@@ -773,7 +773,12 @@ def parse_usd(
             if cached_key != key and cached_key in mesh_cache:
                 return mesh_cache[cached_key]
 
-        mesh = usd.get_mesh(prim, load_uvs=load_uvs, load_normals=load_normals)
+        mesh = usd.get_mesh(
+            prim,
+            load_uvs=load_uvs,
+            load_normals=load_normals,
+            load_visual_materials=False,
+        )
         mesh_cache[key] = mesh
         return mesh
 
@@ -4013,7 +4018,16 @@ def parse_usd(
                         # as visual-only mesh imports.
                         mesh = _get_mesh_with_visual_material(prim, path_name=path)
                     else:
+                        # Not viewport-drawn, but the viewer still draws these under show_collision /
+                        # show_static. Mutating the shared cache entry is safe: both caches key on the
+                        # prim path, so every consumer resolves the same values.
                         mesh = _get_mesh_cached(prim)
+                        if material_props.get("texture") is not None:
+                            mesh.texture = material_props["texture"]
+                        if material_props.get("roughness") is not None:
+                            mesh.roughness = material_props["roughness"]
+                        if material_props.get("metallic") is not None:
+                            mesh.metallic = material_props["metallic"]
                     mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,
