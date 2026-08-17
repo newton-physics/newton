@@ -4116,6 +4116,13 @@ def _cable_rod_separate_rest_and_initial_pose_impl(test: unittest.TestCase, devi
             body_frame_origin="com",
         )
 
+    with test.assertRaisesRegex(ValueError, "finite, nonzero quaternion"):
+        newton.ModelBuilder().add_rod(
+            positions=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 2.0)],
+            quaternions=[wp.quat(float("nan"), 0.0, 0.0, 1.0), wp.quat_identity()],
+            body_frame_origin="com",
+        )
+
     large_builder = newton.ModelBuilder()
     base = wp.vec3(1.0e5, -1.0e5, 1.0e5)
     _, graph_joints = large_builder.add_rod_graph(

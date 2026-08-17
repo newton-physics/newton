@@ -245,7 +245,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         """Verify four cable material moduli map to six per-axis joint stiffness slots.
 
         Authored zero stiffness is preserved, direct values override the volumetric fallback,
-        and all authored material values remain available in ``path_cable_attrs``.
+        material stiffness does not enable generic joint actuation, and all authored material
+        values remain available in ``path_cable_attrs``.
         """
         # Graded segment lengths exercise per-joint dual-length normalization.
         pts = [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.6, 0.0, 1.0)]
@@ -280,7 +281,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 np.testing.assert_allclose(ke[dof0 : dof0 + 6], expected, rtol=1.0e-3)
                 self.assertEqual(
                     builder.joint_target_mode[dof0 : dof0 + 6],
-                    [int(newton.JointTargetMode.POSITION)] * 6,
+                    [int(newton.JointTargetMode.NONE)] * 6,
                 )
 
             # The as-authored material is also preserved in the import metadata.
@@ -420,7 +421,6 @@ class TestUSDDeformableCable(unittest.TestCase):
             # Stretch DOF target_ke is the authored 0.0, not add_rod's 1.0e5 default.
             dof0 = builder.joint_qd_start[j0]
             self.assertEqual(builder.joint_target_ke[dof0 + 2], 0.0)
-            self.assertEqual(builder.joint_target_mode[dof0 + 2], int(newton.JointTargetMode.NONE))
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["curvesStretchStiffness"], 0.0)
 
     def test_cable_stiffness_setter_rejects_incompatible_joint(self):

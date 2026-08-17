@@ -5293,10 +5293,9 @@ class ModelBuilder:
 
         .. note::
 
-            Cable joints are supported by :class:`newton.solvers.SolverVBD`, which uses an
-            AVBD backend for rigid bodies. The solver maps the 6-DoF kinematic
-            layout to four material constraint slots: stretch, shear, bend, and
-            twist. Cable body transforms are integrated directly by
+            Cable joints are supported by :class:`newton.solvers.SolverVBD`. Their six canonical
+            axes represent four material responses: stretch, shear, bend, and twist. Cable body
+            transforms are integrated directly by
             :class:`newton.solvers.SolverVBD`, while :func:`newton.eval_fk` can
             reconstruct them from ``joint_q`` and ``joint_qd``.
 
@@ -5343,8 +5342,8 @@ class ModelBuilder:
             The index of the added joint.
 
         Raises:
-            ValueError: If ``rest_xform`` contains non-finite values.
-            ValueError: If its quaternion has norm less than or equal to 1.0e-9.
+            ValueError: If ``rest_xform`` contains non-finite values or a quaternion with norm less
+                than or equal to 1.0e-9, or if any material stiffness is negative.
 
         .. experimental::
 
@@ -5446,7 +5445,7 @@ class ModelBuilder:
         bend_stiffness: float | None,
         twist_stiffness: float | None,
     ) -> None:
-        """Overwrite each non-None stiffness and its inferred target mode, in :meth:`add_joint_cable` axis order."""
+        """Overwrite each non-None stiffness in :meth:`add_joint_cable` axis order."""
         joint_type = self.joint_type[joint]
         joint_dof_dim = self.joint_dof_dim[joint]
         if joint_type != JointType.CABLE or joint_dof_dim != (3, 3):
@@ -5467,11 +5466,7 @@ class ModelBuilder:
         for offset, stiffness in enumerate(axis_stiffnesses):
             if stiffness is not None:
                 dof = dof_start + offset
-                damping = self.joint_target_kd[dof]
                 self.joint_target_ke[dof] = stiffness
-                self.joint_target_mode[dof] = int(
-                    JointTargetMode.from_gains(stiffness, damping, has_drive=stiffness != 0.0 or damping != 0.0)
-                )
 
     def add_constraint_mimic(
         self,

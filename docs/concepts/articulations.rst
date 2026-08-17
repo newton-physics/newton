@@ -27,10 +27,10 @@ Maximal coordinates describe the configuration of an articulation in terms of th
 Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 The linear component of :attr:`newton.State.body_qd` is the world-frame velocity
-of the body's center of mass. For public ``FREE``, ``DISTANCE``, and ``CABLE``
-joints, :attr:`newton.State.joint_qd` stores the child-COM twist in the joint
-parent frame: the linear slice is child-COM velocity and the angular slice is
-angular velocity in that same frame.
+of the body's center of mass. For public ``FREE``, ``DISTANCE``, and ``CABLE`` joints,
+:attr:`newton.State.joint_qd` stores the child-COM twist in the joint parent
+frame: the linear slice is child-COM velocity and the angular slice is angular
+velocity in that same frame.
 For floating-base articulations, the root ``FREE`` joint usually has the world
 as parent, so this parent-frame twist matches the world-frame body twist in
 practice.
@@ -73,13 +73,11 @@ after changing cable rest.
 
 SolverVBD interprets the six per-axis :attr:`newton.Model.joint_target_ke` and
 :attr:`newton.Model.joint_target_kd` entries in canonical XYZ linear/angular
-order: ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``. Each anchor's
-local ``+Z`` is the material tangent. X/Y shear must match, as must X/Y bend,
-because the transverse responses are isotropic; every axis uses
-:attr:`~newton.JointTargetMode.NONE`. Generic
-:meth:`newton.ModelBuilder.add_joint` construction uses its six ``target_pos``
-values as structural rest. :meth:`newton.ModelBuilder.add_joint_cable` creates
-this layout automatically.
+order: ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``; every axis
+uses :attr:`~newton.JointTargetMode.NONE`. Each anchor's local ``+Z`` is the
+material tangent. :meth:`newton.ModelBuilder.add_joint_cable` creates the
+canonical axis layout automatically; generic :meth:`newton.ModelBuilder.add_joint`
+construction uses its six ``target_pos`` values as structural rest.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:

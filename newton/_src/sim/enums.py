@@ -220,8 +220,7 @@ class JointType(IntEnum):
 
         Notes:
             - For PRISMATIC and REVOLUTE joints, this equals 5 (single DoF axis).
-            - For FREE, DISTANCE, and CABLE joints, `cts_count = 0` since they yield no generic
-              kinematic constraints.
+            - For FREE, DISTANCE, and CABLE joints, `cts_count = 0` since they yield no constraints.
             - For FIXED joints, `cts_count = 6` since it fully constrains the associated bodies.
         """
         cts_count = 6 - num_axes
