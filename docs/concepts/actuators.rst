@@ -235,10 +235,16 @@ hold). At stiff gains and large timesteps this can overshoot or go unstable.
 The **implicit** effort mode instead solves the control law against the
 predicted end-of-step state (a Stable-PD style solve). A key advantage of this
 formulation over the explicit effort mode is that it stays stable at higher
-gains. The implicit effort mode necessarily requires the joint-space effective
-inverse mass. This is supplied by a
-:class:`~newton.actuators.ResponseOracle`, which is refreshed once per step at
-the current pose:
+gains.
+
+That stability comes at a cost: the solve reaches it by applying less effort
+than the control law nominally asks for. The trade-off is between stability at
+large timesteps with the implicit mode, and fidelity to the requested gains at
+small timesteps with the explicit mode.
+
+The implicit effort mode necessarily requires the joint-space effective inverse
+mass. This is supplied by a :class:`~newton.actuators.ResponseOracle`, which is
+refreshed once per step at the current pose:
 
 .. code-block:: python
 
@@ -253,25 +259,30 @@ the current pose:
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
    solver.step(sim_state, next_sim_state, sim_control, contacts, dt=0.01)
 
-In this mode :meth:`~newton.actuators.Actuator.step` solves for the joint
-impulse of each actuated DOF. An impulse on one DOF changes the velocity of
-every DOF in its articulation, so an articulation's actuated DOFs are solved
+In this mode :meth:`Actuator.step <newton.actuators.Actuator.step>` evaluates
+the joint force for each actuated DOF. A force on one DOF changes the velocity
+of every DOF in its articulation, so an articulation's actuated DOFs are solved
 together as one coupled system.
 
 The effective inverse mass, called *the response* below, is computed for a whole
 articulation. The actuator then reads only the entries for the DOFs it drives.
 :class:`~newton.actuators.ResponseOracle` is responsible for providing that
-matrix, and there are two ways to obtain it: compute it from scratch, or reuse
-what the solver already has.
+matrix, and there are two ways to obtain it: compute it from scratch
+(:meth:`ResponseOracle.refresh <newton.actuators.ResponseOracle.refresh>`), or
+reuse what the solver already has (:meth:`ResponseOracle.refresh_from_solve
+<newton.actuators.ResponseOracle.refresh_from_solve>`).
 
 :meth:`~newton.actuators.ResponseOracle.refresh` builds the mass matrix itself,
-from :func:`~newton.eval_mass_matrix` and joint armature. Joint damping, joint
-limits, friction, contacts and constraint regularization are absent. All of
-those resist motion, so the response comes out too large. A larger response
-divides the control law harder and so yields a smaller effort, which errs
-toward stability.
+from :func:`~newton.eval_mass_matrix` and joint armature. This comes with
+approximations. First, joint damping, joint limits, friction, contacts and
+constraint regularization are absent. All of those resist motion, so the
+response comes out larger than anticipated. A larger response further divides
+the control law and so yields a smaller effort than would have been evaluated
+without the simplifications listed above. Second, kinematic loop closures are
+also ignored.
 
-A solver that can apply its own inertia removes that approximation.
+A solver that can apply its own inertia removes most of that approximation, with
+the exception of loop closure effects.
 :meth:`~newton.actuators.ResponseOracle.refresh_from_solve` takes a callable
 that computes ``x = M^-1 y``, so it works with any solver that provides one.
 MuJoCo is currently the only Newton solver that does: it keeps its inertia
