@@ -60,13 +60,16 @@ def _mass_matrix_multiply_kernel(
 
 
 @wp.kernel
-def _gather_dof_flat_kernel(
-    src: wp.array[wp.float32],  # flat sim array
-    indices: wp.array[wp.uint32],  # (total_dofs,) — concatenated per-robot, no padding
-    dst: wp.array[wp.float32],  # flat output (total_dofs,)
+def _gather_mass_matrix_blocks_kernel(
+    mass_matrix_full: wp.array3d[wp.float32],  # (robot_count, model_max_dofs, model_max_dofs)
+    local_dof_idx: wp.array2d[wp.int32],  # (robot_count, max_dofs) -> DOF index within the articulation
+    dofs_per_robot: wp.array[wp.int32],  # (robot_count,)
+    out: wp.array3d[wp.float32],  # (robot_count, max_dofs, max_dofs)
 ):
-    flat = wp.tid()
-    dst[flat] = src[indices[flat]]
+    robot, row, col = wp.tid()
+    if row >= dofs_per_robot[robot] or col >= dofs_per_robot[robot]:
+        return
+    out[robot, row, col] = mass_matrix_full[robot, local_dof_idx[robot, row], local_dof_idx[robot, col]]
 
 
 @wp.kernel

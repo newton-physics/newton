@@ -24,3 +24,12 @@ subclass of :class:`ControllerBase`.
    ControllerBase
    ControllerJointImpedance
    ControllerJointImpedanceModelFree
+   JointSelection
+
+.. rubric:: Functions
+
+.. autosummary::
+   :toctree: _generated
+   :nosignatures:
+
+   select_joints
