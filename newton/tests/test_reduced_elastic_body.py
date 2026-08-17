@@ -1489,7 +1489,7 @@ def test_elastic_shape_box_exact_modal_samples(test, device):
     np.testing.assert_allclose(phi, expected_phi, atol=1.0e-7)
 
 
-def _build_elastic_ground_contact_model(device, z: float, q0: float = 0.0):
+def _build_elastic_ground_contact_model(device, z: float, q0: float = 0.0, is_kinematic: bool = True):
     def downward_shape_fn(_x):
         return np.array([[0.0, 0.0, -1.0]], dtype=np.float32)
 
@@ -1507,12 +1507,12 @@ def _build_elastic_ground_contact_model(device, z: float, q0: float = 0.0):
         mass=1.0,
         inertia=_identity_inertia(),
         mode_count=1,
-        mode_mass=[0.0],
-        mode_stiffness=[0.0],
+        mode_mass=[0.0 if is_kinematic else 1.0],
+        mode_stiffness=[0.0 if is_kinematic else 100.0],
         mode_damping=[0.0],
         mode_q=[q0],
         mode_shape_fn=downward_shape_fn,
-        is_kinematic=True,
+        is_kinematic=is_kinematic,
     )
     builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
     builder.color()
@@ -1593,6 +1593,39 @@ def test_vbd_elastic_contact_solves_modal_penetration(test, device):
     test.assertLess(float(metrics["applied_residual_norm"][0]) / initial_residual, 1.0e-6)
     test.assertGreater(float(metrics["update_norm"][0]), 1.0e-4)
     test.assertLess(float(metrics["update_norm"][0]), 1.0e-2)
+
+
+def test_vbd_elastic_contact_overflow_assembles_consistent_block(test, device):
+    """Overflowing the per-body contact list must not truncate only the rigid frame block."""
+
+    def assemble_block(contact_buffer_size: int):
+        model, _body = _build_elastic_ground_contact_model(device, z=0.04, is_kinematic=False)
+        state_0 = model.state()
+        state_1 = model.state()
+        contacts = model.contacts()
+        model.collide(state_0, contacts)
+        contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreater(contact_count, 1)
+
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=1,
+            rigid_contact_k_start=1000.0,
+            rigid_body_contact_buffer_size=contact_buffer_size,
+            elastic_contact_relaxation=1.0,
+        )
+        solver.step(state_0, state_1, model.control(), contacts, 0.01)
+
+        matrix_upper = solver.elastic_body_block_matrix.numpy()[0]
+        matrix = np.triu(matrix_upper) + np.triu(matrix_upper, 1).T
+        return contact_count, matrix, solver.elastic_body_block_delta.numpy()[0]
+
+    contact_count, overflow_matrix, overflow_delta = assemble_block(contact_buffer_size=1)
+    _, complete_matrix, complete_delta = assemble_block(contact_buffer_size=contact_count)
+
+    np.testing.assert_allclose(overflow_matrix, complete_matrix, rtol=2.0e-6, atol=1.0e-5)
+    np.testing.assert_allclose(overflow_delta, complete_delta, rtol=2.0e-6, atol=1.0e-7)
+    test.assertGreater(float(np.linalg.eigvalsh(overflow_matrix)[0]), 0.0)
 
 
 def test_elastic_contact_local_mat33_projection_matches_world(test, device):
@@ -3748,6 +3781,12 @@ for device in devices:
         TestReducedElasticBody,
         "test_vbd_elastic_contact_solves_modal_penetration",
         test_vbd_elastic_contact_solves_modal_penetration,
+        devices=[device],
+    )
+    add_function_test(
+        TestReducedElasticBody,
+        "test_vbd_elastic_contact_overflow_assembles_consistent_block",
+        test_vbd_elastic_contact_overflow_assembles_consistent_block,
         devices=[device],
     )
     add_function_test(

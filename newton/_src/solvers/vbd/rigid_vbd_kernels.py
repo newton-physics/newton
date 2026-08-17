@@ -2070,12 +2070,12 @@ def build_body_body_contact_lists(
 
     Notes:
       - body_contact_counts[b] is reset to 0 on the host before launch and
-        atomically incremented here; consumers must only read the first
-        body_contact_counts[b] indices for each body.
+        atomically incremented here.
       - If a body has more than body_contact_buffer_pre_alloc contacts, extra indices
-        are dropped (overflow is safely ignored here).
+        are not stored. Consumers detect overflow and scan the full contact array so
+        force and Hessian assembly remains complete.
       - body_contact_indices is not cleared each step; only the prefix defined
-        by body_contact_counts is considered valid.
+        by min(body_contact_counts, body_contact_buffer_pre_alloc) is valid.
     """
     t_id = wp.tid()
     if t_id >= rigid_contact_count[0]:
@@ -2450,8 +2450,10 @@ def accumulate_body_body_contacts_per_body(
         return
 
     num_contacts = body_contact_counts[body_id]
-    if num_contacts > body_contact_buffer_pre_alloc:
-        num_contacts = body_contact_buffer_pre_alloc
+    use_contact_list = num_contacts <= body_contact_buffer_pre_alloc
+    contact_limit = num_contacts
+    if not use_contact_list:
+        contact_limit = rigid_contact_count[0]
 
     force_acc = wp.vec3(0.0)
     torque_acc = wp.vec3(0.0)
@@ -2460,8 +2462,10 @@ def accumulate_body_body_contacts_per_body(
     h_aa_acc = wp.mat33(0.0)
 
     i = thread_id_within_body
-    while i < num_contacts:
-        contact_idx = body_contact_indices[body_id * body_contact_buffer_pre_alloc + i]
+    while i < contact_limit:
+        contact_idx = i
+        if use_contact_list:
+            contact_idx = body_contact_indices[body_id * body_contact_buffer_pre_alloc + i]
         if contact_idx >= rigid_contact_count[0]:
             i += _NUM_CONTACT_THREADS_PER_BODY
             continue

@@ -345,7 +345,7 @@ class Example:
         self.gravity = _arg_float(args, "gravity", -9.81)
         self.contact_stiffness = _arg_float(args, "contact_stiffness", 6.0e3)
         self.contact_damping = _arg_float(args, "contact_damping", 0.008)
-        self.friction_mu = _arg_float(args, "friction_mu", 0.72)
+        self.friction_mu = _arg_float(args, "friction_mu", 0.66)
         self.modal_stiffness_scale = _arg_float(args, "modal_stiffness_scale", 1.0)
         self.modal_damping_ratio = _arg_float(args, "modal_damping_ratio", 0.005)
         self.chair_yaw_angle = math.radians(_arg_float(args, "chair_yaw_angle_deg", 0.0))
@@ -494,6 +494,7 @@ class Example:
             self.model,
             iterations=self.solver_iterations,
             rigid_contact_k_start=5.0e3,
+            rigid_body_contact_buffer_size=256,
             friction_epsilon=1.5e-3,
         )
 

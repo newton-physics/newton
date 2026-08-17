@@ -44,6 +44,7 @@
 
 ### Changed
 
+- Tune the reduced elastic chair friction for a stable stick-slip transition with complete contact assembly
 - Tune reduced elastic torsion and cantilever vibration examples for smoother and faster motion
 - Tune reduced elastic mechanism and gravity examples for clearer visible deformation and camera framing
 - Increase elastic box render tessellation and make the torsion fixture a held 90 degree shaft release with exact surface modal samples
@@ -64,6 +65,8 @@
 - Solve each reduced elastic body's floating frame and modal coordinates in one
   coupled VBD block so joint response no longer depends on slow frame/modal
   fixed-point convergence.
+- Keep rigid-frame and modal contact Hessians consistent when a per-body contact
+  list overflows, and apply tiled elastic updates from tile-local solve results.
 - Resolve USD asset references recursively in `resolve_usd_from_url` so nested stages are fully downloaded
 - Unify CPU and GPU inertia validation to produce identical results for zero-mass bodies with `bound_mass`, singular inertia, non-symmetric tensors, and triangle-inequality boundary cases
 - Fix `UnboundLocalError` crash in detailed inertia validation when eigenvalue decomposition encounters NaN/Inf input

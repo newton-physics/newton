@@ -1006,15 +1006,15 @@ def create_solve_elastic_body_tiled(block_width: int):
             if not wp.isfinite(delta[i]):
                 block_is_definite = False
 
+        safe_delta = wp.tile_zeros(shape=(width,), dtype=float)
         for i in range(width):
             if block_is_definite:
-                elastic_body_block_delta[elastic_index, i] = delta[i]
+                safe_delta[i] = delta[i]
             else:
-                diagonal = elastic_body_block_matrix[elastic_index, i, i]
+                diagonal = h[i, i]
                 if diagonal > 0.0:
-                    elastic_body_block_delta[elastic_index, i] = -g[i] / diagonal
-                else:
-                    elastic_body_block_delta[elastic_index, i] = 0.0
+                    safe_delta[i] = -g[i] / diagonal
+            elastic_body_block_delta[elastic_index, i] = safe_delta[i]
 
         owner_joint = elastic_joint[elastic_index]
         q_start = joint_q_start[owner_joint] + 7
@@ -1036,11 +1036,11 @@ def create_solve_elastic_body_tiled(block_width: int):
                 solve_residual_i = grad_i
                 applied_residual_i = grad_i
                 for j in range(width):
-                    delta_j = elastic_body_block_delta[elastic_index, j]
+                    delta_j = safe_delta[j]
                     solve_residual_i = solve_residual_i + h[row, j] * delta_j
                     applied_residual_i = applied_residual_i + h[row, j] * (elastic_body_relaxation * delta_j)
 
-                applied_delta_i = elastic_body_relaxation * elastic_body_block_delta[elastic_index, row]
+                applied_delta_i = elastic_body_relaxation * safe_delta[row]
                 initial_residual_sq = initial_residual_sq + grad_i * grad_i
                 solve_residual_sq = solve_residual_sq + solve_residual_i * solve_residual_i
                 applied_residual_sq = applied_residual_sq + applied_residual_i * applied_residual_i
@@ -1058,22 +1058,10 @@ def create_solve_elastic_body_tiled(block_width: int):
         if solve_frame and body_inv_mass[body] > 0.0:
             rot_current = wp.transform_get_rotation(q_current)
             body_R = wp.quat_to_matrix(rot_current)
-            x_inc_world = body_R * (
-                elastic_body_relaxation
-                * wp.vec3(
-                    elastic_body_block_delta[elastic_index, 0],
-                    elastic_body_block_delta[elastic_index, 1],
-                    elastic_body_block_delta[elastic_index, 2],
-                )
-            )
-            w_world = body_R * (
-                elastic_body_relaxation
-                * wp.vec3(
-                    elastic_body_block_delta[elastic_index, 3],
-                    elastic_body_block_delta[elastic_index, 4],
-                    elastic_body_block_delta[elastic_index, 5],
-                )
-            )
+            x_delta = wp.vec3(safe_delta[0], safe_delta[1], safe_delta[2])
+            w_delta = wp.vec3(safe_delta[3], safe_delta[4], safe_delta[5])
+            x_inc_world = body_R * (elastic_body_relaxation * x_delta)
+            w_world = body_R * (elastic_body_relaxation * w_delta)
             angle = wp.length(w_world)
             if angle > _SMALL_ANGLE_EPS:
                 dq_world = wp.quat_from_axis_angle(w_world / angle, angle)
@@ -1093,7 +1081,7 @@ def create_solve_elastic_body_tiled(block_width: int):
             qd_idx = qd_start + mode
             q_prev = joint_q_prev[q_idx]
             q_old = joint_q[q_idx]
-            q_new = q_old + elastic_body_relaxation * elastic_body_block_delta[elastic_index, 6 + mode]
+            q_new = q_old + elastic_body_relaxation * safe_delta[6 + mode]
             joint_q[q_idx] = q_new
             joint_qd[qd_idx] = (q_new - q_prev) * inv_dt
 

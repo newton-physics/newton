@@ -284,7 +284,8 @@ class SolverVBD(SolverBase):
             rigid_joint_adaptive_stiffness: Whether to use AVBD adaptive penalty growth for joint constraints.
                 If False, joint penalties are fixed at their per-constraint stiffness caps and joint penalty warmstart
                 and dual updates are skipped. Contact penalties remain adaptive.
-            rigid_body_contact_buffer_size: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
+            rigid_body_contact_buffer_size: Body-body contacts stored per rigid body for fast per-body lookup.
+                If this capacity is exceeded, the solver scans the full contact array for that body.
             rigid_body_particle_contact_buffer_size: Max body-particle (rigid-particle) contacts per rigid body for per-body soft-contact lists (tune based on expected body-particle contact density).
             rigid_enable_dahl_friction: Enable Dahl hysteresis friction model for cable bending (default: False).
                 Configure per-joint Dahl parameters via the solver-registered custom model attributes
