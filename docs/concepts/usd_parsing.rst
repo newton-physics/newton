@@ -82,20 +82,22 @@ The importer uses standard point and material representations:
 
 One import call currently accepts one MPM owner scene. The result's
 ``path_particle_map`` maps every imported Points path to its half-open
-particle range, and ``particle_scene_prim`` contains the governing
-``UsdPhysics.Scene`` prim. Solver configuration remains an explicit
+particle range, and ``particle_scene_path`` contains the governing
+``UsdPhysics.Scene`` prim path. Solver configuration remains an explicit
 solver-specific step.
 
 .. code-block:: python
 
     import newton
     from newton.solvers import SolverImplicitMPM
+    from pxr import Usd
 
+    stage = Usd.Stage.Open("sand.usda")
     builder = newton.ModelBuilder()
     SolverImplicitMPM.register_custom_attributes(builder)
-    result = builder.add_usd("sand.usda", load_visual_shapes=False)
-    particle_scene_prim = result["particle_scene_prim"]
-    mpm_config = SolverImplicitMPM.Config.create_from_usd(particle_scene_prim)
+    result = builder.add_usd(stage, load_visual_shapes=False)
+    particle_scene_path = result["particle_scene_path"]
+    mpm_config = SolverImplicitMPM.Config.create_from_usd(stage.GetPrimAtPath(particle_scene_path))
     particle_range = result["path_particle_map"]["/World/Sand"]
 
 The authored workflow is demonstrated by

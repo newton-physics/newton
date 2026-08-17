@@ -60,10 +60,13 @@ class TestMpmConfigUsdEntryGuards(unittest.TestCase):
 class TestImportUsdMPMFixtures(unittest.TestCase):
     def test_imports_checked_in_two_prim_fixture(self):
         """Parse the checked-in transformed, unit-scaled, two-material USDA fixture."""
+        from pxr import Usd
+
         fixture = pathlib.Path(__file__).parent / "assets" / "mpm_two_prims.usda"
+        stage = Usd.Stage.Open(fixture.as_posix())
         builder = newton.ModelBuilder()
 
-        result = builder.add_usd(fixture.as_posix(), load_visual_shapes=False)
+        result = builder.add_usd(stage, load_visual_shapes=False)
 
         self.assertEqual(
             result["path_particle_map"],
@@ -86,7 +89,8 @@ class TestImportUsdMPMFixtures(unittest.TestCase):
         np.testing.assert_allclose(builder.particle_mass, [2.0, 16.0, 8.0], rtol=1.0e-6)
         np.testing.assert_allclose(np.asarray(builder.gravity), [0.0, 0.0, -9.81], rtol=1.0e-6)
         self.assertNotIn("mpm_config", result)
-        mpm_config = SolverImplicitMPM.Config.create_from_usd(result["particle_scene_prim"])
+        self.assertEqual(result["particle_scene_path"], "/World/PhysicsScene")
+        mpm_config = SolverImplicitMPM.Config.create_from_usd(stage.GetPrimAtPath(result["particle_scene_path"]))
         self.assertAlmostEqual(mpm_config.voxel_size, 0.05)
 
         model = builder.finalize(device="cpu")
@@ -588,8 +592,8 @@ class TestImportUsdMPM(unittest.TestCase):
         result = builder.add_usd(stage, root_path="/World/Sand", load_visual_shapes=False)
 
         self.assertEqual(result["path_particle_map"], {"/World/Sand": (0, 1)})
-        self.assertEqual(str(result["particle_scene_prim"].GetPath()), "/World/PhysicsScene")
-        mpm_config = SolverImplicitMPM.Config.create_from_usd(result["particle_scene_prim"])
+        self.assertEqual(result["particle_scene_path"], "/World/PhysicsScene")
+        mpm_config = SolverImplicitMPM.Config.create_from_usd(stage.GetPrimAtPath(result["particle_scene_path"]))
         self.assertAlmostEqual(mpm_config.tolerance, 2.5e-5)
         np.testing.assert_allclose(np.asarray(builder.gravity), [0.0, 0.0, -9.81], rtol=1.0e-6)
 
@@ -639,7 +643,7 @@ class TestImportUsdMPM(unittest.TestCase):
         result = newton.ModelBuilder().add_usd(stage, load_visual_shapes=False)
 
         self.assertEqual(result["path_particle_map"], {})
-        self.assertIsNone(result["particle_scene_prim"])
+        self.assertIsNone(result["particle_scene_path"])
         self.assertNotIn("mpm_config", result)
 
     def test_imports_opted_in_points_materials_and_ranges(self):
@@ -693,7 +697,7 @@ class TestImportUsdMPM(unittest.TestCase):
         )
 
         self.assertEqual(result["path_particle_map"], {"/World/Sand": (1, 3), "/World/Snow": (3, 4)})
-        self.assertEqual(str(result["particle_scene_prim"].GetPath()), "/World/PhysicsScene")
+        self.assertEqual(result["particle_scene_path"], "/World/PhysicsScene")
         self.assertNotIn("mpm_config", result)
         self.assertEqual(builder.particle_count, 4)
         np.testing.assert_allclose(np.asarray(builder.particle_q[1]), [5.2, 0.0, 0.0], rtol=1.0e-6)

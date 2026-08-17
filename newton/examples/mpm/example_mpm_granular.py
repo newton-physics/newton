@@ -5,6 +5,7 @@ import warnings
 
 import numpy as np
 import warp as wp
+from pxr import Usd
 
 import newton
 import newton.examples
@@ -32,14 +33,15 @@ class Example:
         if args.from_usd:
             # Particle samples, point-subset materials, and solver configuration are authored in USD.
             # Particle masses are derived from bound physics:density values and authored widths.
+            stage = Usd.Stage.Open(newton.examples.get_asset("mpm_sand.usda"))
             import_result = builder.add_usd(
-                newton.examples.get_asset("mpm_sand.usda"),
+                stage,
                 load_visual_shapes=False,
             )
-            particle_scene_prim = import_result["particle_scene_prim"]
-            if particle_scene_prim is None:
+            particle_scene_path = import_result["particle_scene_path"]
+            if particle_scene_path is None:
                 raise ValueError("mpm_sand.usda must author NewtonMPMSceneAPI")
-            mpm_options = SolverImplicitMPM.Config.create_from_usd(particle_scene_prim)
+            mpm_options = SolverImplicitMPM.Config.create_from_usd(stage.GetPrimAtPath(particle_scene_path))
         else:
             Example.emit_particles(builder, args)
             mpm_options = SolverImplicitMPM.Config()
