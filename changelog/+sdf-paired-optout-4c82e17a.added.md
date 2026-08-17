@@ -1,0 +1,1 @@
+Add opt-out controls for adjacent-X SDF texture packing through `ModelBuilder.sdf_texture_paired_samples` and `Mesh.build_sdf(paired_samples=False)` to trade sampling speed for half the texture storage.

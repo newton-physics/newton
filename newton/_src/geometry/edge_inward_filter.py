@@ -15,7 +15,13 @@ if TYPE_CHECKING:
 MINVAL = 1.0e-15
 
 
-def filter_fully_inward_edges(mesh: Mesh, edge_indices: np.ndarray) -> np.ndarray:
+def filter_fully_inward_edges(
+    mesh: Mesh,
+    edge_indices: np.ndarray,
+    *,
+    canonical_vertex_ids: np.ndarray | None = None,
+    edge_slot_topology: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None,
+) -> np.ndarray:
     """Drop concave edges whose endpoints have fully inward manifold one-rings.
 
     A removable edge is shared by exactly two non-degenerate triangles. Both
@@ -27,6 +33,8 @@ def filter_fully_inward_edges(mesh: Mesh, edge_indices: np.ndarray) -> np.ndarra
     Args:
         mesh: Source mesh with consistently authored triangle winding.
         edge_indices: Candidate collision-edge vertex pairs.
+        canonical_vertex_ids: Optional precomputed canonical vertex IDs.
+        edge_slot_topology: Optional precomputed edge-slot topology.
 
     Returns:
         A contiguous subset of ``edge_indices`` with fully inward edges removed.
@@ -36,7 +44,9 @@ def filter_fully_inward_edges(mesh: Mesh, edge_indices: np.ndarray) -> np.ndarra
 
     vertices = np.asarray(mesh.vertices, dtype=np.float64)
     triangles = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
-    canonical = mesh._canonical_vertex_ids()
+    canonical = canonical_vertex_ids
+    if canonical is None:
+        canonical = mesh._canonical_vertex_ids()
     canonical_triangles = canonical[triangles]
 
     # Winding-number SDF construction uses this volume sign to correct a
@@ -53,7 +63,9 @@ def filter_fully_inward_edges(mesh: Mesh, edge_indices: np.ndarray) -> np.ndarra
         return np.ascontiguousarray(edge_indices, dtype=np.int32)
     orientation = 1.0 if signed_volume > 0.0 else -1.0
 
-    orig_edges, _slot_keys, order, keys_sorted, face_normals, face_norms = mesh._build_edge_slot_topology()
+    if edge_slot_topology is None:
+        edge_slot_topology = mesh._build_edge_slot_topology(canonical)
+    orig_edges, _slot_keys, order, keys_sorted, face_normals, face_norms = edge_slot_topology
     if len(keys_sorted) == 0:
         return np.ascontiguousarray(edge_indices, dtype=np.int32)
 

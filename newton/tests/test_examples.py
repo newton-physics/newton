@@ -662,6 +662,13 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
+    name="robot.example_robot_omniwheel",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 500},
+    use_viewer=True,
+)
+add_example_test(
+    TestRobotExamples,
     name="robot.example_robot_ur10",
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},

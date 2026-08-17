@@ -1220,7 +1220,7 @@ For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.C
        Default: False.
    * - ``margin_contact_area``
      - Lower bound on contact area. Hydroelastic stiffness is ``area * k_eff``, but contacts 
-       within the contact margin that are not yet penetrating (speculative contacts) have zero 
+       within the contact margin that are not yet penetrating have zero
        geometric area. This provides a floor value so they still generate repulsive force. Default: 0.01.
 
 .. _Shape Configuration:
@@ -1303,7 +1303,7 @@ by ``margin_a + margin_b``.
    :width: 90%
    :align: center
 
-   Margin sets contact location (surface offset), while gap adds speculative
+   Margin sets contact location (surface offset), while gap adds an early
    detection distance on top of margin. Left: no contact generated. Middle:
    contact generated but not yet active. Right: active contact support.
 
@@ -1346,6 +1346,56 @@ Example (mesh SDF workflow):
 **Builder default gap:**
 
 The builder's ``rigid_gap`` (default 0.1) applies to shapes without explicit ``gap``. Alternatively, use ``builder.default_shape_cfg.gap``.
+
+.. _speculative-contacts:
+
+Speculative contacts (velocity-adapted gaps)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A fixed ``gap`` uses the same detection distance regardless of motion. Speculative
+contacts retain a separated rigid-contact candidate when its contact points can close
+the separation before the next collision update.
+
+For a candidate with current contact-space separation ``d``, authored pair gap ``g``,
+normal-directed closing speed ``v``, collision-update horizon ``dt``, and configured
+limit ``e_max``, the effective admission distance is:
+
+.. math::
+
+   g_{effective} = \max\left(g, \min\left(v\,dt, e_{max}\right)\right)
+
+The contact is kept when ``d <= g_effective``. Newton computes ``v`` from relative
+linear and angular velocity at the contact points. Common motion and receding motion
+therefore do not enlarge the gap. Broad phase uses a conservative motion bound; narrow
+phase applies the normal-directed test above.
+
+Enable the feature with :class:`CollisionPipeline.SpeculativeContactConfig`:
+
+.. code-block:: python
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
+            max_speculative_extension=0.1,
+        ),
+    )
+
+    pipeline.collide(state, contacts, dt=1.0 / 60.0)
+
+The per-call ``dt`` is the time [s] until the next planned
+:meth:`CollisionPipeline.collide` call, including skipped solver substeps, and is
+required when speculative contacts are enabled. ``dt=0.0`` uses only the fixed
+gaps. ``max_speculative_extension`` caps the velocity-based distance [m]; ``0.0``
+also disables velocity adaptation.
+
+Speculation changes when a contact is retained, not its geometry: contact points remain
+at their current separation rather than a predicted impact pose. Mesh and SDF contact
+reduction preserves representative close-clearance and early-impact candidates.
+
+.. note::
+
+   Speculative contacts are opt-in and currently apply to rigid, non-hydroelastic
+   contacts. They do not compute a time of impact or advance bodies to impact.
 
 .. _Common Patterns:
 

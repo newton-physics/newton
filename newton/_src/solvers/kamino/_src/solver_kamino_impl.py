@@ -284,11 +284,19 @@ class SolverKaminoImpl(SolverBase):
         if self._config.use_fk_solver:
             self._solver_fk = ForwardKinematicsSolver(model=self._model, config=self._config.fk)
 
-        # Create the time-integrator instance based on the config
+        # Contacts generated externally are evaluated at the start of a step, so they require
+        # Euler integration. Moreau-Jean is valid only with the internal mid-step detector.
         if self._config.integrator == "euler":
             self._integrator = IntegratorEuler(model=self._model)
         elif self._config.integrator == "moreau":
-            self._integrator = IntegratorMoreauJean(model=self._model)
+            if self._config.use_collision_detector:
+                self._integrator = IntegratorMoreauJean(model=self._model)
+            else:
+                msg.warning(
+                    "Falling back to the 'euler' integrator: 'moreau' requires "
+                    "`use_collision_detector=True` to generate contacts at the mid-point."
+                )
+                self._integrator = IntegratorEuler(model=self._model)
         else:
             raise ValueError(
                 f"Unsupported integrator type: Expected 'euler' or 'moreau', but got {self._config.integrator}."
@@ -1127,7 +1135,7 @@ class SolverKaminoImpl(SolverBase):
         # If a collision detector is provided, use it to generate
         # update the set of active contacts at the current state
         if detector is not None:
-            detector.collide(data=self._data, state=state_in, contacts=contacts)
+            detector.collide(data=self._data, contacts=contacts)
 
         # If a limits container/detector is provided, run joint-limit
         # detection to generate active joint limits at the current state

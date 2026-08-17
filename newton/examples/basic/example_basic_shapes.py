@@ -29,7 +29,7 @@ class Example:
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -37,12 +37,11 @@ class Example:
 
         builder = newton.ModelBuilder()
 
-        builder.default_shape_cfg.mu = 0.5  # Friction coefficient
+        builder.default_shape_cfg.mu = 1.0  # Friction coefficient
 
         if self.solver_type == "vbd":
-            # Stiff, undamped contacts give VBD stable resting poses.
             builder.default_shape_cfg.ke = 1.0e8
-            builder.default_shape_cfg.kd = 0.0
+            builder.default_shape_cfg.kd = 5.0e5
         else:
             builder.default_shape_cfg.mu_torsional = 0.01  # Contact stiffness
             builder.default_shape_cfg.mu_rolling = 3e-3  # Contact stiffness
@@ -106,10 +105,11 @@ class Example:
         if self.solver_type == "vbd":
             self.solver = newton.solvers.SolverVBD(
                 self.model,
-                iterations=10,
+                iterations=5,
+                rigid_compliant_alm=True,
             )
         else:
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
