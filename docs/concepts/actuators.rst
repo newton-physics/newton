@@ -242,9 +242,9 @@ than the control law nominally asks for. The trade-off is between stability at
 large timesteps with the implicit mode, and fidelity to the requested gains at
 small timesteps with the explicit mode.
 
-The implicit effort mode necessarily requires the joint-space effective inverse
-mass. This is supplied by a :class:`~newton.actuators.ResponseOracle`, which is
-refreshed once per step at the current pose:
+The implicit effort mode necessarily requires the joint-space inverse mass
+matrix. This is supplied by a :class:`~newton.actuators.ResponseOracle`, which
+is refreshed once per step at the current pose:
 
 .. code-block:: python
 
@@ -264,7 +264,7 @@ the joint force for each actuated DOF. A force on one DOF changes the velocity
 of every DOF in its articulation, so an articulation's actuated DOFs are solved
 together as one coupled system.
 
-The effective inverse mass, called *the response* below, is computed for a whole
+The inverse mass matrix, called *the response* below, is computed for a whole
 articulation. The actuator then reads only the entries for the DOFs it drives.
 :class:`~newton.actuators.ResponseOracle` is responsible for providing that
 matrix, and there are two ways to obtain it: compute it from scratch
@@ -281,13 +281,15 @@ the control law and so yields a smaller effort than would have been evaluated
 without the simplifications listed above. Second, kinematic loop closures are
 also ignored.
 
-A solver that can apply its own inertia removes most of that approximation, with
-the exception of loop closure effects.
-:meth:`~newton.actuators.ResponseOracle.refresh_from_solve` takes a callable
-that computes ``x = M^-1 y``, so it works with any solver that provides one.
-MuJoCo is currently the only Newton solver that does: it keeps its inertia
-factorized rather than dense, and ``solve_m`` back-substitutes unit vectors
-through that factorization to recover the response.
+The approximations inherent in :meth:`ResponseOracle.refresh
+<newton.actuators.ResponseOracle.refresh>` may be avoided when working with a
+solver that is able to evaluate the inverse mass matrix more directly, with the
+exception of loop closure effects. To this end,
+:meth:`ResponseOracle.refresh_from_solve
+<newton.actuators.ResponseOracle.refresh_from_solve>` takes a callable that
+computes ``x = M^-1 y``. The oracle recovers the response one column at a time,
+by passing unit vectors through that callable. MuJoCo is currently the only
+Newton solver that provides one.
 
 .. code-block:: python
 
@@ -301,9 +303,9 @@ through that factorization to recover the response.
 Both refresh paths launch only kernels, so the actuator, the solver step and the
 response update can be captured in one CUDA graph.
 
-:meth:`~newton.actuators.Actuator.set_effort_mode_explicit` switches back, and
-:class:`~newton.actuators.Actuator.ImplicitOptions` sets the solve's iteration
-count and convergence tolerances.
+:meth:`~newton.actuators.Actuator.set_effort_mode_explicit` switches back to
+explicit mode. :class:`~newton.actuators.Actuator.ImplicitOptions` sets the
+solve's iteration count and convergence tolerances.
 
 All controllers support the implicit mode:
 :class:`~newton.actuators.ControllerPD`,
