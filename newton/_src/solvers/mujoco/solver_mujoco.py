@@ -131,6 +131,46 @@ AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
 
+def _remap_actuator_trnid(value: Any, context: dict[str, Any]) -> Any:
+    """Remap a heterogeneous MuJoCo actuator target during builder composition."""
+    if value is None:
+        return None
+
+    source_builder = context["builder"]
+    row_index = context["row_index"]
+    trntype_attr = source_builder.custom_attributes.get("mujoco:actuator_trntype")
+    if trntype_attr is None:
+        return value
+    trntype = trntype_attr.default
+    if trntype_attr.values and row_index < len(trntype_attr.values):
+        authored = trntype_attr.values[row_index]
+        if authored is not None:
+            trntype = authored
+
+    primary = int(value[0])
+    secondary = int(value[1])
+    entity_offsets = context["entity_offsets"]
+    custom_frequency_offsets = context["custom_frequency_offsets"]
+
+    def offset(index: int, amount: int) -> int:
+        return index + amount if index >= 0 else index
+
+    if int(trntype) in (int(SolverMuJoCo.TrnType.JOINT), int(SolverMuJoCo.TrnType.JOINT_IN_PARENT)):
+        primary = offset(primary, entity_offsets["joint_dof"])
+    elif int(trntype) == int(SolverMuJoCo.TrnType.TENDON):
+        primary = offset(primary, custom_frequency_offsets.get("mujoco:tendon", 0))
+    elif int(trntype) == int(SolverMuJoCo.TrnType.SITE):
+        primary = offset(primary, entity_offsets["shape"])
+        secondary = offset(secondary, entity_offsets["shape"])
+    elif int(trntype) == int(SolverMuJoCo.TrnType.BODY):
+        primary = offset(primary, entity_offsets["body"])
+    elif int(trntype) == int(SolverMuJoCo.TrnType.SLIDERCRANK):
+        primary = offset(primary, entity_offsets["shape"])
+        secondary = offset(secondary, entity_offsets["shape"])
+
+    return wp.vec2i(primary, secondary)
+
+
 def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:
     pattern = re.compile(rf"^{re.escape(package)}(?=[<>=!~])([^;]+)")
     for requirement in requirements:
@@ -1923,6 +1963,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.vec2i,
                 default=wp.vec2i(-1, -1),
                 namespace="mujoco",
+                reference_value_transformer=_remap_actuator_trnid,
             )
         )
 

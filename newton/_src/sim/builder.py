@@ -896,6 +896,15 @@ class ModelBuilder:
         urdf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
         """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information."""
 
+        reference_value_transformer: Callable[[Any, dict[str, Any]], Any] | None = None
+        """Transformer for entity references copied by :meth:`ModelBuilder.add_builder`.
+
+        Use this instead of :attr:`references` when the referenced entity type depends on
+        other values in the same row. The callback receives the value and a context with
+        ``builder`` (the source builder), ``destination_builder``, ``entity_offsets``,
+        ``custom_frequency_offsets``, ``row_index``, ``world``, and ``label_prefix``.
+        """
+
         def __post_init__(self):
             """Initialize default values and validate dtype compatibility."""
             # Allow str dtype for string attributes (stored as Python lists, not warp arrays)
@@ -1707,6 +1716,7 @@ class ModelBuilder:
             and existing.assignment == incoming.assignment
             and existing.namespace == incoming.namespace
             and existing.references == incoming.references
+            and existing.reference_value_transformer is incoming.reference_value_transformer
         )
 
     @staticmethod
@@ -4033,8 +4043,13 @@ class ModelBuilder:
             value_offset = 0 if use_current_world else get_offset(attr.references)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
+            has_reference_value_transformer = attr.reference_value_transformer is not None
             needs_remap = (
-                value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
+                value_offset != 0
+                or use_current_world
+                or is_equality_target_attr
+                or is_collision_mask_domain_attr
+                or has_reference_value_transformer
             )
 
             if needs_remap:
@@ -4092,7 +4107,22 @@ class ModelBuilder:
                     value: Any,
                     is_equality_target: bool = is_equality_target_attr,
                     is_collision_mask_domain: bool = is_collision_mask_domain_attr,
+                    reference_value_transformer: Callable[[Any, dict[str, Any]], Any]
+                    | None = attr.reference_value_transformer,
                 ) -> Any:
+                    if reference_value_transformer is not None:
+                        return reference_value_transformer(
+                            value,
+                            {
+                                "builder": builder,
+                                "destination_builder": self,
+                                "entity_offsets": entity_offsets,
+                                "custom_frequency_offsets": custom_frequency_offsets,
+                                "row_index": entity_idx,
+                                "world": world,
+                                "label_prefix": label_prefix,
+                            },
+                        )
                     if is_equality_target:
                         return transform_equality_target_value(entity_idx, value)
                     if is_collision_mask_domain:
