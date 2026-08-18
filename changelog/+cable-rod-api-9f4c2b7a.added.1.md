@@ -1,1 +1,0 @@
-Add `newton.utils.cable_stiffness_from_elastic_moduli()`, `cable_parallel_transport_quaternions()`, `cable_straight_points()`, and `cable_straight_points_and_quaternions()` as consistently prefixed cable-construction helpers.

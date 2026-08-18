@@ -13,11 +13,11 @@ newton.utils
    :toctree: _generated
    :nosignatures:
 
-   CableStiffness
    ColorSpace
    EventTracer
    MeshAdjacency
    MeshAdjacencyData
+   RodStiffness
 
 .. rubric:: Functions
 
@@ -27,7 +27,6 @@ newton.utils
 
    bourke_color_map
    cable_parallel_transport_quaternions
-   cable_stiffness_from_elastic_moduli
    cable_straight_points
    cable_straight_points_and_quaternions
    color_graph
@@ -41,6 +40,7 @@ newton.utils
    plot_graph
    rasterize_mesh_to_heightfield
    remesh_mesh
+   rod_stiffness_from_elastic_moduli
    run_benchmark
    solidify_mesh
    string_to_warp
@@ -54,8 +54,10 @@ newton.utils
 
    * - Name
      - Guidance
+   * - ``CableStiffness``
+     - Deprecated in 1.6; use RodStiffness instead.
    * - ``create_cable_stiffness_from_elastic_moduli``
-     - Deprecated in 1.6; use cable_stiffness_from_elastic_moduli instead.
+     - Deprecated in 1.6; use rod_stiffness_from_elastic_moduli instead.
    * - ``create_parallel_transport_cable_quaternions``
      - Deprecated in 1.6; use cable_parallel_transport_quaternions instead.
    * - ``create_straight_cable_points``

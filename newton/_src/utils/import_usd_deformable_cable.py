@@ -295,7 +295,7 @@ def _apply_local_cable_stiffnesses(
             body_rest_lengths[builder.joint_parent[joint]] + body_rest_lengths[builder.joint_child[joint]]
         )
         stretch, shear, bend, twist = (None if s is None else s / joint_rest_length for s in structural_stiffnesses)
-        builder._set_joint_cable_stiffnesses(
+        builder._set_joint_rod_stiffnesses(
             joint, stretch_stiffness=stretch, shear_stiffness=shear, bend_stiffness=bend, twist_stiffness=twist
         )
 

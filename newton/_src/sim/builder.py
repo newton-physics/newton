@@ -5351,7 +5351,7 @@ class ModelBuilder:
             **kwargs,
         )
 
-    def _set_joint_cable_stiffnesses(
+    def _set_joint_rod_stiffnesses(
         self,
         joint: int,
         *,
@@ -5365,7 +5365,7 @@ class ModelBuilder:
         joint_dof_dim = self.joint_dof_dim[joint]
         if joint_type != JointType.ROD or joint_dof_dim != (2, 2):
             raise ValueError(
-                "_set_joint_cable_stiffnesses() expected the four-slot ROD layout "
+                "_set_joint_rod_stiffnesses() expected the four-slot ROD layout "
                 f"(2 linear, 2 angular); got joint type {JointType(joint_type).name} with dimensions "
                 f"{joint_dof_dim}. Update the ROD material-slot mapping when changing its slot layout."
             )

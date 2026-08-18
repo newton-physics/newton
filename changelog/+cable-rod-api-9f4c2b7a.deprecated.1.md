@@ -1,1 +1,0 @@
-Deprecate the `newton.utils.create_*` cable helpers in favor of `cable_stiffness_from_elastic_moduli()`, `cable_parallel_transport_quaternions()`, `cable_straight_points()`, and `cable_straight_points_and_quaternions()`. The old names remain functional through 1.6 and are eligible for removal in 1.7.

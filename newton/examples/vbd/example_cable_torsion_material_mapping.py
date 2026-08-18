@@ -130,7 +130,7 @@ class Example:
             self.stretch_stiffness,
             self.bend_stiffness,
             self.twist_stiffness,
-        ) = newton.utils.cable_stiffness_from_elastic_moduli(
+        ) = newton.utils.rod_stiffness_from_elastic_moduli(
             self.YOUNGS_MODULUS,
             self.CABLE_RADIUS,
             self.SEGMENT_LENGTH,
@@ -265,7 +265,7 @@ class Example:
                 if shear_modulus_in is not None
                 else {"poissons_ratio": poissons_ratio}
             )
-            _stretch, _bend, twist = newton.utils.cable_stiffness_from_elastic_moduli(
+            _stretch, _bend, twist = newton.utils.rod_stiffness_from_elastic_moduli(
                 youngs_modulus,
                 radius,
                 segment_length,

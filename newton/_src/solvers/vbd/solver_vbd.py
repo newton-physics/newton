@@ -58,13 +58,13 @@ from .rigid_vbd_kernels import (
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     check_contact_overflow,
-    compute_cable_dahl_parameters,
     compute_rigid_contact_forces,
+    compute_rod_dahl_parameters,
     forward_step_rigid_bodies,
     init_body_body_contact_materials,
     init_body_body_contacts_alm,
     init_body_particle_contacts,
-    init_cable_rest_bend_twist,
+    init_rod_rest_bend_twist,
     refresh_body_structural_k,
     reset_rigid_state,
     snapshot_body_body_contact_history,
@@ -72,10 +72,10 @@ from .rigid_vbd_kernels import (
     step_body_body_contact_C0_lambda,
     step_joint_C0_lambda_rho,
     update_body_velocity,
-    update_cable_dahl_state,
     update_duals_body_body_contacts,
     update_duals_body_particle_contacts,
     update_duals_joint,
+    update_rod_dahl_state,
 )
 from .tri_mesh_collision import (
     TriMeshCollisionDetector,
@@ -969,12 +969,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.enable_dahl_friction = False
 
             # Per-joint DER rest invariants, refreshed at init and on model change
-            # (see _refresh_cable_rest_bend_twist_cache): the parent-local rest
+            # (see _refresh_rod_rest_bend_twist_cache): the parent-local rest
             # curvature binormal (bend) and the rest transported-material twist.
             # Rod joints use local +Z as the material tangent (a SolverVBD convention).
-            self.joint_cable_rest_kb_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
-            self.joint_cable_rest_twist = wp.zeros(model.joint_count, dtype=float, device=self.device)
-            self._refresh_cable_rest_bend_twist_cache()
+            self.joint_rod_rest_kb_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            self.joint_rod_rest_twist = wp.zeros(model.joint_count, dtype=float, device=self.device)
+            self._refresh_rod_rest_bend_twist_cache()
 
         # -------------------------------------------------------------
         # Body-particle interaction shared state.
@@ -1031,7 +1031,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if refresh_structural_k:
             self._refresh_structural_k()
         if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES):
-            self._refresh_cable_rest_bend_twist_cache()
+            self._refresh_rod_rest_bend_twist_cache()
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
@@ -1374,7 +1374,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 "which publishes model.rigid_contact_max; there is no equivalent for body-particle contacts."
             )
 
-    def _refresh_cable_rest_bend_twist_cache(self) -> None:
+    def _refresh_rod_rest_bend_twist_cache(self) -> None:
         """(Re)compute rod rest bend/twist invariants from the current rest pose.
 
         Called once at init and again from ``notify_model_changed`` whenever joint
@@ -1390,7 +1390,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         wp.launch(
-            kernel=init_cable_rest_bend_twist,
+            kernel=init_rod_rest_bend_twist,
             dim=self.model.joint_count,
             inputs=[
                 self.model.joint_type,
@@ -1401,8 +1401,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.model.body_q,
             ],
             outputs=[
-                self.joint_cable_rest_kb_local,
-                self.joint_cable_rest_twist,
+                self.joint_rod_rest_kb_local,
+                self.joint_rod_rest_twist,
             ],
             device=self.device,
         )
@@ -2702,8 +2702,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.joint_axis,
                         model.joint_qd_start,
                         model.joint_dof_dim,
-                        self.joint_cable_rest_kb_local,
-                        self.joint_cable_rest_twist,
+                        self.joint_rod_rest_kb_local,
+                        self.joint_rod_rest_twist,
                         self.body_q_prev,
                         model.body_q,
                         self.joint_constraint_start,
@@ -2741,7 +2741,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             # Compute rod bend/twist Dahl hysteresis parameters once per timestep.
             if self.enable_dahl_friction and model.joint_count > 0:
                 wp.launch(
-                    kernel=compute_cable_dahl_parameters,
+                    kernel=compute_rod_dahl_parameters,
                     inputs=[
                         model.joint_type,
                         model.joint_enabled,
@@ -2756,8 +2756,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.joint_material_k,
                         self.joint_is_hard,
                         self.rigid_compliant_alm,
-                        self.joint_cable_rest_kb_local,
-                        self.joint_cable_rest_twist,
+                        self.joint_rod_rest_kb_local,
+                        self.joint_rod_rest_twist,
                         self.body_q_prev,
                         self.joint_sigma_prev,
                         self.joint_kappa_prev,
@@ -3205,8 +3205,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
-                    self.joint_cable_rest_kb_local,
-                    self.joint_cable_rest_twist,
+                    self.joint_rod_rest_kb_local,
+                    self.joint_rod_rest_twist,
                     model.joint_qd_start,
                     model.joint_target_q_start,
                     self.joint_constraint_start,
@@ -3316,8 +3316,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
-                    self.joint_cable_rest_kb_local,
-                    self.joint_cable_rest_twist,
+                    self.joint_rod_rest_kb_local,
+                    self.joint_rod_rest_twist,
                     model.joint_qd_start,
                     model.joint_target_q_start,
                     self.joint_constraint_start,
@@ -3543,7 +3543,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         if self.enable_dahl_friction and model.joint_count > 0:
             wp.launch(
-                kernel=update_cable_dahl_state,
+                kernel=update_rod_dahl_state,
                 inputs=[
                     model.joint_type,
                     model.joint_enabled,
@@ -3556,8 +3556,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.joint_material_k,
                     self.joint_is_hard,
                     self.rigid_compliant_alm,
-                    self.joint_cable_rest_kb_local,
-                    self.joint_cable_rest_twist,
+                    self.joint_rod_rest_kb_local,
+                    self.joint_rod_rest_twist,
                     state_out.body_q,
                     self.joint_dahl_eps_max,
                     self.joint_dahl_tau,

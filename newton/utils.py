@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+from typing import TYPE_CHECKING
+
 # ==================================================================================
 # sim utils
 # ==================================================================================
@@ -66,36 +69,43 @@ __all__ += [
 ]
 
 # ==================================================================================
-# cable utils
+# cable and rod utils
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
-    CableStiffness,
+    RodStiffness,
     cable_parallel_transport_quaternions,
-    cable_stiffness_from_elastic_moduli,
     cable_straight_points,
     cable_straight_points_and_quaternions,
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
     create_straight_cable_points,
     create_straight_cable_points_and_quaternions,
+    rod_stiffness_from_elastic_moduli,
 )
+
+if TYPE_CHECKING:
+    CableStiffness = RodStiffness
 
 __all__ += [
     "CableStiffness",
+    "RodStiffness",
     "cable_parallel_transport_quaternions",
-    "cable_stiffness_from_elastic_moduli",
     "cable_straight_points",
     "cable_straight_points_and_quaternions",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
     "create_straight_cable_points",
     "create_straight_cable_points_and_quaternions",
+    "rod_stiffness_from_elastic_moduli",
 ]
 
+_DEPRECATED_CABLE_SYMBOLS = {
+    "CableStiffness": RodStiffness,
+}
+
 __deprecated_symbols__ = {
-    "create_cable_stiffness_from_elastic_moduli": (
-        "Deprecated in 1.6; use cable_stiffness_from_elastic_moduli instead."
-    ),
+    "CableStiffness": "Deprecated in 1.6; use RodStiffness instead.",
+    "create_cable_stiffness_from_elastic_moduli": ("Deprecated in 1.6; use rod_stiffness_from_elastic_moduli instead."),
     "create_parallel_transport_cable_quaternions": (
         "Deprecated in 1.6; use cable_parallel_transport_quaternions instead."
     ),
@@ -104,6 +114,25 @@ __deprecated_symbols__ = {
         "Deprecated in 1.6; use cable_straight_points_and_quaternions instead."
     ),
 }
+
+
+def __getattr__(name: str):
+    try:
+        value = _DEPRECATED_CABLE_SYMBOLS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+
+    warnings.warn(
+        f"newton.utils.{name} is deprecated in Newton 1.6; use newton.utils.RodStiffness instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_DEPRECATED_CABLE_SYMBOLS))
+
 
 # ==================================================================================
 # world utils

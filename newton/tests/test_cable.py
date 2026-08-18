@@ -12,17 +12,17 @@ import warp as wp
 import newton
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _bishop_transport_quat,
-    _cable_bend_twist_directional_derivatives_from_measure,
-    _cable_bend_twist_jacobian_z_from_measure,
     _finite_curvature_binormal,
     _finite_curvature_binormal_derivative,
-    _measure_cable_bend_twist_z,
+    _measure_rod_bend_twist_z,
+    _rod_bend_twist_directional_derivatives_from_measure,
+    _rod_bend_twist_jacobian_z_from_measure,
     _transported_twist_angle_derivative_from_measure,
-    compute_cable_dahl_parameters,
-    compute_geometric_cable_kappa_cached_z,
-    evaluate_cable_bend_twist_force_hessian_z,
-    evaluate_cable_stretch_shear_force_hessian,
-    update_cable_dahl_state,
+    compute_geometric_rod_kappa_cached_z,
+    compute_rod_dahl_parameters,
+    evaluate_rod_bend_twist_force_hessian_z,
+    evaluate_rod_stretch_shear_force_hessian,
+    update_rod_dahl_state,
 )
 from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -4348,7 +4348,7 @@ def _eval_cable_stretch_shear_parent_hessian_error(errors: wp.array[wp.vec2]):
         x_c + wp.vec3(-0.04, 0.06, 0.03),
         wp.quat_identity(),
     )
-    _force, _torque, _H_ll, H_al, H_aa = evaluate_cable_stretch_shear_force_hessian(
+    _force, _torque, _H_ll, H_al, H_aa = evaluate_rod_stretch_shear_force_hessian(
         X_wp,
         X_wc,
         X_wp,
@@ -4405,7 +4405,7 @@ def _eval_split_cable_twist_damping_branch_cut_kernel(torques: wp.array[wp.vec3]
     q_control_prev = wp.quat_from_axis_angle(twist_axis, sign * 0.10)
     q_control_now = wp.quat_from_axis_angle(twist_axis, sign * 0.12)
 
-    tau_cross, _H_cross, _kappa_cross, _J_cross = evaluate_cable_bend_twist_force_hessian_z(
+    tau_cross, _H_cross, _kappa_cross, _J_cross = evaluate_rod_bend_twist_force_hessian_z(
         q_id,
         q_cross_now,
         zero,
@@ -4422,7 +4422,7 @@ def _eval_split_cable_twist_damping_branch_cut_kernel(torques: wp.array[wp.vec3]
         True,
         1.0,
     )
-    tau_control, _H_control, _kappa_control, _J_control = evaluate_cable_bend_twist_force_hessian_z(
+    tau_control, _H_control, _kappa_control, _J_control = evaluate_rod_bend_twist_force_hessian_z(
         q_id,
         q_control_now,
         zero,
@@ -4461,7 +4461,7 @@ def _eval_split_cable_material_force_law_kernel(
     q_bend = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), angle)
     q_twist = wp.quat_from_axis_angle(tangent, angle)
 
-    tau_bend, _H_bend, kappa_bend, _J_bend = evaluate_cable_bend_twist_force_hessian_z(
+    tau_bend, _H_bend, kappa_bend, _J_bend = evaluate_rod_bend_twist_force_hessian_z(
         q_id,
         q_bend,
         zero,
@@ -4478,7 +4478,7 @@ def _eval_split_cable_material_force_law_kernel(
         False,
         0.01,
     )
-    tau_twist, _H_twist, kappa_twist, _J_twist = evaluate_cable_bend_twist_force_hessian_z(
+    tau_twist, _H_twist, kappa_twist, _J_twist = evaluate_rod_bend_twist_force_hessian_z(
         q_id,
         q_twist,
         zero,
@@ -4531,7 +4531,7 @@ def _eval_split_cable_cantilever_moment_law_kernel(
     expected_der_moment = bend_stiffness * 2.0 * wp.tan(0.5 * theta) / (wp.cos(0.5 * theta) * wp.cos(0.5 * theta))
     q_bend = wp.quat_from_axis_angle(bend_axis, theta)
 
-    tau_bend, _H_bend, kappa_bend, _J_bend = evaluate_cable_bend_twist_force_hessian_z(
+    tau_bend, _H_bend, kappa_bend, _J_bend = evaluate_rod_bend_twist_force_hessian_z(
         q_id,
         q_bend,
         zero,
@@ -4573,9 +4573,9 @@ def _geometric_cable_test_energy(
     q_wc_rest: wp.quat,
     K_elastic_diag: wp.vec3,
 ) -> float:
-    rest = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    rest = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
     kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
-    residual = compute_geometric_cable_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
+    residual = compute_geometric_rod_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
     return 0.5 * wp.dot(wp.cw_mul(K_elastic_diag, residual), residual)
 
 
@@ -4589,9 +4589,9 @@ def _eval_geometric_cable_test_force_hessian(
     K_elastic_diag: wp.vec3,
 ) -> tuple[wp.vec3, wp.mat33]:
     zero = wp.vec3(0.0)
-    rest = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    rest = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
     kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
-    tau, H, _kappa, _J = evaluate_cable_bend_twist_force_hessian_z(
+    tau, H, _kappa, _J = evaluate_rod_bend_twist_force_hessian_z(
         q_wp,
         q_wc,
         kb_rest_local,
@@ -4780,9 +4780,9 @@ def _eval_geometric_precurved_twist_is_pure_twist_kernel(errors: wp.array[wp.vec
     # Validate the production rest-relative DER residual directly (not a test
     # reference): pure twist on a pre-curved rest must not leak into bend, and the
     # transported-twist magnitude equals the applied twist angle.
-    rest = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    rest = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
     kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
-    kappa = compute_geometric_cable_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
+    kappa = compute_geometric_rod_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
     bend_leak = wp.length(P_bend * kappa)
     expected_twist = twist_angle
     twist_err = wp.abs(wp.length(P_twist * kappa) - expected_twist)
@@ -4805,9 +4805,9 @@ def _eval_geometric_global_rotation_preserves_rest_strain_kernel(errors: wp.arra
     q_wp = q_global * q_wp_rest
     q_wc = q_global * q_wc_rest
 
-    rest = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    rest = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
     kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
-    kappa = compute_geometric_cable_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
+    kappa = compute_geometric_rod_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
     errors[0] = wp.vec3(wp.length(kappa), wp.length(kappa), wp.length(kappa))
 
 
@@ -4818,7 +4818,7 @@ def _eval_geometric_sharp_turn_kernel(errors: wp.array[wp.vec3]):
     q_wc = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), angle)
     zero = wp.vec3(0.0)
 
-    _tau, _H, kappa, _J = evaluate_cable_bend_twist_force_hessian_z(
+    _tau, _H, kappa, _J = evaluate_rod_bend_twist_force_hessian_z(
         q_wp,
         q_wc,
         zero,
@@ -4835,7 +4835,7 @@ def _eval_geometric_sharp_turn_kernel(errors: wp.array[wp.vec3]):
         False,
         0.01,
     )
-    # DER caps the curvature binormal at _CABLE_KB_CURVATURE_CAP near a hairpin,
+    # DER caps the curvature binormal at _ROD_KB_CURVATURE_CAP near a hairpin,
     # so the bend strain saturates at the cap instead of Korner's +/-2 bound.
     expected = 20.0
     twist_leak = wp.abs(kappa[2])
@@ -4853,7 +4853,7 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     q_wp_rest = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, -0.3, 0.5)), 0.4)
     bend_axis = wp.quat_rotate(q_wp_rest, wp.vec3(0.0, 1.0, 0.0))
     q_wc_rest = wp.quat_from_axis_angle(bend_axis, 0.5) * q_wp_rest
-    rest = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    rest = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
     kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
 
     q_wp = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.7, -0.2)), 0.55) * q_wp_rest
@@ -4865,10 +4865,10 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     elif axis_id == 2:
         axis = wp.vec3(0.0, 0.0, 1.0)
 
-    measure = _measure_cable_bend_twist_z(q_wp, q_wc)
-    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(q_wp, measure, axis, is_parent)
+    measure = _measure_rod_bend_twist_z(q_wp, q_wc)
+    d_bend_local, d_twist = _rod_bend_twist_directional_derivatives_from_measure(q_wp, measure, axis, is_parent)
     directional = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
-    jacobian_action = _cable_bend_twist_jacobian_z_from_measure(measure, is_parent) * axis
+    jacobian_action = _rod_bend_twist_jacobian_z_from_measure(measure, is_parent) * axis
 
     h = 1.0e-3
     q_wp_p = q_wp
@@ -4883,8 +4883,8 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
         q_wc_m = _quat_perturb_world(q_wc, axis, -h)
 
     fd = (
-        compute_geometric_cable_kappa_cached_z(q_wp_p, q_wc_p, kb_rest_local, rest.twist)
-        - compute_geometric_cable_kappa_cached_z(q_wp_m, q_wc_m, kb_rest_local, rest.twist)
+        compute_geometric_rod_kappa_cached_z(q_wp_p, q_wc_p, kb_rest_local, rest.twist)
+        - compute_geometric_rod_kappa_cached_z(q_wp_m, q_wc_m, kb_rest_local, rest.twist)
     ) / (2.0 * h)
     equivalence_error = wp.length(jacobian_action - directional) / (1.0 + wp.length(directional))
     # Store [Jacobian-vs-directional, Jacobian-vs-finite-difference, finite-difference signal].
@@ -4913,11 +4913,11 @@ def _eval_bend_twist_jacobian_guard_branches_kernel(errors: wp.array[wp.vec3]):
 
     q_wp = wp.quat_identity()
     q_wc = wp.quat_from_axis_angle(bend_axis, angle)
-    measure = _measure_cable_bend_twist_z(q_wp, q_wc)
+    measure = _measure_rod_bend_twist_z(q_wp, q_wc)
 
-    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(q_wp, measure, omega, is_parent)
+    d_bend_local, d_twist = _rod_bend_twist_directional_derivatives_from_measure(q_wp, measure, omega, is_parent)
     directional = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
-    jacobian_action = _cable_bend_twist_jacobian_z_from_measure(measure, is_parent) * omega
+    jacobian_action = _rod_bend_twist_jacobian_z_from_measure(measure, is_parent) * omega
     directional_error = wp.length(jacobian_action - directional) / (1.0 + wp.length(directional))
 
     fd_error = 0.0
@@ -4937,8 +4937,8 @@ def _eval_bend_twist_jacobian_guard_branches_kernel(errors: wp.array[wp.vec3]):
 
         kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp), measure.kb_world)
         fd = (
-            compute_geometric_cable_kappa_cached_z(q_wp_p, q_wc_p, kb_rest_local, measure.twist)
-            - compute_geometric_cable_kappa_cached_z(q_wp_m, q_wc_m, kb_rest_local, measure.twist)
+            compute_geometric_rod_kappa_cached_z(q_wp_p, q_wc_p, kb_rest_local, measure.twist)
+            - compute_geometric_rod_kappa_cached_z(q_wp_m, q_wc_m, kb_rest_local, measure.twist)
         ) / (2.0 * h)
         fd_error = wp.abs(jacobian_action[2] - fd[2]) / (1.0 + wp.abs(fd[2]))
         fd_signal = wp.abs(fd[2])
@@ -5018,7 +5018,7 @@ def _transported_twist_angle_derivative_fd_error(
     is_parent: bool,
     h: float,
 ) -> wp.vec3:
-    measure = _measure_cable_bend_twist_z(q_wp, q_wc)
+    measure = _measure_rod_bend_twist_z(q_wp, q_wc)
     analytic = _transported_twist_angle_derivative_from_measure(measure, omega, is_parent)
     q_wp_p = q_wp
     q_wp_m = q_wp
@@ -5033,8 +5033,8 @@ def _transported_twist_angle_derivative_fd_error(
         q_wc_p = _quat_perturb_world(q_wc, axis, h * omega_len)
         q_wc_m = _quat_perturb_world(q_wc, axis, -h * omega_len)
 
-    twist_p = _measure_cable_bend_twist_z(q_wp_p, q_wc_p).twist
-    twist_m = _measure_cable_bend_twist_z(q_wp_m, q_wc_m).twist
+    twist_p = _measure_rod_bend_twist_z(q_wp_p, q_wc_p).twist
+    twist_m = _measure_rod_bend_twist_z(q_wp_m, q_wc_m).twist
     fd = (twist_p - twist_m) / (2.0 * h)
     return wp.vec3(wp.abs(analytic - fd), wp.abs(analytic), wp.abs(fd))
 
@@ -5067,7 +5067,7 @@ def _eval_geometric_curvature_binormal_cap_kernel(errors: wp.array[wp.vec3]):
     q_wc = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 3.05)
     zero = wp.vec3(0.0)
 
-    kappa = compute_geometric_cable_kappa_cached_z(q_wp, q_wc, zero, 0.0)
+    kappa = compute_geometric_rod_kappa_cached_z(q_wp, q_wc, zero, 0.0)
     cap_error = wp.abs(wp.length(kappa) - 20.0)
     errors[0] = wp.vec3(cap_error, 0.0, wp.length(kappa))
 
@@ -5117,7 +5117,7 @@ def _eval_geometric_curvature_binormal_growth_kernel(angles: wp.array[float], be
     # between parent and child tangents is exactly angles[tid], so the curvature
     # binormal magnitude is the DER law 2*tan(theta/2) and twist stays 0.
     q_wc = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), angles[tid])
-    kappa = compute_geometric_cable_kappa_cached_z(wp.quat_identity(), q_wc, wp.vec3(0.0), 0.0)
+    kappa = compute_geometric_rod_kappa_cached_z(wp.quat_identity(), q_wc, wp.vec3(0.0), 0.0)
     bend_mag[tid] = wp.sqrt(kappa[0] * kappa[0] + kappa[1] * kappa[1])
 
 
@@ -5191,12 +5191,12 @@ def _split_cable_angular_slot_layout(test, device):
         builder.add_joint_rod(-1, body, bend_stiffness=10.0, twist_stiffness=-1.0)
 
 
-def _cable_stiffness_helper_returns_physical_twist(test, device):
+def _rod_stiffness_helper_returns_physical_twist(test, device):
     """Verify the elastic-moduli helper returns GJ/L with a shear modulus source."""
     E = 200.0
     radius = 0.5
     length = 2.0
-    stretch, bend, twist = newton.utils.cable_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25)
+    stretch, bend, twist = newton.utils.rod_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25)
 
     area = np.pi * radius * radius
     inertia = 0.25 * np.pi * radius**4
@@ -5207,9 +5207,9 @@ def _cable_stiffness_helper_returns_physical_twist(test, device):
     )
 
     with test.assertRaisesRegex(ValueError, "mutually exclusive"):
-        newton.utils.cable_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25, shear_modulus=G)
+        newton.utils.rod_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25, shear_modulus=G)
     with test.assertRaisesRegex(ValueError, "poissons_ratio"):
-        newton.utils.cable_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.5)
+        newton.utils.rod_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.5)
 
 
 def _joint_rod_api_deprecates_cable_names(test, device):
@@ -5314,10 +5314,10 @@ def _cable_legacy_positional_arguments_preserve_binding(test, device):
     np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
 
 
-def _cable_helper_api_deprecates_create_names(test, device):
-    """Verify deprecated cable utility names forward to prefix-first cable names."""
+def _cable_rod_helper_api_deprecates_create_names(test, device):
+    """Verify deprecated create names forward to prefix-first cable/rod APIs."""
     helper_renames = (
-        ("create_cable_stiffness_from_elastic_moduli", "cable_stiffness_from_elastic_moduli"),
+        ("create_cable_stiffness_from_elastic_moduli", "rod_stiffness_from_elastic_moduli"),
         ("create_parallel_transport_cable_quaternions", "cable_parallel_transport_quaternions"),
         ("create_straight_cable_points", "cable_straight_points"),
         ("create_straight_cable_points_and_quaternions", "cable_straight_points_and_quaternions"),
@@ -5350,20 +5350,28 @@ def _cable_helper_api_deprecates_create_names(test, device):
     np.testing.assert_allclose(np.asarray(combined_points), np.asarray(expected_points))
     np.testing.assert_allclose(np.asarray(combined_quaternions), np.asarray(expected_quaternions))
 
-    expected_stiffness = newton.utils.cable_stiffness_from_elastic_moduli(100.0, 0.1, 0.5)
-    with test.assertWarnsRegex(DeprecationWarning, "cable_stiffness_from_elastic_moduli"):
+    expected_stiffness = newton.utils.rod_stiffness_from_elastic_moduli(100.0, 0.1, 0.5)
+    with test.assertWarnsRegex(DeprecationWarning, "rod_stiffness_from_elastic_moduli"):
         stiffness = newton.utils.create_cable_stiffness_from_elastic_moduli(100.0, 0.1, 0.5)
     np.testing.assert_allclose(stiffness, expected_stiffness)
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
-        test.assertIn("CableStiffness", dir(newton.utils))
-        cable_stiffness = newton.utils.cable_stiffness_from_elastic_moduli(100.0, 0.1, 0.5, poissons_ratio=0.25)
-        test.assertIs(type(cable_stiffness), newton.utils.CableStiffness)
+        names = dir(newton.utils)
+        test.assertIn("CableStiffness", names)
+        test.assertIn("RodStiffness", names)
+        rod_stiffness = newton.utils.rod_stiffness_from_elastic_moduli(100.0, 0.1, 0.5, poissons_ratio=0.25)
+        test.assertIs(type(rod_stiffness), newton.utils.RodStiffness)
+        test.assertEqual(type(rod_stiffness).__name__, "RodStiffness")
         newton.utils.cable_straight_points(start, direction, 1.0, 2)
         newton.utils.cable_parallel_transport_quaternions(expected_points)
         newton.utils.cable_straight_points_and_quaternions(start, direction, 1.0, 2)
-        newton.utils.cable_stiffness_from_elastic_moduli(100.0, 0.1, 0.5)
+        newton.utils.rod_stiffness_from_elastic_moduli(100.0, 0.1, 0.5)
+
+    with test.assertWarnsRegex(DeprecationWarning, r"CableStiffness.*RodStiffness") as caught:
+        deprecated_stiffness_type = newton.utils.CableStiffness
+    test.assertIs(deprecated_stiffness_type, newton.utils.RodStiffness)
+    test.assertEqual(caught.filename, __file__)
 
 
 def _split_cable_twist_damping_is_continuous_across_branch_cut(test, device):
@@ -5399,8 +5407,8 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
         joint_constraint_start = wp.array([0, 4], dtype=wp.int32, device=device)
         joint_penalty_k = wp.array([0.0, 0.0, 10.0, 2.0, 0.0, 0.0, 10.0, 2.0], dtype=float, device=device)
         joint_is_hard = wp.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=wp.int32, device=device)
-        joint_cable_rest_kb_local = wp.zeros(2, dtype=wp.vec3, device=device)
-        joint_cable_rest_twist = wp.zeros(2, dtype=float, device=device)
+        joint_rod_rest_kb_local = wp.zeros(2, dtype=wp.vec3, device=device)
+        joint_rod_rest_twist = wp.zeros(2, dtype=float, device=device)
 
         q_bend = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1)
         q_twist = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.1)
@@ -5421,7 +5429,7 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
         rebaseline_mask = wp.zeros(1, dtype=wp.bool, device=device)
 
         wp.launch(
-            compute_cable_dahl_parameters,
+            compute_rod_dahl_parameters,
             dim=2,
             inputs=[
                 joint_type,
@@ -5437,8 +5445,8 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
                 joint_penalty_k,
                 joint_is_hard,
                 0,
-                joint_cable_rest_kb_local,
-                joint_cable_rest_twist,
+                joint_rod_rest_kb_local,
+                joint_rod_rest_twist,
                 body_q,
                 zero_vec3,
                 zero_vec3,
@@ -5495,8 +5503,8 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
             device=device,
         )
         joint_is_hard = wp.zeros(8, dtype=wp.int32, device=device)
-        joint_cable_rest_kb_local = wp.zeros(2, dtype=wp.vec3, device=device)
-        joint_cable_rest_twist = wp.zeros(2, dtype=float, device=device)
+        joint_rod_rest_kb_local = wp.zeros(2, dtype=wp.vec3, device=device)
+        joint_rod_rest_twist = wp.zeros(2, dtype=float, device=device)
 
         half_step = 0.01
         step = 2.0 * half_step
@@ -5533,13 +5541,13 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
             joint_penalty_k,
             joint_is_hard,
             0,
-            joint_cable_rest_kb_local,
-            joint_cable_rest_twist,
+            joint_rod_rest_kb_local,
+            joint_rod_rest_twist,
             body_q,
         ]
 
         wp.launch(
-            compute_cable_dahl_parameters,
+            compute_rod_dahl_parameters,
             dim=2,
             inputs=[
                 joint_type,
@@ -5555,8 +5563,8 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
                 joint_penalty_k,
                 joint_is_hard,
                 0,
-                joint_cable_rest_kb_local,
-                joint_cable_rest_twist,
+                joint_rod_rest_kb_local,
+                joint_rod_rest_twist,
                 body_q,
                 joint_sigma_prev,
                 joint_kappa_prev,
@@ -5574,7 +5582,7 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
         test.assertTrue(np.all(c_fric.numpy()[:, 2] > 0.0), "Dahl twist tangent should remain positive")
 
         wp.launch(
-            update_cable_dahl_state,
+            update_rod_dahl_state,
             dim=2,
             inputs=[
                 *update_inputs,
@@ -5602,7 +5610,7 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
         gated_kappa_prev = wp.array(kappa_prev_values, dtype=wp.vec3, device=device)
         gated_dkappa_prev = wp.zeros(2, dtype=wp.vec3, device=device)
         wp.launch(
-            update_cable_dahl_state,
+            update_rod_dahl_state,
             dim=2,
             inputs=[
                 *update_inputs,
@@ -5671,7 +5679,7 @@ def _split_cable_material_force_law_matches_ei_gj(test, device):
     poissons_ratio = 0.25
     angle = 0.031
 
-    _stretch, bend_stiffness, twist_stiffness = newton.utils.cable_stiffness_from_elastic_moduli(
+    _stretch, bend_stiffness, twist_stiffness = newton.utils.rod_stiffness_from_elastic_moduli(
         youngs_modulus,
         radius,
         segment_length,
@@ -6316,8 +6324,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_stiffness_helper_returns_physical_twist",
-    _cable_stiffness_helper_returns_physical_twist,
+    "test_rod_stiffness_helper_returns_physical_twist",
+    _rod_stiffness_helper_returns_physical_twist,
     devices=devices,
 )
 add_function_test(
@@ -6334,8 +6342,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_helper_api_deprecates_create_names",
-    _cable_helper_api_deprecates_create_names,
+    "test_cable_rod_helper_api_deprecates_create_names",
+    _cable_rod_helper_api_deprecates_create_names,
     devices=None,
 )
 add_function_test(

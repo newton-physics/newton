@@ -13,10 +13,11 @@ import warp as wp
 from ..math import quat_between_vectors_robust
 
 
-class CableStiffness(NamedTuple):
+# Rod-level stiffness result.
+class RodStiffness(NamedTuple):
     """Per-joint Kirchhoff rod stiffness for a circular isotropic cross-section.
 
-    Returned by :func:`cable_stiffness_from_elastic_moduli` when the caller
+    Returned by :func:`rod_stiffness_from_elastic_moduli` when the caller
     supplies either ``poissons_ratio`` or ``shear_modulus``.
 
     Fields:
@@ -27,7 +28,7 @@ class CableStiffness(NamedTuple):
 
     For a circular cross-section the two bending axes are equivalent
     (``EI1 == EI2 == EI``); the single ``bend`` field is used for both axes
-    when assembling the per-joint cable stiffness vector.
+    when assembling the per-joint rod stiffness vector.
 
     No ``shear`` field, by design. Set a sufficiently large finite
     ``shear_stiffness`` separately to approximate an unshearable Kirchhoff rod.
@@ -42,8 +43,13 @@ class CableStiffness(NamedTuple):
     twist: float
 
 
+# Rod representation
+# Deprecated public name retained throughout Newton 1.6.
+CableStiffness = RodStiffness
+
+
 @overload
-def cable_stiffness_from_elastic_moduli(
+def rod_stiffness_from_elastic_moduli(
     youngs_modulus: float,
     radius: float,
     segment_length: float,
@@ -51,34 +57,34 @@ def cable_stiffness_from_elastic_moduli(
 
 
 @overload
-def cable_stiffness_from_elastic_moduli(
+def rod_stiffness_from_elastic_moduli(
     youngs_modulus: float,
     radius: float,
     segment_length: float,
     *,
     poissons_ratio: float,
-) -> CableStiffness: ...
+) -> RodStiffness: ...
 
 
 @overload
-def cable_stiffness_from_elastic_moduli(
+def rod_stiffness_from_elastic_moduli(
     youngs_modulus: float,
     radius: float,
     segment_length: float,
     *,
     shear_modulus: float,
-) -> CableStiffness: ...
+) -> RodStiffness: ...
 
 
-def cable_stiffness_from_elastic_moduli(
+def rod_stiffness_from_elastic_moduli(
     youngs_modulus: float,
     radius: float,
     segment_length: float,
     *,
     poissons_ratio: float | None = None,
     shear_modulus: float | None = None,
-) -> tuple[float, float] | CableStiffness:
-    """Create per-joint cable stiffness from elastic moduli.
+) -> tuple[float, float] | RodStiffness:
+    """Create per-joint rod stiffness from elastic moduli.
 
     For a circular cross-section, this computes material stiffnesses and
     converts them to the per-joint stiffness values expected by
@@ -101,12 +107,12 @@ def cable_stiffness_from_elastic_moduli(
 
     The return shape mirrors what the caller asks for:
 
-    * ``cable_stiffness_from_elastic_moduli(E, r, L)`` returns the plain
+    * ``rod_stiffness_from_elastic_moduli(E, r, L)`` returns the plain
       2-tuple ``(stretch, bend)``. Twist is not derivable from ``E`` alone, so
-      it is omitted. This is suitable for stretch-only or bend-only cables, or
+      it is omitted. This is suitable for stretch-only or bend-only rods, or
       when the caller manages ``twist_stiffness`` separately.
     * Supplying ``poissons_ratio`` or ``shear_modulus`` switches the return to
-      :class:`CableStiffness` with the additional ``twist`` term. The result
+      :class:`RodStiffness` with the additional ``twist`` term. The result
       both unpacks as a 3-tuple and exposes named fields ``.stretch``,
       ``.bend``, and ``.twist``.
 
@@ -119,7 +125,7 @@ def cable_stiffness_from_elastic_moduli(
     Args:
         youngs_modulus: Young's modulus ``E`` [Pa = N/m²]. Must be finite
             and ``>= 0``.
-        radius: Cable radius ``r`` [m]. Must be finite and ``> 0``.
+        radius: Rod radius ``r`` [m]. Must be finite and ``> 0``.
         segment_length: Per-joint rest length ``L`` [m]. Must be finite and
             ``> 0``.
         poissons_ratio: Poisson's ratio ``nu`` used to compute the shear
@@ -131,7 +137,7 @@ def cable_stiffness_from_elastic_moduli(
 
     Returns:
         2-tuple ``(stretch, bend)`` when neither ``poissons_ratio`` nor
-        ``shear_modulus`` is supplied; otherwise a :class:`CableStiffness`
+        ``shear_modulus`` is supplied; otherwise a :class:`RodStiffness`
         NamedTuple ``(stretch, bend, twist)``.
 
     Raises:
@@ -184,23 +190,21 @@ def cable_stiffness_from_elastic_moduli(
             raise ValueError("shear_modulus must be >= 0")
 
     polar_inertia = 0.5 * math.pi * r**4
-    return CableStiffness(
+    return RodStiffness(
         stretch=stretch_stiffness,
         bend=bend_stiffness,
         twist=G * polar_inertia / L,
     )
 
 
+# Cable-level geometry and frames
 def cable_straight_points(
     start: wp.vec3,
     direction: wp.vec3,
     length: float,
     num_segments: int,
 ) -> list[wp.vec3]:
-    """Create straight cable polyline points.
-
-    The returned points form the ``positions`` input for
-    :meth:`ModelBuilder.add_rod`.
+    """Create straight cable centerline points.
 
     Args:
         start: First point in world space [m].
@@ -234,17 +238,18 @@ def cable_parallel_transport_quaternions(
     *,
     twist_total: float = 0.0,
 ) -> list[wp.quat]:
-    """Generate cable quaternions using parallel transport.
+    """Generate cable segment frames using parallel transport.
 
-    The returned quaternions form the ``quaternions`` input for
-    :meth:`ModelBuilder.add_rod`.
+    The returned quaternions can form the ``quaternions`` input for
+    :meth:`ModelBuilder.add_rod`, but the transported frames depend only on the
+    input centerline and twist.
 
     They rotate local +Z to each segment direction while
     minimizing twist between successive segments. Optionally, a total twist
     can be distributed uniformly along the cable.
 
     Args:
-        points: Cable polyline points of length at least two [m].
+        points: Cable centerline points of length at least two [m].
         twist_total: Total twist [rad] distributed along the cable and applied
             about the segment direction.
 
@@ -294,12 +299,24 @@ def cable_straight_points_and_quaternions(
     *,
     twist_total: float = 0.0,
 ) -> tuple[list[wp.vec3], list[wp.quat]]:
-    """Generate straight cable points and matching segment quaternions.
+    """Generate straight cable points and matching segment frames.
 
-    This is a convenience wrapper around:
+    This is a convenience wrapper around :func:`cable_straight_points` and
+    :func:`cable_parallel_transport_quaternions`. The returned values form the
+    ``positions`` and ``quaternions`` inputs for :meth:`ModelBuilder.add_rod`,
+    but are not tied to that representation.
 
-    * :func:`cable_straight_points`
-    * :func:`cable_parallel_transport_quaternions`
+    Args:
+        start: First point in world space [m].
+        direction: World-space direction of the cable (need not be normalized).
+        length: Total length of the cable [m].
+        num_segments: Number of segments. The returned point count is
+            ``num_segments + 1``.
+        twist_total: Total twist [rad] distributed along the cable.
+
+    Returns:
+        Pair containing the world-space polyline points [m] and matching segment
+        orientations as unit quaternions.
     """
     points = cable_straight_points(
         start=start,
@@ -311,6 +328,7 @@ def cable_straight_points_and_quaternions(
     return points, quats
 
 
+# Deprecated compatibility
 @overload
 def create_cable_stiffness_from_elastic_moduli(
     youngs_modulus: float,
@@ -326,7 +344,7 @@ def create_cable_stiffness_from_elastic_moduli(
     segment_length: float,
     *,
     poissons_ratio: float,
-) -> CableStiffness: ...
+) -> RodStiffness: ...
 
 
 @overload
@@ -336,7 +354,7 @@ def create_cable_stiffness_from_elastic_moduli(
     segment_length: float,
     *,
     shear_modulus: float,
-) -> CableStiffness: ...
+) -> RodStiffness: ...
 
 
 def create_cable_stiffness_from_elastic_moduli(
@@ -346,44 +364,25 @@ def create_cable_stiffness_from_elastic_moduli(
     *,
     poissons_ratio: float | None = None,
     shear_modulus: float | None = None,
-) -> tuple[float, float] | CableStiffness:
-    """Deprecated alias for :func:`cable_stiffness_from_elastic_moduli`.
+) -> tuple[float, float] | RodStiffness:
+    """Deprecated alias for :func:`rod_stiffness_from_elastic_moduli`.
 
     .. deprecated:: 1.6
-        Use :func:`cable_stiffness_from_elastic_moduli` instead.
+        Use :func:`rod_stiffness_from_elastic_moduli` instead.
     """
     warnings.warn(
         "create_cable_stiffness_from_elastic_moduli() is deprecated in Newton 1.6; "
-        "use cable_stiffness_from_elastic_moduli() instead.",
+        "use rod_stiffness_from_elastic_moduli() instead.",
         DeprecationWarning,
         stacklevel=2,
     )
-    return cable_stiffness_from_elastic_moduli(
+    return rod_stiffness_from_elastic_moduli(
         youngs_modulus,
         radius,
         segment_length,
         poissons_ratio=poissons_ratio,
         shear_modulus=shear_modulus,
     )
-
-
-def create_straight_cable_points(
-    start: wp.vec3,
-    direction: wp.vec3,
-    length: float,
-    num_segments: int,
-) -> list[wp.vec3]:
-    """Deprecated alias for :func:`cable_straight_points`.
-
-    .. deprecated:: 1.6
-        Use :func:`cable_straight_points` instead.
-    """
-    warnings.warn(
-        "create_straight_cable_points() is deprecated in Newton 1.6; use cable_straight_points() instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return cable_straight_points(start, direction, length, num_segments)
 
 
 def create_parallel_transport_cable_quaternions(
@@ -403,6 +402,25 @@ def create_parallel_transport_cable_quaternions(
         stacklevel=2,
     )
     return cable_parallel_transport_quaternions(points, twist_total=twist_total)
+
+
+def create_straight_cable_points(
+    start: wp.vec3,
+    direction: wp.vec3,
+    length: float,
+    num_segments: int,
+) -> list[wp.vec3]:
+    """Deprecated alias for :func:`cable_straight_points`.
+
+    .. deprecated:: 1.6
+        Use :func:`cable_straight_points` instead.
+    """
+    warnings.warn(
+        "create_straight_cable_points() is deprecated in Newton 1.6; use cable_straight_points() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return cable_straight_points(start, direction, length, num_segments)
 
 
 def create_straight_cable_points_and_quaternions(

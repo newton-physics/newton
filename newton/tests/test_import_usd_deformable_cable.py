@@ -398,8 +398,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(builder.joint_target_mode[dof0], int(newton.JointTargetMode.NONE))
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["curvesStretchStiffness"], 0.0)
 
-    def test_cable_stiffness_setter_rejects_incompatible_joint(self):
-        """Verify that local cable stiffness assignment rejects incompatible joints."""
+    def test_rod_stiffness_setter_rejects_incompatible_joint(self):
+        """Verify that local rod stiffness assignment rejects incompatible joints."""
         builder = newton.ModelBuilder()
         rod = builder.add_joint_rod(-1, builder.add_link())
         fixed = builder.add_joint_fixed(-1, builder.add_link())
@@ -411,11 +411,11 @@ class TestUSDDeformableCable(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "expected the four-slot ROD layout"):
-            builder._set_joint_cable_stiffnesses(fixed, **stiffnesses)
+            builder._set_joint_rod_stiffnesses(fixed, **stiffnesses)
 
         builder.joint_dof_dim[rod] = (3, 3)
         with self.assertRaisesRegex(ValueError, "expected the four-slot ROD layout"):
-            builder._set_joint_cable_stiffnesses(rod, **stiffnesses)
+            builder._set_joint_rod_stiffnesses(rod, **stiffnesses)
 
     def test_cable_rest_length_from_rest_shape_points(self):
         """Verify ``restShapePoints`` supplies each rod joint's local dual rest length.
