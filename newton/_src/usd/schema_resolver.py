@@ -738,31 +738,19 @@ class SchemaResolverManager:
                 property form for the compatibility audit.
 
         Returns:
-            Resolved value according to the precedence above.
+            Resolved value under the manager's configured policy.
         """
-        if override is not _NO_OVERRIDE and self._uses_composed_fallbacks:
-            return override
-
-        resolved = self._get_value_with_policy(
+        return self._resolve_reported_value(
             prim,
             prim_type,
             key,
             default,
+            verbose,
+            override=override,
             legacy_default=legacy_default,
             audit_provenance=self._AuditProvenance.NONE,
-            audit_fallbacks=override is _NO_OVERRIDE,
             comparison_key=comparison_key,
-        )
-        active_default = self._active_default(default, legacy_default)
-        self._report_missing(
-            prim,
-            prim_type,
-            key,
-            resolved.value,
-            active_default,
-            verbose and override is _NO_OVERRIDE,
-        )
-        return resolved.value
+        ).value
 
     def get_value_with_resolver(
         self,
@@ -777,8 +765,35 @@ class SchemaResolverManager:
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
     ) -> tuple[Any, SchemaResolver | None]:
         """Resolve a value and return the resolver that supplied it."""
+        resolved = self._resolve_reported_value(
+            prim,
+            prim_type,
+            key,
+            default,
+            verbose,
+            override=override,
+            legacy_default=legacy_default,
+            audit_provenance=self._AuditProvenance.RESOLVER,
+            comparison_key=comparison_key,
+        )
+        return resolved.value, resolved.resolver
+
+    def _resolve_reported_value(
+        self,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        default: Any,
+        verbose: bool,
+        *,
+        override: Any,
+        legacy_default: Any,
+        audit_provenance: SchemaResolverManager._AuditProvenance,
+        comparison_key: Callable[[Any, SchemaResolver | None], Any] | None,
+    ) -> _ResolvedValue:
+        """Resolve one value request and report a missing final result."""
         if override is not _NO_OVERRIDE and self._uses_composed_fallbacks:
-            return override, None
+            return _ResolvedValue(override, None, _ValueSource.IMPORTER_DEFAULT)
 
         resolved = self._get_value_with_policy(
             prim,
@@ -786,7 +801,7 @@ class SchemaResolverManager:
             key,
             default,
             legacy_default=legacy_default,
-            audit_provenance=self._AuditProvenance.RESOLVER,
+            audit_provenance=audit_provenance,
             audit_fallbacks=override is _NO_OVERRIDE,
             comparison_key=comparison_key,
         )
@@ -799,7 +814,7 @@ class SchemaResolverManager:
             active_default,
             verbose and override is _NO_OVERRIDE,
         )
-        return resolved.value, resolved.resolver
+        return resolved
 
     def _get_interpreted_value(
         self,
