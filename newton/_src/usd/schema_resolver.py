@@ -168,7 +168,12 @@ _VALUE_SOURCE_LABELS = {
 
 
 class SchemaResolver:
-    """Base class mapping USD schema attributes to Newton attributes."""
+    """Base class mapping USD schema attributes to Newton attributes.
+
+    Subclasses may declare static schema ownership and control whether
+    compatibility defaults remain eligible for unregistered schemas or
+    unowned mappings.
+    """
 
     @dataclass
     class SchemaAttribute:
@@ -207,9 +212,11 @@ class SchemaResolver:
     # Name of the schema resolver
     name: ClassVar[str]
 
-    # Applied or typed schema that owns each mapping entry.
-    _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {}
-    _use_legacy_unowned_defaults: ClassVar[bool] = True
+    #: Schema ownership by prim type. A schema name owns every mapped key for
+    #: that prim type. A key-to-schema mapping declares ownership per key.
+    schema_names: ClassVar[Mapping[PrimType, str | Mapping[str, str]]] = {}
+    #: Whether unregistered or unowned mappings may use compatibility defaults.
+    use_compatibility_defaults: ClassVar[bool] = True
 
     # extra_attr_namespaces is a list of additional USD attribute namespaces in which the schema attributes may be authored.
     extra_attr_namespaces: ClassVar[list[str]] = []
@@ -221,6 +228,8 @@ class SchemaResolver:
     deformable_attr_namespaces: ClassVar[list[str]] = []
 
     def __init__(self) -> None:
+        self._validate_schema_ownership()
+
         # Precompute the full set of USD attribute names referenced by this resolver's mapping.
         names: set[str] = set()
         try:
@@ -238,6 +247,35 @@ class SchemaResolver:
                 else:
                     names.add(spec.name)
         self._solver_attributes: list[str] = list(names)
+
+    def _validate_schema_ownership(self) -> None:
+        if not isinstance(self.schema_names, Mapping):
+            raise TypeError(f"{type(self).__name__}.schema_names must be a mapping")
+        if not isinstance(self.use_compatibility_defaults, bool):
+            raise TypeError(f"{type(self).__name__}.use_compatibility_defaults must be a bool")
+
+        for prim_type, ownership in self.schema_names.items():
+            if not isinstance(prim_type, PrimType):
+                raise TypeError(f"{type(self).__name__}.schema_names keys must be PrimType values")
+            if isinstance(ownership, str):
+                if not ownership:
+                    raise ValueError(f"{type(self).__name__}.schema_names cannot contain an empty schema name")
+                continue
+            if not isinstance(ownership, Mapping):
+                raise TypeError(
+                    f"{type(self).__name__}.schema_names values must be schema names or key-to-schema mappings"
+                )
+            mapped_keys = self.mapping.get(prim_type, {})
+            for key, schema_name in ownership.items():
+                if key not in mapped_keys:
+                    raise ValueError(
+                        f"{type(self).__name__}.schema_names declares unknown key '{prim_type.name.lower()}:{key}'"
+                    )
+                if not isinstance(schema_name, str) or not schema_name:
+                    raise ValueError(
+                        f"{type(self).__name__}.schema_names['{prim_type.name.lower()}']['{key}'] "
+                        "must be a non-empty schema name"
+                    )
 
     def get_value(self, prim: Usd.Prim, prim_type: PrimType, key: str) -> Any | None:
         """Get an authored value for a resolver key.
@@ -295,7 +333,7 @@ class SchemaResolver:
         return _ResolverValue(None, authored)
 
     def _schema_name(self, prim_type: PrimType, key: str) -> str | None:
-        schema_names = self._schema_names.get(prim_type)
+        schema_names = self.schema_names.get(prim_type)
         if isinstance(schema_names, str):
             return schema_names if key in self.mapping.get(prim_type, {}) else None
         return schema_names.get(key) if schema_names is not None else None
@@ -502,7 +540,7 @@ class _SchemaResolutionPolicy:
             spec = resolver.mapping.get(prim_type, {}).get(key)
             if (
                 spec is None
-                or not resolver._use_legacy_unowned_defaults
+                or not resolver.use_compatibility_defaults
                 or (resolver._schema_name(prim_type, key) is not None and id(resolver) not in compatibility_fallbacks)
                 or spec.default is None
             ):

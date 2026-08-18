@@ -70,6 +70,8 @@ Registration and fallback presence are distinct:
 | Registered property without fallback | The schema supplies no fallback for that property. |
 | Unregistered schema | A compatibility default may be considered after the importer default. |
 
+Public `SchemaResolver` subclasses declare static ownership with `schema_names`. A schema name owns every mapped key for a prim type, while a nested mapping declares ownership per key. `use_compatibility_defaults` controls whether unregistered or unowned mappings retain their compatibility defaults.
+
 ### Usable candidates
 
 Registered-schema resolution continues until it finds a usable resolution candidate. A candidate is unusable when its resolver getter or transformer returns `None`. This rule applies while selecting authored values, registered fallbacks, and compatibility defaults; it does not restart resolution after the importer has selected and interpreted a candidate.
@@ -120,8 +122,8 @@ This PR does not:
 - package PhysX or MuJoCo codeless schema plugins;
 - copy vendor fallback catalogs;
 - migrate the remaining deformable body and material proposal attributes;
-- expose complete public resolver/source provenance;
+- expose complete public resolver/source provenance or dynamic applicability;
 - turn every `add_usd()` argument into a resolved option; or
 - remove the legacy policy.
 
-PR #3568 can build the public provenance and applicability interfaces on this internal seam. Codeless vendor schemas and deformable schema resolution remain separate integration tasks.
+PR #3568 can build complete provenance and dynamic applicability on this seam. Codeless vendor schemas and deformable schema resolution remain separate integration tasks.

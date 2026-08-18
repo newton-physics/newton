@@ -614,6 +614,27 @@ Pass ``True`` to adopt registered-schema precedence. To preserve the current res
 
 Newton does not copy PhysX or MuJoCo fallback catalogs when their plugins are unavailable. Their resolver defaults remain lower-priority compatibility values until the codeless schema plugins are registered.
 
+Custom Resolver Ownership
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Custom :class:`~newton.usd.SchemaResolver` subclasses can declare static schema ownership with ``schema_names``. A schema name for a prim type owns every mapped key in that category; a nested mapping declares ownership per logical key. Schema names may identify typed, applied, or multiple-apply schemas.
+
+Set ``use_compatibility_defaults`` to ``False`` when the resolver must never use mapping defaults for unregistered or unowned properties. Its default is ``True`` so existing custom resolvers retain their compatibility behavior. Unknown schema names are valid because their plugins may not be installed, but malformed ownership declarations are rejected when the resolver is constructed.
+
+.. code-block:: python
+
+   from newton.usd import PrimType, SchemaResolver
+
+   class SchemaResolverAcme(SchemaResolver):
+       name = "acme"
+       schema_names = {PrimType.JOINT: {"armature": "AcmeJointAPI"}}
+       use_compatibility_defaults = True
+       mapping = {
+           PrimType.JOINT: {
+               "armature": SchemaResolver.SchemaAttribute("acme:armature", 0.0),
+           }
+       }
+
 **Configuring Resolver Priority:**
 
 The order of resolvers in the ``schema_resolvers`` list determines priority, with earlier entries taking precedence. To demonstrate this, consider a USD asset where the same joint has conflicting armature values authored for different solvers:
