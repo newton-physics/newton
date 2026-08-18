@@ -3596,6 +3596,9 @@ def _cable_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device)
 
 def _cable_vbd_joint_f_applies_six_dof_wrench_impl(test: unittest.TestCase, device):
     """Verify VBD applies a Cable joint's six-DoF wrench."""
+    test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+    newton.use_coord_layout_targets = True
+
     child_mass = 2.0
     force_x, torque_y = 12.0, 6.0
     dt = 1.0 / 60.0
@@ -3612,7 +3615,7 @@ def _cable_vbd_joint_f_applies_six_dof_wrench_impl(test: unittest.TestCase, devi
     builder.color()
     model = builder.finalize(device=device)
 
-    solver = newton.solvers.SolverVBD(model)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
 
@@ -3877,7 +3880,11 @@ def _cable_rest_pose_is_independent_from_initial_state_impl(test: unittest.TestC
             )
             builder.add_articulation([joint])
             builder.color()
-            model = builder.finalize(device=device)
+            if use_coord_layout:
+                model = builder.finalize(device=device)
+            else:
+                with test.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
+                    model = builder.finalize(device=device)
 
             # An initial-pose Control target must not replace Model-owned rest.
             control = model.control()
@@ -3891,7 +3898,7 @@ def _cable_rest_pose_is_independent_from_initial_state_impl(test: unittest.TestC
                 control_target[target_start + 3 : target_start + 6] = np.asarray(initial_angles)
             control.joint_target_q.assign(control_target)
 
-            solver = newton.solvers.SolverVBD(model, iterations=5)
+            solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
             state_0, state_1 = model.state(), model.state()
             solver.step(state_0, state_1, control, None, 1.0 / 600.0)
 
@@ -3968,10 +3975,16 @@ def _cable_generic_target_pose_is_structural_rest_impl(test: unittest.TestCase, 
             )
             builder.add_articulation([joint])
             builder.color()
-            model = builder.finalize(device=device)
+            if use_coord_layout:
+                model = builder.finalize(device=device)
+            else:
+                with test.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
+                    model = builder.finalize(device=device)
 
             state_0, state_1 = model.state(), model.state()
-            newton.solvers.SolverVBD(model, iterations=5).step(state_0, state_1, model.control(), None, 1.0 / 240.0)
+            newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True).step(
+                state_0, state_1, model.control(), None, 1.0 / 240.0
+            )
             np.testing.assert_allclose(
                 state_1.body_qd.numpy()[[parent, child]],
                 0.0,
@@ -3984,6 +3997,8 @@ def _cable_generic_target_pose_is_structural_rest_impl(test: unittest.TestCase, 
 
 def _cable_rod_separate_rest_and_initial_pose_impl(test: unittest.TestCase, device):
     """Verify rod rest geometry is independent and authored frames are aligned."""
+    test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+    newton.use_coord_layout_targets = True
 
     def builder_target_rotation(builder: newton.ModelBuilder, joint: int) -> wp.quat:
         start = builder.joint_q_start[joint]
@@ -4154,13 +4169,16 @@ def _cable_rod_separate_rest_and_initial_pose_impl(test: unittest.TestCase, devi
         test.assertAlmostEqual(float(shape_scale[shape_ids[0], 1]), expected_half_length, places=6)
 
     state_0, state_1 = model.state(), model.state()
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
     solver.step(state_0, state_1, model.control(), None, 1.0 / 600.0)
     test.assertGreater(float(np.linalg.norm(state_1.body_qd.numpy()[rod_bodies[1]])), 1.0e-5)
 
 
 def _cable_rest_offset_threshold_is_scale_relative_impl(test: unittest.TestCase, device):
     """Verify cable Hessian-arm selection rejects noise relative to anchor scale."""
+    test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+    newton.use_coord_layout_targets = True
+
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     joints = []
     for rest_offset in (1.0e-6, 1.0e-3):
@@ -4176,7 +4194,7 @@ def _cable_rest_offset_threshold_is_scale_relative_impl(test: unittest.TestCase,
         joints.append(joint)
 
     builder.color()
-    solver = newton.solvers.SolverVBD(builder.finalize(device=device))
+    solver = newton.solvers.SolverVBD(builder.finalize(device=device), rigid_compliant_alm=True)
     material_arm = solver.joint_cable_rest_uses_material_arm.numpy()
     test.assertFalse(bool(material_arm[joints[0]]))
     test.assertTrue(bool(material_arm[joints[1]]))
@@ -5901,6 +5919,9 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
 
 def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     """Explicit shear stiffness/damping must land in the split shear slot."""
+    test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+    newton.use_coord_layout_targets = True
+
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
     joint = builder.add_joint_cable(
@@ -5935,7 +5956,7 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     target_ke[dof_start + 1] = 41.0
     model.joint_target_ke.assign(target_ke)
     with test.assertRaisesRegex(ValueError, "requires isotropic CABLE shear and bend"):
-        newton.solvers.SolverVBD(model)
+        newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
 
 
 def _split_cable_parent_hessian_uses_rest_offset_arm(test, device):

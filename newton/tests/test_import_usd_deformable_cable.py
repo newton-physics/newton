@@ -1092,7 +1092,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         for joint, joint_length in zip(range(j0, j1), (0.35, 0.45, 0.4), strict=True):
             expected = stretch / joint_length
             dof0 = builder.joint_qd_start[joint]
-            self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
+            self.assertAlmostEqual(builder.joint_target_ke[dof0 + 2], expected, delta=expected * 1.0e-3)
 
     def test_welded_graph_degenerate_segment_skips_component(self):
         """A welded curve with a zero-length segment is rejected with a warning instead of aborting

@@ -75,9 +75,11 @@ SolverVBD interprets the six per-axis :attr:`newton.Model.joint_target_ke` and
 :attr:`newton.Model.joint_target_kd` entries in canonical XYZ linear/angular
 order: ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``; every axis
 uses :attr:`~newton.JointTargetMode.NONE`. Each anchor's local ``+Z`` is the
-material tangent. :meth:`newton.ModelBuilder.add_joint_cable` creates the
-canonical axis layout automatically; generic :meth:`newton.ModelBuilder.add_joint`
-construction uses its six ``target_pos`` values as structural rest.
+material tangent. X/Y shear and X/Y bend entries must match because the
+transverse responses are isotropic about that tangent.
+:meth:`newton.ModelBuilder.add_joint_cable` creates the canonical axis layout
+automatically; generic :meth:`newton.ModelBuilder.add_joint` construction uses
+its six ``target_pos`` values as structural rest.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
