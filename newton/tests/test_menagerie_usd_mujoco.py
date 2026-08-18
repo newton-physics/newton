@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import unittest
+import warnings
 from collections import Counter
 from pathlib import Path
 from typing import Any, ClassVar
@@ -72,15 +73,21 @@ def create_newton_model_from_usd(
     robot_builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(robot_builder)
 
-    robot_builder.add_usd(
-        str(usd_path),
-        collapse_fixed_joints=False,
-        enable_self_collisions=False,
-        schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+    with warnings.catch_warnings():
         # Preserve MuJoCo compatibility defaults until its codeless schemas
         # make those defaults registered schema fallbacks.
-        use_applied_schema_fallbacks=False,
-    )
+        warnings.filterwarnings(
+            "ignore",
+            message=r"This import used deprecated legacy USD property precedence; .*",
+            category=DeprecationWarning,
+        )
+        robot_builder.add_usd(
+            str(usd_path),
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+            use_applied_schema_fallbacks=False,
+        )
 
     builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(builder)

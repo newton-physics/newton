@@ -81,6 +81,16 @@ material that authors its values only under the vendor namespaces is still read 
 resolver, with a ``DeprecationWarning``, so existing assets keep their stiffness and density
 during the deprecation window.
 
+.. note::
+
+   ``use_applied_schema_fallbacks`` does not yet change proposal deformable attribute reads.
+   Those attributes continue to read canonical ``physics:`` values first, followed by
+   resolver-enabled vendor namespaces. They do not yet read composed fallbacks from
+   ``Usd.SchemaRegistry``. Cloth shell mass properties are the limited exception: their shared
+   ``mass_model`` and ``shell_thickness`` properties already use the ordinary schema resolver.
+   Applying the common registered-fallback policy to the remaining deformable properties is
+   follow-up work.
+
 Supported subset
 ~~~~~~~~~~~~~~~~
 
@@ -370,6 +380,9 @@ The table below shows PhysX attribute remapping examples:
    * - ``physxArticulation:enabledSelfCollisions``
      - ``self_collision_enabled`` (per articulation)
      - Direct mapping
+   * - ``state:transX:physics:position`` / ``velocity``
+     - D6 ``transX`` initial position / velocity
+     - Direct mapping; equivalent mappings exist for ``transY`` and ``transZ``
 
 **Newton articulation remapping:**
 
@@ -488,7 +501,33 @@ Priority-Based Resolution
 
 When multiple physics solvers define conflicting attributes for the same property, the user can define which solver attributes should be preferred by configuring the resolver order.
 
-**Resolution Hierarchy:**
+Resolution distinguishes five sources that were previously all described as
+defaults:
+
+.. list-table:: Property value sources
+   :header-rows: 1
+   :widths: 25 75
+
+   * - **Source**
+     - **Meaning**
+   * - Authored value
+     - A usable value explicitly authored on the prim.
+   * - Registered schema fallback
+     - An authoritative fallback from the composed prim definition in
+       ``Usd.SchemaRegistry`` for an applied schema.
+   * - Importer default
+     - A property-specific value supplied by the builder configuration or the
+       conceptual default of an importer argument.
+   * - Compatibility default
+     - A resolver mapping default retained for an unregistered schema or an
+       older resolver without declared schema ownership. It is not an
+       authoritative schema fallback.
+   * - Explicit importer override
+     - A caller-provided value that replaces USD resolution for importer
+       arguments that support overrides.
+
+Resolution Hierarchy
+^^^^^^^^^^^^^^^^^^^^
 
 With ``use_applied_schema_fallbacks=True``, an explicit importer override is
 returned before this hierarchy. For example, passing
@@ -509,30 +548,106 @@ By default, attribute resolution retains the compatibility hierarchy:
 2. **Importer Defaults**: If no authored value is found, Newton's importer uses a property-specific fallback (e.g. ``builder.default_joint_cfg.armature`` for joint armature). This takes precedence over schema-level defaults.
 3. **Resolver Compatibility Defaults**: If neither an authored value nor an importer default is available, Newton falls back to the resolver mapping's compatibility default.
 
-Pass ``use_applied_schema_fallbacks=True`` to enable schema ownership. Resolution
-then follows four stages:
+Pass ``use_applied_schema_fallbacks=True`` to enable schema ownership. Resolver
+priority then applies to each resolver's complete candidate, not to one global
+authored-value pass followed by a fallback pass. Resolution follows four
+stages:
 
 1. **Authored Value**: Read the current resolver's authored property value.
 2. **Registered Schema Fallback**: If that resolver's schema is applied and the
-   property is unauthored and unblocked, read its fallback from the composed prim
+   property is unauthored, read its fallback from the composed prim
    definition in ``Usd.SchemaRegistry``. A resolver may mark a fallback as an
    unset sentinel, meaning that the schema has no opinion for that property.
    Skip those sentinels and repeat stages 1 and 2 for each resolver in priority
    order.
 3. **Importer Default**: Use the property-specific importer fallback after no
    resolver supplies an authored value or registered schema fallback.
-4. **Resolver Compatibility Default**: For an applied but unregistered schema,
-   use the resolver mapping's compatibility default only after the importer
-   default. Unregistered schemas do not own fallbacks.
+4. **Resolver Compatibility Default**: Use the resolver mapping's compatibility
+   default only after the importer default when its declared schema is applied
+   but unregistered, or when the resolver does not declare schema ownership.
+   Unregistered schemas do not own fallbacks.
+
+Consequently, an earlier resolver's registered fallback takes precedence over
+a later resolver's authored value. A registered property without a fallback is
+different from an unregistered schema: the former does not receive a resolver
+compatibility default, while the latter may use one after the importer default.
+
+Usability and Consumer Meaning
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+With ``use_applied_schema_fallbacks=True``, Newton stops at the first *usable*
+candidate. A getter or conversion that returns ``None`` falls through to the
+next resolver. A property can also mark a registered fallback sentinel as
+unset, meaning that the schema has no effective opinion for that property.
+Sentinel rules are property-specific: for example, the unlimited velocity
+fallback is skipped, while an explicitly authored hull limit of ``-1`` remains
+an exact unbounded choice.
+
+The deprecated legacy policy preserves its existing compatibility-default
+behavior. Once it selects the first resolver mapping default, it returns the
+converted result even if that result is ``None``; it does not try a later
+compatibility default. The migration audit warns when registered-schema
+precedence would continue to a usable value and change the result.
+
+Some logical properties are computed from multiple USD attributes. Newton
+composes those constituents independently: it keeps each usable authored
+constituent and fills a missing or blocked constituent from the registered
+schema definition. A mixed result is classified as a registered schema fallback
+because that stage completed the compound value. Complete per-constituent
+provenance remains follow-up work.
+
+A blocked attribute is treated as unauthored. Under registered-schema
+precedence, an applicable schema fallback remains eligible. If a custom getter
+cannot read a registered fallback without a PXR prim, only that resolver's
+unsupported candidate is skipped; lower-priority candidates remain eligible.
+
+The importer compares each resolved property after applying its
+property-specific interpretation. This includes unit conversions, unset
+sentinels, direct builder defaults, validation that defines the property, and
+source-dependent behavior such as MuJoCo joint-limit modes. When several USD
+inputs jointly define one logical property, the comparison uses the assembled
+result and attributes a warning only to inputs whose interpreted contribution
+changes. Raw values that differ but produce the same interpreted property do
+not warn; equal numbers that select different property semantics do warn.
+
+The audit does not shadow-run the complete importer under both policies.
+Independent downstream rules can therefore mask a reported property change;
+for example, authored body mass properties can make a changed shell thickness
+irrelevant to the final body inertia. The warning still identifies a real
+change in how that USD property resolves.
+
+Migration Audit
+^^^^^^^^^^^^^^^
 
 The legacy hierarchy selected by ``use_applied_schema_fallbacks=False`` is
 deprecated. During the compatibility period, Newton emits one
-:exc:`DeprecationWarning` when registered-schema precedence would change an
-effective value or source; the warning lists the affected properties and prim
-paths. Pass ``True`` to adopt registered schema fallback precedence, or author
-the intended property values to preserve them across the transition. Newton
-does not copy PhysX or MuJoCo fallback catalogs when their schema plugins are
-unavailable.
+:exc:`DeprecationWarning` per import when future precedence is proven to change
+an interpreted property value or its source-dependent meaning. The comparison
+includes all terminal results: registered fallbacks, importer defaults,
+compatibility defaults, and unresolved values. Audit failures alone do not
+trigger a warning. The warning lists a bounded set of affected properties and
+prim paths as ``old resolver (attribute; source) -> new resolver (attribute;
+source)`` transitions. Importer defaults and unresolved values have no resolver
+label.
+
+Pass ``True`` to adopt registered schema fallback precedence. To preserve the
+current result, author the value through a higher-priority schema, reorder
+``schema_resolvers``, or use an explicit importer override where one is
+supported. Authoring through a lower-priority resolver is insufficient when an
+earlier resolver owns an applicable registered fallback.
+
+Newton does not copy PhysX or MuJoCo fallback catalogs when their schema
+plugins are unavailable; those resolvers retain lower-priority compatibility
+defaults until their codeless schema plugins are registered.
+
+Resolver Boundary
+^^^^^^^^^^^^^^^^^
+
+The resolution order is source-neutral: it consumes callbacks that read a
+candidate, check schema applicability, and read a fallback. The USD importer is
+the PXR-facing adapter that supplies those callbacks from the prim and
+``Usd.SchemaRegistry``. This keeps the precedence policy reusable, but the
+current public API does not yet expose complete winning-source provenance.
 
 **Configuring Resolver Priority:**
 

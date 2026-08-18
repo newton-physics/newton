@@ -249,6 +249,21 @@ class SchemaResolverNewton(SchemaResolver):
                 0.0,
                 usd_value_getter=_newton_non_schema_joint_state_attr("newton:linear:position"),
             ),
+            "transX_position": SchemaAttribute(
+                "newton:transX:position",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transX:position"),
+            ),
+            "transY_position": SchemaAttribute(
+                "newton:transY:position",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transY:position"),
+            ),
+            "transZ_position": SchemaAttribute(
+                "newton:transZ:position",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transZ:position"),
+            ),
             "rotX_position": SchemaAttribute(
                 "newton:rotX:position",
                 0.0,
@@ -273,6 +288,21 @@ class SchemaResolverNewton(SchemaResolver):
                 "newton:linear:velocity",
                 0.0,
                 usd_value_getter=_newton_non_schema_joint_state_attr("newton:linear:velocity"),
+            ),
+            "transX_velocity": SchemaAttribute(
+                "newton:transX:velocity",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transX:velocity"),
+            ),
+            "transY_velocity": SchemaAttribute(
+                "newton:transY:velocity",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transY:velocity"),
+            ),
+            "transZ_velocity": SchemaAttribute(
+                "newton:transZ:velocity",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transZ:velocity"),
             ),
             "rotX_velocity": SchemaAttribute(
                 "newton:rotX:velocity",
@@ -414,7 +444,7 @@ class SchemaResolverPhysx(SchemaResolver):
             },
             **{
                 f"{axis}_{quantity}": f"PhysicsJointStateAPI:{axis}"
-                for axis in ("linear", "angular", "rotX", "rotY", "rotZ")
+                for axis in ("linear", "angular", "transX", "transY", "transZ", "rotX", "rotY", "rotZ")
                 for quantity in ("position", "velocity")
             },
         },
@@ -483,11 +513,17 @@ class SchemaResolverPhysx(SchemaResolver):
             "limit_rotZ_kd": SchemaAttribute("physxLimit:rotZ:damping", 0.0),
             "angular_position": SchemaAttribute("state:angular:physics:position", 0.0),
             "linear_position": SchemaAttribute("state:linear:physics:position", 0.0),
+            "transX_position": SchemaAttribute("state:transX:physics:position", 0.0),
+            "transY_position": SchemaAttribute("state:transY:physics:position", 0.0),
+            "transZ_position": SchemaAttribute("state:transZ:physics:position", 0.0),
             "rotX_position": SchemaAttribute("state:rotX:physics:position", 0.0),
             "rotY_position": SchemaAttribute("state:rotY:physics:position", 0.0),
             "rotZ_position": SchemaAttribute("state:rotZ:physics:position", 0.0),
             "angular_velocity": SchemaAttribute("state:angular:physics:velocity", 0.0),
             "linear_velocity": SchemaAttribute("state:linear:physics:velocity", 0.0),
+            "transX_velocity": SchemaAttribute("state:transX:physics:velocity", 0.0),
+            "transY_velocity": SchemaAttribute("state:transY:physics:velocity", 0.0),
+            "transZ_velocity": SchemaAttribute("state:transZ:physics:velocity", 0.0),
             "rotX_velocity": SchemaAttribute("state:rotX:physics:velocity", 0.0),
             "rotY_velocity": SchemaAttribute("state:rotY:physics:velocity", 0.0),
             "rotZ_velocity": SchemaAttribute("state:rotZ:physics:velocity", 0.0),
@@ -630,10 +666,8 @@ class SchemaResolverMjc(SchemaResolver):
         },
         PrimType.JOINT: {
             "armature": SchemaAttribute("mjc:armature", 0.0),
-            # MuJoCo damping is authored in SI units (per radian for angular
-            # DOFs), unlike the USD per-degree convention behind the plain
-            # "damping" key, so it resolves through the _per_rad variant.
-            "damping_per_rad": SchemaAttribute("mjc:damping", None),
+            # MuJoCo authors angular damping per radian rather than per degree.
+            "damping": SchemaAttribute("mjc:damping", None, angular_unit="radians"),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
             # Per-axis aliases mapped to solreflimit (MjcJointAPI authors joint limit solref here)
             "limit_transX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),

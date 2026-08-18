@@ -1806,6 +1806,139 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(damping[qd_start + 1]), 3.0, places=6)  # angular DOF
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_damping_importer_default_precedes_compatibility(self):
+        """Place the damping importer default before compatibility defaults."""
+        from pxr import Usd
+
+        class SchemaResolverCompatibilityDamping(usd.SchemaResolver):
+            name = "compatibility"
+            mapping: ClassVar = {
+                usd.PrimType.JOINT: {
+                    "damping": usd.SchemaResolver.SchemaAttribute("compatibility:damping", 0.25),
+                }
+            }
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "World" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Slider" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collider" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsPrismaticJoint "Slide"
+    {
+        rel physics:body0 = </World/Slider>
+        rel physics:body1 = </World/Body1>
+        token physics:axis = "X"
+    }
+
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collider" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (2, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collider" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsJoint "D6" (
+        prepend apiSchemas = ["PhysicsLimitAPI:transX", "PhysicsLimitAPI:rotZ"]
+    )
+    {
+        rel physics:body0 = </World/Body1>
+        rel physics:body1 = </World/Body2>
+        float limit:transX:physics:low = -1
+        float limit:transX:physics:high = 1
+        float limit:rotZ:physics:low = -45
+        float limit:rotZ:physics:high = 45
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        policy_damping = {}
+        for importer_damping in (3.0, 0.25):
+            results = []
+            for use_applied_schema_fallbacks in (False, True):
+                with self.subTest(
+                    importer_damping=importer_damping,
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                ):
+                    builder = newton.ModelBuilder()
+                    builder.default_joint_cfg.damping = importer_damping
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        builder.add_usd(
+                            stage,
+                            schema_resolvers=[SchemaResolverCompatibilityDamping()],
+                            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                        )
+                    model = builder.finalize()
+                    slide_start = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Slide")])
+                    d6_start = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/D6")])
+                    damping = model.joint_damping.numpy()
+                    results.append(
+                        (
+                            float(damping[slide_start]),
+                            float(damping[d6_start]),
+                            float(damping[d6_start + 1]),
+                        )
+                    )
+                    migration_warnings = [item for item in caught if "compatibility:damping" in str(item.message)]
+                    self.assertEqual(len(migration_warnings), int(not use_applied_schema_fallbacks))
+            policy_damping[importer_damping] = results
+
+        degrees_to_radians = math.pi / 180.0
+        compatibility_values = (0.25, 0.25, 0.25 / degrees_to_radians)
+        np.testing.assert_allclose(policy_damping[3.0][0], compatibility_values)
+        np.testing.assert_allclose(policy_damping[3.0][1], (3.0, 3.0, 3.0))
+        np.testing.assert_allclose(policy_damping[0.25][0], compatibility_values)
+        np.testing.assert_allclose(policy_damping[0.25][1], (0.25, 0.25, 0.25))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_d6(self):
         """NewtonJointAPI attributes broadcast uniformly across a D6 joint's linear and angular DOFs."""
         from pxr import Usd
@@ -2079,7 +2212,7 @@ def Xform "Articulation" (
         """Reuse the velocity-limit authored read during fallback auditing."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
-        class CountingResolver(usd.SchemaResolver):
+        class SchemaResolverCounting(usd.SchemaResolver):
             name = "counting"
             _schema_names: ClassVar = {usd.PrimType.JOINT: "NewtonJointAPI"}
             mapping: ClassVar = {
@@ -2107,7 +2240,7 @@ def Xform "Articulation" (
         joint.CreateBody1Rel().SetTargets([body.GetPath()])
         joint.CreateAxisAttr().Set("Z")
 
-        resolver = CountingResolver()
+        resolver = SchemaResolverCounting()
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.velocity_limit = 123.0
         with warnings.catch_warnings():
@@ -2119,6 +2252,99 @@ def Xform "Articulation" (
             builder.add_usd(stage, schema_resolvers=[resolver])
 
         self.assertEqual(resolver.velocity_read_count, 1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_velocity_audit_compares_builder_units(self):
+        """Compare velocity limits after source-dependent angular conversion."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        class SchemaResolverVelocityFallback(usd.SchemaResolver):
+            name = "velocity_fallback"
+            _schema_names: ClassVar = {usd.PrimType.JOINT: {"velocity_limit": "NewtonSceneAPI"}}
+            mapping: ClassVar = {
+                usd.PrimType.JOINT: {"velocity_limit": usd.SchemaResolver.SchemaAttribute("newton:timeStepsPerSecond")}
+            }
+
+        for joint_kind in ("revolute", "d6_linear", "d6_mixed"):
+            with self.subTest(joint_kind=joint_kind):
+                stage = Usd.Stage.CreateInMemory()
+                root = UsdGeom.Xform.Define(stage, "/World")
+                UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                body = UsdGeom.Xform.Define(stage, "/World/Body")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                if joint_kind.startswith("d6"):
+                    joint = UsdPhysics.Joint.Define(stage, "/World/Joint")
+                    UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "transX")
+                    if joint_kind == "d6_mixed":
+                        UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "rotZ")
+                else:
+                    joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+                    joint.CreateAxisAttr().Set("Z")
+                joint.GetPrim().ApplyAPI("NewtonSceneAPI")
+                joint.CreateBody1Rel().SetTargets([body.GetPath()])
+
+                policy_values = []
+                for use_applied_schema_fallbacks in (False, True):
+                    builder = newton.ModelBuilder()
+                    builder.default_joint_cfg.velocity_limit = 1000.0
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        builder.add_usd(
+                            stage,
+                            schema_resolvers=[SchemaResolverVelocityFallback()],
+                            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                            load_visual_shapes=False,
+                        )
+                    policy_values.append(builder.finalize().joint_velocity_limit.numpy().tolist())
+                    migration_warnings = [item for item in caught if "newton:timeStepsPerSecond" in str(item.message)]
+                    expected_warning = not use_applied_schema_fallbacks and joint_kind != "d6_linear"
+                    self.assertEqual(len(migration_warnings), int(expected_warning))
+
+                if joint_kind == "d6_mixed":
+                    np.testing.assert_allclose(policy_values[0], [1000.0, 1000.0])
+                    np.testing.assert_allclose(policy_values[1], [1000.0, 1000.0 * math.pi / 180.0])
+                elif joint_kind == "revolute":
+                    np.testing.assert_allclose(policy_values[0], [1000.0])
+                    np.testing.assert_allclose(policy_values[1], [1000.0 * math.pi / 180.0])
+                else:
+                    np.testing.assert_allclose(policy_values[0], [1000.0])
+                    np.testing.assert_allclose(policy_values[1], [1000.0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_d6_damping_audit_ignores_unused_axes(self):
+        """Ignore unused D6 axis units when auditing joint damping."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        class SchemaResolverDampingFallback(usd.SchemaResolver):
+            name = "damping_fallback"
+            _schema_names: ClassVar = {usd.PrimType.JOINT: {"damping": "NewtonSceneAPI"}}
+            mapping: ClassVar = {
+                usd.PrimType.JOINT: {"damping": usd.SchemaResolver.SchemaAttribute("newton:timeStepsPerSecond")}
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.Joint.Define(stage, "/World/Joint")
+        joint.GetPrim().ApplyAPI("NewtonSceneAPI")
+        UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "transX")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            builder.default_joint_cfg.damping = 1000.0
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                builder.add_usd(
+                    stage,
+                    schema_resolvers=[SchemaResolverDampingFallback()],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                    load_visual_shapes=False,
+                )
+            self.assertEqual(builder.finalize().joint_damping.numpy().tolist(), [1000.0])
+            self.assertFalse(any("newton:timeStepsPerSecond" in str(item.message) for item in caught))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_legacy_policy_warns_before_fallback_change(self):
@@ -2162,6 +2388,160 @@ def Xform "Articulation" (
                 self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), 123.0)
                 self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 7.0)
                 self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_mjc_limit_default_warns_before_importer_default(self):
+        """Warn when future precedence replaces a MuJoCo compatibility default."""
+        from pxr import Usd
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
+    def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def PhysicsPrismaticJoint "Joint" (prepend apiSchemas = ["MjcJointAPI"]) {
+        rel physics:body1 = </World/Body>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.limit_ke = 4321.0
+        builder.default_joint_cfg.limit_kd = 43.0
+        SolverMuJoCo.register_custom_attributes(builder)
+        with self.assertWarnsRegex(DeprecationWarning, "mjc:solreflimit"):
+            builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+
+        model = builder.finalize()
+        joint = model.joint_label.index("/World/Joint")
+        dof = int(model.joint_qd_start.numpy()[joint])
+        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 2500.0)
+        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 100.0)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_MJCF_DEFAULT)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_registered_mjc_limit_default_preserves_legacy_result(self):
+        """Suppress migration warnings when a registered MuJoCo default preserves results."""
+        from pxr import Usd
+
+        from newton._src.usd.schema_resolver import SchemaResolverManager  # noqa: PLC0415
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
+    def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def PhysicsPrismaticJoint "Joint" (prepend apiSchemas = ["MjcJointAPI"]) {
+        rel physics:body1 = </World/Body>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+    }
+}
+"""
+        )
+
+        original_schema_fallback = SchemaResolverManager._schema_fallback
+
+        def registered_mjc_fallback(manager, resolver, prim, prim_type, key):
+            if resolver.name == "mjc" and key in {"limit_linear_ke", "limit_linear_kd"}:
+                spec = resolver.mapping[prim_type][key]
+                return spec.usd_value_transformer(spec.default)
+            return original_schema_fallback(manager, resolver, prim, prim_type, key)
+
+        policy_results = []
+        with mock.patch.object(SchemaResolverManager, "_schema_fallback", new=registered_mjc_fallback):
+            for use_applied_schema_fallbacks in (False, True):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    builder.add_usd(
+                        stage,
+                        schema_resolvers=[SchemaResolverMjc()],
+                        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                    )
+
+                self.assertFalse(any("mjc:solreflimit" in str(item.message) for item in caught))
+                model = builder.finalize()
+                joint = model.joint_label.index("/World/Joint")
+                dof = int(model.joint_qd_start.numpy()[joint])
+                policy_results.append(
+                    (
+                        float(model.joint_limit_ke.numpy()[dof]),
+                        float(model.joint_limit_kd.numpy()[dof]),
+                        int(model.mujoco.solreflimit_mode.numpy()[dof]),
+                    )
+                )
+
+        self.assertEqual(policy_results, [(2500.0, 100.0, SOLREF_MODE_MJCF_DEFAULT)] * 2)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_generic_limit_gains_mask_per_axis_policy_changes(self):
+        """Audit final joint-limit gains after generic Newton values are applied."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        for joint_type in ("prismatic", "d6"):
+            with self.subTest(joint_type=joint_type):
+                stage = Usd.Stage.CreateInMemory()
+                root = UsdGeom.Xform.Define(stage, "/World")
+                UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                body = UsdGeom.Xform.Define(stage, "/World/Body")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                if joint_type == "prismatic":
+                    joint = UsdPhysics.PrismaticJoint.Define(stage, "/World/Joint")
+                    joint.CreateAxisAttr().Set("X")
+                    joint.CreateLowerLimitAttr().Set(-1.0)
+                    joint.CreateUpperLimitAttr().Set(1.0)
+                    dof_count = 1
+                else:
+                    joint = UsdPhysics.Joint.Define(stage, "/World/Joint")
+                    for axis in ("transX", "rotZ"):
+                        limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+                        limit.CreateLowAttr().Set(-1.0)
+                        limit.CreateHighAttr().Set(1.0)
+                    dof_count = 2
+                joint.CreateBody1Rel().SetTargets([body.GetPath()])
+                joint.GetPrim().AddAppliedSchema("NewtonJointAPI")
+                joint.GetPrim().AddAppliedSchema("MjcJointAPI")
+                joint.GetPrim().CreateAttribute("newton:limitStiffness", Sdf.ValueTypeNames.Double).Set(777.0)
+                joint.GetPrim().CreateAttribute("newton:limitDamping", Sdf.ValueTypeNames.Double).Set(88.0)
+
+                policy_results = []
+                for use_applied_schema_fallbacks in (False, True):
+                    builder = newton.ModelBuilder()
+                    SolverMuJoCo.register_custom_attributes(builder)
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        builder.add_usd(
+                            stage,
+                            schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()],
+                            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                        )
+
+                    self.assertFalse(any("mjc:solreflimit" in str(item.message) for item in caught))
+                    model = builder.finalize()
+                    joint_index = model.joint_label.index("/World/Joint")
+                    dof_start = int(model.joint_qd_start.numpy()[joint_index])
+                    policy_results.append(
+                        (
+                            model.joint_limit_ke.numpy()[dof_start : dof_start + dof_count],
+                            model.joint_limit_kd.numpy()[dof_start : dof_start + dof_count],
+                        )
+                    )
+
+                np.testing.assert_allclose(policy_results[0][0], policy_results[1][0])
+                np.testing.assert_allclose(policy_results[0][1], policy_results[1][1])
+                scale = np.array([1.0]) if joint_type == "prismatic" else np.array([1.0, 180.0 / math.pi])
+                np.testing.assert_allclose(policy_results[0][0], 777.0 * scale, rtol=1.0e-6)
+                np.testing.assert_allclose(policy_results[0][1], 88.0 * scale, rtol=1.0e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_limit_sentinels_do_not_warn_when_results_match(self):
@@ -2224,6 +2604,168 @@ def Xform "Articulation" (
                 np.testing.assert_allclose(policy_gains[0][1], policy_gains[1][1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_limit_resolution_skips_unusable_authored_values(self):
+        """Continue to lower-priority joint gains after an unusable authored value."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        class SchemaResolverUnusable(usd.SchemaResolver):
+            name = "unusable"
+            mapping: ClassVar = {
+                usd.PrimType.JOINT: {
+                    key: usd.SchemaResolver.SchemaAttribute(
+                        f"unusable:{key}",
+                        usd_value_transformer=lambda _value: None,
+                    )
+                    for key in ("limit_angular_ke", "limit_angular_kd", "limit_rotZ_ke", "limit_rotZ_kd")
+                }
+            }
+
+        class SchemaResolverUsable(usd.SchemaResolver):
+            name = "usable"
+            mapping: ClassVar = {
+                usd.PrimType.JOINT: {
+                    key: usd.SchemaResolver.SchemaAttribute(f"usable:{key}")
+                    for key in ("limit_angular_ke", "limit_angular_kd", "limit_rotZ_ke", "limit_rotZ_kd")
+                }
+            }
+
+        for joint_type in ("revolute", "d6"):
+            for use_applied_schema_fallbacks in (False, True):
+                with self.subTest(
+                    joint_type=joint_type,
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                ):
+                    stage = Usd.Stage.CreateInMemory()
+                    root = UsdGeom.Xform.Define(stage, "/World")
+                    UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                    body = UsdGeom.Xform.Define(stage, "/World/Body")
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    if joint_type == "revolute":
+                        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+                        joint.CreateAxisAttr().Set("Z")
+                        joint.CreateLowerLimitAttr().Set(-45.0)
+                        joint.CreateUpperLimitAttr().Set(45.0)
+                        gain_prefix = "limit_angular"
+                    else:
+                        joint = UsdPhysics.Joint.Define(stage, "/World/Joint")
+                        limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "rotZ")
+                        limit.CreateLowAttr().Set(-45.0)
+                        limit.CreateHighAttr().Set(45.0)
+                        gain_prefix = "limit_rotZ"
+                    joint.CreateBody1Rel().SetTargets([body.GetPath()])
+                    for gain, value in (("ke", 2.0), ("kd", 3.0)):
+                        key = f"{gain_prefix}_{gain}"
+                        joint.GetPrim().CreateAttribute(f"unusable:{key}", Sdf.ValueTypeNames.Double).Set(-1.0)
+                        joint.GetPrim().CreateAttribute(f"usable:{key}", Sdf.ValueTypeNames.Double).Set(value)
+
+                    builder = newton.ModelBuilder()
+                    builder.add_usd(
+                        stage,
+                        schema_resolvers=[SchemaResolverUnusable(), SchemaResolverUsable()],
+                        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                        load_visual_shapes=False,
+                    )
+                    model = builder.finalize()
+                    joint_index = model.joint_label.index("/World/Joint")
+                    dof = int(model.joint_qd_start.numpy()[joint_index])
+
+                    self.assertAlmostEqual(
+                        float(model.joint_limit_ke.numpy()[dof]),
+                        2.0 / math.radians(1.0),
+                        places=4,
+                    )
+                    self.assertAlmostEqual(
+                        float(model.joint_limit_kd.numpy()[dof]),
+                        3.0 / math.radians(1.0),
+                        places=4,
+                    )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_limit_audit_detects_equal_gains_with_new_semantics(self):
+        """Warn when equal joint gains change from MuJoCo to force-space semantics."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        class SchemaResolverUnrelated(usd.SchemaResolver):
+            name = "unrelated"
+            _schema_names: ClassVar = {usd.PrimType.JOINT: "UnrelatedJointAPI"}
+            mapping: ClassVar = {
+                usd.PrimType.JOINT: {
+                    key: usd.SchemaResolver.SchemaAttribute(f"unrelated:{key}", 1.0)
+                    for key in ("limit_angular_ke", "limit_angular_kd", "limit_rotZ_ke", "limit_rotZ_kd")
+                }
+            }
+
+        class SchemaResolverForceSpace(usd.SchemaResolver):
+            name = "force_space"
+            mapping: ClassVar = {
+                usd.PrimType.JOINT: {
+                    key: usd.SchemaResolver.SchemaAttribute(f"force_space:{key}")
+                    for key in ("limit_angular_ke", "limit_angular_kd", "limit_rotZ_ke", "limit_rotZ_kd")
+                }
+            }
+
+        for joint_type, gain_prefix in (("revolute", "limit_angular"), ("d6", "limit_rotZ")):
+            with self.subTest(joint_type=joint_type):
+                stage = Usd.Stage.CreateInMemory()
+                root = UsdGeom.Xform.Define(stage, "/World")
+                UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                body = UsdGeom.Xform.Define(stage, "/World/Body")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                if joint_type == "revolute":
+                    joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+                    joint.CreateAxisAttr().Set("Z")
+                    joint.CreateLowerLimitAttr().Set(-45.0)
+                    joint.CreateUpperLimitAttr().Set(45.0)
+                else:
+                    joint = UsdPhysics.Joint.Define(stage, "/World/Joint")
+                    limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "rotZ")
+                    limit.CreateLowAttr().Set(-45.0)
+                    limit.CreateHighAttr().Set(45.0)
+                joint.CreateBody1Rel().SetTargets([body.GetPath()])
+                joint.GetPrim().AddAppliedSchema("UnrelatedJointAPI")
+                joint.GetPrim().AddAppliedSchema("MjcJointAPI")
+                joint.GetPrim().CreateAttribute("mjc:solreflimit", Sdf.ValueTypeNames.DoubleArray).Set([0.0, 0.0])
+                for gain, value in (("ke", 2500.0), ("kd", 100.0)):
+                    joint.GetPrim().CreateAttribute(
+                        f"force_space:{gain_prefix}_{gain}",
+                        Sdf.ValueTypeNames.Double,
+                    ).Set(value * math.pi / 180.0)
+
+                policy_results = []
+                for use_applied_schema_fallbacks in (False, True):
+                    builder = newton.ModelBuilder()
+                    SolverMuJoCo.register_custom_attributes(builder)
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        builder.add_usd(
+                            stage,
+                            schema_resolvers=[
+                                SchemaResolverUnrelated(),
+                                usd.SchemaResolverMjc(),
+                                SchemaResolverForceSpace(),
+                            ],
+                            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                            load_visual_shapes=False,
+                        )
+                    model = builder.finalize()
+                    joint_index = model.joint_label.index("/World/Joint")
+                    dof = int(model.joint_qd_start.numpy()[joint_index])
+                    policy_results.append(
+                        (
+                            float(model.joint_limit_ke.numpy()[dof]),
+                            float(model.joint_limit_kd.numpy()[dof]),
+                            int(model.mujoco.solreflimit_mode.numpy()[dof]),
+                        )
+                    )
+                    migration_warnings = [warning for warning in caught if "mjc:solreflimit" in str(warning.message)]
+                    self.assertEqual(len(migration_warnings), int(not use_applied_schema_fallbacks))
+
+                self.assertAlmostEqual(policy_results[0][0], policy_results[1][0], places=4)
+                self.assertAlmostEqual(policy_results[0][1], policy_results[1][1], places=4)
+                self.assertEqual(policy_results[0][2], SOLREF_MODE_RAW)
+                self.assertEqual(policy_results[1][2], SOLREF_MODE_FORCE_SPACE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_missing_joint_state_is_zero_in_both_fallback_policies(self):
         """Keep missing joint state zero under both fallback policies."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -2239,11 +2781,13 @@ def Xform "Articulation" (
 
         policy_states = []
         for use_applied_schema_fallbacks in (False, True):
-            builder = newton.ModelBuilder()
-            builder.add_usd(
-                stage,
-                use_applied_schema_fallbacks=use_applied_schema_fallbacks,
-            )
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                builder = newton.ModelBuilder()
+                builder.add_usd(
+                    stage,
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
             model = builder.finalize()
             joint_index = model.joint_label.index("/World/Joint")
             q_start = int(model.joint_q_start.numpy()[joint_index])
@@ -2254,8 +2798,127 @@ def Xform "Articulation" (
                     float(model.joint_qd.numpy()[qd_start]),
                 )
             )
+            self.assertFalse(
+                any("USD property precedence" in str(item.message) for item in caught),
+                [str(item.message) for item in caught],
+            )
 
         self.assertEqual(policy_states, [(0.0, 0.0), (0.0, 0.0)])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_missing_joint_state_does_not_report_errors(self):
+        """Avoid missing-value errors for optional ordinary and D6 joint state."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        for joint_kind in ("revolute", "prismatic", "d6"):
+            for use_applied_schema_fallbacks in (False, True):
+                with self.subTest(
+                    joint_kind=joint_kind,
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                ):
+                    stage = Usd.Stage.CreateInMemory()
+                    root = UsdGeom.Xform.Define(stage, "/World")
+                    UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                    body = UsdGeom.Xform.Define(stage, "/World/Body")
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+                    state_keys: tuple[str, ...]
+                    if joint_kind == "revolute":
+                        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+                        joint.CreateAxisAttr().Set("Z")
+                        state_keys = ("angular_position", "angular_velocity")
+                        dof_count = 1
+                    elif joint_kind == "prismatic":
+                        joint = UsdPhysics.PrismaticJoint.Define(stage, "/World/Joint")
+                        joint.CreateAxisAttr().Set("X")
+                        state_keys = ("linear_position", "linear_velocity")
+                        dof_count = 1
+                    else:
+                        joint = UsdPhysics.Joint.Define(stage, "/World/Joint")
+                        for axis in ("transX", "rotZ"):
+                            limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+                            limit.CreateLowAttr().Set(-1.0)
+                            limit.CreateHighAttr().Set(1.0)
+                        state_keys = (
+                            "transX_position",
+                            "transX_velocity",
+                            "rotZ_position",
+                            "rotZ_velocity",
+                        )
+                        dof_count = 2
+                    joint.CreateBody1Rel().SetTargets([body.GetPath()])
+
+                    stdout = io.StringIO()
+                    builder = newton.ModelBuilder()
+                    with contextlib.redirect_stdout(stdout):
+                        builder.add_usd(
+                            stage,
+                            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                            load_visual_shapes=False,
+                            verbose=True,
+                        )
+
+                    output = stdout.getvalue()
+                    for key in state_keys:
+                        self.assertNotIn(f"joint:{key}", output)
+
+                    model = builder.finalize()
+                    joint_index = model.joint_label.index("/World/Joint")
+                    q_start = int(model.joint_q_start.numpy()[joint_index])
+                    qd_start = int(model.joint_qd_start.numpy()[joint_index])
+                    self.assertEqual(
+                        model.joint_q.numpy()[q_start : q_start + dof_count].tolist(),
+                        [0.0] * dof_count,
+                    )
+                    self.assertEqual(
+                        model.joint_qd.numpy()[qd_start : qd_start + dof_count].tolist(),
+                        [0.0] * dof_count,
+                    )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_d6_translation_state_uses_axis_mappings(self):
+        """Resolve D6 translation state through Newton and PhysX axis mappings."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.Joint.Define(stage, "/World/Joint")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+        for axis in ("transX", "transY"):
+            limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+            limit.CreateLowAttr().Set(-10.0)
+            limit.CreateHighAttr().Set(10.0)
+        for name, value in (
+            ("state:transX:physics:position", 1.25),
+            ("state:transX:physics:velocity", 2.5),
+            ("newton:transY:position", -3.5),
+            ("newton:transY:velocity", -4.5),
+        ):
+            joint.GetPrim().CreateAttribute(name, Sdf.ValueTypeNames.Float).Set(value)
+
+        for use_applied_schema_fallbacks in (False, True):
+            with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", UserWarning)
+                    builder.add_usd(
+                        stage,
+                        schema_resolvers=[usd.SchemaResolverPhysx(), usd.SchemaResolverNewton()],
+                        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                        load_visual_shapes=False,
+                    )
+
+                state_warnings = [item for item in caught if "non-schema attribute" in str(item.message)]
+                self.assertEqual(len(state_warnings), 2)
+                model = builder.finalize()
+                joint_index = model.joint_label.index("/World/Joint")
+                q_start = int(model.joint_q_start.numpy()[joint_index])
+                qd_start = int(model.joint_qd_start.numpy()[joint_index])
+                self.assertEqual(model.joint_q.numpy()[q_start : q_start + 2].tolist(), [1.25, -3.5])
+                self.assertEqual(model.joint_qd.numpy()[qd_start : qd_start + 2].tolist(), [2.5, -4.5])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_composed_fallback_policy_covers_joint_special_cases(self):
@@ -2299,7 +2962,7 @@ def Xform "Articulation" (
         blocked_model = blocked_builder.finalize()
         dof = int(blocked_model.joint_qd_start.numpy()[blocked_model.joint_label.index("/World/Joint")])
 
-        self.assertAlmostEqual(float(blocked_model.joint_armature.numpy()[dof]), 0.7)
+        self.assertEqual(float(blocked_model.joint_armature.numpy()[dof]), 0.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_merged_joint_velocity_sentinel_uses_builder_default(self):
@@ -4307,7 +4970,7 @@ def Xform "Articulation" (
         """Keep importer limit gains ahead of unregistered PhysX defaults."""
         from pxr import Usd
 
-        class UnregisteredPhysxResolver(usd.SchemaResolverPhysx):
+        class SchemaResolverUnregisteredPhysx(usd.SchemaResolverPhysx):
             _schema_names: ClassVar = {
                 usd.PrimType.JOINT: {
                     "limit_linear_ke": "UnregisteredPhysxLimitAPI:linear",
@@ -4335,7 +4998,7 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
         builder.default_joint_cfg.limit_kd = 43.0
         builder.add_usd(
             stage,
-            schema_resolvers=[UnregisteredPhysxResolver()],
+            schema_resolvers=[SchemaResolverUnregisteredPhysx()],
             use_applied_schema_fallbacks=True,
         )
         model = builder.finalize()
@@ -4349,7 +5012,7 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
         """Keep the importer velocity limit ahead of an unregistered PhysX default."""
         from pxr import Usd
 
-        class UnregisteredPhysxResolver(usd.SchemaResolverPhysx):
+        class SchemaResolverUnregisteredPhysx(usd.SchemaResolverPhysx):
             _schema_names: ClassVar = {usd.PrimType.JOINT: {"velocity_limit": "UnregisteredPhysxJointAPI"}}
 
         stage = Usd.Stage.CreateInMemory()
@@ -4371,7 +5034,7 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
         builder.default_joint_cfg.velocity_limit = 123.0
         builder.add_usd(
             stage,
-            schema_resolvers=[UnregisteredPhysxResolver()],
+            schema_resolvers=[SchemaResolverUnregisteredPhysx()],
             use_applied_schema_fallbacks=True,
         )
         model = builder.finalize()
@@ -4442,7 +5105,10 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        self.assertFalse(any("mjc:solreflimit" in str(item.message) for item in caught))
         model = builder.finalize()
 
         joint_idx = model.joint_label.index("/Articulation/Joint")
@@ -4520,7 +5186,8 @@ def Xform "Articulation" (
         stage.GetRootLayer().ImportFromString(usd_content)
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        with self.assertWarnsRegex(DeprecationWarning, "mjc:solreflimit"):
+            builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
         self.assertIn("mujoco:solreflimit_mode", builder.custom_attributes)
         model = builder.finalize()
 
@@ -4630,7 +5297,8 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        with self.assertWarnsRegex(DeprecationWarning, "mjc:solreflimit"):
+            builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
         model = builder.finalize()
 
         joint1_idx = model.joint_label.index("/Articulation/Joint1")
@@ -5158,7 +5826,8 @@ def PhysicsRevoluteJoint "Joint2"
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        with self.assertWarnsRegex(DeprecationWarning, "mjc:gap"):
+            builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
         model = builder.finalize()
 
         shape_gap = model.shape_gap.numpy()
@@ -5219,11 +5888,12 @@ def PhysicsRevoluteJoint "Joint2"
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(
-            stage,
-            schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
-            legacy_margin_gap=True,
-        )
+        with self.assertWarnsRegex(DeprecationWarning, "mjc:gap"):
+            builder.add_usd(
+                stage,
+                schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+                legacy_margin_gap=True,
+            )
         model = builder.finalize()
 
         shape_margin = model.shape_margin.numpy()
@@ -6429,6 +7099,40 @@ def Xform "TestBody" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unset_shell_thickness_does_not_warn(self):
+        """Keep an unset shell fallback quiet when the imported thickness matches."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        collider = UsdGeom.Cube.Define(stage, "/Collider")
+        prim = collider.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+        prim.ApplyAPI("NewtonMassAPI")
+        prim.GetAttribute("newton:massModel").Set("shell")
+
+        policy_margins = []
+        for use_applied_schema_fallbacks in (False, True):
+            with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
+                builder = newton.ModelBuilder()
+                builder.default_shape_cfg.margin = 0.03
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    result = builder.add_usd(
+                        stage,
+                        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                    )
+                shape = result["path_shape_map"]["/Collider"]
+                policy_margins.append(builder.shape_margin[shape])
+                self.assertFalse(
+                    any("USD property precedence" in str(item.message) for item in caught),
+                    [str(item.message) for item in caught],
+                )
+
+        np.testing.assert_allclose(policy_margins, [0.03, 0.03])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_mass_api_parsing(self):
         """Exhaustive test of NewtonMassAPI mass/inertia combinations.
 
@@ -7350,12 +8054,13 @@ class TestImportSampleAssetsParsing(unittest.TestCase):
                             r"\(label: '/World/Articulation/Link2'\).*undefined semantics",
                             category=UserWarning,
                         )
-                    with mock.patch.object(builtins, "__import__", side_effect=track_optional_runtime_imports):
-                        builder.add_usd(
-                            asset_path,
-                            convert_mjc_equality_constraints=convert_equalities,
-                            schema_resolvers=[usd.SchemaResolverMjc()],
-                        )
+                    with self.assertWarnsRegex(DeprecationWarning, "mjc:solreflimit"):
+                        with mock.patch.object(builtins, "__import__", side_effect=track_optional_runtime_imports):
+                            builder.add_usd(
+                                asset_path,
+                                convert_mjc_equality_constraints=convert_equalities,
+                                schema_resolvers=[usd.SchemaResolverMjc()],
+                            )
                 self.assertEqual(optional_runtime_imports, [])
 
                 model = builder.finalize()
@@ -8022,6 +8727,193 @@ def Xform "Articulation" (
         # Check rolling friction
         rolling = model.shape_material_mu_rolling.numpy()[shape_idx]
         self.assertAlmostEqual(rolling, 0.08, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unbound_material_policy_changes_do_not_warn(self):
+        """Skip migration warnings for material values no shape consumes."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        class SchemaResolverLaterMaterial(usd.SchemaResolver):
+            name = "later_material"
+            mapping: ClassVar = {
+                usd.PrimType.MATERIAL: {
+                    "mu_torsional": usd.SchemaResolver.SchemaAttribute("later:torsionalFriction"),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        material = UsdShade.Material.Define(stage, "/Materials/Unused")
+        material_prim = material.GetPrim()
+        material_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(material_prim)
+        material_prim.CreateAttribute("later:torsionalFriction", Sdf.ValueTypeNames.Double).Set(0.1)
+
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                builder.add_usd(
+                    stage,
+                    schema_resolvers=[usd.SchemaResolverNewton(), SchemaResolverLaterMaterial()],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
+            self.assertFalse(any("deprecated legacy USD property precedence" in str(item.message) for item in caught))
+            self.assertEqual(builder.shape_count, 0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_shape_only_resolver_needs_no_material_mapping(self):
+        """Accept custom shape resolvers that define no material properties."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        class SchemaResolverShapeOnly(usd.SchemaResolver):
+            name = "shape_only"
+            mapping: ClassVar = {
+                usd.PrimType.SHAPE: {
+                    "hydroelastic_enabled": usd.SchemaResolver.SchemaAttribute("shape:hydroelastic"),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        collider = UsdGeom.Cube.Define(stage, "/Body/Collider")
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(
+                stage,
+                schema_resolvers=[SchemaResolverShapeOnly()],
+                use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+            )
+            self.assertEqual(builder.shape_count, 1)
+            shape = result["path_shape_map"]["/Body/Collider"]
+            self.assertEqual(builder.shape_material_mu_torsional[shape], builder.default_shape_cfg.mu_torsional)
+            self.assertEqual(builder.shape_material_mu_rolling[shape], builder.default_shape_cfg.mu_rolling)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mesh_without_sdf_masks_hydroelastic_policy_changes(self):
+        """Audit hydroelastic policy changes after mesh SDF validation."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        class SchemaResolverEarlyHydroelastic(usd.SchemaResolver):
+            name = "early_hydroelastic"
+            mapping: ClassVar = {
+                usd.PrimType.SHAPE: {
+                    "hydroelastic_enabled": usd.SchemaResolver.SchemaAttribute("physics:collisionEnabled"),
+                }
+            }
+            _schema_names: ClassVar = {
+                usd.PrimType.SHAPE: {
+                    "hydroelastic_enabled": "PhysicsCollisionAPI",
+                }
+            }
+
+        class SchemaResolverLaterHydroelastic(usd.SchemaResolver):
+            name = "later_hydroelastic"
+            mapping: ClassVar = {
+                usd.PrimType.SHAPE: {
+                    "hydroelastic_enabled": usd.SchemaResolver.SchemaAttribute("later:hydroelasticEnabled"),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/Collider")
+        mesh.CreatePointsAttr().Set([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)])
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3, 3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])
+        prim = mesh.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(prim)
+        prim.CreateAttribute("later:hydroelasticEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+
+        flags = []
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = builder.add_usd(
+                    stage,
+                    schema_resolvers=[
+                        SchemaResolverEarlyHydroelastic(),
+                        SchemaResolverLaterHydroelastic(),
+                        usd.SchemaResolverNewton(),
+                    ],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
+            shape = result["path_shape_map"]["/Body/Collider"]
+            flags.append(builder.shape_flags[shape])
+            self.assertFalse(builder.shape_flags[shape] & newton.ShapeFlags.HYDROELASTIC)
+            self.assertFalse(
+                any("deprecated legacy USD property precedence" in str(item.message) for item in caught),
+                [str(item.message) for item in caught],
+            )
+
+        self.assertEqual(flags[0], flags[1])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_plane_masks_hydroelastic_policy_changes(self):
+        """Audit hydroelastic policy changes after shape-type validation."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        class SchemaResolverEarlyHydroelastic(usd.SchemaResolver):
+            name = "early_hydroelastic"
+            mapping: ClassVar = {
+                usd.PrimType.SHAPE: {
+                    "hydroelastic_enabled": usd.SchemaResolver.SchemaAttribute("physics:collisionEnabled"),
+                }
+            }
+            _schema_names: ClassVar = {
+                usd.PrimType.SHAPE: {
+                    "hydroelastic_enabled": "PhysicsCollisionAPI",
+                }
+            }
+
+        class SchemaResolverLaterHydroelastic(usd.SchemaResolver):
+            name = "later_hydroelastic"
+            mapping: ClassVar = {
+                usd.PrimType.SHAPE: {
+                    "hydroelastic_enabled": usd.SchemaResolver.SchemaAttribute("later:hydroelasticEnabled"),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        plane = UsdGeom.Plane.Define(stage, "/Plane")
+        prim = plane.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(prim)
+        prim.CreateAttribute("later:hydroelasticEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+
+        flags = []
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = builder.add_usd(
+                    stage,
+                    schema_resolvers=[
+                        SchemaResolverEarlyHydroelastic(),
+                        SchemaResolverLaterHydroelastic(),
+                        usd.SchemaResolverNewton(),
+                    ],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
+            shape = result["path_shape_map"]["/Plane"]
+            flags.append(builder.shape_flags[shape])
+            self.assertFalse(builder.shape_flags[shape] & newton.ShapeFlags.HYDROELASTIC)
+            self.assertFalse(
+                any("deprecated legacy USD property precedence" in str(item.message) for item in caught),
+                [str(item.message) for item in caught],
+            )
+
+        self.assertEqual(flags[0], flags[1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_mesh_material_subsets_create_separate_visual_shapes(self):
@@ -10040,6 +10932,79 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.shape_gap.numpy()[shape2_idx], 0.01, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_gap_uses_importer_default_after_registered_sentinel(self):
+        """Use the importer gap after an unset registered schema fallback."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        cube.GetPrim().ApplyAPI("NewtonCollisionAPI")
+
+        for configured_gap, expected_gap in ((0.015, 0.015), (None, 0.1)):
+            for use_applied_schema_fallbacks in (False, True):
+                with self.subTest(
+                    configured_gap=configured_gap,
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                ):
+                    builder = newton.ModelBuilder()
+                    builder.default_shape_cfg.gap = configured_gap
+                    builder.rigid_gap = 0.1
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        result = builder.add_usd(
+                            stage,
+                            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                        )
+
+                    shape = result["path_shape_map"]["/cube"]
+                    self.assertAlmostEqual(builder.shape_gap[shape], expected_gap)
+                    self.assertFalse(
+                        any("schema fallbacks" in str(item.message) for item in caught),
+                        [str(item.message) for item in caught],
+                    )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_gap_future_default_precedes_compatibility_default(self):
+        """Place the future importer gap before unregistered compatibility defaults."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        cube.GetPrim().AddAppliedSchema("MjcCollisionAPI")
+
+        for configured_gap, future_gap in ((0.015, 0.015), (None, 0.1)):
+            for use_applied_schema_fallbacks in (False, True):
+                with self.subTest(
+                    configured_gap=configured_gap,
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                ):
+                    builder = newton.ModelBuilder()
+                    builder.default_shape_cfg.gap = configured_gap
+                    builder.rigid_gap = 0.1
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        result = builder.add_usd(
+                            stage,
+                            schema_resolvers=[usd.SchemaResolverMjc()],
+                            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                        )
+
+                    shape = result["path_shape_map"]["/cube"]
+                    expected_gap = future_gap if use_applied_schema_fallbacks else 0.0
+                    self.assertAlmostEqual(builder.shape_gap[shape], expected_gap)
+                    migration_warnings = [item for item in caught if "schema fallbacks" in str(item.message)]
+                    if use_applied_schema_fallbacks:
+                        self.assertFalse(migration_warnings)
+                    else:
+                        self.assertEqual(len(migration_warnings), 1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_response_parsing(self):
         """Test ke/kd/kf/ka parsed from NewtonMaterialAPI on bound material."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -10197,6 +11162,69 @@ def Xform "Articulation" (
             policy_values.append(values)
 
         self.assertEqual(policy_values[0], policy_values[1])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_material_masks_shape_policy_changes(self):
+        """Audit contact response after bound-material precedence is applied."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        class SchemaResolverShapeFallback(usd.SchemaResolver):
+            name = "shape_fallback"
+            _schema_names: ClassVar = {usd.PrimType.SHAPE: {"ke": "NewtonCollisionAPI"}}
+            mapping: ClassVar = {
+                usd.PrimType.SHAPE: {
+                    "ke": usd.SchemaResolver.SchemaAttribute("newton:contactMargin"),
+                }
+            }
+
+        class SchemaResolverLaterShape(usd.SchemaResolver):
+            name = "later_shape"
+            mapping: ClassVar = {
+                usd.PrimType.SHAPE: {
+                    "ke": usd.SchemaResolver.SchemaAttribute("later:ke"),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        material = UsdShade.Material.Define(stage, "/Materials/Contact")
+        material_prim = material.GetPrim()
+        material_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(material_prim)
+        material_prim.GetAttribute("newton:contactStiffness").Set(7.0)
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        collider = UsdGeom.Cube.Define(stage, "/Body/Collider")
+        collider_prim = collider.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_prim)
+        collider_prim.ApplyAPI("NewtonCollisionAPI")
+        collider_prim.CreateAttribute("later:ke", Sdf.ValueTypeNames.Double).Set(3.0)
+        UsdShade.MaterialBindingAPI.Apply(collider_prim).Bind(material, "physics")
+
+        policy_values = []
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                result = builder.add_usd(
+                    stage,
+                    schema_resolvers=[
+                        SchemaResolverShapeFallback(),
+                        SchemaResolverLaterShape(),
+                        usd.SchemaResolverNewton(),
+                    ],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
+            self.assertFalse(any("deprecated legacy USD property precedence" in str(item.message) for item in caught))
+            model = builder.finalize()
+            shape_index = result["path_shape_map"]["/Body/Collider"]
+            policy_values.append(float(model.shape_material_ke.numpy()[shape_index]))
+
+        self.assertEqual(policy_values, [7.0, 7.0])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_response_legacy_shape_fallback(self):
@@ -10900,6 +11928,7 @@ def Xform "Articulation" (
             load_sites=False,
             schema_resolvers=[usd.SchemaResolverMjc()],
             convert_mjc_equality_constraints=False,
+            use_applied_schema_fallbacks=True,
         )
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.joint_count, 2)
@@ -11047,6 +12076,7 @@ def Xform "Articulation" (
             load_sites=False,
             schema_resolvers=[usd.SchemaResolverMjc()],
             convert_mjc_equality_constraints=False,
+            use_applied_schema_fallbacks=True,
         )
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.joint_count, 2)
@@ -11461,6 +12491,45 @@ def Xform "Articulation" (
         self.assertAlmostEqual(result["physics_dt"], 0.001, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_timestep_audits_physics_dt(self):
+        """Audit timesteps after converting their frequency to physics_dt."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        class SchemaResolverLaterTimestep(usd.SchemaResolver):
+            name = "later_timestep"
+            mapping: ClassVar = {
+                usd.PrimType.SCENE: {
+                    "time_steps_per_second": usd.SchemaResolver.SchemaAttribute("later:tps"),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        scene_prim = scene.GetPrim()
+        scene_prim.ApplyAPI("NewtonSceneAPI")
+        scene_prim.CreateAttribute("later:tps", Sdf.ValueTypeNames.Int).Set(0)
+
+        body = UsdGeom.Cube.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+
+        policy_values = []
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                result = builder.add_usd(
+                    stage,
+                    schema_resolvers=[usd.SchemaResolverNewton(), SchemaResolverLaterTimestep()],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
+            self.assertFalse(any("deprecated legacy USD property precedence" in str(item.message) for item in caught))
+            policy_values.append(result["physics_dt"])
+
+        self.assertEqual(policy_values, [0.001, 0.001])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_max_solver_iterations_parsing(self):
         """Test that max_solver_iterations is parsed correctly from USD scene."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -11486,6 +12555,31 @@ def Xform "Articulation" (
         result = builder.add_usd(stage)
         # max_solver_iterations should be 200
         self.assertEqual(result["max_solver_iterations"], 200)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_max_solver_iterations_uses_importer_default(self):
+        """Keep the unspecified iteration limit stable across fallback policies."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        policy_values = []
+        for use_applied_schema_fallbacks in (False, True):
+            with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    result = newton.ModelBuilder().add_usd(
+                        stage,
+                        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                    )
+                policy_values.append(result["max_solver_iterations"])
+                self.assertFalse(
+                    any("USD property precedence" in str(item.message) for item in caught),
+                    [str(item.message) for item in caught],
+                )
+
+        self.assertEqual(policy_values, [-1, -1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mesh_max_hull_vertices_parsing(self):
@@ -11554,7 +12648,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_schema_hull_sentinel_uses_importer_limit(self):
-        """Interpret schema hull sentinels without changing explicit overrides."""
+        """Use importer limits for fallback hull sentinels and preserve authored limits."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -11598,6 +12692,13 @@ def Xform "Articulation" (
         authored_unlimited_builder = newton.ModelBuilder()
         authored_unlimited_builder.add_usd(stage, use_applied_schema_fallbacks=True)
         self.assertEqual(authored_unlimited_builder.shape_source[0].maxhullvert, 0)
+
+        mesh_prim.GetAttribute("newton:maxHullVertices").Set(-1)
+        for policy_args in ({}, {"use_applied_schema_fallbacks": True}):
+            with self.subTest(authored_value=-1, policy_args=policy_args):
+                exact_hull_builder = newton.ModelBuilder()
+                exact_hull_builder.add_usd(stage, **policy_args)
+                self.assertEqual(exact_hull_builder.shape_source[0].maxhullvert, -1)
 
 
 class TestImportSampleAssetsComposition(unittest.TestCase):

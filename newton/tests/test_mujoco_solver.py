@@ -7088,7 +7088,11 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverMjc()],
+            use_applied_schema_fallbacks=True,
+        )
         model = builder.finalize()
 
         assert hasattr(model, "mujoco")

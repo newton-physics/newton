@@ -51,7 +51,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
-from ..usd.schema_resolver import SchemaResolver, _default_when_omitted
+from ..usd.schema_resolver import SchemaResolver, _track_omitted_import_defaults
 from ..utils import compute_world_offsets
 from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency, split_mesh_components
@@ -3337,6 +3337,12 @@ class ModelBuilder:
             override_root_xform=override_root_xform,
         )
 
+    @_track_omitted_import_defaults(
+        joint_drive_gains_scaling=1.0,
+        collapse_fixed_joints=False,
+        enable_self_collisions=True,
+        mesh_maxhullvert=Mesh.MAX_HULL_VERTICES,
+    )
     def add_usd(
         self,
         source: str | UsdStage,
@@ -3347,11 +3353,11 @@ class ModelBuilder:
         parent_body: int = -1,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
-        joint_drive_gains_scaling: float = _default_when_omitted(1.0),
+        joint_drive_gains_scaling: float = 1.0,
         verbose: bool = False,
         ignore_paths: list[str] | None = None,
-        collapse_fixed_joints: bool = _default_when_omitted(False),
-        enable_self_collisions: bool = _default_when_omitted(True),
+        collapse_fixed_joints: bool = False,
+        enable_self_collisions: bool = True,
         apply_up_axis_from_stage: bool = False,
         root_path: str = "/",
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
@@ -3363,7 +3369,7 @@ class ModelBuilder:
         hide_collision_shapes: bool = False,
         force_show_colliders: bool = False,
         parse_mujoco_options: bool = True,
-        mesh_maxhullvert: int | None = _default_when_omitted(Mesh.MAX_HULL_VERTICES),
+        mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         use_applied_schema_fallbacks: bool = False,
         force_position_velocity_actuation: bool = False,
@@ -3513,13 +3519,18 @@ class ModelBuilder:
 
                 .. experimental::
 
-                    The ``schema_resolvers`` and ``use_applied_schema_fallbacks``
-                    arguments may change without prior notice.
-            use_applied_schema_fallbacks: If True, use registered schema fallbacks
-                before importer defaults. False retains deprecated legacy precedence
-                and warns when the effective imported value or source would change.
-                Unregistered resolver defaults remain compatibility defaults after importer
-                defaults.
+                    The ``schema_resolvers`` argument may change without prior notice.
+            use_applied_schema_fallbacks: If True, resolve each ordered resolver's
+                authored value and registered schema fallback before advancing to the
+                next resolver, then use importer and unregistered compatibility defaults.
+                False retains deprecated legacy precedence and warns when future
+                precedence would change the interpreted property or its source-dependent
+                meaning.
+
+                .. experimental::
+
+                    The ``use_applied_schema_fallbacks`` argument may change without
+                    prior notice.
 
                 .. deprecated:: 1.6
                     Passing False selects deprecated legacy fallback precedence. Pass
