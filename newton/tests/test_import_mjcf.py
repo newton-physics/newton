@@ -1733,6 +1733,13 @@ f 4 5 8
                             atol=1e-11,
                             rtol=1e-6,
                         )
+                    else:
+                        np.testing.assert_allclose(
+                            inertia,
+                            np.diag([8.6e-8, 8.6e-8, 8.6e-8]),
+                            atol=1e-11,
+                            rtol=1e-6,
+                        )
 
     def test_zero_mass_mesh_geom_no_warning(self):
         """Regression test: mass='0' on mesh geoms must not emit a warning.
@@ -3187,6 +3194,195 @@ f 4 5 8
             self.assertNotAlmostEqual(masses["shell"], masses["exact"], places=6)
             self.assertAlmostEqual(masses["default legacy"], masses["legacy"], places=9)
             self.assertAlmostEqual(masses["inherited shell"], masses["shell"], places=9)
+
+    def test_mesh_inertia_skips_noncontributing_exact_geoms(self):
+        """Skip exact mesh integration when a geom cannot contribute inertia."""
+        mesh_content = """v 0 0 0
+v 1 0 0
+v 0 1 0
+f 1 2 3
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mesh_path = os.path.join(temp_dir, "triangle.obj")
+            with open(mesh_path, "w", encoding="utf-8") as mesh_file:
+                mesh_file.write(mesh_content)
+            mjcf = f"""
+<mujoco>
+  <compiler inertiagrouprange="0 0"/>
+  <asset><mesh name="triangle" file="{mesh_path}" inertia="exact"/></asset>
+  <worldbody>
+    <geom type="mesh" mesh="triangle"/>
+    <body name="explicit">
+      <freejoint/>
+      <inertial mass="1" pos="0 0 0" diaginertia="0.1 0.1 0.1"/>
+      <geom type="mesh" mesh="triangle"/>
+    </body>
+    <body name="massless">
+      <freejoint/>
+      <geom type="mesh" mesh="triangle" mass="0"/>
+    </body>
+    <body name="excluded">
+      <freejoint/>
+      <geom type="mesh" mesh="triangle" group="1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+
+            self.assertEqual(builder.shape_count, 4)
+            self.assertAlmostEqual(builder.body_mass[0], 1.0)
+            self.assertAlmostEqual(builder.body_mass[1], 0.0)
+            self.assertAlmostEqual(builder.body_mass[2], 0.0)
+
+    def test_planar_legacy_mesh_imports_with_zero_mass(self):
+        """Preserve permissive imports for planar legacy mesh geoms."""
+        mesh_content = """v 0 0 0
+v 1 0 0
+v 0 1 0
+f 1 2 3
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mesh_path = os.path.join(temp_dir, "triangle.obj")
+            with open(mesh_path, "w", encoding="utf-8") as mesh_file:
+                mesh_file.write(mesh_content)
+            mjcf = f"""
+<mujoco>
+  <asset><mesh name="triangle" file="{mesh_path}" inertia="legacy"/></asset>
+  <worldbody>
+    <body name="planar"><freejoint/><geom type="mesh" mesh="triangle" density="2"/></body>
+  </worldbody>
+</mujoco>
+"""
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "importing with zero mass properties"):
+                builder.add_mjcf(mjcf)
+
+            self.assertEqual(builder.shape_count, 1)
+            self.assertAlmostEqual(builder.body_mass[0], 0.0)
+
+    def test_mesh_inertia_is_cached_per_asset_configuration(self):
+        """Compute shared mesh mass properties once per asset configuration."""
+        mesh_content = """v 0 0 0
+v 1 0 0
+v 0 1 0
+v 0 0 1
+f 1 3 2
+f 1 2 4
+f 1 4 3
+f 2 3 4
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mesh_path = os.path.join(temp_dir, "tetrahedron.obj")
+            with open(mesh_path, "w", encoding="utf-8") as mesh_file:
+                mesh_file.write(mesh_content)
+            mjcf = f"""
+<mujoco>
+  <asset><mesh name="tetrahedron" file="{mesh_path}" inertia="exact"/></asset>
+  <worldbody>
+    <body name="first"><freejoint/><geom type="mesh" mesh="tetrahedron"/></body>
+    <body name="second"><freejoint/><geom type="mesh" mesh="tetrahedron"/></body>
+  </worldbody>
+</mujoco>
+"""
+            importer = sys.modules[parse_mjcf.__module__]
+            with mock.patch.object(
+                importer,
+                "_compute_mjcf_mesh_inertia",
+                wraps=importer._compute_mjcf_mesh_inertia,
+            ) as compute_inertia:
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+
+            self.assertEqual(compute_inertia.call_count, 1)
+
+    def test_exact_mesh_inertia_with_negative_scale(self):
+        """Match native exact inertia for a mirrored mesh asset."""
+        import mujoco
+        import trimesh
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mesh_path = os.path.join(temp_dir, "box.obj")
+            trimesh.creation.box(extents=(1.0, 0.6, 0.4)).export(mesh_path)
+            mjcf = f"""
+<mujoco>
+  <asset><mesh name="box" file="{mesh_path}" inertia="exact" scale="-1 1 1"/></asset>
+  <worldbody><body name="box"><freejoint/><geom type="mesh" mesh="box" density="2.3"/></body></worldbody>
+</mujoco>
+"""
+            native_model = mujoco.MjModel.from_xml_string(mjcf)
+            inertia_rotation = np.empty(9)
+            mujoco.mju_quat2Mat(inertia_rotation, native_model.body_iquat[1])
+            inertia_rotation = inertia_rotation.reshape(3, 3)
+            native_inertia = inertia_rotation @ np.diag(native_model.body_inertia[1]) @ inertia_rotation.T
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+
+            self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1], places=6)
+            np.testing.assert_allclose(builder.body_com[0], native_model.body_ipos[1], atol=1e-6)
+            np.testing.assert_allclose(
+                np.asarray(builder.body_inertia[0]).reshape(3, 3),
+                native_inertia,
+                atol=1e-6,
+            )
+
+    def test_exact_mesh_inertia_rejects_inconsistent_orientation(self):
+        """Reject exact inertia when adjacent mesh faces have the same winding."""
+        import mujoco
+
+        mjcf = """
+<mujoco>
+  <asset>
+    <mesh name="bad" inertia="exact"
+          vertex="0 0 0 1 0 0 0 1 0 0 0 1"
+          face="0 2 1 0 3 1 0 3 2 1 2 3"/>
+  </asset>
+  <worldbody><body name="bad"><freejoint/><geom type="mesh" mesh="bad"/></body></worldbody>
+</mujoco>
+"""
+        with self.assertRaisesRegex(ValueError, "inconsistent orientation"):
+            mujoco.MjModel.from_xml_string(mjcf)
+
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "inconsistent orientation"):
+            builder.add_mjcf(mjcf)
+
+    def test_limited_convex_mesh_inertia_precedes_scaling(self):
+        """Match native limited convex inertia under nonuniform mesh scaling."""
+        import mujoco
+        import trimesh
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mesh_path = os.path.join(temp_dir, "sphere.obj")
+            trimesh.creation.icosphere(subdivisions=2, radius=1.0).export(mesh_path)
+            mjcf = f"""
+<mujoco>
+  <asset>
+    <mesh name="sphere" file="{mesh_path}" inertia="convex" maxhullvert="12" scale="2 0.5 1.5"/>
+  </asset>
+  <worldbody>
+    <body name="sphere"><freejoint/><geom type="mesh" mesh="sphere" density="2.3"/></body>
+  </worldbody>
+</mujoco>
+"""
+            native_model = mujoco.MjModel.from_xml_string(mjcf)
+            inertia_rotation = np.empty(9)
+            mujoco.mju_quat2Mat(inertia_rotation, native_model.body_iquat[1])
+            inertia_rotation = inertia_rotation.reshape(3, 3)
+            native_inertia = inertia_rotation @ np.diag(native_model.body_inertia[1]) @ inertia_rotation.T
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+
+            self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1], places=6)
+            np.testing.assert_allclose(builder.body_com[0], native_model.body_ipos[1], atol=1e-6)
+            np.testing.assert_allclose(
+                np.asarray(builder.body_inertia[0]).reshape(3, 3),
+                native_inertia,
+                atol=1e-6,
+            )
 
     def test_compiler_inertiagrouprange(self):
         """Test that only geom groups in the compiler range contribute inertia."""

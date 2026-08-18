@@ -854,9 +854,9 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
     # General (full 3D) case.
     qhull_options = "Qt"
     if maxhullvert > 0:
-        # qhull "TA" actually means "number of vertices added after the initial simplex"
-        # from mujoco's user_mesh.cc
-        qhull_options += f" TA{maxhullvert - 4}"
+        # MuJoCo pairs furthest-point processing (Q9) with a cap on vertices
+        # added after Qhull's initial simplex (TA).
+        qhull_options += f" Q9 TA{maxhullvert - 4}"
     try:
         hull = ConvexHull(vertices, qhull_options=qhull_options)
     except QhullError:

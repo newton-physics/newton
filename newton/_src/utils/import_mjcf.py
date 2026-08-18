@@ -75,6 +75,9 @@ def _compute_mjcf_mesh_inertia(
     meshes: list[Mesh],
     mode: str,
     maxhullvert: int,
+    *,
+    convex_meshes: list[Mesh] | None = None,
+    scaling: np.ndarray | None = None,
 ) -> tuple[float, wp.vec3, wp.mat33]:
     """Compute unit-density mesh mass properties using MuJoCo's algorithms."""
 
@@ -95,29 +98,63 @@ def _compute_mjcf_mesh_inertia(
         )
         return triangles, centers, areas, normals
 
-    vertices = []
-    faces = []
-    vertex_offset = 0
-    for mesh in meshes:
-        mesh_vertices = np.asarray(mesh.vertices, dtype=np.float64)
-        mesh_faces = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
-        vertices.append(mesh_vertices)
-        faces.append(mesh_faces + vertex_offset)
-        vertex_offset += len(mesh_vertices)
+    def _combine_meshes(source_meshes: list[Mesh]) -> tuple[np.ndarray, np.ndarray]:
+        vertices = []
+        faces = []
+        vertex_offset = 0
+        for mesh in source_meshes:
+            mesh_vertices = np.asarray(mesh.vertices, dtype=np.float64)
+            mesh_faces = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
+            vertices.append(mesh_vertices)
+            faces.append(mesh_faces + vertex_offset)
+            vertex_offset += len(mesh_vertices)
+        return np.concatenate(vertices), np.concatenate(faces)
 
-    vertices = np.concatenate(vertices)
-    faces = np.concatenate(faces)
+    def _validate_exact_orientation(mesh_vertices: np.ndarray, mesh_faces: np.ndarray) -> None:
+        vertex_ids = {}
+        welded_indices = np.empty(len(mesh_vertices), dtype=np.int32)
+        for vertex_index, vertex in enumerate(mesh_vertices):
+            welded_indices[vertex_index] = vertex_ids.setdefault(tuple(vertex), len(vertex_ids))
+
+        directed_edges = set()
+        for face in welded_indices[mesh_faces]:
+            for start, end in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+                edge = (int(start), int(end))
+                if edge in directed_edges:
+                    raise ValueError(
+                        "MJCF mesh faces have inconsistent orientation; "
+                        f"check faces containing vertices {start} and {end}"
+                    )
+                directed_edges.add(edge)
+
+    def _zero_mass_properties(message: str) -> tuple[float, wp.vec3, wp.mat33]:
+        if mode == "exact":
+            raise ValueError(message)
+        warnings.warn(f"{message}; importing with zero mass properties", stacklevel=2)
+        return 0.0, wp.vec3(), wp.mat33()
+
+    vertices, faces = _combine_meshes(meshes)
+    left_handed = scaling is not None and np.prod(scaling) < 0.0
+    if mode == "exact":
+        _validate_exact_orientation(vertices, faces)
+    if left_handed:
+        faces = faces[:, [0, 2, 1]]
 
     _, centers, areas, _ = _triangle_metrics(vertices, faces)
     total_area = np.sum(areas)
     if total_area <= 0.0:
-        raise ValueError("MJCF mesh surface area is too small to compute inertia")
+        return _zero_mass_properties("MJCF mesh surface area is too small to compute inertia")
     face_centroid = np.sum(areas[:, None] * centers, axis=0) / total_area
 
     if mode == "convex":
-        inertia_vertices, inertia_faces = remesh_convex_hull(vertices, maxhullvert=maxhullvert)
+        hull_source_vertices, _ = _combine_meshes(convex_meshes if convex_meshes is not None else meshes)
+        inertia_vertices, inertia_faces = remesh_convex_hull(hull_source_vertices, maxhullvert=maxhullvert)
         inertia_vertices = np.asarray(inertia_vertices, dtype=np.float64)
         inertia_faces = np.asarray(inertia_faces, dtype=np.int32).reshape(-1, 3)
+        if scaling is not None:
+            inertia_vertices *= scaling
+        if left_handed:
+            inertia_faces = inertia_faces[:, [0, 2, 1]]
     else:
         inertia_vertices = vertices
         inertia_faces = faces
@@ -134,7 +171,9 @@ def _compute_mjcf_mesh_inertia(
     total_measure = np.sum(weights)
     if total_measure <= 0.0:
         qualifier = "negative" if total_measure < 0.0 else "too small"
-        raise ValueError(f"MJCF mesh volume is {qualifier}; check triangle orientation or use inertia='shell'")
+        return _zero_mass_properties(
+            f"MJCF mesh volume is {qualifier}; check triangle orientation or use inertia='shell'"
+        )
     com = np.sum(weights[:, None] * (0.75 * centers + 0.25 * face_centroid), axis=0) / total_measure
 
     centered_triangles, centers, areas, normals = _triangle_metrics(inertia_vertices - com, inertia_faces)
@@ -1349,29 +1388,50 @@ def parse_mjcf(
                     override_texture=texture,
                 )
                 mass_mesh = m_meshes[0]
-                inertia_mode = mesh_assets[geom_attrib["mesh"]]["inertia"]
-                mesh_mass, mesh_com, mesh_inertia = _compute_mjcf_mesh_inertia(
-                    m_meshes,
-                    inertia_mode,
-                    maxhullvert,
+                inertia_mode = mesh_asset["inertia"]
+                contributes_inertia = (
+                    shape_cfg.is_solid
+                    and link >= 0
+                    and (shape_cfg.density > 0.0 or (geom_mass_explicit is not None and geom_mass_explicit > 0.0))
                 )
-                mass_mesh.mass = mesh_mass
-                mass_mesh.com = mesh_com
-                mass_mesh.inertia = mesh_inertia
-                mass_mesh.has_inertia = True
-                for m_mesh in m_meshes:
-                    m_mesh.is_solid = shape_cfg.is_solid
+                if contributes_inertia:
+                    cache_key = (tuple(float(value) for value in scaling), inertia_mode, maxhullvert)
+                    inertia_cache = mesh_asset.setdefault("_inertia_cache", {})
+                    if cache_key not in inertia_cache:
+                        convex_meshes = None
+                        if inertia_mode == "convex":
+                            convex_meshes = load_mesh_asset(
+                                geom_attrib["mesh"],
+                                np.ones(3),
+                                maxhullvert,
+                            )
+                        inertia_cache[cache_key] = _compute_mjcf_mesh_inertia(
+                            m_meshes,
+                            inertia_mode,
+                            maxhullvert,
+                            convex_meshes=convex_meshes,
+                            scaling=scaling,
+                        )
+                    mesh_mass, mesh_com, mesh_inertia = inertia_cache[cache_key]
+                    mass_mesh.mass = mesh_mass
+                    mass_mesh.com = mesh_com
+                    mass_mesh.inertia = mesh_inertia
+                    mass_mesh.has_inertia = True
 
                 explicit_mesh_density = None
                 if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
-                    unit_density_mass = compute_inertia_shape(
-                        GeoType.MESH,
-                        wp.vec3(1.0),
-                        mass_mesh,
-                        density=1.0,
-                        is_solid=shape_cfg.is_solid,
-                        thickness=shape_cfg.margin,
-                    )[0]
+                    unit_density_meshes = [mass_mesh] if shape_cfg.is_solid else m_meshes
+                    unit_density_mass = sum(
+                        compute_inertia_shape(
+                            GeoType.MESH,
+                            wp.vec3(1.0),
+                            m_mesh,
+                            density=1.0,
+                            is_solid=shape_cfg.is_solid,
+                            thickness=shape_cfg.margin,
+                        )[0]
+                        for m_mesh in unit_density_meshes
+                    )
                     if unit_density_mass > 0.0:
                         explicit_mesh_density = geom_mass_explicit / unit_density_mass
                         explicit_mass_handled = True
@@ -1388,7 +1448,7 @@ def parse_mjcf(
                     mesh_cfg.sdf_narrow_band_range = (-0.1, 0.1)
                     if explicit_mesh_density is not None:
                         mesh_cfg.density = explicit_mesh_density
-                    if mesh_index > 0:
+                    if shape_cfg.is_solid and mesh_index > 0:
                         mesh_cfg.density = 0.0
                     mesh_shape_kwargs["cfg"] = mesh_cfg
                     s = shape_builder.add_shape_mesh(
