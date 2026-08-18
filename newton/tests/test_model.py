@@ -2154,14 +2154,13 @@ class TestModelJoints(unittest.TestCase):
         builder = ModelBuilder()
         parent = builder.add_link(xform=parent_body_xform)
         child = builder.add_link(xform=child_body_xform)
-        root_joint = builder.add_joint_fixed(parent=-1, child=parent, parent_xform=parent_body_xform)
         joint = builder.add_joint_free(
             parent=parent,
             child=child,
             parent_xform=parent_xform,
             child_xform=child_xform,
         )
-        builder.add_articulation([root_joint, joint])
+        builder.add_articulation([joint])
 
         parent_anchor_world = parent_body_xform * parent_xform
         expected_joint_q = wp.transform_inverse(parent_anchor_world) * child_body_xform * child_xform
@@ -3150,7 +3149,7 @@ class TestModelJoints(unittest.TestCase):
         self.assertIn("pendulum_articulation", error_msg)
         self.assertIn("mount_joint", error_msg)
         self.assertIn("base", error_msg)
-        self.assertIn("same articulation", error_msg)
+        self.assertIn("cannot be connected", error_msg)
 
     def test_joint_world_validation(self):
         """Test that joints validate parent/child bodies belong to current world"""
@@ -3528,10 +3527,9 @@ class TestModelWorld(unittest.TestCase):
             b1 = world_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=10.0)
             b2 = world_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), mass=5.0)
             b3 = world_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), mass=2.5)
-            j0 = world_builder.add_joint_fixed(parent=-1, child=b1)
             j1 = world_builder.add_joint_revolute(parent=b1, child=b2, axis=(0, 1, 0))
             j2 = world_builder.add_joint_revolute(parent=b2, child=b3, axis=(0, 1, 0))
-            world_builder.add_articulation([j0, j1, j2])
+            world_builder.add_articulation([j1, j2])
             world_builder.add_shape_sphere(
                 body=b1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.1
             )
@@ -3576,7 +3574,7 @@ class TestModelWorld(unittest.TestCase):
         self.assertEqual(model.particle_count, 9)  # 3 global + 2*3 = 9
         self.assertEqual(model.body_count, 12)  # 3 global + 3*3 = 12
         self.assertEqual(model.shape_count, 12)  # 3 global + 3*3 = 12
-        self.assertEqual(model.joint_count, 12)  # 3 global + 3*3 = 12
+        self.assertEqual(model.joint_count, 9)  # 3 global + 2*3 = 9
         self.assertEqual(model.articulation_count, 6)  # 3 global + 1*3 = 6
 
         # Verify group assignments
@@ -3619,11 +3617,14 @@ class TestModelWorld(unittest.TestCase):
 
         if len(joint_world) > 0:
             self.assertEqual(joint_world[0], -1)  # ground body's free joint
-            self.assertTrue(np.all(joint_world[1:4] == 0))
-            self.assertTrue(np.all(joint_world[4:7] == 1))
-            self.assertTrue(np.all(joint_world[7:10] == 2))
-            self.assertEqual(joint_world[10], -1)  # floor body's free joint
-            self.assertEqual(joint_world[11], -1)  # ball body's free joint
+            self.assertEqual(joint_world[1], 0)
+            self.assertEqual(joint_world[2], 0)
+            self.assertEqual(joint_world[3], 1)
+            self.assertEqual(joint_world[4], 1)
+            self.assertEqual(joint_world[5], 2)
+            self.assertEqual(joint_world[6], 2)
+            self.assertEqual(joint_world[7], -1)  # floor body's free joint
+            self.assertEqual(joint_world[8], -1)  # ball body's free joint
 
         if len(articulation_world) > 0:
             self.assertEqual(articulation_world[0], -1)  # ground body's articulation
@@ -3695,11 +3696,11 @@ class TestModelWorld(unittest.TestCase):
         self.assertTrue(np.array_equal(particle_world_start, np.array([1, 3, 5, 7, 9])))
         self.assertTrue(np.array_equal(body_world_start, np.array([1, 4, 7, 10, 12])))
         self.assertTrue(np.array_equal(shape_world_start, np.array([1, 4, 7, 10, 12])))
-        self.assertTrue(np.array_equal(joint_world_start, np.array([1, 4, 7, 10, 12])))
+        self.assertTrue(np.array_equal(joint_world_start, np.array([1, 3, 5, 7, 9])))
         self.assertTrue(np.array_equal(articulation_world_start, np.array([1, 2, 3, 4, 6])))
         self.assertTrue(np.array_equal(joint_dof_world_start, np.array([6, 8, 10, 12, 24])))
         self.assertTrue(np.array_equal(joint_coord_world_start, np.array([7, 9, 11, 13, 27])))
-        self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 16, 32, 48, 48])))
+        self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 30, 30])))
 
     def test_world_count_tracking(self):
         """Test that world_count is properly tracked when using add_world."""

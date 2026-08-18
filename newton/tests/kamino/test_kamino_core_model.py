@@ -503,8 +503,8 @@ class TestModelConversions(unittest.TestCase):
         Test per-world base assignment when articulation roots are not unary free joints.
 
         A free-rooted articulation following a fixed-rooted one still provides the
-        world's floating base; a world whose articulations are fixed-rooted or
-        rooted by a free joint with a body parent gets no base.
+        world's floating base; a world whose only articulation is fixed-rooted,
+        including one with a body-parented free joint, gets no base.
         """
 
         def build_model(free_root: str | None) -> Model:
@@ -513,13 +513,18 @@ class TestModelConversions(unittest.TestCase):
             body_fixed = builder.add_link()
             builder.add_shape_box(body_fixed)
             joint_fixed = builder.add_joint_fixed(parent=-1, child=body_fixed)
-            builder.add_articulation([joint_fixed])
             if free_root is not None:
                 body_free = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 2.0), wp.quat_identity()))
                 builder.add_shape_box(body_free)
                 parent = -1 if free_root == "world" else body_fixed
                 joint_free = builder.add_joint_free(child=body_free, parent=parent)
-                builder.add_articulation([joint_free])
+                if parent == -1:
+                    builder.add_articulation([joint_fixed])
+                    builder.add_articulation([joint_free])
+                else:
+                    builder.add_articulation([joint_fixed, joint_free])
+            else:
+                builder.add_articulation([joint_fixed])
             return builder.finalize(device=self.default_device)
 
         model_kamino = ModelKamino.from_newton(build_model(free_root="world"))

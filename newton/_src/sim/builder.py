@@ -10419,11 +10419,10 @@ class ModelBuilder:
                 )
 
     def _validate_joints(self):
-        """Validate articulation rootedness and joint membership.
+        """Validate articulation topology and joint membership.
 
-        Every non-world parent of an articulated joint must be the child of another
-        joint in the same articulation. This keeps each articulation rooted at the
-        world and prevents joints from connecting separate articulations.
+        A joint in one articulation cannot have a parent body that belongs to a
+        different articulation. Connected joints must use the same articulation.
 
         Loop-closing joints are allowed when their child is already reachable through
         an articulation. Standalone world-root joints (``parent == -1``) are also
@@ -10435,9 +10434,12 @@ class ModelBuilder:
         """
         if self.joint_count > 0:
             articulation_children = {}
+            body_articulations = {}
             for joint_idx, articulation_idx in enumerate(self.joint_articulation):
                 if articulation_idx >= 0:
-                    articulation_children.setdefault(articulation_idx, set()).add(self.joint_child[joint_idx])
+                    child = self.joint_child[joint_idx]
+                    articulation_children.setdefault(articulation_idx, set()).add(child)
+                    body_articulations.setdefault(child, set()).add(articulation_idx)
 
             for joint_idx, articulation_idx in enumerate(self.joint_articulation):
                 if articulation_idx < 0:
@@ -10451,14 +10453,20 @@ class ModelBuilder:
                 if parent < -1 or parent >= self.body_count:
                     continue
 
+                parent_articulations = body_articulations.get(parent)
+                if not parent_articulations:
+                    continue
+
+                parent_articulation_idx = min(parent_articulations)
                 articulation_label = self.articulation_label[articulation_idx]
+                parent_articulation_label = self.articulation_label[parent_articulation_idx]
                 joint_label = self.joint_label[joint_idx]
                 parent_label = self.body_label[parent]
                 raise ValueError(
-                    f"Articulation {articulation_idx} ('{articulation_label}') is not rooted at the world: "
-                    f"joint {joint_idx} ('{joint_label}') has parent body {parent} ('{parent_label}') outside the "
-                    "same articulation. Articulations cannot be connected through joints. Add all connected joints "
-                    "to the same articulation."
+                    f"Joint {joint_idx} ('{joint_label}') in articulation {articulation_idx} "
+                    f"('{articulation_label}') has parent body {parent} ('{parent_label}') in articulation "
+                    f"{parent_articulation_idx} ('{parent_articulation_label}'). Articulations cannot be connected "
+                    "through joints. Add all connected joints to the same articulation."
                 )
 
             # Find all bodies reachable via articulated joints.
@@ -11151,7 +11159,7 @@ class ModelBuilder:
                 you are confident the model is valid. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
             skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
-                articulations must be rooted at the world, and non-root joints must belong to an articulation or
+                joints cannot connect separate articulations, and non-root joints must belong to an articulation or
                 close a loop; standalone world-root joints are allowed.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,

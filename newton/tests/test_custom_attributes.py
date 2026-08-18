@@ -31,7 +31,7 @@ class TestCustomAttributes(unittest.TestCase):
         """Set up test fixtures."""
         self.device = wp.get_device()
 
-    def _add_test_robot(self, builder: ModelBuilder) -> dict[str, int]:
+    def _add_test_robot(self, builder: ModelBuilder, add_articulation: bool = True) -> dict[str, int]:
         """Build a simple 2-bar linkage robot without custom attributes."""
         base = builder.add_link(xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()), mass=1.0)
         builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
@@ -58,8 +58,8 @@ class TestCustomAttributes(unittest.TestCase):
             axis=[0.0, 1.0, 0.0],
         )
 
-        # Add articulation for the joints
-        builder.add_articulation([joint1, joint2])
+        if add_articulation:
+            builder.add_articulation([joint1, joint2])
 
         return {"base": base, "link1": link1, "link2": link2, "joint1": joint1, "joint2": joint2}
 
@@ -339,7 +339,7 @@ class TestCustomAttributes(unittest.TestCase):
             )
         )
 
-        robot_entities = self._add_test_robot(builder)
+        robot_entities = self._add_test_robot(builder, add_articulation=False)
 
         body = builder.add_link(mass=1.0)
         joint3 = builder.add_joint_revolute(
@@ -353,7 +353,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_int_coord": [12],
             },
         )
-        builder.add_articulation([joint3])
+        builder.add_articulation([robot_entities["joint1"], robot_entities["joint2"], joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -395,7 +395,7 @@ class TestCustomAttributes(unittest.TestCase):
             )
         )
 
-        robot_entities = self._add_test_robot(builder)
+        robot_entities = self._add_test_robot(builder, add_articulation=False)
 
         body = builder.add_link(mass=1.0)
         joint3 = builder.add_joint_revolute(
@@ -407,7 +407,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_int_cts": [1, 2, 3, 4, 5],
             },
         )
-        builder.add_articulation([joint3])
+        builder.add_articulation([robot_entities["joint1"], robot_entities["joint2"], joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -442,7 +442,7 @@ class TestCustomAttributes(unittest.TestCase):
             )
         )
 
-        robot_entities = self._add_test_robot(builder)
+        robot_entities = self._add_test_robot(builder, add_articulation=False)
         cfg = ModelBuilder.JointDofConfig
 
         body = builder.add_link(mass=1.0)
@@ -456,7 +456,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_int_coord": [100, 200, 300],
             },
         )
-        builder.add_articulation([joint3])
+        builder.add_articulation([robot_entities["joint1"], robot_entities["joint2"], joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -494,7 +494,7 @@ class TestCustomAttributes(unittest.TestCase):
             )
         )
 
-        robot_entities = self._add_test_robot(builder)
+        robot_entities = self._add_test_robot(builder, add_articulation=False)
         cfg = ModelBuilder.JointDofConfig
 
         body = builder.add_link(mass=1.0)
@@ -508,7 +508,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_int_cts": [1, 2, 3],
             },
         )
-        builder.add_articulation([joint3])
+        builder.add_articulation([robot_entities["joint1"], robot_entities["joint2"], joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -550,7 +550,7 @@ class TestCustomAttributes(unittest.TestCase):
             )
         )
 
-        robot_entities = self._add_test_robot(builder)
+        robot_entities = self._add_test_robot(builder, add_articulation=False)
         cfg = ModelBuilder.JointDofConfig
 
         body = builder.add_link(mass=1.0)
@@ -565,7 +565,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_vec3_cts": [[0.01, 0.02, 0.03], [0.04, 0.05, 0.06], [0.07, 0.08, 0.09]],
             },
         )
-        builder.add_articulation([joint3])
+        builder.add_articulation([robot_entities["joint1"], robot_entities["joint2"], joint3])
 
         model = builder.finalize(device=self.device)
 
