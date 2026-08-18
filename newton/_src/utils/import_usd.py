@@ -5433,6 +5433,10 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
 
     Returns:
         File path to the downloaded USD file.
+
+    Raises:
+        ValueError: If a URL is not HTTPS or a referenced asset cannot be
+            localized within the download cache.
     """
 
     import requests
@@ -5509,41 +5513,6 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         )
         reference_item_pattern = re.compile(r"@(?P<path>[^@]*)@(?P<suffix>(?:<[^>]*>)?(?:\s*\([^)]*\))?)")
 
-        def _rewrite_reference_assignment(match):
-            """Validate and rewrite every item in a reference assignment."""
-            value = match.group("value")
-            reference_items = list(reference_item_pattern.finditer(value))
-            if not reference_items:
-                return match.group(0)
-
-            rewritten_items = []
-            for item in reference_items:
-                raw_ref = item.group("path")
-                rewritten_ref = raw_ref
-                raw_ref_scheme = urlparse(raw_ref).scheme
-                if raw_ref_scheme in {"http", "https"}:
-                    rewritten_ref, ref_url, local_path = _prepare_reference(raw_ref)
-                else:
-                    try:
-                        rewritten_ref, ref_url, local_path = _prepare_reference(raw_ref)
-                    except ValueError:
-                        print(f"Skipping reference that escapes target folder: {raw_ref}")
-                        continue
-                try:
-                    _resolve_usd_cache_path(target_folder_name, local_path)
-                except ValueError:
-                    print(f"Skipping reference that escapes target folder: {raw_ref}")
-                    continue
-                if ref_url not in downloaded_urls:
-                    pending.append((ref_url, local_path))
-                rewritten_items.append(f"@{rewritten_ref}@{item.group('suffix')}")
-
-            if value.startswith("["):
-                rewritten_value = f"[{', '.join(rewritten_items)}]"
-            else:
-                rewritten_value = rewritten_items[0] if rewritten_items else "[]"
-            return match.group("prefix") + rewritten_value
-
         def _prepare_reference(raw_ref):
             """Return the rewritten path, source URL, and cache-relative path."""
             raw_ref_scheme = urlparse(raw_ref).scheme
@@ -5558,6 +5527,20 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
                 ref_url = urljoin(parent_url_folder + "/", raw_ref.replace("\\", "/"))
                 rewritten_ref = raw_ref
             return rewritten_ref, ref_url, local_path
+
+        def _rewrite_reference_item(match):
+            """Validate one asset reference and rewrite its cache path when needed."""
+            raw_ref = match.group("path")
+            rewritten_ref, ref_url, local_path = _prepare_reference(raw_ref)
+            _resolve_usd_cache_path(target_folder_name, local_path)
+            if ref_url not in downloaded_urls:
+                pending.append((ref_url, local_path))
+            return f"@{rewritten_ref}@{match.group('suffix')}"
+
+        def _rewrite_reference_assignment(match):
+            """Rewrite asset references without changing other reference-list entries."""
+            rewritten_value = reference_item_pattern.sub(_rewrite_reference_item, match.group("value"))
+            return match.group("prefix") + rewritten_value
 
         return reference_assignment_pattern.sub(_rewrite_reference_assignment, layer_str)
 
