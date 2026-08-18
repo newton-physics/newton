@@ -1034,7 +1034,7 @@ class TestControllerJointImpedance(unittest.TestCase):
 
 class TestSelectJoints(unittest.TestCase):
     def test_single_robot_all_scalar_joints(self):
-        """Verify select_joints defaults to every revolute/prismatic joint of the model."""
+        """Verify select_joints defaults to every single-coordinate, single-DOF joint of the model."""
         device = wp.get_device()
         model = _build_single_prismatic().finalize(device=device)
         selection = select_joints(model)
