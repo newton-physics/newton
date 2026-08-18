@@ -119,12 +119,12 @@ class DVIState:
         self.bilateral_active_dim = wp.zeros(size.num_worlds, dtype=int32)
         self.limit_indices = wp.full(max(1, size.sum_of_max_limits), -1, dtype=int32)
         self.contact_indices = wp.full(max(1, size.sum_of_max_contacts), -1, dtype=int32)
-        self.inequality_bodies = wp.full(max(1, size.sum_of_max_unilaterals), vec2i(-1, -1), dtype=vec2i)
+        self.inequality_bodies = wp.full(max(1, size.sum_of_max_inequalities), vec2i(-1, -1), dtype=vec2i)
         self.inequality_body_color_masks = wp.zeros(max(1, size.sum_of_num_bodies), dtype=uint64)
-        self.inequality_colors = wp.full(max(1, size.sum_of_max_unilaterals), -1, dtype=int32)
+        self.inequality_colors = wp.full(max(1, size.sum_of_max_inequalities), -1, dtype=int32)
         self.inequality_num_colors = wp.zeros(max(1, size.num_worlds), dtype=int32)
-        self.inequality_ids_by_color = wp.full(max(1, size.sum_of_max_unilaterals), -1, dtype=int32)
-        self.inequality_color_starts = wp.zeros(max(1, size.sum_of_max_unilaterals + size.num_worlds), dtype=int32)
+        self.inequality_ids_by_color = wp.full(max(1, size.sum_of_max_inequalities), -1, dtype=int32)
+        self.inequality_color_starts = wp.zeros(max(1, size.sum_of_max_inequalities + size.num_worlds), dtype=int32)
 
     def reset(self):
         """Reset scratch arrays to zero."""

@@ -143,6 +143,12 @@ class DualProblemData:
     Shape of `(num_worlds,)`.
     """
 
+    nbc: wp.array[wp.int32] | None = None
+    """
+    The number of active bounded-multiplier constraints in each world.
+    Shape of `(num_worlds,)`.
+    """
+
     nl: wp.array[wp.int32] | None = None
     """
     The number of active limit constraints in each world.
@@ -152,6 +158,13 @@ class DualProblemData:
     nc: wp.array[wp.int32] | None = None
     """
     The number of active contact constraints in each world.
+    Shape of `(num_worlds,)`.
+    """
+
+    bcio: wp.array[wp.int32] | None = None
+    """
+    The bounded-multiplier index offset of each world.
+    Used to index into `bound_lower` and `bound_upper`.
     Shape of `(num_worlds,)`.
     """
 
@@ -167,9 +180,16 @@ class DualProblemData:
     Shape of `(num_worlds,)`.
     """
 
-    uio: wp.array[wp.int32] | None = None
+    iio: wp.array[wp.int32] | None = None
     """
-    The unilateral index offset of each world.
+    The inequality index offset of each world.
+    Used to index flat arrays spanning bounded-multiplier, limit, and contact entities.
+    Shape of `(num_worlds,)`.
+    """
+
+    bcgo: wp.array[wp.int32] | None = None
+    """
+    The bounded-multiplier constraint group offset of each world.
     Shape of `(num_worlds,)`.
     """
 
@@ -317,6 +337,20 @@ class DualProblemData:
     - `v_i` is the stack of free-velocity impact biases vectors
 
     Shape of `(sum_of_max_total_cts,)`.
+    """
+
+    bound_lower: wp.array[wp.float32] | None = None
+    """
+    Lower impulse bound for each bounded-multiplier row in preconditioned coordinates.
+
+    Shape of `(sum_of_num_bounded_cts,)`.
+    """
+
+    bound_upper: wp.array[wp.float32] | None = None
+    """
+    Upper impulse bound for each bounded-multiplier row in preconditioned coordinates.
+
+    Shape of `(sum_of_num_bounded_cts,)`.
     """
 
     mu: wp.array[wp.float32] | None = None
@@ -573,6 +607,31 @@ def _build_free_velocity_bias_joint_kinematics(
     # Compute the free-velocity bias for the joint
     for j in range(num_kin_cts_j):
         problem_v_b[cts_row_start_j + j] = c_b * data_joints_r_j[res_row_start_j + j]
+
+
+@wp.kernel
+def _build_joint_friction_bounds(
+    # Inputs:
+    model_time_dt: wp.array[wp.float32],
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_dofs_offset: wp.array[wp.int32],
+    model_joints_num_friction_cts: wp.array[wp.int32],
+    model_joints_friction_cts_offset: wp.array[wp.int32],
+    model_joints_f_j: wp.array[wp.float32],
+    # Outputs:
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
+):
+    """Build per-row Coulomb-friction impulse bounds."""
+    jid = wp.tid()
+    num_rows = model_joints_num_friction_cts[jid]
+    dof_start = model_joints_dofs_offset[jid]
+    row_start = model_joints_friction_cts_offset[jid]
+    dt = model_time_dt[model_joints_wid[jid]]
+    for j in range(num_rows):
+        bound = dt * model_joints_f_j[dof_start + j]
+        problem_bound_lower[row_start + j] = -bound
+        problem_bound_upper[row_start + j] = bound
 
 
 @wp.kernel
@@ -1015,6 +1074,30 @@ def _apply_dual_preconditioner_to_vector(
     x[v_i] = P_i * x_i
 
 
+@wp.kernel
+def _apply_dual_preconditioner_to_bounds(
+    # Inputs:
+    problem_nbc: wp.array[wp.int32],
+    problem_bcgo: wp.array[wp.int32],
+    problem_bcio: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_P: wp.array[wp.float32],
+    # Outputs:
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
+):
+    """Scale bounded-multiplier constraint impulse bounds into preconditioned coordinates."""
+    wid, bid = wp.tid()
+    if bid >= problem_nbc[wid]:
+        return
+
+    row = problem_vio[wid] + problem_bcgo[wid] + bid
+    bio = problem_bcio[wid] + bid
+    inv_p = 1.0 / problem_P[row]
+    problem_bound_lower[bio] *= inv_p
+    problem_bound_upper[bio] *= inv_p
+
+
 ###
 # Interfaces
 ###
@@ -1079,11 +1162,11 @@ class DualProblem:
         Constructs a dual problem interface container.
 
         If `model`, `limits` and/or `contacts` containers are provided, it allocates the dual problem data members.
-        Only the `model` is strictly required for the allocation, but the resulting dual problem will only represent
-        bilateral (i.e. equality) joint constraints and possibly some unilateral (i.e. inequality) joint limits, but
-        not contact constraints. The `contacts` container is required if the dual problem is to also incorporate
-        contact constraints. If no `model` is provided at construction time, then deferred allocation is possible
-        by calling the `finalize()` method at a later point.
+        Only the `model` is strictly required for the allocation. The resulting dual problem always includes
+        bilateral (equality) joint constraints and any bounded-multiplier (inequality) constraints defined in
+        the model (e.g. joint friction). Joint-limit constraints require the `limits` container, and contact
+        constraints require the `contacts` container. If no `model` is provided at construction time, then
+        deferred allocation is possible by calling the `finalize()` method at a later point.
 
         Args:
             model: The model to build the dual problem for.
@@ -1299,11 +1382,14 @@ class DualProblem:
                     max_of_maxdims=self._delassus.max_of_max_dims,
                     # Capture references to the mode and data info arrays
                     njc=model.info.num_joint_cts,
+                    nbc=model.info.num_bounded_cts,
                     nl=data.info.num_limits,
                     nc=data.info.num_contacts,
+                    bcio=model.info.joint_bounded_cts_offset,
                     lio=model.info.limits_offset,
                     cio=model.info.contacts_offset,
-                    uio=model.info.unilaterals_offset,
+                    iio=model.info.inequalities_offset,
+                    bcgo=model.info.bounded_cts_group_offset,
                     lcgo=data.info.limit_cts_group_offset,
                     ccgo=data.info.contact_cts_group_offset,
                     # Capture references to arrays already create by the Delassus operator
@@ -1322,6 +1408,8 @@ class DualProblem:
                     v_i=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
                     v_f=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
                     mu=wp.zeros(shape=(model_max_contacts_host,), dtype=wp.float32),
+                    bound_lower=wp.zeros(shape=(model.size.sum_of_num_bounded_cts,), dtype=wp.float32),
+                    bound_upper=wp.zeros(shape=(model.size.sum_of_num_bounded_cts,), dtype=wp.float32),
                     P=wp.ones(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
                 )
                 # Connect Delassus preconditioner to data array
@@ -1333,13 +1421,16 @@ class DualProblem:
                     max_of_maxdims=self._delassus.num_maxdims,
                     # Capture references to the mode and data info arrays
                     njc=model.info.num_joint_cts,
+                    nbc=model.info.num_bounded_cts,
                     nl=data.info.num_limits,
                     nc=data.info.num_contacts,
                     lio=model.info.limits_offset,
                     cio=model.info.contacts_offset,
-                    uio=model.info.unilaterals_offset,
+                    iio=model.info.inequalities_offset,
                     lcgo=data.info.limit_cts_group_offset,
                     ccgo=data.info.contact_cts_group_offset,
+                    bcgo=model.info.bounded_cts_group_offset,
+                    bcio=model.info.joint_bounded_cts_offset,
                     # Capture references to arrays already create by the Delassus operator
                     maxdim=self._delassus.info.maxdim,
                     dim=self._delassus.info.dim,
@@ -1356,6 +1447,8 @@ class DualProblem:
                     v_i=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
                     v_f=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
                     mu=wp.zeros(shape=(model_max_contacts_host,), dtype=wp.float32),
+                    bound_lower=wp.zeros(shape=(model.size.sum_of_num_bounded_cts,), dtype=wp.float32),
+                    bound_upper=wp.zeros(shape=(model.size.sum_of_num_bounded_cts,), dtype=wp.float32),
                     P=wp.ones(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
                 )
 
@@ -1367,6 +1460,8 @@ class DualProblem:
         self._data.v_i.zero_()
         self._data.v_f.zero_()
         self._data.mu.zero_()
+        self._data.bound_lower.zero_()
+        self._data.bound_upper.zero_()
         self._data.P.fill_(1.0)
         if self._sparse:
             self._delassus.set_needs_update()
@@ -1459,6 +1554,24 @@ class DualProblem:
             self._build_dual_preconditioner()
             self._apply_dual_preconditioner_to_dual()
 
+            if model.size.sum_of_num_bounded_cts > 0:
+                wp.launch(
+                    _apply_dual_preconditioner_to_bounds,
+                    dim=(self._size.num_worlds, self._size.max_of_num_bounded_cts),
+                    inputs=[
+                        # Inputs:
+                        self._data.nbc,
+                        self._data.bcgo,
+                        self._data.bcio,
+                        self._data.vio,
+                        self._data.P,
+                        # Outputs:
+                        self._data.bound_lower,
+                        self._data.bound_upper,
+                    ],
+                    device=self.device,
+                )
+
     ###
     # Internals
     ###
@@ -1546,10 +1659,34 @@ class DualProblem:
         contacts: ContactsKamino | None = None,
     ):
         """
-        Builds the free-velocity bias vector `v_b`.
+        Assemble per-constraint dual-problem inputs for the current step.
+
+        Primarily builds the free-velocity bias vector ``v_b`` (joint dynamics and
+        kinematics, limits, contacts). Also fills auxiliary inequality data that is
+        zeroed in :meth:`zero` and consumed later by the solver: joint-friction
+        impulse bounds (``bound_lower``, ``bound_upper``) and contact friction
+        coefficients (``mu``).
         """
 
         if model.size.sum_of_num_joints > 0:
+            if model.size.sum_of_num_friction_cts > 0:
+                wp.launch(
+                    _build_joint_friction_bounds,
+                    dim=model.size.sum_of_num_joints,
+                    inputs=[
+                        # Inputs:
+                        model.time.dt,
+                        model.joints.wid,
+                        model.joints.dofs_offset,
+                        model.joints.num_friction_cts,
+                        model.joints.friction_cts_offset,
+                        model.joints.f_j,
+                        # Outputs:
+                        self._data.bound_lower,
+                        self._data.bound_upper,
+                    ],
+                    device=self.device,
+                )
             if model.size.sum_of_num_dynamic_joints > 0:
                 wp.launch(
                     _build_free_velocity_bias_joint_dynamics,

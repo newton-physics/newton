@@ -882,9 +882,12 @@ def _compute_cts_contacts_residual(
 @wp.kernel
 def _compute_dual_problem_metrics(
     # Inputs:
+    problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
     problem_nc: wp.array[wp.int32],
+    problem_bcio: wp.array[wp.int32],
     problem_cio: wp.array[wp.int32],
+    problem_bcgo: wp.array[wp.int32],
     problem_lcgo: wp.array[wp.int32],
     problem_ccgo: wp.array[wp.int32],
     problem_dim: wp.array[wp.int32],
@@ -894,6 +897,8 @@ def _compute_dual_problem_metrics(
     problem_v_f: wp.array[wp.float32],
     problem_D: wp.array[wp.float32],
     problem_P: wp.array[wp.float32],
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
     solution_sigma: wp.array[wp.vec2f],
     solution_lambdas: wp.array[wp.float32],
     solution_v_plus: wp.array[wp.float32],
@@ -918,10 +923,13 @@ def _compute_dual_problem_metrics(
     wid = wp.tid()
 
     # Retrieve the world-specific data
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
     ncts = problem_dim[wid]
+    bcio = problem_bcio[wid]
     cio = problem_cio[wid]
+    bcgo = problem_bcgo[wid]
     lcgo = problem_lcgo[wid]
     ccgo = problem_ccgo[wid]
     vio = problem_vio[wid]
@@ -929,7 +937,7 @@ def _compute_dual_problem_metrics(
     sigma = solution_sigma[wid]
 
     # Compute additional info
-    njc = ncts - (nl + 3 * nc)
+    njc = ncts - (nbc + nl + 3 * nc)
 
     # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
     # NOTE: We assume the dual problem linear terms `D` and `v_f` have already been preconditioned in-place using `P`
@@ -960,9 +968,24 @@ def _compute_dual_problem_metrics(
     # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
     r_ncp_c, r_ncp_c_argmax = compute_ncp_complementarity_residual(nl, nc, vio, lcgo, ccgo, buffer_v, solution_lambdas)
 
-    # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
+    # Compute the natural-map residual as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
     r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
-        njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
+        njc,
+        nbc,
+        nl,
+        nc,
+        vio,
+        bcio,
+        bcgo,
+        lcgo,
+        ccgo,
+        cio,
+        problem_mu,
+        problem_bound_lower,
+        problem_bound_upper,
+        problem_P,
+        buffer_v,
+        solution_lambdas,
     )
 
     # Store the computed metrics in the output arrays
@@ -983,9 +1006,12 @@ def _compute_dual_problem_metrics(
 @wp.kernel
 def _compute_dual_problem_metrics_sparse(
     # Inputs:
+    problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
     problem_nc: wp.array[wp.int32],
+    problem_bcio: wp.array[wp.int32],
     problem_cio: wp.array[wp.int32],
+    problem_bcgo: wp.array[wp.int32],
     problem_lcgo: wp.array[wp.int32],
     problem_ccgo: wp.array[wp.int32],
     problem_dim: wp.array[wp.int32],
@@ -993,6 +1019,8 @@ def _compute_dual_problem_metrics_sparse(
     problem_mu: wp.array[wp.float32],
     problem_v_f: wp.array[wp.float32],
     problem_P: wp.array[wp.float32],
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
     solution_lambdas: wp.array[wp.float32],
     solution_v_plus: wp.array[wp.float32],
     # Buffers:
@@ -1016,16 +1044,19 @@ def _compute_dual_problem_metrics_sparse(
     wid = wp.tid()
 
     # Retrieve the world-specific data
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
     ncts = problem_dim[wid]
+    bcio = problem_bcio[wid]
     cio = problem_cio[wid]
+    bcgo = problem_bcgo[wid]
     lcgo = problem_lcgo[wid]
     ccgo = problem_ccgo[wid]
     vio = problem_vio[wid]
 
     # Compute additional info
-    njc = ncts - (nl + 3 * nc)
+    njc = ncts - (nbc + nl + 3 * nc)
 
     # Compute the post-event constraint-space velocity from the current solution: v_plus = v_f + D @ lambda
     # NOTE: We assume the dual problem term `v_f` has already been preconditioned in-place using `P`, and
@@ -1057,9 +1088,24 @@ def _compute_dual_problem_metrics_sparse(
     # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
     r_ncp_c, r_ncp_c_argmax = compute_ncp_complementarity_residual(nl, nc, vio, lcgo, ccgo, buffer_v, solution_lambdas)
 
-    # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
+    # Compute the natural-map residual as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
     r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
-        njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
+        njc,
+        nbc,
+        nl,
+        nc,
+        vio,
+        bcio,
+        bcgo,
+        lcgo,
+        ccgo,
+        cio,
+        problem_mu,
+        problem_bound_lower,
+        problem_bound_upper,
+        problem_P,
+        buffer_v,
+        solution_lambdas,
     )
 
     # Store the computed metrics in the output arrays
@@ -1442,9 +1488,12 @@ class SolutionMetrics:
                 dim=problem.size.num_worlds,
                 inputs=[
                     # Inputs:
+                    problem.data.nbc,
                     problem.data.nl,
                     problem.data.nc,
+                    problem.data.bcio,
                     problem.data.cio,
+                    problem.data.bcgo,
                     problem.data.lcgo,
                     problem.data.ccgo,
                     problem.data.dim,
@@ -1452,6 +1501,8 @@ class SolutionMetrics:
                     problem.data.mu,
                     problem.data.v_f,
                     problem.data.P,
+                    problem.data.bound_lower,
+                    problem.data.bound_upper,
                     lambdas,
                     v_plus,
                     # Buffers:
@@ -1479,9 +1530,12 @@ class SolutionMetrics:
                 dim=problem.size.num_worlds,
                 inputs=[
                     # Inputs:
+                    problem.data.nbc,
                     problem.data.nl,
                     problem.data.nc,
+                    problem.data.bcio,
                     problem.data.cio,
+                    problem.data.bcgo,
                     problem.data.lcgo,
                     problem.data.ccgo,
                     problem.data.dim,
@@ -1491,6 +1545,8 @@ class SolutionMetrics:
                     problem.data.v_f,
                     problem.data.D,
                     problem.data.P,
+                    problem.data.bound_lower,
+                    problem.data.bound_upper,
                     sigma,
                     lambdas,
                     v_plus,

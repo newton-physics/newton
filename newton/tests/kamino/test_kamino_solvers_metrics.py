@@ -57,10 +57,15 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
     )
 
     num_joint_cts = problem.data.njc.numpy()
+    num_bounded_cts = problem.data.nbc.numpy()
     num_contacts = problem.data.nc.numpy()
     num_limits = problem.data.nl.numpy()
+    bounded_cts_offset = problem.data.bcio.numpy()
+    bounded_cts_group_offset = problem.data.bcgo.numpy()
     contact_group_offset = problem.data.ccgo.numpy()
     limit_group_offset = problem.data.lcgo.numpy()
+    bound_lower = problem.data.bound_lower.numpy().astype(np.float64)
+    bound_upper = problem.data.bound_upper.numpy().astype(np.float64)
 
     for mat_id in range(num_matrices):
         D_i = D[mat_id]
@@ -179,10 +184,18 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
             r_ncp_c_i = max(r_ncp_c_i, r_c)
         output["r_ncp_c"].append(r_ncp_c_i)
 
-        # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
+        # Compute the natural-map residuals as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
         r_vi_natmap_i = 0.0
         for jid in range(num_joint_cts[mat_id]):
             r_vi_natmap_i = max(r_vi_natmap_i, np.abs(v_aug_i[jid]))
+        for bounded_id in range(num_bounded_cts[mat_id]):
+            bound_idx = bounded_cts_offset[mat_id] + bounded_id
+            vector_idx = bounded_cts_group_offset[mat_id] + bounded_id
+            lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
+            upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
+            lambda_b = lambdas_i[vector_idx]
+            r_b = np.abs(lambda_b - np.clip(lambda_b - v_aug_i[vector_idx], lower, upper))
+            r_vi_natmap_i = max(r_vi_natmap_i, r_b)
 
         for lid in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + lid

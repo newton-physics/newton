@@ -383,7 +383,7 @@ def compute_ncp_primal_residual(
     Computes the NCP primal residual as: `r_p := || lambda - proj_K(lambda) ||_inf`, where:
     - `lambda` is the vector of constraint reactions (i.e. impulses)
     - `proj_K()` is the projection operator onto the cone `K`
-    - `K` is the total cone defined by the unilateral constraints such as limits and contacts
+    - `K` is the total cone defined by unilateral limit and contact constraints
     - `|| . ||_inf` is the infinity norm (i.e. maximum absolute value of the vector components)
 
     Notes:
@@ -457,7 +457,7 @@ def compute_ncp_dual_residual(
     - `v_plus` is the post-event constraint-space velocities
     - `s` is the De Saxce correction vector
     - `proj_K^*()` is the projection operator onto the dual cone `K^*`
-    - `K^*` is the dual of the total cone defined by the unilateral constraints such as limits and contacts
+    - `K^*` is the dual of the total cone defined by unilateral limit and contact constraints
     - `|| . ||_inf` is the infinity norm (i.e. maximum absolute value of the vector components)
 
     Notes:
@@ -590,33 +590,50 @@ def compute_ncp_complementarity_residual(
 @wp.func
 def compute_ncp_natural_map_residual(
     njc: wp.int32,
+    nbc: wp.int32,
     nl: wp.int32,
     nc: wp.int32,
     vio: wp.int32,
+    bcio: wp.int32,
+    bcgo: wp.int32,
     lcgo: wp.int32,
     ccgo: wp.int32,
     cio: wp.int32,
     mu: wp.array[wp.float32],
+    bound_lower: wp.array[wp.float32],
+    bound_upper: wp.array[wp.float32],
+    P: wp.array[wp.float32],
     v_aug: wp.array[wp.float32],
     lambdas: wp.array[wp.float32],
 ) -> tuple[wp.float32, wp.int32]:
     """
-    Computes the natural-map residuals as: `r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf`
+    Computes the natural-map residual as: `r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf`,
+    where `C` is the product of bounded-multiplier box constraints, unilateral limit cones, and
+    Coulomb friction cones.
 
     Notes:
     - For joint constraints, the cone is all of `R^njc`, so the natural-map residual is `abs(v_aug)`.
+    - For bounded-multiplier constraints, the feasible set is the box
+      `C_b := { lambda | lower <= lambda <= upper }`, so the natural-map residual is
+      `abs(lambda - clamp(lambda - v_aug, lower, upper))`.
     - For limit constraints, the cone is defined as `K_l := { lambda | lambda >= 0 }`.
     - For contact constraints, the cone is defined as `K_c := { lambda | || lambda ||_2 <= mu * || vn ||_2 }`.
 
     Args:
         njc: The number of joint constraints.
+        nbc: The number of active bounded-multiplier constraints.
         nl: The number of active limit constraints.
         nc: The number of active contact constraints.
         vio: The vector index offset (i.e. start index) for the constraints.
+        bcio: The bounded-multiplier constraint index offset (i.e. start index).
+        bcgo: The bounded-multiplier constraint group offset (i.e. start index).
         lcgo: The limit constraint group offset (i.e. start index).
         ccgo: The contact constraint group offset (i.e. start index).
         cio: The contact index offset (i.e. start index) for the contacts.
         mu: The array of friction coefficients for each contact.
+        bound_lower: The lower bounds for bounded-multiplier constraint reactions.
+        bound_upper: The upper bounds for bounded-multiplier constraint reactions.
+        P: The dual-problem diagonal preconditioner.
         v_aug: The array of augmented constraint velocities.
         lambdas: The array of constraint reactions (i.e. impulses).
 
@@ -636,6 +653,18 @@ def compute_ncp_natural_map_residual(
         r_ncp_natmap = wp.max(r_ncp_natmap, r_j)
         if r_ncp_natmap == r_j:
             r_ncp_natmap_argmax = jid
+
+    for bid in range(nbc):
+        # Bounds are stored in preconditioned coordinates, while the residual uses physical reactions.
+        bcio_b = bcio + bid
+        bcio_v = vio + bcgo + bid
+        lower = P[bcio_v] * bound_lower[bcio_b]
+        upper = P[bcio_v] * bound_upper[bcio_b]
+        lambda_b = lambdas[bcio_v]
+        r_b = wp.abs(lambda_b - wp.clamp(lambda_b - v_aug[bcio_v], lower, upper))
+        r_ncp_natmap = wp.max(r_ncp_natmap, r_b)
+        if r_ncp_natmap == r_b:
+            r_ncp_natmap_argmax = bid
 
     for lid in range(nl):
         # Compute the limit constraint index offset

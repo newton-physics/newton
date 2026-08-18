@@ -191,6 +191,18 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
+    num_bounded_cts: wp.array[wp.int32] | None = None
+    """
+    The number of bounded-multiplier constraint rows of each world.
+    Shape of ``(num_worlds,)``.
+    """
+
+    num_friction_cts: wp.array[wp.int32] | None = None
+    """
+    The number of Coulomb-friction constraint rows of each world.
+    Shape of ``(num_worlds,)``.
+    """
+
     max_limit_cts: wp.array[wp.int32] | None = None
     """
     The maximum number of active limit constraints of each world.
@@ -245,9 +257,9 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
-    unilaterals_offset: wp.array[wp.int32] | None = None
+    inequalities_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the unilaterals (limits + contacts) block of each world.
+    The index offset of the inequalities (bounded-multiplier, limits, and contacts) block of each world.
     Shape of ``(num_worlds,)``.
     """
 
@@ -329,13 +341,28 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
-    # TODO: We could make this an array of vec5i and store the absolute
+    joint_bounded_cts_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the bounded-multiplier joint constraints block of each world.
+    Used to index into arrays that contain flattened bounded-multiplier joint constraint data.
+    Shape of ``(num_worlds,)``.
+    """
+
+    joint_friction_cts_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the Coulomb-friction constraint block of each world.
+    Used to index into arrays that contain flattened friction constraint data.
+    Shape of ``(num_worlds,)``.
+    """
+
+    # TODO: We could make this an array of vec6i and store the absolute
     #  startindex of each constraint group in the constraint array `lambda`:
     # - [0]: total_cts_offset
     # - [1]: joint_dynamic_cts_group_offset
     # - [2]: joint_kinematic_cts_group_offset
-    # - [3]: limit_cts_group_offset
-    # - [4]: contact_cts_group_offset
+    # - [3]: joint_friction_cts_group_offset
+    # - [4]: limit_cts_group_offset
+    # - [5]: contact_cts_group_offset
     # TODO: We could then provide helper functions to get the start-end of each block
     total_cts_offset: wp.array[wp.int32] | None = None
     """
@@ -345,6 +372,8 @@ class ModelKaminoInfo:
     This offset should be used together with:
     - joint_dynamic_cts_group_offset
     - joint_kinematic_cts_group_offset
+    - joint_friction_cts_group_offset
+    - bounded_cts_group_offset
     - limit_cts_group_offset
     - contact_cts_group_offset
 
@@ -354,12 +383,14 @@ class ModelKaminoInfo:
     world_cts_start = model_info.total_cts_offset[w]
     local_joint_dynamic_cts_start = model_info.joint_dynamic_cts_group_offset[w]
     local_joint_kinematic_cts_start = model_info.joint_kinematic_cts_group_offset[w]
+    local_joint_friction_cts_start = model_info.joint_friction_cts_group_offset[w]
     local_limit_cts_start = model_info.limit_cts_group_offset[w]
     local_contact_cts_start = model_info.contact_cts_group_offset[w]
 
     # Now compute the starting index of each constraint group within the total constraints block of world `w`:
     world_dynamic_joint_cts_start = world_cts_start + local_joint_dynamic_cts_start
     world_kinematic_joint_cts_start = world_cts_start + local_joint_kinematic_cts_start
+    world_friction_cts_start = world_cts_start + local_joint_friction_cts_start
     world_limit_cts_start = world_cts_start + local_limit_cts_start
     world_contact_cts_start = world_cts_start + local_contact_cts_start
     ```
@@ -377,6 +408,19 @@ class ModelKaminoInfo:
     joint_kinematic_cts_group_offset: wp.array[wp.int32] | None = None
     """
     The index offset of the kinematic joint constraints group within the constraints block of each world.
+    Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
+    Shape of ``(num_worlds,)``.
+    """
+
+    bounded_cts_group_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the bounded constraint group within each world's total constraint block.
+    Shape of ``(num_worlds,)``.
+    """
+
+    joint_friction_cts_group_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the Coulomb-friction constraint group within each world's total constraint block.
     Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
     Shape of ``(num_worlds,)``.
     """
@@ -496,7 +540,6 @@ class ModelKamino:
 
     def data(
         self,
-        unilateral_cts: bool = False,
         joint_wrenches: bool = False,
         requires_grad: bool = False,
         device: wp.DeviceLike = None,
@@ -505,8 +548,6 @@ class ModelKamino:
         Creates a model data container with the initial state of the model entities.
 
         Args:
-            unilateral_cts: Whether to include unilateral constraints (limits and contacts) in the model data.
-                Defaults to ``False``.
             joint_wrenches: Whether to include joint wrenches in the model data. Defaults to ``False``.
             requires_grad: Whether the model data should require gradients. Defaults to ``False``.
             device: The device to create the model data on. If not specified, the model's device is used.
@@ -527,19 +568,18 @@ class ModelKamino:
         njcts = self.size.sum_of_num_joint_cts
         njdyncts = self.size.sum_of_num_dynamic_joint_cts
         njkincts = self.size.sum_of_num_kinematic_joint_cts
+        njfccts = self.size.sum_of_num_friction_cts
 
         # Construct the model data on the specified device
         with wp.ScopedDevice(device=device):
             # Create a new model data info with the total constraint
-            # counts initialized to the joint constraints count
+            # counts initialized to the joint + bounded constraints count
             info = DataKaminoInfo(
-                num_total_cts=wp.clone(self.info.num_joint_cts),
-                num_limits=wp.zeros(shape=nw, dtype=wp.int32) if unilateral_cts else None,
-                num_contacts=wp.zeros(shape=nw, dtype=wp.int32) if unilateral_cts else None,
-                num_limit_cts=wp.zeros(shape=nw, dtype=wp.int32) if unilateral_cts else None,
-                num_contact_cts=wp.zeros(shape=nw, dtype=wp.int32) if unilateral_cts else None,
-                limit_cts_group_offset=wp.zeros(shape=nw, dtype=wp.int32) if unilateral_cts else None,
-                contact_cts_group_offset=wp.zeros(shape=nw, dtype=wp.int32) if unilateral_cts else None,
+                num_total_cts=wp.array(
+                    self.info.num_joint_cts.numpy() + self.info.num_bounded_cts.numpy(),
+                    dtype=wp.int32,
+                    device=device,
+                ),
             )
 
             # Construct the time data with the initial step and time set to zero for all worlds
@@ -558,6 +598,7 @@ class ModelKamino:
                 w_i=wp.zeros_like(self.bodies.u_i_0, requires_grad=requires_grad),
                 w_a_i=wp.zeros_like(self.bodies.u_i_0, requires_grad=requires_grad),
                 w_j_i=wp.zeros_like(self.bodies.u_i_0, requires_grad=requires_grad),
+                w_f_i=wp.zeros_like(self.bodies.u_i_0, requires_grad=requires_grad),
                 w_l_i=wp.zeros_like(self.bodies.u_i_0, requires_grad=requires_grad),
                 w_c_i=wp.zeros_like(self.bodies.u_i_0, requires_grad=requires_grad),
                 w_e_i=wp.zeros_like(self.bodies.u_i_0, requires_grad=requires_grad),
@@ -574,6 +615,7 @@ class ModelKamino:
                 r_j=wp.zeros(shape=njkincts, dtype=wp.float32, requires_grad=requires_grad),
                 dr_j=wp.zeros(shape=njkincts, dtype=wp.float32, requires_grad=requires_grad),
                 lambda_j=wp.zeros(shape=njcts, dtype=wp.float32, requires_grad=requires_grad),
+                lambda_f_j=wp.zeros(shape=njfccts, dtype=wp.float32, requires_grad=requires_grad),
                 m_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 inv_m_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 dq_b_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
@@ -585,6 +627,9 @@ class ModelKamino:
                 if joint_wrenches
                 else None,
                 j_w_c_j=wp.zeros(shape=nj, dtype=wp.spatial_vectorf, requires_grad=requires_grad)
+                if joint_wrenches
+                else None,
+                j_w_f_j=wp.zeros(shape=nj, dtype=wp.spatial_vectorf, requires_grad=requires_grad)
                 if joint_wrenches
                 else None,
                 j_w_a_j=wp.zeros(shape=nj, dtype=wp.spatial_vectorf, requires_grad=requires_grad)

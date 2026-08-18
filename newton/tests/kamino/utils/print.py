@@ -32,8 +32,8 @@ def print_model_size(model: ModelKamino):
     print(f"model.size.max_of_num_body_dofs: {model.size.max_of_num_body_dofs}")
     print(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
     print(f"model.size.max_of_num_joint_dofs: {model.size.max_of_num_joint_dofs}")
-    print(f"model.size.sum_of_max_unilaterals: {model.size.sum_of_max_unilaterals}")
-    print(f"model.size.max_of_max_unilaterals: {model.size.max_of_max_unilaterals}")
+    print(f"model.size.sum_of_max_inequalities: {model.size.sum_of_max_inequalities}")
+    print(f"model.size.max_of_max_inequalities: {model.size.max_of_max_inequalities}")
 
 
 def print_model_info(model: ModelKamino):
@@ -73,7 +73,7 @@ def print_model_info(model: ModelKamino):
     print(f"model.info.joints_offset: {model.info.joints_offset}")
     print(f"model.info.limits_offset: {model.info.limits_offset}")
     print(f"model.info.contacts_offset: {model.info.contacts_offset}")
-    print(f"model.info.unilaterals_offset: {model.info.unilaterals_offset}")
+    print(f"model.info.inequalities_offset: {model.info.inequalities_offset}")
     # Print the coords, DoFs and constraint offsets
     print("-------------------------------------------------------------------------------")
     print(f"model.info.body_dofs_offset: {model.info.body_dofs_offset}")
@@ -87,10 +87,14 @@ def print_model_info(model: ModelKamino):
     print(f"model.info.joint_cts_offset: {model.info.joint_cts_offset}")
     print(f"model.info.joint_dynamic_cts_offset: {model.info.joint_dynamic_cts_offset}")
     print(f"model.info.joint_kinematic_cts_offset: {model.info.joint_kinematic_cts_offset}")
+    print(f"model.info.joint_bounded_cts_offset: {model.info.joint_bounded_cts_offset}")
+    print(f"model.info.joint_friction_cts_offset: {model.info.joint_friction_cts_offset}")
     print("-------------------------------------------------------------------------------")
     print(f"model.info.total_cts_offset: {model.info.total_cts_offset}")
     print(f"model.info.joint_dynamic_cts_group_offset: {model.info.joint_dynamic_cts_group_offset}")
     print(f"model.info.joint_kinematic_cts_group_offset: {model.info.joint_kinematic_cts_group_offset}")
+    print(f"model.info.bounded_cts_group_offset: {model.info.bounded_cts_group_offset}")
+    print(f"model.info.joint_friction_cts_group_offset: {model.info.joint_friction_cts_group_offset}")
 
 
 def print_model_constraint_info(model: ModelKamino):
@@ -108,7 +112,7 @@ def print_model_constraint_info(model: ModelKamino):
     print("-------------------------------------------------------------------------------")
     print(f"model.info.limits_offset: {model.info.limits_offset}")
     print(f"model.info.contacts_offset: {model.info.contacts_offset}")
-    print(f"model.info.unilaterals_offset: {model.info.unilaterals_offset}")
+    print(f"model.info.inequalities_offset: {model.info.inequalities_offset}")
     print("-------------------------------------------------------------------------------")
     print(f"model.info.body_dofs_offset: {model.info.body_dofs_offset}")
     print(f"model.info.joint_coords_offset: {model.info.joint_coords_offset}")
@@ -121,10 +125,14 @@ def print_model_constraint_info(model: ModelKamino):
     print(f"model.info.joint_cts_offset: {model.info.joint_cts_offset}")
     print(f"model.info.joint_dynamic_cts_offset: {model.info.joint_dynamic_cts_offset}")
     print(f"model.info.joint_kinematic_cts_offset: {model.info.joint_kinematic_cts_offset}")
+    print(f"model.info.joint_bounded_cts_offset: {model.info.joint_bounded_cts_offset}")
+    print(f"model.info.joint_friction_cts_offset: {model.info.joint_friction_cts_offset}")
     print("-------------------------------------------------------------------------------")
     print(f"model.info.total_cts_offset: {model.info.total_cts_offset}")
     print(f"model.info.joint_dynamic_cts_group_offset: {model.info.joint_dynamic_cts_group_offset}")
     print(f"model.info.joint_kinematic_cts_group_offset: {model.info.joint_kinematic_cts_group_offset}")
+    print(f"model.info.bounded_cts_group_offset: {model.info.bounded_cts_group_offset}")
+    print(f"model.info.joint_friction_cts_group_offset: {model.info.joint_friction_cts_group_offset}")
 
 
 def print_model_bodies(model: ModelKamino, inertias=True, initial_states=True):
@@ -224,6 +232,7 @@ def print_data(data: DataKamino, info=True):
     print(f"data.bodies.w_a_i: {data.bodies.w_a_i}")
     print(f"data.bodies.w_j_i: {data.bodies.w_j_i}")
     print(f"data.bodies.w_l_i: {data.bodies.w_l_i}")
+    print(f"data.bodies.w_f_i: {data.bodies.w_f_i}")
     print(f"data.bodies.w_c_i: {data.bodies.w_c_i}")
     print(f"data.bodies.w_e_i: {data.bodies.w_e_i}")
     # Print joint state data
@@ -238,9 +247,11 @@ def print_data(data: DataKamino, info=True):
     print(f"data.joints.inv_m_j: {data.joints.inv_m_j}")
     print(f"data.joints.q_j_ref: {data.joints.q_j_ref}")
     print(f"data.joints.dq_j_ref: {data.joints.dq_j_ref}")
+    print(f"data.joints.lambda_f_j: {data.joints.lambda_f_j}")
     print(f"data.joints.j_w_j: {data.joints.j_w_j}")
     print(f"data.joints.j_w_a_j: {data.joints.j_w_a_j}")
     print(f"data.joints.j_w_c_j: {data.joints.j_w_c_j}")
+    print(f"data.joints.j_w_f_j: {data.joints.j_w_f_j}")
     print(f"data.joints.j_w_l_j: {data.joints.j_w_l_j}")
     # Print the geometry state data
     print(f"data.geoms.pose: {data.geoms.pose}")

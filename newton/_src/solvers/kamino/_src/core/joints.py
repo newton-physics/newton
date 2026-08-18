@@ -1253,6 +1253,14 @@ class JointDescriptor(Descriptor):
     that the joint has no internal damping and is thus frictionless.
     """
 
+    f_j: ArrayLike | float | None = None
+    """
+    Coulomb friction effort along each joint DoF.
+
+    Defaults to zero. Positive values allocate a bounded-multiplier constraint row
+    for every DoF of the joint. Friction on free joints is ignored.
+    """
+
     k_p_j: ArrayLike | float | None = None
     """
     Implicit PD-control proportional gain.
@@ -1331,8 +1339,8 @@ class JointDescriptor(Descriptor):
 
     cts_offset: int = -1
     """
-    Index offset of this joint's constraints among all
-    joint constraints in the world it belongs to.
+    Index offset of this joint's constraints among all bilateral
+    joint constraints (kinematic + dynamic)in the world it belongs to.
     """
 
     dynamic_cts_offset: int = -1
@@ -1345,6 +1353,18 @@ class JointDescriptor(Descriptor):
     """
     Index offset of this joint's kinematic constraints among all
     kinematic joint constraints in the world it belongs to.
+    """
+
+    bounded_cts_offset: int = -1
+    """
+    Index offset of this joint's bounded-multiplier rows among all 
+    bounded-multiplier constraints in its world.
+    """
+
+    friction_cts_offset: int = -1
+    """
+    Index offset of this joint's friction rows among all
+    Coulomb-friction constraints in its world.
     """
 
     ###
@@ -1413,6 +1433,16 @@ class JointDescriptor(Descriptor):
         Returns the number of kinematic constraints introduced by this joint.
         """
         return self.dof_type.num_cts
+
+    @property
+    def num_bounded_cts(self) -> int:
+        """Returns the number of bounded-multiplier constraint rows introduced by this joint."""
+        return self.num_friction_cts
+
+    @property
+    def num_friction_cts(self) -> int:
+        """Returns the number of Coulomb-friction rows introduced by this joint."""
+        return self.num_dofs if self.dof_type != JointDoFType.FREE and np.any(self.f_j) else 0
 
     @property
     def is_binary(self) -> bool:
@@ -1522,6 +1552,7 @@ class JointDescriptor(Descriptor):
         # Set default values for internal inertia, damping, and implicit PD gains if not provided
         self.a_j = self._check_dofs_array(self.a_j, self.num_dofs, 0.0)
         self.b_j = self._check_dofs_array(self.b_j, self.num_dofs, 0.0)
+        self.f_j = self._check_dofs_array(self.f_j, self.num_dofs, 0.0)
         self.k_p_j = self._check_dofs_array(self.k_p_j, self.num_dofs, 0.0)
         self.k_d_j = self._check_dofs_array(self.k_d_j, self.num_dofs, 0.0)
 
@@ -1603,6 +1634,7 @@ class JointDescriptor(Descriptor):
             "----------------------------------------------\n"
             f"a_j: {self.a_j},\n"
             f"b_j: {self.b_j},\n"
+            f"f_j: {self.f_j},\n"
             f"k_p_j: {self.k_p_j},\n"
             f"k_d_j: {self.k_d_j},\n"
             "----------------------------------------------\n"
@@ -1705,6 +1737,8 @@ class JointDescriptor(Descriptor):
                 raise ValueError(f"Invalid joint armature: a_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
             if self.b_j[i] < 0:
                 raise ValueError(f"Invalid joint damping: b_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
+            if self.f_j[i] < 0:
+                raise ValueError(f"Invalid joint friction: f_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
             if self.k_p_j[i] < 0:
                 raise ValueError(f"Invalid joint proportional gain: k_p_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
             if self.k_d_j[i] < 0:
@@ -1867,6 +1901,12 @@ class JointsModel:
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
+    f_j: wp.array[wp.float32] | None = None
+    """
+    Coulomb friction effort of each joint DoF.
+    Shape of ``(sum_of_num_joint_dofs,)``.
+    """
+
     k_p_j: wp.array[wp.float32] | None = None
     """
     Implicit PD-control proportional gain of each joint (as flat array).
@@ -1940,6 +1980,12 @@ class JointsModel:
     Number of kinematic constraints of each joint.
     Shape of ``(num_joints,)``.
     """
+
+    num_bounded_cts: wp.array[wp.int32] | None = None
+    """Number of bounded-multiplier rows of each joint."""
+
+    num_friction_cts: wp.array[wp.int32] | None = None
+    """Number of Coulomb-friction rows of each joint."""
 
     coords_offset: wp.array[wp.int32] | None = None
     """
@@ -2060,6 +2106,28 @@ class JointsModel:
     kinematic constraints count is encoded as ``kinematic_cts_offset[j+1] - kinematic_cts_offset[j]``.
     """
 
+    bounded_cts_offset: wp.array[wp.int32] | None = None
+    """
+    Index offset of each joint's bounded-multiplier constraints block, in model-wide
+    flattened joint bounded constraints arrays.
+
+    Shape of ``(num_joints + 1,)``.
+
+    The last entry is the total joint bounded-multiplier constraints count, so that the per-joint
+    bounded constraints count is encoded as ``bounded_cts_offset[j+1] - bounded_cts_offset[j]``.
+    """
+
+    friction_cts_offset: wp.array[wp.int32] | None = None
+    """
+    Index offset of each joint's friction constraints block, in model-wide
+    flattened joint Coulomb-friction constraints arrays.
+
+    Shape of ``(num_joints + 1,)``.
+
+    The last entry is the total joint friction constraints count, so that the per-joint
+    friction constraints count is encoded as ``friction_cts_offset[j+1] - friction_cts_offset[j]``.
+    """
+
     dynamic_cts_offset_joint_cts: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's dynamic constraints block, in model-wide
@@ -2079,7 +2147,7 @@ class JointsModel:
     dynamic_cts_offset_total_cts: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's dynamic constraints block, in model-wide
-    flattened total constraints arrays (joints + limits + contacts).
+    flattened total constraints arrays (joints + bounded + limits + contacts).
 
     Shape of ``(num_joints,)``.
     """
@@ -2087,7 +2155,15 @@ class JointsModel:
     kinematic_cts_offset_total_cts: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's kinematic constraints block, in model-wide
-    flattened total constraints arrays (joints + limits + contacts).
+    flattened total constraints arrays (joints + bounded + limits + contacts).
+
+    Shape of ``(num_joints,)``.
+    """
+
+    friction_cts_offset_total_cts: wp.array[wp.int32] | None = None
+    """
+    Index offset of each joint's friction constraints block, in model-wide
+    flattened total constraints arrays (joints + bounded + limits + contacts).
 
     Shape of ``(num_joints,)``.
     """
@@ -2164,7 +2240,7 @@ class JointsData:
 
     lambda_j: wp.array[wp.float32] | None = None
     """
-    Flat array of joint constraint Lagrange multipliers.
+    Flat array of bilateral joint constraint Lagrange multipliers.
 
     To access the constraint multipliers of a specific world `w` use:
     - to get the start index: ``model.info.joint_cts_offset[w]``
@@ -2177,6 +2253,17 @@ class JointsData:
         ``model.info.joint_kinematic_cts_group_offset[w]`` and ``model.info.num_joint_kinematic_cts[w]``
 
     Shape of ``(sum_of_num_joint_cts,)``.
+    """
+
+    lambda_f_j: wp.array[wp.float32] | None = None
+    """
+    Flat array of joint Coulomb-friction Lagrange multipliers.
+
+    To access the multipliers of a specific joint ``j`` use ``model.joints.friction_cts_offset[j]``
+    as the start index. The per-joint row count is
+    ``model.joints.friction_cts_offset[j + 1] - model.joints.friction_cts_offset[j]``.
+
+    Shape of ``(sum_of_num_friction_cts,)``.
     """
 
     ###
@@ -2294,6 +2381,8 @@ class JointsData:
     in and about the corresponding joint frame.
     Its direction follows the convention that
     joints act on the follower by the base body.
+    This is the sum of :attr:`j_w_a_j`, :attr:`j_w_c_j`,
+    :attr:`j_w_f_j`, and :attr:`j_w_l_j`.
     Shape of ``(num_joints,)``.
     """
 
@@ -2309,7 +2398,18 @@ class JointsData:
 
     j_w_c_j: wp.array[wp.spatial_vectorf] | None = None
     """
-    Constraint wrench applied by each joint, expressed
+    Bilateral constraint wrench applied by each joint, expressed
+    in and about the corresponding joint frame.
+    This includes the dynamic and kinematic constraint reactions only.
+    Its direction is defined by the convention that positive wrenches
+    in the joint frame are those inducing a positive change in the
+    twist of the follower body relative to the base body.
+    Shape of ``(num_joints,)``.
+    """
+
+    j_w_f_j: wp.array[wp.spatial_vectorf] | None = None
+    """
+    Joint friction wrench applied by each joint, expressed
     in and about the corresponding joint frame.
     Its direction is defined by the convention that positive wrenches
     in the joint frame are those inducing a positive change in the
@@ -2345,6 +2445,7 @@ class JointsData:
             self.q_j.zero_()
             self.q_j_p.zero_()
         self.dq_j.zero_()
+        self.lambda_f_j.zero_()
 
     def reset_references(
         self,
@@ -2392,6 +2493,7 @@ class JointsData:
         Resets all joint constraint reactions to zero.
         """
         self.lambda_j.zero_()
+        self.lambda_f_j.zero_()
 
     def clear_actuation_forces(self):
         """
@@ -2406,6 +2508,7 @@ class JointsData:
         if self.j_w_j is not None:
             self.j_w_j.zero_()
             self.j_w_c_j.zero_()
+            self.j_w_f_j.zero_()
             self.j_w_a_j.zero_()
             self.j_w_l_j.zero_()
 

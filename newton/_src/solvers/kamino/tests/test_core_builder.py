@@ -69,6 +69,8 @@ def assert_model_matches_builder(test: unittest.TestCase, builder: ModelBuilderK
         # TODO: test.assertEqual(model.info.joint_cts_offset.numpy()[w], world.joint_cts_idx_offset)
         test.assertEqual(model.info.joint_dynamic_cts_offset.numpy()[w], world.joint_dynamic_cts_idx_offset)
         test.assertEqual(model.info.joint_kinematic_cts_offset.numpy()[w], world.joint_kinematic_cts_idx_offset)
+        test.assertEqual(model.info.joint_bounded_cts_offset.numpy()[w], world.bounded_cts_idx_offset)
+        test.assertEqual(model.info.joint_friction_cts_offset.numpy()[w], world.friction_cts_idx_offset)
 
     test.assertEqual(builder.num_bodies, model.size.sum_of_num_bodies)
     for i, body in enumerate(builder.all_bodies):

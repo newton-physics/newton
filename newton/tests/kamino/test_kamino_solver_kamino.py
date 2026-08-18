@@ -275,7 +275,7 @@ def check_body_and_joint_state_consistency(
     np.testing.assert_equal(joint_u.shape[0], model.size.sum_of_num_joint_dofs)
 
     # Create a model data, and evaluate joint data given provided body states
-    data = model.data(unilateral_cts=False, device=model.device)
+    data = model.data(device=model.device)
     wp.copy(data.bodies.q_i, body_q)
     wp.copy(data.bodies.u_i, body_u)
     compute_joints_data(model=model, data=data, q_j_p=joint_q, correction=JointCorrectionMode.CONTINUOUS)

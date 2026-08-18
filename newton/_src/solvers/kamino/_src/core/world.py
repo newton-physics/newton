@@ -171,6 +171,12 @@ class WorldDescriptor(Descriptor):
     This is equal to the sum of the kinematics constraints of all joints defined in the world.
     """
 
+    num_bounded_cts: int = 0
+    """The number of bounded-multiplier constraint rows."""
+
+    num_friction_cts: int = 0
+    """The number of Coulomb-friction constraint rows."""
+
     joint_coords: list[int] = field(default_factory=list)
     """
     The list of all joint coordinates.
@@ -273,6 +279,12 @@ class WorldDescriptor(Descriptor):
 
     joint_kinematic_cts_idx_offset: int = 0
     """Index offset of the world's joint kinematics constraints w.r.t the entire model."""
+
+    bounded_cts_idx_offset: int = 0
+    """Index offset of the world's bounded constraints w.r.t the entire model."""
+
+    friction_cts_idx_offset: int = 0
+    """Index offset of the world's Coulomb-friction constraints w.r.t the entire model."""
 
     ###
     # Entity Identifiers
@@ -458,6 +470,8 @@ class WorldDescriptor(Descriptor):
         joint.cts_offset = int(self.num_joint_cts)
         joint.dynamic_cts_offset = int(self.num_dynamic_joint_cts)
         joint.kinematic_cts_offset = int(self.num_kinematic_joint_cts)
+        joint.bounded_cts_offset = int(self.num_bounded_cts)
+        joint.friction_cts_offset = int(self.num_friction_cts)
 
         # Append joint identifiers
         self.joint_names.append(joint.name)
@@ -475,6 +489,8 @@ class WorldDescriptor(Descriptor):
         self.num_joint_cts += joint.num_cts
         self.num_dynamic_joint_cts += joint.num_dynamic_cts
         self.num_kinematic_joint_cts += joint.num_kinematic_cts
+        self.num_bounded_cts += joint.num_bounded_cts
+        self.num_friction_cts += joint.num_friction_cts
 
         # Append joint connection group info
         if joint.bid_B < 0:

@@ -38,7 +38,8 @@ class SizeKamino:
     Notes:
     - The sums are used for memory allocations.
     - The maximums are used to define 2D thread shapes: (num_worlds, max_of_max_XXX)
-    - Where `XXX` is the maximum number of limits, contacts, unilaterals, or constraints in any world.
+    - Where `XXX` is the maximum number of bounded-multiplier, limits, contacts, inequalities,
+      or constraints in any world.
     """
 
     num_worlds: int = 0
@@ -176,6 +177,18 @@ class SizeKamino:
     max_of_num_kinematic_joint_cts: int = 0
     """The maximum number of kinematic joint constraints in any world."""
 
+    sum_of_num_bounded_cts: int = 0
+    """The total number of bounded-multiplier constraint rows across all worlds."""
+
+    max_of_num_bounded_cts: int = 0
+    """The maximum number of bounded-multiplier constraint rows in any world."""
+
+    sum_of_num_friction_cts: int = 0
+    """The total number of Coulomb-friction constraint rows across all worlds."""
+
+    max_of_num_friction_cts: int = 0
+    """The maximum number of Coulomb-friction constraint rows in any world."""
+
     sum_of_max_limits: int = 0
     """The total maximum number of limits allocated for the model across all worlds."""
 
@@ -188,11 +201,11 @@ class SizeKamino:
     max_of_max_contacts: int = 0
     """The maximum number of active contacts of any world."""
 
-    sum_of_max_unilaterals: int = 0
-    """The maximum number of active unilateral entities, i.e. joint-limits and contacts."""
+    sum_of_max_inequalities: int = 0
+    """The total maximum number of bounded-multiplier, limit, and contact entities across all worlds."""
 
-    max_of_max_unilaterals: int = 0
-    """The maximum number of active unilaterals of any world."""
+    max_of_max_inequalities: int = 0
+    """The maximum number of bounded-multiplier, limit, and contact entities in any world."""
 
     sum_of_max_total_cts: int = 0
     """The total maximum number of active constraints allocated for the model across all worlds."""
@@ -221,9 +234,11 @@ class SizeKamino:
             ("num_joint_cts", "sum_of_num_joint_cts", "max_of_num_joint_cts"),
             ("num_dynamic_joint_cts", "sum_of_num_dynamic_joint_cts", "max_of_num_dynamic_joint_cts"),
             ("num_kinematic_joint_cts", "sum_of_num_kinematic_joint_cts", "max_of_num_kinematic_joint_cts"),
+            ("num_bounded_cts", "sum_of_num_bounded_cts", "max_of_num_bounded_cts"),
+            ("num_friction_cts", "sum_of_num_friction_cts", "max_of_num_friction_cts"),
             ("max_limits", "sum_of_max_limits", "max_of_max_limits"),
             ("max_contacts", "sum_of_max_contacts", "max_of_max_contacts"),
-            ("max_unilaterals", "sum_of_max_unilaterals", "max_of_max_unilaterals"),
+            ("max_inequalities", "sum_of_max_inequalities", "max_of_max_inequalities"),
             ("max_total_cts", "sum_of_max_total_cts", "max_of_max_total_cts"),
         ]
 

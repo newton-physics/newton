@@ -142,7 +142,8 @@ class PADMMConfigStruct:
             Must be greater than zero. Defaults to `1e-6`.
         dual_tolerance: The target tolerance on the total dual residual `r_dual`.
             Must be greater than zero. Defaults to `1e-6`.
-        compl_tolerance: The target tolerance on the total complementarity residual `r_compl`.
+        compl_tolerance: The target tolerance on the generalized inequality
+            optimality residual `r_compl` used by the convergence test.
             Must be greater than zero. Defaults to `1e-6`.
         restart_tolerance: The tolerance on the total combined primal-dual
             residual `r_comb`, for determining when gradient acceleration should be restarted.
@@ -171,25 +172,26 @@ class PADMMConfigStruct:
 
     primal_tolerance: wp.float32
     """
-    The target tolerance on the total primal residual `r_primal`.
+    The target tolerance on the total primal residual `r_primal` (`r_p`).
     Must be greater than zero. Defaults to `1e-6`.
     """
 
     dual_tolerance: wp.float32
     """
-    The target tolerance on the total dual residual `r_dual`.
+    The target tolerance on the total dual residual `r_dual` (`r_d`).
     Must be greater than zero. Defaults to `1e-6`.
     """
 
     compl_tolerance: wp.float32
     """
-    The target tolerance on the total complementarity residual `r_compl`.
+    The target tolerance on the generalized inequality optimality residual
+    `r_compl` (`r_c`) used by the convergence test.
     Must be greater than zero. Defaults to `1e-6`.
     """
 
     restart_tolerance: wp.float32
     """
-    The tolerance applied on the total combined primal-dual residual `r_comb`,
+    The tolerance applied on the total combined primal-dual residual `r_comb` (`r_a`),
     for determining when gradient acceleration should be restarted.
     Must be greater than zero. Defaults to `0.999`.
     """
@@ -293,9 +295,12 @@ class PADMMStatus:
             Computed using the L-inf norm as `r_primal := || x - y ||_inf`.
         r_d: The total dual residual.
             Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`.
-        r_c: The total complementarity residual.
-            Computed using the L-inf norm as `r_compl := || [x_k.T @ z_k] ||_inf`,
-            with `k` indexing each unilateral constraint set, i.e. 1D limits and 3D contacts.
+        r_c: The generalized inequality optimality residual used by the convergence test.
+            For each bounded-multiplier row `b`, the residual is the box natural map
+            `x_b - clamp(x_b - z_b, lower_b, upper_b)`. For each limit or contact
+            entity `k`, it is the complementarity inner product `x_k.T @ z_k`.
+            `r_c` is the maximum absolute value over these entity residuals. The
+            natural map is used for a box because a box has no fixed dual cone.
         r_dx: The total primal iterate residual.
             Computed as the L2-norm `r_dx := || x - x_p ||_2`.
         r_dy: The total slack iterate residual.
@@ -340,9 +345,12 @@ class PADMMStatus:
 
     r_c: wp.float32
     """
-    The total complementarity residual.
-    Computed using the L-inf norm as `r_compl := || [x_k.T @ z_k] ||_inf`,
-    with `k` indexing each unilateral constraint set, i.e. 1D limits and 3D contacts.
+    The generalized inequality optimality residual used by the convergence test.
+    For each bounded-multiplier row `b`, the residual is the box natural map
+    `x_b - clamp(x_b - z_b, lower_b, upper_b)`. For each limit or contact
+    entity `k`, it is the complementarity inner product `x_k.T @ z_k`.
+    `r_c` is the maximum absolute value over these entity residuals. The
+    natural map is used for a box because a box has no fixed dual cone.
     """
 
     r_dx: wp.float32
@@ -669,9 +677,11 @@ class PADMMResiduals:
             Shape of ``(sum_of_max_total_cts,)``.
         r_dual: The PADMM dual residual vector, computed as `r_dual := eta * (x - x_p) + rho * (y - y_p)`.
             Shape of ``(sum_of_max_total_cts,)``.
-        r_compl: The PADMM complementarity residual vector, computed as `r_compl := [x_j.dot(z_j)]`,
-            where `j` indexes each unilateral constraint set (i.e. 1D limits and 3D contacts).
-            Shape of ``(sum_of_num_unilateral_cts,)``.
+        r_compl: The PADMM generalized inequality optimality residual vector used
+            by the convergence test. Per-inequality entries are bounded-multiplier
+            natural maps for box constraints and complementarity inner products
+            `x_j.dot(z_j)` for limit and contact constraints.
+            Shape of ``(sum_of_max_inequalities,)``.
         r_dx: The PADMM primal iterate residual vector, computed as `r_dx := x - x_p`.
             Shape of ``(sum_of_max_total_cts,)``.
         r_dy: The PADMM slack iterate residual vector, computed as `r_dy := y - y_p`.
@@ -704,9 +714,11 @@ class PADMMResiduals:
 
         self.r_compl: wp.array[wp.float32] | None = None
         """
-        The PADMM complementarity residual vector, computed as `r_compl := [x_j.dot(z_j)]`,
-        where `j` indexes each unilateral constraint set (i.e. 1D limits and 3D contacts).
-        Shape of ``(sum_of_num_unilateral_cts,)``.
+        The PADMM generalized inequality optimality residual vector used by the
+        convergence test. Per-inequality entries are bounded-multiplier natural
+        maps for box constraints and complementarity inner products
+        `x_j.dot(z_j)` for limit and contact constraints.
+        Shape of ``(sum_of_max_inequalities,)``.
         """
 
         self.r_dx: wp.array[wp.float32] | None = None
@@ -745,7 +757,7 @@ class PADMMResiduals:
         # Allocate the main residuals arrays
         self.r_primal = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
         self.r_dual = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
-        self.r_compl = wp.zeros(size.sum_of_max_unilaterals, dtype=wp.float32)
+        self.r_compl = wp.zeros(size.sum_of_max_inequalities, dtype=wp.float32)
 
         # Optionally allocate iterate residuals used when acceleration is enabled
         if use_acceleration:
@@ -816,7 +828,8 @@ class PADMMInfo:
             Shape of ``(num_worlds * max_iters,)``.
         r_dual: History of the total dual residual.
             Shape of ``(num_worlds * max_iters,)``.
-        r_compl: History of the total complementarity residual.
+        r_compl: History of the generalized inequality optimality residual used
+            by the PADMM convergence test.
             Shape of ``(num_worlds * max_iters,)``.
         r_comb: History of the total combined primal-dual residual.
             Shape of ``(num_worlds * max_iters,)``.
@@ -974,7 +987,8 @@ class PADMMInfo:
 
         self.r_compl: wp.array[wp.float32] | None = None
         """
-        History of PADMM complementarity residuals.
+        History of the generalized inequality optimality residual used by the
+        PADMM convergence test.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
