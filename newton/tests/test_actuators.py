@@ -216,9 +216,20 @@ def _build_pendulum(device):
     return builder.finalize(device=device)
 
 
-def _two_link_builder(armature: float = 0.0):
-    """Builder for a two-link revolute chain — one articulation, two coupled DOFs."""
+def _two_link_builder(armature: float = 0.0, dummy_body: bool = False):
+    """Builder for a two-link revolute chain — one articulation, two coupled DOFs.
+
+    With *dummy_body*, a standalone hinged body is declared before the chain and
+    left out of the articulation. MuJoCo orders articulated bodies ahead of
+    standalone ones while Newton keeps declaration order, so
+    ``mjc_dof_to_newton_dof`` becomes a real permutation instead of the identity.
+    The body carries no shape and gravity is off, so it never interacts with the
+    chain. Its DOF also belongs to no articulation, which exercises the branch
+    that drops such entries.
+    """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    if dummy_body:
+        builder.add_joint_revolute(parent=-1, child=builder.add_link(mass=1.0), axis=newton.Axis.Z)
     base = builder.add_link(mass=2.0)
     tip = builder.add_link(mass=1.0)
     builder.body_com[base] = wp.vec3(0.3, 0.0, 0.0)
@@ -235,9 +246,9 @@ def _two_link_builder(armature: float = 0.0):
     return builder
 
 
-def _build_two_link(device):
+def _build_two_link(device, dummy_body: bool = False):
     """Two-link revolute chain — one articulation, two inertially coupled DOFs."""
-    return _two_link_builder().finalize(device=device)
+    return _two_link_builder(dummy_body=dummy_body).finalize(device=device)
 
 
 def _response_at(model, q, qd):
@@ -248,6 +259,45 @@ def _response_at(model, q, qd):
     newton.eval_fk(model, scratch.joint_q, scratch.joint_qd, scratch)
     n = model.joint_dof_count
     return np.linalg.inv(newton.eval_mass_matrix(model, scratch).numpy()[0, :n, :n])
+
+
+def _arm_dofs(model) -> np.ndarray:
+    """DOF indices belonging to an articulation, in order.
+
+    Equal to ``arange(joint_dof_count)`` unless the model was built with
+    ``dummy_body=True``, which prepends a standalone body that is not actuated
+    and cannot be: implicit actuation rejects DOFs outside an articulation.
+    """
+    art_start = model.articulation_start.numpy()
+    art_end = model.articulation_end.numpy()
+    qd_start = model.joint_qd_start.numpy()
+    spans = [np.arange(qd_start[art_start[a]], qd_start[art_end[a]]) for a in range(model.articulation_count)]
+    return np.concatenate(spans).astype(np.uint32) if spans else np.empty(0, dtype=np.uint32)
+
+
+def _set_arm(model, array, values) -> None:
+    """Write *values* into the articulation's slice of a per-DOF array."""
+    buf = array.numpy()
+    buf[_arm_dofs(model).astype(np.int64)] = np.asarray(values, dtype=np.float32)
+    array.assign(buf)
+
+
+def _arm_values(model, array) -> np.ndarray:
+    """Read the articulation's slice out of a per-DOF array."""
+    return array.numpy()[_arm_dofs(model).astype(np.int64)]
+
+
+def _mujoco_solver(test_case, model):
+    """Build :class:`SolverMuJoCo`, tolerating the standalone-root advisory.
+
+    Models built with ``dummy_body=True`` carry a joint outside any articulation.
+    That is what makes MuJoCo reorder the DOFs, and the solver says so on
+    conversion.
+    """
+    if model.articulation_count and len(_arm_dofs(model)) != model.joint_dof_count:
+        with test_case.assertWarnsRegex(UserWarning, "standalone world roots"):
+            return newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+    return newton.solvers.SolverMuJoCo(model, disable_contacts=True)
 
 
 def _mujoco_solve(solver):
@@ -278,13 +328,12 @@ def _make_implicit_actuator(model, device, kp, kd, max_effort=None, **kwargs):
 
     Returns the actuator together with the response oracle driving its solve.
     """
-    n = model.joint_dof_count
     clamping = None
     if max_effort is not None:
         clamping = [ClampingMaxEffort(max_effort=wp.array(max_effort, dtype=float, device=device))]
     oracle = kwargs.setdefault("response", ResponseOracle(model))
     actuator = Actuator(
-        indices=wp.array(np.arange(n, dtype=np.uint32), device=device),
+        indices=wp.array(_arm_dofs(model), dtype=wp.uint32, device=device),
         controller=ControllerPD(kp=kp, kd=kd),
         clamping=clamping,
         control_target_pos_attr="joint_target_q",
@@ -2657,7 +2706,7 @@ class TestResponseOracle(unittest.TestCase):
             f0 = kp[sl] * (target[sl] - q0[sl])
             J = np.eye(2) + h * np.diag(h * kp[sl] + kd[sl]) @ A
             expected[sl] = np.linalg.solve(J, h * f0) / h
-        np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
+        np.testing.assert_allclose(_arm_values(model, control.joint_f), expected, rtol=1e-3, atol=1e-3)
 
     def test_refresh_from_solve_captures_without_warmup(self):
         """refresh_from_solve captures and replays, with no warm-up call first.
@@ -2671,11 +2720,11 @@ class TestResponseOracle(unittest.TestCase):
         if not device.is_cuda:
             self.skipTest("graph capture requires CUDA")
 
-        model = _build_two_link(device)
-        n = model.joint_dof_count
+        model = _build_two_link(device, dummy_body=True)
+        n = len(_arm_dofs(model))
         state = model.state()
-        state.joint_q.assign(np.array([0.3, -0.8], dtype=np.float32))
-        solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+        _set_arm(model, state.joint_q, [0.3, -0.8])
+        solver = _mujoco_solver(self, model)
         solver.step(state, model.state(), model.control(), None, 0.01)
         solve_inverse = _mujoco_solve(solver)
 
@@ -2710,20 +2759,19 @@ class TestResponseOracle(unittest.TestCase):
         q0 = np.array([0.3, -0.8], dtype=np.float32)  # away from qpos0: alpha differs from invweight0
         target = np.array([0.6, 0.4], dtype=np.float32)
 
-        model = _build_two_link(device)
+        model = _build_two_link(device, dummy_body=True)
         state = model.state()
-        state.joint_q.assign(q0)
+        _set_arm(model, state.joint_q, q0)
         control = model.control()
-        control.joint_target_q.assign(target)
+        _set_arm(model, control.joint_target_q, target)
 
         # One solver step populates qM at the state's pose (computed before integration).
-        solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+        solver = _mujoco_solver(self, model)
         state_out = model.state()
         solver.step(state, state_out, control, None, h)
 
-        n = model.joint_dof_count
-        nv = solver.mj_model.nv
-        self.assertEqual(nv, n)
+        n = len(_arm_dofs(model))
+        self.assertEqual(solver.mj_model.nv, model.joint_dof_count)
 
         mjc_oracle = ResponseOracle(model)
         mjc_oracle.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
@@ -2749,7 +2797,7 @@ class TestResponseOracle(unittest.TestCase):
         f0 = kp * (target - q0)
         jacobian = np.eye(n) + h * np.diag(h * kp + kd) @ response_newton
         expected = np.linalg.solve(jacobian, h * f0) / h
-        np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
+        np.testing.assert_allclose(_arm_values(model, control.joint_f), expected, rtol=1e-3, atol=1e-3)
 
     def test_full_loop_response_from_mujoco_matches_refresh(self):
         """Closed-loop run with the coupled response from MuJoCo's inertia.
@@ -2771,13 +2819,12 @@ class TestResponseOracle(unittest.TestCase):
         target = np.array([0.6, 0.4], dtype=np.float32)
 
         def run(use_qm):
-            model = _build_two_link(device)
-            n = model.joint_dof_count
+            model = _build_two_link(device, dummy_body=True)
             states = [model.state(), model.state()]
             control = model.control()
-            control.joint_target_q.assign(target)
+            _set_arm(model, control.joint_target_q, target)
 
-            solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+            solver = _mujoco_solver(self, model)
             actuator, oracle = _make_implicit_actuator(
                 model,
                 device,
@@ -2785,7 +2832,7 @@ class TestResponseOracle(unittest.TestCase):
                 kd=wp.array(kd, dtype=float, device=device),
             )
 
-            self.assertEqual(solver.mj_model.nv, n)
+            self.assertEqual(solver.mj_model.nv, model.joint_dof_count)
             solve_m = _mujoco_solve(solver)
 
             def update_response(state_prev):
@@ -2805,7 +2852,7 @@ class TestResponseOracle(unittest.TestCase):
                     states[0], states[1] = states[1], states[0]
 
             def reset():
-                states[0].joint_q.assign(q_init)
+                _set_arm(model, states[0].joint_q, q_init)
                 states[0].joint_qd.zero_()
                 newton.eval_fk(model, states[0].joint_q, states[0].joint_qd, states[0])
                 oracle.refresh(states[0])  # prime the response at the initial pose
