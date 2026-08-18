@@ -207,7 +207,8 @@ class Mesh:
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
 
         self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
-        self._indices = np.array(indices, dtype=np.int32).flatten()
+        self._indices = self._normalize_indices(indices)
+        self._validate_indices(self._vertices, self._indices)
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self._color: Vec3 | None = None
@@ -235,11 +236,57 @@ class Mesh:
         self.sdf = sdf
 
         if compute_inertia:
-            self.mass, self.com, self.inertia, _ = compute_inertia_mesh(1.0, vertices, indices, is_solid=is_solid)
+            self.mass, self.com, self.inertia, _ = compute_inertia_mesh(
+                1.0, self._vertices, self._indices, is_solid=is_solid
+            )
         else:
             self.inertia = wp.mat33(np.eye(3))
             self.mass = 1.0
             self.com = wp.vec3()
+
+    @staticmethod
+    def _normalize_indices(indices: Sequence[int] | np.ndarray) -> np.ndarray:
+        """Convert triangle connectivity to int32 without changing values."""
+        try:
+            source = np.asarray(indices)
+            if np.iscomplexobj(source):
+                raise ValueError
+            normalized = np.asarray(indices, dtype=np.int64)
+            if not np.array_equal(source, normalized):
+                raise ValueError
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError("indices must contain integer indices representable as int32.") from exc
+
+        int32_info = np.iinfo(np.int32)
+        if normalized.size > 0 and (int(normalized.min()) < int32_info.min or int(normalized.max()) > int32_info.max):
+            raise ValueError("indices must contain integer indices representable as int32.")
+        return normalized.astype(np.int32).flatten()
+
+    @staticmethod
+    def _validate_indices(vertices: np.ndarray, indices: np.ndarray) -> None:
+        """Validate flattened triangle connectivity against the vertex array."""
+        if len(indices) % 3 != 0:
+            raise ValueError(f"indices length must be a multiple of 3, got {len(indices)}.")
+
+        if len(indices) == 0:
+            return
+
+        vertex_count = len(vertices)
+        idx_min = int(indices.min())
+        idx_max = int(indices.max())
+        if idx_min < 0:
+            raise ValueError(f"indices contains negative index {idx_min}.")
+        if idx_max >= vertex_count:
+            raise ValueError(f"indices contains index {idx_max} which exceeds vertex count {vertex_count}.")
+
+    def _replace_geometry(self, vertices: Sequence[Vec3] | np.ndarray, indices: Sequence[int] | np.ndarray) -> None:
+        """Replace vertices and indices as one validated geometry update."""
+        normalized_vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
+        normalized_indices = self._normalize_indices(indices)
+        self._validate_indices(normalized_vertices, normalized_indices)
+        self._vertices = normalized_vertices
+        self._indices = normalized_indices
+        self.invalidate_cache()
 
     @staticmethod
     def create_sphere(
@@ -1106,7 +1153,9 @@ class Mesh:
 
     @vertices.setter
     def vertices(self, value):
-        self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
+        vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
+        self._validate_indices(vertices, self._indices)
+        self._vertices = vertices
         self.invalidate_cache()
 
     @property
@@ -1115,7 +1164,9 @@ class Mesh:
 
     @indices.setter
     def indices(self, value):
-        self._indices = np.array(value, dtype=np.int32).flatten()
+        indices = self._normalize_indices(value)
+        self._validate_indices(self._vertices, indices)
+        self._indices = indices
         self.invalidate_cache()
 
     def _canonical_vertex_ids(self) -> np.ndarray:
@@ -1534,6 +1585,7 @@ class Mesh:
         Returns:
             The ID of the simulation-ready Warp Mesh.
         """
+        self._validate_indices(self._vertices, self._indices)
         device = wp.get_device(device)
         # wp.Device is not hashable, key on its alias instead
         cache_key = (device.alias, requires_grad, bvh_constructor)
@@ -1564,8 +1616,7 @@ class Mesh:
 
         hull_vertices, hull_faces = remesh_convex_hull(self.vertices, maxhullvert=self.maxhullvert)
         if replace:
-            self.vertices = hull_vertices
-            self.indices = hull_faces
+            self._replace_geometry(hull_vertices, hull_faces)
             return self
         else:
             # create a new mesh for the convex hull
@@ -2257,6 +2308,9 @@ class Heightfield:
             hy: Half-extent in Y direction. The heightfield spans [-hy, +hy].
             min_z: World-space Z value corresponding to data minimum. Must be provided
                 together with ``max_z``, or both omitted to auto-derive from data.
+                Uniform data normalizes to zeros, so with an explicit range the flat
+                surface sits at ``min_z`` (matching MuJoCo's compilation of constant
+                elevation); omit both bounds to place a flat field at its value.
             max_z: World-space Z value corresponding to data maximum. Must be provided
                 together with ``min_z``, or both omitted to auto-derive from data.
         """
@@ -2268,7 +2322,11 @@ class Heightfield:
         raw = np.array(data, dtype=np.float32).reshape(nrow, ncol)
         d_min, d_max = float(raw.min()), float(raw.max())
 
-        # Normalize data to [0, 1]
+        # Normalize data to [0, 1]. Uniform data has no range of its own and
+        # normalizes to zeros, so the surface sits at min_z — the same
+        # convention MuJoCo compiles (and SolverMuJoCo re-derives), keeping
+        # every solver's view of the field identical. To place a flat field
+        # at its value, omit min_z/max_z so both derive from the data.
         if d_max > d_min:
             self._data = (raw - d_min) / (d_max - d_min)
         else:

@@ -2643,6 +2643,10 @@ def _coerce_color(value: Any) -> tuple[float, float, float] | None:
     """Coerce a value to an RGB color tuple, or None if not possible."""
     if value is None:
         return None
+    # A per-vertex or per-face primvar holds one entry per element and only the leading one
+    # is used, so take it before the numpy conversion rather than flattening the whole array.
+    if hasattr(value, "__len__") and len(value) > 0 and hasattr(value[0], "__len__"):
+        value = value[0]
     color_np = np.array(value, dtype=np.float32).reshape(-1)
     if color_np.size >= 3:
         return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
@@ -2984,13 +2988,26 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
     if properties["color"] is None and properties["texture"] is None:
-        display_color = UsdGeom.PrimvarsAPI(target_prim).GetPrimvar("displayColor")
-        if display_color:
-            color = _coerce_color(display_color.Get())
-            if color is not None:
-                properties["color"] = _color_to_display_space(color, display_color.GetAttr())
+        properties["color"] = _display_color_for_prim(target_prim)
 
     return properties
+
+
+def _display_color_for_prim(prim: Usd.Prim) -> tuple[float, float, float] | None:
+    """Read ``primvars:displayColor`` off a prim, in Newton's display color space.
+
+    Resolved with inheritance: a ``constant`` primvar applies to every descendant, so an
+    ancestor is a legitimate place to author the color for a whole subtree.
+    """
+    if UsdGeom is None or not prim or not prim.IsValid():
+        return None
+    display_color = UsdGeom.PrimvarsAPI(prim).FindPrimvarWithInheritance("displayColor")
+    if not display_color:
+        return None
+    color = _coerce_color(display_color.Get())
+    if color is None:
+        return None
+    return _color_to_display_space(color, display_color.GetAttr())
 
 
 def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
@@ -3046,7 +3063,12 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
             if fallback_props is not None:
                 return fallback_props
 
-    return _empty_material_properties()
+    # No material is bound anywhere, which is exactly when ``primvars:displayColor`` is the
+    # only color the prim carries. The fallback above only runs once a material has been
+    # resolved, so it never reaches these prims.
+    properties = _empty_material_properties()
+    properties["color"] = _display_color_for_prim(prim)
+    return properties
 
 
 def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:

@@ -1438,12 +1438,37 @@ def parse_mjcf(
                 hfield_asset = hfield_assets[hfield_name]
                 nrow, ncol = hfield_asset["nrow"], hfield_asset["ncol"]
 
+                # MuJoCo's row conventions are PER SOURCE (verified against
+                # mujoco 3.10/3.11 with mj_ray probes on asymmetric fields):
+                # it reverses rows when parsing the inline XML ``elevation``
+                # string and when loading PNG images (row 0 lands at maximum
+                # y, the image-top convention), but loads its custom binary
+                # format as stored (row 0 = minimum y, which already matches
+                # Newton's grid).
                 if hfield_asset["elevation"] is not None:
                     elevation = hfield_asset["elevation"]
+                    flip_rows = True
                 elif hfield_asset["file"] is not None:
                     elevation = load_heightfield_elevation(hfield_asset["file"], nrow, ncol)
+                    flip_rows = hfield_asset["file"].lower().endswith(".png")
                 else:
                     elevation = np.zeros((nrow, ncol), dtype=np.float32)
+                    flip_rows = False
+
+                # Reproduce MuJoCo's elevation normalization exactly:
+                # (v - min) / (max - min), with CONSTANT data compiling to
+                # zeros (surface at the geom origin — verified against
+                # mujoco 3.10/3.11).
+                elevation = np.asarray(elevation, dtype=np.float32)
+                e_min, e_max = float(elevation.min()), float(elevation.max())
+                if e_max > e_min:
+                    elevation = (elevation - e_min) / (e_max - e_min)
+                else:
+                    elevation = np.zeros_like(elevation)
+
+                if flip_rows:
+                    elevation = elevation[::-1]
+                elevation = np.ascontiguousarray(elevation)
 
                 # Convert MuJoCo size (size_x, size_y, size_z, size_base) to Newton format.
                 # In MuJoCo, the heightfield's lowest point (data=0) is at the geom origin,
@@ -2017,6 +2042,7 @@ def parse_mjcf(
             # frictionloss for a native <joint type="ball"/>; captured in the ball branch
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
+            ball_damping = default_joint_damping
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_attrib = resolve_element_attrib(joint, "joint", defaults)
@@ -2062,9 +2088,10 @@ def parse_mjcf(
                             dof_custom_attributes[solreflimit_mode_key][current_dof_index + dof_offset] = (
                                 solreflimit_mode
                             )
-                    # Lift frictionloss into the builder's per-DOF friction array so it
-                    # reaches the MuJoCo spec (joint_friction[qd_start]) on export.
+                    # Lift frictionloss and damping into the builder's per-DOF arrays
+                    # so they reach the MuJoCo spec on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
+                    ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
                     mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
                     current_dof_index += 3
                     break
@@ -2308,6 +2335,7 @@ def parse_mjcf(
                     child_xform=wp.transform(joint_pos, wp.quat_identity()),
                     armature=joint_armature[-1] if joint_armature else None,
                     friction=ball_friction,
+                    damping=ball_damping,
                     label=joint_label,
                     custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )

@@ -697,11 +697,20 @@ class Model:
         def add_deprecated_alias(self, name: str, getter: Callable[[], Any], message: str) -> None:
             """Add a deprecated attribute alias.
 
+            .. deprecated:: 1.6
+                Define an explicit property on a custom namespace instead.
+
             Args:
                 name: Alias name exposed on the namespace.
                 getter: Callable returning the canonical target object.
                 message: Deprecation warning message.
             """
+            warnings.warn(
+                "Model.AttributeNamespace.add_deprecated_alias() is deprecated; "
+                "define an explicit property on a custom namespace instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             if name in self.__dict__ or name in self._deprecated_aliases:
                 raise AttributeError(f"Attribute already exists: {self._name}.{name}")
             self._deprecated_aliases[name] = (getter, message)

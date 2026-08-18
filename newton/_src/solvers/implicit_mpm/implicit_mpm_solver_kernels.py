@@ -915,6 +915,7 @@ def reset_mpm_particle_history(
     particle_world: wp.array[wp.int32],
     world_mask: wp.array[wp.bool],
     world_count: int,
+    initial_particle_Jp: wp.array[float],
     particle_elastic_strain: wp.array[wp.mat33],
     particle_transform: wp.array[wp.mat33],
     particle_qd_grad: wp.array[wp.mat33],
@@ -930,7 +931,7 @@ def reset_mpm_particle_history(
         particle_transform[particle_index] = identity
         particle_qd_grad[particle_index] = wp.mat33(0.0)
         particle_stress[particle_index] = wp.mat33(0.0)
-        particle_Jp[particle_index] = 1.0
+        particle_Jp[particle_index] = initial_particle_Jp[particle_index]
 
 
 @wp.kernel

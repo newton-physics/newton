@@ -32,6 +32,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
+from newton._src.utils.color import color_linear_to_srgb
 from newton._src.utils.import_usd import _is_uniform_scale
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
@@ -6205,7 +6206,7 @@ def Xform "NotPSD" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_stiffness_damping(self):
-        """Test that joint stiffness and damping are parsed correctly from USD."""
+        """Verify joint stiffness and damping are parsed correctly from USD."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -6322,11 +6323,15 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
+        self.assertNotIn("mujoco:dof_passive_damping", builder.custom_attributes)
+        # mjc:damping resolves through SchemaResolverMjc into joint_damping;
+        # mjc:stiffness stays a namespaced custom attribute.
+        builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()])
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
+        self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
 
         joint_names = model.joint_label
         joint_qd_start = model.joint_qd_start.numpy()
@@ -6361,6 +6366,120 @@ def Xform "Articulation" (
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_damping_respects_schema_resolver_priority(self):
+        """Honor resolver priority when multiple damping schemas are authored."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        parent = UsdGeom.Xform.Define(stage, "/World/Articulation/Parent")
+        child = UsdGeom.Xform.Define(stage, "/World/Articulation/Child")
+        UsdPhysics.RigidBodyAPI.Apply(parent.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(child.GetPrim())
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint")
+        joint.CreateBody0Rel().SetTargets([parent.GetPath()])
+        joint.CreateBody1Rel().SetTargets([child.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0))
+        joint.GetPrim().CreateAttribute("newton:damping", Sdf.ValueTypeNames.Float, custom=True).Set(2.0)
+        joint.GetPrim().CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Float, custom=True).Set(7.0)
+
+        cases = (
+            ((usd.SchemaResolverNewton, usd.SchemaResolverMjc), math.degrees(2.0)),
+            ((usd.SchemaResolverMjc, usd.SchemaResolverNewton), 7.0),
+        )
+        for resolver_types, expected_damping in cases:
+            with self.subTest(resolvers=[resolver_type.name for resolver_type in resolver_types]):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage, schema_resolvers=[resolver_type() for resolver_type in resolver_types])
+                with mock.patch("newton.use_coord_layout_targets", True):
+                    model = builder.finalize()
+
+                joint_index = model.joint_label.index("/World/Articulation/Joint")
+                dof_start = int(model.joint_qd_start.numpy()[joint_index])
+                self.assertAlmostEqual(float(model.joint_damping.numpy()[dof_start]), expected_damping, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_damping_from_spherical_joint_via_schema_resolver(self):
+        """Verify MuJoCo USD damping reaches every spherical-joint DOF."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        parent = UsdGeom.Xform.Define(stage, "/World/Articulation/Parent")
+        child = UsdGeom.Xform.Define(stage, "/World/Articulation/Child")
+        UsdPhysics.RigidBodyAPI.Apply(parent.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(child.GetPrim())
+
+        joint = UsdPhysics.SphericalJoint.Define(stage, "/World/Articulation/Joint")
+        joint.CreateBody0Rel().SetTargets([parent.GetPath()])
+        joint.CreateBody1Rel().SetTargets([child.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0))
+        joint.GetPrim().CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Float, custom=True).Set(0.75)
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 99.0
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc()])
+        with mock.patch("newton.use_coord_layout_targets", True):
+            model = builder.finalize()
+
+        joint_index = model.joint_label.index("/World/Articulation/Joint")
+        dof_start = int(model.joint_qd_start.numpy()[joint_index])
+        np.testing.assert_allclose(model.joint_damping.numpy()[dof_start : dof_start + 3], [0.75] * 3)
+        self.assertFalse(hasattr(model.mujoco, "dof_passive_damping"))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_damping_from_d6_joint_via_schema_resolver(self):
+        """Verify MuJoCo USD damping reaches linear and angular D6 DOFs."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        parent = UsdGeom.Xform.Define(stage, "/World/Articulation/Parent")
+        child = UsdGeom.Xform.Define(stage, "/World/Articulation/Child")
+        UsdPhysics.RigidBodyAPI.Apply(parent.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(child.GetPrim())
+
+        joint = UsdPhysics.Joint.Define(stage, "/World/Articulation/Joint")
+        joint.CreateBody0Rel().SetTargets([parent.GetPath()])
+        joint.CreateBody1Rel().SetTargets([child.GetPath()])
+        for axis in ("transX", "rotZ"):
+            limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+            limit.CreateLowAttr().Set(-1.0)
+            limit.CreateHighAttr().Set(1.0)
+        joint.GetPrim().CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Float, custom=True).Set(0.75)
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 99.0
+        builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc()])
+        with mock.patch("newton.use_coord_layout_targets", True):
+            model = builder.finalize()
+
+        joint_index = model.joint_label.index("/World/Articulation/Joint")
+        self.assertEqual(builder.joint_dof_dim[joint_index], (1, 1))
+        dof_start = int(model.joint_qd_start.numpy()[joint_index])
+        np.testing.assert_allclose(model.joint_damping.numpy()[dof_start : dof_start + 2], [0.75, 0.75])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_geom_priority_parsing(self):
@@ -7397,9 +7516,13 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage)
 
-        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+        shape = result["path_shape_map"]["/Body/VisualMesh"]
+        src = builder.shape_source[shape]
         self.assertIsNotNone(src.texture)
         np.testing.assert_allclose(np.array(src.color), np.array([1.0, 1.0, 1.0]))
+        # The viewer reads shape_color, and ModelBuilder prefers it over src.color, so the
+        # white has to survive there too or the shader multiplies it into every texel.
+        np.testing.assert_allclose(np.array(builder.shape_color[shape]), np.array([1.0, 1.0, 1.0]))
 
     @staticmethod
     def _build_uvless_textured_visual_mesh_stage(*, material_subset: bool):
@@ -12440,6 +12563,87 @@ def Xform "Body" (
         self.assertEqual(builder.shape_count, 2)
         drawn = [s for s in range(builder.shape_count) if builder.shape_flags[s] & ShapeFlags.VISIBLE]
         self.assertEqual(drawn, [path_shape_map["/Body/VisualSphere"]])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unmaterialed_visual_shape_uses_neutral_color(self):
+        """Verify a visual prim with no bound material gets the neutral default, not the palette.
+
+        ModelBuilder colors an uncolored shape from a per-shape debug palette, which suits
+        procedurally built scenes but makes an imported stage render in colors the asset
+        never authored. USD renderers draw an unmaterialed prim in UsdPreviewSurface's
+        ``diffuseColor`` default instead, so the importer supplies that.
+        """
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.Xform.Define(stage, "/World")
+        UsdGeom.Cube.Define(stage, "/World/Bare")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=True)
+        shape = result["path_shape_map"]["/World/Bare"]
+
+        self.assertTrue(builder.shape_flags[shape] & ShapeFlags.VISIBLE)
+        color = builder.shape_color[shape]
+        # 0.18 linear, display-encoded the same way an authored color would be.
+        expected = color_linear_to_srgb((0.18, 0.18, 0.18))
+        for channel, want in zip(color, expected, strict=True):
+            self.assertAlmostEqual(channel, want, places=5)
+        # Guard the actual defect: the palette varies with shape index, a neutral does not.
+        self.assertAlmostEqual(color[0], color[1], places=6)
+        self.assertAlmostEqual(color[1], color[2], places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_color_used_without_bound_material(self):
+        """Verify primvars:displayColor is honored on a prim that binds no material.
+
+        displayColor was only consulted once a material had been resolved but supplied no
+        color, so it never reached prims with no material at all -- the case where it is
+        the only color the prim carries.
+        """
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.Xform.Define(stage, "/World")
+        cube = UsdGeom.Cube.Define(stage, "/World/Colored")
+        cube.GetDisplayColorAttr().Set([(0.463, 0.725, 0.0)])
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=True)
+        color = builder.shape_color[result["path_shape_map"]["/World/Colored"]]
+
+        expected = color_linear_to_srgb((0.463, 0.725, 0.0))
+        for channel, want in zip(color, expected, strict=True):
+            self.assertAlmostEqual(channel, want, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_color_inherited_from_ancestor(self):
+        """Verify a constant displayColor authored on an ancestor reaches its descendants.
+
+        Constant primvars inherit down the hierarchy, so authoring one on an Xform is a
+        legitimate way to color a whole subtree. ``GetPrimvar`` only inspects the prim
+        itself and returns a primvar whose value is None, which reads as "no color".
+        """
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        group = UsdGeom.Xform.Define(stage, "/World")
+        primvar = UsdGeom.PrimvarsAPI(group.GetPrim()).CreatePrimvar(
+            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant
+        )
+        primvar.Set([(0.1, 0.2, 0.3)])
+        UsdGeom.Cube.Define(stage, "/World/Inheriting")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=True)
+        color = builder.shape_color[result["path_shape_map"]["/World/Inheriting"]]
+
+        expected = color_linear_to_srgb((0.1, 0.2, 0.3))
+        for channel, want in zip(color, expected, strict=True):
+            self.assertAlmostEqual(channel, want, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_fallback_with_material(self):

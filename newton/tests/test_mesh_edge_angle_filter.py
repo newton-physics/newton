@@ -601,13 +601,19 @@ class TestCollisionEdgesLifecycle(unittest.TestCase):
         mesh.sdf = object()
         self._seed_collision_edges(mesh)
 
-        # New topology (a single triangle) -- old cached edges are bogus.
-        new_verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
-        new_inds = np.array([0, 1, 2], dtype=np.int32)
-        copy_verts = mesh.copy(vertices=new_verts)
+        # A vertices-only copy retains the current topology, so keep the
+        # vertex count compatible while still changing the geometry.
+        replacement_verts = mesh.vertices.copy()
+        replacement_verts[0] += np.array([0.1, 0.0, 0.0], dtype=np.float32)
+        copy_verts = mesh.copy(vertices=replacement_verts)
+        np.testing.assert_array_equal(copy_verts.vertices, replacement_verts)
+        np.testing.assert_array_equal(copy_verts.indices, mesh.indices)
         self.assertIsNone(copy_verts._collision_edges)
         self.assertIsNone(copy_verts.sdf)
 
+        # New topology (a single triangle) -- old cached edges are bogus.
+        new_verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        new_inds = np.array([0, 1, 2], dtype=np.int32)
         copy_inds = mesh.copy(indices=new_inds)
         self.assertIsNone(copy_inds._collision_edges)
         self.assertIsNone(copy_inds.sdf)
