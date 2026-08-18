@@ -17,6 +17,7 @@ from .schema_resolver import (
     SchemaResolver,
     SchemaResolverManager,
     _ImporterDefault,
+    _PolicySelection,
     _ResolvedValue,
     _ResolverValue,
     _ValueSource,
@@ -342,7 +343,7 @@ class _UsdResolutionPolicy:
 
         def select_field(
             key: str,
-            policy: Literal["active", "legacy", "composed"],
+            policy: _PolicySelection,
         ) -> tuple[float, Literal["shape", "material", "default"]]:
             shape_result = shape_policies.get(key).select(policy)
             shape_value = None if shape_result is None else shape_result.value
@@ -361,7 +362,7 @@ class _UsdResolutionPolicy:
                 return float(shape_value), "shape"
             return getattr(shape_defaults, key), "default"
 
-        def select(policy: Literal["active", "legacy", "composed"]) -> _UsdResolutionPolicy._ContactResponseSelection:
+        def select(policy: _PolicySelection) -> _UsdResolutionPolicy._ContactResponseSelection:
             selected = self.ContactResponse.from_getter(lambda key: select_field(key, policy))
             return self._ContactResponseSelection(
                 self.ContactResponse.from_getter(lambda key: selected.get(key)[0]),
@@ -671,7 +672,7 @@ class _UsdResolutionPolicy:
             )
 
         def resolution_settings(
-            policy: Literal["active", "legacy", "composed"],
+            policy: _PolicySelection,
         ) -> _UsdResolutionPolicy._SdfResolutionSettings:
             target = target_policies.select(policy).value
             max_result = max_resolution_policies.select(policy).resolved
@@ -1009,7 +1010,7 @@ class _UsdResolutionPolicy:
             interpreter=interpret_thickness,
         )
 
-        def effective_thickness(policy: Literal["active", "legacy", "composed"]) -> float | None:
+        def effective_thickness(policy: _PolicySelection) -> float | None:
             model = mass_model.select(policy)
             thickness = shell_thickness.select(policy)
             if model is None or thickness is None or not model.value:
@@ -1281,9 +1282,7 @@ class _UsdResolutionPolicy:
             candidates[f"{key}_ke"] = fallback_ke
             candidates[f"{key}_kd"] = fallback_kd
 
-        def assemble(
-            key: str, policy: Literal["active", "legacy", "composed"]
-        ) -> _UsdResolutionPolicy.JointLimitResult:
+        def assemble(key: str, policy: _PolicySelection) -> _UsdResolutionPolicy.JointLimitResult:
             builder_defaults = defaults[key]
             fallback_ke, fallback_kd = fallback_policies[key]
             return self._resolve_joint_limit_policy_result(

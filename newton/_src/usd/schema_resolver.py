@@ -73,6 +73,16 @@ def _track_omitted_import_defaults(**defaults: Any) -> Callable[[Callable[_P, _R
     return decorate
 
 
+def _track_omitted_usd_import_defaults(*, mesh_maxhullvert: int) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
+    """Mark omission-sensitive defaults shared by the USD importer entry points."""
+    return _track_omitted_import_defaults(
+        joint_drive_gains_scaling=1.0,
+        collapse_fixed_joints=False,
+        enable_self_collisions=True,
+        mesh_maxhullvert=mesh_maxhullvert,
+    )
+
+
 def _interpret_import_argument(value: Any) -> tuple[Any, _ImporterDefault]:
     """Preserve an argument's future override and legacy default roles."""
     if isinstance(value, _ImporterDefault):

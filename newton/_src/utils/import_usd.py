@@ -54,7 +54,7 @@ from ..usd.schema_resolver import (
     SchemaResolverManager,
     _interpret_import_argument,
     _resolve_import_option,
-    _track_omitted_import_defaults,
+    _track_omitted_usd_import_defaults,
 )
 from ..usd.schemas import SchemaResolverNewton
 from .color import color_linear_to_srgb
@@ -175,12 +175,7 @@ class _DofParams:
     limit_solref_mode: int
 
 
-@_track_omitted_import_defaults(
-    joint_drive_gains_scaling=1.0,
-    collapse_fixed_joints=False,
-    enable_self_collisions=True,
-    mesh_maxhullvert=Mesh.MAX_HULL_VERTICES,
-)
+@_track_omitted_usd_import_defaults(mesh_maxhullvert=Mesh.MAX_HULL_VERTICES)
 def parse_usd(
     builder: ModelBuilder,
     source: str | UsdStage,

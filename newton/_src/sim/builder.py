@@ -51,7 +51,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
-from ..usd.schema_resolver import SchemaResolver, _track_omitted_import_defaults
+from ..usd.schema_resolver import SchemaResolver, _track_omitted_usd_import_defaults
 from ..utils import compute_world_offsets
 from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency, split_mesh_components
@@ -3337,12 +3337,7 @@ class ModelBuilder:
             override_root_xform=override_root_xform,
         )
 
-    @_track_omitted_import_defaults(
-        joint_drive_gains_scaling=1.0,
-        collapse_fixed_joints=False,
-        enable_self_collisions=True,
-        mesh_maxhullvert=Mesh.MAX_HULL_VERTICES,
-    )
+    @_track_omitted_usd_import_defaults(mesh_maxhullvert=Mesh.MAX_HULL_VERTICES)
     def add_usd(
         self,
         source: str | UsdStage,
