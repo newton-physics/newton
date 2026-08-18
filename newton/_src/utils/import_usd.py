@@ -4024,6 +4024,9 @@ def parse_usd(
                         mesh = _get_mesh_cached(prim)
                         if material_props.get("texture") is not None:
                             mesh.texture = material_props["texture"]
+                            # A textured material resolves no scalar color, so add_shape()
+                            # would otherwise fall back to its palette and tint the texture.
+                            mesh.color = (1.0, 1.0, 1.0)
                         if material_props.get("roughness") is not None:
                             mesh.roughness = material_props["roughness"]
                         if material_props.get("metallic") is not None:
