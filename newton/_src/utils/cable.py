@@ -233,24 +233,23 @@ def cable_straight_points(
     return [start + d * (ds * i) for i in range(num_segments + 1)]
 
 
-def cable_parallel_transport_quaternions(
+def rod_parallel_transport_quaternions(
     points: Sequence[wp.vec3],
     *,
     twist_total: float = 0.0,
 ) -> list[wp.quat]:
-    """Generate cable segment frames using parallel transport.
+    """Generate rod segment frames using parallel transport.
 
-    The returned quaternions can form the ``quaternions`` input for
-    :meth:`ModelBuilder.add_rod`, but the transported frames depend only on the
-    input centerline and twist.
+    The returned quaternions form the ``quaternions`` input for
+    :meth:`ModelBuilder.add_rod`.
 
     They rotate local +Z to each segment direction while
     minimizing twist between successive segments. Optionally, a total twist
-    can be distributed uniformly along the cable.
+    can be distributed uniformly along the rod.
 
     Args:
-        points: Cable centerline points of length at least two [m].
-        twist_total: Total twist [rad] distributed along the cable and applied
+        points: Rod centerline points of length at least two [m].
+        twist_total: Total twist [rad] distributed along the rod and applied
             about the segment direction.
 
     Returns:
@@ -291,7 +290,7 @@ def cable_parallel_transport_quaternions(
     return quats
 
 
-def cable_straight_points_and_quaternions(
+def rod_straight_points_and_quaternions(
     start: wp.vec3,
     direction: wp.vec3,
     length: float,
@@ -299,20 +298,19 @@ def cable_straight_points_and_quaternions(
     *,
     twist_total: float = 0.0,
 ) -> tuple[list[wp.vec3], list[wp.quat]]:
-    """Generate straight cable points and matching segment frames.
+    """Generate straight rod points and matching segment frames.
 
     This is a convenience wrapper around :func:`cable_straight_points` and
-    :func:`cable_parallel_transport_quaternions`. The returned values form the
-    ``positions`` and ``quaternions`` inputs for :meth:`ModelBuilder.add_rod`,
-    but are not tied to that representation.
+    :func:`rod_parallel_transport_quaternions`. The returned values form the
+    ``positions`` and ``quaternions`` inputs for :meth:`ModelBuilder.add_rod`.
 
     Args:
         start: First point in world space [m].
-        direction: World-space direction of the cable (need not be normalized).
-        length: Total length of the cable [m].
+        direction: World-space direction of the rod (need not be normalized).
+        length: Total length of the rod [m].
         num_segments: Number of segments. The returned point count is
             ``num_segments + 1``.
-        twist_total: Total twist [rad] distributed along the cable.
+        twist_total: Total twist [rad] distributed along the rod.
 
     Returns:
         Pair containing the world-space polyline points [m] and matching segment
@@ -324,7 +322,7 @@ def cable_straight_points_and_quaternions(
         length=length,
         num_segments=num_segments,
     )
-    quats = cable_parallel_transport_quaternions(points, twist_total=twist_total)
+    quats = rod_parallel_transport_quaternions(points, twist_total=twist_total)
     return points, quats
 
 
@@ -390,18 +388,18 @@ def create_parallel_transport_cable_quaternions(
     *,
     twist_total: float = 0.0,
 ) -> list[wp.quat]:
-    """Deprecated alias for :func:`cable_parallel_transport_quaternions`.
+    """Deprecated alias for :func:`rod_parallel_transport_quaternions`.
 
     .. deprecated:: 1.6
-        Use :func:`cable_parallel_transport_quaternions` instead.
+        Use :func:`rod_parallel_transport_quaternions` instead.
     """
     warnings.warn(
         "create_parallel_transport_cable_quaternions() is deprecated in Newton 1.6; "
-        "use cable_parallel_transport_quaternions() instead.",
+        "use rod_parallel_transport_quaternions() instead.",
         DeprecationWarning,
         stacklevel=2,
     )
-    return cable_parallel_transport_quaternions(points, twist_total=twist_total)
+    return rod_parallel_transport_quaternions(points, twist_total=twist_total)
 
 
 def create_straight_cable_points(
@@ -431,18 +429,18 @@ def create_straight_cable_points_and_quaternions(
     *,
     twist_total: float = 0.0,
 ) -> tuple[list[wp.vec3], list[wp.quat]]:
-    """Deprecated alias for :func:`cable_straight_points_and_quaternions`.
+    """Deprecated alias for :func:`rod_straight_points_and_quaternions`.
 
     .. deprecated:: 1.6
-        Use :func:`cable_straight_points_and_quaternions` instead.
+        Use :func:`rod_straight_points_and_quaternions` instead.
     """
     warnings.warn(
         "create_straight_cable_points_and_quaternions() is deprecated in Newton 1.6; "
-        "use cable_straight_points_and_quaternions() instead.",
+        "use rod_straight_points_and_quaternions() instead.",
         DeprecationWarning,
         stacklevel=2,
     )
-    return cable_straight_points_and_quaternions(
+    return rod_straight_points_and_quaternions(
         start,
         direction,
         length,

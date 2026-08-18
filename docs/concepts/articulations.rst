@@ -50,10 +50,10 @@ Rod joints
 
 Newton uses *cable* for the modeled object and *rod* for this discrete
 stretch/shear/bend/twist representation. A cable may be assembled from rod
-joints or modeled with another formulation. Geometry and transported-frame
-helpers depend only on the cable centerline and use the ``newton.utils.cable_*``
-prefix. Per-joint stiffness and solver mechanics belong to the rod
-representation and use ``rod`` terminology.
+joints or modeled with another formulation. Cable centerline geometry uses
+``cable`` terminology. Per-segment orientation/twist frames, per-joint
+stiffness, and solver mechanics belong to the rod representation and use
+``rod`` terminology.
 
 :attr:`newton.JointType.ROD` is represented in Newton's joint data model, but
 it is not a conventional generalized-coordinate joint. Its four entries are

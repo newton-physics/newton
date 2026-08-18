@@ -148,7 +148,7 @@ class Example:
                         amp = wav * cable_length * waviness_scale
                         pts[i] = pts[i] + ortho_vec * (amp * math.sin(phase))
 
-                edge_q = newton.utils.cable_parallel_transport_quaternions(pts, twist_total=float(twist))
+                edge_q = newton.utils.rod_parallel_transport_quaternions(pts, twist_total=float(twist))
 
                 builder.add_rod(
                     positions=pts,

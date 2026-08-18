@@ -309,7 +309,7 @@ def _make_straight_cable_along_x(num_elements: int, segment_length: float, z_hei
     """
     length = float(num_elements * segment_length)
     start = wp.vec3(-0.5 * length, 0.0, float(z_height))
-    return newton.utils.cable_straight_points_and_quaternions(
+    return newton.utils.rod_straight_points_and_quaternions(
         start=start,
         direction=wp.vec3(1.0, 0.0, 0.0),
         length=length,
@@ -326,7 +326,7 @@ def _make_straight_cable_along_y(num_elements: int, segment_length: float, z_hei
     """
     length = float(num_elements * segment_length)
     start = wp.vec3(0.0, -0.5 * length, float(z_height))
-    return newton.utils.cable_straight_points_and_quaternions(
+    return newton.utils.rod_straight_points_and_quaternions(
         start=start,
         direction=wp.vec3(0.0, 1.0, 0.0),
         length=length,
@@ -417,7 +417,7 @@ def _build_cable_loop(device, num_links: int = 6):
         y = radius * wp.sin(angle)
         points.append(wp.vec3(x, y, z_height))
 
-    edge_q = newton.utils.cable_parallel_transport_quaternions(points, twist_total=0.0)
+    edge_q = newton.utils.rod_parallel_transport_quaternions(points, twist_total=0.0)
 
     _rod_bodies, _rod_joints = builder.add_rod(
         positions=points,
@@ -1811,7 +1811,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.cable_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -1937,7 +1937,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.cable_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2218,7 +2218,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.cable_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2344,7 +2344,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.cable_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2489,7 +2489,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.cable_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2642,7 +2642,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
     cable_width = 2.0 * rod_radius
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.cable_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2774,7 +2774,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.cable_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2935,7 +2935,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.cable_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -3077,7 +3077,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.cable_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -3581,7 +3581,7 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
     z0 = 0.5
     theta = np.linspace(0.0, 2.0 * np.pi, num_segments + 1, endpoint=True)
     points = [wp.vec3(float(radius * np.cos(t)), float(radius * np.sin(t)), float(z0)) for t in theta]
-    quats = newton.utils.cable_parallel_transport_quaternions(points)
+    quats = newton.utils.rod_parallel_transport_quaternions(points)
 
     # Avoid list[Vec3] invariance issues in static checking.
     points_any: list[Any] = points
@@ -4126,7 +4126,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
     attach_offset = anchor_radius + rod_radius
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -attach_offset)
 
-    rod_points, rod_quats = newton.utils.cable_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements) * segment_length,
@@ -5318,9 +5318,9 @@ def _cable_rod_helper_api_deprecates_create_names(test, device):
     """Verify deprecated create names forward to prefix-first cable/rod APIs."""
     helper_renames = (
         ("create_cable_stiffness_from_elastic_moduli", "rod_stiffness_from_elastic_moduli"),
-        ("create_parallel_transport_cable_quaternions", "cable_parallel_transport_quaternions"),
+        ("create_parallel_transport_cable_quaternions", "rod_parallel_transport_quaternions"),
         ("create_straight_cable_points", "cable_straight_points"),
-        ("create_straight_cable_points_and_quaternions", "cable_straight_points_and_quaternions"),
+        ("create_straight_cable_points_and_quaternions", "rod_straight_points_and_quaternions"),
     )
     for deprecated_name, canonical_name in helper_renames:
         with test.subTest(deprecated_name=deprecated_name):
@@ -5338,12 +5338,12 @@ def _cable_rod_helper_api_deprecates_create_names(test, device):
     # Deprecation warnings should point to the caller.
     test.assertEqual(caught.filename, __file__)
 
-    expected_quaternions = newton.utils.cable_parallel_transport_quaternions(expected_points)
-    with test.assertWarnsRegex(DeprecationWarning, "cable_parallel_transport_quaternions"):
+    expected_quaternions = newton.utils.rod_parallel_transport_quaternions(expected_points)
+    with test.assertWarnsRegex(DeprecationWarning, "rod_parallel_transport_quaternions"):
         quaternions = newton.utils.create_parallel_transport_cable_quaternions(expected_points)
     np.testing.assert_allclose(np.asarray(quaternions), np.asarray(expected_quaternions))
 
-    with test.assertWarnsRegex(DeprecationWarning, "cable_straight_points_and_quaternions"):
+    with test.assertWarnsRegex(DeprecationWarning, "rod_straight_points_and_quaternions"):
         combined_points, combined_quaternions = newton.utils.create_straight_cable_points_and_quaternions(
             start, direction, 1.0, 2
         )
@@ -5364,8 +5364,8 @@ def _cable_rod_helper_api_deprecates_create_names(test, device):
         test.assertIs(type(rod_stiffness), newton.utils.RodStiffness)
         test.assertEqual(type(rod_stiffness).__name__, "RodStiffness")
         newton.utils.cable_straight_points(start, direction, 1.0, 2)
-        newton.utils.cable_parallel_transport_quaternions(expected_points)
-        newton.utils.cable_straight_points_and_quaternions(start, direction, 1.0, 2)
+        newton.utils.rod_parallel_transport_quaternions(expected_points)
+        newton.utils.rod_straight_points_and_quaternions(start, direction, 1.0, 2)
         newton.utils.rod_stiffness_from_elastic_moduli(100.0, 0.1, 0.5)
 
     with test.assertWarnsRegex(DeprecationWarning, r"CableStiffness.*RodStiffness") as caught:
@@ -5818,7 +5818,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
         length=cable_length,
         num_segments=num_segments,
     )
-    quats = newton.utils.cable_parallel_transport_quaternions(points)
+    quats = newton.utils.rod_parallel_transport_quaternions(points)
     rod_bodies, _rod_joints = builder.add_rod(
         positions=points,
         quaternions=quats,

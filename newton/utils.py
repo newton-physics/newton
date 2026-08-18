@@ -73,14 +73,14 @@ __all__ += [
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
     RodStiffness,
-    cable_parallel_transport_quaternions,
     cable_straight_points,
-    cable_straight_points_and_quaternions,
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
     create_straight_cable_points,
     create_straight_cable_points_and_quaternions,
+    rod_parallel_transport_quaternions,
     rod_stiffness_from_elastic_moduli,
+    rod_straight_points_and_quaternions,
 )
 
 if TYPE_CHECKING:
@@ -89,14 +89,14 @@ if TYPE_CHECKING:
 __all__ += [
     "CableStiffness",
     "RodStiffness",
-    "cable_parallel_transport_quaternions",
     "cable_straight_points",
-    "cable_straight_points_and_quaternions",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
     "create_straight_cable_points",
     "create_straight_cable_points_and_quaternions",
+    "rod_parallel_transport_quaternions",
     "rod_stiffness_from_elastic_moduli",
+    "rod_straight_points_and_quaternions",
 ]
 
 _DEPRECATED_CABLE_SYMBOLS = {
@@ -107,11 +107,11 @@ __deprecated_symbols__ = {
     "CableStiffness": "Deprecated in 1.6; use RodStiffness instead.",
     "create_cable_stiffness_from_elastic_moduli": ("Deprecated in 1.6; use rod_stiffness_from_elastic_moduli instead."),
     "create_parallel_transport_cable_quaternions": (
-        "Deprecated in 1.6; use cable_parallel_transport_quaternions instead."
+        "Deprecated in 1.6; use rod_parallel_transport_quaternions instead."
     ),
     "create_straight_cable_points": "Deprecated in 1.6; use cable_straight_points instead.",
     "create_straight_cable_points_and_quaternions": (
-        "Deprecated in 1.6; use cable_straight_points_and_quaternions instead."
+        "Deprecated in 1.6; use rod_straight_points_and_quaternions instead."
     ),
 }
 

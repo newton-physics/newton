@@ -80,7 +80,7 @@ class Example:
                 length=self.cable_length,
                 num_segments=self.NUM_ELEMENTS,
             )
-            quats = newton.utils.cable_parallel_transport_quaternions(points)
+            quats = newton.utils.rod_parallel_transport_quaternions(points)
 
             # Twist != bend exercises the split stiffness path while the applied
             # load remains pure bending.

@@ -196,7 +196,7 @@ class Example:
             length=self.cable_length,
             num_segments=self.NUM_ELEMENTS,
         )
-        quats = newton.utils.cable_parallel_transport_quaternions(points)
+        quats = newton.utils.rod_parallel_transport_quaternions(points)
 
         joint_count_before = builder.joint_count
         rod_bodies, _ = builder.add_rod(
