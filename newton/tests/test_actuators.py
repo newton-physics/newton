@@ -713,7 +713,7 @@ class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.Te
         self.assertFalse([w for w in caught if "checkpoints" in str(w.message)])
 
     def test_dict_checkpoint_uses_target_pos_indices(self):
-        """target_pos is read at target_pos_indices, not sequentially or at pos_indices.
+        """Verify target_pos uses target_pos_indices, not sequential or pos_indices.
 
         Regression test for a bug where the Torch path fell back to sequential indices
         into target_pos whenever target_pos_indices was not literally the same array
@@ -878,7 +878,7 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
             ControllerNeuralLSTM(model_path=dict_path)
 
     def test_dict_checkpoint_uses_target_pos_indices(self):
-        """target_pos is read at target_pos_indices, not sequentially or at pos_indices.
+        """Verify target_pos uses target_pos_indices, not sequential or pos_indices.
 
         Regression test for a bug where the Torch path fell back to sequential indices
         into target_pos whenever target_pos_indices was not literally the same array
@@ -935,8 +935,7 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
         np.testing.assert_allclose(forces.numpy(), expected.cpu().numpy(), rtol=1e-4, atol=1e-6)
 
     def test_masked_reset_after_inference_mode_output(self):
-        """State.reset(mask) succeeds and zeros only masked actuators when hidden/cell are
-        inference-mode network outputs.
+        """Verify masked reset clears selected LSTM state without raising.
 
         Regression test: masked resets used to write in-place into the hidden/cell tensors
         produced by the network under torch.inference_mode(), which raised
