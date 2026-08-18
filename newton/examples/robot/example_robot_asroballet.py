@@ -98,6 +98,7 @@ def _lqr_control_kernel(
     joint_q: wp.array[float],
     base_body: int,
     wheel_q_indices: wp.array[int],
+    wheel_ctrl_indices: wp.array[int],
     command: wp.array[wp.vec3],
     position_reference: wp.array[wp.vec3],
     track_planar_velocity: bool,
@@ -164,7 +165,7 @@ def _lqr_control_kernel(
             + ball_to_control[wheel, 1] * virtual_torque[1]
             + ball_to_control[wheel, 2] * virtual_torque[2]
         )
-        control[wheel] = wp.clamp(wheel_control, -control_limit, control_limit)
+        control[wheel_ctrl_indices[wheel]] = wp.clamp(wheel_control, -control_limit, control_limit)
 
 
 @wp.kernel
@@ -177,20 +178,21 @@ def _latch_position_reference_kernel(
 
 
 def launch_lqr_control(
-    body_q: wp.array,
-    body_qd: wp.array,
-    joint_q: wp.array,
-    control: wp.array,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    joint_q: wp.array[float],
+    control: wp.array[float],
     base_body: int,
-    wheel_q_indices: wp.array,
-    command: wp.array,
-    position_reference: wp.array,
+    wheel_q_indices: wp.array[int],
+    wheel_ctrl_indices: wp.array[int],
+    command: wp.array[wp.vec3],
+    position_reference: wp.array[wp.vec3],
     track_planar_velocity: bool,
-    roll_gain: wp.array,
-    pitch_gain: wp.array,
-    yaw_gain: wp.array,
-    ball_to_control: wp.array,
-    wheel_state_to_ball: wp.array,
+    roll_gain: wp.array[float],
+    pitch_gain: wp.array[float],
+    yaw_gain: wp.array[float],
+    ball_to_control: wp.array2d[float],
+    wheel_state_to_ball: wp.array2d[float],
     sphere_radius: float,
     control_limit: float,
     device,
@@ -205,6 +207,7 @@ def launch_lqr_control(
             joint_q,
             base_body,
             wheel_q_indices,
+            wheel_ctrl_indices,
             command,
             position_reference,
             track_planar_velocity,
@@ -223,6 +226,21 @@ def launch_lqr_control(
 
 @dataclass(frozen=True)
 class LqrModelParameters:
+    """Rigid-body parameters of the asRoBallet balancing model.
+
+    Args:
+        upper_mass: Upper-body mass [kg].
+        sphere_mass: Ball mass [kg].
+        sphere_radius: Ball radius [m].
+        com_height: Upper-body center-of-mass height above the ball center [m].
+        upper_inertia_roll: Upper-body roll inertia [kg m^2].
+        upper_inertia_pitch: Upper-body pitch inertia [kg m^2].
+        upper_inertia_yaw: Upper-body yaw inertia [kg m^2].
+        sphere_inertia: Ball inertia about a diameter [kg m^2].
+        gravity: Gravitational acceleration magnitude [m/s^2].
+        rolling_damping: Viscous rolling damping coefficient [N m s/rad].
+    """
+
     upper_mass: float = 13.37187446932556
     sphere_mass: float = 3.021143163744471
     sphere_radius: float = 0.115
@@ -362,48 +380,47 @@ def solve_discrete_lqr(
     return discrete_a, discrete_b, gain
 
 
+def find_asroballet_joint_indices(builder: newton.ModelBuilder, joint_name: str) -> tuple[int, int]:
+    """Locate one joint coordinate and its MuJoCo control index."""
+    matching_joints = [joint for joint, label in enumerate(builder.joint_label) if label.endswith(f"/{joint_name}")]
+    if len(matching_joints) != 1:
+        raise ValueError(f"Expected one joint named '{joint_name}', found {len(matching_joints)}.")
+
+    joint = matching_joints[0]
+    q_index = builder.joint_q_start[joint]
+    qd_index = builder.joint_qd_start[joint]
+    actuator_targets = builder.custom_attributes["mujoco:actuator_trnid"].values
+    matching_actuators = [actuator for actuator, target in enumerate(actuator_targets) if int(target[0]) == qd_index]
+    if len(matching_actuators) != 1:
+        raise ValueError(f"Expected one actuator for '{joint_name}', found {len(matching_actuators)}.")
+
+    return q_index, matching_actuators[0]
+
+
 def configure_asroballet_downward_arm_pose(builder: newton.ModelBuilder) -> tuple[list[int], list[int]]:
     """Set both elbows to the vertically downward pose and locate their actuators."""
-    elbow_names = ("right_elbow_joint", "left_elbow_joint")
     elbow_q_indices = []
     elbow_ctrl_indices = []
-    actuator_targets = builder.custom_attributes["mujoco:actuator_trnid"].values
 
-    for elbow_name in elbow_names:
-        matching_joints = [joint for joint, label in enumerate(builder.joint_label) if label.endswith(f"/{elbow_name}")]
-        if len(matching_joints) != 1:
-            raise ValueError(f"Expected one joint named '{elbow_name}', found {len(matching_joints)}.")
-
-        joint = matching_joints[0]
-        q_index = builder.joint_q_start[joint]
-        qd_index = builder.joint_qd_start[joint]
-        matching_actuators = [
-            actuator for actuator, target in enumerate(actuator_targets) if int(target[0]) == qd_index
-        ]
-        if len(matching_actuators) != 1:
-            raise ValueError(f"Expected one actuator for '{elbow_name}', found {len(matching_actuators)}.")
-
+    for elbow_name in ("right_elbow_joint", "left_elbow_joint"):
+        q_index, ctrl_index = find_asroballet_joint_indices(builder, elbow_name)
         builder.joint_q[q_index] = math.pi / 2.0
         elbow_q_indices.append(q_index)
-        elbow_ctrl_indices.append(matching_actuators[0])
+        elbow_ctrl_indices.append(ctrl_index)
 
     return elbow_q_indices, elbow_ctrl_indices
 
 
-def find_asroballet_wheel_q_indices(model: newton.Model) -> list[int]:
-    """Locate the three driven wheel coordinates in actuator order."""
-    joint_q_start = model.joint_q_start.numpy()
+def find_asroballet_wheel_indices(builder: newton.ModelBuilder) -> tuple[list[int], list[int]]:
+    """Locate the three driven wheel coordinates and control indices."""
     wheel_q_indices = []
+    wheel_ctrl_indices = []
     for wheel in range(1, 4):
-        joint_name = f"wheel_{wheel}_axle_joint"
-        matching_joints = [joint for joint, label in enumerate(model.joint_label) if label.endswith(f"/{joint_name}")]
-        if len(matching_joints) != 1:
-            raise ValueError(f"Expected one joint named '{joint_name}', found {len(matching_joints)}.")
+        q_index, ctrl_index = find_asroballet_joint_indices(builder, f"wheel_{wheel}_axle_joint")
+        wheel_q_indices.append(q_index)
+        wheel_ctrl_indices.append(ctrl_index)
 
-        joint = matching_joints[0]
-        wheel_q_indices.append(int(joint_q_start[joint]))
-
-    return wheel_q_indices
+    return wheel_q_indices, wheel_ctrl_indices
 
 
 def initialize_asroballet_control(control: newton.Control, elbow_ctrl_indices: list[int]) -> None:
@@ -557,6 +574,7 @@ class _AsRoBalletController:
 
         builder = build_asroballet_builder(model_path, virtual_ball_joint)
         _, self.elbow_ctrl_indices = configure_asroballet_downward_arm_pose(builder)
+        wheel_q_indices, wheel_ctrl_indices = find_asroballet_wheel_indices(builder)
         base_bodies = [body for body, label in enumerate(builder.body_label) if label.endswith("/base_link")]
         if len(base_bodies) != 1:
             raise ValueError(f"Expected one asRoBallet base body, found {len(base_bodies)}.")
@@ -564,6 +582,8 @@ class _AsRoBalletController:
 
         self.model = builder.finalize()
         self.device = self.model.device
+        self.wheel_q_indices = wp.array(wheel_q_indices, dtype=wp.int32, device=self.device)
+        self.wheel_ctrl_indices = wp.array(wheel_ctrl_indices, dtype=wp.int32, device=self.device)
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             iterations=100,
@@ -621,8 +641,6 @@ class _LqrController(_AsRoBalletController):
         )
 
         parameters = LqrModelParameters()
-        wheel_q_indices = find_asroballet_wheel_q_indices(self.model)
-
         control_cost = np.array([[20.0]])
         static_state_cost = np.diag([100.0, 2000.0, 10.0, 1000.0])
         tracking_state_cost = np.diag([100.0, 1.0e-6, 10.0, 1000.0])
@@ -668,7 +686,6 @@ class _LqrController(_AsRoBalletController):
             dtype=wp.float32,
             device=self.device,
         )
-        self.wheel_q_indices = wp.array(wheel_q_indices, dtype=wp.int32, device=self.device)
         self.velocity_command = np.array([args.velocity_x, args.velocity_y, args.yaw_rate], dtype=np.float64)
         self.keyboard_control = should_use_keyboard_control(
             args.viewer,
@@ -701,6 +718,7 @@ class _LqrController(_AsRoBalletController):
             control=self.control.mujoco.ctrl,
             base_body=self.base_body,
             wheel_q_indices=self.wheel_q_indices,
+            wheel_ctrl_indices=self.wheel_ctrl_indices,
             command=self.command,
             position_reference=self.position_reference,
             track_planar_velocity=self.track_planar_velocity,
@@ -990,6 +1008,7 @@ def _measure_station_switch_motion_kernel(
 @wp.kernel
 def _apply_policy_action_kernel(
     action: wp.array2d[float],
+    wheel_ctrl_indices: wp.array[int],
     control: wp.array[float],
     current_action: wp.array2d[float],
     last_action: wp.array2d[float],
@@ -998,19 +1017,19 @@ def _apply_policy_action_kernel(
     value = wp.clamp(action[0, wheel], -1.0, 1.0)
     last_action[0, wheel] = current_action[0, wheel]
     current_action[0, wheel] = value
-    control[wheel] = value
+    control[wheel_ctrl_indices[wheel]] = value
 
 
 def launch_policy_observation(
-    body_q: wp.array,
-    body_qd: wp.array,
-    body_com: wp.array,
-    body_mass: wp.array,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_mass: wp.array[float],
     base_body: int,
     ball_body: int,
-    command: wp.array,
-    last_action: wp.array,
-    observation: wp.array,
+    command: wp.array[wp.vec3],
+    last_action: wp.array2d[float],
+    observation: wp.array2d[float],
     device,
 ) -> None:
     """Build one observation with the layout used during policy training."""
@@ -1034,17 +1053,17 @@ def launch_policy_observation(
 
 
 def launch_station_policy_observation(
-    body_q: wp.array,
-    body_qd: wp.array,
-    body_com: wp.array,
-    body_mass: wp.array,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_mass: wp.array[float],
     base_body: int,
     ball_body: int,
     station_site_transform: wp.transform,
-    reference_position_xy: wp.array,
-    reference_yaw: wp.array,
-    last_action: wp.array,
-    observation: wp.array,
+    reference_position_xy: wp.array[wp.vec2],
+    reference_yaw: wp.array[float],
+    last_action: wp.array2d[float],
+    observation: wp.array2d[float],
     device,
 ) -> None:
     """Build one station observation relative to the latched release pose."""
@@ -1070,11 +1089,11 @@ def launch_station_policy_observation(
 
 
 def latch_station_reference(
-    body_q: wp.array,
+    body_q: wp.array[wp.transform],
     base_body: int,
     station_site_transform: wp.transform,
-    reference_position_xy: wp.array,
-    reference_yaw: wp.array,
+    reference_position_xy: wp.array[wp.vec2],
+    reference_yaw: wp.array[float],
     device,
 ) -> None:
     """Latch the current station sensor position and base yaw."""
@@ -1093,11 +1112,11 @@ def latch_station_reference(
 
 
 def measure_station_switch_motion(
-    body_q: wp.array,
-    body_qd: wp.array,
-    body_com: wp.array,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
     base_body: int,
-    motion: wp.array,
+    motion: wp.array[wp.vec2],
     device,
 ) -> np.ndarray:
     """Measure planar and yaw speed for the station transition."""
@@ -1111,17 +1130,18 @@ def measure_station_switch_motion(
 
 
 def launch_policy_action(
-    action: wp.array,
-    control: wp.array,
-    current_action: wp.array,
-    last_action: wp.array,
+    action: wp.array2d[float],
+    wheel_ctrl_indices: wp.array[int],
+    control: wp.array[float],
+    current_action: wp.array2d[float],
+    last_action: wp.array2d[float],
     device,
 ) -> None:
     """Apply clipped wheel actions and retain them for the next observation."""
     wp.launch(
         _apply_policy_action_kernel,
         dim=ACTION_DIM,
-        inputs=[action, control, current_action, last_action],
+        inputs=[action, wheel_ctrl_indices, control, current_action, last_action],
         device=device,
     )
 
@@ -1293,6 +1313,7 @@ class _PolicyController(_AsRoBalletController):
             action = output[self.policy_output_name]
         launch_policy_action(
             action=action,
+            wheel_ctrl_indices=self.wheel_ctrl_indices,
             control=self.control.mujoco.ctrl,
             current_action=self.current_action,
             last_action=self.last_action,
