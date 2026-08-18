@@ -17,6 +17,7 @@ from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
+from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.import_usd_deformable_utils import _validate_mass_array, _warn_geometry_authored_material_attrs
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
@@ -1323,6 +1324,7 @@ def _find_uv_primvar(prim: Usd.Prim):
 @overload
 def get_mesh(
     source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1335,7 +1337,6 @@ def get_mesh(
     root_path: str | None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
-    *,
     load_visual_materials: bool = True,
 ) -> Mesh: ...
 
@@ -1343,6 +1344,7 @@ def get_mesh(
 @overload
 def get_mesh(
     source: Usd.Prim,
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1355,7 +1357,6 @@ def get_mesh(
     root_path: None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
-    *,
     load_visual_materials: bool = True,
 ) -> tuple[Mesh, np.ndarray | None]: ...
 
@@ -1363,6 +1364,7 @@ def get_mesh(
 @overload
 def get_mesh(
     source: None = None,
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1375,7 +1377,6 @@ def get_mesh(
     root_path: str | None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
-    *,
     prim: Usd.Prim,
     load_visual_materials: bool = True,
 ) -> Mesh: ...
@@ -1384,6 +1385,7 @@ def get_mesh(
 @overload
 def get_mesh(
     source: None = None,
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1396,14 +1398,15 @@ def get_mesh(
     root_path: None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
-    *,
     prim: Usd.Prim,
     load_visual_materials: bool = True,
 ) -> tuple[Mesh, np.ndarray | None]: ...
 
 
+@deprecate_nonkeyword_arguments
 def get_mesh(
     source: Usd.Prim | Usd.Stage | str | os.PathLike[str] | None = None,
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1416,7 +1419,6 @@ def get_mesh(
     root_path: str | None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
-    *,
     prim: Usd.Prim | None = None,
     load_visual_materials: bool = True,
 ) -> Mesh | tuple[Mesh, np.ndarray | None]:
