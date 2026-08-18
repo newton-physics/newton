@@ -864,6 +864,13 @@ with a desired acceleration:
 Orphan joints
 -------------
 
+Each articulation must form a kinematic tree rooted at the world. In particular,
+the parent body of every articulated joint must either be the world or be the child
+of another joint in the same articulation. Connecting two articulations with a
+joint is unsupported and :meth:`~newton.ModelBuilder.finalize` rejects that
+topology. To compose imported robots, pass ``parent_body`` and ``base_joint`` to
+the importer so the new joints are appended to the parent's articulation.
+
 An **orphan joint** is a joint that is not part of any articulation **and** whose child body is not reachable through any articulated joint (i.e. the child has no articulated path back to the rest of the model). This situation can arise when:
 
 * The USD asset does not define a ``PhysicsArticulationRootAPI`` on any prim, so no articulations are discovered during parsing.
