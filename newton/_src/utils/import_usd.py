@@ -1672,7 +1672,12 @@ def parse_usd(
         builder_limit_kd = default_joint_limit_kd * limit_gains_scaling
         active_limit = resolution.resolve_joint_limits(
             jp_prim,
-            {limit_key: (builder_limit_ke, builder_limit_kd)},
+            {
+                limit_key: resolution.JointLimitDefaults(
+                    ke=builder_limit_ke,
+                    kd=builder_limit_kd,
+                )
+            },
         )[limit_key]
         limit_lower = jd.limit.lower
         limit_upper = jd.limit.upper
@@ -1864,9 +1869,9 @@ def parse_usd(
                 dof: f"limit_{_trans_names[dof] if dof in _trans_names else _rot_names[dof]}" for dof in d6_free_dofs
             }
             d6_limit_defaults = {
-                key: (
-                    default_joint_limit_ke * (1.0 if dof in _trans_names else DegreesToRadian),
-                    default_joint_limit_kd * (1.0 if dof in _trans_names else DegreesToRadian),
+                key: resolution.JointLimitDefaults(
+                    ke=default_joint_limit_ke * (1.0 if dof in _trans_names else DegreesToRadian),
+                    kd=default_joint_limit_kd * (1.0 if dof in _trans_names else DegreesToRadian),
                 )
                 for dof, key in d6_limit_keys.items()
             }

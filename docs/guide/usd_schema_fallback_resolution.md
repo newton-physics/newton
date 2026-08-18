@@ -72,7 +72,7 @@ Registration and fallback presence are distinct:
 
 ### Usable candidates
 
-Registered-schema resolution continues until it finds a usable candidate. This applies to authored values, registered fallbacks, getter-derived values, transformed values, and compatibility defaults.
+Registered-schema resolution continues until it finds a usable resolution candidate. A candidate is unusable when its resolver getter or transformer returns `None`. This rule applies while selecting authored values, registered fallbacks, and compatibility defaults; it does not restart resolution after the importer has selected and interpreted a candidate.
 
 A property can mark a registered fallback as unset. Sentinel rules remain property-specific: an unlimited velocity fallback is absent, while an authored hull value of `-1` is an exact unbounded choice.
 
@@ -82,7 +82,7 @@ Reader-backed compound properties resolve each constituent independently. Author
 
 ### Property interpretation
 
-Migration auditing compares the value observed by the importer, not the raw USD value. Property-specific interpreters handle unit conversion, sentinels, validation, and source-dependent behavior. The importer consumes the same interpreted result used by the audit.
+Migration auditing compares the value observed by the importer, not the raw USD value. After candidate selection, property-specific interpreters handle unit conversion, sentinels, validation, and source-dependent behavior. Consumer interpretation does not resume candidate selection. The importer consumes the same interpreted result used by the audit.
 
 Properties assembled from several inputs are compared after assembly. Examples include joint-limit gains, contact response, and SDF configuration. Warnings name only the inputs that contribute to the interpreted change.
 

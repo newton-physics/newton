@@ -180,16 +180,22 @@ class _UsdResolutionPolicy:
         gap_policies: SchemaResolverManager._InterpretedPolicyValues
 
     @dataclass(frozen=True)
+    class _SdfResolutionSettings:
+        """Keep the coupled SDF resolution settings for one policy."""
+
+        target_voxel_size: float | None
+        max_resolution: int | None
+
+    @dataclass(frozen=True)
     class _ShapeSdfProperties:
         """Keep resolved SDF settings used by shape validation."""
 
-        max_resolution: int | None
         narrow_band_range: tuple[float, float]
-        target_voxel_size: float | None
         texture_format: str
         padding: float | None
-        legacy_settings: tuple[float | None, int | None] | None
-        composed_settings: tuple[float | None, int | None] | None
+        active_settings: _UsdResolutionPolicy._SdfResolutionSettings
+        legacy_settings: _UsdResolutionPolicy._SdfResolutionSettings | None
+        composed_settings: _UsdResolutionPolicy._SdfResolutionSettings | None
 
     @dataclass(frozen=True)
     class _ShapeHydroelasticProperties:
@@ -212,6 +218,13 @@ class _UsdResolutionPolicy:
 
         value: float
         angular_unit: Literal["degrees", "radians"] | None
+
+    @dataclass(frozen=True)
+    class JointLimitDefaults:
+        """Hold builder defaults for one joint limit."""
+
+        ke: float
+        kd: float
 
     @dataclass(frozen=True)
     class JointLimitResult:
@@ -525,9 +538,9 @@ class _UsdResolutionPolicy:
         return self.ShapeProperties(
             margin=offsets.margin,
             gap=offsets.gap,
-            sdf_max_resolution=sdf.max_resolution,
+            sdf_max_resolution=sdf.active_settings.max_resolution,
             sdf_narrow_band_range=sdf.narrow_band_range,
-            sdf_target_voxel_size=sdf.target_voxel_size,
+            sdf_target_voxel_size=sdf.active_settings.target_voxel_size,
             sdf_texture_format=sdf.texture_format,
             sdf_padding=sdf.padding,
             is_hydroelastic=hydroelastic.enabled,
@@ -665,10 +678,13 @@ class _UsdResolutionPolicy:
 
         def resolution_settings(
             policy: Literal["active", "legacy", "composed"],
-        ) -> tuple[float | None, int | None]:
+        ) -> _UsdResolutionPolicy._SdfResolutionSettings:
             target = target_policies.select(policy).value
             max_result = max_resolution_policies.select(policy).resolved
-            return target, interpret_max_resolution(max_result, target)
+            return self._SdfResolutionSettings(
+                target_voxel_size=target,
+                max_resolution=interpret_max_resolution(max_result, target),
+            )
 
         sdf_max_resolution = interpret_max_resolution(max_resolution_policies.active.resolved, target_voxel_size)
         legacy_sdf_settings = None
@@ -687,20 +703,20 @@ class _UsdResolutionPolicy:
             self._resolver._audit_assembled_property(
                 prim,
                 PrimType.SHAPE,
-                legacy_sdf_settings[0],
-                composed_sdf_settings[0],
+                legacy_sdf_settings.target_voxel_size,
+                composed_sdf_settings.target_voxel_size,
                 (
                     target_policies.contribution(
-                        legacy_comparison=legacy_sdf_settings[0],
-                        composed_comparison=composed_sdf_settings[0],
+                        legacy_comparison=legacy_sdf_settings.target_voxel_size,
+                        composed_comparison=composed_sdf_settings.target_voxel_size,
                     ),
                 ),
             )
             self._resolver._audit_assembled_property(
                 prim,
                 PrimType.SHAPE,
-                legacy_sdf_settings[1],
-                composed_sdf_settings[1],
+                legacy_sdf_settings.max_resolution,
+                composed_sdf_settings.max_resolution,
                 (
                     max_resolution_policies.contribution(
                         legacy_comparison=interpret_max_resolution(max_resolution_policies.legacy.resolved, None),
@@ -797,11 +813,13 @@ class _UsdResolutionPolicy:
             )
 
         return self._ShapeSdfProperties(
-            max_resolution=sdf_max_resolution,
             narrow_band_range=sdf_narrow_band_range,
-            target_voxel_size=target_voxel_size,
             texture_format=texture_format_result.value,
             padding=padding_policies.active.value,
+            active_settings=self._SdfResolutionSettings(
+                target_voxel_size=target_voxel_size,
+                max_resolution=sdf_max_resolution,
+            ),
             legacy_settings=legacy_sdf_settings,
             composed_settings=composed_sdf_settings,
         )
@@ -835,15 +853,18 @@ class _UsdResolutionPolicy:
             verbose=self._verbose,
         )
 
-        def validate_enabled(enabled: bool, sdf_settings: tuple[float | None, int | None]) -> bool:
+        def validate_enabled(
+            enabled: bool,
+            sdf_settings: _UsdResolutionPolicy._SdfResolutionSettings,
+        ) -> bool:
             if is_plane:
                 return False
-            if enabled and is_mesh and sdf_settings[0] is None and sdf_settings[1] is None:
+            if enabled and is_mesh and sdf_settings.target_voxel_size is None and sdf_settings.max_resolution is None:
                 return False
             return enabled
 
         requested = enabled_policies.active.value
-        enabled = validate_enabled(requested, (sdf.target_voxel_size, sdf.max_resolution))
+        enabled = validate_enabled(requested, sdf.active_settings)
         if (
             enabled_policies.legacy is not None
             and enabled_policies.composed is not None
@@ -882,7 +903,12 @@ class _UsdResolutionPolicy:
                 f"(must be > 0); falling back to default.",
                 stacklevel=4,
             )
-        if requested and is_mesh and sdf.max_resolution is None and sdf.target_voxel_size is None:
+        if (
+            requested
+            and is_mesh
+            and sdf.active_settings.max_resolution is None
+            and sdf.active_settings.target_voxel_size is None
+        ):
             warnings.warn(
                 f"{prim_path}: hydroelastic mesh requires newton:sdfMaxResolution or "
                 f"newton:sdfTargetVoxelSize so an SDF can be generated; disabling "
@@ -1243,7 +1269,7 @@ class _UsdResolutionPolicy:
     def resolve_joint_limits(
         self,
         prim: Any,
-        defaults: Mapping[str, tuple[float, float]],
+        defaults: Mapping[str, JointLimitDefaults],
     ) -> dict[str, JointLimitResult]:
         """Resolve and audit generic and per-axis joint-limit gains."""
         read_value = self._resolver._cached_value_reader(prim, PrimType.JOINT)
@@ -1251,17 +1277,17 @@ class _UsdResolutionPolicy:
         candidates = {"limit_ke": generic_ke, "limit_kd": generic_kd}
         fallback_policies = {}
 
-        for key, (builder_ke, builder_kd) in defaults.items():
+        for key, builder_defaults in defaults.items():
             fallback_ke = self.resolve_joint_limit_gain_policies(
                 prim,
                 f"{key}_ke",
-                builder_ke,
+                builder_defaults.ke,
                 read_value,
             )
             fallback_kd = self.resolve_joint_limit_gain_policies(
                 prim,
                 f"{key}_kd",
-                builder_kd,
+                builder_defaults.kd,
                 read_value,
             )
             fallback_policies[key] = (fallback_ke, fallback_kd)
@@ -1271,15 +1297,15 @@ class _UsdResolutionPolicy:
         def assemble(
             key: str, policy: Literal["active", "legacy", "composed"]
         ) -> _UsdResolutionPolicy.JointLimitResult:
-            builder_ke, builder_kd = defaults[key]
+            builder_defaults = defaults[key]
             fallback_ke, fallback_kd = fallback_policies[key]
             return self._resolve_joint_limit_policy_result(
                 generic_ke.select(policy).resolved,
                 generic_kd.select(policy).resolved,
                 fallback_ke.select(policy).resolved,
                 fallback_kd.select(policy).resolved,
-                builder_ke,
-                builder_kd,
+                builder_defaults.ke,
+                builder_defaults.kd,
             )
 
         active = {key: assemble(key, "active") for key in defaults}
