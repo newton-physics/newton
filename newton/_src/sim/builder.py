@@ -3366,7 +3366,7 @@ class ModelBuilder:
         parse_mujoco_options: bool = True,
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
-        use_applied_schema_fallbacks: bool = False,
+        use_registered_schema_fallbacks: bool = False,
         force_position_velocity_actuation: bool = False,
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
@@ -3458,19 +3458,19 @@ class ModelBuilder:
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling: When omitted, use ``1.0`` as the importer
                 default for scaling PD control gains. With
-                ``use_applied_schema_fallbacks=True``, an explicitly provided value
+                ``use_registered_schema_fallbacks=True``, an explicitly provided value
                 overrides ``newton:joint_drive_gains_scaling`` on the PhysicsScene.
                 Legacy resolution continues to treat it as an importer default.
             verbose: If True, print additional information about the parsed USD file. Default is False.
             ignore_paths: A list of regular expressions matching prim paths to ignore.
             collapse_fixed_joints: When omitted, use ``False`` as the
                 importer default for removing fixed joints and merging their bodies.
-                With ``use_applied_schema_fallbacks=True``, an explicitly provided
+                With ``use_registered_schema_fallbacks=True``, an explicitly provided
                 value overrides ``newton:collapse_fixed_joints`` on the PhysicsScene.
                 Legacy resolution continues to treat it as an importer default.
             enable_self_collisions: When omitted, use ``True`` as the importer
                 default for self-collisions within an articulation. With
-                ``use_applied_schema_fallbacks=True``, an explicitly provided value
+                ``use_registered_schema_fallbacks=True``, an explicitly provided value
                 overrides the corresponding authored USD value and schema fallback.
                 Legacy resolution continues to treat it as an importer default. USD
                 resolution reads ``newton:selfCollisionEnabled``
@@ -3501,7 +3501,7 @@ class ModelBuilder:
                 :attr:`newton.Mesh.MAX_HULL_VERTICES` as the importer default for
                 convex hull approximation. Passing ``None`` explicitly selects
                 the same limit. With
-                ``use_applied_schema_fallbacks=True``, an explicitly provided value
+                ``use_registered_schema_fallbacks=True``, an explicitly provided value
                 overrides the corresponding authored USD value and schema fallback.
                 Legacy resolution continues to treat it as an importer default.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
@@ -3515,7 +3515,7 @@ class ModelBuilder:
                 .. experimental::
 
                     The ``schema_resolvers`` argument may change without prior notice.
-            use_applied_schema_fallbacks: If True, resolve each ordered resolver's
+            use_registered_schema_fallbacks: If True, resolve each ordered resolver's
                 authored value and registered schema fallback before advancing to the
                 next resolver, then use importer and unregistered compatibility defaults.
                 False retains deprecated legacy precedence and warns when future
@@ -3524,7 +3524,7 @@ class ModelBuilder:
 
                 .. experimental::
 
-                    The ``use_applied_schema_fallbacks`` argument may change without
+                    The ``use_registered_schema_fallbacks`` argument may change without
                     prior notice.
 
                 .. deprecated:: 1.6
@@ -3685,7 +3685,7 @@ class ModelBuilder:
             parse_mujoco_options=parse_mujoco_options,
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
-            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+            use_registered_schema_fallbacks=use_registered_schema_fallbacks,
             force_position_velocity_actuation=force_position_velocity_actuation,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,

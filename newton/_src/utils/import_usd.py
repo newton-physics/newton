@@ -204,7 +204,7 @@ def parse_usd(
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
-    use_applied_schema_fallbacks: bool = False,
+    use_registered_schema_fallbacks: bool = False,
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
@@ -297,19 +297,19 @@ def parse_usd(
         only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling: When omitted, use ``1.0`` as the importer
             default for scaling PD control gains. With
-            ``use_applied_schema_fallbacks=True``, an explicitly provided value
+            ``use_registered_schema_fallbacks=True``, an explicitly provided value
             overrides ``newton:joint_drive_gains_scaling`` on the PhysicsScene.
             Legacy resolution continues to treat it as an importer default.
         verbose: If True, print additional information about the parsed USD file. Default is False.
         ignore_paths: A list of regular expressions matching prim paths to ignore.
         collapse_fixed_joints: When omitted, use ``False`` as the
             importer default for removing fixed joints and merging their bodies.
-            With ``use_applied_schema_fallbacks=True``, an explicitly provided
+            With ``use_registered_schema_fallbacks=True``, an explicitly provided
             value overrides ``newton:collapse_fixed_joints`` on the PhysicsScene.
             Legacy resolution continues to treat it as an importer default.
         enable_self_collisions: When omitted, use ``True`` as the importer
             default for self-collisions within an articulation. With
-            ``use_applied_schema_fallbacks=True``, an explicitly provided value
+            ``use_registered_schema_fallbacks=True``, an explicitly provided value
             overrides the corresponding authored USD value and schema fallback.
             Legacy resolution continues to treat it as an importer default. USD
             resolution reads ``newton:selfCollisionEnabled``
@@ -340,7 +340,7 @@ def parse_usd(
             :attr:`newton.Mesh.MAX_HULL_VERTICES` as the importer default for
             convex hull approximation. Passing ``None`` explicitly selects
             the same limit. With
-            ``use_applied_schema_fallbacks=True``, an explicitly provided value
+            ``use_registered_schema_fallbacks=True``, an explicitly provided value
             overrides the corresponding authored USD value and schema fallback.
             Legacy resolution continues to treat it as an importer default.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
@@ -354,7 +354,7 @@ def parse_usd(
             .. experimental::
 
                 The ``schema_resolvers`` argument may change without prior notice.
-        use_applied_schema_fallbacks: If True, resolve each ordered resolver's
+        use_registered_schema_fallbacks: If True, resolve each ordered resolver's
             authored value and registered schema fallback before advancing to the
             next resolver, then use importer and unregistered compatibility defaults.
             False retains deprecated legacy precedence and warns when future
@@ -363,7 +363,7 @@ def parse_usd(
 
             .. experimental::
 
-                The ``use_applied_schema_fallbacks`` argument may change without
+                The ``use_registered_schema_fallbacks`` argument may change without
                 prior notice.
 
             .. deprecated:: 1.6
@@ -600,7 +600,7 @@ def parse_usd(
     joint_drive_gains_scaling = _resolve_import_option(
         joint_drive_gains_scaling,
         authored_drive_gain_scaling,
-        use_explicit_overrides=use_applied_schema_fallbacks,
+        use_explicit_overrides=use_registered_schema_fallbacks,
     )
     authored_collapse_fixed_joints = (
         usd.get_attribute(physics_scene_prim, "newton:collapse_fixed_joints")
@@ -610,7 +610,7 @@ def parse_usd(
     collapse_fixed_joints = _resolve_import_option(
         collapse_fixed_joints,
         authored_collapse_fixed_joints,
-        use_explicit_overrides=use_applied_schema_fallbacks,
+        use_explicit_overrides=use_registered_schema_fallbacks,
     )
 
     legacy_rigid_object_types = (
@@ -659,7 +659,7 @@ def parse_usd(
     # Initialize schema resolver according to precedence
     resolver_manager = SchemaResolverManager(
         schema_resolvers,
-        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+        use_registered_schema_fallbacks=use_registered_schema_fallbacks,
     )
 
     # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a

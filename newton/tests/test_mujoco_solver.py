@@ -7091,7 +7091,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         builder.add_usd(
             stage,
             schema_resolvers=[SchemaResolverMjc()],
-            use_applied_schema_fallbacks=True,
+            use_registered_schema_fallbacks=True,
         )
         model = builder.finalize()
 

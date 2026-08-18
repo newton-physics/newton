@@ -616,7 +616,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             with self.assertWarnsRegex(UserWarning, "independent collision representations"):
                 result = builder.add_usd(
                     str(usd_path),
-                    use_applied_schema_fallbacks=True,
+                    use_registered_schema_fallbacks=True,
                 )
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)

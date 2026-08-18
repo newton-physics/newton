@@ -150,7 +150,7 @@ during the deprecation window.
 
 .. note::
 
-   ``use_applied_schema_fallbacks`` does not yet change proposal deformable attribute reads. Those attributes continue to read canonical ``physics:`` values first, followed by resolver-enabled vendor namespaces. They do not yet read composed fallbacks from ``Usd.SchemaRegistry``. Cloth shell mass properties are the limited exception: their shared ``mass_model`` and ``shell_thickness`` properties already use the ordinary schema resolver. Applying the common registered-fallback policy to the remaining deformable properties is follow-up work.
+   ``use_registered_schema_fallbacks`` does not yet change proposal deformable attribute reads. Those attributes continue to read canonical ``physics:`` values first, followed by resolver-enabled vendor namespaces. They do not yet read composed fallbacks from ``Usd.SchemaRegistry``. Cloth shell mass properties are the limited exception: their shared ``mass_model`` and ``shell_thickness`` properties already use the ordinary schema resolver. Applying the common registered-fallback policy to the remaining deformable properties is follow-up work.
 
 Supported subset
 ~~~~~~~~~~~~~~~~
@@ -460,7 +460,7 @@ On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArtic
      - ``self_collision_enabled``
      - Direct mapping
 
-The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` in resolver priority order. When ``enable_self_collisions`` is omitted from :meth:`newton.ModelBuilder.add_usd`, ``True`` is the importer default. With ``use_applied_schema_fallbacks=True``, passing the argument explicitly overrides the resolved USD value. Legacy resolution continues to treat an explicit value as an importer default.
+The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` in resolver priority order. When ``enable_self_collisions`` is omitted from :meth:`newton.ModelBuilder.add_usd`, ``True`` is the importer default. With ``use_registered_schema_fallbacks=True``, passing the argument explicitly overrides the resolved USD value. Legacy resolution continues to treat an explicit value as an importer default.
 
 **Newton Joint Attribute Remapping:**
 
@@ -578,7 +578,7 @@ Resolution distinguishes authored values, registered schema fallbacks, importer 
 Resolution Hierarchy
 ^^^^^^^^^^^^^^^^^^^^
 
-With ``use_applied_schema_fallbacks=True``, supported explicit importer arguments take precedence over USD. For example, ``enable_self_collisions=False`` forces self-collisions off, while explicitly passing ``mesh_maxhullvert=None`` selects :attr:`newton.Mesh.MAX_HULL_VERTICES` even when USD authors a hull limit.
+With ``use_registered_schema_fallbacks=True``, supported explicit importer arguments take precedence over USD. For example, ``enable_self_collisions=False`` forces self-collisions off, while explicitly passing ``mesh_maxhullvert=None`` selects :attr:`newton.Mesh.MAX_HULL_VERTICES` even when USD authors a hull limit.
 
 ``joint_drive_gains_scaling`` and ``collapse_fixed_joints`` are raw PhysicsScene importer metadata rather than registered schema properties. They resolve from an explicit override, authored ``newton:*`` metadata, then the importer default.
 
@@ -588,7 +588,7 @@ By default, attribute resolution retains the deprecated compatibility order:
 2. **Importer Defaults**: If no authored value is found, Newton's importer uses a property-specific fallback (e.g. ``builder.default_joint_cfg.armature`` for joint armature). This takes precedence over schema-level defaults.
 3. **Resolver Compatibility Defaults**: If neither an authored value nor an importer default is available, Newton falls back to the resolver mapping's compatibility default.
 
-Pass ``use_applied_schema_fallbacks=True`` to enable schema ownership. Resolution then follows this order:
+Pass ``use_registered_schema_fallbacks=True`` to enable schema ownership. Resolution then follows this order:
 
 1. **Resolver candidate**: For each resolver in priority order, use its authored value or the fallback from its applicable registered schema.
 2. **Importer default**: Use the property-specific importer value when no resolver supplies a candidate.
@@ -599,7 +599,7 @@ Resolver priority applies to each resolver's complete candidate, so an earlier r
 Usability and Consumer Meaning
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-With ``use_applied_schema_fallbacks=True``, Newton continues to the next candidate when a resolver getter or transformer returns no usable value. Registered fallback sentinels can also mean that the schema has no effective opinion. For example, an unlimited velocity fallback is skipped, while an authored hull limit of ``-1`` remains an exact unbounded choice.
+With ``use_registered_schema_fallbacks=True``, Newton continues to the next candidate when a resolver getter or transformer returns no usable value. Registered fallback sentinels can also mean that the schema has no effective opinion. For example, an unlimited velocity fallback is skipped, while an authored hull limit of ``-1`` remains an exact unbounded choice.
 
 A blocked attribute is unauthored, so its applicable registered fallback remains eligible. Compound properties retain usable authored constituents and fill missing or blocked constituents from the registered schema.
 

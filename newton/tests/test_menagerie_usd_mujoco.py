@@ -86,7 +86,7 @@ def create_newton_model_from_usd(
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
-            use_applied_schema_fallbacks=False,
+            use_registered_schema_fallbacks=False,
         )
 
     builder = newton.ModelBuilder()
@@ -165,7 +165,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
-            use_applied_schema_fallbacks=True,
+            use_registered_schema_fallbacks=True,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
         )
 

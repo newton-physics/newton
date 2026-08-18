@@ -266,8 +266,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
         cloth.GetPrim().CreateAttribute("newton:massModel", Sdf.ValueTypeNames.Token).Set("shell")
 
         policy_masses = []
-        for use_applied_schema_fallbacks in (False, True):
-            with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
+        for use_registered_schema_fallbacks in (False, True):
+            with self.subTest(use_registered_schema_fallbacks=use_registered_schema_fallbacks):
                 builder = newton.ModelBuilder()
                 with (
                     warnings.catch_warnings(record=True) as caught,
@@ -276,7 +276,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
                     warnings.simplefilter("always")
                     builder.add_usd(
                         stage,
-                        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                        use_registered_schema_fallbacks=use_registered_schema_fallbacks,
                         verbose=True,
                     )
                 p0, p1 = group_range(builder, "cloth", "/World/Cloth", "particle")

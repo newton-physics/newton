@@ -827,7 +827,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         builder_compat.add_usd(
             stage,
             schema_resolvers=[SchemaResolverPhysx()],
-            use_applied_schema_fallbacks=True,
+            use_registered_schema_fallbacks=True,
         )
         self.assertAlmostEqual(cable_radius(builder_compat), 0.5 * 0.02, places=5)
         self.assertNotAlmostEqual(default_radius, 0.5 * 0.02, places=5)
@@ -844,7 +844,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder.add_usd(
                 stage,
                 schema_resolvers=[SchemaResolverPhysx()],
-                use_applied_schema_fallbacks=True,
+                use_registered_schema_fallbacks=True,
             )
             return builder.shape_scale[builder.body_shapes[0][0]][0]
 

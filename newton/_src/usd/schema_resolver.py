@@ -676,20 +676,20 @@ class SchemaResolverManager:
         self,
         resolvers: Sequence[SchemaResolver],
         *,
-        use_applied_schema_fallbacks: bool = False,
+        use_registered_schema_fallbacks: bool = False,
     ):
         """
         Initialize resolver manager with resolver instances in priority order.
 
         Args:
             resolvers: List of instantiated resolvers in priority order.
-            use_applied_schema_fallbacks: Use the owning applied schema's fallback
-                before importer defaults. Only registered schema definitions supply
-                these fallbacks; unregistered resolver defaults remain after importer
-                defaults. Defaults to False.
+            use_registered_schema_fallbacks: Use the owning registered typed or
+                applied schema's fallback before importer defaults. Only registered
+                schema definitions supply these fallbacks; unregistered resolver
+                defaults remain after importer defaults. Defaults to False.
         """
         self.resolvers = list(resolvers)
-        self._use_applied_schema_fallbacks = use_applied_schema_fallbacks
+        self._use_registered_schema_fallbacks = use_registered_schema_fallbacks
         self._resolution = _SchemaResolutionPolicy(self.resolvers)
         self._registered_schema_fallbacks: dict[tuple[str, str], dict[str, Any] | None] = {}
         self._legacy_fallback_properties: dict[SchemaResolverManager._MigrationTransition, set[str]] = {}
@@ -857,7 +857,7 @@ class SchemaResolverManager:
 
     @property
     def _uses_composed_fallbacks(self) -> bool:
-        return self._use_applied_schema_fallbacks
+        return self._use_registered_schema_fallbacks
 
     def _active_default(self, default: Any, legacy_default: Any) -> Any:
         if not self._uses_composed_fallbacks and legacy_default is not _SAME_AS_DEFAULT:
@@ -1346,7 +1346,7 @@ class SchemaResolverManager:
             f"{' and '.join(details)}. In a future release, registered schema fallbacks will be considered "
             "before importer defaults. Compatibility defaults will remain available only for resolvers with an "
             "applicable unregistered schema or without declared schema ownership; "
-            "pass use_applied_schema_fallbacks=True to adopt that behavior now. To preserve current results, "
+            "pass use_registered_schema_fallbacks=True to adopt that behavior now. To preserve current results, "
             "author values on a higher-priority schema, reorder schema_resolvers, or use a supported explicit "
             "importer override."
         )

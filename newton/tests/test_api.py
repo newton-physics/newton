@@ -193,7 +193,7 @@ class TestApi(unittest.TestCase):
             },
             "policy": {
                 "schema_resolvers",
-                "use_applied_schema_fallbacks",
+                "use_registered_schema_fallbacks",
             },
             "diagnostic_or_output": {
                 "verbose",

@@ -295,7 +295,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
                     builder.add_usd(
                         stage,
                         schema_resolvers=[SchemaResolverPhysx()],
-                        use_applied_schema_fallbacks=True,
+                        use_registered_schema_fallbacks=True,
                     )
                 k_mu, k_lambda, _k_damp = builder.tet_materials[0]
                 self.assertAlmostEqual(k_mu, expected_mu, places=1)
