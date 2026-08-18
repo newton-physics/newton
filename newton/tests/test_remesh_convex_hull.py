@@ -163,6 +163,11 @@ class TestRemeshConvexHullFull3D(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "non-positive or at least 4"):
                     remesh_convex_hull(verts_in, maxhullvert=maxhullvert)
 
+        verts, faces = remesh_convex_hull(verts_in, maxhullvert=4)
+        _assert_mesh_shape(self, verts, faces)
+        self.assertEqual(verts.shape[0], 4)
+        self.assertEqual(faces.shape[0], 4)
+
 
 class TestRemeshConvexHullDegenerate(unittest.TestCase):
     """Degeneracy handling added by the diff."""
