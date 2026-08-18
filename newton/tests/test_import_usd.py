@@ -1969,10 +1969,49 @@ def Xform "World" (
             migration_warnings = [
                 item for item in caught if "deprecated legacy USD property precedence" in str(item.message)
             ]
-            self.assertEqual(len(migration_warnings), int(not use_applied_schema_fallbacks))
+            self.assertFalse(migration_warnings, [str(item.message) for item in migration_warnings])
 
         np.testing.assert_allclose(authored_policy_damping[0], (2.0, 2.0, 2.0))
-        np.testing.assert_allclose(authored_policy_damping[1], (3.0, 3.0, 3.0))
+        np.testing.assert_allclose(authored_policy_damping[1], (2.0, 2.0, 2.0))
+
+        class SchemaResolverDampingAliasOnly(usd.SchemaResolver):
+            name = "damping_alias"
+            mapping: ClassVar = {
+                usd.PrimType.JOINT: {
+                    "damping_per_rad": usd.SchemaResolver.SchemaAttribute("compatibility:dampingPerRad"),
+                }
+            }
+
+        for use_applied_schema_fallbacks in (False, True):
+            with self.subTest(
+                alias_only=True,
+                use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+            ):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.damping = 3.0
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    builder.add_usd(
+                        stage,
+                        schema_resolvers=[SchemaResolverDampingAliasOnly()],
+                        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                    )
+                model = builder.finalize()
+                slide_start = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Slide")])
+                d6_start = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/D6")])
+                damping = model.joint_damping.numpy()
+                np.testing.assert_allclose(
+                    (
+                        float(damping[slide_start]),
+                        float(damping[d6_start]),
+                        float(damping[d6_start + 1]),
+                    ),
+                    (2.0, 2.0, 2.0),
+                )
+                self.assertFalse(
+                    any("USD property precedence" in str(item.message) for item in caught),
+                    [str(item.message) for item in caught],
+                )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_d6(self):

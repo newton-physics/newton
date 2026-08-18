@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
@@ -18,6 +18,7 @@ from .schema_resolver import (
     SchemaResolverManager,
     _ImporterDefault,
     _ResolvedValue,
+    _ResolverValue,
     _ValueSource,
 )
 
@@ -170,11 +171,41 @@ class _UsdResolutionPolicy:
         inertia_margin: float
 
     @dataclass(frozen=True)
-    class _LegacyJointDampingValue:
-        """Keep the angular unit selected by the legacy damping alias."""
+    class _JointDampingValue:
+        """Keep the angular unit selected by a damping mapping key."""
 
         value: float
         angular_unit: Literal["degrees", "radians"] | None
+
+    @dataclass(frozen=True)
+    class JointLimitResult:
+        """Hold one assembled joint-limit result and its source semantics."""
+
+        ke: float
+        kd: float
+        ke_source: Literal["force", "mjc_authored", "mjc_default"]
+        kd_source: Literal["force", "mjc_authored", "mjc_default"]
+
+        @property
+        def solref_mode(self) -> int:
+            if self.ke_source == self.kd_source == "mjc_authored":
+                return SOLREF_MODE_RAW
+            if self.ke_source == self.kd_source == "mjc_default":
+                return SOLREF_MODE_MJCF_DEFAULT
+            return SOLREF_MODE_FORCE_SPACE
+
+        @property
+        def comparison(self) -> tuple[float, float, int]:
+            return self.ke, self.kd, self.solref_mode
+
+    @dataclass(frozen=True)
+    class JointLimitAudit:
+        """Describe one legacy-to-composed joint-limit comparison."""
+
+        legacy: _UsdResolutionPolicy.JointLimitResult
+        composed: _UsdResolutionPolicy.JointLimitResult
+        legacy_owners: tuple[str, str]
+        composed_owners: tuple[str, str]
 
     def __init__(
         self,
@@ -462,7 +493,7 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"Prim '{prim_path}': legacy translation yields negative margin "
                 f"(mjc_margin={raw_margin}, mjc_gap={read_legacy_mjc_gap()}).",
-                stacklevel=2,
+                stacklevel=3,
             )
 
         def interpret_target_voxel_size(result: _ResolvedValue) -> float | None:
@@ -484,7 +515,7 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:sdfTargetVoxelSize={raw_target!r} is invalid "
                 f"(must be > 0); falling back to default.",
-                stacklevel=2,
+                stacklevel=3,
             )
 
         def interpret_max_resolution(result: _ResolvedValue, target: float | None) -> int | None:
@@ -512,19 +543,19 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:sdfMaxResolution={raw_max_resolution!r} is invalid "
                 f"(must be > 0); falling back to default.",
-                stacklevel=2,
+                stacklevel=3,
             )
         elif raw_max_resolution is not None and raw_max_resolution != float("-inf") and raw_max_resolution % 8 != 0:
             warnings.warn(
                 f"{prim_path}: newton:sdfMaxResolution={raw_max_resolution!r} must be divisible by 8 "
                 f"(SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
-                stacklevel=2,
+                stacklevel=3,
             )
         elif target_voxel_size is not None and raw_max_resolution not in (None, float("-inf")):
             warnings.warn(
                 f"{prim_path}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution are set; "
                 f"sdfTargetVoxelSize takes precedence.",
-                stacklevel=2,
+                stacklevel=3,
             )
 
         def resolution_settings(policy: Literal["active", "legacy", "composed"]):
@@ -611,7 +642,7 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:sdfTextureFormat={raw_texture_format!r} is invalid "
                 f"(expected one of {list(_VALID_SDF_TEXTURE_FORMATS)}); falling back to default.",
-                stacklevel=2,
+                stacklevel=3,
             )
 
         def interpret_padding(result: _ResolvedValue) -> float | None:
@@ -632,7 +663,7 @@ class _UsdResolutionPolicy:
         if raw_padding is not None and raw_padding != float("-inf") and raw_padding < 0:
             warnings.warn(
                 f"{prim_path}: newton:sdfPadding={raw_padding!r} is invalid (must be >= 0); falling back to default.",
-                stacklevel=2,
+                stacklevel=3,
             )
         if all(
             result is not None
@@ -722,14 +753,14 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:hydroelasticStiffness={raw_kh!r} is invalid "
                 f"(must be > 0); falling back to default.",
-                stacklevel=2,
+                stacklevel=3,
             )
         if requested_hydroelastic and is_mesh and sdf_max_resolution is None and target_voxel_size is None:
             warnings.warn(
                 f"{prim_path}: hydroelastic mesh requires newton:sdfMaxResolution or "
                 f"newton:sdfTargetVoxelSize so an SDF can be generated; disabling "
                 f"hydroelastic for this shape.",
-                stacklevel=2,
+                stacklevel=3,
             )
 
         mass_model_policies = self._resolver._resolve_interpreted_policies(
@@ -794,7 +825,7 @@ class _UsdResolutionPolicy:
         ):
             warnings.warn(
                 f"Shape {prim_path}: negative shell thickness {raw_shell_thickness}; falling back to margin.",
-                stacklevel=2,
+                stacklevel=3,
             )
 
         return self.ShapeProperties(
@@ -811,6 +842,47 @@ class _UsdResolutionPolicy:
             shell_thickness=raw_shell_thickness,
             inertia_margin=inertia_margin,
         )
+
+    def resolve_cloth_shell_thickness(self, prim: Any) -> float | None:
+        """Resolve the optional shell thickness shared with cloth import."""
+        mass_model = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "mass_model",
+            "solid",
+            interpreter=lambda result: result.value == "shell",
+        )
+
+        def interpret_thickness(result: _ResolvedValue) -> float | None:
+            if result.value is None:
+                return None
+            value = float(result.value)
+            return value if math.isfinite(value) and value > 0.0 else None
+
+        shell_thickness = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "shell_thickness",
+            None,
+            interpreter=interpret_thickness,
+        )
+
+        def effective_thickness(policy: Literal["active", "legacy", "composed"]) -> float | None:
+            model = mass_model.select(policy)
+            thickness = shell_thickness.select(policy)
+            if model is None or thickness is None or not model.value:
+                return None
+            return thickness.value
+
+        if mass_model.legacy is not None and shell_thickness.legacy is not None:
+            self._resolver._audit_assembled_property(
+                prim,
+                PrimType.SHAPE,
+                effective_thickness("legacy"),
+                effective_thickness("composed"),
+                (mass_model.contribution(), shell_thickness.contribution()),
+            )
+        return effective_thickness("active")
 
     def resolve_max_hull_vertices(self, prim: Any, *, default: Any, override: Any) -> int:
         """Resolve the convex-hull vertex limit for a mesh."""
@@ -889,20 +961,38 @@ class _UsdResolutionPolicy:
     ) -> tuple[float, ...]:
         """Resolve passive joint damping in builder units for the active axes."""
 
+        read_value = self._resolver._cached_value_reader(prim, PrimType.JOINT)
+
+        def read_damping_value(resolver, key):
+            state = read_value(resolver, key)
+            if key == "damping_per_rad" and state.usable:
+                return _ResolverValue(
+                    self._JointDampingValue(state.value, "radians"),
+                    state.authored,
+                )
+            return state
+
         def resolve_legacy(resolvers, read_value):
             for resolver in resolvers:
-                mapping = resolver.mapping.get(PrimType.JOINT, {})
-                for key, angular_unit in (("damping", None), ("damping_per_rad", "radians")):
+                for key in ("damping", "damping_per_rad"):
+                    mapping = resolver.mapping.get(PrimType.JOINT, {})
                     if key not in mapping:
                         continue
                     state = read_value(resolver, key)
                     if state.authored and state.usable:
                         return _ResolvedValue(
-                            self._LegacyJointDampingValue(state.value, angular_unit),
+                            state.value,
                             resolver,
                             _ValueSource.AUTHORED,
+                            mapping_key=key,
                         )
             return _ResolvedValue(self._default_joint_damping, None, _ValueSource.IMPORTER_DEFAULT)
+
+        def audit_key(policies):
+            for policy in (policies.legacy, policies.composed):
+                if policy is not None and isinstance(policy.raw_value, self._JointDampingValue):
+                    return "damping_per_rad"
+            return "damping"
 
         return self._resolve_joint_dof_property(
             prim,
@@ -912,6 +1002,9 @@ class _UsdResolutionPolicy:
             legacy_default=self._default_joint_damping,
             interpreter=self._interpret_joint_damping,
             resolve_legacy=resolve_legacy,
+            read_value=read_damping_value,
+            authored_aliases=("damping_per_rad",),
+            audit_key=audit_key,
         )
 
     def resolve_optional_joint_state(self, prim: Any, key: str) -> float | None:
@@ -989,7 +1082,7 @@ class _UsdResolutionPolicy:
                 if resolver.name != "mjc":
                     if not state.usable:
                         continue
-                    return _ResolvedValue(state.value, resolver, _ValueSource.AUTHORED)
+                    return _ResolvedValue(state.value, resolver, _ValueSource.AUTHORED, mapping_key=key)
                 value = state.value
                 if value is None:
                     value = self._get_mjc_joint_limit_default(prim, key)
@@ -997,12 +1090,18 @@ class _UsdResolutionPolicy:
                     builder_default if value is None else value,
                     resolver,
                     _ValueSource.AUTHORED,
+                    mapping_key=key,
                 )
 
             if self._mjc_resolver is not None:
                 value = self._get_mjc_joint_limit_default(prim, key)
                 if value is not None:
-                    return _ResolvedValue(value, self._mjc_resolver, _ValueSource.COMPATIBILITY_DEFAULT)
+                    return _ResolvedValue(
+                        value,
+                        self._mjc_resolver,
+                        _ValueSource.COMPATIBILITY_DEFAULT,
+                        mapping_key=key,
+                    )
             return _ResolvedValue(builder_default, None, _ValueSource.IMPORTER_DEFAULT)
 
         return self._resolver._resolve_interpreted_policies(
@@ -1022,7 +1121,7 @@ class _UsdResolutionPolicy:
         fallback_kd: _ResolvedValue,
         builder_ke: float,
         builder_kd: float,
-    ) -> tuple[float, float, str, str]:
+    ) -> JointLimitResult:
         """Assemble generic and per-axis joint limit gains."""
         fallback_ke_value, fallback_ke_source = self._interpret_joint_limit_gain(fallback_ke, builder_ke)
         fallback_kd_value, fallback_kd_source = self._interpret_joint_limit_gain(fallback_kd, builder_kd)
@@ -1039,7 +1138,7 @@ class _UsdResolutionPolicy:
             fallback_kd_source,
             builder_kd,
         )
-        return resolved_ke, resolved_kd, ke_source, kd_source
+        return self.JointLimitResult(resolved_ke, resolved_kd, ke_source, kd_source)
 
     @staticmethod
     def joint_limit_policy_owners(
@@ -1058,31 +1157,33 @@ class _UsdResolutionPolicy:
             kd_owner = "limit_kd"
         return ke_owner, kd_owner
 
-    def changed_joint_limit_owners(
+    def audit_joint_limit_changes(
         self,
-        legacy_result,
-        composed_result,
-        legacy_owners,
-        composed_owners,
-    ) -> set[str]:
-        """Return limit inputs that contribute to an assembled change."""
+        prim: Any,
+        changes: Sequence[JointLimitAudit],
+        candidates: Mapping[str, SchemaResolverManager._InterpretedPolicyValues],
+    ) -> None:
+        """Audit the inputs that contribute to assembled joint-limit changes."""
         changed = set()
-        if not self._resolver._values_equal(legacy_result[0], composed_result[0]):
-            changed.update((legacy_owners[0], composed_owners[0]))
-        if not self._resolver._values_equal(legacy_result[1], composed_result[1]):
-            changed.update((legacy_owners[1], composed_owners[1]))
-        if self.joint_limit_solref_mode(*legacy_result[2:]) != self.joint_limit_solref_mode(*composed_result[2:]):
-            changed.update((*legacy_owners, *composed_owners))
-        return changed
+        for change in changes:
+            if not self._resolver._values_equal(change.legacy.ke, change.composed.ke):
+                changed.update((change.legacy_owners[0], change.composed_owners[0]))
+            if not self._resolver._values_equal(change.legacy.kd, change.composed.kd):
+                changed.update((change.legacy_owners[1], change.composed_owners[1]))
+            if change.legacy.solref_mode != change.composed.solref_mode:
+                changed.update((*change.legacy_owners, *change.composed_owners))
 
-    @staticmethod
-    def joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
-        """Choose MuJoCo limit-solref semantics from the gain sources."""
-        if ke_source == kd_source == "mjc_authored":
-            return SOLREF_MODE_RAW
-        if ke_source == kd_source == "mjc_default":
-            return SOLREF_MODE_MJCF_DEFAULT
-        return SOLREF_MODE_FORCE_SPACE
+        self._resolver._audit_assembled_property(
+            prim,
+            PrimType.JOINT,
+            tuple(change.legacy.comparison for change in changes),
+            tuple(change.composed.comparison for change in changes),
+            tuple(
+                policies.contribution(key=owner, compare_source=True)
+                for owner, policies in candidates.items()
+                if owner in changed
+            ),
+        )
 
     def _get_mjc_joint_limit_default(self, prim: Any, key: str) -> float | None:
         resolver = self._mjc_resolver
@@ -1116,7 +1217,7 @@ class _UsdResolutionPolicy:
     def _interpret_joint_damping(self, resolved: _ResolvedValue, *, is_revolute: bool) -> float:
         raw_value = resolved.value
         legacy_angular_unit = None
-        if isinstance(raw_value, self._LegacyJointDampingValue):
+        if isinstance(raw_value, self._JointDampingValue):
             value = raw_value.value
             legacy_angular_unit = raw_value.angular_unit
         else:
@@ -1139,6 +1240,9 @@ class _UsdResolutionPolicy:
         legacy_default,
         interpreter,
         resolve_legacy=None,
+        read_value=None,
+        authored_aliases=(),
+        audit_key=None,
     ) -> tuple[float, ...]:
         def interpret(resolved: _ResolvedValue) -> tuple[float, ...]:
             return tuple(interpreter(resolved, is_revolute=value) for value in revolute)
@@ -1152,6 +1256,8 @@ class _UsdResolutionPolicy:
             interpreter=interpret,
             verbose=self._verbose,
             resolve_legacy=resolve_legacy,
+            read_value=read_value,
+            authored_aliases=authored_aliases,
         )
 
         active = policies.active.value
@@ -1161,6 +1267,6 @@ class _UsdResolutionPolicy:
                 PrimType.JOINT,
                 policies.legacy.value,
                 policies.composed.value,
-                (policies.contribution(),),
+                (policies.contribution(key=key if audit_key is None else audit_key(policies)),),
             )
         return active

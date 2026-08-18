@@ -1032,6 +1032,7 @@ class _DeformableImportContext:
     stage: Usd.Stage
     root_prim: Usd.Prim
     resolver: Any
+    resolution_policy: Any
     collect_schema_attrs: bool
     deformable_read: Callable
     get_prim_world_mat: Callable

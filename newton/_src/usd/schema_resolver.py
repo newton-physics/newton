@@ -447,17 +447,27 @@ class _SchemaResolutionPolicy:
         key: str,
         *,
         default: Any = None,
+        authored_aliases: Sequence[str] = (),
     ) -> _ResolvedValue:
         compatibility_fallbacks: set[int] = set()
         for resolver in self._resolvers:
             spec = resolver.mapping.get(prim_type, {}).get(key)
+            for authored_key in (key, *authored_aliases):
+                if authored_key not in resolver.mapping.get(prim_type, {}):
+                    continue
+                value = read_value(resolver, authored_key)
+                if not isinstance(value, _ResolverValue):
+                    value = _ResolverValue(value, value is not None)
+                if value.authored and value.usable:
+                    return _ResolvedValue(
+                        value.value,
+                        resolver,
+                        _ValueSource.AUTHORED,
+                        mapping_key=authored_key,
+                    )
+
             if spec is None:
                 continue
-            value = read_value(resolver, key)
-            if not isinstance(value, _ResolverValue):
-                value = _ResolverValue(value, value is not None)
-            if value.authored and value.usable:
-                return _ResolvedValue(value.value, resolver, _ValueSource.AUTHORED)
 
             if schema_is_applied(resolver, key):
                 fallback = read_fallback(resolver, key)
@@ -467,7 +477,12 @@ class _SchemaResolutionPolicy:
                     continue
                 elif fallback is not _MISSING_FALLBACK and fallback is not None:
                     if spec.fallback_is_unset is None or not spec.fallback_is_unset(fallback):
-                        return _ResolvedValue(fallback, resolver, _ValueSource.REGISTERED_FALLBACK)
+                        return _ResolvedValue(
+                            fallback,
+                            resolver,
+                            _ValueSource.REGISTERED_FALLBACK,
+                            mapping_key=key,
+                        )
 
         has_importer_default, importer_default = _importer_default(default)
         if has_importer_default:
@@ -492,6 +507,7 @@ class _SchemaResolutionPolicy:
                 None,
                 _ValueSource.COMPATIBILITY_DEFAULT,
                 compatibility_resolver=resolver,
+                mapping_key=key,
             )
 
         return _ResolvedValue(None, None, _ValueSource.UNRESOLVED)
@@ -506,6 +522,7 @@ class _ResolvedValue:
     source: _ValueSource
     comparison: Any = field(default=_NO_COMPARISON, repr=False, compare=False)
     compatibility_resolver: SchemaResolver | None = field(default=None, repr=False, compare=False)
+    mapping_key: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def authored(self) -> bool:
@@ -871,6 +888,7 @@ class SchemaResolverManager:
                 resolved.source,
                 result_interpreter(resolved),
                 resolved.compatibility_resolver,
+                resolved.mapping_key,
             )
         elif comparison_key is not None:
             resolved = _ResolvedValue(
@@ -879,6 +897,7 @@ class SchemaResolverManager:
                 resolved.source,
                 comparison_key(resolved.value, resolved.resolver),
                 resolved.compatibility_resolver,
+                resolved.mapping_key,
             )
         if not self._uses_composed_fallbacks and audit_fallbacks:
             self._record_legacy_fallback(
@@ -943,13 +962,21 @@ class SchemaResolverManager:
         ]
         | None = None,
         read_value: Callable[[SchemaResolver, str], _ResolverValue] | None = None,
+        authored_aliases: Sequence[str] = (),
     ) -> SchemaResolverManager._PolicyValues:
         """Resolve active and migration-comparison values without auditing."""
         if read_value is None:
             read_value = self._cached_value_reader(prim, prim_type)
 
         if self._uses_composed_fallbacks:
-            composed = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
+            composed = self._resolve_value(
+                prim,
+                prim_type,
+                key,
+                default=default,
+                read_value=read_value,
+                authored_aliases=authored_aliases,
+            )
             if composed.resolver is not None:
                 self._collect_on_first_use(composed.resolver, prim)
             return self._PolicyValues(composed, None, composed)
@@ -968,7 +995,14 @@ class SchemaResolverManager:
                 self._collect_on_first_use(legacy.resolver, prim)
 
         try:
-            composed = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
+            composed = self._resolve_value(
+                prim,
+                prim_type,
+                key,
+                default=default,
+                read_value=read_value,
+                authored_aliases=authored_aliases,
+            )
         except _SchemaFallbackError as error:
             self._record_fallback_location(self._legacy_fallback_failures, error.label, prim)
             composed = None
@@ -990,6 +1024,7 @@ class SchemaResolverManager:
         ]
         | None = None,
         read_value: Callable[[SchemaResolver, str], _ResolverValue] | None = None,
+        authored_aliases: Sequence[str] = (),
     ) -> _InterpretedPolicyValues:
         """Resolve, interpret, and report one property's policy values."""
         policies = self._resolve_policy_values(
@@ -1000,6 +1035,7 @@ class SchemaResolverManager:
             legacy_default=legacy_default,
             resolve_legacy=resolve_legacy,
             read_value=read_value,
+            authored_aliases=authored_aliases,
         )
 
         def interpret(resolved: _ResolvedValue | None) -> SchemaResolverManager._InterpretedPolicyValue | None:
@@ -1040,7 +1076,7 @@ class SchemaResolverManager:
             if value is None:
                 continue
             self._collect_on_first_use(resolver, prim)
-            return _ResolvedValue(value, resolver, _ValueSource.AUTHORED)
+            return _ResolvedValue(value, resolver, _ValueSource.AUTHORED, mapping_key=key)
 
         has_importer_default, importer_default = _importer_default(default)
         if has_importer_default:
@@ -1058,6 +1094,7 @@ class SchemaResolverManager:
                 None,
                 _ValueSource.COMPATIBILITY_DEFAULT,
                 compatibility_resolver=resolver,
+                mapping_key=key,
             )
 
         return _ResolvedValue(None, None, _ValueSource.UNRESOLVED)
@@ -1208,17 +1245,20 @@ class SchemaResolverManager:
             resolver = value.resolver or value.compatibility_resolver
             if resolver is None:
                 return self._MigrationEndpoint(value.source)
-            spec = resolver.mapping.get(prim_type, {}).get(key)
+            mapping_key = value.mapping_key or key
+            spec = resolver.mapping.get(prim_type, {}).get(mapping_key)
             if spec is None:
                 return self._MigrationEndpoint(value.source, resolver.name)
             owner = (
                 resolver.name
                 if value.source == _ValueSource.COMPATIBILITY_DEFAULT
-                else resolver._schema_name(prim_type, key) or resolver.name
+                else resolver._schema_name(prim_type, mapping_key) or resolver.name
             )
             names = tuple(spec.attribute_names or (spec.name,))
             return self._MigrationEndpoint(value.source, owner, names)
 
+        legacy_endpoint = endpoint(legacy)
+        resolved_endpoint = endpoint(resolved)
         representative = (
             legacy.resolver or legacy.compatibility_resolver or resolved.resolver or resolved.compatibility_resolver
         )
@@ -1229,12 +1269,19 @@ class SchemaResolverManager:
             )
         if representative is None:
             return
-        spec = representative.mapping[prim_type][key]
+
+        attribute_names = legacy_endpoint.attribute_names or resolved_endpoint.attribute_names
+        if not attribute_names:
+            mapping = representative.mapping.get(prim_type, {})
+            representative_key = legacy.mapping_key or resolved.mapping_key or key
+            spec = mapping.get(representative_key) or mapping.get(key)
+            if spec is not None:
+                attribute_names = tuple(spec.attribute_names or (spec.name,))
         transition = self._MigrationTransition(
             key,
-            tuple(spec.attribute_names or (spec.name,)),
-            endpoint(legacy),
-            endpoint(resolved),
+            attribute_names,
+            legacy_endpoint,
+            resolved_endpoint,
         )
         self._record_fallback_location(
             self._legacy_fallback_properties,
@@ -1314,6 +1361,7 @@ class SchemaResolverManager:
         *,
         default: Any = None,
         read_value: Callable[[SchemaResolver, str], _ResolverValue] | None = None,
+        authored_aliases: Sequence[str] = (),
     ) -> _ResolvedValue:
         """Resolve a value while retaining source provenance."""
 
@@ -1327,6 +1375,7 @@ class SchemaResolverManager:
             prim_type,
             key,
             default=default,
+            authored_aliases=authored_aliases,
         )
 
     def _schema_fallback(

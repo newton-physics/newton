@@ -662,7 +662,7 @@ def parse_usd(
             )
 
     # Initialize schema resolver according to precedence
-    R = SchemaResolverManager(
+    resolver_manager = SchemaResolverManager(
         schema_resolvers,
         use_applied_schema_fallbacks=use_applied_schema_fallbacks,
     )
@@ -671,16 +671,16 @@ def parse_usd(
     # fallback to the canonical physics: deformable schema. Empty unless a
     # resolver declaring them (e.g. SchemaResolverPhysx) is active, so a default
     # import parses the AOUSD proposal as written.
-    deformable_compat_ns = R.deformable_compat_namespaces()
+    deformable_compat_ns = resolver_manager.deformable_compat_namespaces()
     # Resolver-owned deformable read (physics: first, then opted-in vendor namespaces).
-    deformable_read = R.read_deformable_attr
+    deformable_read = resolver_manager.read_deformable_attr
 
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
     mjc_resolver = next((resolver for resolver in schema_resolvers if resolver.name == "mjc"), None)
     resolution = _UsdResolutionPolicy(
-        R,
+        resolver_manager,
         degrees_to_radian=DegreesToRadian,
         default_joint_damping=default_joint_damping,
         default_joint_velocity_limit=default_joint_velocity_limit,
@@ -1670,7 +1670,7 @@ def parse_usd(
         limit_key = "limit_angular" if is_revolute else "limit_linear"
         builder_limit_ke = default_joint_limit_ke * limit_gains_scaling
         builder_limit_kd = default_joint_limit_kd * limit_gains_scaling
-        limit_read_value = R._cached_value_reader(jp_prim, PrimType.JOINT)
+        limit_read_value = resolver_manager._cached_value_reader(jp_prim, PrimType.JOINT)
         fallback_limit_ke = resolution.resolve_joint_limit_gain_policies(
             jp_prim,
             f"{limit_key}_ke",
@@ -1687,7 +1687,7 @@ def parse_usd(
             jp_prim,
             limit_read_value,
         )
-        limit_ke, limit_kd, limit_ke_source, limit_kd_source = resolution.resolve_joint_limit_policy_result(
+        active_limit = resolution.resolve_joint_limit_policy_result(
             newton_limit_ke.active.resolved,
             newton_limit_kd.active.resolved,
             fallback_limit_ke.active.resolved,
@@ -1727,28 +1727,16 @@ def parse_usd(
                 f"{limit_key}_ke",
                 f"{limit_key}_kd",
             )
-            changed_owners = resolution.changed_joint_limit_owners(
-                legacy_limit,
-                composed_limit,
-                legacy_owners,
-                composed_owners,
-            )
             limit_candidates = {
                 "limit_ke": newton_limit_ke,
                 "limit_kd": newton_limit_kd,
                 f"{limit_key}_ke": fallback_limit_ke,
                 f"{limit_key}_kd": fallback_limit_kd,
             }
-            R._audit_assembled_property(
+            resolution.audit_joint_limit_changes(
                 jp_prim,
-                PrimType.JOINT,
-                (*legacy_limit[:2], resolution.joint_limit_solref_mode(*legacy_limit[2:])),
-                (*composed_limit[:2], resolution.joint_limit_solref_mode(*composed_limit[2:])),
-                tuple(
-                    policies.contribution(key=owner, compare_source=True)
-                    for owner, policies in limit_candidates.items()
-                    if owner in changed_owners
-                ),
+                (resolution.JointLimitAudit(legacy_limit, composed_limit, legacy_owners, composed_owners),),
+                limit_candidates,
             )
         limit_lower = jd.limit.lower
         limit_upper = jd.limit.upper
@@ -1769,6 +1757,8 @@ def parse_usd(
         state_prefix = "angular" if is_revolute else "linear"
         initial_position = resolution.resolve_optional_joint_state(jp_prim, f"{state_prefix}_position")
         initial_velocity = resolution.resolve_optional_joint_state(jp_prim, f"{state_prefix}_velocity")
+        limit_ke = active_limit.ke
+        limit_kd = active_limit.kd
 
         if is_revolute:
             limit_lower *= DegreesToRadian
@@ -1801,7 +1791,7 @@ def parse_usd(
             actuator_mode=actuator_mode,
             initial_position=initial_position,
             initial_velocity=initial_velocity,
-            limit_solref_mode=resolution.joint_limit_solref_mode(limit_ke_source, limit_kd_source),
+            limit_solref_mode=active_limit.solref_mode,
         )
 
     def parse_joint(
@@ -1816,7 +1806,7 @@ def parse_usd(
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
         # collect engine-specific attributes on the joint prim if requested
         if collect_schema_attrs:
-            R.collect_prim_attrs(joint_prim)
+            resolver_manager.collect_prim_attrs(joint_prim)
         parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
             joint_desc, path_body_map, get_transforms=True
         )
@@ -1934,7 +1924,7 @@ def parse_usd(
             d6_dof_axes = []
             linear_solref_modes: list[int] = []
             angular_solref_modes: list[int] = []
-            d6_limit_read_value = R._cached_value_reader(joint_prim, PrimType.JOINT)
+            d6_limit_read_value = resolver_manager._cached_value_reader(joint_prim, PrimType.JOINT)
             d6_limit_gain_cache: dict[
                 tuple[Any, str],
                 tuple[SchemaResolverManager._InterpretedPolicyValues, float],
@@ -1985,15 +1975,7 @@ def parse_usd(
             if limit_ke_policies.legacy is not None and all(
                 policies.composed is not None for policies in all_d6_policies
             ):
-
-                def _d6_limit_comparison(policy):
-                    comparison = []
-                    for dof in d6_free_dofs:
-                        result = _resolve_d6_limit_gains(dof, policy)
-                        comparison.append((*result[:2], resolution.joint_limit_solref_mode(*result[2:])))
-                    return tuple(comparison)
-
-                changed_owners = set()
+                limit_changes = []
                 for dof in d6_free_dofs:
                     name = _trans_names[dof] if dof in _trans_names else _rot_names[dof]
                     legacy_result = _resolve_d6_limit_gains(dof, "legacy")
@@ -2010,8 +1992,8 @@ def parse_usd(
                         f"limit_{name}_ke",
                         f"limit_{name}_kd",
                     )
-                    changed_owners.update(
-                        resolution.changed_joint_limit_owners(
+                    limit_changes.append(
+                        resolution.JointLimitAudit(
                             legacy_result,
                             composed_result,
                             legacy_owners,
@@ -2023,16 +2005,10 @@ def parse_usd(
                 for (dof, gain), (policies, _default) in d6_limit_gain_cache.items():
                     name = _trans_names[dof] if dof in _trans_names else _rot_names[dof]
                     candidate_policies[f"limit_{name}_{gain}"] = policies
-                R._audit_assembled_property(
+                resolution.audit_joint_limit_changes(
                     joint_prim,
-                    PrimType.JOINT,
-                    _d6_limit_comparison("legacy"),
-                    _d6_limit_comparison("composed"),
-                    tuple(
-                        policies.contribution(key=owner, compare_source=True)
-                        for owner, policies in candidate_policies.items()
-                        if owner in changed_owners
-                    ),
+                    limit_changes,
+                    candidate_policies,
                 )
 
             # print(joint_desc.jointLimits, joint_desc.jointDrives)
@@ -2086,19 +2062,14 @@ def parse_usd(
                     d6_initial_velocities[trans_name] = resolution.resolve_optional_joint_state(
                         joint_prim, f"{trans_name}_velocity"
                     )
-                    (
-                        current_joint_limit_ke,
-                        current_joint_limit_kd,
-                        limit_ke_source,
-                        limit_kd_source,
-                    ) = active_d6_limits[dof]
+                    current_limit = active_d6_limits[dof]
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
                             axis=_trans_axes[dof],
                             limit_lower=limit_lower,
                             limit_upper=limit_upper,
-                            limit_ke=current_joint_limit_ke,
-                            limit_kd=current_joint_limit_kd,
+                            limit_ke=current_limit.ke,
+                            limit_kd=current_limit.kd,
                             target_pos=target_pos,
                             target_vel=target_vel,
                             target_ke=target_ke,
@@ -2111,7 +2082,7 @@ def parse_usd(
                             actuator_mode=actuator_mode,
                         )
                     )
-                    linear_solref_modes.append(resolution.joint_limit_solref_mode(limit_ke_source, limit_kd_source))
+                    linear_solref_modes.append(current_limit.solref_mode)
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(trans_name)
                 elif free_axis and dof in _rot_axes:
@@ -2124,20 +2095,15 @@ def parse_usd(
                     d6_initial_velocities[rot_name] = resolution.resolve_optional_joint_state(
                         joint_prim, f"{rot_name}_velocity"
                     )
-                    (
-                        current_joint_limit_ke,
-                        current_joint_limit_kd,
-                        limit_ke_source,
-                        limit_kd_source,
-                    ) = active_d6_limits[dof]
+                    current_limit = active_d6_limits[dof]
 
                     angular_axes.append(
                         ModelBuilder.JointDofConfig(
                             axis=_rot_axes[dof],
                             limit_lower=limit_lower * DegreesToRadian,
                             limit_upper=limit_upper * DegreesToRadian,
-                            limit_ke=current_joint_limit_ke / DegreesToRadian,
-                            limit_kd=current_joint_limit_kd / DegreesToRadian,
+                            limit_ke=current_limit.ke / DegreesToRadian,
+                            limit_kd=current_limit.kd / DegreesToRadian,
                             target_pos=target_pos * DegreesToRadian,
                             target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
@@ -2150,7 +2116,7 @@ def parse_usd(
                             actuator_mode=actuator_mode,
                         )
                     )
-                    angular_solref_modes.append(resolution.joint_limit_solref_mode(limit_ke_source, limit_kd_source))
+                    angular_solref_modes.append(current_limit.solref_mode)
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(rot_name)
                     num_dofs += 1
@@ -2322,7 +2288,7 @@ def parse_usd(
             collision_filter_parent = collision_filter_parent or not jd.collisionEnabled
             jp_prim = stage.GetPrimAtPath(jd.primPath)
             if collect_schema_attrs:
-                R.collect_prim_attrs(jp_prim)
+                resolver_manager.collect_prim_attrs(jp_prim)
 
             key = jd.type
             if key not in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint):
@@ -2628,7 +2594,7 @@ def parse_usd(
     if physics_scene_prim is not None:
         # Collect schema-defined attributes from the scene prim for inspection (e.g., mjc:* attributes)
         if collect_schema_attrs:
-            R.collect_prim_attrs(physics_scene_prim)
+            resolver_manager.collect_prim_attrs(physics_scene_prim)
 
         # Extract custom attributes for model (ONCE and WORLD frequency) from the PhysicsScene prim
         # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -2808,14 +2774,14 @@ def parse_usd(
             )
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
-                R.collect_prim_attrs(articulation_prim)
+                resolver_manager.collect_prim_attrs(articulation_prim)
                 # Also collect on the parent prim (e.g. Xform with PhysxArticulationAPI)
                 try:
                     parent_prim = articulation_prim.GetParent()
                 except Exception:
                     parent_prim = None
                 if parent_prim is not None and parent_prim.IsValid():
-                    R.collect_prim_attrs(parent_prim)
+                    resolver_manager.collect_prim_attrs(parent_prim)
 
             # Extract custom attributes for articulation frequency from the articulation root prim
             # (the one with PhysicsArticulationRootAPI, typically the articulation_prim itself or its parent)
@@ -2856,7 +2822,7 @@ def parse_usd(
                 usd_prim = stage.GetPrimAtPath(p)
                 if collect_schema_attrs:
                     # Collect on each articulated body prim encountered
-                    R.collect_prim_attrs(usd_prim)
+                    resolver_manager.collect_prim_attrs(usd_prim)
 
                 if key in body_specs:
                     body_desc = body_specs[key]
@@ -3647,7 +3613,7 @@ def parse_usd(
                     prim, builder_custom_attr_shape, context={"builder": builder}
                 )
                 if collect_schema_attrs:
-                    R.collect_prim_attrs(prim)
+                    resolver_manager.collect_prim_attrs(prim)
 
                 legacy_mjc_gap: list[float] = []
 
@@ -4358,7 +4324,8 @@ def parse_usd(
             builder=builder,
             stage=stage,
             root_prim=root_prim,
-            resolver=R,
+            resolver=resolver_manager,
+            resolution_policy=resolution,
             collect_schema_attrs=collect_schema_attrs,
             deformable_read=deformable_read,
             get_prim_world_mat=_get_prim_world_mat,
@@ -4582,7 +4549,7 @@ def parse_usd(
                 continue
 
             if collect_schema_attrs and (is_connect or is_weld):
-                R.collect_prim_attrs(joint_prim)
+                resolver_manager.collect_prim_attrs(joint_prim)
 
             eq_custom_attrs = usd.get_custom_attribute_values(
                 joint_prim, builder_custom_attr_eq, context={"builder": builder}
@@ -5013,7 +4980,7 @@ def parse_usd(
         "physics_scene_path": str(physics_scene_prim.GetPath()) if physics_scene_prim is not None else None,
         "physics_dt": physics_dt,
         "collapse_results": collapse_results,
-        "schema_attrs": R.schema_attrs,
+        "schema_attrs": resolver_manager.schema_attrs,
         # "articulation_roots": articulation_roots,
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
@@ -5211,7 +5178,7 @@ def parse_usd(
             }
         )
 
-    fallback_migration_warning = R._fallback_migration_warning()
+    fallback_migration_warning = resolver_manager._fallback_migration_warning()
     if fallback_migration_warning is not None:
         warnings.warn(
             fallback_migration_warning,

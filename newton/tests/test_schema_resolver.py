@@ -417,6 +417,42 @@ class TestSchemaResolver(unittest.TestCase):
             message,
         )
 
+    def test_fallback_migration_warning_names_authored_alias(self):
+        """Name the mapping key that supplied an authored alias."""
+
+        class SchemaResolverDampingAlias(SchemaResolver):
+            name = "damping_alias"
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "damping_per_rad": SchemaResolver.SchemaAttribute("compatibility:dampingPerRad"),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        alias = SchemaResolverDampingAlias()
+        resolver = SchemaResolverManager([alias])
+        resolver._record_resolution_transition(
+            joint,
+            PrimType.JOINT,
+            "damping",
+            _ResolvedValue(
+                2.0,
+                alias,
+                _ValueSource.AUTHORED,
+                mapping_key="damping_per_rad",
+            ),
+            _ResolvedValue(3.0, None, _ValueSource.IMPORTER_DEFAULT),
+        )
+
+        message = resolver._fallback_migration_warning()
+
+        self.assertIsNotNone(message)
+        self.assertIn(
+            "damping: damping_alias (compatibility:dampingPerRad; authored value) -> importer default",
+            message,
+        )
+
     def test_fallback_migration_warning_names_compatibility_resolver(self):
         """Name the resolver that supplies a compatibility default."""
 
