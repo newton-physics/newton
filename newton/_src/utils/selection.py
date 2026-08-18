@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 from warp.types import is_array
 
+from ..actuators.actuator import _gather_parameter_kernel, _scatter_parameter_kernel
 from ..sim import (
     Control,
     JointType,
@@ -290,38 +291,6 @@ def build_actuator_dof_mapping_indices_kernel(
                     actuator_idx = world_idx * actuators_per_world + local_idx
                     mapping[view_pos] = actuator_idx
                 break
-
-
-@wp.kernel
-def _gather_1d_kernel(
-    src: Any,
-    indices: wp.array[int],
-    dst: Any,
-):
-    """Gather ``dst[tid] = src[indices[tid]]``. Index -1 means skip (leave dst unchanged)."""
-    tid = wp.tid()
-    idx = indices[tid]
-    if idx >= 0:
-        dst[tid] = src[idx]
-
-
-@wp.kernel
-def _scatter_masked_2d_kernel(
-    values: Any,
-    mapping: wp.array[int],
-    mask: wp.array[bool],
-    cols: int,
-    dst: Any,
-):
-    """Scatter ``dst[mapping[row * cols + col]] = values[row, col]`` where ``mask[row]`` is true.
-
-    Mapping entries of -1 are skipped.
-    """
-    row, col = wp.tid()
-    if mask[row]:
-        dst_idx = mapping[row * cols + col]
-        if dst_idx >= 0:
-            dst[dst_idx] = values[row, col]
 
 
 # NOTE: Python slice objects are not hashable in Python < 3.12, so we use this instead.
@@ -1951,15 +1920,16 @@ class ArticulationView:
         src = getattr(component, name)
         dofs_per_world = len(mapping) // self.world_count
 
-        dst = wp.zeros(len(mapping), dtype=src.dtype, device=self.device)
+        mapping = mapping.reshape((self.world_count, dofs_per_world))
+        dst = wp.zeros(mapping.shape, dtype=src.dtype, device=self.device)
         wp.launch(
-            _gather_1d_kernel,
-            dim=len(mapping),
+            _gather_parameter_kernel,
+            dim=mapping.shape,
             inputs=[src, mapping],
             outputs=[dst],
             device=self.device,
         )
-        return dst.reshape((self.world_count, dofs_per_world))
+        return dst
 
     def set_actuator_parameter(
         self,
@@ -2004,9 +1974,9 @@ class ArticulationView:
             raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
 
         wp.launch(
-            _scatter_masked_2d_kernel,
+            _scatter_parameter_kernel,
             dim=(self.world_count, dofs_per_world),
-            inputs=[values, mapping, mask, dofs_per_world],
+            inputs=[values, mapping.reshape((self.world_count, dofs_per_world)), mask],
             outputs=[dst],
             device=self.device,
         )

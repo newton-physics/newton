@@ -17,6 +17,30 @@ from .effort_mode_implicit import ImplicitOptions, ResponseOracle, _EffortModeIm
 
 
 @wp.kernel
+def _gather_parameter_kernel(src: Any, mapping: wp.array2d[int], dst: Any):
+    """Gather actuator parameters into a view-shaped array."""
+    world, dof = wp.tid()
+    index = mapping[world, dof]
+    if index >= 0:
+        dst[world, dof] = src[index]
+
+
+@wp.kernel
+def _scatter_parameter_kernel(
+    values: Any,
+    mapping: wp.array2d[int],
+    mask: wp.array[bool],
+    dst: Any,
+):
+    """Scatter view-shaped actuator parameters for selected worlds."""
+    world, dof = wp.tid()
+    if mask[world]:
+        index = mapping[world, dof]
+        if index >= 0:
+            dst[index] = values[world, dof]
+
+
+@wp.kernel
 def _scatter_add_kernel(
     forces: wp.array[float],
     computed_forces: wp.array[float],

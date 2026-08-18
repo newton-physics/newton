@@ -7,10 +7,12 @@ from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, 
 from .delay import Delay
 from .response_oracle import ResponseOracle
 from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuator_prim, register_actuator_component
+from .view import ActuatorView
 
 __all__ = [
     "Actuator",
     "ActuatorParsed",
+    "ActuatorView",
     "Clamping",
     "ClampingDCMotor",
     "ClampingMaxEffort",
