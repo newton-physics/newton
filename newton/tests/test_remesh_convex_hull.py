@@ -146,6 +146,23 @@ class TestRemeshConvexHullFull3D(unittest.TestCase):
         self.assertLessEqual(verts_limited.shape[0], 16)
         self.assertTrue(_has_outward_winding(verts_limited, faces_limited))
 
+    def test_maxhullvert_rejects_positive_values_below_four(self):
+        """Reject positive hull limits that cannot form a 3D simplex."""
+        verts_in = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+
+        for maxhullvert in (1, 2, 3):
+            with self.subTest(maxhullvert=maxhullvert):
+                with self.assertRaisesRegex(ValueError, "non-positive or at least 4"):
+                    remesh_convex_hull(verts_in, maxhullvert=maxhullvert)
+
 
 class TestRemeshConvexHullDegenerate(unittest.TestCase):
     """Degeneracy handling added by the diff."""

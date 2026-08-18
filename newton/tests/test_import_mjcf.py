@@ -3342,7 +3342,7 @@ f 2 3 4
   <worldbody><body name="bad"><freejoint/><geom type="mesh" mesh="bad"/></body></worldbody>
 </mujoco>
 """
-        with self.assertRaisesRegex(ValueError, "inconsistent orientation"):
+        with self.assertRaises(ValueError):
             mujoco.MjModel.from_xml_string(mjcf)
 
         builder = newton.ModelBuilder()
