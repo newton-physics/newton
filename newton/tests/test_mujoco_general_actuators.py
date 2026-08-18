@@ -419,6 +419,15 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(activation)))
         self.assertGreater(float(np.max(np.abs(activation))), 0.0)
 
+    def test_mjcf_without_dcmotor_omits_high_level_parameters(self):
+        """Avoid allocating high-level DC-motor parameters for ordinary actuators."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_ACTUATORS)
+
+        self.assertNotIn("mujoco:actuator_dcmotor_motorconst", builder.custom_attributes)
+        model = builder.finalize()
+        self.assertFalse(hasattr(model.mujoco, "actuator_dcmotor_motorconst"))
+
     def test_parsing_ctrl_direct_false(self):
         """Test parsing with ctrl_direct=False."""
         builder = ModelBuilder()

@@ -375,6 +375,10 @@ def parse_mjcf(
     # Register the MuJoCo custom attributes needed to preserve imported model
     # properties. The operation is idempotent.
     SolverMuJoCo.register_custom_attributes(builder)
+    # Avoid replicating and allocating high-level DC-motor arrays for the
+    # overwhelmingly common case where the MJCF contains no DC motors.
+    if any(True for _ in root.iter("dcmotor")):
+        SolverMuJoCo._register_dcmotor_custom_attributes(builder)
     # Bit 1 in one MJCF file may describe different shapes than bit 1 in
     # another. Give every add_mjcf() call a domain so those equal numbers are
     # not mistaken for one shared collision rule. The domain is only a source

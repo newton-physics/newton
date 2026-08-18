@@ -741,6 +741,116 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             for joint_idx, coef in joint_entries
         ]
 
+    @classmethod
+    def _register_dcmotor_custom_attributes(cls, builder: ModelBuilder) -> None:
+        """Declare high-level MJCF DC-motor parameters when a source uses them."""
+
+        def parse_dcmotor_input(value: Any, _context: dict[str, Any] | None = None) -> int:
+            return int(
+                cls._parse_named_int(
+                    value,
+                    {"voltage": 0, "position": 1, "velocity": 2},
+                    fallback_on_unknown=0,
+                )
+            )
+
+        dcmotor_vec6 = wp.types.vector(length=6, dtype=wp.float32)
+        attributes = (
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_motorconst",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="motorconst",
+            ),
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_resistance",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="resistance",
+            ),
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_nominal",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="nominal",
+            ),
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_saturation",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="saturation",
+            ),
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_inductance",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="inductance",
+            ),
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_cogging",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="cogging",
+            ),
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_controller",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=dcmotor_vec6,
+                default=dcmotor_vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="controller",
+            ),
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_thermal",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=dcmotor_vec6,
+                default=dcmotor_vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="thermal",
+            ),
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_lugre",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=vec5,
+                default=vec5(0.0, 0.0, 0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="lugre",
+            ),
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_input",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                mjcf_attribute_name="input",
+                mjcf_value_transformer=parse_dcmotor_input,
+            ),
+        )
+        for attribute in attributes:
+            builder.add_custom_attribute(attribute)
+
     @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
@@ -1512,9 +1622,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
             return parse_actuator_enum(s, actuator_bias_types)
 
-        def parse_dcmotor_input(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, {"voltage": 0, "position": 1, "velocity": 2})
-
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
             if isinstance(value, bool):
@@ -2046,120 +2153,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         )
 
-        # Preserve high-level MJCF DC-motor parameters so MjSpec can apply the
-        # native shortcut when SolverMuJoCo rebuilds its MuJoCo model.
-        dcmotor_vec6 = wp.types.vector(length=6, dtype=wp.float32)
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_dcmotor_motorconst",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.vec2,
-                default=wp.vec2(0.0, 0.0),
-                namespace="mujoco",
-                mjcf_attribute_name="motorconst",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_dcmotor_resistance",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.float32,
-                default=0.0,
-                namespace="mujoco",
-                mjcf_attribute_name="resistance",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_dcmotor_nominal",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.vec3,
-                default=wp.vec3(0.0, 0.0, 0.0),
-                namespace="mujoco",
-                mjcf_attribute_name="nominal",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_dcmotor_saturation",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.vec3,
-                default=wp.vec3(0.0, 0.0, 0.0),
-                namespace="mujoco",
-                mjcf_attribute_name="saturation",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_dcmotor_inductance",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.vec2,
-                default=wp.vec2(0.0, 0.0),
-                namespace="mujoco",
-                mjcf_attribute_name="inductance",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_dcmotor_cogging",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.vec3,
-                default=wp.vec3(0.0, 0.0, 0.0),
-                namespace="mujoco",
-                mjcf_attribute_name="cogging",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_dcmotor_controller",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=dcmotor_vec6,
-                default=dcmotor_vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-                namespace="mujoco",
-                mjcf_attribute_name="controller",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_dcmotor_thermal",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=dcmotor_vec6,
-                default=dcmotor_vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-                namespace="mujoco",
-                mjcf_attribute_name="thermal",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_dcmotor_lugre",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=vec5,
-                default=vec5(0.0, 0.0, 0.0, 0.0, 0.0),
-                namespace="mujoco",
-                mjcf_attribute_name="lugre",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_dcmotor_input",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=0,
-                namespace="mujoco",
-                mjcf_attribute_name="input",
-                mjcf_value_transformer=parse_dcmotor_input,
-            )
-        )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_cranklength",
