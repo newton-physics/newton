@@ -1448,7 +1448,7 @@ class TestImportUsdJoints(unittest.TestCase):
         """NewtonJointAPI broadcast attributes parse onto a revolute joint, including sentinels."""
         from pxr import Usd
 
-        from newton._src.utils.import_usd import _HARD_LIMIT_KE  # noqa: PLC0415
+        from newton._src.usd._usd_resolution_policy import _HARD_LIMIT_KE  # noqa: PLC0415
 
         deg2rad = math.pi / 180.0
 
@@ -1809,13 +1809,14 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_damping_importer_default_precedes_compatibility(self):
         """Place the damping importer default before compatibility defaults."""
-        from pxr import Usd
+        from pxr import Sdf, Usd
 
         class SchemaResolverCompatibilityDamping(usd.SchemaResolver):
             name = "compatibility"
             mapping: ClassVar = {
                 usd.PrimType.JOINT: {
                     "damping": usd.SchemaResolver.SchemaAttribute("compatibility:damping", 0.25),
+                    "damping_per_rad": usd.SchemaResolver.SchemaAttribute("compatibility:dampingPerRad"),
                 }
             }
 
@@ -1929,15 +1930,49 @@ def Xform "World" (
                         )
                     )
                     migration_warnings = [item for item in caught if "compatibility:damping" in str(item.message)]
-                    self.assertEqual(len(migration_warnings), int(not use_applied_schema_fallbacks))
+                    self.assertFalse(migration_warnings)
             policy_damping[importer_damping] = results
 
-        degrees_to_radians = math.pi / 180.0
-        compatibility_values = (0.25, 0.25, 0.25 / degrees_to_radians)
-        np.testing.assert_allclose(policy_damping[3.0][0], compatibility_values)
+        np.testing.assert_allclose(policy_damping[3.0][0], (3.0, 3.0, 3.0))
         np.testing.assert_allclose(policy_damping[3.0][1], (3.0, 3.0, 3.0))
-        np.testing.assert_allclose(policy_damping[0.25][0], compatibility_values)
+        np.testing.assert_allclose(policy_damping[0.25][0], (0.25, 0.25, 0.25))
         np.testing.assert_allclose(policy_damping[0.25][1], (0.25, 0.25, 0.25))
+
+        for path in ("/World/Slide", "/World/D6"):
+            stage.GetPrimAtPath(path).CreateAttribute(
+                "compatibility:dampingPerRad",
+                Sdf.ValueTypeNames.Float,
+            ).Set(2.0)
+
+        authored_policy_damping = []
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            builder.default_joint_cfg.damping = 3.0
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                builder.add_usd(
+                    stage,
+                    schema_resolvers=[SchemaResolverCompatibilityDamping()],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
+            model = builder.finalize()
+            slide_start = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Slide")])
+            d6_start = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/D6")])
+            damping = model.joint_damping.numpy()
+            authored_policy_damping.append(
+                (
+                    float(damping[slide_start]),
+                    float(damping[d6_start]),
+                    float(damping[d6_start + 1]),
+                )
+            )
+            migration_warnings = [
+                item for item in caught if "deprecated legacy USD property precedence" in str(item.message)
+            ]
+            self.assertEqual(len(migration_warnings), int(not use_applied_schema_fallbacks))
+
+        np.testing.assert_allclose(authored_policy_damping[0], (2.0, 2.0, 2.0))
+        np.testing.assert_allclose(authored_policy_damping[1], (3.0, 3.0, 3.0))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_d6(self):
@@ -2196,17 +2231,24 @@ def Xform "Articulation" (
         joint.CreateBody1Rel().SetTargets([body.GetPath()])
         joint.CreateAxisAttr().Set("X")
 
-        builder = newton.ModelBuilder()
-        builder.default_joint_cfg.velocity_limit = 123.0
-        builder.add_usd(
-            stage,
-            schema_resolvers=[SchemaResolverCompatibility()],
-            use_applied_schema_fallbacks=True,
-            load_visual_shapes=False,
-        )
-        model = builder.finalize()
+        policy_values = []
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            builder.default_joint_cfg.velocity_limit = 123.0
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                builder.add_usd(
+                    stage,
+                    schema_resolvers=[SchemaResolverCompatibility()],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                    load_visual_shapes=False,
+                )
+            model = builder.finalize()
+            policy_values.append(model.joint_velocity_limit.numpy().tolist())
+            migration_warnings = [item for item in caught if "compat:velocityLimit" in str(item.message)]
+            self.assertEqual(len(migration_warnings), int(not use_applied_schema_fallbacks))
 
-        self.assertEqual(model.joint_velocity_limit.numpy().tolist(), [123.0])
+        self.assertEqual(policy_values, [[456.0], [123.0]])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_velocity_fallback_audit_reuses_authored_read(self):
@@ -5977,7 +6019,11 @@ def PhysicsRevoluteJoint "Joint2"
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverMjc()],
+            use_applied_schema_fallbacks=True,
+        )
         model = builder.finalize()
 
         shape_margin = model.shape_margin.numpy()
@@ -7812,7 +7858,11 @@ def Xform "Articulation" (
             with self.subTest(resolvers=[resolver_type.name for resolver_type in resolver_types]):
                 builder = newton.ModelBuilder()
                 SolverMuJoCo.register_custom_attributes(builder)
-                builder.add_usd(stage, schema_resolvers=[resolver_type() for resolver_type in resolver_types])
+                builder.add_usd(
+                    stage,
+                    schema_resolvers=[resolver_type() for resolver_type in resolver_types],
+                    use_applied_schema_fallbacks=True,
+                )
                 with mock.patch("newton.use_coord_layout_targets", True):
                     model = builder.finalize()
 
@@ -7847,7 +7897,11 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.damping = 99.0
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc()])
+        builder.add_usd(
+            stage,
+            schema_resolvers=[usd.SchemaResolverMjc()],
+            use_applied_schema_fallbacks=True,
+        )
         with mock.patch("newton.use_coord_layout_targets", True):
             model = builder.finalize()
 
@@ -7884,7 +7938,11 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.damping = 99.0
-        builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc()])
+        builder.add_usd(
+            stage,
+            schema_resolvers=[usd.SchemaResolverMjc()],
+            use_applied_schema_fallbacks=True,
+        )
         with mock.patch("newton.use_coord_layout_targets", True):
             model = builder.finalize()
 
@@ -12585,6 +12643,37 @@ def Xform "Articulation" (
                 )
 
         self.assertEqual(policy_values, [-1, -1])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_iterations_preserve_legacy_compatibility_default(self):
+        """Preserve the legacy scene iteration compatibility default."""
+        from pxr import Usd, UsdPhysics
+
+        class SchemaResolverCompatibility(usd.SchemaResolver):
+            name = "compatibility"
+            mapping: ClassVar = {
+                usd.PrimType.SCENE: {
+                    "max_solver_iterations": usd.SchemaResolver.SchemaAttribute("compat:iterations", 22)
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        policy_values = []
+        for use_applied_schema_fallbacks in (False, True):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                result = newton.ModelBuilder().add_usd(
+                    stage,
+                    schema_resolvers=[SchemaResolverCompatibility()],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
+            policy_values.append(result["max_solver_iterations"])
+            migration_warnings = [item for item in caught if "compat:iterations" in str(item.message)]
+            self.assertEqual(len(migration_warnings), int(not use_applied_schema_fallbacks))
+
+        self.assertEqual(policy_values, [22, -1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mesh_max_hull_vertices_parsing(self):

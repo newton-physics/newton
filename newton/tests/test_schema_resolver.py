@@ -1758,6 +1758,7 @@ class TestSchemaResolver(unittest.TestCase):
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverPhysx()],  # PhysX first
             verbose=False,
+            use_applied_schema_fallbacks=True,
         )
         armature_values_found = []
         for i in range(6, builder.joint_dof_count):
@@ -1798,6 +1799,7 @@ class TestSchemaResolver(unittest.TestCase):
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverPhysx()],
             verbose=False,
+            use_applied_schema_fallbacks=True,
         )
         expected_velocity_limit = 100.0 * math.pi / 180.0  # 100 deg/s -> rad/s
         velocity_limits_found = []
