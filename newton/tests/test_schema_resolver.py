@@ -990,6 +990,33 @@ class TestSchemaResolver(unittest.TestCase):
                 self.assertEqual(builder.shape_sdf_texture_format[shape], "uint16")
                 self.assertFalse(builder.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
 
+    def test_unapplied_sdf_effective_defaults_do_not_report_missing(self):
+        """Avoid missing errors when SDF consumers provide effective defaults."""
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        for use_registered_schema_fallbacks in (False, True):
+            with self.subTest(use_registered_schema_fallbacks=use_registered_schema_fallbacks):
+                builder = ModelBuilder()
+                with mock.patch("builtins.print") as print_mock:
+                    result = builder.add_usd(
+                        stage,
+                        use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                        verbose=True,
+                    )
+
+                shape = result["path_shape_map"]["/cube"]
+                missing_messages = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+                self.assertNotIn("Error: Cannot resolve value", missing_messages)
+                self.assertEqual(
+                    builder.shape_sdf_narrow_band_range[shape],
+                    builder.default_shape_cfg.sdf_narrow_band_range,
+                )
+                self.assertEqual(builder.shape_material_kh[shape], builder.default_shape_cfg.kh)
+
     def test_applied_sdf_effective_default_change_warns(self):
         """Warn when a registered SDF fallback changes the effective value."""
         stage = Usd.Stage.CreateInMemory()

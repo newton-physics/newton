@@ -887,7 +887,7 @@ class SchemaResolverManager:
             prim,
             prim_type,
             key,
-            resolved.value,
+            resolved.comparison,
             active_default,
             verbose and override is _NO_OVERRIDE,
         )
