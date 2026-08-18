@@ -150,7 +150,12 @@ during the deprecation window.
 
 .. note::
 
-   ``use_registered_schema_fallbacks`` does not yet change proposal deformable attribute reads. Those attributes continue to read canonical ``physics:`` values first, followed by resolver-enabled vendor namespaces. They do not yet read composed fallbacks from ``Usd.SchemaRegistry``. Cloth shell mass properties are the limited exception: their shared ``mass_model`` and ``shell_thickness`` properties already use the ordinary schema resolver. Applying the common registered-fallback policy to the remaining deformable properties is follow-up work.
+   Most deformable properties do not yet use registered schema fallbacks.
+   They read authored ``physics:`` values first, followed by resolver-enabled vendor namespaces.
+   Cloth ``mass_model`` and ``shell_thickness`` already use the common resolver.
+   These properties are described by the experimental `AOUSD UsdPhysics Deformables proposal
+   <https://github.com/PixarAnimationStudios/OpenUSD-proposals/pull/111>`_. Registered-fallback
+   support for the remaining deformable properties will be expanded in the future.
 
 Supported subset
 ~~~~~~~~~~~~~~~~
