@@ -117,6 +117,8 @@ _NEWTON_VERSION_KEY = "__newton_version__"
 _CREATED_UTC_KEY = "__created_utc__"
 _NPZ_SUFFIX = ".sdf.npz"
 _KIND = "newton.texture_sdf"
+# Match the sentinels in ``sdf_texture``. Valid slots pack three 10-bit
+# coordinates into bits 0-29, leaving the two highest uint32 values reserved.
 _SLOT_LINEAR = np.uint32(0xFFFFFFFE)
 _SLOT_EMPTY = np.uint32(0xFFFFFFFF)
 
