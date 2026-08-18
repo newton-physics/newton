@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import math
 import operator
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -166,24 +168,34 @@ def _validate_sparse_grid_node_capacity(name: str, value: int) -> int:
     return capacity
 
 
-def _make_grid_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polynomial | None = None):
-    assert len(basis_str) >= 2
-
-    degree = int(basis_str[1])
-    discontinuous = degree == 0 or basis_str[-1] == "d"
-
-    if basis_str[0] == "B":
-        element_basis = fem.ElementBasis.BSPLINE
-    elif basis_str[0] == "Q":
-        element_basis = fem.ElementBasis.LAGRANGE
-    elif basis_str[0] == "S":
-        element_basis = fem.ElementBasis.SERENDIPITY
-    elif basis_str[0] == "P" and discontinuous:
-        element_basis = fem.ElementBasis.NONCONFORMING_POLYNOMIAL
-    else:
+def _parse_grid_basis_name(basis_str: str) -> tuple[str, int, bool]:
+    """Parse and validate Newton's compact grid-basis spelling."""
+    match = re.fullmatch(r"([BQSP])([0-9]+)(d?)", basis_str)
+    if match is None:
         raise ValueError(
-            f"Unsupported basis: {basis_str}. Expected format: Q<degree>[d], S<degree>, or P<degree>[d] for tri-polynomial, serendipity, or non-conforming polynomial respectively."
+            f"Unsupported basis: {basis_str}. Expected format: B<degree>[d], Q<degree>[d], "
+            "S<degree>[d], P0, or P<positive-degree>d."
         )
+
+    basis_type, degree_text, discontinuous_suffix = match.groups()
+    degree = int(degree_text)
+    discontinuous = degree == 0 or discontinuous_suffix == "d"
+    if basis_type == "P" and not discontinuous:
+        raise ValueError(f"Unsupported basis: {basis_str}. Non-conforming polynomial (P) bases must be discontinuous.")
+    return basis_type, degree, discontinuous
+
+
+def _make_grid_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polynomial | None = None):
+    basis_type, degree, discontinuous = _parse_grid_basis_name(basis_str)
+
+    if basis_type == "B":
+        element_basis = fem.ElementBasis.BSPLINE
+    elif basis_type == "Q":
+        element_basis = fem.ElementBasis.LAGRANGE
+    elif basis_type == "S":
+        element_basis = fem.ElementBasis.SERENDIPITY
+    elif basis_type == "P":
+        element_basis = fem.ElementBasis.NONCONFORMING_POLYNOMIAL
 
     return fem.make_polynomial_basis_space(
         grid, degree=degree, element_basis=element_basis, family=family, discontinuous=discontinuous
@@ -923,6 +935,250 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             without prior notice.
         """
 
+        @classmethod
+        def create_from_usd(cls, scene_prim: Any) -> SolverImplicitMPM.Config:
+            """Create a solver configuration from ``NewtonMPMSceneAPI``.
+
+            Only authored USD values override :class:`Config` defaults, so the
+            Python defaults remain the source of simulator-default values.
+            Authored ``-inf`` values on dimensional attributes using the USD
+            simulator-default convention retain those Python defaults. Length
+            values authored in stage units are converted to meters. Following
+            :meth:`ModelBuilder.add_usd`, unauthored stage unit metadata is
+            interpreted as one meter and one kilogram per stage unit.
+
+            Args:
+                scene_prim: A ``UsdPhysics.Scene`` prim with
+                    ``NewtonMPMSceneAPI`` applied, or its typed schema object.
+
+            Returns:
+                A validated MPM solver configuration.
+
+            Raises:
+                TypeError: If ``scene_prim`` is not a USD physics scene prim.
+                ValueError: If the API is absent or an authored value is invalid.
+            """
+            try:
+                from pxr import UsdGeom, UsdPhysics
+            except ImportError as error:
+                raise ImportError("Creating an MPM config from USD requires usd-core.") from error
+
+            from ...usd import utils as usd  # noqa: PLC0415
+
+            prim = scene_prim.GetPrim() if hasattr(scene_prim, "GetPrim") else scene_prim
+            if not prim or not prim.IsValid() or not prim.IsA(UsdPhysics.Scene):
+                raise TypeError("scene_prim must be a valid UsdPhysics.Scene prim.")
+            path = str(prim.GetPath())
+            if not usd.has_applied_api_schema(prim, "NewtonMPMSceneAPI"):
+                raise ValueError(f"{path}: NewtonMPMSceneAPI is not applied.")
+
+            config = cls()
+
+            def authored(name: str):
+                attr = prim.GetAttribute(name)
+                if not attr or not attr.HasAuthoredValue():
+                    return None
+                value = attr.Get()
+                if value is None:
+                    raise ValueError(f"{path}: authored attribute {name!r} has no value.")
+                return value
+
+            def finite_float(name: str, value: Any, *, minimum: float | None = None) -> float:
+                try:
+                    result = float(value)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"{path}: {name} must be a finite number, got {value!r}.") from error
+                if not math.isfinite(result) or (minimum is not None and result < minimum):
+                    qualifier = f" greater than or equal to {minimum}" if minimum is not None else ""
+                    raise ValueError(f"{path}: {name} must be a finite number{qualifier}, got {value!r}.")
+                return result
+
+            def requests_simulator_default(name: str, value: Any) -> bool:
+                try:
+                    result = float(value)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"{path}: {name} must be a number, got {value!r}.") from error
+                return result == float("-inf")
+
+            def integer(name: str, value: Any, *, allow_minus_one: bool = False) -> int:
+                if isinstance(value, (bool, np.bool_)):
+                    raise ValueError(f"{path}: {name} must be an integer, got {value!r}.")
+                try:
+                    result = operator.index(value)
+                except TypeError as error:
+                    raise ValueError(f"{path}: {name} must be an integer, got {value!r}.") from error
+                if result < 0 and not (allow_minus_one and result == -1):
+                    suffix = " or -1" if allow_minus_one else ""
+                    raise ValueError(f"{path}: {name} must be non-negative{suffix}, got {result}.")
+                return result
+
+            def token(name: str, value: Any, allowed: set[str]) -> str:
+                result = str(value)
+                if result not in allowed:
+                    raise ValueError(f"{path}: {name} must be one of {sorted(allowed)}, got {result!r}.")
+                return result
+
+            value = authored("newton:maxSolverIterations")
+            if value is not None:
+                value = integer("newton:maxSolverIterations", value, allow_minus_one=True)
+                if value == 0:
+                    raise ValueError(f"{path}: newton:maxSolverIterations must be positive or -1, got 0.")
+                if value != -1:
+                    config.max_iterations = value
+
+            value = authored("newton:mpm:tolerance")
+            if value is not None:
+                config.tolerance = finite_float("newton:mpm:tolerance", value, minimum=0.0)
+                if config.tolerance == 0.0:
+                    raise ValueError(f"{path}: newton:mpm:tolerance must be positive.")
+
+            value = authored("newton:mpm:rheologySolvers")
+            if value is not None:
+                solvers = tuple(str(item) for item in value)
+                solver_names = {
+                    "auto": "auto",
+                    "gauss-seidel": "gauss-seidel",
+                    "gauss-seidel-soa": "gauss-seidel-soa",
+                    "gauss-seidel-batched": "gauss-seidel-batched",
+                    "jacobi": "jacobi",
+                    "conjugate-gradient": "cg",
+                    "conjugate-residual": "cr",
+                    "generalized-minimal-residual": "gmres",
+                }
+                if not solvers or any(item not in solver_names for item in solvers):
+                    raise ValueError(
+                        f"{path}: newton:mpm:rheologySolvers must be a non-empty ordered array of supported tokens, "
+                        f"got {solvers!r}."
+                    )
+                config.solver = tuple(solver_names[item] for item in solvers)
+
+            token_fields = (
+                ("newton:mpm:gridType", "grid_type", {"sparse", "dense", "fixed"}),
+                ("newton:mpm:transferScheme", "transfer_scheme", {"apic", "pic"}),
+                ("newton:mpm:integrationScheme", "integration_scheme", {"pic", "gimp"}),
+            )
+            for usd_name, field_name, allowed in token_fields:
+                value = authored(usd_name)
+                if value is not None:
+                    setattr(config, field_name, token(usd_name, value, allowed))
+
+            stage = prim.GetStage()
+            linear_unit = (
+                float(UsdGeom.GetStageMetersPerUnit(stage)) if UsdGeom.StageHasAuthoredMetersPerUnit(stage) else 1.0
+            )
+            if not math.isfinite(linear_unit) or linear_unit <= 0.0:
+                raise ValueError(f"{path}: metersPerUnit must be finite and positive, got {linear_unit!r}.")
+            mass_unit = (
+                float(UsdPhysics.GetStageKilogramsPerUnit(stage))
+                if UsdPhysics.StageHasAuthoredKilogramsPerUnit(stage)
+                else 1.0
+            )
+            if not math.isfinite(mass_unit) or mass_unit <= 0.0:
+                raise ValueError(f"{path}: kilogramsPerUnit must be finite and positive, got {mass_unit!r}.")
+            value = authored("newton:mpm:voxelSize")
+            if value is not None and not requests_simulator_default("newton:mpm:voxelSize", value):
+                config.voxel_size = finite_float("newton:mpm:voxelSize", value, minimum=0.0) * linear_unit
+                if not math.isfinite(config.voxel_size) or config.voxel_size <= 0.0:
+                    raise ValueError(f"{path}: newton:mpm:voxelSize must convert to a finite positive SI distance.")
+
+            value = authored("newton:mpm:gridPadding")
+            if value is not None:
+                config.grid_padding = integer("newton:mpm:gridPadding", value)
+
+            value = authored("newton:mpm:maxActiveCellCount")
+            if value is not None:
+                try:
+                    config.max_active_cell_count = _validate_sparse_grid_node_capacity("max_active_cell_count", value)
+                except ValueError as error:
+                    raise ValueError(f"{path}: invalid newton:mpm:maxActiveCellCount: {error}") from error
+
+            value = authored("newton:mpm:criticalFraction")
+            if value is not None:
+                config.critical_fraction = finite_float("newton:mpm:criticalFraction", value, minimum=0.0)
+                if config.critical_fraction > 1.0:
+                    raise ValueError(f"{path}: newton:mpm:criticalFraction must not exceed 1.0.")
+            value = authored("newton:mpm:airDrag")
+            if value is not None and not requests_simulator_default("newton:mpm:airDrag", value):
+                authored_air_drag = finite_float("newton:mpm:airDrag", value, minimum=0.0)
+                config.air_drag = authored_air_drag * mass_unit
+                if not math.isfinite(config.air_drag) or (authored_air_drag != 0.0 and config.air_drag == 0.0):
+                    raise ValueError(f"{path}: newton:mpm:airDrag must convert to a finite, representable SI value.")
+
+            def read_basis(prefix: str, field_name: str, allowed_types: set[str]) -> None:
+                """Compose the schema's basis fields into Newton's compact basis name."""
+                type_name = f"newton:mpm:{prefix}BasisType"
+                order_name = f"newton:mpm:{prefix}BasisOrder"
+                discontinuous_name = f"newton:mpm:{prefix}DiscontinuousBasis"
+                attrs = (
+                    prim.GetAttribute(type_name),
+                    prim.GetAttribute(order_name),
+                    prim.GetAttribute(discontinuous_name),
+                )
+                if not any(attr and attr.HasAuthoredValue() for attr in attrs):
+                    return
+
+                basis_type = token(
+                    type_name,
+                    attrs[0].Get(),
+                    allowed_types,
+                )
+                order = integer(order_name, attrs[1].Get())
+                discontinuous = attrs[2].Get()
+                if not isinstance(discontinuous, (bool, np.bool_)):
+                    raise ValueError(f"{path}: {discontinuous_name} must be bool, got {discontinuous!r}.")
+
+                if basis_type == "particle":
+                    # The current runtime has no USD representation for its
+                    # optional picN capacity suffix. Plain "pic" is the stable
+                    # particle-basis spelling; order and continuity do not apply.
+                    basis = "pic"
+                else:
+                    if basis_type in ("bspline", "serendipity") and not 1 <= order <= 3:
+                        raise ValueError(
+                            f"{path}: {type_name}={basis_type!r} supports {order_name} values from 1 through 3, "
+                            f"got {order}."
+                        )
+                    prefix_by_type = {
+                        "linear": "P",
+                        "trilinear": "Q",
+                        "bspline": "B",
+                        "serendipity": "S",
+                    }
+                    basis = f"{prefix_by_type[basis_type]}{order}"
+                    # Degree-zero spaces are inherently discontinuous, so the
+                    # authored flag only changes positive-order basis names.
+                    if bool(discontinuous) and order > 0:
+                        basis += "d"
+                    _parse_grid_basis_name(basis)
+                setattr(config, field_name, basis)
+
+            read_basis(
+                "collider",
+                "collider_basis",
+                {"linear", "trilinear", "bspline", "serendipity", "particle"},
+            )
+            read_basis("strain", "strain_basis", {"linear", "trilinear", "particle"})
+
+            velocity_type_name = "newton:mpm:velocityBasisType"
+            velocity_order_name = "newton:mpm:velocityBasisOrder"
+            velocity_attrs = (
+                prim.GetAttribute(velocity_type_name),
+                prim.GetAttribute(velocity_order_name),
+            )
+            if any(attr and attr.HasAuthoredValue() for attr in velocity_attrs):
+                velocity_type = token(
+                    velocity_type_name,
+                    velocity_attrs[0].Get(),
+                    {"trilinear", "bspline"},
+                )
+                velocity_order = integer(velocity_order_name, velocity_attrs[1].Get())
+                if not 1 <= velocity_order <= 3:
+                    raise ValueError(f"{path}: {velocity_order_name} must be from 1 through 3, got {velocity_order}.")
+                velocity_prefix = "Q" if velocity_type == "trilinear" else "B"
+                config.velocity_basis = f"{velocity_prefix}{velocity_order}"
+
+            return config
+
     @classmethod
     def register_custom_attributes(cls, builder: newton.ModelBuilder) -> None:
         """Register MPM-specific custom attributes in the 'mpm' namespace.
@@ -1610,7 +1866,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     state.mpm.particle_transform.fill_(identity)
                     state.mpm.particle_qd_grad.zero_()
                     state.mpm.particle_stress.zero_()
-                    state.mpm.particle_Jp.fill_(1.0)
+                    state.mpm.particle_Jp.assign(self.model.mpm.particle_Jp)
                 else:
                     wp.launch(
                         reset_mpm_particle_history,
@@ -1619,6 +1875,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                             self.model.particle_world,
                             world_mask,
                             self._initial_world_count,
+                            self.model.mpm.particle_Jp,
                             state.mpm.particle_elastic_strain,
                             state.mpm.particle_transform,
                             state.mpm.particle_qd_grad,
