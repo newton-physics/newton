@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+<!-- towncrier release notes start -->
+
+## [1.5.1] - 2026-08-26
+
+### Fixed
+
+- Reset masked `ControllerNeuralLSTM` hidden and cell state without in-place writes. Network outputs are produced under `torch.inference_mode()`, so a partial reset previously raised `RuntimeError: Inplace update to inference tensor outside InferenceMode is not allowed.` ([#3923](https://github.com/newton-physics/newton/issues/3923))
+- Index Torch neural controller targets with the supplied `target_pos_indices`. `ControllerNeuralMLP` and `ControllerNeuralLSTM` previously selected between position and sequential indices by Python object identity, which produced wrong position errors whenever the target and position layouts differ, such as DOF-layout targets on a floating-base robot. ([#3923](https://github.com/newton-physics/newton/issues/3923))
+
 ## [1.5.0] - 2026-08-11
 
 ### Added
