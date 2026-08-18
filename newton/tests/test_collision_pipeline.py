@@ -3940,14 +3940,21 @@ def test_unprovisioned_mesh_raises(test, device):
         newton.CollisionPipeline(
             model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
         )
-    # The BVH back-end (opt-in) handles the SDF-less mesh instead of raising.
-    newton.CollisionPipeline(
+    # The BVH back-end (opt-in) handles the SDF-less mesh instead of raising -- and actually
+    # produces full-surface records for it at runtime (the mesh is excluded from the legacy
+    # per-particle pairs, so every record below comes from the BVH path).
+    pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
         soft_contact_gap=0.1,
         enable_rigid_soft_full_surface_contact=True,
         full_surface_mesh_backend="bvh",
     )
+    contacts = pipeline.contacts()
+    state = model.state()
+    pipeline.refit_soft_contact_bvh(state)
+    pipeline.collide(state, contacts)
+    test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
 
 
 add_function_test(

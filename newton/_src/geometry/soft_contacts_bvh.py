@@ -59,12 +59,19 @@ CONTACT_NORMAL_DEGENERATE_EPS = wp.constant(1.0e-6)
 def _mesh_feature_data(mesh: Mesh) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute per-mesh feature tables: unique vertices and edges with outward directions.
 
-    Returns ``(vertex_table, vertex_normals, edge_table, edge_outward)``. Table entries are
-    *face-vertex* indices into the mesh index buffer, not vertex ids: ``wp.mesh_get_point(id, i)``
-    returns ``points[indices[i]]``, so a raw vertex id is not addressable from a kernel. Vertices are
-    folded to canonical ids (the same 1e-7 quantization as :attr:`Mesh.edges`), so a seam-duplicated
-    vertex yields one table row and normals accumulate across the seam. All normals are mesh-local
-    and unit length.
+    Table entries are *face-vertex* indices into the mesh index buffer, not vertex ids: a single
+    such index serves both the position and the velocity fetch in the kernels
+    (``wp.mesh_get_point`` and ``wp.mesh_eval_velocity``). Vertices are folded to canonical ids
+    (the same 1e-7 quantization as :attr:`Mesh.edges`), so a seam-duplicated vertex yields one
+    table row and normals accumulate across the seam. All normals are mesh-local and unit length.
+
+    Returns:
+        Four per-mesh numpy arrays, row-aligned in pairs:
+
+        - ``vertex_table``: one representative face-vertex index per canonical vertex.
+        - ``vertex_normals``: the row's angle-weighted unit vertex normal.
+        - ``edge_table``: one ``(index0, index1)`` face-vertex row per unique edge.
+        - ``edge_outward``: the row's unit outward direction (mean of adjacent face normals).
     """
     verts = np.asarray(mesh.vertices, dtype=np.float64)
     idx = np.asarray(mesh.indices, dtype=np.int32).reshape(-1)
@@ -141,9 +148,17 @@ def build_full_surface_bvh_rigid_features(
     its own table rows because transforms differ. Host-side and allocation-heavy: call at pipeline
     construction, never inside a CUDA graph capture.
 
-    Returns ``(rigid_vertex_table, rigid_vertex_normals, rigid_edge_table, rigid_edge_outward_dirs)``:
-    ``(shape, face_vertex_index)`` rows with mesh-local unit normals, and ``(shape, index0, index1)``
-    rows with mesh-local unit outward directions.
+    Returns:
+        Four flat, row-aligned arrays:
+
+        - ``rigid_vertex_table`` (``wp.vec2i``): one ``(shape, face_vertex_index)``
+          row per canonical vertex of each selected shape.
+        - ``rigid_vertex_normals`` (``wp.vec3``): the row's mesh-local unit
+          vertex normal (angle-weighted).
+        - ``rigid_edge_table`` (``wp.vec3i``): one ``(shape, index0, index1)`` row
+          per unique edge; endpoints are face-vertex indices.
+        - ``rigid_edge_outward_dirs`` (``wp.vec3``): the row's mesh-local unit
+          outward direction (mean of adjacent face normals).
     """
     device = model.device
     vertex_rows: list[np.ndarray] = []
@@ -189,8 +204,9 @@ def build_full_surface_bvh_rigid_features(
 # ---------------------------------------------------------------------------
 # Kernels: two-stage detect + emit
 # ---------------------------------------------------------------------------
-# Differentiable-replay contract: :func:`soft_contacts_common._emit_soft_contact` memoizes ONE
-# record index per thread, so a taped kernel may emit at most once per thread. A BVH traversal
+# Differentiable-replay contract: ``counter_increment`` memoizes ONE record index per thread
+# (see :func:`soft_contacts_common._write_soft_contact`), so a taped kernel may emit at most
+# once per thread. A BVH traversal
 # discovers an unbounded number of pairs, so detection and emission are split. The DETECT kernels
 # traverse the BVHs and append compact integer candidates with no tape recording (which pairs are
 # within range is a discrete, gradient-free decision, like the broad phase). The EMIT kernel runs
@@ -535,10 +551,10 @@ def emit_bvh_contacts(
     """One thread per candidate slot: recompute the contact geometry differentiably and emit once.
 
     Threads beyond the (clamped) candidate count early-out, so the launch dim is fixed at the
-    candidate capacity and the kernel is CUDA-graph-capturable. Exactly one
-    :func:`soft_contacts_common._emit_soft_contact` call per thread keeps the differentiable
-    replay memo valid, and reading positions from the live ``particle_q``/``body_q`` (rather than
-    values stored at detection) is what lets gradients flow to the state."""
+    candidate capacity and the kernel is CUDA-graph-capturable. Exactly one record emission per
+    thread (``counter_increment`` + :func:`soft_contacts_common._write_soft_contact`) keeps the
+    differentiable replay memo valid, and reading positions from the live ``particle_q``/``body_q``
+    (rather than values stored at detection) is what lets gradients flow to the state."""
     tid = wp.tid()
     if tid >= wp.min(candidate_count[0], candidate_max):
         return

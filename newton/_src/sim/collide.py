@@ -654,7 +654,7 @@ def _world_compatible_pairs(
     shape_world: np.ndarray,
     world_count: int,
     device,
-    shape_ok: np.ndarray | None = None,
+    shape_mask: np.ndarray | None = None,
 ) -> wp.array[wp.vec2i]:
     """Emit ``(feature, shape)`` index pairs whose worlds are compatible: same world, or either is
     global (``-1``). ``feature_world[i]`` / ``shape_world[s]`` give each entity's world (-1 == global).
@@ -669,10 +669,10 @@ def _world_compatible_pairs(
     n_shapes = len(shape_world)
 
     def _pairs(f_idx: np.ndarray, s_idx: np.ndarray) -> wp.array[wp.vec2i]:
-        # ``shape_ok`` (optional, indexed by shape) drops pairs whose shape cannot participate -- e.g.
+        # ``shape_mask`` (optional, indexed by shape) drops pairs whose shape cannot participate -- e.g.
         # full-surface edge/face excludes shapes without a usable SDF, which fall back to per-particle.
-        if shape_ok is not None and len(s_idx):
-            keep = shape_ok[s_idx.astype(np.intp)]
+        if shape_mask is not None and len(s_idx):
+            keep = shape_mask[s_idx.astype(np.intp)]
             f_idx, s_idx = f_idx[keep], s_idx[keep]
         stacked = np.column_stack((f_idx, s_idx)).astype(np.int32) if len(f_idx) else np.empty((0, 2), np.int32)
         return wp.array(stacked, dtype=wp.vec2i, device=device)
@@ -718,14 +718,14 @@ def _world_compatible_pairs(
     return _pairs(np.concatenate(f_cols), np.concatenate(s_cols))
 
 
-def _build_soft_particle_rigid_contact_pairs(model: Model, shape_ok: np.ndarray | None = None) -> wp.array[wp.vec2i]:
+def _build_soft_particle_rigid_contact_pairs(model: Model, shape_mask: np.ndarray | None = None) -> wp.array[wp.vec2i]:
     """Build the soft-rigid (particle-shape) candidate pairs for ``model``.
 
     Emits every particle-shape pair whose worlds are compatible (see :func:`_world_compatible_pairs`).
     :attr:`~newton.ParticleFlags.ACTIVE` and :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES` are applied
     per-thread in :func:`~newton._src.geometry.kernels.create_soft_contacts`, not here, so the
     candidate set stays valid when those flags change after the pipeline is constructed.
-    ``shape_ok`` (optional boolean mask over shapes) drops pairs whose shape is handled elsewhere --
+    ``shape_mask`` (optional boolean mask over shapes) drops pairs whose shape is handled elsewhere --
     the BVH full-surface back-end's VT query *replaces* the legacy closest-point record for its
     shapes, so they must not also appear here.
     """
@@ -735,7 +735,7 @@ def _build_soft_particle_rigid_contact_pairs(model: Model, shape_ok: np.ndarray 
         return wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
     world_count = int(getattr(model, "world_count", 0) or 0)
     return _world_compatible_pairs(
-        model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device, shape_ok=shape_ok
+        model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device, shape_mask=shape_mask
     )
 
 
@@ -779,7 +779,7 @@ def _build_soft_face_rigid_contact_pairs(
     world_count = int(getattr(model, "world_count", 0) or 0)
     face_world = model.particle_world.numpy()[model.tri_indices.numpy()[:, 0]]
     return _world_compatible_pairs(
-        face_world, model.shape_world.numpy(), world_count, device, shape_ok=capable_shape_mask
+        face_world, model.shape_world.numpy(), world_count, device, shape_mask=capable_shape_mask
     )
 
 
@@ -801,7 +801,7 @@ def _build_soft_edge_rigid_contact_pairs(
     # edge_indices rows are [o0, o1, v0, v1]; col 2 (v0) is an endpoint, so its world is the edge's.
     edge_world = model.particle_world.numpy()[model.edge_indices.numpy()[:, 2]]
     return _world_compatible_pairs(
-        edge_world, model.shape_world.numpy(), world_count, device, shape_ok=capable_shape_mask
+        edge_world, model.shape_world.numpy(), world_count, device, shape_mask=capable_shape_mask
     )
 
 
@@ -1465,7 +1465,7 @@ class CollisionPipeline:
                 _bvh_shape_mask = _mask
 
         self.soft_rigid_contact_pairs = _build_soft_particle_rigid_contact_pairs(
-            model, shape_ok=(~_bvh_shape_mask if _bvh_shape_mask is not None else None)
+            model, shape_mask=(~_bvh_shape_mask if _bvh_shape_mask is not None else None)
         )
         self._soft_contact_pair_count = len(self.soft_rigid_contact_pairs)
         # Full-surface edge/face candidate pairs (world-compatible, like the particle pairs above);
@@ -1531,7 +1531,7 @@ class CollisionPipeline:
                 model.shape_world.numpy(),
                 int(getattr(model, "world_count", 0) or 0),
                 device,
-                shape_ok=_bvh_shape_mask,
+                shape_mask=_bvh_shape_mask,
             )
             # Query AABB inflation for the TV/EE threads (rigid features know no soft radius
             # up front); radii grown past this after finalize can miss candidates.
@@ -1565,6 +1565,9 @@ class CollisionPipeline:
             soft_contact_max += full_surface_bvh_contact_headroom * self._full_surface_bvh_thread_count
         # BVH candidate buffer (detect stage output / emit stage input), 1:1 with records: sizing
         # it to the record capacity means the candidate cap never binds before the record cap does.
+        # Deliberately the FULL capacity, not just the BVH headroom share: the particle and
+        # edge/face summands above are worst-case pair reservations that typically go mostly
+        # unfilled, and the shared record stream lets BVH records claim that unused space.
         _candidate_max = soft_contact_max if self._full_surface_bvh_thread_count > 0 else 0
         self._full_surface_bvh_candidate_count = wp.zeros(1, dtype=wp.int32, device=device)
         self._full_surface_bvh_candidates = wp.zeros(_candidate_max, dtype=wp.vec4i, device=device)
@@ -2015,7 +2018,7 @@ class CollisionPipeline:
                 into ``contacts.soft_self_contact_data``. Requires
                 :meth:`init_soft_self_contact` to have been called. The
                 self-contact BVHs are **not** updated by this call — keep them
-                current via :meth:`refit_soft_self_contact_bvh`.
+                current via :meth:`refit_soft_contact_bvh`.
             dt: Collision-update horizon [s]. Required when speculative
                 contacts are enabled. ``0.0`` disables velocity adaptation for
                 this call. Ignored when speculative contacts are disabled. See
@@ -2489,7 +2492,7 @@ class CollisionPipeline:
             detector = self._get_soft_self_contact_detector(contacts)
             query_radius = self.soft_self_contact_margin + self.soft_self_contact_gap
             # The BVHs (and the positions detection reads) are NOT updated here —
-            # keeping them current via refit_soft_self_contact_bvh() is
+            # keeping them current via refit_soft_contact_bvh() is
             # the caller's responsibility. Rest-shape exclusion measures pair
             # distances in the model's initial (rest) positions.
             detector.vertex_triangle_collision_detection(
