@@ -1185,8 +1185,8 @@ class TestUSDImporter(unittest.TestCase):
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 31)
-        self.assertEqual(builder_usd.num_joints, 36)
-        self.assertEqual(builder_usd.num_geoms, 31)
+        self.assertEqual(builder_usd.num_joints, 37)
+        self.assertEqual(builder_usd.num_geoms, 81)
 
     def test_import_model_dr_legs_with_boxes(self):
         """Test importing the `DR Legs` example model from a USD file"""
@@ -1200,7 +1200,7 @@ class TestUSDImporter(unittest.TestCase):
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 31)
-        self.assertEqual(builder_usd.num_joints, 36)
+        self.assertEqual(builder_usd.num_joints, 37)
         self.assertEqual(builder_usd.num_geoms, 3)
 
     def test_import_model_dr_legs_with_meshes_and_boxes(self):
@@ -1215,8 +1215,8 @@ class TestUSDImporter(unittest.TestCase):
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 31)
-        self.assertEqual(builder_usd.num_joints, 36)
-        self.assertEqual(builder_usd.num_geoms, 34)
+        self.assertEqual(builder_usd.num_joints, 37)
+        self.assertEqual(builder_usd.num_geoms, 84)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_is_body_aware(self):
