@@ -599,7 +599,7 @@ Resolver priority applies to each resolver's complete candidate, so an earlier r
 Usability and Consumer Meaning
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-With ``use_applied_schema_fallbacks=True``, Newton skips values that become unusable after property-specific interpretation. Registered fallback sentinels can also mean that the schema has no effective opinion. For example, an unlimited velocity fallback is skipped, while an authored hull limit of ``-1`` remains an exact unbounded choice.
+With ``use_applied_schema_fallbacks=True``, Newton continues to the next candidate when a resolver getter or transformer returns no usable value. Registered fallback sentinels can also mean that the schema has no effective opinion. For example, an unlimited velocity fallback is skipped, while an authored hull limit of ``-1`` remains an exact unbounded choice.
 
 A blocked attribute is unauthored, so its applicable registered fallback remains eligible. Compound properties retain usable authored constituents and fill missing or blocked constituents from the registered schema.
 

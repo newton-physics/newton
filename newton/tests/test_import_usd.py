@@ -8123,6 +8123,7 @@ def Xform "Body" (
 class TestImportSampleAssetsParsing(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_add_usd_mjc_schemas_without_mujoco(self):
+        """Import MuJoCo schemas without requiring the MuJoCo runtime."""
         asset_path = os.path.join(os.path.dirname(__file__), "assets", "mjc_schema_import.usda")
         original_import = builtins.__import__
         optional_runtime_imports = []
