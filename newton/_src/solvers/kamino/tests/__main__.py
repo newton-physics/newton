@@ -5,6 +5,7 @@ import argparse
 import unittest
 from pathlib import Path
 
+import newton
 from newton._src.solvers.kamino.tests import setup_tests as setup_tests_internal
 from newton.tests.kamino import setup_tests as setup_tests_newton
 
@@ -73,9 +74,9 @@ if __name__ == "__main__":
     # Kamino tests live in two locations: internal (private helpers) and under newton/tests/kamino
     # (public-facing / integration).
     this_file = Path(__file__).resolve()
-    repo_root = this_file.parents[5]  # <root>/newton/_src/solvers/kamino/tests/__main__.py
+    repo_root = Path(newton.__file__).resolve().parent
     test_folder_internal = this_file.parent
-    test_folder_newton = repo_root / "newton" / "tests" / "kamino"
+    test_folder_newton = repo_root / "tests" / "kamino"
 
     # Discover unit tests from both folders
     # Note: use repo root as top_level_dir as discovery doesn't allow moving up in the folder hierarchy
