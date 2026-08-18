@@ -37,6 +37,73 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+Particle Simulation Geometry
+----------------------------
+
+.. experimental::
+
+   Particle import requires ``newton-usd-schemas`` 0.5.0 or newer, which registers
+   ``NewtonPointsDeformableSimAPI``, ``NewtonMPMSceneAPI``, and
+   ``NewtonMPMMaterialAPI``. These schemas may evolve while the AOUSD
+   deformable-material proposal is being standardized.
+
+:meth:`newton.ModelBuilder.add_usd` imports a ``UsdGeom.Points`` prim as
+particles when it applies ``NewtonPointsDeformableSimAPI`` and is governed by
+``PhysicsDeformableBodyAPI`` on the Points prim or its direct parent. The body's
+``physics:simulationOwner`` must select a ``PhysicsScene`` carrying
+``NewtonMPMSceneAPI``. Without an authored owner, the first ``PhysicsScene`` in
+stage traversal order is used.
+
+The importer uses standard point and material representations:
+
+* ``points`` and ``velocities`` come from ``UsdGeom.Points``. The optional
+  ``ids`` attribute remains authored USD data; Newton does not currently copy it
+  into its particle model.
+* ``widths`` are particle diameters. An authored ``primvars:widths`` takes
+  precedence and follows normal indexed, inherited, and interpolation rules.
+  Widths become radii using ``width / 2`` after stage units and the prim's
+  uniform world scale are applied. Non-uniform scale and shear are rejected.
+* ``physics:masses`` supplies per-point masses and takes precedence over
+  ``PhysicsDeformableBodyAPI`` mass or density and material density. Its length
+  must match ``points``. A body-total ``physics:mass`` is otherwise distributed
+  using the density-derived particle weights.
+* A physics-purpose material binding supplies ``physics:density`` and
+  ``NewtonMPMMaterialAPI`` properties, including
+  ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. Point-element
+  ``GeomSubset`` bindings provide discrete materials within one Points prim.
+* ``newton:mpm:elasticDamping`` is authored as an absolute coefficient in Pa·s.
+  Until the solver stores absolute damping directly, the importer divides it by
+  the resolved Young's modulus. ``newton:mpm:initialPlasticVolumeStrain`` seeds
+  the per-particle ``mpm:particle_Jp`` state and is preserved by solver resets.
+* When ``physics:masses`` is unauthored, mass uses a cubical MPM support volume:
+  ``mass = density * transformed_width**3``. If widths are absent, Newton uses
+  :attr:`newton.ModelBuilder.default_particle_radius` and a support width of
+  twice that radius.
+
+One import call currently accepts one MPM owner scene. The result's
+``path_particle_map`` maps every imported Points path to its half-open
+particle range, and ``particle_scene_path`` contains the governing
+``UsdPhysics.Scene`` prim path. Solver configuration remains an explicit
+solver-specific step.
+
+.. code-block:: python
+
+    import newton
+    from newton.solvers import SolverImplicitMPM
+    from pxr import Usd
+
+    stage = Usd.Stage.Open("sand.usda")
+    builder = newton.ModelBuilder()
+    SolverImplicitMPM.register_custom_attributes(builder)
+    result = builder.add_usd(stage, load_visual_shapes=False)
+    particle_scene_path = result["particle_scene_path"]
+    mpm_config = SolverImplicitMPM.Config.create_from_usd(stage.GetPrimAtPath(particle_scene_path))
+    particle_range = result["path_particle_map"]["/World/Sand"]
+
+The authored workflow is demonstrated by
+``python -m newton.examples mpm_granular --from-usd`` and
+``newton/examples/assets/mpm_sand.usda``.
+
 Deformable Bodies
 -----------------
 

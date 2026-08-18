@@ -3371,7 +3371,7 @@ class ModelBuilder:
         legacy_margin_gap: bool = False,
         return_deformable_results: bool = False,
     ) -> dict[str, Any]:
-        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
+        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -3528,6 +3528,35 @@ class ModelBuilder:
             diagnostic text, not a stable code, and a prim absent from a realized map may still
             appear in the authored metadata.
 
+            ``path_particle_map`` is always returned. It maps each imported
+            ``UsdGeom.Points`` prim carrying ``NewtonPointsDeformableSimAPI`` whose
+            governing ``PhysicsDeformableBodyAPI`` resolves to a
+            ``NewtonMPMSceneAPI`` owner to its half-open ``[start, end)`` builder
+            particle range. These ranges are build-time snapshots and are not
+            updated by later structural builder mutations.
+            Each resolved whole-prim or point-``GeomSubset`` physics material must
+            apply ``NewtonMPMMaterialAPI``, ``PhysicsMaterialAPI``, or
+            ``PhysicsVolumeDeformableMaterialAPI``. MPM elasticity is read from
+            ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. After
+            unit conversion, Young's modulus is in Pa and density is in kg/m^3.
+            Unbound Points use Newton's registered material defaults and
+            ``ModelBuilder.default_shape_cfg`` density. All Points imported by one
+            call must resolve to the same MPM scene; unrelated PhysicsScenes
+            and particle systems are ignored. ``particle_scene_path`` contains the
+            governing ``UsdPhysics.Scene`` prim path, or ``None`` when no particles
+            are imported.
+
+            Particle widths are diameters. Newton converts each radius as
+            ``width / 2`` after applying stage units and the prim's uniform world
+            scale; converted widths and radii are in meters. Authored
+            ``physics:masses`` take precedence over body mass or density, then
+            material density. Density-derived mass uses
+            ``physics:density * width**3``; converted masses are in kilograms.
+            Without widths, it uses ``ModelBuilder.default_particle_radius`` and a
+            support width of twice that radius. Non-uniform scale or shear is
+            rejected because one scalar width cannot preserve a spherical particle
+            under that transform.
+
             The returned mapping has the following entries:
 
             .. list-table::
@@ -3547,6 +3576,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_particle_map"``
+                  - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
                 * - ``"path_cable_map"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_map"``
@@ -3579,6 +3610,8 @@ class ModelBuilder:
                   - Dictionary of collected per-prim schema attributes (dict)
                 * - ``"max_solver_iterations"``
                   - The resolved maximum solver iterations (int or None)
+                * - ``"particle_scene_path"``
+                  - Governing ``UsdPhysics.Scene`` prim path for imported particle simulation geometry, or ``None`` when no particles are imported
                 * - ``"path_body_relative_transform"``
                   - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
                 * - ``"path_original_body_map"``
