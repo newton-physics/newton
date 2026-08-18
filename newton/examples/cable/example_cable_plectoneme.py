@@ -90,8 +90,8 @@ class Example:
     # Self-contact (true radius, hard-history). Radius is kept below half the
     # segment length so rest-state neighbours do not overlap; the gap catches
     # approaching strands before they cross.
-    CONTACT_STIFFNESS = 5.0e4
-    CONTACT_DAMPING = 0.0
+    CONTACT_STIFFNESS = 3.0e5
+    CONTACT_DAMPING = 2.5e1
     CONTACT_TOPOLOGICAL_FILTER_SPAN = 2
 
     FPS = 60
@@ -170,7 +170,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_contact_hard=True,
+            rigid_compliant_alm=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=1024,
         )

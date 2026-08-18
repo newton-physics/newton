@@ -19,6 +19,10 @@ from newton._src.solvers.kamino._src.linalg.utils.range import in_range_via_gaus
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
+from newton._src.solvers.kamino._src.solvers.padmm.math import (
+    project_to_coulomb_cone,
+    project_to_coulomb_dual_cone,
+)
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
@@ -984,6 +988,53 @@ class TestPADMMSolver(unittest.TestCase):
 
                 status = solver.data.status.numpy()
                 self.assertEqual([int(status[w][1]) for w in range(len(budgets))], budgets)
+
+    def assert_coulomb_cone_projection(self, cone: str, case: str, mu: float, x: list[float], expected: list[float]):
+        """Assert one primal or dual Coulomb cone projection."""
+        is_primal = cone == "primal"
+
+        @wp.kernel
+        def project(x: wp.array[wp.vec3f], mu: wp.array[wp.float32], y: wp.array[wp.vec3f]):
+            if wp.static(is_primal):
+                y[0] = project_to_coulomb_cone(x[0], mu[0])
+            else:
+                y[0] = project_to_coulomb_dual_cone(x[0], mu[0])
+
+        x_arg = wp.array(np.array([x], dtype=np.float32), dtype=wp.vec3f, device=self.default_device)
+        mu_arg = wp.array(np.array([mu], dtype=np.float32), dtype=wp.float32, device=self.default_device)
+        y = wp.zeros(1, dtype=wp.vec3f, device=self.default_device)
+        wp.launch(kernel=project, dim=1, inputs=[x_arg, mu_arg], outputs=[y], device=self.default_device)
+        with self.subTest(mu=mu, cone=cone, case=case):
+            np.testing.assert_allclose(y.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
+
+    def test_12_coulomb_cone_projections_handle_zero_friction(self):
+        """Handle the ray and half-space projections at zero friction."""
+        mu = 0.0
+
+        cone = "primal"
+        self.assert_coulomb_cone_projection(cone, "positive ray", mu, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+        self.assert_coulomb_cone_projection(cone, "polar", mu, [0.0, 0.0, -1.0], [0.0, 0.0, 0.0])
+        self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+
+        cone = "dual"
+        self.assert_coulomb_cone_projection(cone, "pos. half-space", mu, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+        self.assert_coulomb_cone_projection(cone, "polar", mu, [0.0, 0.0, -1.0], [0.0, 0.0, 0.0])
+        self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, -1.0], [1.0, 0.0, 0.0])
+
+    def test_13_coulomb_cone_projections_handle_all_branches(self):
+        """Handle interior, polar, and general projections at positive friction."""
+        for mu in (1.0e-6, 1.0, 1e6):
+            den = 1.0 + mu * mu
+
+            cone = "primal"
+            self.assert_coulomb_cone_projection(cone, "interior", mu, [0.5 * mu, 0.0, 1.0], [0.5 * mu, 0.0, 1.0])
+            self.assert_coulomb_cone_projection(cone, "polar", mu, [1.0, 0.0, -2.0 * mu], [0.0, 0.0, 0.0])
+            self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 0.0], [mu * mu / den, 0.0, mu / den])
+
+            cone = "dual"
+            self.assert_coulomb_cone_projection(cone, "interior", mu, [1.0, 0.0, 2.0 * mu], [1.0, 0.0, 2.0 * mu])
+            self.assert_coulomb_cone_projection(cone, "polar", mu, [1.0, 0.0, -2.0 / mu], [0.0, 0.0, 0.0])
+            self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 0.0], [1.0 / den, 0.0, mu / den])
 
 
 ###

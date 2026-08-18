@@ -481,9 +481,9 @@ class ModelBuilder:
         on the solver constructor for this field to take effect.
         """
         mu_torsional: float = 0.005
-        """The coefficient of torsional friction (resistance to spinning at contact point)."""
+        """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
         mu_rolling: float = 0.0001
-        """The coefficient of rolling friction (resistance to rolling motion)."""
+        """The coefficient of rolling friction [m] (resistance to rolling motion)."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
@@ -1108,6 +1108,7 @@ class ModelBuilder:
         self,
         up_axis: AxisType = Axis.Z,
         gravity: float | Vec3 | None = None,
+        sdf_texture_paired_samples: bool = True,
     ):
         """
         Initializes a new ModelBuilder instance for constructing simulation models.
@@ -1118,9 +1119,18 @@ class ModelBuilder:
             gravity: Default gravity vector [m/s^2]. The deprecated scalar form
                 applies acceleration along ``up_axis``. If omitted, gravity
                 defaults to -9.81 along ``up_axis``.
+            sdf_texture_paired_samples: Store adjacent X samples together in
+                SDF textures for faster software interpolation. Disable to
+                halve SDF texture memory at the cost of slower hydroelastic
+                sampling. Every prebuilt mesh SDF added to this builder must
+                use the same layout, selected by the ``paired_samples``
+                argument to :meth:`Mesh.build_sdf`.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
+
+        self.sdf_texture_paired_samples = bool(sdf_texture_paired_samples)
+        """Whether generated SDF textures store adjacent X samples together."""
 
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
@@ -3361,7 +3371,7 @@ class ModelBuilder:
         legacy_margin_gap: bool = False,
         return_deformable_results: bool = False,
     ) -> dict[str, Any]:
-        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
+        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -3518,6 +3528,35 @@ class ModelBuilder:
             diagnostic text, not a stable code, and a prim absent from a realized map may still
             appear in the authored metadata.
 
+            ``path_particle_map`` is always returned. It maps each imported
+            ``UsdGeom.Points`` prim carrying ``NewtonPointsDeformableSimAPI`` whose
+            governing ``PhysicsDeformableBodyAPI`` resolves to a
+            ``NewtonMPMSceneAPI`` owner to its half-open ``[start, end)`` builder
+            particle range. These ranges are build-time snapshots and are not
+            updated by later structural builder mutations.
+            Each resolved whole-prim or point-``GeomSubset`` physics material must
+            apply ``NewtonMPMMaterialAPI``, ``PhysicsMaterialAPI``, or
+            ``PhysicsVolumeDeformableMaterialAPI``. MPM elasticity is read from
+            ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. After
+            unit conversion, Young's modulus is in Pa and density is in kg/m^3.
+            Unbound Points use Newton's registered material defaults and
+            ``ModelBuilder.default_shape_cfg`` density. All Points imported by one
+            call must resolve to the same MPM scene; unrelated PhysicsScenes
+            and particle systems are ignored. ``particle_scene_path`` contains the
+            governing ``UsdPhysics.Scene`` prim path, or ``None`` when no particles
+            are imported.
+
+            Particle widths are diameters. Newton converts each radius as
+            ``width / 2`` after applying stage units and the prim's uniform world
+            scale; converted widths and radii are in meters. Authored
+            ``physics:masses`` take precedence over body mass or density, then
+            material density. Density-derived mass uses
+            ``physics:density * width**3``; converted masses are in kilograms.
+            Without widths, it uses ``ModelBuilder.default_particle_radius`` and a
+            support width of twice that radius. Non-uniform scale or shear is
+            rejected because one scalar width cannot preserve a spherical particle
+            under that transform.
+
             The returned mapping has the following entries:
 
             .. list-table::
@@ -3537,6 +3576,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_particle_map"``
+                  - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
                 * - ``"path_cable_map"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_map"``
@@ -3569,6 +3610,8 @@ class ModelBuilder:
                   - Dictionary of collected per-prim schema attributes (dict)
                 * - ``"max_solver_iterations"``
                   - The resolved maximum solver iterations (int or None)
+                * - ``"particle_scene_path"``
+                  - Governing ``UsdPhysics.Scene`` prim path for imported particle simulation geometry, or ``None`` when no particles are imported
                 * - ``"path_body_relative_transform"``
                   - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
                 * - ``"path_original_body_map"``
@@ -5288,6 +5331,34 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
             **kwargs,
         )
+
+    def _set_joint_cable_stiffnesses(
+        self,
+        joint: int,
+        *,
+        stretch_stiffness: float | None,
+        shear_stiffness: float | None,
+        bend_stiffness: float | None,
+        twist_stiffness: float | None,
+    ) -> None:
+        """Overwrite each non-None stiffness and its inferred target mode, in :meth:`add_joint_cable` axis order."""
+        joint_type = self.joint_type[joint]
+        joint_dof_dim = self.joint_dof_dim[joint]
+        if joint_type != JointType.CABLE or joint_dof_dim != (2, 2):
+            raise ValueError(
+                "_set_joint_cable_stiffnesses() expected the four-DOF CABLE layout "
+                f"(2 linear, 2 angular); got joint type {JointType(joint_type).name} with dimensions "
+                f"{joint_dof_dim}. Update the CABLE material-slot mapping when changing its DOF layout."
+            )
+        dof_start = self.joint_qd_start[joint]
+        for offset, stiffness in enumerate((stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)):
+            if stiffness is not None:
+                dof = dof_start + offset
+                damping = self.joint_target_kd[dof]
+                self.joint_target_ke[dof] = stiffness
+                self.joint_target_mode[dof] = int(
+                    JointTargetMode.from_gains(stiffness, damping, has_drive=stiffness != 0.0 or damping != 0.0)
+                )
 
     def add_constraint_mimic(
         self,
@@ -10442,6 +10513,7 @@ class ModelBuilder:
 
         - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
         - Joint references: equality_constraint_joint1/2
+        - Particle references: spring, triangle, edge, and tetrahedron connectivity
         - Self-referential joints: joint_parent[i] != joint_child[i]
         - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start, articulation_end
         - Array length consistency: per-DOF and per-coord arrays
@@ -10644,6 +10716,61 @@ class ModelBuilder:
                     f"Array length mismatch: {name} has length {len(values)}, "
                     f"but expected {particle_count} (particle_count)."
                 )
+
+        def _topology_array(name: str, values: list, expected_shape: tuple[int, ...]) -> np.ndarray:
+            try:
+                source = np.asarray(values)
+                if np.iscomplexobj(source):
+                    raise ValueError
+                array = np.asarray(values, dtype=np.int64)
+                if not np.array_equal(source, array):
+                    raise ValueError
+            except (OverflowError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Invalid {name}: expected integer indices representable as int32 with shape {expected_shape}."
+                ) from exc
+            if array.size == 0 and expected_shape[0] == 0:
+                return array.reshape(expected_shape)
+            if array.shape != expected_shape:
+                raise ValueError(f"Invalid {name} shape: expected {expected_shape}, got {array.shape}.")
+            int32_info = np.iinfo(np.int32)
+            if array.size > 0 and (int(array.min()) < int32_info.min or int(array.max()) > int32_info.max):
+                raise ValueError(
+                    f"Invalid {name}: expected integer indices representable as int32 with shape {expected_shape}."
+                )
+            return array
+
+        def _validate_particle_topology(name: str, indices: np.ndarray) -> None:
+            invalid_mask = (indices < 0) | (indices >= particle_count)
+            if np.any(invalid_mask):
+                element, slot = np.argwhere(invalid_mask)[0]
+                index = int(indices[element, slot])
+                raise ValueError(
+                    f"Invalid particle reference in {name}: element {element}, slot {slot} references particle "
+                    f"{index}, but valid range is [0, {particle_count - 1}] (particle count={particle_count})."
+                )
+
+        spring_indices = _topology_array("spring_indices", self.spring_indices, (self.spring_count * 2,)).reshape(-1, 2)
+        tri_indices = _topology_array("tri_indices", self.tri_indices, (self.tri_count, 3))
+        edge_indices = _topology_array("edge_indices", self.edge_indices, (self.edge_count, 4))
+        tet_indices = _topology_array("tet_indices", self.tet_indices, (self.tet_count, 4))
+
+        _validate_particle_topology("spring_indices", spring_indices)
+        _validate_particle_topology("tri_indices", tri_indices)
+        _validate_particle_topology("tet_indices", tet_indices)
+
+        if edge_indices.size > 0:
+            opposite_vertices = edge_indices[:, :2]
+            invalid_opposite_mask = (opposite_vertices < -1) | (opposite_vertices >= particle_count)
+            if np.any(invalid_opposite_mask):
+                element, slot = np.argwhere(invalid_opposite_mask)[0]
+                index = int(opposite_vertices[element, slot])
+                raise ValueError(
+                    f"Invalid particle reference in edge_indices: element {element}, opposite vertex {slot} "
+                    f"references particle {index}, but valid values are -1 or [0, {particle_count - 1}] "
+                    f"(particle count={particle_count})."
+                )
+            _validate_particle_topology("edge_indices", edge_indices[:, 2:])
 
         if joint_count > 0:
             # Per-DOF arrays should have length == joint_dof_count
@@ -10996,7 +11123,7 @@ class ModelBuilder:
                 must belong to an articulation or close a loop; standalone world-root joints are allowed.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
-                array lengths, monotonicity). Default is False.
+                particle topology, array lengths, monotonicity). Default is False.
             skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
                 articulations. Default is True (opt-in) because this check has O(n log n) complexity.
 
@@ -11050,6 +11177,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m._sdf_texture_paired_samples = self.sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
@@ -11513,6 +11641,7 @@ class ModelBuilder:
                         sdf_kwargs["margin"] = sdf_gen_margin
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
+                        sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
                         deferred_key = (
                             id(shape_src),
                             tuple(shape_scale),
@@ -11533,6 +11662,16 @@ class ModelBuilder:
                         if deferred_key in deferred_collision_edges_cache:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
+                        coarse_texture = getattr(mesh_sdf, "_coarse_texture", None)
+                        if coarse_texture is not None and (
+                            (coarse_texture.num_channels == 2) != self.sdf_texture_paired_samples
+                        ):
+                            mode = "paired" if self.sdf_texture_paired_samples else "scalar"
+                            raise ValueError(
+                                f"ModelBuilder requires {mode} SDF textures, but shape {i} uses a prebuilt SDF "
+                                "with a different layout. Rebuild it with mesh.build_sdf(paired_samples="
+                                f"{self.sdf_texture_paired_samples})."
+                            )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                 elif has_shape_collision and (
                     is_hydroelastic
@@ -11586,6 +11725,7 @@ class ModelBuilder:
                                     target_voxel_size=sdf_target_voxel_size,
                                     quantization_mode=_tex_fmt_map[sdf_tex_fmt],
                                     scale_baked=True,
+                                    paired_samples=self.sdf_texture_paired_samples,
                                     device=device,
                                 )
                             except NotImplementedError:
@@ -11672,6 +11812,7 @@ class ModelBuilder:
                             quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
                             scale_baked=False,
                             device=device,
+                            paired_samples=self.sdf_texture_paired_samples,
                         )
                     except Exception as e:
                         warnings.warn(

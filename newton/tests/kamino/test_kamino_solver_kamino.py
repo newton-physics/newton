@@ -35,6 +35,7 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.sampling import sample_world_mask
 from newton.tests.utils import basics
+from newton.tests.utils.testing import build_binary_revolute_joint_test
 
 ###
 # Module configs
@@ -516,6 +517,27 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         contacts = newton.CollisionPipeline(model).contacts()
         with self.assertNoLogs(level="WARNING"):
             solver.update_contacts(contacts, model.state())
+
+    def test_step_with_zero_max_contacts(self):
+        """Verify SolverKamino.step() succeeds when the model admits no possible contacts."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        build_binary_revolute_joint_test(builder=builder, ground=False)
+        model = builder.finalize(device=self.default_device)
+
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
+
+        # Check that collision detector was initialized, but no collision pipeline or contacts were
+        # assigned.
+        self.assertIsNotNone(solver._collision_detector_kamino)
+        self.assertEqual(solver._collision_detector_kamino._model_max_contacts, 0)
+        self.assertIsNone(solver._collision_detector_kamino._unified_pipeline)
+        self.assertIsNone(solver._collision_detector_kamino._primitive_pipeline)
+        self.assertIsNone(solver._contacts_kamino)
+
+        state_in = model.state()
+        state_out = model.state()
+        solver.step(state_in, state_out, None, None, dt=1.0 / 60.0)
 
 
 class TestSolverKaminoImpl(unittest.TestCase):

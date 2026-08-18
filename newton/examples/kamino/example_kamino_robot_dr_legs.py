@@ -44,8 +44,11 @@ class Example:
         robot_builder.default_shape_cfg.gap = 1e-2
         robot_builder.request_contact_attributes("force")  # For contact visualization
 
-        # Load the DR Legs USD and add it to the builder
-        asset_path = newton.utils.download_asset("disneyresearch")
+        # Load the DR Legs USD and add it to the builder.
+        # Pinned to an older revision: the current one is better for RL but tips over
+        # differently in simulation, which the DVI contact regressions detect. Drop the
+        # ref once that is understood.
+        asset_path = newton.utils.download_asset("disneyresearch", ref="261cd1f429619d8ef4f546bd788ab9dea906b5e1")
         asset_file = str(asset_path / "dr_legs/usd" / "dr_legs_with_meshes_and_boxes.usda")
         robot_builder.add_usd(
             asset_file,

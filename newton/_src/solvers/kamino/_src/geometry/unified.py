@@ -365,6 +365,7 @@ def _update_geom_poses_and_compute_aabbs(
         shape_data.shape_type = geo_type
         shape_data.scale = scale
         shape_data.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+        shape_data.center = wp.vec3(0.0, 0.0, 0.0)
 
         # For CONVEX_MESH, pack the mesh pointer
         if geo_type == GeoType.CONVEX_MESH:

@@ -27,14 +27,12 @@ if TYPE_CHECKING:
 
     from ..sim.builder import ModelBuilder
 
-# Assumed physical sizes [m] for deformables whose material authors no thickness. The
-# proposal's unauthored-thickness sentinel (-inf) delegates to a simulator default, so
-# fabric- / wire-like sizes are assumed; every use warns with the assumed value, and an
-# authored physics:thickness always overrides.
+# Physical-size fallbacks [m]. Cloth uses the assumed thickness below; the cable
+# radius preserves no-material and legacy-only behavior. Each fallback path warns.
 # TODO: evaluate moving these to configurable ModelBuilder defaults (like
 # default_particle_radius) when deformable import leaves its experimental phase.
 _DEFAULT_CLOTH_THICKNESS = 0.002
-_DEFAULT_CABLE_RADIUS = 0.0025
+_CABLE_RADIUS_COMPATIBILITY_FALLBACK = 0.0025
 
 
 def _bake_world_points(points, world_mat) -> list[wp.vec3]:
@@ -381,9 +379,9 @@ class _CurveDeformableRecord:
     """A single linear curve deformable eligible for rod-graph welding.
 
     Positions are already in world space (import transform applied). ``material`` holds
-    the authored curve-deformable material values (see
-    :func:`.usd.utils._get_curve_deformable_material`); ``radius`` and ``density`` are the
-    resolved per-curve values.
+    the authored curve-deformable material values, or ``None`` when no curve material API
+    applies (see :func:`.usd.utils._get_curve_deformable_material`); ``radius`` and
+    ``density`` are the resolved per-curve values.
     """
 
     prim: Usd.Prim
@@ -391,7 +389,7 @@ class _CurveDeformableRecord:
     closed: bool
     radius: float
     density: float
-    material: dict[str, float] = field(default_factory=dict)
+    material: dict[str, float] | None = None
 
 
 def _cable_segment_quaternions(seg_positions: Sequence[wp.vec3], seg_normals: Sequence[wp.vec3]) -> list[wp.quat]:
@@ -470,15 +468,20 @@ def _warn_dropped_velocities(prim: Usd.Prim, path: str) -> None:
 
 
 def _warn_geometry_authored_material_attrs(prim: Usd.Prim, path: str, material_api: str, read_attr: Callable) -> None:
-    """Warn for deformable material moduli authored on the geometry instead of the bound material.
+    """Warn for deformable material properties authored on the geometry instead of the bound material.
 
-    The proposal scopes these moduli to the deformable material APIs, so authoring them on the
+    The proposal scopes these properties to the deformable material APIs, so authoring them on the
     geometry has no effect; warn rather than drop them silently. ``density`` is excluded since it
     may legitimately sit on the body (``PhysicsDeformableBodyAPI``).
     """
     for name in (
         "youngsModulus",
         "poissonsRatio",
+        "curvesStretchStiffness",
+        "curvesShearStiffness",
+        "curvesBendStiffness",
+        "curvesTwistStiffness",
+        "curvesThickness",
         "stretchStiffness",
         "shearStiffness",
         "bendStiffness",
