@@ -14,7 +14,7 @@
 # decoupling computed internally from their respective Newton models).
 #
 # The two robots have different DOF counts, exercising the heterogeneous
-# gather/scatter and per-robot kernel guard paths.
+# per-robot DOF layout and the indexed-view scatter into the sim.
 #
 # Command: python -m newton.examples controller_joint_impedance_heterogeneous
 ###########################################################################

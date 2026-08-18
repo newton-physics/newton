@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared Warp kernels for :class:`~newton.controllers.ControllerJointImpedance`.
+"""Shared Warp kernels for the joint impedance controllers.
 
-Every buffer here is compact — one entry per controlled DOF, robot 0's DOFs
-first, then robot 1's — so the elementwise kernels are flat 1-D launches with no
-padding to skip. Only the mass-matrix kernels are per-robot blocked, since
-:func:`~newton.eval_mass_matrix` genuinely produces one square block per
-articulation.
+Every 1-D buffer here is compact — one entry per controlled DOF, robot 0's DOFs
+first, then robot 1's — so every kernel is a flat 1-D launch with no padding to
+skip. The exception is the mass matrix, which :func:`~newton.eval_mass_matrix`
+produces as one square block per articulation: the multiply kernel stays flat
+and indexes into those blocks, while the gather kernel launches over them.
 """
 
 import warp as wp

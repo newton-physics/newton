@@ -52,7 +52,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     a simulation-sized array, which is how a caller expresses a gather or
     scatter without the controller owning an index table::
 
-        inputs.joint_q = state.joint_qd[selection.qd_idx]  # gather
+        inputs.joint_q = state.joint_q[selection.q_idx]  # gather
         outputs.joint_f = control.joint_f[selection.qd_idx]  # scatter
 
     Views are live and graph-capturable: bind them once, and each step (or graph
@@ -63,9 +63,9 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     at capture time only.
 
     Supports heterogeneous robot fleets — robots in the batch may have
-    different DOF counts, including zero for a robot that is present in the
-    model but not controlled. Only the mass matrix is padded to ``max_dofs``;
-    every other buffer is compact.
+    different DOF counts, including zero for a robot the caller counts but
+    does not control. Only the mass matrix is padded to ``max_dofs``; every
+    other buffer is compact.
 
     Allocate input and output structs via :meth:`input` and :meth:`output`.
     All field names on those structs are fixed — see :class:`Inputs` and
@@ -81,7 +81,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
             :attr:`robot_count`, its sum sets :attr:`total_dofs` (the length of
             every port), and its maximum sets :attr:`max_dofs` (the padded width
             of the mass matrix). Entries may be zero.
-        stiffness: Position-error gain Kp, shape ``(total_dofs,)``. Units depend
+        stiffness: Position-error gain Kp, shape [total_dofs]. Units depend
             on ``use_inertia_decoupling``: [1/s²] when enabled, since the PD
             term is then an acceleration premultiplied by M(q); otherwise
             [N/m or N·m/rad]. Pass an array to copy it at construction, or
@@ -101,36 +101,36 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     class Inputs:
         """Input struct returned by :meth:`~ControllerJointImpedanceModelFree.input`.
 
-        Every 1-D field is compact, shape ``(total_dofs,)``. Optional fields are
+        Every 1-D field is compact, shape [total_dofs]. Optional fields are
         ``None`` when the corresponding feature is disabled at construction.
         """
 
         joint_q: wp.array[wp.float32]
-        """Current joint positions [m or rad], shape ``(total_dofs,)``."""
+        """Current joint positions [m or rad], shape [total_dofs]."""
         joint_qd: wp.array[wp.float32]
-        """Current joint velocities [m/s or rad/s], shape ``(total_dofs,)``."""
+        """Current joint velocities [m/s or rad/s], shape [total_dofs]."""
         joint_q_des: wp.array[wp.float32]
-        """Desired joint positions [m or rad], shape ``(total_dofs,)``."""
+        """Desired joint positions [m or rad], shape [total_dofs]."""
         joint_qd_des: wp.array[wp.float32]
-        """Desired joint velocities [m/s or rad/s], shape ``(total_dofs,)``."""
+        """Desired joint velocities [m/s or rad/s], shape [total_dofs]."""
         joint_qdd: wp.array[wp.float32] | None
-        """Desired acceleration feedforward [m/s² or rad/s²], shape ``(total_dofs,)``. ``None`` unless ``has_qdd_feedforward=True``."""
+        """Desired acceleration feedforward [m/s² or rad/s²], shape [total_dofs]. ``None`` unless ``has_qdd_feedforward=True``."""
         gravity_force: wp.array[wp.float32] | None
-        """Gravity generalized forces [N or N·m], shape ``(total_dofs,)``. ``None`` unless ``use_gravity_compensation=True``."""
+        """Gravity generalized forces [N or N·m], shape [total_dofs]. ``None`` unless ``use_gravity_compensation=True``."""
         coriolis_force: wp.array[wp.float32] | None
-        """Coriolis generalized forces [N or N·m], shape ``(total_dofs,)``. ``None`` unless ``use_coriolis_compensation=True``."""
+        """Coriolis generalized forces [N or N·m], shape [total_dofs]. ``None`` unless ``use_coriolis_compensation=True``."""
         mass_matrix: wp.array3d[wp.float32] | None
-        """Per-robot mass matrices, shape ``(robot_count, max_dofs, max_dofs)``. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
+        """Per-robot mass matrices, shape [robot_count, max_dofs, max_dofs]. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
         stiffness: wp.array[wp.float32] | None
-        """Position-error gain Kp, shape ``(total_dofs,)``. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
+        """Position-error gain Kp, shape [total_dofs]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
         damping: wp.array[wp.float32] | None
-        """Velocity-error gain Kd, shape ``(total_dofs,)``. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction."""
+        """Velocity-error gain Kd, shape [total_dofs]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerJointImpedanceModelFree.output`."""
 
         joint_f: wp.array[wp.float32]
-        """Joint torque command [N or N·m], shape ``(total_dofs,)``."""
+        """Joint torque command [N or N·m], shape [total_dofs]."""
 
     def __init__(
         self,
