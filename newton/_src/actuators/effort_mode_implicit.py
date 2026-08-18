@@ -372,6 +372,9 @@ class _EffortModeImplicit:
         except ValueError:
             valid = ", ".join(repr(w.value) for w in ImplicitOptions.WarmStart)
             raise ValueError(f"warm_start must be one of {valid}, got {self._options.warm_start!r}") from None
+        if self._options.fd_epsilon <= 0.0:
+            # The Jacobian divides by this, so zero yields NaN.
+            raise ValueError(f"fd_epsilon must be positive, got {self._options.fd_epsilon}")
         self._num_actuators = num_actuators
         self._device = device
         if not isinstance(response, ResponseOracle):

@@ -210,7 +210,6 @@ def _build_pendulum(device):
     """Single revolute joint with an offset COM and no gravity — one scalar DOF."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0)
-    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
     builder.body_com[body] = wp.vec3(0.5, 0.0, 0.0)
     joint = builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
     builder.add_articulation([joint])
@@ -220,10 +219,8 @@ def _build_pendulum(device):
 def _two_link_builder(armature: float = 0.0):
     """Builder for a two-link revolute chain — one articulation, two coupled DOFs."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    base = builder.add_link(mass=1.5)
-    tip = builder.add_link(mass=0.8)
-    builder.add_shape_box(base, hx=0.2, hy=0.1, hz=0.1)
-    builder.add_shape_box(tip, hx=0.15, hy=0.1, hz=0.1)
+    base = builder.add_link(mass=2.0)
+    tip = builder.add_link(mass=1.0)
     builder.body_com[base] = wp.vec3(0.3, 0.0, 0.0)
     builder.body_com[tip] = wp.vec3(0.25, 0.0, 0.0)
     j0 = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z, armature=armature)
@@ -2235,7 +2232,7 @@ class TestActuatorImplicit(unittest.TestCase):
             actuator.step(model.state(), model.control())
 
     def test_validation_rejects_bad_options(self):
-        """dt and warm_start are validated rather than silently misbehaving."""
+        """dt, warm_start and fd_epsilon are validated rather than silently misbehaving."""
         device = wp.get_device()
         model = _build_pendulum(device)
         kp = wp.array([100.0], dtype=float, device=device)
@@ -2244,6 +2241,11 @@ class TestActuatorImplicit(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "warm_start"):
             _make_implicit_actuator(
                 model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(warm_start="Zero")
+            )
+
+        with self.assertRaisesRegex(ValueError, "fd_epsilon"):
+            _make_implicit_actuator(
+                model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(fd_epsilon=0.0)
             )
 
         actuator, _ = _make_implicit_actuator(model, device, kp=kp, kd=kd)
@@ -2419,7 +2421,8 @@ class TestActuatorImplicit(unittest.TestCase):
         """
         device = wp.get_device()
         h = 0.01
-        kp, sat, vel_lim, max_e = 50.0, 20.0, 0.5, 50.0
+        # Tuned so the solve crosses a clamp branch; the assertions below fail if it stops doing so.
+        kp, sat, vel_lim, max_e = 5.0, 20.0, 1.0, 50.0
         q0 = np.zeros(2)
         qd0 = np.array([1.5, -1.0])
         target = np.array([1.0, 1.0])
