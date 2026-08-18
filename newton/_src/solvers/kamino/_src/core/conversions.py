@@ -14,6 +14,7 @@ import warp as wp
 from .....geometry import ShapeFlags
 from .....sim.model import Model
 from ....coupled.model_view import ModelView
+from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
     convert_body_origin_to_com,
@@ -31,7 +32,6 @@ from .materials import MaterialDescriptor, MaterialManager
 from .shapes import max_contacts_for_shape_pair
 from .size import SizeKamino
 from .types import mat63f, to_warp_int32_array, vec6f
-from ..utils import logger as msg
 
 if TYPE_CHECKING:
     from ..core.model import ModelKamino, ModelKaminoInfo

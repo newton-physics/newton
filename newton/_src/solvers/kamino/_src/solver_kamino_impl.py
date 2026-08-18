@@ -201,8 +201,7 @@ class SolverKaminoImpl(SolverBase):
         if self._model.size.sum_of_num_friction_cts > 0:
             if self._config.dynamics_solver == "dvi":
                 raise ValueError(
-                    "bounded-multiplier constraints currently require PADMM. "
-                    "DVI does not support them yet."   
+                    "bounded-multiplier constraints currently require PADMM. DVI does not support them yet."
                 )
 
         # If graph conditionals are disabled in the PADMM solver, ensure that they

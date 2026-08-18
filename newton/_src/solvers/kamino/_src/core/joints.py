@@ -1357,7 +1357,7 @@ class JointDescriptor(Descriptor):
 
     bounded_cts_offset: int = -1
     """
-    Index offset of this joint's bounded-multiplier rows among all 
+    Index offset of this joint's bounded-multiplier rows among all
     bounded-multiplier constraints in its world.
     """
 

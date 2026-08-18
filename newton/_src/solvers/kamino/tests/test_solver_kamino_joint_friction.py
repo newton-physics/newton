@@ -199,7 +199,13 @@ def _run_hold_and_breakaway_test(
                     state = _initialize_state(model)
                     control = model.control()
 
-                    def set_control_from_desired_torque(desired_torque: float) -> None:
+                    def set_control_from_desired_torque(
+                        desired_torque: float,
+                        *,
+                        control_type: str = control_type,
+                        control=control,
+                        kp: float = kp,
+                    ) -> None:
                         if control_type == "feedforward":
                             control.joint_f.assign([desired_torque])
                         else:
