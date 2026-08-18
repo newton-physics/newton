@@ -71,6 +71,7 @@ def apply_picking_force_kernel(
     body_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
     pick_effective_mass: wp.array[float],
+    pick_os_inertia: wp.array[wp.mat33],
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
@@ -93,13 +94,22 @@ def apply_picking_force_kernel(
     pick_vel = velocity_at_point(body_qd[pick_body], offset)
 
     # Command an acceleration of the pick point so gains are mass-independent,
-    # then scale by the picked body's mass.
+    # then map it to a force through the operational-space inertia at that point.
     pick_accel = pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (
         pick_state[0].pick_damping * pick_vel
     )
 
     max_acceleration = pick_state[0].pick_max_acceleration * 9.81
-    pick_force = pick_accel * body_mass[pick_body]
+
+    # Operational-space mass resolved along the pull direction, so the force stays
+    # parallel to the commanded acceleration.
+    accel_mag = wp.length(pick_accel)
+    pick_mass = body_mass[pick_body]
+    if accel_mag > 1.0e-9:
+        accel_dir = pick_accel / accel_mag
+        pick_mass = wp.dot(accel_dir, pick_os_inertia[0] * accel_dir)
+
+    pick_force = pick_accel * pick_mass
 
     # Clamp force magnitude to prevent runaway divergence on light objects.
     # The articulation total bounds the force so picking a light link can still

@@ -37,10 +37,10 @@ class Picking:
         Args:
             model: The model to pick from.
             pick_stiffness: Stiffness of the picking spring, in acceleration per unit
-                displacement [1/s^2]. The commanded acceleration is scaled by the
-                picked body's mass, so gains are mass-independent. For a body in an
-                articulation the rest of the chain resists, so the pick point
-                accelerates less than commanded.
+                displacement [1/s^2]. The commanded acceleration is mapped to a force
+                through the operational-space inertia at the pick point, so gains are
+                mass-independent and picking a light distal link is as effective as
+                picking a heavy one.
             pick_damping: Damping of the picking spring, in acceleration per unit
                 velocity of the pick point [1/s].
             pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
@@ -81,6 +81,10 @@ class Picking:
 
         self._pick_effective_mass = self._compute_effective_mass(model)
 
+        # Operational-space inertia at the pick point, refreshed on every pick.
+        # Identity-scaled by the body mass is the correct value for a free body.
+        self._pick_os_inertia = wp.zeros(1, dtype=wp.mat33, device=model.device if model else "cpu")
+
     def _apply_picking_force(self, state: newton.State) -> None:
         """
         Applies a force to the picked body.
@@ -112,9 +116,62 @@ class Picking:
                 self.model.body_mass,
                 self.model.body_inv_inertia,
                 self._pick_effective_mass,
+                self._pick_os_inertia,
             ],
             device=self.model.device,
         )
+
+    def _update_os_inertia(self, state: newton.State, body: int, point_world: wp.vec3f) -> None:
+        """Refresh the operational-space inertia used to turn commanded acceleration into force.
+
+        Computes :math:`\\Lambda = (J H^{-1} J^T)^{-1}` at the pick point, where ``J`` maps
+        articulation velocities to the velocity of that point and ``H`` is the joint-space mass
+        matrix. This is the inertia actually felt at the grab point, so picking a light distal
+        link is not weaker than picking the base. Eigenvalues are clamped between the body's own
+        mass and the articulation total: the lower bound keeps picking usable where rotation
+        absorbs the pull, the upper bound avoids over-commanding and regularizes singular poses.
+        A body outside an articulation falls back to :math:`m I`, exact for a free body.
+
+        Held fixed for the duration of the pick.
+
+        Args:
+            state: The simulation state supplying the current pose.
+            body: Index of the picked body.
+            point_world: The pick point in world space.
+        """
+        model = self.model
+        mass = float(model.body_mass.numpy()[body])
+        lam = np.eye(3) * mass
+
+        joints = np.nonzero(model.joint_child.numpy() == body)[0] if model.articulation_count else []
+        if len(joints) and mass > 0.0:
+            joint = int(joints[0])
+            art = int(model.joint_articulation.numpy()[joint])
+            first = int(model.articulation_start.numpy()[art])
+            qd_start = model.joint_qd_start.numpy()
+            row = 6 * (joint - first)
+            ndof = int(qd_start[int(model.articulation_end.numpy()[art])]) - int(qd_start[first])
+
+            mask = wp.array(np.arange(model.articulation_count) == art, dtype=bool, device=model.device)
+            jacobian = newton.eval_jacobian(model, state, mask=mask)
+            h = newton.eval_mass_matrix(model, state, J=jacobian, mask=mask).numpy()[art][:ndof, :ndof]
+            jac = jacobian.numpy()[art][:, :ndof]
+
+            # Newton stores twists as (linear, angular); shift the linear rows from the COM to
+            # the pick point via v_p = v_com + omega x r.
+            X_wb = wp.transform(*state.body_q.numpy()[body])
+            r = np.array(point_world) - np.array(wp.transform_point(X_wb, wp.vec3(*model.body_com.numpy()[body])))
+            jac_point = jac[row : row + 3] + np.cross(jac[row + 3 : row + 6].T, r).T
+
+            upper = max(float(self._pick_effective_mass.numpy()[body]), mass)
+            try:
+                eigenvalues, eigenvectors = np.linalg.eigh(jac_point @ np.linalg.solve(h, jac_point.T))
+                inertia = 1.0 / np.clip(eigenvalues, 1.0 / upper, 1.0 / mass)
+                lam = eigenvectors @ np.diag(inertia) @ eigenvectors.T
+            except np.linalg.LinAlgError:
+                pass
+
+        self._pick_os_inertia.assign(np.ascontiguousarray(lam, dtype=np.float32).reshape(1, 3, 3))
 
     @staticmethod
     def _compute_effective_mass(model: newton.Model) -> wp.array[float]:
@@ -124,8 +181,8 @@ class Picking:
         articulation so that picking a light link still allows enough
         force to move the whole chain.  Free bodies get their own mass.
 
-        This bounds the force only; the commanded acceleration is scaled by the
-        picked body's own mass.
+        This bounds the force only; the commanded acceleration is mapped to a force
+        by :meth:`_update_os_inertia`.
         """
         if model is None:
             return wp.zeros(1, dtype=float)
@@ -311,3 +368,6 @@ class Picking:
             )
 
         self.picking_active = self.pick_body.numpy()[0] >= 0
+
+        if self.picking_active:
+            self._update_os_inertia(state, int(self.pick_body.numpy()[0]), hit_point_world)
