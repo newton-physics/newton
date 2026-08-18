@@ -2711,8 +2711,10 @@ def apply_rigid_restitution(
     if rel_vel_old >= 0.0:
         return
 
-    # Eq. 34
-    dv = (-rel_vel_new - restitution * rel_vel_old) / inv_mass
+    # Eq. 34 — clamp the restitution target to be non-negative so we never *inject*
+    # normal velocity (matches apply_particle_shape_restitution above). Without the
+    # wp.max(), body-vs-body contacts can rebound at restitution=0 (issue #1137).
+    dv = (-rel_vel_new + wp.max(-restitution * rel_vel_old, 0.0)) / inv_mass
 
     # Eq. 33 — push A in -n direction, B in +n direction
     if body_a >= 0:
