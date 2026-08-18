@@ -336,7 +336,6 @@ class _UsdResolutionPolicy:
                 key,
                 None,
                 interpreter=_interpret_usd_contact_result,
-                verbose=self._verbose,
             )
         )
         material_contact_policies = self.ContactResponse.from_getter(material.policies.get)
@@ -470,7 +469,6 @@ class _UsdResolutionPolicy:
                 key,
                 default,
                 interpreter=_interpret_usd_contact_result if interpret_contact else None,
-                verbose=self._verbose,
             )
             value_policies[key] = policies
             return policies.active.value
@@ -578,7 +576,6 @@ class _UsdResolutionPolicy:
             "margin",
             defaults.margin,
             interpreter=interpret_margin,
-            verbose=self._verbose,
         )
         gap_policies = self._resolver._resolve_interpreted_policies(
             prim,
@@ -587,7 +584,6 @@ class _UsdResolutionPolicy:
             _ImporterDefault(defaults.gap),
             legacy_default=None,
             interpreter=interpret_gap,
-            verbose=self._verbose,
         )
         self._audit_policy_value(prim, PrimType.SHAPE, gap_policies)
         self._audit_policy_value(prim, PrimType.SHAPE, margin_policies)
@@ -626,7 +622,6 @@ class _UsdResolutionPolicy:
             "sdf_target_voxel_size",
             None,
             interpreter=interpret_target_voxel_size,
-            verbose=self._verbose,
         )
         raw_target = target_policies.active.raw_value
         if raw_target is not None and raw_target != float("-inf") and raw_target <= 0:
@@ -653,7 +648,6 @@ class _UsdResolutionPolicy:
             PrimType.SHAPE,
             "sdf_max_resolution",
             None,
-            verbose=self._verbose,
         )
         target_voxel_size = target_policies.active.value
         raw_max_resolution = max_resolution_policies.active.raw_value
@@ -758,7 +752,6 @@ class _UsdResolutionPolicy:
             PrimType.SHAPE,
             "sdf_texture_format",
             interpreter=interpret_texture_format,
-            verbose=self._verbose,
         )
         raw_texture_format = texture_format_result.raw_value
         if raw_texture_format is not None and raw_texture_format not in _VALID_SDF_TEXTURE_FORMATS:
@@ -780,7 +773,6 @@ class _UsdResolutionPolicy:
             "sdf_padding",
             None,
             interpreter=interpret_padding,
-            verbose=self._verbose,
         )
         raw_padding = padding_policies.active.raw_value
         if raw_padding is not None and raw_padding != float("-inf") and raw_padding < 0:
@@ -850,7 +842,6 @@ class _UsdResolutionPolicy:
             "hydroelastic_enabled",
             None,
             interpreter=interpret_enabled,
-            verbose=self._verbose,
         )
 
         def validate_enabled(
@@ -932,7 +923,6 @@ class _UsdResolutionPolicy:
             "mass_model",
             "solid",
             interpreter=lambda result: result.value != "shell",
-            verbose=self._verbose,
         )
         self._audit_policy_value(prim, PrimType.SHAPE, mass_model_policies)
 
@@ -948,7 +938,6 @@ class _UsdResolutionPolicy:
             "shell_thickness",
             None,
             interpreter=usable_shell_thickness,
-            verbose=self._verbose,
         )
         raw_shell_thickness = shell_policies.active.raw_value
         inertia_margin = margin if shell_policies.active.value is None else shell_policies.active.value
@@ -1186,7 +1175,6 @@ class _UsdResolutionPolicy:
                 "limit_ke",
                 None,
                 read_value=read_value,
-                verbose=self._verbose,
             ),
             self._resolver._resolve_interpreted_policies(
                 prim,
@@ -1194,7 +1182,6 @@ class _UsdResolutionPolicy:
                 "limit_kd",
                 None,
                 read_value=read_value,
-                verbose=self._verbose,
             ),
         )
 
@@ -1477,7 +1464,6 @@ class _UsdResolutionPolicy:
             default,
             legacy_default=legacy_default,
             interpreter=interpret,
-            verbose=self._verbose,
             resolve_legacy=resolve_legacy,
             read_value=read_value,
             authored_aliases=authored_aliases,

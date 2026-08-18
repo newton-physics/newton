@@ -916,14 +916,17 @@ class TestSchemaResolver(unittest.TestCase):
         for use_applied_schema_fallbacks in (False, True):
             with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
                 builder = ModelBuilder()
-                with warnings.catch_warnings():
+                with warnings.catch_warnings(), mock.patch("builtins.print") as print_mock:
                     warnings.simplefilter("error", DeprecationWarning)
                     result = builder.add_usd(
                         stage,
                         use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                        verbose=True,
                     )
 
                 shape = result["path_shape_map"]["/cube"]
+                missing_messages = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+                self.assertNotIn("Error: Cannot resolve value", missing_messages)
                 self.assertEqual(builder.shape_sdf_max_resolution[shape], 64)
                 self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[shape][0], -0.1)
                 self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[shape][1], 0.1)

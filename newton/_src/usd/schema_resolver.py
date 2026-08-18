@@ -1017,7 +1017,6 @@ class SchemaResolverManager:
         *,
         interpreter: Callable[[_ResolvedValue], Any] | None = None,
         legacy_default: Any = _SAME_AS_DEFAULT,
-        verbose: bool = False,
         resolve_legacy: Callable[
             [Sequence[SchemaResolver], Callable[[SchemaResolver, str], _ResolverValue]],
             _ResolvedValue,
@@ -1026,7 +1025,7 @@ class SchemaResolverManager:
         read_value: Callable[[SchemaResolver, str], _ResolverValue] | None = None,
         authored_aliases: Sequence[str] = (),
     ) -> _InterpretedPolicyValues:
-        """Resolve, interpret, and report one property's policy values."""
+        """Resolve and interpret policy values used to assemble one property."""
         policies = self._resolve_policy_values(
             prim,
             prim_type,
@@ -1046,14 +1045,6 @@ class SchemaResolverManager:
 
         active = interpret(policies.active)
         assert active is not None
-        self._report_missing(
-            prim,
-            prim_type,
-            key,
-            active.value,
-            self._active_default(default, legacy_default),
-            verbose,
-        )
         return self._InterpretedPolicyValues(
             key,
             policies,
