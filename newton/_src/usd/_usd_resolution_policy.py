@@ -171,6 +171,42 @@ class _UsdResolutionPolicy:
         inertia_margin: float
 
     @dataclass(frozen=True)
+    class _ShapeOffsets:
+        """Keep resolved contact offsets and their policy values."""
+
+        margin: float
+        gap: float
+        margin_policies: SchemaResolverManager._InterpretedPolicyValues
+        gap_policies: SchemaResolverManager._InterpretedPolicyValues
+
+    @dataclass(frozen=True)
+    class _ShapeSdfProperties:
+        """Keep resolved SDF settings used by shape validation."""
+
+        max_resolution: int | None
+        narrow_band_range: tuple[float, float]
+        target_voxel_size: float | None
+        texture_format: str
+        padding: float | None
+        legacy_settings: tuple[float | None, int | None] | None
+        composed_settings: tuple[float | None, int | None] | None
+
+    @dataclass(frozen=True)
+    class _ShapeHydroelasticProperties:
+        """Keep validated hydroelastic shape properties."""
+
+        enabled: bool
+        stiffness: float
+
+    @dataclass(frozen=True)
+    class _ShapeMassProperties:
+        """Keep interpreted shell mass properties."""
+
+        is_solid: bool
+        shell_thickness: float | None
+        inertia_margin: float
+
+    @dataclass(frozen=True)
     class _JointDampingValue:
         """Keep the angular unit selected by a damping mapping key."""
 
@@ -454,6 +490,63 @@ class _UsdResolutionPolicy:
         read_legacy_mjc_gap: Callable[[], float],
     ) -> ShapeProperties:
         """Resolve and interpret properties shared by collision shapes."""
+        offsets = self._resolve_shape_offsets(
+            prim,
+            prim_path=prim_path,
+            defaults=defaults,
+            legacy_margin_gap=legacy_margin_gap,
+            read_legacy_mjc_gap=read_legacy_mjc_gap,
+        )
+
+        sdf = self._resolve_shape_sdf(
+            prim,
+            prim_path=prim_path,
+            defaults=defaults,
+            has_sdf_api=has_sdf_api,
+            gap_policies=offsets.gap_policies,
+        )
+
+        hydroelastic = self._resolve_shape_hydroelastic(
+            prim,
+            prim_path=prim_path,
+            defaults=defaults,
+            has_sdf_api=has_sdf_api,
+            is_mesh=is_mesh,
+            is_plane=is_plane,
+            sdf=sdf,
+        )
+        mass = self._resolve_shape_mass(
+            prim,
+            prim_path=prim_path,
+            margin=offsets.margin,
+            margin_policies=offsets.margin_policies,
+        )
+
+        return self.ShapeProperties(
+            margin=offsets.margin,
+            gap=offsets.gap,
+            sdf_max_resolution=sdf.max_resolution,
+            sdf_narrow_band_range=sdf.narrow_band_range,
+            sdf_target_voxel_size=sdf.target_voxel_size,
+            sdf_texture_format=sdf.texture_format,
+            sdf_padding=sdf.padding,
+            is_hydroelastic=hydroelastic.enabled,
+            kh=hydroelastic.stiffness,
+            is_solid=mass.is_solid,
+            shell_thickness=mass.shell_thickness,
+            inertia_margin=mass.inertia_margin,
+        )
+
+    def _resolve_shape_offsets(
+        self,
+        prim: Any,
+        *,
+        prim_path: str,
+        defaults: Any,
+        legacy_margin_gap: bool,
+        read_legacy_mjc_gap: Callable[[], float],
+    ) -> _ShapeOffsets:
+        """Resolve contact margin and gap values."""
 
         def interpret_margin(result: _ResolvedValue) -> float:
             value = defaults.margin if result.value is None else result.value
@@ -493,8 +586,20 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"Prim '{prim_path}': legacy translation yields negative margin "
                 f"(mjc_margin={raw_margin}, mjc_gap={read_legacy_mjc_gap()}).",
-                stacklevel=3,
+                stacklevel=4,
             )
+        return self._ShapeOffsets(margin, gap_policies.active.value, margin_policies, gap_policies)
+
+    def _resolve_shape_sdf(
+        self,
+        prim: Any,
+        *,
+        prim_path: str,
+        defaults: Any,
+        has_sdf_api: bool,
+        gap_policies: SchemaResolverManager._InterpretedPolicyValues,
+    ) -> _ShapeSdfProperties:
+        """Resolve and validate SDF generation settings."""
 
         def interpret_target_voxel_size(result: _ResolvedValue) -> float | None:
             value = result.value
@@ -515,7 +620,7 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:sdfTargetVoxelSize={raw_target!r} is invalid "
                 f"(must be > 0); falling back to default.",
-                stacklevel=3,
+                stacklevel=4,
             )
 
         def interpret_max_resolution(result: _ResolvedValue, target: float | None) -> int | None:
@@ -543,22 +648,24 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:sdfMaxResolution={raw_max_resolution!r} is invalid "
                 f"(must be > 0); falling back to default.",
-                stacklevel=3,
+                stacklevel=4,
             )
         elif raw_max_resolution is not None and raw_max_resolution != float("-inf") and raw_max_resolution % 8 != 0:
             warnings.warn(
                 f"{prim_path}: newton:sdfMaxResolution={raw_max_resolution!r} must be divisible by 8 "
                 f"(SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
-                stacklevel=3,
+                stacklevel=4,
             )
         elif target_voxel_size is not None and raw_max_resolution not in (None, float("-inf")):
             warnings.warn(
                 f"{prim_path}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution are set; "
                 f"sdfTargetVoxelSize takes precedence.",
-                stacklevel=3,
+                stacklevel=4,
             )
 
-        def resolution_settings(policy: Literal["active", "legacy", "composed"]):
+        def resolution_settings(
+            policy: Literal["active", "legacy", "composed"],
+        ) -> tuple[float | None, int | None]:
             target = target_policies.select(policy).value
             max_result = max_resolution_policies.select(policy).resolved
             return target, interpret_max_resolution(max_result, target)
@@ -642,7 +749,7 @@ class _UsdResolutionPolicy:
             warnings.warn(
                 f"{prim_path}: newton:sdfTextureFormat={raw_texture_format!r} is invalid "
                 f"(expected one of {list(_VALID_SDF_TEXTURE_FORMATS)}); falling back to default.",
-                stacklevel=3,
+                stacklevel=4,
             )
 
         def interpret_padding(result: _ResolvedValue) -> float | None:
@@ -663,7 +770,7 @@ class _UsdResolutionPolicy:
         if raw_padding is not None and raw_padding != float("-inf") and raw_padding < 0:
             warnings.warn(
                 f"{prim_path}: newton:sdfPadding={raw_padding!r} is invalid (must be >= 0); falling back to default.",
-                stacklevel=3,
+                stacklevel=4,
             )
         if all(
             result is not None
@@ -689,80 +796,110 @@ class _UsdResolutionPolicy:
                 ),
             )
 
-        def interpret_hydroelastic_enabled(result: _ResolvedValue) -> bool:
+        return self._ShapeSdfProperties(
+            max_resolution=sdf_max_resolution,
+            narrow_band_range=sdf_narrow_band_range,
+            target_voxel_size=target_voxel_size,
+            texture_format=texture_format_result.value,
+            padding=padding_policies.active.value,
+            legacy_settings=legacy_sdf_settings,
+            composed_settings=composed_sdf_settings,
+        )
+
+    def _resolve_shape_hydroelastic(
+        self,
+        prim: Any,
+        *,
+        prim_path: str,
+        defaults: Any,
+        has_sdf_api: bool,
+        is_mesh: bool,
+        is_plane: bool,
+        sdf: _ShapeSdfProperties,
+    ) -> _ShapeHydroelasticProperties:
+        """Resolve and validate hydroelastic shape settings."""
+
+        def interpret_enabled(result: _ResolvedValue) -> bool:
             if result.value is True or result.value is False:
                 return result.value
             if has_sdf_api:
                 return False
             return defaults.is_hydroelastic
 
-        hydroelastic_policies = self._resolver._resolve_interpreted_policies(
+        enabled_policies = self._resolver._resolve_interpreted_policies(
             prim,
             PrimType.SHAPE,
             "hydroelastic_enabled",
             None,
-            interpreter=interpret_hydroelastic_enabled,
+            interpreter=interpret_enabled,
             verbose=self._verbose,
         )
 
-        def final_hydroelastic_enabled(enabled: bool, sdf_settings) -> bool:
+        def validate_enabled(enabled: bool, sdf_settings: tuple[float | None, int | None]) -> bool:
             if is_plane:
                 return False
             if enabled and is_mesh and sdf_settings[0] is None and sdf_settings[1] is None:
                 return False
             return enabled
 
-        requested_hydroelastic = hydroelastic_policies.active.value
-        is_hydroelastic = final_hydroelastic_enabled(
-            requested_hydroelastic,
-            (target_voxel_size, sdf_max_resolution),
-        )
+        requested = enabled_policies.active.value
+        enabled = validate_enabled(requested, (sdf.target_voxel_size, sdf.max_resolution))
         if (
-            hydroelastic_policies.legacy is not None
-            and hydroelastic_policies.composed is not None
-            and legacy_sdf_settings is not None
-            and composed_sdf_settings is not None
+            enabled_policies.legacy is not None
+            and enabled_policies.composed is not None
+            and sdf.legacy_settings is not None
+            and sdf.composed_settings is not None
         ):
             self._resolver._audit_assembled_property(
                 prim,
                 PrimType.SHAPE,
-                final_hydroelastic_enabled(hydroelastic_policies.legacy.value, legacy_sdf_settings),
-                final_hydroelastic_enabled(hydroelastic_policies.composed.value, composed_sdf_settings),
+                validate_enabled(enabled_policies.legacy.value, sdf.legacy_settings),
+                validate_enabled(enabled_policies.composed.value, sdf.composed_settings),
                 (
-                    hydroelastic_policies.contribution(
-                        legacy_comparison=hydroelastic_policies.legacy.value,
-                        composed_comparison=hydroelastic_policies.composed.value,
+                    enabled_policies.contribution(
+                        legacy_comparison=enabled_policies.legacy.value,
+                        composed_comparison=enabled_policies.composed.value,
                     ),
                 ),
             )
 
-        def interpret_hydroelastic_stiffness(result: _ResolvedValue) -> float:
+        def interpret_stiffness(result: _ResolvedValue) -> float:
             if result.value == float("-inf") or result.value is None or result.value <= 0:
                 return defaults.kh
             return result.value
 
-        kh_result = self._resolver._get_interpreted_value(
+        stiffness = self._resolver._get_interpreted_value(
             prim,
             PrimType.SHAPE,
             "kh",
-            interpreter=interpret_hydroelastic_stiffness,
+            interpreter=interpret_stiffness,
             verbose=self._verbose,
         )
-        raw_kh = kh_result.raw_value
-        if raw_kh is not None and raw_kh != float("-inf") and raw_kh <= 0:
+        raw_stiffness = stiffness.raw_value
+        if raw_stiffness is not None and raw_stiffness != float("-inf") and raw_stiffness <= 0:
             warnings.warn(
-                f"{prim_path}: newton:hydroelasticStiffness={raw_kh!r} is invalid "
+                f"{prim_path}: newton:hydroelasticStiffness={raw_stiffness!r} is invalid "
                 f"(must be > 0); falling back to default.",
-                stacklevel=3,
+                stacklevel=4,
             )
-        if requested_hydroelastic and is_mesh and sdf_max_resolution is None and target_voxel_size is None:
+        if requested and is_mesh and sdf.max_resolution is None and sdf.target_voxel_size is None:
             warnings.warn(
                 f"{prim_path}: hydroelastic mesh requires newton:sdfMaxResolution or "
                 f"newton:sdfTargetVoxelSize so an SDF can be generated; disabling "
                 f"hydroelastic for this shape.",
-                stacklevel=3,
+                stacklevel=4,
             )
+        return self._ShapeHydroelasticProperties(enabled, stiffness.value)
 
+    def _resolve_shape_mass(
+        self,
+        prim: Any,
+        *,
+        prim_path: str,
+        margin: float,
+        margin_policies: SchemaResolverManager._InterpretedPolicyValues,
+    ) -> _ShapeMassProperties:
+        """Resolve mass model and shell thickness settings."""
         mass_model_policies = self._resolver._resolve_interpreted_policies(
             prim,
             PrimType.SHAPE,
@@ -825,22 +962,12 @@ class _UsdResolutionPolicy:
         ):
             warnings.warn(
                 f"Shape {prim_path}: negative shell thickness {raw_shell_thickness}; falling back to margin.",
-                stacklevel=3,
+                stacklevel=4,
             )
-
-        return self.ShapeProperties(
-            margin=margin,
-            gap=gap_policies.active.value,
-            sdf_max_resolution=sdf_max_resolution,
-            sdf_narrow_band_range=sdf_narrow_band_range,
-            sdf_target_voxel_size=target_voxel_size,
-            sdf_texture_format=texture_format_result.value,
-            sdf_padding=padding_policies.active.value,
-            is_hydroelastic=is_hydroelastic,
-            kh=kh_result.value,
-            is_solid=mass_model_policies.active.value,
-            shell_thickness=raw_shell_thickness,
-            inertia_margin=inertia_margin,
+        return self._ShapeMassProperties(
+            mass_model_policies.active.value,
+            raw_shell_thickness,
+            inertia_margin,
         )
 
     def resolve_cloth_shell_thickness(self, prim: Any) -> float | None:
