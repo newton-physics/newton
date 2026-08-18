@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import warp as wp
@@ -31,7 +32,14 @@ from ..geometry.collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
-from ..geometry.contact_data import SHAPE_PAIR_HFIELD_BIT, ContactData, contact_passes_gap_check, make_contact_sort_key
+from ..geometry.contact_data import (
+    SHAPE_PAIR_HFIELD_BIT,
+    ContactData,
+    contact_passes_gap_check,
+    contact_passes_speculative_gap_check,
+    make_contact_sort_key,
+    prepare_speculative_contact,
+)
 from ..geometry.contact_reduction_global import (
     EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
     EXPORT_REDUCED_CONTACTS_THREAD_BUDGET_MULTIPLIER,
@@ -40,6 +48,7 @@ from ..geometry.contact_reduction_global import (
     create_export_reduced_contacts_kernel,
     mesh_triangle_contacts_to_reducer_kernel,
     reduce_buffered_contacts_kernel,
+    reduce_buffered_contacts_speculative_kernel,
     write_contact_to_reducer,
 )
 from ..geometry.contact_sort import ContactSorter
@@ -76,6 +85,41 @@ class ContactWriterData:
     contact_penetration: wp.array[float]
     contact_tangent: wp.array[wp.vec3]
     contact_sort_key: wp.array[wp.int64]
+    shape_gap: wp.array[float]
+    shape_transform: wp.array[wp.transform]
+    shape_linear_velocity: wp.array[wp.vec3]
+    shape_angular_velocity: wp.array[wp.vec3]
+    collision_update_dt: float
+    max_speculative_extension: float
+
+
+@wp.func
+def _write_contact_simple_at_index(
+    contact_data: ContactData,
+    writer_data: ContactWriterData,
+    index: int,
+    normal_a_to_b: wp.vec3,
+    separation: float,
+):
+    """Write an accepted contact through the simple narrow-phase API."""
+    if index >= writer_data.contact_max:
+        return
+
+    writer_data.contact_pair[index] = wp.vec2i(contact_data.shape_a, contact_data.shape_b)
+    writer_data.contact_position[index] = contact_data.contact_point_center
+    writer_data.contact_normal[index] = normal_a_to_b
+    writer_data.contact_penetration[index] = separation
+
+    if writer_data.contact_tangent.shape[0] > 0:
+        world_x = wp.vec3(1.0, 0.0, 0.0)
+        if wp.abs(wp.dot(normal_a_to_b, world_x)) > 0.99:
+            world_x = wp.vec3(0.0, 1.0, 0.0)
+        writer_data.contact_tangent[index] = wp.normalize(world_x - wp.dot(world_x, normal_a_to_b) * normal_a_to_b)
+
+    if writer_data.contact_sort_key.shape[0] > 0:
+        writer_data.contact_sort_key[index] = make_contact_sort_key(
+            contact_data.shape_a, contact_data.shape_b, contact_data.sort_sub_key
+        )
 
 
 @wp.func
@@ -115,28 +159,36 @@ def write_contact_simple(
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
     else:
         index = output_index
-    if index >= writer_data.contact_max:
-        return
-
-    writer_data.contact_pair[index] = wp.vec2i(contact_data.shape_a, contact_data.shape_b)
-    writer_data.contact_position[index] = contact_data.contact_point_center
-    writer_data.contact_normal[index] = contact_normal_a_to_b
-    writer_data.contact_penetration[index] = d
-
-    if writer_data.contact_tangent.shape[0] > 0:
-        world_x = wp.vec3(1.0, 0.0, 0.0)
-        normal = contact_normal_a_to_b
-        if wp.abs(wp.dot(normal, world_x)) > 0.99:
-            world_x = wp.vec3(0.0, 1.0, 0.0)
-        writer_data.contact_tangent[index] = wp.normalize(world_x - wp.dot(world_x, normal) * normal)
-
-    if writer_data.contact_sort_key.shape[0] > 0:
-        writer_data.contact_sort_key[index] = make_contact_sort_key(
-            contact_data.shape_a, contact_data.shape_b, contact_data.sort_sub_key
-        )
+    _write_contact_simple_at_index(contact_data, writer_data, index, contact_normal_a_to_b, d)
 
 
-def create_narrow_phase_primitive_kernel(writer_func: Any):
+@wp.func
+def _write_contact_simple_speculative(
+    contact_data: ContactData,
+    writer_data: ContactWriterData,
+    output_index: int,
+):
+    """Write a present or exactly predicted contact through the simple API."""
+    contact_data.gap_sum = writer_data.shape_gap[contact_data.shape_a] + writer_data.shape_gap[contact_data.shape_b]
+    normal, _point_a_world, _point_b_world, separation = prepare_speculative_contact(contact_data)
+
+    index = output_index
+    if index < 0:
+        if not contact_passes_speculative_gap_check(
+            contact_data,
+            writer_data.shape_transform,
+            writer_data.shape_linear_velocity,
+            writer_data.shape_angular_velocity,
+            writer_data.collision_update_dt,
+            writer_data.max_speculative_extension,
+        ):
+            return
+        index = wp.atomic_add(writer_data.contact_count, 0, 1)
+
+    _write_contact_simple_at_index(contact_data, writer_data, index, normal, separation)
+
+
+def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = False):
     """
     Create a kernel for fast analytical collision detection of primitive shapes.
 
@@ -151,7 +203,31 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
     Returns:
         A warp kernel for primitive collision detection
     """
-    _module = f"narrow_phase_primitive_{writer_func.__name__}"
+    _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}"
+
+    @wp.func(module=_module)
+    def _admit(
+        contact_data: ContactData,
+        position: wp.vec3,
+        distance: float,
+        shape_transform: wp.array[wp.transform],
+        shape_linear_velocity: wp.array[wp.vec3],
+        shape_angular_velocity: wp.array[wp.vec3],
+        collision_update_dt: float,
+        max_speculative_extension: float,
+    ) -> bool:
+        contact_data.contact_point_center = position
+        contact_data.contact_distance = distance
+        if wp.static(speculative):
+            return contact_passes_speculative_gap_check(
+                contact_data,
+                shape_transform,
+                shape_linear_velocity,
+                shape_angular_velocity,
+                collision_update_dt,
+                max_speculative_extension,
+            )
+        return contact_passes_gap_check(contact_data)
 
     @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_primitive_kernel(
@@ -160,6 +236,10 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
         shape_types: wp.array[int],
         shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
+        shape_linear_velocity: wp.array[wp.vec3],
+        shape_angular_velocity: wp.array[wp.vec3],
+        collision_update_dt: float,
+        max_speculative_extension: float,
         shape_source: wp.array[wp.uint64],
         shape_gap: wp.array[float],
         shape_flags: wp.array[wp.int32],
@@ -549,32 +629,63 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_data.margin_b = margin_offset_b
                 contact_data.shape_a = shape_a
                 contact_data.shape_b = shape_b
-                contact_data.gap_sum = gap_sum
+                if wp.static(speculative):
+                    contact_data.gap_sum = writer_data.shape_gap[shape_a] + writer_data.shape_gap[shape_b]
+                else:
+                    contact_data.gap_sum = gap_sum
 
                 # Check margin for all possible contacts
                 contact_0_valid = False
                 if contact_dist_0 < MAXVAL:
-                    contact_data.contact_point_center = contact_pos_0
-                    contact_data.contact_distance = contact_dist_0
-                    contact_0_valid = contact_passes_gap_check(contact_data)
+                    contact_0_valid = _admit(
+                        contact_data,
+                        contact_pos_0,
+                        contact_dist_0,
+                        shape_transform,
+                        shape_linear_velocity,
+                        shape_angular_velocity,
+                        collision_update_dt,
+                        max_speculative_extension,
+                    )
 
                 contact_1_valid = False
                 if contact_dist_1 < MAXVAL:
-                    contact_data.contact_point_center = contact_pos_1
-                    contact_data.contact_distance = contact_dist_1
-                    contact_1_valid = contact_passes_gap_check(contact_data)
+                    contact_1_valid = _admit(
+                        contact_data,
+                        contact_pos_1,
+                        contact_dist_1,
+                        shape_transform,
+                        shape_linear_velocity,
+                        shape_angular_velocity,
+                        collision_update_dt,
+                        max_speculative_extension,
+                    )
 
                 contact_2_valid = False
                 if contact_dist_2 < MAXVAL:
-                    contact_data.contact_point_center = contact_pos_2
-                    contact_data.contact_distance = contact_dist_2
-                    contact_2_valid = contact_passes_gap_check(contact_data)
+                    contact_2_valid = _admit(
+                        contact_data,
+                        contact_pos_2,
+                        contact_dist_2,
+                        shape_transform,
+                        shape_linear_velocity,
+                        shape_angular_velocity,
+                        collision_update_dt,
+                        max_speculative_extension,
+                    )
 
                 contact_3_valid = False
                 if contact_dist_3 < MAXVAL:
-                    contact_data.contact_point_center = contact_pos_3
-                    contact_data.contact_distance = contact_dist_3
-                    contact_3_valid = contact_passes_gap_check(contact_data)
+                    contact_3_valid = _admit(
+                        contact_data,
+                        contact_pos_3,
+                        contact_dist_3,
+                        shape_transform,
+                        shape_linear_velocity,
+                        shape_angular_velocity,
+                        collision_update_dt,
+                        max_speculative_extension,
+                    )
 
                 # Count valid contacts and allocate consecutive indices
                 num_valid = int(contact_0_valid) + int(contact_1_valid) + int(contact_2_valid) + int(contact_3_valid)
@@ -630,7 +741,11 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
 
 
 def create_narrow_phase_kernel_gjk_mpr(
-    external_aabb: bool, writer_func: Any, support_func: Any = None, post_process_contact: Any = None
+    external_aabb: bool,
+    writer_func: Any,
+    support_func: Any = None,
+    post_process_contact: Any = None,
+    speculative: bool = False,
 ):
     """
     Create a GJK/MPR narrow phase kernel for complex convex shape collisions.
@@ -646,7 +761,7 @@ def create_narrow_phase_kernel_gjk_mpr(
     """
     _sf = support_func.__name__ if support_func is not None else "default"
     _ppc = post_process_contact.__name__ if post_process_contact is not None else "default"
-    _module = f"narrow_phase_gjk_mpr_{external_aabb}_{writer_func.__name__}_{_sf}_{_ppc}"
+    _module = f"narrow_phase_gjk_mpr_{external_aabb}_{speculative}_{writer_func.__name__}_{_sf}_{_ppc}"
 
     @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_kernel_gjk_mpr(
@@ -757,6 +872,15 @@ def create_narrow_phase_kernel_gjk_mpr(
                 # Compute bounding spheres and check for overlap (early rejection)
                 bsphere_center_a, bsphere_radius_a = compute_bounding_sphere_from_aabb(aabb_a_lower, aabb_a_upper)
                 bsphere_center_b, bsphere_radius_b = compute_bounding_sphere_from_aabb(aabb_b_lower, aabb_b_upper)
+
+                # External AABBs describe the current geometry. Include both shapes' search
+                # extensions so relative translational motion cannot be culled before GJK.
+                if wp.static(external_aabb and speculative):
+                    pair_search_extension = shape_gap[shape_a] + shape_gap[shape_b]
+                    if is_infinite_plane_a:
+                        bsphere_radius_b += pair_search_extension
+                    else:
+                        bsphere_radius_a += pair_search_extension
 
                 if not check_infinite_plane_bsphere_overlap(
                     shape_data_a,
@@ -1486,6 +1610,8 @@ class NarrowPhase:
         contact_max: int | None = None,
         verify_buffers: bool = True,
         contact_reduction_hashtable_size_factor: float = 0.25,
+        speculative: bool = False,
+        contact_writer_supports_speculative: bool = False,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -1541,6 +1667,10 @@ class NarrowPhase:
                 ``max_triangle_pairs`` when allocating the global contact
                 reduction hashtable. Increase this if hashtable fill/failure
                 warnings appear. Defaults to ``0.25`` for memory compatibility.
+            speculative: Whether the caller provides velocity-expanded search
+                gaps and exact speculative-contact data. Defaults to False.
+            contact_writer_supports_speculative: Whether a custom contact writer performs exact speculative-contact
+                admission. Required when ``speculative`` and ``contact_writer_warp_func`` are both provided.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -1552,6 +1682,14 @@ class NarrowPhase:
         self.mesh_sdf_identity_scale_only = mesh_sdf_identity_scale_only
         self.deterministic = deterministic
         self.verify_buffers = verify_buffers
+        self.speculative = speculative
+        if speculative and contact_writer_warp_func is not None and not contact_writer_supports_speculative:
+            raise ValueError(
+                "A custom contact writer used with speculative=True must set "
+                "contact_writer_supports_speculative=True and perform exact speculative-contact admission"
+            )
+        if speculative and hydroelastic_sdf is not None:
+            raise NotImplementedError("Speculative contact generation does not yet support hydroelastic SDF contacts")
         device_obj = wp.get_device(device)
         # Contact reduction requires either meshes or heightfields (the
         # mesh/heightfield-triangle path feeds the global reducer, so
@@ -1575,7 +1713,7 @@ class NarrowPhase:
 
         # Determine the writer function
         if contact_writer_warp_func is None:
-            writer_func = write_contact_simple
+            writer_func = _write_contact_simple_speculative if speculative else write_contact_simple
         else:
             writer_func = contact_writer_warp_func
 
@@ -1606,7 +1744,7 @@ class NarrowPhase:
 
         # Create the appropriate kernel variants
         # Primitive kernel handles lightweight primitives and routes remaining pairs
-        self.primitive_kernel = create_narrow_phase_primitive_kernel(writer_func)
+        self.primitive_kernel = create_narrow_phase_primitive_kernel(writer_func, speculative=speculative)
         # GJK/MPR kernel handles remaining convex-convex pairs
         if use_lean_gjk_mpr:
             # Use lean support function (CONVEX_MESH, BOX, SPHERE only) and lean post-processing
@@ -1616,9 +1754,12 @@ class NarrowPhase:
                 writer_func,
                 support_func=support_map_lean,
                 post_process_contact=post_process_minkowski_only,
+                speculative=speculative,
             )
         else:
-            self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(self.external_aabb, writer_func)
+            self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(
+                self.external_aabb, writer_func, speculative=speculative
+            )
         # Create triangle contacts kernel when meshes or heightfields are present
         if has_meshes or has_heightfields:
             self.mesh_triangle_contacts_kernel = create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func)
@@ -1644,6 +1785,7 @@ class NarrowPhase:
                     write_contact_to_reducer,
                     enable_heightfields=has_heightfields,
                     reduce_contacts=True,
+                    speculative=speculative,
                     use_texture_sdf_only=self.mesh_sdf_texture_only,
                     use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
                 )
@@ -1654,11 +1796,13 @@ class NarrowPhase:
                     use_precomputed_edge_data=True,
                     use_texture_sdf_only=self.mesh_sdf_texture_only,
                     use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
+                    speculative=speculative,
                 )
             else:
                 self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     writer_func,
                     enable_heightfields=has_heightfields,
+                    speculative=speculative,
                     use_texture_sdf_only=self.mesh_sdf_texture_only,
                     use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
                 )
@@ -1668,6 +1812,7 @@ class NarrowPhase:
                     use_precomputed_edge_data=True,
                     use_texture_sdf_only=self.mesh_sdf_texture_only,
                     use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
+                    speculative=speculative,
                 )
         else:
             self.mesh_plane_contacts_kernel = None
@@ -1687,6 +1832,7 @@ class NarrowPhase:
                 device=device,
                 deterministic=deterministic,
                 hashtable_size_factor=contact_reduction_hashtable_size_factor,
+                enable_contact_reclamation=speculative,
             )
         else:
             self.export_reduced_contacts_kernel = None
@@ -1741,6 +1887,7 @@ class NarrowPhase:
 
             self.empty_tangent = None
             self._empty_sort_key = wp.zeros(0, dtype=wp.int64, device=device)
+            self._empty_vec3 = wp.zeros(0, dtype=wp.vec3, device=device)
             det_capacity = contact_max if contact_max is not None else max_candidate_pairs
             if deterministic:
                 self._sort_key_array = wp.zeros(det_capacity, dtype=wp.int64, device=device)
@@ -1831,6 +1978,7 @@ class NarrowPhase:
         shape_mesh_properties: wp.array[wp.int32] | None = None,  # Per-shape mesh property bitfield
         shape_sdf_index: wp.array[wp.int32],  # Per-shape index into texture_sdf_data (-1 for none)
         shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
+        shape_base_gap: wp.array[wp.float32] | None = None,
         shape_collision_radius: wp.array[wp.float32],  # per-shape collision radius for AABB fallback
         shape_flags: wp.array[wp.int32],  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
         shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
@@ -1844,6 +1992,11 @@ class NarrowPhase:
         mesh_edge_centers: wp.array[wp.vec4] | None = None,
         mesh_edge_halves: wp.array[wp.vec4] | None = None,
         shape_edge_range: wp.array[wp.vec2i] | None = None,
+        hydroelastic_shape_sdf_data_prepared: bool = False,
+        shape_linear_velocity: wp.array[wp.vec3] | None = None,
+        shape_angular_velocity: wp.array[wp.vec3] | None = None,
+        collision_update_dt: float = 0.0,
+        max_speculative_extension: float = 0.0,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
@@ -1864,13 +2017,22 @@ class NarrowPhase:
             shape_sdf_index: Per-shape SDF table index (-1 for shapes without SDF)
             texture_sdf_data: Compact array of TextureSDFData structs
             shape_gap: Array of per-shape contact gaps (detection threshold) for each shape
+            shape_base_gap: Array of authored per-shape contact gaps used for
+                exact admission and regular SDF reduction lanes.
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
             shape_flags: Array of shape flags for each shape (includes ShapeFlags.HYDROELASTIC)
             shape_collision_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
+            mesh_edge_centers: Packed precomputed mesh edge centers [m].
+            mesh_edge_halves: Packed precomputed mesh edge half-vectors [m].
             shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
+            hydroelastic_shape_sdf_data_prepared: Whether finalized hydroelastic SDF descriptors were cached upstream.
+            shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.
+            shape_angular_velocity: Shape angular velocities [rad/s]. Required in speculative mode.
+            collision_update_dt: Collision prediction horizon [s].
+            max_speculative_extension: Maximum speculative clearance [m].
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -1880,6 +2042,21 @@ class NarrowPhase:
             shape_mesh_properties = self._empty_mesh_properties
         if shape_edge_range is None:
             shape_edge_range = self._empty_edge_range
+        if self.speculative and shape_base_gap is None:
+            raise ValueError("Speculative NarrowPhase requires the authored shape_base_gap array")
+        if shape_base_gap is None:
+            shape_base_gap = shape_gap
+        if self.speculative and (shape_linear_velocity is None or shape_angular_velocity is None):
+            raise ValueError("Speculative NarrowPhase requires per-shape linear/angular velocity arrays")
+        if self.speculative:
+            for name, value in (
+                ("collision_update_dt", collision_update_dt),
+                ("max_speculative_extension", max_speculative_extension),
+            ):
+                if not math.isfinite(value) or value < 0.0:
+                    raise ValueError(f"{name} must be a non-negative finite number, got {value!r}")
+        shape_linear_velocity = self._empty_vec3 if shape_linear_velocity is None else shape_linear_velocity
+        shape_angular_velocity = self._empty_vec3 if shape_angular_velocity is None else shape_angular_velocity
 
         # Clear all counters with a single kernel launch (consolidated counter array)
         self._counter_array.zero_()
@@ -1896,6 +2073,10 @@ class NarrowPhase:
                 shape_types,
                 shape_data,
                 shape_transform,
+                shape_linear_velocity,
+                shape_angular_velocity,
+                collision_update_dt,
+                max_speculative_extension,
                 shape_source,
                 shape_gap,
                 shape_flags,
@@ -2093,21 +2274,45 @@ class NarrowPhase:
             # Register mesh-plane/mesh-triangle contacts in hashtable BEFORE mesh-mesh.
             # Mesh-mesh does inline hashtable registration in its kernel.
             if self.reduce_contacts:
-                wp.launch(
-                    kernel=reduce_buffered_contacts_kernel,
-                    dim=self.total_num_threads,
-                    inputs=[
-                        reducer_data,
-                        shape_transform,
-                        shape_collision_aabb_lower,
-                        shape_collision_aabb_upper,
-                        shape_voxel_resolution,
-                        self.total_num_threads,
-                    ],
-                    device=device,
-                    block_dim=self.block_dim,
-                    record_tape=False,
-                )
+                if self.speculative:
+                    wp.launch(
+                        kernel=reduce_buffered_contacts_speculative_kernel,
+                        dim=self.total_num_threads,
+                        inputs=[
+                            reducer_data,
+                            shape_types,
+                            shape_data,
+                            shape_base_gap,
+                            shape_transform,
+                            shape_linear_velocity,
+                            shape_angular_velocity,
+                            shape_collision_aabb_lower,
+                            shape_collision_aabb_upper,
+                            shape_voxel_resolution,
+                            collision_update_dt,
+                            max_speculative_extension,
+                            self.total_num_threads,
+                        ],
+                        device=device,
+                        block_dim=self.block_dim,
+                        record_tape=False,
+                    )
+                else:
+                    wp.launch(
+                        kernel=reduce_buffered_contacts_kernel,
+                        dim=self.total_num_threads,
+                        inputs=[
+                            reducer_data,
+                            shape_transform,
+                            shape_collision_aabb_lower,
+                            shape_collision_aabb_upper,
+                            shape_voxel_resolution,
+                            self.total_num_threads,
+                        ],
+                        device=device,
+                        block_dim=self.block_dim,
+                        record_tape=False,
+                    )
 
             # Launch mesh-mesh contact processing kernel.
             # The kernel uses texture SDF for fast sampling, with BVH fallback via shape_sdf_index,
@@ -2157,6 +2362,11 @@ class NarrowPhase:
                             shape_sdf_index,
                             shape_mesh_properties,
                             shape_gap,
+                            shape_base_gap,
+                            shape_linear_velocity,
+                            shape_angular_velocity,
+                            collision_update_dt,
+                            max_speculative_extension,
                             shape_collision_aabb_lower,
                             shape_collision_aabb_upper,
                             shape_voxel_resolution,
@@ -2190,6 +2400,11 @@ class NarrowPhase:
                             shape_sdf_index,
                             shape_mesh_properties,
                             shape_gap,
+                            shape_base_gap,
+                            shape_linear_velocity,
+                            shape_angular_velocity,
+                            collision_update_dt,
+                            max_speculative_extension,
                             shape_collision_aabb_lower,
                             shape_collision_aabb_upper,
                             shape_voxel_resolution,
@@ -2257,6 +2472,7 @@ class NarrowPhase:
                 self.shape_pairs_sdf_sdf,
                 self.shape_pairs_sdf_sdf_count,
                 writer_data,
+                hydroelastic_shape_sdf_data_prepared,
             )
 
         # Verify no collision pipeline buffers overflowed
@@ -2312,6 +2528,7 @@ class NarrowPhase:
         shape_sdf_index: wp.array[wp.int32] | None = None,  # Per-shape index into texture_sdf_data (-1 for none)
         texture_sdf_data: wp.array[TextureSDFData] | None = None,  # Compact texture SDF data table
         shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
+        shape_base_gap: wp.array[wp.float32] | None = None,
         shape_collision_radius: wp.array[wp.float32],  # per-shape collision radius for AABB fallback
         shape_flags: wp.array[wp.int32],  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
         shape_collision_aabb_lower: wp.array[wp.vec3] | None = None,  # Local-space AABB lower bounds
@@ -2326,6 +2543,10 @@ class NarrowPhase:
         contact_penetration: wp.array[float],  # negative if bodies overlap
         contact_count: wp.array[int],  # Number of active contacts after narrow
         contact_tangent: wp.array[wp.vec3] | None = None,  # Represents x axis of local contact frame (None to disable)
+        shape_linear_velocity: wp.array[wp.vec3] | None = None,
+        shape_angular_velocity: wp.array[wp.vec3] | None = None,
+        collision_update_dt: float = 0.0,
+        max_speculative_extension: float = 0.0,
         device: Devicelike | None = None,  # Device to launch on
         **kwargs: Any,
     ) -> None:
@@ -2343,6 +2564,8 @@ class NarrowPhase:
             shape_sdf_index: Per-shape SDF table index (-1 for shapes without SDF)
             texture_sdf_data: Compact array of TextureSDFData structs
             shape_gap: Array of per-shape contact gaps (detection threshold) for each shape
+            shape_base_gap: Authored per-shape contact gaps. Required when
+                this narrow phase was constructed with ``speculative=True``.
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
             shape_collision_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
@@ -2353,6 +2576,10 @@ class NarrowPhase:
             contact_penetration: Output array for penetration depths
             contact_tangent: Output array for contact tangents, or None to disable tangent computation
             contact_count: Output array (single element) for contact count
+            shape_linear_velocity: World-space shape-origin linear velocity [m/s].
+            shape_angular_velocity: World-space shape angular velocity [rad/s].
+            collision_update_dt: Speculative collision horizon [s].
+            max_speculative_extension: Maximum speculative clearance [m].
             device: Device to launch on
         """
         if device is None:
@@ -2385,6 +2612,14 @@ class NarrowPhase:
             )
         if shape_sdf_index is None:
             shape_sdf_index = wp.full(shape_types.shape[0], -1, dtype=wp.int32, device=device)
+        if self.speculative and shape_base_gap is None:
+            raise ValueError("Speculative NarrowPhase requires the authored shape_base_gap array")
+        if shape_base_gap is None:
+            shape_base_gap = shape_gap
+        if self.speculative and (shape_linear_velocity is None or shape_angular_velocity is None):
+            raise ValueError("Speculative NarrowPhase requires per-shape linear/angular velocity arrays")
+        shape_linear_velocity = self._empty_vec3 if shape_linear_velocity is None else shape_linear_velocity
+        shape_angular_velocity = self._empty_vec3 if shape_angular_velocity is None else shape_angular_velocity
 
         contact_max = contact_pair.shape[0]
 
@@ -2418,6 +2653,12 @@ class NarrowPhase:
         writer_data.contact_penetration = contact_penetration
         writer_data.contact_tangent = contact_tangent
         writer_data.contact_sort_key = sort_key_arr
+        writer_data.shape_gap = shape_base_gap
+        writer_data.shape_transform = shape_transform
+        writer_data.shape_linear_velocity = shape_linear_velocity
+        writer_data.shape_angular_velocity = shape_angular_velocity
+        writer_data.collision_update_dt = collision_update_dt
+        writer_data.max_speculative_extension = max_speculative_extension
 
         # Delegate to launch_custom_write
         self.launch_custom_write(
@@ -2431,6 +2672,7 @@ class NarrowPhase:
             shape_sdf_index=shape_sdf_index,
             texture_sdf_data=texture_sdf_data,
             shape_gap=shape_gap,
+            shape_base_gap=shape_base_gap,
             shape_collision_radius=shape_collision_radius,
             shape_flags=shape_flags,
             shape_collision_aabb_lower=shape_collision_aabb_lower,
@@ -2440,6 +2682,10 @@ class NarrowPhase:
             mesh_edge_centers=mesh_edge_centers,
             mesh_edge_halves=mesh_edge_halves,
             shape_edge_range=shape_edge_range,
+            shape_linear_velocity=shape_linear_velocity,
+            shape_angular_velocity=shape_angular_velocity,
+            collision_update_dt=collision_update_dt,
+            max_speculative_extension=max_speculative_extension,
             writer_data=writer_data,
             device=device,
         )
