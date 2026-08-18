@@ -262,13 +262,13 @@ class RigidBodiesData:
 
     w_j_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Bilateral joint constraint wrench applied to each body (in world coordinates).
+    Bilateral joint constraint wrench applied to each body (in world coordinates) [N, N·m].
     Shape of ``(num_bodies,)``.
     """
 
     w_f_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Joint friction wrench applied to each body (in world coordinates).
+    Joint friction wrench applied to each body (in world coordinates) [N, N·m].
     Shape of ``(num_bodies,)``.
     """
 

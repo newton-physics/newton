@@ -1255,7 +1255,14 @@ class JointDescriptor(Descriptor):
 
     f_j: ArrayLike | float | None = None
     """
-    Coulomb friction effort along each joint DoF.
+    Coulomb friction force or torque along each joint DoF [N, N·m].
+
+    Each translational DoF uses a force [N], and each rotational DoF uses a torque [N·m].
+    Accepts `ArrayLike`, `float`, or `None`.
+
+    If specified as a type conforming to the `ArrayLike` union, then the
+    number of elements must equal the number of DoFs of the joint, i.e.
+    `num_dofs = dof_type.num_dofs`.
 
     Defaults to zero. Positive values allocate a bounded-multiplier constraint row
     for every DoF of the joint. Friction on free joints is ignored.
@@ -1903,7 +1910,9 @@ class JointsModel:
 
     f_j: wp.array[wp.float32] | None = None
     """
-    Coulomb friction effort of each joint DoF.
+    Coulomb friction force or torque of each joint DoF [N, N·m].
+
+    Each translational DoF uses a force [N], and each rotational DoF uses a torque [N·m].
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 

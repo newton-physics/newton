@@ -595,6 +595,7 @@ def joint_indexing_kernel(
     joint_num_dofs: wp.array[wp.int32],
     joint_num_kinematic_cts: wp.array[wp.int32],
     joint_num_dynamic_cts: wp.array[wp.int32],
+    joint_num_bounded_cts: wp.array[wp.int32],
     joint_num_friction_cts: wp.array[wp.int32],
     model_fk_act_flag: wp.array[wp.int32],
     # Outputs:
@@ -670,6 +671,7 @@ def joint_indexing_kernel(
         ndofs_j = joint_num_dofs[joint_id]
         n_kin_cts_j = joint_num_kinematic_cts[joint_id]
         n_dyn_cts_j = joint_num_dynamic_cts[joint_id]
+        n_bounded_cts_j = joint_num_bounded_cts[joint_id]
         n_friction_cts_j = joint_num_friction_cts[joint_id]
         act_type_j = joint_act_type[joint_id]
 
@@ -701,7 +703,7 @@ def joint_indexing_kernel(
             num_cts += n_dyn_cts_j
             num_dynamic_j += 1
 
-        num_bounded += n_friction_cts_j
+        num_bounded += n_bounded_cts_j
         num_friction += n_friction_cts_j
 
     # Write sizes for this world
@@ -985,6 +987,7 @@ def validate_model_structural_updates(
     - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/gimbal axes
     - :attr:`StructuralUpdateViolation.GIMBAL_HANDEDNESS`: gimbal axis handedness changed
     - :attr:`StructuralUpdateViolation.MASSLESS`: a built massive body became massless
+    - :attr:`StructuralUpdateViolation.FRICTION_CTS`: joint friction constraint topology changed
 
     An entry equal to the maximum of the body, joint, and DoF counts indicates that no
     violation of that type was found.
@@ -1527,6 +1530,7 @@ def convert_joints(
             joint_num_dofs,
             joint_num_kinematic_cts,
             joint_num_dynamic_cts,
+            joint_num_bounded_cts,
             joint_num_friction_cts,
             model.fk_actuation_flag if hasattr(model, "fk_actuation_flag") else None,
         ],

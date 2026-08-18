@@ -908,6 +908,7 @@ def _build_dual_preconditioner_all_constraints(
     problem_mio: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     problem_njc: wp.array[wp.int32],
+    problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
     problem_D: wp.array[wp.float32],
     # Outputs:
@@ -932,10 +933,11 @@ def _build_dual_preconditioner_all_constraints(
     # Retrieve the vector index offset of the world
     vio = problem_vio[wid]
 
-    # Retrieve the number of active joint and limit constraints of the world
+    # Bounded rows are scalar constraints between joint and limit rows.
     njc = problem_njc[wid]
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
-    njlc = njc + nl
+    njlc = njc + nbc + nl
 
     _build_dual_preconditioner_entry(
         tid,
@@ -955,6 +957,7 @@ def _build_dual_preconditioner_all_constraints_sparse(
     problem_dim: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     problem_njc: wp.array[wp.int32],
+    problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
     # Outputs:
     problem_P: wp.array[wp.float32],
@@ -975,10 +978,11 @@ def _build_dual_preconditioner_all_constraints_sparse(
     # Retrieve the vector index offset of the world
     vio = problem_vio[wid]
 
-    # Retrieve the number of active joint and limit constraints of the world
+    # Bounded rows are scalar constraints between joint and limit rows.
     njc = problem_njc[wid]
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
-    njlc = njc + nl
+    njlc = njc + nbc + nl
 
     _build_dual_preconditioner_entry(
         tid,
@@ -1804,6 +1808,7 @@ class DualProblem:
                     self._data.dim,
                     self._data.vio,
                     self._data.njc,
+                    self._data.nbc,
                     self._data.nl,
                     # Outputs:
                     self._data.P,
@@ -1821,6 +1826,7 @@ class DualProblem:
                     self._data.mio,
                     self._data.vio,
                     self._data.njc,
+                    self._data.nbc,
                     self._data.nl,
                     self._data.D,
                     # Outputs:

@@ -435,7 +435,7 @@ class ModelBuilderKamino:
             tau_j_max: The maximum joint effort limits.
             a_j: The joint armature along each DoF.
             b_j: The joint damping along each DoF.
-            f_j: The Coulomb friction force or torque limit along each DoF.
+            f_j: The Coulomb friction force or torque limit along each DoF [N, N·m].
             k_p_j: The joint proportional gain along each DoF.
             k_d_j: The joint derivative gain along each DoF.
             name: The name of the joint.
