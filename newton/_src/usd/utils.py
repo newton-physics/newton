@@ -1493,11 +1493,16 @@ def get_mesh(
             non-mesh prim sources from authored USD distance units to meters.
             Single mesh prim sources keep their authored coordinates for
             backward compatibility unless ``root_path`` is provided.
-        load_visual_materials: If True, resolve and attach the bound visual
-            material's color, texture, metallic, and roughness. Set to False
-            when only mesh geometry is needed. If ``load_uvs`` is True, the
-            material's shader network may still be inspected to select the UV
-            primvar used by the texture.
+        load_visual_materials: If True, resolve the mesh's visual material and
+            populate :attr:`newton.Mesh.color`, :attr:`newton.Mesh.texture`,
+            :attr:`newton.Mesh.metallic`, and :attr:`newton.Mesh.roughness`.
+            Resolution also covers materials bound through an instance
+            prototype or a ``UsdGeom.Subset`` child, and the ``displayColor``
+            primvar fallback. If False, those attributes keep their
+            :class:`newton.Mesh` defaults; set it to False when only mesh
+            geometry is needed. If ``load_uvs`` is True, the material's shader
+            network may still be inspected to select the UV primvar used by
+            the texture.
 
     Returns:
         newton.Mesh: The loaded mesh, or ``(mesh, uv_indices)`` if
