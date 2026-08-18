@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 import torch  # noqa: TID253
 import warp as wp
 
+from newton._src.solvers.kamino._src.core.joints import JointDoFType
 from newton._src.solvers.kamino._src.utils.sim import Simulator
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
 from newton._src.solvers.kamino.examples.rl.utils import StackedIndices, periodic_encoding
@@ -512,7 +513,17 @@ class DrlegsBaseObservation(ObservationBuilder):
         )
         self._body_sim = body_sim
         self._num_actions = body_sim.num_actuated
-        self._num_dofs = body_sim.num_joint_coords
+        # Exclude the floating-base root joint's coordinates, if present
+        # (e.g. a FREE joint contributes 7 pose coords); the root is
+        # already represented separately via root position/orientation
+        # observations.
+        root_dof_type = int(wp.to_torch(body_sim.sim.model.joints.dof_type)[0].item())
+        if root_dof_type in (JointDoFType.FREE, JointDoFType.SPHERICAL):
+            num_root_coords = int(wp.to_torch(body_sim.sim.model.joints.num_coords)[0].item())
+        else:
+            num_root_coords = 0
+        self._num_root_coords = num_root_coords
+        self._num_dofs = body_sim.num_joint_coords - num_root_coords
         self._action_scale = action_scale
 
         # Action history buffers (actuated joints only).
@@ -544,7 +555,7 @@ class DrlegsBaseObservation(ObservationBuilder):
             self._action_history[:] = self._action_scale * actions
 
         root_pos = self._get_root_positions()
-        q_j = self._get_joint_positions()
+        q_j = self._get_joint_positions()[:, self._num_root_coords :]
 
         d = self._num_dofs
         a = self._num_actions
