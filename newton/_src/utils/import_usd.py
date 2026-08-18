@@ -1670,74 +1670,10 @@ def parse_usd(
         limit_key = "limit_angular" if is_revolute else "limit_linear"
         builder_limit_ke = default_joint_limit_ke * limit_gains_scaling
         builder_limit_kd = default_joint_limit_kd * limit_gains_scaling
-        limit_read_value = resolver_manager._cached_value_reader(jp_prim, PrimType.JOINT)
-        fallback_limit_ke = resolution.resolve_joint_limit_gain_policies(
+        active_limit = resolution.resolve_joint_limits(
             jp_prim,
-            f"{limit_key}_ke",
-            builder_limit_ke,
-            limit_read_value,
-        )
-        fallback_limit_kd = resolution.resolve_joint_limit_gain_policies(
-            jp_prim,
-            f"{limit_key}_kd",
-            builder_limit_kd,
-            limit_read_value,
-        )
-        newton_limit_ke, newton_limit_kd = resolution.resolve_joint_generic_limit_policies(
-            jp_prim,
-            limit_read_value,
-        )
-        active_limit = resolution.resolve_joint_limit_policy_result(
-            newton_limit_ke.active.resolved,
-            newton_limit_kd.active.resolved,
-            fallback_limit_ke.active.resolved,
-            fallback_limit_kd.active.resolved,
-            builder_limit_ke,
-            builder_limit_kd,
-        )
-        if newton_limit_ke.legacy is not None and all(
-            policies.composed is not None
-            for policies in (newton_limit_ke, newton_limit_kd, fallback_limit_ke, fallback_limit_kd)
-        ):
-            legacy_limit = resolution.resolve_joint_limit_policy_result(
-                newton_limit_ke.legacy.resolved,
-                newton_limit_kd.legacy.resolved,
-                fallback_limit_ke.legacy.resolved,
-                fallback_limit_kd.legacy.resolved,
-                builder_limit_ke,
-                builder_limit_kd,
-            )
-            composed_limit = resolution.resolve_joint_limit_policy_result(
-                newton_limit_ke.composed.resolved,
-                newton_limit_kd.composed.resolved,
-                fallback_limit_ke.composed.resolved,
-                fallback_limit_kd.composed.resolved,
-                builder_limit_ke,
-                builder_limit_kd,
-            )
-            legacy_owners = resolution.joint_limit_policy_owners(
-                newton_limit_ke.legacy.resolved,
-                newton_limit_kd.legacy.resolved,
-                f"{limit_key}_ke",
-                f"{limit_key}_kd",
-            )
-            composed_owners = resolution.joint_limit_policy_owners(
-                newton_limit_ke.composed.resolved,
-                newton_limit_kd.composed.resolved,
-                f"{limit_key}_ke",
-                f"{limit_key}_kd",
-            )
-            limit_candidates = {
-                "limit_ke": newton_limit_ke,
-                "limit_kd": newton_limit_kd,
-                f"{limit_key}_ke": fallback_limit_ke,
-                f"{limit_key}_kd": fallback_limit_kd,
-            }
-            resolution.audit_joint_limit_changes(
-                jp_prim,
-                (resolution.JointLimitAudit(legacy_limit, composed_limit, legacy_owners, composed_owners),),
-                limit_candidates,
-            )
+            {limit_key: (builder_limit_ke, builder_limit_kd)},
+        )[limit_key]
         limit_lower = jd.limit.lower
         limit_upper = jd.limit.upper
 
@@ -1924,92 +1860,18 @@ def parse_usd(
             d6_dof_axes = []
             linear_solref_modes: list[int] = []
             angular_solref_modes: list[int] = []
-            d6_limit_read_value = resolver_manager._cached_value_reader(joint_prim, PrimType.JOINT)
-            d6_limit_gain_cache: dict[
-                tuple[Any, str],
-                tuple[SchemaResolverManager._InterpretedPolicyValues, float],
-            ] = {}
-
-            def _d6_limit_gain(dof, gain):
-                cache_key = (dof, gain)
-                if cache_key not in d6_limit_gain_cache:
-                    if dof in _trans_names:
-                        name = _trans_names[dof]
-                        scale = 1.0
-                    else:
-                        name = _rot_names[dof]
-                        scale = DegreesToRadian
-                    builder_default = (default_joint_limit_ke if gain == "ke" else default_joint_limit_kd) * scale
-                    policies = resolution.resolve_joint_limit_gain_policies(
-                        joint_prim,
-                        f"limit_{name}_{gain}",
-                        builder_default,
-                        d6_limit_read_value,
-                    )
-                    d6_limit_gain_cache[cache_key] = policies, builder_default
-                return d6_limit_gain_cache[cache_key]
-
-            limit_ke_policies, limit_kd_policies = resolution.resolve_joint_generic_limit_policies(
-                joint_prim,
-                d6_limit_read_value,
-            )
-
-            def _resolve_d6_limit_gains(
-                dof,
-                policy: Literal["active", "legacy", "composed"] = "active",
-            ):
-                fallback_ke, builder_ke = _d6_limit_gain(dof, "ke")
-                fallback_kd, builder_kd = _d6_limit_gain(dof, "kd")
-                return resolution.resolve_joint_limit_policy_result(
-                    limit_ke_policies.select(policy).resolved,
-                    limit_kd_policies.select(policy).resolved,
-                    fallback_ke.select(policy).resolved,
-                    fallback_kd.select(policy).resolved,
-                    builder_ke,
-                    builder_kd,
+            d6_limit_keys = {
+                dof: f"limit_{_trans_names[dof] if dof in _trans_names else _rot_names[dof]}" for dof in d6_free_dofs
+            }
+            d6_limit_defaults = {
+                key: (
+                    default_joint_limit_ke * (1.0 if dof in _trans_names else DegreesToRadian),
+                    default_joint_limit_kd * (1.0 if dof in _trans_names else DegreesToRadian),
                 )
-
-            active_d6_limits = {dof: _resolve_d6_limit_gains(dof) for dof in d6_free_dofs}
-            all_d6_policies = [limit_ke_policies, limit_kd_policies]
-            all_d6_policies.extend(policies for policies, _default in d6_limit_gain_cache.values())
-            if limit_ke_policies.legacy is not None and all(
-                policies.composed is not None for policies in all_d6_policies
-            ):
-                limit_changes = []
-                for dof in d6_free_dofs:
-                    name = _trans_names[dof] if dof in _trans_names else _rot_names[dof]
-                    legacy_result = _resolve_d6_limit_gains(dof, "legacy")
-                    composed_result = _resolve_d6_limit_gains(dof, "composed")
-                    legacy_owners = resolution.joint_limit_policy_owners(
-                        limit_ke_policies.legacy.resolved,
-                        limit_kd_policies.legacy.resolved,
-                        f"limit_{name}_ke",
-                        f"limit_{name}_kd",
-                    )
-                    composed_owners = resolution.joint_limit_policy_owners(
-                        limit_ke_policies.composed.resolved,
-                        limit_kd_policies.composed.resolved,
-                        f"limit_{name}_ke",
-                        f"limit_{name}_kd",
-                    )
-                    limit_changes.append(
-                        resolution.JointLimitAudit(
-                            legacy_result,
-                            composed_result,
-                            legacy_owners,
-                            composed_owners,
-                        )
-                    )
-
-                candidate_policies = {"limit_ke": limit_ke_policies, "limit_kd": limit_kd_policies}
-                for (dof, gain), (policies, _default) in d6_limit_gain_cache.items():
-                    name = _trans_names[dof] if dof in _trans_names else _rot_names[dof]
-                    candidate_policies[f"limit_{name}_{gain}"] = policies
-                resolution.audit_joint_limit_changes(
-                    joint_prim,
-                    limit_changes,
-                    candidate_policies,
-                )
+                for dof, key in d6_limit_keys.items()
+            }
+            resolved_d6_limits = resolution.resolve_joint_limits(joint_prim, d6_limit_defaults)
+            active_d6_limits = {dof: resolved_d6_limits[key] for dof, key in d6_limit_keys.items()}
 
             # print(joint_desc.jointLimits, joint_desc.jointDrives)
             # print(joint_desc.body0)

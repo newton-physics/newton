@@ -199,7 +199,7 @@ class _UsdResolutionPolicy:
             return self.ke, self.kd, self.solref_mode
 
     @dataclass(frozen=True)
-    class JointLimitAudit:
+    class _JointLimitAudit:
         """Describe one legacy-to-composed joint-limit comparison."""
 
         legacy: _UsdResolutionPolicy.JointLimitResult
@@ -1113,7 +1113,77 @@ class _UsdResolutionPolicy:
             read_value=read_value,
         )
 
-    def resolve_joint_limit_policy_result(
+    def resolve_joint_limits(
+        self,
+        prim: Any,
+        defaults: Mapping[str, tuple[float, float]],
+    ) -> dict[str, JointLimitResult]:
+        """Resolve and audit generic and per-axis joint-limit gains."""
+        read_value = self._resolver._cached_value_reader(prim, PrimType.JOINT)
+        generic_ke, generic_kd = self.resolve_joint_generic_limit_policies(prim, read_value)
+        candidates = {"limit_ke": generic_ke, "limit_kd": generic_kd}
+        fallback_policies = {}
+
+        for key, (builder_ke, builder_kd) in defaults.items():
+            fallback_ke = self.resolve_joint_limit_gain_policies(
+                prim,
+                f"{key}_ke",
+                builder_ke,
+                read_value,
+            )
+            fallback_kd = self.resolve_joint_limit_gain_policies(
+                prim,
+                f"{key}_kd",
+                builder_kd,
+                read_value,
+            )
+            fallback_policies[key] = (fallback_ke, fallback_kd)
+            candidates[f"{key}_ke"] = fallback_ke
+            candidates[f"{key}_kd"] = fallback_kd
+
+        def assemble(
+            key: str, policy: Literal["active", "legacy", "composed"]
+        ) -> _UsdResolutionPolicy.JointLimitResult:
+            builder_ke, builder_kd = defaults[key]
+            fallback_ke, fallback_kd = fallback_policies[key]
+            return self._resolve_joint_limit_policy_result(
+                generic_ke.select(policy).resolved,
+                generic_kd.select(policy).resolved,
+                fallback_ke.select(policy).resolved,
+                fallback_kd.select(policy).resolved,
+                builder_ke,
+                builder_kd,
+            )
+
+        active = {key: assemble(key, "active") for key in defaults}
+        can_audit = generic_ke.legacy is not None and all(
+            policies.composed is not None for policies in candidates.values()
+        )
+        if not can_audit:
+            return active
+
+        changes = []
+        for key in defaults:
+            legacy = assemble(key, "legacy")
+            composed = assemble(key, "composed")
+            legacy_owners = self._joint_limit_policy_owners(
+                generic_ke.legacy.resolved,
+                generic_kd.legacy.resolved,
+                f"{key}_ke",
+                f"{key}_kd",
+            )
+            composed_owners = self._joint_limit_policy_owners(
+                generic_ke.composed.resolved,
+                generic_kd.composed.resolved,
+                f"{key}_ke",
+                f"{key}_kd",
+            )
+            changes.append(self._JointLimitAudit(legacy, composed, legacy_owners, composed_owners))
+
+        self._audit_joint_limit_changes(prim, changes, candidates)
+        return active
+
+    def _resolve_joint_limit_policy_result(
         self,
         limit_ke: _ResolvedValue,
         limit_kd: _ResolvedValue,
@@ -1141,7 +1211,7 @@ class _UsdResolutionPolicy:
         return self.JointLimitResult(resolved_ke, resolved_kd, ke_source, kd_source)
 
     @staticmethod
-    def joint_limit_policy_owners(
+    def _joint_limit_policy_owners(
         limit_ke: _ResolvedValue,
         limit_kd: _ResolvedValue,
         fallback_ke_key: str,
@@ -1157,10 +1227,10 @@ class _UsdResolutionPolicy:
             kd_owner = "limit_kd"
         return ke_owner, kd_owner
 
-    def audit_joint_limit_changes(
+    def _audit_joint_limit_changes(
         self,
         prim: Any,
-        changes: Sequence[JointLimitAudit],
+        changes: Sequence[_JointLimitAudit],
         candidates: Mapping[str, SchemaResolverManager._InterpretedPolicyValues],
     ) -> None:
         """Audit the inputs that contribute to assembled joint-limit changes."""
