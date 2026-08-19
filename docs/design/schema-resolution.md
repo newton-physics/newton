@@ -164,6 +164,10 @@ armature = properties["armature"]
 print(armature.value, armature.source, armature.resolver)
 ```
 
+Default-map membership distinguishes omission from an explicit `None` value.
+The PXR adapter keeps the same distinction: omitting its default supplies no
+candidate, while passing `None` selects an explicit null importer default.
+
 Fallback tables contain raw USD values; the common resolver applies the same
 composite getter and value transformer as it does to authored values. These
 methods accept an optional `keys=` selection so an integration can request only

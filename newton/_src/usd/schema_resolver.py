@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 _MISSING_FALLBACK = object()
 _NO_COMPARISON = object()
+_NO_IMPORTER_DEFAULT = object()
 _NO_OVERRIDE = object()
 _SAME_AS_DEFAULT = object()
 _UNREGISTERED_SCHEMA = object()
@@ -38,6 +39,18 @@ _UNREADABLE_FALLBACK = object()
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 _PolicySelection = Literal["active", "legacy", "composed"]
+
+
+def _pxr_schema_kind(prim: Usd.Prim, schema_name: str) -> Literal["typed", "applied"] | None:
+    """Classify an applicable PXR schema for one prim."""
+    from pxr import Usd
+
+    schema_type = Usd.SchemaRegistry.GetTypeFromName(schema_name)
+    if schema_type and prim.IsA(schema_type):
+        return "typed"
+    if usd.has_applied_api_schema(prim, schema_name):
+        return "applied"
+    return None
 
 
 @dataclass(frozen=True)
@@ -110,6 +123,15 @@ def _importer_default(default: Any) -> tuple[bool, Any]:
     if isinstance(default, _ImporterDefault):
         return True, default.value
     return default is not None, default
+
+
+def _as_importer_default(default: Any) -> Any:
+    """Distinguish an omitted manager default from an explicit value."""
+    if default is _NO_IMPORTER_DEFAULT:
+        return None
+    if isinstance(default, _ImporterDefault):
+        return default
+    return _ImporterDefault(default)
 
 
 def _values_equal(left: Any, right: Any) -> bool:
@@ -379,13 +401,7 @@ class SchemaResolver:
         schema_name = self._schema_name(prim_type, key)
         if schema_name is None or prim is None:
             return False
-        if usd.has_applied_api_schema(prim, schema_name):
-            return True
-
-        from pxr import Usd
-
-        schema_type = Usd.SchemaRegistry.GetTypeFromName(schema_name)
-        return bool(schema_type) and prim.IsA(schema_type)
+        return _pxr_schema_kind(prim, schema_name) is not None
 
     def _get_value_with_reader(
         self,
@@ -656,6 +672,13 @@ class _ResolvedValue:
     def authored(self) -> bool:
         return self.source == _ValueSource.AUTHORED
 
+    @property
+    def winning_resolver(self) -> SchemaResolver | None:
+        """Return the resolver responsible for the terminal value."""
+        if self.resolver is not None:
+            return self.resolver
+        return self.compatibility_resolver
+
 
 class SchemaResolution:
     """Reuse one resolver order and fallback policy across USD sources.
@@ -704,6 +727,14 @@ class SchemaResolution:
         resolver: SchemaResolver | None
         schema_name: str | None
         attribute_names: tuple[str, ...]
+
+    _SOURCE_BY_INTERNAL: ClassVar = {
+        _ValueSource.UNRESOLVED: Source.UNRESOLVED,
+        _ValueSource.AUTHORED: Source.AUTHORED,
+        _ValueSource.REGISTERED_FALLBACK: Source.REGISTERED_FALLBACK,
+        _ValueSource.IMPORTER_DEFAULT: Source.IMPORTER_DEFAULT,
+        _ValueSource.COMPATIBILITY_DEFAULT: Source.COMPATIBILITY_DEFAULT,
+    }
 
     def __init__(
         self,
@@ -807,7 +838,7 @@ class SchemaResolution:
 
     @staticmethod
     def _fallback_label(resolved: _ResolvedValue, prim_type: PrimType, key: str) -> str:
-        resolver = resolved.resolver or resolved.compatibility_resolver
+        resolver = resolved.winning_resolver
         if resolver is None:
             return key
         spec = resolver.mapping[prim_type][resolved.mapping_key or key]
@@ -816,7 +847,7 @@ class SchemaResolution:
         return f"{schema_name or resolver.name} ({names})"
 
     def _public_result(self, resolved: _ResolvedValue, prim_type: PrimType, key: str) -> Result:
-        resolver = resolved.resolver or resolved.compatibility_resolver
+        resolver = resolved.winning_resolver
         if resolver is None:
             schema_name = None
             attribute_names = ()
@@ -827,7 +858,7 @@ class SchemaResolution:
             attribute_names = () if spec is None else tuple(spec.attribute_names or (spec.name,))
         return self.Result(
             value=resolved.value,
-            source=self.Source(resolved.source.value),
+            source=self._SOURCE_BY_INTERNAL[resolved.source],
             resolver=resolver,
             schema_name=schema_name,
             attribute_names=attribute_names,
@@ -1095,15 +1126,17 @@ class SchemaResolverManager:
                 raise ValueError("resolvers and resolution are mutually exclusive")
             if not policy_was_omitted:
                 raise ValueError("use_registered_schema_fallbacks cannot be supplied when resolution owns the policy")
-            self.resolvers = list(resolution._resolvers)
-            self._use_registered_schema_fallbacks = resolution._use_registered_schema_fallbacks
-            self._resolution = resolution._policy
+            self._schema_resolution = resolution
         elif resolvers is not None:
-            self.resolvers = list(resolvers)
-            self._use_registered_schema_fallbacks = bool(use_registered_schema_fallbacks)
-            self._resolution = _SchemaResolutionPolicy(self.resolvers)
+            self._schema_resolution = SchemaResolution(
+                resolvers,
+                use_registered_schema_fallbacks=bool(use_registered_schema_fallbacks),
+            )
         else:
             raise ValueError("resolvers or resolution is required")
+        self.resolvers = list(self._schema_resolution._resolvers)
+        self._use_registered_schema_fallbacks = self._schema_resolution._use_registered_schema_fallbacks
+        self._resolution = self._schema_resolution._policy
         self._registered_schema_fallbacks: dict[tuple[str, str], dict[str, Any] | None] = {}
         self._legacy_fallback_properties: dict[SchemaResolverManager._MigrationTransition, set[str]] = {}
         self._legacy_fallback_failures: dict[str, set[str]] = {}
@@ -1131,7 +1164,7 @@ class SchemaResolverManager:
         prim: Usd.Prim,
         prim_type: PrimType,
         key: str,
-        default: Any = None,
+        default: Any = _NO_IMPORTER_DEFAULT,
         verbose: bool = False,
         *,
         override: Any = _NO_OVERRIDE,
@@ -1145,7 +1178,9 @@ class SchemaResolverManager:
             prim: USD prim to query (for scene prim_type, this should be scene_prim)
             prim_type: Prim type (PrimType enum)
             key: Attribute key within the prim type
-            default: Default value if not found
+            default: Importer default used when no higher-priority candidate
+                resolves. Omit this argument to supply no importer default;
+                passing ``None`` supplies an explicit null default.
             override: Explicit importer value that takes precedence over USD
                 resolution when composed fallback resolution is enabled. Under
                 legacy resolution, its paired importer default retains the
@@ -1158,7 +1193,7 @@ class SchemaResolverManager:
         Returns:
             Resolved value under the manager's configured policy.
         """
-        return self._resolve_reported_value(
+        return self._resolve_result(
             prim,
             prim_type,
             key,
@@ -1175,15 +1210,15 @@ class SchemaResolverManager:
         prim: Usd.Prim,
         prim_type: PrimType,
         key: str,
-        default: Any = None,
+        default: Any = _NO_IMPORTER_DEFAULT,
         verbose: bool = False,
         *,
         override: Any = _NO_OVERRIDE,
         legacy_default: Any = _SAME_AS_DEFAULT,
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
     ) -> tuple[Any, SchemaResolver | None]:
-        """Resolve a value and return the resolver that supplied it."""
-        resolved = self._resolve_reported_value(
+        """Resolve a value and return its authored, fallback, or compatibility resolver."""
+        resolved = self._resolve_result(
             prim,
             prim_type,
             key,
@@ -1195,6 +1230,33 @@ class SchemaResolverManager:
             comparison_key=comparison_key,
         )
         return resolved.value, resolved.resolver
+
+    def _resolve_result(
+        self,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        default: Any = _NO_IMPORTER_DEFAULT,
+        verbose: bool = False,
+        *,
+        override: Any = _NO_OVERRIDE,
+        legacy_default: Any = _SAME_AS_DEFAULT,
+        audit_provenance: SchemaResolverManager._AuditProvenance = _AuditProvenance.NONE,
+        comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
+    ) -> SchemaResolution.Result:
+        """Resolve one PXR property through the source-neutral result contract."""
+        resolved = self._resolve_reported_value(
+            prim,
+            prim_type,
+            key,
+            _as_importer_default(default),
+            verbose,
+            override=override,
+            legacy_default=legacy_default,
+            audit_provenance=audit_provenance,
+            comparison_key=comparison_key,
+        )
+        return self._schema_resolution._public_result(resolved, prim_type, key)
 
     def _resolve_reported_value(
         self,
@@ -1560,10 +1622,13 @@ class SchemaResolverManager:
             comparison_key is None
             and result_interpreter is None
             and (
-                (audit_provenance == self._AuditProvenance.RESOLVER and legacy.resolver is not resolved.resolver)
+                (
+                    audit_provenance == self._AuditProvenance.RESOLVER
+                    and legacy.winning_resolver is not resolved.winning_resolver
+                )
                 or (
                     audit_provenance == self._AuditProvenance.SOURCE
-                    and (legacy.source != resolved.source or legacy.resolver is not resolved.resolver)
+                    and (legacy.source != resolved.source or legacy.winning_resolver is not resolved.winning_resolver)
                 )
             )
         )
@@ -1603,7 +1668,9 @@ class SchemaResolverManager:
                 legacy_value = candidate.legacy_comparison
                 composed_value = candidate.composed_comparison
             values_differ = not _values_equal(legacy_value, composed_value)
-            sources_differ = legacy.source != composed.source or legacy.resolver is not composed.resolver
+            sources_differ = (
+                legacy.source != composed.source or legacy.winning_resolver is not composed.winning_resolver
+            )
             if not values_differ and not (candidate.compare_source and sources_differ):
                 continue
             self._record_resolution_transition(
@@ -1625,7 +1692,7 @@ class SchemaResolverManager:
         """Record one property transition between resolution policies."""
 
         def endpoint(value: _ResolvedValue) -> SchemaResolverManager._MigrationEndpoint:
-            resolver = value.resolver or value.compatibility_resolver
+            resolver = value.winning_resolver
             if resolver is None:
                 return self._MigrationEndpoint(value.source)
             mapping_key = value.mapping_key or key
@@ -1642,9 +1709,7 @@ class SchemaResolverManager:
 
         legacy_endpoint = endpoint(legacy)
         resolved_endpoint = endpoint(resolved)
-        representative = (
-            legacy.resolver or legacy.compatibility_resolver or resolved.resolver or resolved.compatibility_resolver
-        )
+        representative = legacy.winning_resolver or resolved.winning_resolver
         if representative is None:
             representative = next(
                 (resolver for resolver in self.resolvers if key in resolver.mapping.get(prim_type, {})),
@@ -1778,10 +1843,10 @@ class SchemaResolverManager:
         cache_key = (prim_type_name, schema_name)
         if cache_key not in self._registered_schema_fallbacks:
             registry = Usd.SchemaRegistry()
-            schema_type = registry.GetTypeFromName(schema_name)
-            if schema_type and prim.IsA(schema_type):
+            schema_kind = _pxr_schema_kind(prim, schema_name)
+            if schema_kind == "typed":
                 prim_definition = registry.FindConcretePrimDefinition(prim_type_name)
-            else:
+            elif schema_kind == "applied":
                 schema_type_name, _ = registry.GetTypeNameAndInstance(schema_name)
                 schema_definition = registry.FindAppliedAPIPrimDefinition(schema_type_name)
                 prim_definition = (
@@ -1789,6 +1854,8 @@ class SchemaResolverManager:
                     if schema_definition is not None
                     else None
                 )
+            else:
+                prim_definition = None
             self._registered_schema_fallbacks[cache_key] = (
                 _registered_attribute_fallbacks(prim_definition) if prim_definition is not None else None
             )

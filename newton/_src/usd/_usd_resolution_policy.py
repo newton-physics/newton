@@ -1157,7 +1157,6 @@ class _UsdResolutionPolicy:
             prim,
             PrimType.JOINT,
             key,
-            default=None,
             comparison_key=_interpret_usd_joint_state,
         )
 
@@ -1433,7 +1432,7 @@ class _UsdResolutionPolicy:
         else:
             value = self._default_joint_damping if raw_value is None else raw_value
         if is_revolute and resolved.source not in (_ValueSource.IMPORTER_DEFAULT, _ValueSource.UNRESOLVED):
-            resolver = resolved.resolver or resolved.compatibility_resolver
+            resolver = resolved.winning_resolver
             spec = resolver.mapping.get(PrimType.JOINT, {}).get("damping") if resolver is not None else None
             angular_unit = legacy_angular_unit or (spec.angular_unit if spec is not None else "degrees")
             if angular_unit == "degrees":
