@@ -491,6 +491,43 @@ class _SchemaResolutionPolicy:
     def __init__(self, resolvers: Sequence[SchemaResolver]):
         self._resolvers = tuple(resolvers)
 
+    def _resolve_legacy_value(
+        self,
+        read_value: Callable[[SchemaResolver, str], _ResolverValue],
+        prim_type: PrimType,
+        key: str,
+        *,
+        default: Any = None,
+    ) -> _ResolvedValue:
+        """Preserve legacy candidate selection through a source-neutral reader."""
+        for resolver in self._resolvers:
+            value = read_value(resolver, key)
+            if value.usable:
+                return _ResolvedValue(value.value, resolver, _ValueSource.AUTHORED, mapping_key=key)
+
+        has_importer_default, importer_default = _importer_default(default)
+        if has_importer_default:
+            return _ResolvedValue(importer_default, None, _ValueSource.IMPORTER_DEFAULT)
+
+        for resolver in self._resolvers:
+            spec = resolver.mapping.get(prim_type, {}).get(key)
+            if spec is None or spec.default is None:
+                continue
+            value = spec.default
+            if spec.usd_value_transformer is not None:
+                value = spec.usd_value_transformer(value)
+            # Legacy resolution treats the first mapping default as terminal,
+            # including a default transformed to None.
+            return _ResolvedValue(
+                value,
+                None,
+                _ValueSource.COMPATIBILITY_DEFAULT,
+                compatibility_resolver=resolver,
+                mapping_key=key,
+            )
+
+        return _ResolvedValue(None, None, _ValueSource.UNRESOLVED)
+
     def _resolve_value(
         self,
         read_value: Callable[[SchemaResolver, str], Any],
@@ -724,40 +761,6 @@ class SchemaResolution:
 
         return resolver._get_fallback_with_reader(read_fallback, prim_type, key)
 
-    def _legacy_value(
-        self,
-        read_value: Callable[[SchemaResolver, str], _ResolverValue],
-        prim_type: PrimType,
-        key: str,
-        *,
-        default: Any,
-        has_default: bool,
-    ) -> _ResolvedValue:
-        for resolver in self._resolvers:
-            value = read_value(resolver, key)
-            if value.usable:
-                return _ResolvedValue(value.value, resolver, _ValueSource.AUTHORED, mapping_key=key)
-
-        if has_default:
-            return _ResolvedValue(default, None, _ValueSource.IMPORTER_DEFAULT)
-
-        for resolver in self._resolvers:
-            spec = resolver.mapping.get(prim_type, {}).get(key)
-            if spec is None or spec.default is None:
-                continue
-            value = spec.default
-            if spec.usd_value_transformer is not None:
-                value = spec.usd_value_transformer(value)
-            return _ResolvedValue(
-                value,
-                None,
-                _ValueSource.COMPATIBILITY_DEFAULT,
-                compatibility_resolver=resolver,
-                mapping_key=key,
-            )
-
-        return _ResolvedValue(None, None, _ValueSource.UNRESOLVED)
-
     @staticmethod
     def _fallback_label(resolved: _ResolvedValue, prim_type: PrimType, key: str) -> str:
         resolver = resolved.resolver or resolved.compatibility_resolver
@@ -863,12 +866,11 @@ class SchemaResolution:
             if self._use_registered_schema_fallbacks:
                 selected_value = registered
             else:
-                selected_value = self._legacy_value(
+                selected_value = self._policy._resolve_legacy_value(
                     read_value,
                     prim_type,
                     key,
-                    default=default,
-                    has_default=has_default,
+                    default=_ImporterDefault(default) if has_default else None,
                 )
                 if not SchemaResolverManager._values_equal(selected_value.value, registered.value):
                     compatibility_changes.add(self._fallback_label(registered, prim_type, key))
@@ -1458,33 +1460,15 @@ class SchemaResolverManager:
         *,
         read_value: Callable[[SchemaResolver, str], _ResolverValue],
     ) -> _ResolvedValue:
-        for resolver in self.resolvers:
-            value = read_value(resolver, key).value
-            if value is None:
-                continue
-            self._collect_on_first_use(resolver, prim)
-            return _ResolvedValue(value, resolver, _ValueSource.AUTHORED, mapping_key=key)
-
-        has_importer_default, importer_default = _importer_default(default)
-        if has_importer_default:
-            return _ResolvedValue(importer_default, None, _ValueSource.IMPORTER_DEFAULT)
-
-        for resolver in self.resolvers:
-            spec = resolver.mapping.get(prim_type, {}).get(key)
-            if spec is None or spec.default is None:
-                continue
-            value = spec.default
-            if spec.usd_value_transformer is not None:
-                value = spec.usd_value_transformer(value)
-            return _ResolvedValue(
-                value,
-                None,
-                _ValueSource.COMPATIBILITY_DEFAULT,
-                compatibility_resolver=resolver,
-                mapping_key=key,
-            )
-
-        return _ResolvedValue(None, None, _ValueSource.UNRESOLVED)
+        resolved = self._resolution._resolve_legacy_value(
+            read_value,
+            prim_type,
+            key,
+            default=default,
+        )
+        if resolved.resolver is not None:
+            self._collect_on_first_use(resolved.resolver, prim)
+        return resolved
 
     @staticmethod
     def _values_equal(left: Any, right: Any) -> bool:
