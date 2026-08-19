@@ -281,6 +281,35 @@ the mode from user code.
 For parameter interpretation, stability tradeoffs, and task-oriented guidance,
 see :ref:`Tuning MuJoCo`.
 
+.. _mujoco-contact-friction-solreffriction:
+
+Contact friction ``solreffriction`` mapping
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For :class:`~newton.solvers.SolverMuJoCo`, ``kf`` maps to MuJoCo's per-contact
+``solreffriction`` when the MuJoCo Warp backend uses elliptic friction cones
+(``use_mujoco_cpu=False``, ``cone="elliptic"``) with Newton contacts
+(``use_mujoco_contacts=False``). It targets the force-space friction slope
+``f = -kf * v`` below the Coulomb limit. The mapping is exact when the sum of
+MuJoCo's translational ``body_invweight0`` values matches the contact's inverse
+effective mass (the relevant diagonal of :math:`J M^{-1} J^T`) and the contact
+operates at its maximum impedance ``dmax``. Very large ``kf`` saturates at
+MuJoCo's refsafe stability bound, where the reference time constant is clamped
+to twice the timestep.
+
+The two shapes' ``kf`` values combine with the usual priority/``solmix``
+weighting. A resolved ``kf = 0`` makes the contact frictionless
+(``condim = 1``), removing its sliding, torsional, and rolling friction rows.
+If a positive ``kf`` cannot produce a positive, finite inverse-weight
+denominator, ``solreffriction`` remains unset and MuJoCo inherits the normal
+``solref``. The mapping is independent of the shape's ``solref_mode`` above,
+which only governs the normal-direction ``solref``.
+
+The slope is calibrated for the sliding friction rows. With ``condim > 3``, the
+torsional and rolling rows share the same per-contact ``solreffriction`` and
+MuJoCo scales their regularization by the corresponding friction-coefficient
+ratios, so their effective damping deviates from ``kf`` accordingly.
+
 Actuators
 ---------
 
@@ -405,7 +434,7 @@ angular axis behaves as a revolute closure and three as a ball closure;
 any other configuration is skipped.
 
 Only the kinematic coupling implied by the joint type is enforced. Any
-drive (``joint_target_pos`` / ``joint_target_vel``, PD gains,
+drive (``joint_target_q`` / ``joint_target_qd``, PD gains,
 ``control.joint_f``), joint limits, armature, friction, and
 effort/velocity limits authored on the loop-closing joint are **ignored**
 by :class:`~newton.solvers.SolverMuJoCo`. Loop-joint DOFs and coordinates
@@ -438,6 +467,80 @@ Newton's pipeline supports non-convex meshes, SDF-based contacts, and
 hydroelastic contacts, which are not available through MuJoCo's collision
 detection.
 
+Collision filtering
+~~~~~~~~~~~~~~~~~~~
+
+MuJoCo gives every geom two 32-bit masks, ``contype`` and ``conaffinity``.
+Together, these masks decide whether two geoms are allowed to collide. For a
+candidate pair ``a, b``, the mask test passes when
+``(contype_a & conaffinity_b) != 0`` or
+``(contype_b & conaffinity_a) != 0``. MuJoCo then applies other selection
+rules, including same-body suppression and body-wide ``<exclude>`` elements;
+explicit ``<pair>`` elements bypass the automatic mask test. See MuJoCo's
+`collision selection documentation
+<https://mujoco.readthedocs.io/en/stable/computation/index.html#selection>`__
+and the `geom mask attributes
+<https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-geom>`__.
+
+**Importing MJCF masks.**
+
+:func:`~newton.utils.parse_mjcf` resolves inherited ``contype`` and
+``conaffinity`` values and determines which shape pairs may collide. It stores
+the same result in Newton collision groups and explicit excluded pairs. The
+original 32-bit values are also retained as
+``model.mujoco.contype`` and ``model.mujoco.conaffinity`` custom attributes
+for a lossless round trip back to MuJoCo.
+
+A *mask domain* is the set of shapes whose mask bits were authored together.
+Each :func:`~newton.utils.parse_mjcf` call creates a new domain and records it
+in the internal ``model.mujoco.collision_mask_domain`` attribute. The domain
+is only a source label. It is not another collision mask and does not enable
+or disable contacts. When :meth:`~newton.ModelBuilder.add_builder` combines
+separately built models, it gives the copied domains new IDs so they remain
+distinct from domains already in the destination builder.
+
+**Choosing masks for a MuJoCo solver.**
+
+With ``use_mujoco_contacts=True``, preserved source masks are forwarded
+verbatim only when every selected collision shape has masks from the same
+domain and those masks already enforce all active Newton pair filters.
+Same-body filtering and imported body-wide ``<exclude>`` elements also count
+as enforced. This path preserves the source MJCF exactly. For a single import,
+the original masks therefore remain the source of truth even if its Newton
+collision groups are later edited.
+
+A native shape, shapes from more than one domain, or a new Newton pair filter
+can make the original masks unsafe to reuse. The solver then lists the shape
+pairs that Newton allows and creates new MuJoCo masks that reproduce that
+list.
+
+**Example: combining two MJCF files.**
+
+Suppose file A and file B both use bit 0. In file A, bit 0 may control contacts
+between its floor and spheres. File B may reuse bit 0 for its own shapes. The
+files were authored independently, so that shared number says nothing about
+how a shape from A should interact with a shape from B.
+
+After both files are added to one builder, Newton's collision groups and
+excluded pairs define those new cross-file interactions. Copying the original
+masks would make MuJoCo treat bit 0 as one global rule and could allow or block
+the wrong cross-file pairs. Because the shapes have different domains, the
+solver instead creates new masks from Newton's final list of allowed pairs.
+
+**Compiling Newton filtering to MuJoCo masks.**
+
+MuJoCo provides only 32 mask bits. One bit can encode all collisions between
+one set of shapes and another set. In graph terminology, that rule is a
+complete bipartite graph, or biclique. The solver tries to reproduce Newton's
+full list of allowed pairs using at most 32 such rules. It is guaranteed to
+find an exact result for up to 33 selected shapes and often handles much larger
+models whose collision groups have a regular structure.
+
+If the rules do not fit in 32 bits, the solver uses the established legacy
+graph-color approximation, which may allow extra contacts. Finding an exact
+result requires checking every shape pair, so models above 256 selected shapes
+or 1,024 explicit excluded pairs skip directly to that fallback.
+
 .. _mujoco-margin-gap-mapping:
 
 Margin and gap mapping
@@ -466,7 +569,8 @@ allows up to four contact points per geom pair instead of one. Pairs
 where either geom has non-zero MuJoCo ``geom_margin`` still fall back
 to a single contact regardless of the flag (see *Margin zeroing*
 below for how Newton's :attr:`~newton.Model.shape_margin` is forwarded
-to it).
+to it). MuJoCo Warp currently remains single-contact for cylinder--box;
+see :ref:`Geometry Pair Contact Behavior`.
 
 **Margin zeroing.** ``mujoco_warp`` rejects non-zero geom margins on
 box-box pairs (its default NATIVECCD path) and on any box/mesh pair
@@ -563,6 +667,89 @@ See MuJoCo's `solver documentation
 what each parameter does and when to tune it.
 
 
+Sleeping
+--------
+
+MuJoCo Warp can exclude stationary constraint islands from collision
+detection and the compact Newton solver. Newton keeps this optimization
+disabled by default. Enable it when simulating many passive objects that
+spend substantial time at rest. Sleeping adds island bookkeeping and uses the
+compact-solver path even while everything remains awake, so scenes in which
+most degrees of freedom remain awake can be slower than with sleeping disabled.
+Benchmark representative workloads before enabling it::
+
+    solver = SolverMuJoCo(
+        model,
+        enable_sleeping=True,
+        sleep_tolerance=0.01,
+    )
+
+Sleeping is only supported by Newton's MuJoCo Warp GPU path. It requires
+``solver="newton"`` and ``use_mujoco_contacts=True`` so MuJoCo Warp's
+collision pipeline can wake sleeping bodies, and it does not support the RK4
+integrator. Unsupported combinations raise ``ValueError`` during solver
+construction. When an imported MJCF contains
+``<option><flag sleep="enable"/></option>``, leaving ``enable_sleeping`` as
+``None`` honors that setting. An explicit constructor value takes precedence.
+
+``sleep_tolerance`` is the scaled generalized-velocity threshold [m/s] below
+which an island becomes eligible to sleep. It follows the normal
+`Solver options`_ resolution order, including per-world
+``model.mujoco.sleep_tolerance`` values. The default is ``0.001``.
+
+MuJoCo's per-tree ``body/sleep`` policy is available as the body-frequency
+``model.mujoco.sleep_policy`` custom attribute and is imported from MJCF.
+The supported values are :attr:`~newton.solvers.SolverMuJoCo.SleepPolicy.AUTO`,
+:attr:`~newton.solvers.SolverMuJoCo.SleepPolicy.NEVER`,
+:attr:`~newton.solvers.SolverMuJoCo.SleepPolicy.ALLOWED`, and
+:attr:`~newton.solvers.SolverMuJoCo.SleepPolicy.INIT`. The policy must be
+assigned to the moving root body of a MuJoCo kinematic tree. For a
+programmatically built model, register the MuJoCo custom attributes before
+adding the body::
+
+    builder = newton.ModelBuilder()
+    SolverMuJoCo.register_custom_attributes(builder)
+    root = builder.add_link(
+        custom_attributes={
+            "mujoco:sleep_policy": SolverMuJoCo.SleepPolicy.INIT,
+        },
+    )
+
+``INIT`` makes the tree start asleep and is the intended way to construct a
+solver with compact ``nvmax`` storage. The setting applies to the shared model,
+so replicated worlds receive the same initial tree policies. Their default
+joint velocities must also match because MuJoCo Warp uses one shared initial
+sleep state; solver construction rejects differing per-world defaults.
+
+``nvmax`` sizes the compact solver's active-DOF workspace per world. If it is
+``None``, MuJoCo Warp uses the model's full ``nv``. This is the safe starting
+point but does not reduce compact-workspace memory. Tune a smaller value to
+the maximum number of DOFs expected to be awake simultaneously. The capacity
+must include every DOF that is awake in the initial MuJoCo state; Newton rejects
+smaller values before allocating solver data. ``nvmax`` is rejected when
+sleeping is disabled because MuJoCo Warp would otherwise allocate unused
+compact-solver workspace. If more than ``nvmax`` DOFs become active later,
+MuJoCo Warp sets the ``NVMAX`` bit in
+``solver.mjw_data.overflow``; increase ``nvmax`` and recreate the solver.
+
+MuJoCo Warp automatically wakes islands for applied forces and contacts.
+Actuated trees are not allowed to sleep by default. If their sleep policy is
+explicitly changed to allow sleeping, changing actuator controls alone does not
+wake them; apply a force or set a nonzero velocity first. Newton-side
+joint-position edits wake only the affected sleeping trees.
+:meth:`~newton.solvers.SolverMuJoCo.reset` restores the initial sleep state in
+selected worlds, while
+:meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` wakes all worlds
+after model-property updates. The sleeping path supports whole-step CUDA graph
+capture.
+
+See MuJoCo's `sleeping-islands documentation
+<https://mujoco.readthedocs.io/en/stable/programming/simulation.html#sleeping-islands>`_
+and `MuJoCo Warp compact-solver guide
+<https://mujoco.readthedocs.io/en/latest/mjwarp/#compact-solver>`_ for the
+underlying sleep policy, wake triggers, and ``nvmax`` tuning guidance.
+
+
 .. _mujoco-custom-attributes:
 
 MuJoCo-specific parameters in USD and MJCF
@@ -603,8 +790,17 @@ goes through :class:`~newton.usd.SchemaResolverMjc`
 (:github:`newton/_src/usd/schemas.py`).
 
 MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
-The old ``model.mujoco.dof_passive_damping`` custom attribute remains
-a deprecated alias and emits a ``DeprecationWarning`` when accessed.
+When importing MuJoCo-authored USD, opt into that mapping explicitly::
+
+    from newton.usd import SchemaResolverMjc, SchemaResolverNewton
+
+    builder.add_usd(
+        stage,
+        schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+    )
+
+Registering MuJoCo custom attributes alone enables the ``model.mujoco``
+namespace but does not map ``mjc:damping`` to the built-in property.
 
 
 Unsupported MuJoCo features
@@ -633,11 +829,9 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **User data and arbitrary custom elements** (``<custom>``, ``<numeric>``,
   ``<text>``) — not imported. Newton-specific user data should use the
   Newton custom-attribute system instead.
-- **Actuator transmissions** — only ``joint``, ``tendon``, ``site``, and
-  ``body`` transmissions are supported (see
-  :class:`~newton.solvers.SolverMuJoCo.TrnType` for the enum). MuJoCo's
-  ``jointinparent`` and ``slidercrank`` transmissions are not converted;
-  actuators using them are skipped at construction with a warning.
+- **Actuator transmissions** — ``joint``, ``jointinparent``, ``tendon``,
+  ``site``, ``body``, and ``slidercrank`` transmissions are supported (see
+  :class:`~newton.solvers.SolverMuJoCo.TrnType` for the enum).
 
 Smaller limitations are documented inline where they are most relevant —
 see `Caveats`_ below for collision-radius, convex-hull fallback, and
@@ -669,16 +863,10 @@ Caveats
   prescribed. The user-supplied armature on those DOFs is silently
   discarded. See `Kinematic links and fixed roots`_.
 
-**Collision filtering bitmask fallback.**
-  Newton's :attr:`~newton.Model.shape_collision_group` (see
-  :ref:`Collision Groups`) is translated to MuJoCo's ``contype`` /
-  ``conaffinity`` via graph coloring
-  (:github:`newton/_src/sim/graph_coloring.py`). Up to 32 colors are
-  supported (one per ``contype`` bit). If the filtering graph requires
-  more, shapes with color index ≥ 32 fall back to ``contype=1`` /
-  ``conaffinity=1`` and silently collide with every other shape,
-  bypassing the intended filtering and adding extra contact pairs to
-  the broadphase.
+**Collision filtering has a 32-bit capacity.**
+  The solver creates MuJoCo masks that reproduce Newton's allowed collision
+  pairs when they fit in 32 bits. See `Collision filtering`_ for the behavior
+  of imported masks and the warned fallback used when the rules do not fit.
 
 
 .. _mujoco-kinematic-links-and-fixed-roots:

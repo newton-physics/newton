@@ -12,6 +12,7 @@ from warp.types import type_size
 
 import newton
 
+from ...core.reset import reset_world_selected
 from .implicit_mpm_model import MaterialParameters
 from .rheology_solver_kernels import YieldParamVec, project_stress
 
@@ -153,7 +154,7 @@ def integrate_velocity(
 
     vel_adv = velocities[s.qp_index]
     world_idx = particle_world[s.qp_index]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     rho = particle_density[s.qp_index]
     vel_adv = wp.where(
@@ -910,6 +911,87 @@ def record_volume_rebuild_status(status: wp.array[wp.uint32], accumulated_status
 
 
 @wp.kernel
+def reset_mpm_particle_history(
+    particle_world: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    initial_particle_Jp: wp.array[float],
+    particle_elastic_strain: wp.array[wp.mat33],
+    particle_transform: wp.array[wp.mat33],
+    particle_qd_grad: wp.array[wp.mat33],
+    particle_stress: wp.array[wp.mat33],
+    particle_Jp: wp.array[float],
+):
+    """Reset implicit MPM history for selected local or shared particles."""
+    particle_index = wp.tid()
+    world = particle_world[particle_index]
+    if reset_world_selected(world, world_mask, world_count):
+        identity = wp.identity(n=3, dtype=float)
+        particle_elastic_strain[particle_index] = identity
+        particle_transform[particle_index] = identity
+        particle_qd_grad[particle_index] = wp.mat33(0.0)
+        particle_stress[particle_index] = wp.mat33(0.0)
+        particle_Jp[particle_index] = initial_particle_Jp[particle_index]
+
+
+@wp.kernel
+def reset_mpm_collider_history(
+    body_world: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+):
+    """Refresh previous collider poses for selected local or shared bodies."""
+    body_index = wp.tid()
+    world = body_world[body_index]
+    if reset_world_selected(world, world_mask, world_count):
+        body_q_prev[body_index] = body_q[body_index]
+
+
+@wp.kernel(module="unique")
+def reset_mpm_point_warmstart(
+    particle_world: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    values: wp.array[Any],
+):
+    """Clear particle-backed warm starts for selected local or shared particles."""
+    particle_index = wp.tid()
+    world = particle_world[particle_index]
+    if reset_world_selected(world, world_mask, world_count):
+        values[particle_index] = values.dtype(0.0)
+
+
+wp.overload(reset_mpm_point_warmstart, {"values": wp.array[wp.vec3]})
+wp.overload(reset_mpm_point_warmstart, {"values": wp.array[vec6]})
+
+
+@wp.kernel(module="unique")
+def reset_mpm_grid_warmstart(
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    environment_offsets: wp.array[int],
+    environment_node_indices: wp.array[int],
+    values: wp.array[Any],
+):
+    """Clear whole-space warm-start values for selected environments."""
+    partition_index = wp.tid()
+    if partition_index >= environment_offsets[world_count]:
+        return
+
+    environment = wp.lower_bound(environment_offsets, partition_index + 1) - 1
+    if environment >= 0 and environment < world_count and world_mask[environment]:
+        space_node_index = environment_node_indices[partition_index]
+        if space_node_index >= 0 and space_node_index < values.shape[0]:
+            values[space_node_index] = values.dtype(0.0)
+
+
+wp.overload(reset_mpm_grid_warmstart, {"values": wp.array[wp.vec3]})
+wp.overload(reset_mpm_grid_warmstart, {"values": wp.array[vec6]})
+
+
+@wp.kernel
 def pad_voxels(particle_q: wp.array[wp.vec3i], padded_q: wp.array4d[wp.vec3i]):
     pid = wp.tid()
 
@@ -931,6 +1013,10 @@ def _rebuild_capacity(
     max_active_voxels: int,
     point_mask=None,
     *,
+    point_environment=None,
+    environment_count: int | None = None,
+    guard_cells: int = 3,
+    temporary_store=None,
     max_leaf_node_count: int = -1,
     max_lower_node_count: int = -1,
     max_upper_node_count: int = -1,
@@ -938,21 +1024,39 @@ def _rebuild_capacity(
     """Estimate rebuildable-volume capacities (active voxels + NanoVDB node counts).
 
     Automatic leaf-node storage reserves ``max_active_voxels`` entries. The
-    lower/upper internal nodes each span 16x and 32x more cells, so automatic
-    capacities are estimated from one throwaway build of the current particles
-    scaled by ``ratio`` for spreading headroom. Explicit capacities allow
-    applications with known spatial bounds to budget each hierarchy level.
+    lower/upper internal nodes each span 16x and 32x more cells, so their counts
+    are typically small; automatic capacities are estimated from one throwaway
+    build of the current particles scaled by ``ratio`` for spreading headroom.
+    Explicit node capacities allow applications with known spatial bounds to
+    budget each NanoVDB hierarchy level independently. Rebuild status reports
+    when any reserved capacity is exceeded.
     """
-    initial = wp.Volume.allocate_by_voxels(
-        voxel_points=particle_q,
-        voxel_size=voxel_size,
-        point_mask=point_mask,
-    )
-    if initial.get_voxel_count() == 0:
+    if point_environment is None:
+        initial = wp.Volume.allocate_by_voxels(
+            voxel_points=particle_q,
+            voxel_size=voxel_size,
+            point_mask=point_mask,
+        )
+        ijk = initial.get_voxels().numpy()
+    else:
+        if environment_count is None:
+            raise ValueError("environment_count is required with point_environment")
+        initial = fem.Nanogrid.from_environment_voxels(
+            particle_q,
+            point_environment,
+            environment_count,
+            point_mask=point_mask,
+            guard_cells=guard_cells,
+            voxel_size=voxel_size,
+            temporary_store=temporary_store,
+            device=particle_q.device,
+        )
+        ijk = initial.cell_grid.get_voxels().numpy()
+
+    if ijk.shape[0] == 0:
         automatic_lower = min(max_active_voxels, 8)
         automatic_upper = min(max_active_voxels, 4)
     else:
-        ijk = initial.get_voxels().numpy()
         lower = np.unique(np.floor_divide(ijk, 8 * 16), axis=0).shape[0]
         upper = np.unique(np.floor_divide(ijk, 8 * 16 * 32), axis=0).shape[0]
         automatic_lower = min(max_active_voxels, max(8, math.ceil(lower * ratio)))
@@ -1034,6 +1138,16 @@ def allocate_by_voxels(
         )
 
     return volume
+
+
+def voxel_coordinates(particle_q: wp.array[wp.vec3], voxel_size: float, padding_voxels: int = 0) -> wp.array[wp.vec3i]:
+    if particle_q.shape[0] == 0:
+        return wp.empty(0, dtype=wp.vec3i, device=particle_q.device)
+
+    volume = allocate_by_voxels(particle_q, voxel_size, padding_voxels=padding_voxels)
+    voxels = wp.empty(volume.get_voxel_count(), dtype=wp.vec3i, device=particle_q.device)
+    volume.get_voxels(voxels)
+    return voxels
 
 
 @wp.kernel
@@ -1167,6 +1281,25 @@ def mark_active_cells(
 
     x = positions[s.qp_index]
     s_grid = fem.lookup(domain, x)
+
+    if s_grid.element_index != fem.NULL_ELEMENT_INDEX:
+        active_cells[s_grid.element_index] = 1
+
+
+@fem.integrand
+def mark_active_cells_by_environment(
+    s: fem.Sample,
+    domain: fem.Domain,
+    positions: wp.array[wp.vec3],
+    particle_flags: wp.array[int],
+    particle_environment: wp.array[int],
+    active_cells: wp.array[int],
+):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return
+
+    x = positions[s.qp_index]
+    s_grid = fem.lookup(domain, x, int(particle_environment[s.qp_index]))
 
     if s_grid.element_index != fem.NULL_ELEMENT_INDEX:
         active_cells[s_grid.element_index] = 1

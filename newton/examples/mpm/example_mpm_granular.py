@@ -5,6 +5,7 @@ import warnings
 
 import numpy as np
 import warp as wp
+from pxr import Usd
 
 import newton
 import newton.examples
@@ -26,10 +27,24 @@ class Example:
         self.viewer = viewer
         builder = newton.ModelBuilder()
 
-        # Register MPM custom attributes before adding particles
+        # Register MPM custom attributes before adding particles.
         SolverImplicitMPM.register_custom_attributes(builder)
 
-        Example.emit_particles(builder, args)
+        if args.from_usd:
+            # Particle samples, point-subset materials, and solver configuration are authored in USD.
+            # Particle masses are derived from bound physics:density values and authored widths.
+            stage = Usd.Stage.Open(newton.examples.get_asset("mpm_sand.usda"))
+            import_result = builder.add_usd(
+                stage,
+                load_visual_shapes=False,
+            )
+            particle_scene_path = import_result["particle_scene_path"]
+            if particle_scene_path is None:
+                raise ValueError("mpm_sand.usda must author NewtonMPMSceneAPI")
+            mpm_options = SolverImplicitMPM.Config.create_from_usd(stage.GetPrimAtPath(particle_scene_path))
+        else:
+            Example.emit_particles(builder, args)
+            mpm_options = SolverImplicitMPM.Config()
 
         # Setup collision geometry
         self.collider = args.collider
@@ -80,16 +95,17 @@ class Example:
         builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
 
         self.model = builder.finalize()
-        self.model.set_gravity(args.gravity)
 
-        # Copy all remaining CLI arguments to MPM options or per-particle material custom attributes
-        mpm_options = SolverImplicitMPM.Config()
-        for key in vars(args):
-            if hasattr(mpm_options, key):
-                setattr(mpm_options, key, getattr(args, key))
+        if not args.from_usd:
+            self.model.set_gravity(args.gravity)
 
-            if hasattr(self.model.mpm, key):
-                getattr(self.model.mpm, key).fill_(getattr(args, key))
+            # Copy all remaining CLI arguments to MPM options or per-particle material custom attributes
+            for key in vars(args):
+                if hasattr(mpm_options, key):
+                    setattr(mpm_options, key, getattr(args, key))
+
+                if hasattr(self.model.mpm, key):
+                    getattr(self.model.mpm, key).fill_(getattr(args, key))
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -193,6 +209,7 @@ class Example:
 
     @staticmethod
     def emit_particles(builder: newton.ModelBuilder, args):
+        """Populate the procedural particle grid used by the default example mode."""
         density = args.density
         voxel_size = args.voxel_size
 
@@ -230,6 +247,11 @@ class Example:
         parser = newton.examples.create_parser()
 
         # Scene configuration
+        parser.add_argument(
+            "--from-usd",
+            action="store_true",
+            help="Load particles, materials, and MPM solver configuration from the authored USD fixture.",
+        )
         parser.add_argument("--collider", default="cube", choices=["cube", "wedge", "concave", "none"], type=str)
         parser.add_argument("--emit-lo", type=float, nargs=3, default=[-1, -1, 1.5])
         parser.add_argument("--emit-hi", type=float, nargs=3, default=[1, 1, 3.5])

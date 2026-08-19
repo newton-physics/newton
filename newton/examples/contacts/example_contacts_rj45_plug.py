@@ -241,7 +241,7 @@ class Example:
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        SolverVBD.register_custom_attributes(builder)
         builder.rigid_gap = 0.005
 
         builder.add_ground_plane()
@@ -399,7 +399,7 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
-            rigid_contact_hard=False,
+            rigid_compliant_alm=True,
             rigid_body_contact_buffer_size=256,
         )
 
@@ -408,7 +408,7 @@ class Example:
 
         self._pick_body = wp.array([-1], dtype=int, device=self.model.device)
         self._pick_target = wp.zeros(1, dtype=wp.vec3, device=self.model.device)
-        self._gravity = wp.vec3(*self.model.gravity.numpy()[0])
+        self._gravity = wp.vec3(*self.model.gravity.numpy()[-1])
 
         self.capture()
 
@@ -477,7 +477,8 @@ class Example:
     def step(self):
         gp = wp.transform_get_translation(self.gizmo_tf)
 
-        picked_body = int(self.viewer.picking.pick_body.numpy()[0])
+        picking = getattr(self.viewer, "picking", None)
+        picked_body = int(picking.pick_body.numpy()[0]) if picking is not None else -1
 
         self._pick_body.assign([picked_body])
         self._pick_target.assign([gp])
@@ -498,7 +499,7 @@ class Example:
                 print(f"[contact overflow] body {label} (idx={i}): {counts[i]} contacts (buffer={buf})")
 
         # Snap gizmo to the plug when the user isn't dragging it.
-        gizmo_active = self.viewer.gizmo_is_using
+        gizmo_active = bool(getattr(self.viewer, "gizmo_is_using", False))
         if not gizmo_active:
             plug_tf = self.state_0.body_q.numpy()[self._plug_body]
             if picked_body >= 0:

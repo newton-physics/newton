@@ -27,6 +27,7 @@ import newton.examples
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
 
@@ -192,6 +193,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
             iterations=self.iterations,
+            rigid_compliant_alm=True,
             particle_enable_self_contact=True,
             particle_self_contact_radius=0.001,  # m (0.1 cm)
             particle_self_contact_margin=0.0015,  # m (0.15 cm)

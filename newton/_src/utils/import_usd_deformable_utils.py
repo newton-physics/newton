@@ -27,14 +27,12 @@ if TYPE_CHECKING:
 
     from ..sim.builder import ModelBuilder
 
-# Assumed physical sizes [m] for deformables whose material authors no thickness. The
-# proposal's unauthored-thickness sentinel (-inf) delegates to a simulator default, so
-# fabric- / wire-like sizes are assumed; every use warns with the assumed value, and an
-# authored physics:thickness always overrides.
+# Physical-size fallbacks [m]. Cloth uses the assumed thickness below; the cable
+# radius preserves no-material and legacy-only behavior. Each fallback path warns.
 # TODO: evaluate moving these to configurable ModelBuilder defaults (like
 # default_particle_radius) when deformable import leaves its experimental phase.
 _DEFAULT_CLOTH_THICKNESS = 0.002
-_DEFAULT_CABLE_RADIUS = 0.0025
+_CABLE_RADIUS_COMPATIBILITY_FALLBACK = 0.0025
 
 
 def _bake_world_points(points, world_mat) -> list[wp.vec3]:
@@ -381,9 +379,9 @@ class _CurveDeformableRecord:
     """A single linear curve deformable eligible for rod-graph welding.
 
     Positions are already in world space (import transform applied). ``material`` holds
-    the authored curve-deformable material values (see
-    :func:`.usd.utils._get_curve_deformable_material`); ``radius`` and ``density`` are the
-    resolved per-curve values.
+    the authored curve-deformable material values, or ``None`` when no curve material API
+    applies (see :func:`.usd.utils._get_curve_deformable_material`); ``radius`` and
+    ``density`` are the resolved per-curve values.
     """
 
     prim: Usd.Prim
@@ -391,7 +389,7 @@ class _CurveDeformableRecord:
     closed: bool
     radius: float
     density: float
-    material: dict[str, float] = field(default_factory=dict)
+    material: dict[str, float] | None = None
 
 
 def _cable_segment_quaternions(seg_positions: Sequence[wp.vec3], seg_normals: Sequence[wp.vec3]) -> list[wp.quat]:
@@ -470,15 +468,20 @@ def _warn_dropped_velocities(prim: Usd.Prim, path: str) -> None:
 
 
 def _warn_geometry_authored_material_attrs(prim: Usd.Prim, path: str, material_api: str, read_attr: Callable) -> None:
-    """Warn for deformable material moduli authored on the geometry instead of the bound material.
+    """Warn for deformable material properties authored on the geometry instead of the bound material.
 
-    The proposal scopes these moduli to the deformable material APIs, so authoring them on the
+    The proposal scopes these properties to the deformable material APIs, so authoring them on the
     geometry has no effect; warn rather than drop them silently. ``density`` is excluded since it
     may legitimately sit on the body (``PhysicsDeformableBodyAPI``).
     """
     for name in (
         "youngsModulus",
         "poissonsRatio",
+        "curvesStretchStiffness",
+        "curvesShearStiffness",
+        "curvesBendStiffness",
+        "curvesTwistStiffness",
+        "curvesThickness",
         "stretchStiffness",
         "shearStiffness",
         "bendStiffness",
@@ -812,6 +815,9 @@ class _DeformablePrimBuckets:
     tetmeshes: list[Usd.Prim] = field(default_factory=list)
     attachments: list[Usd.Prim] = field(default_factory=list)
     element_filters: list[Usd.Prim] = field(default_factory=list)
+    # Optional supported visual leaf candidates collected for parse_usd's static visual
+    # pass. Reusing this scout avoids a second full instance-proxy traversal of the stage.
+    static_visuals: list[Usd.Prim] = field(default_factory=list)
     # PhysicsDeformableBodyAPI prim path -> the single simulation geometry it governs (the
     # first candidate of any family in traversal order); a body's mass must not be applied
     # once per family, so the passes skip every other candidate under the same body.
@@ -862,8 +868,29 @@ _SCOUT_SKIP_TYPE_NAMES = frozenset(
     }
 )
 
+# UsdGeom.Imageable is intentionally broader: it also accepts container and non-shape
+# schemas, while the static post-pass invokes the loader with child recursion disabled.
+_LOADABLE_VISUAL_TYPE_NAMES = frozenset(
+    {
+        "Cube",
+        "Sphere",
+        "Plane",
+        "Capsule",
+        "Cylinder",
+        "Cone",
+        "Mesh",
+        "ParticleField3DGaussianSplat",
+    }
+)
+_LOADABLE_VISUAL_TYPE_NAMES_LOWER = frozenset(type_name.lower() for type_name in _LOADABLE_VISUAL_TYPE_NAMES)
 
-def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = ()) -> _DeformablePrimBuckets:
+
+def _scout_deformable_prims(
+    root_prim: Usd.Prim,
+    ignore_paths: Sequence[str] = (),
+    *,
+    collect_static_visuals: bool = False,
+) -> _DeformablePrimBuckets:
     """Classify deformable candidate prims in one stage traversal.
 
     Replaces the per-family full-stage walks: the lowering passes iterate these buckets instead of
@@ -897,13 +924,18 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
 
     for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
         type_name = str(prim.GetTypeName())
-        if type_name in _SCOUT_SKIP_TYPE_NAMES:
+        is_static_visual = collect_static_visuals and type_name in _LOADABLE_VISUAL_TYPE_NAMES
+        if type_name in _SCOUT_SKIP_TYPE_NAMES and not is_static_visual:
             continue
         # An ignored prim must be as-if-absent from the start: bucketing it or letting it
         # claim body ownership would let an ignored sim child block a non-ignored sibling
         # from becoming the body's simulation geometry. Children still traverse, matching
         # the per-path semantics of the lowering passes' own checks.
         if ignore_paths and _is_ignored_path(str(prim.GetPath()), ignore_paths):
+            continue
+        if is_static_visual:
+            buckets.static_visuals.append(prim)
+        if type_name in _SCOUT_SKIP_TYPE_NAMES:
             continue
         if type_name == "PhysicsAttachment":
             buckets.attachments.append(prim)
@@ -1000,6 +1032,7 @@ class _DeformableImportContext:
     stage: Usd.Stage
     root_prim: Usd.Prim
     resolver: Any
+    resolution_policy: Any
     collect_schema_attrs: bool
     deformable_read: Callable
     get_prim_world_mat: Callable

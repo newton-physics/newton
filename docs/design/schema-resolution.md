@@ -59,21 +59,24 @@ That makes an unapplied schema contribute defaults and lets an importer default
 override the fallback of an applied schema. It also disagrees with specialized
 paths such as MuJoCo joint-limit resolution.
 
-The composed order is evaluated per resolver, in priority order:
+Registered-schema precedence is evaluated per resolver, in priority order:
 
-1. Use a source value when present.
-2. If the schema owning the property is applied, use its USD fallback and stop.
+1. Use a usable authored value.
+2. If a registered schema owns the property, use its usable USD fallback.
 3. Otherwise continue to the next resolver.
-4. Use the caller default only when no resolver owns the property.
+4. Use the importer default when no resolver supplies a candidate.
+5. Use an eligible compatibility default from an unregistered or unowned
+   resolver mapping.
 
-Typed schemas participate like applied API schemas. During migration, a private
-policy computes this result but returns the legacy value. If the results differ,
-the public entry points emit a `DeprecationWarning`. The policy is shared by PXR
-and mapping sources and is not user-selectable. A later release changes one
-private default to return the composed result; the legacy branch can then be
-removed after its deprecation window. Unowned entries retain their mapping
-defaults. A schema fallback may itself be an engine-default sentinel; using the
-builder in response to that sentinel is still schema-defined behavior.
+Typed schemas participate like applied API schemas. By default, the importer
+returns the legacy value and audits the registered-schema result. It emits a
+`DeprecationWarning` when the interpreted property would change. Callers can
+select registered-schema precedence with
+`use_registered_schema_fallbacks=True`, either on `SchemaResolution` or directly
+on `add_usd()` when no shared object is supplied. Unowned and unregistered
+entries may retain compatibility defaults after importer defaults. A schema
+fallback may itself be an engine-default sentinel; property-specific handling
+decides whether that candidate is usable.
 
 ## Proposed boundary
 
@@ -113,15 +116,17 @@ The existing public classes and methods remain valid:
 ```python
 resolution = newton.usd.SchemaResolution(
     resolvers,
+    use_registered_schema_fallbacks=True,
 )
 builder.add_usd(stage, schema_resolution=resolution)
 ```
 
 `schema_resolvers` and `schema_resolution` are mutually exclusive. The former
-is a compatibility shorthand for constructing `SchemaResolution(resolvers)`;
-it does not select another engine or fallback policy. After consumers have had
-time to migrate to a reusable object, the shorthand can be deprecated and then
-removed without changing resolution semantics.
+is a compatibility shorthand for constructing `SchemaResolution(resolvers)`.
+The shared object owns the fallback-policy choice, so the direct
+`use_registered_schema_fallbacks` argument cannot also select that policy.
+After consumers have had time to migrate to a reusable object, the shorthand
+can be deprecated and then removed without changing resolution semantics.
 
 Built-in composite getters are migrated to the source-neutral reader. The
 existing `usd_value_getter` callback remains supported for downstream resolver
@@ -133,6 +138,7 @@ The same object resolves mapping inputs directly:
 ```python
 resolution = newton.usd.SchemaResolution(
     resolvers,
+    use_registered_schema_fallbacks=True,
 )
 requirements = resolution.requirements(PrimType.JOINT)
 schemas = resolution.schemas(PrimType.JOINT)

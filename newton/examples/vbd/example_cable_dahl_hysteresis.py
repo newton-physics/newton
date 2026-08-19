@@ -98,7 +98,7 @@ class Example:
         self.cycle_duration = self.NUM_PHASES * self.PHASE_DURATION
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
 
         self.cases: list[dict] = []
         for name, mode, has_dahl in (
@@ -124,7 +124,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
         self._configure_dahl_attributes()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

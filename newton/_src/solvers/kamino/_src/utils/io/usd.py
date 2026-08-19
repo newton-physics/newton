@@ -29,7 +29,6 @@ from ...core.joints import (
     JointDoFType,
 )
 from ...core.materials import (
-    DEFAULT_DENSITY,
     DEFAULT_FRICTION,
     DEFAULT_RESTITUTION,
     MaterialDescriptor,
@@ -290,23 +289,29 @@ class USDImporter:
         return wp.quat_from_matrix(R_g)
 
     @staticmethod
-    def _make_faces_from_counts(indices: np.ndarray, counts: Iterable[int], prim_path: str) -> np.ndarray:
-        faces = []
-        face_id = 0
-        for count in counts:
-            if count == 3:
-                faces.append(indices[face_id : face_id + 3])
-            elif count == 4:
-                faces.append(indices[face_id : face_id + 3])
-                faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-            else:
-                msg.error(
-                    f"Error while parsing USD mesh {prim_path}: "
-                    f"encountered polygon with {count} vertices, but only triangles and quads are supported."
-                )
-                continue
-            face_id += count
-        return np.array(faces, dtype=np.int32).flatten()
+    def _read_mesh(geom_prim) -> dict[str, np.ndarray | None]:
+        """Read mesh data from a USD prim via Newton's shared USD reader.
+
+        Delegating keeps this importer's handling of ``primvars:normals``, indexed
+        primvars, face-varying interpolation and n-gon triangulation consistent with
+        :func:`newton.usd.get_mesh`.
+
+        Stage units are deliberately not applied: unlike the primitive shapes above,
+        mesh vertices are consumed in stage-authored units here.
+
+        Args:
+            geom_prim: The ``UsdGeom.Mesh`` prim to read.
+
+        Returns:
+            Keyword arguments for :class:`MeshShape`.
+        """
+        mesh = usd_utils.get_mesh(
+            prim=geom_prim,
+            load_normals=True,
+            compute_inertia=False,
+            apply_stage_units=False,
+        )
+        return {"vertices": mesh.vertices, "indices": mesh.indices, "normals": mesh.normals}
 
     def _get_attribute(self, prim, name) -> Any:
         return prim.GetAttribute(name)
@@ -458,6 +463,20 @@ class USDImporter:
             return False
         return imageable.ComputeVisibility() != self.UsdGeom.Tokens.invisible
 
+    def _is_viewport_drawn(self, prim) -> bool:
+        """Return whether a prim is drawn under viewport semantics.
+
+        USD viewports draw the ``default`` and ``proxy`` purposes and hide ``guide`` and
+        ``render``. ``force_show_colliders`` is the explicit override for inspecting
+        collision geometry that is not otherwise viewport-drawn.
+        """
+        if not self._is_effectively_visible(prim):
+            return False
+        return self.UsdGeom.Imageable(prim).ComputePurpose() in (
+            self.UsdGeom.Tokens.default_,
+            self.UsdGeom.Tokens.proxy,
+        )
+
     def _parse_material(
         self,
         material_prim,
@@ -502,12 +521,9 @@ class USDImporter:
         ###
 
         # Retrieve the USD material properties
-        density_scale = mass_unit / distance_unit**3
-        density = (density_scale) * self._parse_float(material_prim, "physics:density", default=DEFAULT_DENSITY)
         restitution = self._parse_float(material_prim, "physics:restitution", default=DEFAULT_RESTITUTION)
         static_friction = self._parse_float(material_prim, "physics:staticFriction", default=DEFAULT_FRICTION)
         dynamic_friction = self._parse_float(material_prim, "physics:dynamicFriction", default=DEFAULT_FRICTION)
-        msg.debug(f"density: {density}")
         msg.debug(f"restitution: {restitution}")
         msg.debug(f"static_friction: {static_friction}")
         msg.debug(f"dynamic_friction: {dynamic_friction}")
@@ -519,7 +535,6 @@ class USDImporter:
         return MaterialDescriptor(
             name=name,
             uid=uid,
-            density=density,
             restitution=restitution,
             static_friction=static_friction,
             dynamic_friction=dynamic_friction,
@@ -1448,28 +1463,8 @@ class USDImporter:
                 shape = EllipsoidShape(rx=rx, ry=ry, rz=rz)
 
         elif geom_type == self.UsdGeom.Mesh:
-            # Retrieve the mesh data from the USD mesh prim
-            usd_mesh = self.UsdGeom.Mesh(geom_prim)
-            usd_mesh_path = usd_mesh.GetPath()
-
-            # Extract mandatory mesh attributes
-            points = np.array(usd_mesh.GetPointsAttr().Get(), dtype=np.float32)
-            indices = np.array(usd_mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
-            counts = usd_mesh.GetFaceVertexCountsAttr().Get()
-
-            # Extract optional normals attribute if defined
-            normals = (
-                np.array(usd_mesh.GetNormalsAttr().Get(), dtype=np.float32)
-                if usd_mesh.GetNormalsAttr().IsDefined()
-                else None
-            )
-
-            # Extract triangle face indices from the mesh data
-            # NOTE: This handles both triangle and quad meshes
-            faces = self._make_faces_from_counts(indices, counts, usd_mesh_path)
-
             # Create the mesh shape (i.e. wrapper around newton.geometry.Mesh)
-            shape = MeshShape(vertices=points, indices=faces, normals=normals)
+            shape = MeshShape(**self._read_mesh(geom_prim))
         else:
             raise ValueError(
                 f"Unsupported UsdGeom type: {geom_type}. Supported types: {self.supported_usd_geom_types}."
@@ -1506,6 +1501,7 @@ class USDImporter:
         meshes_are_collidable: bool = False,
         force_show_colliders: bool = False,
         hide_collision_shapes: bool = False,
+        bodies_with_visual_shapes: set[int] | None = None,
         prim_path_names: bool = False,
     ) -> GeometryDescriptor | None:
         """
@@ -1622,28 +1618,8 @@ class USDImporter:
                 shape = EllipsoidShape(rx=rx, ry=ry, rz=rz)
 
         elif geom_type == self.UsdPhysics.ObjectType.MeshShape:
-            # Retrieve the mesh data from the USD mesh prim
-            usd_mesh = self.UsdGeom.Mesh(geom_prim)
-            usd_mesh_path = usd_mesh.GetPath()
-
-            # Extract mandatory mesh attributes
-            points = np.array(usd_mesh.GetPointsAttr().Get(), dtype=np.float32)
-            indices = np.array(usd_mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
-            counts = usd_mesh.GetFaceVertexCountsAttr().Get()
-
-            # Extract optional normals attribute if defined
-            normals = (
-                np.array(usd_mesh.GetNormalsAttr().Get(), dtype=np.float32)
-                if usd_mesh.GetNormalsAttr().IsDefined()
-                else None
-            )
-
-            # Extract triangle face indices from the mesh data
-            # NOTE: This handles both triangle and quad meshes
-            faces = self._make_faces_from_counts(indices, counts, usd_mesh_path)
-
             # Create the mesh shape (i.e. wrapper around newton.geometry.Mesh)
-            shape = MeshShape(vertices=points, indices=faces, normals=normals)
+            shape = MeshShape(**self._read_mesh(geom_prim))
             is_mesh_shape = True
         else:
             raise ValueError(
@@ -1698,12 +1674,18 @@ class USDImporter:
                     geom_collides += cgroup
             msg.debug(f"[{name}]: geom_collides: {geom_collides}")
 
-        # Explicit hide_collision_shapes overrides material-based visibility:
+        # Explicit hide_collision_shapes overrides drawability:
         # if the body already has visual shapes, hide its colliders unconditionally.
-        collider_is_visible = force_show_colliders and not hide_collision_shapes
-        collider_is_visible = collider_is_visible and self._is_effectively_visible(geom_prim)
+        visual_bodies = bodies_with_visual_shapes if bodies_with_visual_shapes is not None else set()
+        has_body_visual_shapes = body_index in visual_bodies
+        hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
+        # A collider is drawn when USD says it is drawn, or when force_show_colliders
+        # overrides authored invisibility (e.g. guide/invisible collision geometry).
+        collider_is_visible = (
+            force_show_colliders or self._is_viewport_drawn(geom_prim)
+        ) and not hide_collider_for_body
 
-        # Set the geom to be visible if it is a non-collidable mesh and we are forcing show colliders
+        # Set the geom to be visible when the collider display policy says it should be drawn.
         if collider_is_visible:
             geom_flags = geom_flags | ShapeFlags.VISIBLE
 
@@ -2167,6 +2149,7 @@ class USDImporter:
         # Define separate lists to hold geometry descriptors for visual and physics geometry
         visual_geoms: list[GeometryDescriptor] = []
         physics_geoms: list[GeometryDescriptor] = []
+        bodies_with_visual_shapes: set[int] = set()
 
         # Define a function to process each geometry prim and construct geometry descriptors based on whether
         # they are marked for physics simulation or not. The geometry descriptors are then added to the
@@ -2216,6 +2199,7 @@ class USDImporter:
                                 meshes_are_collidable=meshes_are_collidable,
                                 force_show_colliders=force_show_colliders,
                                 hide_collision_shapes=hide_collision_shapes,
+                                bodies_with_visual_shapes=bodies_with_visual_shapes,
                                 prim_path_names=use_prim_path_names,
                             )
                             break  # Stop after the first match
@@ -2251,6 +2235,8 @@ class USDImporter:
                     else:
                         msg.debug("Adding visual geom '%d':\n%s\n", builder.num_geoms, geom_desc)
                         visual_geoms.append(geom_desc)
+                        if geom_desc.body >= 0 and self._is_viewport_drawn(prim):
+                            bodies_with_visual_shapes.add(geom_desc.body)
 
             # Indicate to user that a UsdGeom has potentially not been marked for physics simulation
             else:

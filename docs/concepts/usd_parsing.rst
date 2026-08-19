@@ -37,6 +37,73 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+Particle Simulation Geometry
+----------------------------
+
+.. experimental::
+
+   Particle import requires ``newton-usd-schemas`` 0.5.0 or newer, which registers
+   ``NewtonPointsDeformableSimAPI``, ``NewtonMPMSceneAPI``, and
+   ``NewtonMPMMaterialAPI``. These schemas may evolve while the AOUSD
+   deformable-material proposal is being standardized.
+
+:meth:`newton.ModelBuilder.add_usd` imports a ``UsdGeom.Points`` prim as
+particles when it applies ``NewtonPointsDeformableSimAPI`` and is governed by
+``PhysicsDeformableBodyAPI`` on the Points prim or its direct parent. The body's
+``physics:simulationOwner`` must select a ``PhysicsScene`` carrying
+``NewtonMPMSceneAPI``. Without an authored owner, the first ``PhysicsScene`` in
+stage traversal order is used.
+
+The importer uses standard point and material representations:
+
+* ``points`` and ``velocities`` come from ``UsdGeom.Points``. The optional
+  ``ids`` attribute remains authored USD data; Newton does not currently copy it
+  into its particle model.
+* ``widths`` are particle diameters. An authored ``primvars:widths`` takes
+  precedence and follows normal indexed, inherited, and interpolation rules.
+  Widths become radii using ``width / 2`` after stage units and the prim's
+  uniform world scale are applied. Non-uniform scale and shear are rejected.
+* ``physics:masses`` supplies per-point masses and takes precedence over
+  ``PhysicsDeformableBodyAPI`` mass or density and material density. Its length
+  must match ``points``. A body-total ``physics:mass`` is otherwise distributed
+  using the density-derived particle weights.
+* A physics-purpose material binding supplies ``physics:density`` and
+  ``NewtonMPMMaterialAPI`` properties, including
+  ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. Point-element
+  ``GeomSubset`` bindings provide discrete materials within one Points prim.
+* ``newton:mpm:elasticDamping`` is authored as an absolute coefficient in Pa·s.
+  Until the solver stores absolute damping directly, the importer divides it by
+  the resolved Young's modulus. ``newton:mpm:initialPlasticVolumeStrain`` seeds
+  the per-particle ``mpm:particle_Jp`` state and is preserved by solver resets.
+* When ``physics:masses`` is unauthored, mass uses a cubical MPM support volume:
+  ``mass = density * transformed_width**3``. If widths are absent, Newton uses
+  :attr:`newton.ModelBuilder.default_particle_radius` and a support width of
+  twice that radius.
+
+One import call currently accepts one MPM owner scene. The result's
+``path_particle_map`` maps every imported Points path to its half-open
+particle range, and ``particle_scene_path`` contains the governing
+``UsdPhysics.Scene`` prim path. Solver configuration remains an explicit
+solver-specific step.
+
+.. code-block:: python
+
+    import newton
+    from newton.solvers import SolverImplicitMPM
+    from pxr import Usd
+
+    stage = Usd.Stage.Open("sand.usda")
+    builder = newton.ModelBuilder()
+    SolverImplicitMPM.register_custom_attributes(builder)
+    result = builder.add_usd(stage, load_visual_shapes=False)
+    particle_scene_path = result["particle_scene_path"]
+    mpm_config = SolverImplicitMPM.Config.create_from_usd(stage.GetPrimAtPath(particle_scene_path))
+    particle_range = result["path_particle_map"]["/World/Sand"]
+
+The authored workflow is demonstrated by
+``python -m newton.examples mpm_granular --from-usd`` and
+``newton/examples/assets/mpm_sand.usda``.
+
 Deformable Bodies
 -----------------
 
@@ -51,10 +118,10 @@ Deformable Bodies
    subset and limitations below -- and is not fully proposal-compliant. It also does not
    import native OmniPhysics/PhysX deformable assets (see the vendor-namespace note below).
 
-:meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the `AOUSD UsdPhysics
-Deformables proposal
-<https://github.com/aousd/OpenUSD-proposals/blob/5d89c0ed46a26de92f4d3fefef3bfad6500c07ce/proposals/physics_deformables/wp_deformable_physics.md>`_,
-across three families:
+.. _AOUSD UsdPhysics Deformables proposal: https://github.com/PixarAnimationStudios/OpenUSD-proposals/pull/111
+
+:meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the
+`AOUSD UsdPhysics Deformables proposal`_, across three families:
 
 * **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI``
   becomes a rod: a chain of capsule bodies joined by cable joints, usable by any solver that
@@ -81,17 +148,33 @@ material that authors its values only under the vendor namespaces is still read 
 resolver, with a ``DeprecationWarning``, so existing assets keep their stiffness and density
 during the deprecation window.
 
+.. note::
+
+   Most deformable properties do not yet use registered schema fallbacks.
+   They read authored ``physics:`` values first, followed by resolver-enabled vendor namespaces.
+   Cloth ``mass_model`` and ``shell_thickness`` already use the common resolver.
+   These properties are described by the experimental `AOUSD UsdPhysics Deformables proposal`_.
+   Registered-fallback support for the remaining deformable properties will be expanded in the
+   future.
+
 Supported subset
 ~~~~~~~~~~~~~~~~
 
 The first release deliberately supports a narrow, predictable set of inputs:
 
 * Valid, enabled, **dynamic** cable, cloth, and volume simulation prims that use the AOUSD
-  deformable APIs. A bound simulation material supplies thickness, stiffness, and density;
-  unauthored material properties fall back to documented builder defaults.
+  deformable APIs. A bound simulation material supplies thickness, stiffness, and density.
+  For cables, each authored ``physics:curves*Stiffness`` is a structural stiffness; an
+  unauthored mode is derived instead from ``physics:youngsModulus``, ``physics:poissonsRatio``,
+  and ``physics:curvesThickness``, each of which falls back to the proposal's assumed 1 MPa,
+  0.3, and 1 mm when it is itself unauthored.
+  Newton divides each resolved structural stiffness by that joint's own dual rest length
+  ``0.5 * (L_parent + L_child)``, so unevenly sampled curves keep per-joint accuracy.
+  The earlier unprefixed cable material attributes remain accepted with their former modulus
+  interpretation during a deprecation window and emit a ``DeprecationWarning``.
 * The points and topology **as currently authored**. Newton builds the deformable at that pose;
-  a standalone cable's ``restShapePoints`` may affect stiffness normalization but never
-  establishes an initial strain state.
+  a cable's ``restShapePoints`` may affect stiffness normalization but never establishes an
+  initial strain state.
 * Point attachments only where the authored constraint can be represented without moving any
   geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
@@ -123,12 +206,12 @@ Limitations
 Known gaps of the experimental importer, tracked as follow-ups:
 
 * **Rest state** -- authored rest geometry is not imported as the deformable's simulated rest
-  configuration. Cloth and volume rest attributes are ignored with a warning, and welded cable
-  graphs drop ``restShapePoints``. For a standalone cable, a valid ``restShapePoints`` supplies
-  only the segment lengths used to convert the material moduli into joint stiffness; the rod
-  itself is still built relaxed at the current ``points`` pose, and mass distribution also uses
-  the current geometry. A body saved in a deformed pose therefore resumes relaxed at that pose
-  instead of springing back.
+  configuration. Cloth and volume rest attributes are ignored with a warning. For a cable,
+  including one in a welded graph, valid ``restShapePoints`` supplies only the segment lengths
+  used to discretize material stiffness into joint stiffness; invalid values warn and fall back
+  to the current ``points`` lengths. The rod itself is still built relaxed at the current
+  ``points`` pose, and mass distribution also uses the current geometry. A body saved in a
+  deformed pose therefore resumes relaxed at that pose instead of springing back.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or
@@ -156,15 +239,21 @@ Known gaps of the experimental importer, tracked as follow-ups:
   (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:
   it is not simulated, but its collision geometry persists as static colliders (TetMesh
   and BasisCurves simulation geometry has no static representation and stays out).
-* **Cable frames and stiffness** -- if per-point normals are missing, segment orientation is
-  synthesized. One stiffness value, computed from the mean segment length, applies to a whole
-  curve or graph, so curves with very uneven segment lengths lose per-segment accuracy. When a
-  standalone cable authors valid ``restShapePoints``, its segment lengths are used for this
-  conversion; the current ``points`` still define the rod's constructed and relaxed pose.
-* **Thickness fallbacks** -- without an authored thickness the importer assumes a default
-  (2 mm cloth shell thickness, 2.5 mm cable radius) for the mass, stiffness, and
-  collision-radius conversions, and warns with the assumed value. Author
-  ``physics:thickness`` on the material to override.
+* **Cable frames** -- if per-point normals are missing, segment orientation is synthesized.
+* **Thickness fallbacks** -- for cloth that needs a thickness to convert volumetric density or
+  stiffness, the importer warns and assumes a 2 mm shell thickness if none resolves. A cable
+  without a valid thickness instead uses AOUSD's 1 mm diameter when the bound material follows
+  the current ``physics:curves*`` contract described above; when no curve material is bound or
+  it uses only the deprecated unprefixed attributes, Newton retains its previous 2.5 mm radius.
+  The assumed size affects mass, collision geometry, and stiffness derived from material
+  moduli. At the 1 mm cable diameter, the smallest principal moment of
+  short segments at typical densities may fall below :class:`~newton.ModelBuilder`'s inertia-validation
+  floor, causing their inertia to be corrected during finalization. Explicitly authored
+  comparably thin cables can do the same. Set
+  :attr:`~newton.ModelBuilder.validate_inertia_detailed` before finalization to identify corrected
+  bodies. To override the fallback, author ``physics:thickness`` for cloth (or configure
+  ``newton:massModel = "shell"`` with ``newton:shellThickness``) or
+  ``physics:curvesThickness`` for cables.
 * **Single-segment curves** -- an open two-point curve (one segment) is warned and skipped;
   the rod representation needs at least two segments. A periodic two-point curve closes into
   two segments and imports.
@@ -227,12 +316,13 @@ close a loop, so they stay outside the articulation.
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to its attributes exactly
 as authored, independent of any solver. The cable and cloth entries expose the parsed
-``material`` moduli and the ``resolved_density``. The volume entry exposes the
+authored ``material`` values and the ``resolved_density``. The volume entry exposes the
 ``resolved_density`` (a volume material's ``youngsModulus`` / ``poissonsRatio`` are applied to
-the built soft body and not repeated there). The cable and cloth ``material`` keeps moduli the
-imported rod and membrane cannot express -- for example cable ``shearStiffness`` /
-``twistStiffness`` -- so a solver with a richer cable or surface model can rebuild the
-deformable from the import without re-parsing the stage. A cable entry carries a
+the built soft body and not repeated there). A cable entry preserves authored
+``curvesThickness``, ``youngsModulus``, ``poissonsRatio``, and the per-mode structural
+stiffnesses, plus any earlier unprefixed attributes the material still authors during the
+deprecation window; a cloth entry keeps moduli its isotropic membrane cannot express. This
+lets another solver rebuild the deformable without re-parsing the stage. A cable entry carries a
 ``graph_component`` identifier only when the curve was welded into a rod graph; curves of one
 graph share it, and independent or fallback cables have no such key.
 
@@ -357,6 +447,9 @@ The table below shows PhysX attribute remapping examples:
    * - ``physxArticulation:enabledSelfCollisions``
      - ``self_collision_enabled`` (per articulation)
      - Direct mapping
+   * - ``state:transX:physics:position`` / ``velocity``
+     - D6 ``transX`` initial position / velocity
+     - Direct mapping; equivalent mappings exist for ``transY`` and ``transZ``
 
 **Newton articulation remapping:**
 
@@ -373,7 +466,7 @@ On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArtic
      - ``self_collision_enabled``
      - Direct mapping
 
-The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` (in resolver priority order). The ``enable_self_collisions`` argument to :meth:`newton.ModelBuilder.add_usd` is used as the default when neither attribute is authored.
+The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` in resolver priority order. When ``enable_self_collisions`` is omitted from :meth:`newton.ModelBuilder.add_usd`, ``True`` is the importer default. With ``use_registered_schema_fallbacks=True``, passing the argument explicitly overrides the resolved USD value. Legacy resolution continues to treat an explicit value as an importer default.
 
 **Newton Joint Attribute Remapping:**
 
@@ -469,27 +562,84 @@ Priority-Based Resolution
 
 When multiple physics solvers define conflicting attributes for the same property, the user can define which solver attributes should be preferred by configuring the resolver order.
 
-**Resolution Hierarchy:**
+Resolution distinguishes authored values, registered schema fallbacks, importer defaults, resolver compatibility defaults, and explicit importer overrides. Registered fallbacks come from the composed prim definition in ``Usd.SchemaRegistry``; compatibility defaults are approximations retained for unregistered schemas and older custom resolvers.
 
-The attribute resolution process follows a three-layer fallback hierarchy to determine which value to use:
+.. list-table:: Property value sources
+   :header-rows: 1
+   :widths: 25 75
+
+   * - **Source**
+     - **Meaning**
+   * - Authored value
+     - A usable value explicitly authored on the prim.
+   * - Registered schema fallback
+     - An authoritative fallback from an applicable registered schema.
+   * - Importer default
+     - A property-specific value supplied by the builder or an importer argument's default.
+   * - Compatibility default
+     - A lower-priority resolver default for an unregistered or ownership-less schema mapping.
+   * - Explicit importer override
+     - A caller-provided value that replaces USD resolution for supported arguments.
+
+Resolution Hierarchy
+^^^^^^^^^^^^^^^^^^^^
+
+With ``use_registered_schema_fallbacks=True``, supported explicit importer arguments take precedence over USD. For example, ``enable_self_collisions=False`` forces self-collisions off, while explicitly passing ``mesh_maxhullvert=None`` selects :attr:`newton.Mesh.MAX_HULL_VERTICES` even when USD authors a hull limit.
+
+``joint_drive_gains_scaling`` and ``collapse_fixed_joints`` are raw PhysicsScene importer metadata rather than registered schema properties. They resolve from an explicit override, authored ``newton:*`` metadata, then the importer default.
+
+By default, attribute resolution retains the deprecated compatibility order:
 
 1. **Authored Values**: Resolvers are queried in priority order; the first resolver that finds an authored value on the prim returns it and remaining resolvers are not consulted.
 2. **Importer Defaults**: If no authored value is found, Newton's importer uses a property-specific fallback (e.g. ``builder.default_joint_cfg.armature`` for joint armature). This takes precedence over schema-level defaults.
 3. **Resolver Compatibility Defaults**: If neither an authored value nor an importer default is available, Newton falls back to the resolver mapping's compatibility default.
 
-This order is retained during a compatibility period. In the future, applying a
-schema will give it ownership of its properties: an unauthored property will use
-the fallback from its registered USD schema definition before a lower-priority
-resolver or importer default. Newton does not treat resolver compatibility
-defaults as schema-declared fallbacks; the relevant codeless or code-generated
-schema plugin must be registered with USD for first-class fallback ownership.
-Unregistered schemas retain their resolver compatibility defaults after
-importer defaults as a second-class path. Newton emits a
-:class:`DeprecationWarning` when the future rule would select a different
-resolver value or source. Author the intended property value explicitly to
-preserve it across the transition, or pass
-``use_applied_schema_fallbacks=True`` to adopt the future behavior now without
-migration warnings.
+Pass ``use_registered_schema_fallbacks=True`` to enable schema ownership. Resolution then follows this order:
+
+1. **Resolver candidate**: For each resolver in priority order, use its authored value or the fallback from its applicable registered schema.
+2. **Importer default**: Use the property-specific importer value when no resolver supplies a candidate.
+3. **Compatibility default**: Use a resolver default only for an applicable unregistered schema or a resolver without declared ownership.
+
+Resolver priority applies to each resolver's complete candidate, so an earlier resolver's registered fallback wins over a later resolver's authored value. A registered property without a fallback does not receive its resolver's compatibility default.
+
+Usability and Consumer Meaning
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+With ``use_registered_schema_fallbacks=True``, Newton continues to the next candidate when a resolver getter or transformer returns no usable value. Registered fallback sentinels can also mean that the schema has no effective opinion. For example, an unlimited velocity fallback is skipped, while an authored hull limit of ``-1`` remains an exact unbounded choice.
+
+A blocked attribute is unauthored, so its applicable registered fallback remains eligible. Compound properties retain usable authored constituents and fill missing or blocked constituents from the registered schema.
+
+The deprecated legacy policy preserves one older behavior: after selecting a compatibility default, it does not try another compatibility default if property interpretation produces ``None``.
+
+Migration Audit
+^^^^^^^^^^^^^^^
+
+The legacy hierarchy is deprecated. Newton emits at most one :exc:`DeprecationWarning` per import when it can prove that registered-schema precedence changes an interpreted property or source-dependent meaning. Audit failures alone do not warn.
+
+Pass ``True`` to adopt registered-schema precedence. To preserve the current result, author through a higher-priority schema, reorder ``schema_resolvers``, or use an explicit importer override where supported.
+
+Newton does not copy PhysX or MuJoCo fallback catalogs when their plugins are unavailable. Their resolver defaults remain lower-priority compatibility values until the codeless schema plugins are registered.
+
+Custom Resolver Ownership
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Custom :class:`~newton.usd.SchemaResolver` subclasses can declare static schema ownership with ``schema_names``. A schema name for a prim type owns every mapped key in that category; a nested mapping declares ownership per logical key. Schema names may identify typed, applied, or multiple-apply schemas.
+
+Set ``use_compatibility_defaults`` to ``False`` when registered-schema precedence should exclude mapping defaults for unregistered or unowned properties. Its default is ``True`` so existing custom resolvers retain their compatibility behavior. Unknown schema names are valid because their plugins may not be installed, but malformed ownership declarations are rejected when the resolver is constructed.
+
+.. code-block:: python
+
+   from newton.usd import PrimType, SchemaResolver
+
+   class SchemaResolverAcme(SchemaResolver):
+       name = "acme"
+       schema_names = {PrimType.JOINT: {"armature": "AcmeJointAPI"}}
+       use_compatibility_defaults = True
+       mapping = {
+           PrimType.JOINT: {
+               "armature": SchemaResolver.SchemaAttribute("acme:armature", 0.0),
+           }
+       }
 
 **Configuring Resolver Priority:**
 

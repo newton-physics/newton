@@ -29,7 +29,6 @@ from .....geometry.types import GeoType
 from ..core.data import DataKamino
 from ..core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION, make_get_material_pair_properties
 from ..core.model import ModelKamino
-from ..core.state import StateKamino
 from ..core.types import (
     to_warp_int32_array,
 )
@@ -39,9 +38,9 @@ from ..geometry.contacts import (
     DEFAULT_TRIANGLE_MAX_PAIRS,
     ContactsKamino,
     make_contact_frame_znorm,
+    reserve_contact_capacity,
 )
 from ..geometry.keying import build_pair_key2
-from ..utils import logger as _msg
 
 ###
 # Module configs
@@ -81,6 +80,8 @@ class ContactWriterDataKamino:
     # Contact limit and active count (Newton interface)
     contact_max: wp.int32
     contact_count: wp.array[wp.int32]
+    dropped_contact_count: wp.array[wp.int32]
+    contact_overflow_warning_emitted: wp.array[wp.int32]
 
     # Output arrays (Kamino Contacts format)
     contacts_model_num_active: wp.array[wp.int32]
@@ -151,24 +152,20 @@ def _write_contact_unified_kamino(
         wid = wid_b
     world_max_contacts = writer_data.world_max_contacts[wid]
 
-    # Always allocate from the model-level counter so the active count
-    # stays accurate regardless of whether the narrowphase pre-allocated
-    # an output_index (primitive kernel) or left it to the writer (-1).
-    wcid = wp.atomic_add(writer_data.contacts_world_num_active, wid, 1)
-    if wcid >= world_max_contacts:  # Roll back and exit if world counter exceeds max
-        wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
+    reservation = reserve_contact_capacity(
+        writer_data.model_max_contacts,
+        world_max_contacts,
+        wid,
+        1,
+        writer_data.contacts_model_num_active,
+        writer_data.contacts_world_num_active,
+        writer_data.contact_overflow_warning_emitted,
+    )
+    if reservation[0] == 0:
+        wp.atomic_add(writer_data.dropped_contact_count, 0, 1)
         return
-    mcid = wp.atomic_add(writer_data.contacts_model_num_active, 0, 1)
-    if mcid >= writer_data.model_max_contacts:  # Roll back and exit if model counter exceeds max
-        wp.atomic_sub(writer_data.contacts_model_num_active, 0, 1)
-        wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
-        return
-    # Note: the world counter must be incremented first to ensure that once
-    # a thread increments the global counter, it won't decrease it again after
-    # because its world is saturated (leading to potential non-unique
-    # mcid in other threads working on other worlds)
-    # The decrease to the world counter if the model is saturated is not
-    # problematic because the model is saturated for all threads in all worlds anyway.
+    wcid = reservation[1]
+    mcid = reservation[2]
 
     # Retrieve the geom/body/material indices
     gid_a = contact_data.shape_a
@@ -368,6 +365,7 @@ def _update_geom_poses_and_compute_aabbs(
         shape_data.shape_type = geo_type
         shape_data.scale = scale
         shape_data.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+        shape_data.center = wp.vec3(0.0, 0.0, 0.0)
 
         # For CONVEX_MESH, pack the mesh pointer
         if geo_type == GeoType.CONVEX_MESH:
@@ -469,7 +467,8 @@ class CollisionPipelineUnifiedKamino:
         if broadphase == "explicit":
             self.shape_pairs_filtered = self._model.geoms.collidable_pairs
             self._max_shape_pairs = self._model.geoms.num_collidable_pairs
-            self._max_contacts = self._model.geoms.model_minimum_contacts
+            if max_contacts is None:
+                self._max_contacts = self._model.geoms.model_minimum_contacts
 
         # Build excluded pairs for NXN/SAP broadphase filtering.
         # Kamino uses a bitmask group/collides system that is more expressive than
@@ -514,6 +513,8 @@ class CollisionPipelineUnifiedKamino:
             self.broad_phase_pairs = wp.zeros(self._max_shape_pairs, dtype=wp.vec2i)
             self.broad_phase_pair_count = wp.zeros(1, dtype=wp.int32)
             self.narrow_phase_contact_count = wp.zeros(1, dtype=wp.int32)
+            self.dropped_contact_count = wp.zeros(1, dtype=wp.int32)
+            self._contact_overflow_warning_emitted = wp.zeros(1, dtype=wp.int32)
             self.shape_sdf_data = wp.empty(shape=(0,), dtype=TextureSDFData)
             self.shape_sdf_index = wp.full_like(self._model.geoms.type, -1)
 
@@ -579,13 +580,12 @@ class CollisionPipelineUnifiedKamino:
     # Operations
     ###
 
-    def collide(self, data: DataKamino, state: StateKamino, contacts: ContactsKamino):
+    def collide(self, data: DataKamino, contacts: ContactsKamino):
         """
         Runs the unified collision detection pipeline to generate discrete contacts.
 
         Args:
             data: The data container holding the time-varying state of the simulation.
-            state: The state container holding the current simulation state.
             contacts: Output contacts container (will be cleared and populated).
         """
         # Check if contacts is allocated on the same device
@@ -595,26 +595,16 @@ class CollisionPipelineUnifiedKamino:
                 f"does not match the CD pipeline device ({self._device})."
             )
 
-        # Check if contacts can hold the maximum number of contacts.
-        # When max_contacts_per_world is set, the buffer is intentionally smaller
-        # than the theoretical maximum — excess contacts are dropped per world.
-        if contacts.model_max_contacts_host < self._max_contacts:
-            if not getattr(self, "_capacity_warning_shown", False):
-                _msg.warning(
-                    f"ContactsKamino capacity ({contacts.model_max_contacts_host}) is less than "
-                    f"the theoretical maximum ({self._max_contacts}). "
-                    f"Per-world contact limits will cap actual contacts."
-                )
-                self._capacity_warning_shown = True
-
         # Clear contacts
         contacts.clear()
 
         # Clear internal contact counts
         self.narrow_phase_contact_count.zero_()
+        self.dropped_contact_count.zero_()
+        self._contact_overflow_warning_emitted.zero_()
 
         # Update geometry poses from body states and compute respective AABBs
-        self._update_geom_data(data, state)
+        self._update_geom_data(data)
 
         # Run broad-phase collision detection to get candidate shape pairs
         self._run_broadphase()
@@ -654,13 +644,12 @@ class CollisionPipelineUnifiedKamino:
         if self._model.geoms.collision_radius is not None:
             self.collision_radius.assign(self._model.geoms.collision_radius)
 
-    def _update_geom_data(self, data: DataKamino, state: StateKamino):
+    def _update_geom_data(self, data: DataKamino):
         """
         Updates geometry poses from corresponding body states and computes respective AABBs.
 
         Args:
             data: The data container holding the time-varying state of the simulation.
-            state: The state container holding the current simulation state.
         """
         wp.launch(
             kernel=_update_geom_poses_and_compute_aabbs,
@@ -674,7 +663,7 @@ class CollisionPipelineUnifiedKamino:
                 self._model.geoms.gap,
                 self.geom_data,
                 self.collision_radius,
-                state.q_i,
+                data.bodies.q_i,
             ],
             outputs=[
                 data.geoms.pose,
@@ -763,6 +752,8 @@ class CollisionPipelineUnifiedKamino:
         writer_data.material_pair_dynamic_friction = self._model.material_pairs.dynamic_friction
         writer_data.contact_max = wp.int32(contacts.model_max_contacts_host)
         writer_data.contact_count = self.narrow_phase_contact_count
+        writer_data.dropped_contact_count = self.dropped_contact_count
+        writer_data.contact_overflow_warning_emitted = self._contact_overflow_warning_emitted
         writer_data.contacts_model_num_active = contacts.model_active_contacts
         writer_data.contacts_world_num_active = contacts.world_active_contacts
         writer_data.contact_wid = contacts.wid

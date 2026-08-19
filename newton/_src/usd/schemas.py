@@ -21,6 +21,18 @@ SchemaAttribute = SchemaResolver.SchemaAttribute
 _AttributeReader = Callable[[str], Any | None]
 
 
+def _fallback_is_negative_infinity(value: Any) -> bool:
+    return value == float("-inf")
+
+
+def _fallback_is_positive_infinity(value: Any) -> bool:
+    return value == float("inf")
+
+
+def _fallback_is_negative_one(value: Any) -> bool:
+    return value == -1
+
+
 def _physx_gap_from_reader(read_attribute: _AttributeReader) -> float | None:
     """Compute Newton gap from PhysX: contactOffset - restOffset [m].
 
@@ -118,8 +130,8 @@ class SchemaResolverNewton(SchemaResolver):
     """
 
     name: ClassVar[str] = "newton"
-    _use_legacy_unowned_defaults: ClassVar[bool] = False
-    _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+    use_compatibility_defaults: ClassVar[bool] = False
+    schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: "NewtonSceneAPI",
         PrimType.JOINT: dict.fromkeys(
             ("armature", "damping", "friction", "limit_ke", "limit_kd", "velocity_limit"),
@@ -153,9 +165,21 @@ class SchemaResolverNewton(SchemaResolver):
             "armature": SchemaAttribute("newton:armature", 0.0),
             "damping": SchemaAttribute("newton:damping", None),
             "friction": SchemaAttribute("newton:friction", 0.0),
-            "limit_ke": SchemaAttribute("newton:limitStiffness", None),
-            "limit_kd": SchemaAttribute("newton:limitDamping", None),
-            "velocity_limit": SchemaAttribute("newton:velocityLimit", float("inf")),
+            "limit_ke": SchemaAttribute(
+                "newton:limitStiffness",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "limit_kd": SchemaAttribute(
+                "newton:limitDamping",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "velocity_limit": SchemaAttribute(
+                "newton:velocityLimit",
+                float("inf"),
+                fallback_is_unset=_fallback_is_positive_infinity,
+            ),
             # Non-schema per-DOF limit attrs (deprecated; use newton:limitStiffness / newton:limitDamping)
             "limit_linear_ke": _reader_schema_attribute(
                 "newton:linear:limitStiffness",
@@ -232,6 +256,21 @@ class SchemaResolverNewton(SchemaResolver):
                 0.0,
                 _reader_value_getter=_newton_non_schema_joint_state_attr("newton:linear:position"),
             ),
+            "transX_position": _reader_schema_attribute(
+                "newton:transX:position",
+                0.0,
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:transX:position"),
+            ),
+            "transY_position": _reader_schema_attribute(
+                "newton:transY:position",
+                0.0,
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:transY:position"),
+            ),
+            "transZ_position": _reader_schema_attribute(
+                "newton:transZ:position",
+                0.0,
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:transZ:position"),
+            ),
             "rotX_position": _reader_schema_attribute(
                 "newton:rotX:position",
                 0.0,
@@ -257,6 +296,21 @@ class SchemaResolverNewton(SchemaResolver):
                 0.0,
                 _reader_value_getter=_newton_non_schema_joint_state_attr("newton:linear:velocity"),
             ),
+            "transX_velocity": _reader_schema_attribute(
+                "newton:transX:velocity",
+                0.0,
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:transX:velocity"),
+            ),
+            "transY_velocity": _reader_schema_attribute(
+                "newton:transY:velocity",
+                0.0,
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:transY:velocity"),
+            ),
+            "transZ_velocity": _reader_schema_attribute(
+                "newton:transZ:velocity",
+                0.0,
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:transZ:velocity"),
+            ),
             "rotX_velocity": _reader_schema_attribute(
                 "newton:rotX:velocity",
                 0.0,
@@ -275,10 +329,18 @@ class SchemaResolverNewton(SchemaResolver):
         },
         PrimType.SHAPE: {
             # Mesh
-            "max_hull_vertices": SchemaAttribute("newton:maxHullVertices", -1),
+            "max_hull_vertices": SchemaAttribute(
+                "newton:maxHullVertices",
+                -1,
+                fallback_is_unset=_fallback_is_negative_one,
+            ),
             # Collisions: newton margin == newton:contactMargin, newton gap == newton:contactGap
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
-            "gap": SchemaAttribute("newton:contactGap", float("-inf")),
+            "gap": SchemaAttribute(
+                "newton:contactGap",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
             # Legacy per-shape contact attrs (deprecated; use NewtonMaterialAPI instead)
             "ke": _reader_schema_attribute(
                 "newton:contact_ke",
@@ -300,31 +362,60 @@ class SchemaResolverNewton(SchemaResolver):
                 None,
                 _reader_value_getter=_newton_legacy_contact_attr("newton:contact_ka", "newton:contactAdhesion"),
             ),
-            # SDF configuration — from NewtonSDFCollisionAPI.
+            # SDF configuration — from NewtonSDFCollisionAPI. `-inf` is the
+            # "unset" sentinel (same convention as gap / shell_thickness above).
             "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", float("-inf")),
             "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", float("-inf")),
             "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", float("-inf")),
-            "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", float("-inf")),
+            "sdf_target_voxel_size": SchemaAttribute(
+                "newton:sdfTargetVoxelSize",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
             "sdf_texture_format": SchemaAttribute("newton:sdfTextureFormat", None),
-            "sdf_padding": SchemaAttribute("newton:sdfPadding", float("-inf")),
+            "sdf_padding": SchemaAttribute(
+                "newton:sdfPadding",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
             # Hydroelastic contacts — folded into NewtonSDFCollisionAPI
             "hydroelastic_enabled": SchemaAttribute("newton:hydroelasticEnabled", None),
             "kh": SchemaAttribute("newton:hydroelasticStiffness", float("-inf")),
             # Mass model
             "mass_model": SchemaAttribute("newton:massModel", "solid"),
-            "shell_thickness": SchemaAttribute("newton:shellThickness", float("-inf")),
+            "shell_thickness": SchemaAttribute(
+                "newton:shellThickness",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
             "self_collision_enabled": SchemaAttribute("newton:selfCollisionEnabled", True),
         },
         PrimType.MATERIAL: {
-            "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.25),
-            "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0005),
-            "ke": SchemaAttribute("newton:contactStiffness", None),
-            "kd": SchemaAttribute("newton:contactDamping", None),
-            "kf": SchemaAttribute("newton:contactFrictionGain", None),
-            "ka": SchemaAttribute("newton:contactAdhesion", None),
+            "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.005),
+            "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0001),
+            "ke": SchemaAttribute(
+                "newton:contactStiffness",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "kd": SchemaAttribute(
+                "newton:contactDamping",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "kf": SchemaAttribute(
+                "newton:contactFrictionGain",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "ka": SchemaAttribute(
+                "newton:contactAdhesion",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
         },
         PrimType.ACTUATOR: {},
     }
@@ -340,8 +431,7 @@ class SchemaResolverPhysx(SchemaResolver):
     """
 
     name: ClassVar[str] = "physx"
-    _use_legacy_unowned_defaults: ClassVar[bool] = False
-    _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+    schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: {
             "max_solver_iterations": "PhysxSceneAPI",
             "time_steps_per_second": "PhysxSceneAPI",
@@ -361,7 +451,7 @@ class SchemaResolverPhysx(SchemaResolver):
             },
             **{
                 f"{axis}_{quantity}": f"PhysicsJointStateAPI:{axis}"
-                for axis in ("linear", "angular", "rotX", "rotY", "rotZ")
+                for axis in ("linear", "angular", "transX", "transY", "transZ", "rotX", "rotY", "rotZ")
                 for quantity in ("position", "velocity")
             },
         },
@@ -407,9 +497,7 @@ class SchemaResolverPhysx(SchemaResolver):
         PrimType.SCENE: {
             "max_solver_iterations": SchemaAttribute("physxScene:maxVelocityIterationCount", 255),
             "time_steps_per_second": SchemaAttribute("physxScene:timeStepsPerSecond", 60),
-            "gravity_enabled": SchemaAttribute(
-                "physxRigidBody:disableGravity", False, usd_value_transformer=lambda value: not value
-            ),
+            "gravity_enabled": SchemaAttribute("physxRigidBody:disableGravity", False, lambda value: not value),
         },
         PrimType.JOINT: {
             "armature": SchemaAttribute("physxJoint:armature", 0.0),
@@ -432,11 +520,17 @@ class SchemaResolverPhysx(SchemaResolver):
             "limit_rotZ_kd": SchemaAttribute("physxLimit:rotZ:damping", 0.0),
             "angular_position": SchemaAttribute("state:angular:physics:position", 0.0),
             "linear_position": SchemaAttribute("state:linear:physics:position", 0.0),
+            "transX_position": SchemaAttribute("state:transX:physics:position", 0.0),
+            "transY_position": SchemaAttribute("state:transY:physics:position", 0.0),
+            "transZ_position": SchemaAttribute("state:transZ:physics:position", 0.0),
             "rotX_position": SchemaAttribute("state:rotX:physics:position", 0.0),
             "rotY_position": SchemaAttribute("state:rotY:physics:position", 0.0),
             "rotZ_position": SchemaAttribute("state:rotZ:physics:position", 0.0),
             "angular_velocity": SchemaAttribute("state:angular:physics:velocity", 0.0),
             "linear_velocity": SchemaAttribute("state:linear:physics:velocity", 0.0),
+            "transX_velocity": SchemaAttribute("state:transX:physics:velocity", 0.0),
+            "transY_velocity": SchemaAttribute("state:transY:physics:velocity", 0.0),
+            "transZ_velocity": SchemaAttribute("state:transZ:physics:velocity", 0.0),
             "rotX_velocity": SchemaAttribute("state:rotX:physics:velocity", 0.0),
             "rotY_velocity": SchemaAttribute("state:rotY:physics:velocity", 0.0),
             "rotZ_velocity": SchemaAttribute("state:rotZ:physics:velocity", 0.0),
@@ -447,9 +541,7 @@ class SchemaResolverPhysx(SchemaResolver):
             # Collisions: newton margin == physx restOffset, newton gap == physx contactOffset - restOffset.
             # PhysX uses -inf to mean "engine default"; treat as unset (None).
             "margin": SchemaAttribute(
-                "physxCollision:restOffset",
-                0.0,
-                usd_value_transformer=lambda v: None if v == float("-inf") else float(v),
+                "physxCollision:restOffset", 0.0, lambda v: None if v == float("-inf") else float(v)
             ),
             "gap": _reader_schema_attribute(
                 "physxCollision:contactOffset",
@@ -553,8 +645,7 @@ class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
     name: ClassVar[str] = "mjc"
-    _use_legacy_unowned_defaults: ClassVar[bool] = False
-    _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+    schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: "MjcSceneAPI",
         PrimType.JOINT: "MjcJointAPI",
         PrimType.SHAPE: {
@@ -576,12 +667,14 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.SCENE: {
             "max_solver_iterations": SchemaAttribute("mjc:option:iterations", 100),
             "time_steps_per_second": SchemaAttribute(
-                "mjc:option:timestep", 0.002, usd_value_transformer=lambda s: int(1.0 / s) if (s and s > 0) else None
+                "mjc:option:timestep", 0.002, lambda s: int(1.0 / s) if (s and s > 0) else None
             ),
             "gravity_enabled": SchemaAttribute("mjc:flag:gravity", True),
         },
         PrimType.JOINT: {
             "armature": SchemaAttribute("mjc:armature", 0.0),
+            # MuJoCo authors angular damping per radian rather than per degree.
+            "damping": SchemaAttribute("mjc:damping", None, angular_unit="radians"),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
             # Per-axis aliases mapped to solreflimit (MjcJointAPI authors joint limit solref here)
             "limit_transX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
@@ -609,9 +702,7 @@ class SchemaResolverMjc(SchemaResolver):
             "margin": SchemaAttribute("mjc:margin", 0.0),
             "gap": SchemaAttribute("mjc:gap", 0.0),
             # Mass model: mjc:shellinertia (bool) → "shell" / "solid"
-            "mass_model": SchemaAttribute(
-                "mjc:shellinertia", False, usd_value_transformer=lambda v: "shell" if v else "solid"
-            ),
+            "mass_model": SchemaAttribute("mjc:shellinertia", False, lambda v: "shell" if v else "solid"),
             # mjc:solref also fills shape_material_ke/kd via the legacy lossy
             # conversion for back-compat with the convert_solref(ke, kd, 1, 1)
             # round-trip; raw solref is preserved in mujoco.solref. See

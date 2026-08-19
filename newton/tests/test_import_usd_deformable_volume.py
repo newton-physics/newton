@@ -271,9 +271,11 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertNotEqual([builder.particle_mass[i] for i in range(4)], [2.0, 4.0, 6.0, 8.0])
 
     def test_volume_material_poisson_ratio_schema_fallback(self):
-        """A material authoring youngsModulus without poissonsRatio uses the proposal's
-        declared poissonsRatio fallback of 0.3 instead of silently discarding the authored
-        modulus. Canonical and vendor namespaces behave the same."""
+        """Use the schema Poisson-ratio fallback with an authored Young's modulus.
+
+        Verify that canonical and vendor namespaces both use the declared
+        fallback of 0.3 instead of discarding the authored modulus.
+        """
         youngs = 300000.0
         nu = 0.3
         expected_mu = youngs / (2.0 * (1.0 + nu))
@@ -290,7 +292,11 @@ class TestUSDDeformableVolume(unittest.TestCase):
                 if namespace == "physics":
                     builder.add_usd(stage)
                 else:
-                    builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
+                    builder.add_usd(
+                        stage,
+                        schema_resolvers=[SchemaResolverPhysx()],
+                        use_registered_schema_fallbacks=True,
+                    )
                 k_mu, k_lambda, _k_damp = builder.tet_materials[0]
                 self.assertAlmostEqual(k_mu, expected_mu, places=1)
                 self.assertAlmostEqual(k_lambda, expected_lambda, places=1)

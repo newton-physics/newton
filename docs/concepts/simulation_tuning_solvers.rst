@@ -91,10 +91,17 @@ Effort limits, target rates, armature, and friction
    justified by actuator or gearbox data when possible.
 
 Collision frequency
-   Calling ``pipeline.collide`` every substep is most
-   robust. Calling it less frequently can improve performance for expensive
-   collision models, but stale contacts can increase penetration or weaken
-   grasping.
+   When the solver consumes contacts from :class:`~newton.CollisionPipeline`,
+   call ``pipeline.collide`` every substep while debugging contact chatter,
+   excess penetration, or a weak grasp. This removes stale pipeline contacts as
+   a variable. Solver-internal collision detection, including MuJoCo contacts
+   and VBD particle self-contact, uses separate knobs.
+
+   Once the behavior is acceptable, try colliding every N substeps to reduce
+   collision cost. Use the largest interval that preserves the required
+   behavior. Fast motion and changing contact configurations usually need more
+   frequent updates. See :ref:`collision-frequency-in-the-simulation-loop` for
+   loop patterns.
 
 Solver-Specific Knobs
 ---------------------
@@ -133,14 +140,13 @@ repository examples spend tuning effort, not a shared solver API.
        use armature, joint friction, effort limits, or velocity limits.
        Examples mostly tune ``iterations`` and ``rigid_contact_relaxation``.
    * - :class:`~newton.solvers.SolverVBD`
-     - ``iterations``, ``friction_epsilon``, ``rigid_avbd_alpha``,
+     - ``iterations``, ``rigid_compliant_alm``, ``friction_epsilon``,
+       ``rigid_avbd_alpha``,
        ``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``,
        ``rigid_avbd_beta``, ``rigid_avbd_linear_beta``,
        ``rigid_avbd_angular_beta``, ``rigid_avbd_gamma``,
        ``rigid_contact_hard``, ``rigid_contact_history``,
-       ``rigid_contact_k_start``, ``rigid_contact_stick_motion_eps``,
-       ``rigid_contact_stick_freeze_translation_eps``,
-       ``rigid_contact_stick_freeze_angular_eps``,
+       ``rigid_contact_k_start``,
        ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``,
        ``rigid_joint_linear_ke``, ``rigid_joint_angular_ke``,
@@ -156,18 +162,42 @@ repository examples spend tuning effort, not a shared solver API.
        ``particle_edge_parallel_epsilon``, ``particle_enable_tile_solve``,
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
-     - Contact history requires matched contacts, for example
-       ``CollisionPipeline(contact_matching="latest")``. When recording VBD
-       steps in a CUDA graph, construct :class:`~newton.CollisionPipeline`
-       before :class:`~newton.solvers.SolverVBD` so contact history is
-       pre-allocated, or run one uncaptured solver step before capture. Buffer
-       sizes that are too small can drop contacts; sizes that are too large cost
-       memory and performance. Examples commonly tune ``iterations``, particle
-       self-contact radius and margin, particle contact buffers and filters,
-       ``particle_collision_detection_interval``, ``particle_enable_tile_solve``,
-       ``rigid_body_contact_buffer_size``,
-       ``rigid_body_particle_contact_buffer_size``, ``rigid_contact_hard``,
-       ``rigid_contact_history``, and ``rigid_avbd_contact_alpha``.
+     - ``rigid_compliant_alm=True`` enables the recommended unified
+       finite-material compliant ALM formulation for rigid contacts, structural
+       joints, drives, and limits. Authored stiffness determines physical
+       compliance; :class:`~newton.solvers.SolverVBD` selects the numerical ALM
+       conditioning parameters internally. Omitting the option is deprecated
+       because its default will change to ``True``. Pass ``False`` to retain the
+       legacy AVBD path during the migration window. ``rigid_contact_hard``
+       selects contact behavior only on that legacy path.
+
+       ``rigid_avbd_beta`` and ``*_k_start`` apply only to the legacy path.
+       Simulations relying on those controls or on legacy hard constraints may
+       require stiffness retuning when enabling compliant ALM. Alpha remains an
+       advanced stabilization override.
+
+       Optional numeric contact warm-starting with
+       ``rigid_contact_history=True`` requires
+       ``CollisionPipeline(contact_matching="latest")`` or ``"sticky"``.
+       SolverVBD uses match indices only for numeric warm-starting; contact
+       geometry remains owned by the collision pipeline. Contact history is
+       cross-replay-persistent state, so it must always be pre-allocated
+       before graph capture on any device; otherwise SolverVBD raises a
+       ``RuntimeError``. Construct :class:`~newton.CollisionPipeline` before
+       :class:`~newton.solvers.SolverVBD` so contact history is pre-allocated,
+       or run one uncaptured solver step before capture. Ordinary contact
+       buffers can still grow on demand during graph capture on CPU and on
+       CUDA with the memory pool enabled; only CUDA capture without a memory
+       pool requires that they also be pre-allocated. Buffer sizes that are
+       too small can drop contacts; sizes that are too large cost memory and
+       performance. Examples commonly tune
+       ``iterations``, particle self-contact radius and margin, particle
+       contact buffers and filters, ``particle_collision_detection_interval``,
+       ``particle_enable_tile_solve``, ``rigid_body_contact_buffer_size``,
+       ``rigid_body_particle_contact_buffer_size``, and
+       ``rigid_contact_history``. On the legacy path, examples also tune
+       ``rigid_contact_hard``. ``rigid_avbd_contact_alpha`` remains available
+       under compliant ALM as an advanced stabilization override.
    * - :class:`~newton.solvers.SolverFeatherstone`
      - ``angular_damping``, ``friction_smoothing``,
        ``update_mass_matrix_interval``, ``use_tile_gemm``, ``fuse_cholesky``.
@@ -380,8 +410,10 @@ Use this sequence for contact-heavy scenes:
    support it.
 6. Add damping to reduce bounce or oscillation.
 7. Increase solver-specific convergence work if available.
-8. Refresh contacts more frequently if fast motion or manipulation depends on
-   current contact points.
+8. For contacts generated by :class:`~newton.CollisionPipeline`, refresh them
+   every substep as a sanity check. If that helps, use the every-N pattern in
+   :ref:`collision-frequency-in-the-simulation-loop` to find an acceptable
+   performance and behavior tradeoff.
 
 Common mistakes:
 

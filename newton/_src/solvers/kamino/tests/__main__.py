@@ -53,7 +53,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--clear-cache",
-        default=True,  # Edit to enable/disable cache clear (if not running in command line)
+        default=False,  # Edit to enable/disable cache clear (if not running in command line)
         action=argparse.BooleanOptionalAction,
         help="Whether to clear the warp cache before running tests.",
     )

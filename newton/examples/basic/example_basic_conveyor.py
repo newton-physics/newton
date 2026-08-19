@@ -152,6 +152,7 @@ def advance_time(sim_time: wp.array[wp.float32], dt: float):
 
 class Example:
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -190,14 +191,14 @@ class Example:
         )
         rail_cfg = newton.ModelBuilder.ShapeConfig(
             mu=0.8,
-            ke=1.0e5,  # vbd only
+            ke=1.0e7,  # vbd only
             kd=0.0,  # vbd only
             collision_group=RAIL_COLLISION_GROUP,
         )
         bag_cfg = newton.ModelBuilder.ShapeConfig(
             mu=1.0,
-            ke=1.0e5,  # vbd only
-            kd=0.0,  # vbd only
+            ke=1.0e7,  # vbd only
+            kd=1.0e4,  # vbd only
             restitution=0.0,
         )
 
@@ -344,7 +345,12 @@ class Example:
 
         solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
         if solver_type == "vbd":
-            self.solver = newton.solvers.SolverVBD(self.model, iterations=5, rigid_body_contact_buffer_size=512)
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=1,
+                rigid_compliant_alm=True,
+                rigid_body_contact_buffer_size=512,
+            )
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)
 

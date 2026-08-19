@@ -1363,6 +1363,7 @@ def build_all_joints_test_model(
         base_joint = copy.deepcopy(builder.joints[0][0])
         if make_floating_base:
             base_joint.dof_type = JointDoFType.FREE
+            base_joint.__post_init__()  # Will correctly populate joint dynamics etc.
         builder_alt.add_joint_descriptor(base_joint)
         joint = copy.deepcopy(builder.joints[0][1])
         if make_actuated:
@@ -1392,10 +1393,7 @@ def build_all_joints_test_model(
             geom_.shape = builder.shapes[geom.uid]
             geom_.body = geom.body - 1
             if geom_.body == -1:
-                # wp.transform_set_translation(geom_.offset, body_0_offset)
-                geom_.offset[0] = body_0_offset[0]
-                geom_.offset[1] = body_0_offset[1]
-                geom_.offset[2] = body_0_offset[2]
+                wp.transform_set_translation(geom_.offset, body_0_offset)
             builder_unary.add_geometry_descriptor(geom_)
         return builder_unary
 

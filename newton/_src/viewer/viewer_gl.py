@@ -202,6 +202,7 @@ class ViewerGL(ViewerBase):
         headless: bool = False,
         paused: bool = False,
         plot_history_size: int = 250,
+        num_frames: int | None = None,
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -214,11 +215,20 @@ class ViewerGL(ViewerBase):
             paused: Start the viewer in paused mode.
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
+            num_frames: Number of frames to render in headless mode before
+                :meth:`is_running` returns False. If None, headless rendering
+                is unbounded; if 0, no frames are rendered. Ignored in
+                windowed mode.
         """
         if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
             raise TypeError("plot_history_size must be an integer")
         if plot_history_size <= 0:
             raise ValueError("plot_history_size must be > 0")
+        if num_frames is not None:
+            if not isinstance(num_frames, int) or isinstance(num_frames, bool):
+                raise TypeError("num_frames must be an integer or None")
+            if num_frames < 0:
+                raise ValueError("num_frames must be >= 0")
 
         # Rolling buffers for log_scalar() time-series plots.
         self._scalar_buffers: dict[str, collections.deque] = {}
@@ -246,6 +256,7 @@ class ViewerGL(ViewerBase):
             sidebar_width_px=self._sidebar_width_fb_px(),
             dpi_scale=self._dpi_scale(),
         )
+        self._main_image_name: str | None = None
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
@@ -253,6 +264,12 @@ class ViewerGL(ViewerBase):
         self._paused = paused
         self._step_requested = False
         self._reset_callback: Callable[[], None] | None = None
+
+        # Headless has no window-close event, so a frame budget is the only
+        # termination signal available to is_running().
+        self._headless = headless
+        self.num_frames = num_frames
+        self._frame_count = 0
 
         self.renderer.register_key_press(self.on_key_press)
         self.renderer.register_key_release(self.on_key_release)
@@ -605,6 +622,11 @@ class ViewerGL(ViewerBase):
 
         super().set_model(model)
 
+        if self.gui is not None:
+            # Reading shape_flags back from the device belongs here, not in the
+            # per-frame overlay path.
+            self.gui.update_shape_counts(self.model)
+
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the
         # model's device. Rebind the image logger so its GPU path tests against
         # — and registers PBO interop with — the correct CUDA context.
@@ -744,7 +766,7 @@ class ViewerGL(ViewerBase):
         self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
         self._packed_world_xforms = all_world_xforms
         self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
-        self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=True)
+        self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=device.is_cuda)
 
     def _rebuild_gl_shape_caches(self):
         """Rebuild GL-specific caches after shape instances change.
@@ -1484,12 +1506,14 @@ class ViewerGL(ViewerBase):
         self._array_dirty.add(name)
 
     @override
-    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray, *, fullscreen: bool = False) -> None:
         """See :meth:`~newton.viewer.ViewerBase.log_image`."""
         # Route user-supplied names through the active layer (idempotent)
         # so two layers logging the same image name don't stomp each other.
         name = self._qualify(name)
-        self._image_logger.log(name, image)
+        self._image_logger.log(name, image, fullscreen=fullscreen)
+        if fullscreen:
+            self._main_image_name = name
 
     @override
     def log_scalar(
@@ -1590,7 +1614,7 @@ class ViewerGL(ViewerBase):
 
             layer_hidden = self._layer_force_hidden()
             for key, shapes, offset, count in self._packed_groups:
-                visible = self._should_show_shape(shapes.flags, shapes.static) and not layer_hidden
+                visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
                 colors = shapes.colors if self.model_changed or shapes.colors_changed else None
                 materials = shapes.materials if self.model_changed else None
 
@@ -1694,6 +1718,7 @@ class ViewerGL(ViewerBase):
         whether an exit was requested and early-out before touching GL if so.
         """
         self._update()
+        self._frame_count += 1
 
     @override
     def apply_forces(self, state: nt.State):
@@ -1724,17 +1749,29 @@ class ViewerGL(ViewerBase):
         if self.wind is not None:
             self.wind.update(dt)
 
-        # If the window was closed during event processing, skip rendering
-        if self.renderer.has_exit():
-            return
+        try:
+            # If the window was closed during event processing, skip rendering
+            if self.renderer.has_exit():
+                return
 
-        # Render the scene and present it
-        self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
+            # Fullscreen image logs are frame-scoped so stale sensor output cannot
+            # keep replacing the 3D scene after an example stops logging it.
+            main_image_name = self._main_image_name
+            if main_image_name is not None:
+                texture = self._image_logger.get_texture(main_image_name, fullscreen=True)
+                if texture is None:
+                    self.renderer.render_texture(None, 0, 0)
+                else:
+                    self.renderer.render_texture(*texture)
+            else:
+                self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
 
-        if self.gui:
-            self.gui.render_frame(update_fps=True)
+            if self.gui:
+                self.gui.render_frame(update_fps=True)
 
-        self.renderer.present()
+            self.renderer.present()
+        finally:
+            self._main_image_name = None
 
     def get_frame(self, target_image: wp.array | None = None, render_ui: bool = False) -> wp.array:
         """
@@ -1841,10 +1878,18 @@ class ViewerGL(ViewerBase):
         """
         Check if the viewer is still running.
 
+        In headless mode the viewer stops once ``num_frames`` is reached. In
+        windowed mode it keeps running until the user closes the window,
+        ignoring ``num_frames`` so the window does not disappear unexpectedly.
+
         Returns:
-            bool: True if the window is open, False if closed.
+            bool: True if the viewer should keep rendering, False otherwise.
         """
-        return not self.renderer.has_exit()
+        if self.renderer.has_exit():
+            return False
+        if self._headless and self.num_frames is not None:
+            return self._frame_count < self.num_frames
+        return True
 
     @override
     def is_paused(self) -> bool:

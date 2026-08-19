@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -32,6 +33,32 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
 
     test.assertGreater(float(solver.pd_diags.numpy().sum()), 0.0)
     test.assertGreater(int(solver.pd_non_diags.num_nz.numpy().sum()), 0)
+
+
+def test_invalid_topology_is_rejected_before_precompute(test, device):
+    """Reject malformed cloth topology before Style3D precomputation."""
+    builder = newton.ModelBuilder()
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_grid(
+        builder,
+        pos=wp.vec3(0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+    )
+    i, j, _ = builder.tri_indices[0]
+    builder.tri_indices[0] = (i, j, builder.particle_count)
+
+    with mock.patch.object(newton.solvers.SolverStyle3D, "_precompute") as precompute:
+        with test.assertRaisesRegex(ValueError, "tri_indices.*particle count"):
+            model = builder.finalize(device=device)
+            newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+
+    precompute.assert_not_called()
 
 
 def test_zero_mass_isolated_particle_remains_finite(test, device):
@@ -131,6 +158,33 @@ def test_solver_flags_track_runtime_model_changes(test, device):
     np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
 
 
+def test_global_particles_use_global_gravity(test, device):
+    """Apply dedicated global gravity to Style3D particles."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_grid(
+        builder,
+        pos=(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+    )
+    builder.begin_world(gravity=(0.0, 0.0, 0.0))
+    builder.end_world()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+    state_0, state_1 = model.state(), model.state()
+    contacts = newton.CollisionPipeline(model).contacts()
+
+    solver.step(state_0, state_1, model.control(), contacts, 0.1)
+
+    test.assertTrue(np.all(state_1.particle_qd.numpy()[:, 2] < -1.0e-6))
+
+
 devices = get_test_devices()
 
 
@@ -142,6 +196,14 @@ add_function_test(
     TestSolverStyle3D,
     "test_constructor_precomputes_fixed_pd_matrix",
     test_constructor_precomputes_fixed_pd_matrix,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_invalid_topology_is_rejected_before_precompute",
+    test_invalid_topology_is_rejected_before_precompute,
     devices=devices,
     check_output=False,
 )
@@ -166,6 +228,14 @@ add_function_test(
     TestSolverStyle3D,
     "test_solver_flags_track_runtime_model_changes",
     test_solver_flags_track_runtime_model_changes,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_global_particles_use_global_gravity",
+    test_global_particles_use_global_gravity,
     devices=devices,
     check_output=False,
 )

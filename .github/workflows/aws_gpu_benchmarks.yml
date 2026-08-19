@@ -34,6 +34,10 @@ on:
         required: false
         type: string
         default: ''
+      trigger-category:
+        description: 'Normalized workflow trigger category'
+        required: true
+        type: string
     secrets:
       GH_PERSONAL_ACCESS_TOKEN:
         required: true
@@ -95,7 +99,11 @@ jobs:
             [
               {"Key": "Name", "Value": "ec2-github-runner"},
               {"Key": "created-by", "Value": "github-actions-newton-role"},
-              {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"}
+              {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"},
+              {"Key": "Newton-Trigger", "Value": ${{ toJSON(inputs['trigger-category']) }}},
+              {"Key": "Newton-Workload", "Value": "gpu-benchmarks"},
+              {"Key": "GitHub-Run-ID", "Value": "${{ github.run_id }}"},
+              {"Key": "GitHub-Run-Attempt", "Value": "${{ github.run_attempt }}"}
             ]
 
   gpu-benchmarks:
@@ -112,6 +120,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -136,6 +145,9 @@ jobs:
         run: uvx asv machine --yes
 
       - name: Run Benchmarks
+        env:
+          # Keep resolution 128 in the shared benchmark for nightly ASV collection.
+          NEWTON_ASV_PR_GATE: "1"
         run: |
           # Gate this PR job on directly measured runtimes only.
           uvx --with virtualenv asv continuous \

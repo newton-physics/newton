@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import unittest
+import warnings
 from collections import Counter
 from pathlib import Path
 from typing import Any, ClassVar
@@ -72,13 +73,21 @@ def create_newton_model_from_usd(
     robot_builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(robot_builder)
 
-    robot_builder.add_usd(
-        str(usd_path),
-        collapse_fixed_joints=False,
-        enable_self_collisions=False,
-        schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
-        use_applied_schema_fallbacks=True,
-    )
+    with warnings.catch_warnings():
+        # Preserve MuJoCo compatibility defaults until its codeless schemas
+        # make those defaults registered schema fallbacks.
+        warnings.filterwarnings(
+            "ignore",
+            message=r"This import used deprecated legacy USD property precedence; .*",
+            category=DeprecationWarning,
+        )
+        robot_builder.add_usd(
+            str(usd_path),
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+            use_registered_schema_fallbacks=False,
+        )
 
     builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(builder)
@@ -156,7 +165,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
-            use_applied_schema_fallbacks=True,
+            use_registered_schema_fallbacks=True,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
         )
 
@@ -1512,9 +1521,10 @@ class TestMenagerieUSD(TestMenagerieBase):
             ``StepResponseControlStrategy`` would drive different actuators on
             each side when USD vs MJCF orderings differ).
           - JOINT_TARGET actuators (USD-imported MjcActuator position-shortcut rows)
-            are routed through ``Control.joint_target_pos`` / ``joint_target_vel``
+            are routed through ``Control.joint_target_q`` / ``joint_target_qd``
             rather than ``mujoco.ctrl`` — see ``mjc_actuator_ctrl_source`` on the
-            solver. Both arrays are written here, indexed via
+            solver. Position targets are indexed via the coord-layout
+            ``mjc_actuator_to_newton_target_q_idx``; velocity targets via
             ``mjc_actuator_to_newton_idx``.
           - Newton's per-step ``qpos`` / ``qvel`` are permuted via ``_qpos_map`` /
             ``_dof_map`` before comparison.
@@ -1543,14 +1553,29 @@ class TestMenagerieUSD(TestMenagerieBase):
             # Per-world step-response control with actuator remap.
             ctrl_source = newton_solver.mjc_actuator_ctrl_source.numpy()
             act_to_newton_idx = newton_solver.mjc_actuator_to_newton_idx.numpy()
-            # Start from zero so non-driven JOINT_TARGET actuators have target=0,
+            act_to_target_q_idx = newton_solver.mjc_actuator_to_newton_target_q_idx.numpy()
+            act_to_ball_jnt = newton_solver.mjc_actuator_to_newton_ball_jnt.numpy()
+            act_to_axis_idx = newton_solver.mjc_actuator_to_target_q_axis_idx.numpy()
+            newton_model = newton_solver.model
+            # Start from neutral so non-driven JOINT_TARGET actuators have target=0,
             # matching native_ctrl=0 for those slots. Without this, Newton's pre-existing
-            # joint_target_pos (initial DOF targets from the USD posture) would apply
+            # position targets (initial targets from the USD posture) would apply
             # nonzero forces every world for actuators we didn't drive — surfaced on
             # WonikAllegro where tha0's initial target 0.8295 stayed in every world.
+            # Neutral means zero scalars and identity quaternions in the BALL/FREE
+            # coord-layout slots.
             joint_target_pos = np.zeros_like(newton_control.joint_target_q.numpy())
             joint_target_vel = np.zeros_like(newton_control.joint_target_qd.numpy())
-            dofs_per_world = joint_target_pos.shape[0] // num_worlds
+            dofs_per_world = joint_target_vel.shape[0] // num_worlds
+            target_q_per_world = joint_target_pos.shape[0] // num_worlds
+            joint_types_np = newton_model.joint_type.numpy()
+            target_q_starts_np = newton_model.joint_target_q_start.numpy()
+            for j in range(newton_model.joint_count):
+                jt = int(joint_types_np[j])
+                if jt == int(newton.JointType.BALL):
+                    joint_target_pos[int(target_q_starts_np[j]) + 3] = 1.0
+                elif jt in (int(newton.JointType.FREE), int(newton.JointType.DISTANCE)):
+                    joint_target_pos[int(target_q_starts_np[j]) + 6] = 1.0
 
             native_ctrl_np = np.zeros((num_worlds, num_actuators), dtype=np.float32)
             newton_ctrl_np = np.zeros_like(native_ctrl_np)
@@ -1569,7 +1594,16 @@ class TestMenagerieUSD(TestMenagerieBase):
                     newton_ctrl_np[w, idx] = target
                 elif ctrl_source[newton_act] == 0:  # JOINT_TARGET
                     if idx >= 0:
-                        joint_target_pos[w * dofs_per_world + idx] = target
+                        # Template-world coord index; offset into world w's block.
+                        tq = w * target_q_per_world + int(act_to_target_q_idx[newton_act])
+                        if int(act_to_ball_jnt[newton_act]) >= 0:
+                            # BALL position target is a quaternion; compose the
+                            # single-axis rotation matching the scalar step target.
+                            axis = int(act_to_axis_idx[newton_act])
+                            joint_target_pos[tq + axis] = np.sin(0.5 * target)
+                            joint_target_pos[tq + 3] = np.cos(0.5 * target)
+                        else:
+                            joint_target_pos[tq] = target
                     elif idx <= -2:
                         joint_target_vel[w * dofs_per_world + (-(idx + 2))] = target
             native_mjw_data.ctrl.assign(native_ctrl_np)
@@ -1782,9 +1816,8 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
     num_steps = 20
     fk_enabled = True
     # Menagerie PR #252 corrected the source finger pads from 2e-6 kg to
-    # 0.0035 kg. The USD reconstructs them as 0.0033 kg, so exact inertia
-    # comparison remains inappropriate, but the dynamics residual is now two
-    # orders of magnitude below the tolerance required by the stale source.
+    # 0.0035 kg. The pinned USD was generated from the old source and still
+    # authors the old mass on its colliders; the test below tracks that fixture.
     dynamics_tolerance = 1e-4
 
     def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
@@ -1797,12 +1830,19 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
         newton_mass = self._newton_solver.mj_model.body_mass
         native_mass = self._mj_model.body_mass
 
+        pad_masses = []
         for body_name in ("left_pad", "right_pad"):
             native_id = self._mj_model.body(body_name).id
             newton_id = self._body_map[native_id]
+            pad_masses.append((body_name, newton_mass[newton_id], native_mass[native_id]))
+
+        if all(np.isclose(usd_mass, 2.0e-6) for _, usd_mass, _ in pad_masses):
+            self.skipTest("Pinned USD fixture still authors the pre-Menagerie-#252 finger-pad mass")
+
+        for body_name, usd_mass, mjcf_mass in pad_masses:
             np.testing.assert_allclose(
-                newton_mass[newton_id],
-                native_mass[native_id],
+                usd_mass,
+                mjcf_mass,
                 rtol=0.1,
                 atol=0.0,
                 err_msg=f"{body_name} mass",

@@ -49,11 +49,23 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
     r")\n?"
 )
+_ASSET_CACHE_REFRESH_OUTPUT_RE = (
+    r"(?:New version of [^\n]+ found "
+    r"\(cached: [0-9a-f]{8}, latest: [0-9a-f]{8}\)\. Refreshing\.\.\.\n)?"
+)
 _NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
-    r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+    _ASSET_CACHE_REFRESH_OUTPUT_RE + r"Cloning https://github\.com/newton-physics/newton-assets\.git "
     r"\(ref: [0-9a-f]{40}\)\.\.\.\n"
     r"Successfully downloaded folder to: [^\n]+\n?"
 )
+_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE = (
+    _ASSET_CACHE_REFRESH_OUTPUT_RE + r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
+    r"\(ref: main\)\.\.\.\n"
+    r"Successfully downloaded folder to: [^\n]+\n?"
+)
+_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE = r"Downloading nut/bolt assets\.\.\.\n?"
+_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE = r"Assets downloaded to: [^\n]+\n?"
+_PYRAMID_BUILD_OUTPUT_RE = r"Built 3 pyramids x 5 rows = 45 boxes\n?"
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
 _DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"(?:numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?){2}"
 _DIFFSIM_DRONE_LOSS_LINE_RE = r"\[\s*\d{1,3}/360\] loss=-?\d+\.\d{8}\n?"
@@ -77,6 +89,11 @@ _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
     r"^.*\n"
     r")+"
     r"^\d+ warnings? generated\.\n?"
+)
+_ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
+    r"^.*newton[/\\]_src[/\\]utils[/\\]import_urdf\.py:\d+: UserWarning: Warning: mesh "
+    r"[^\n]*[/\\]base\.dae has a texture but no UVs; texture will be ignored\.\n"
+    r"  parse_shapes\(link, visuals, density=0\.0, just_visual=True, visible=not hide_visuals\)\n?"
 )
 _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
@@ -389,6 +406,30 @@ add_basic_example_test(
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 add_basic_example_test(
+    name="basic.example_basic_conveyor_forces",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "xpbd"},
+    test_suffix="xpbd",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_conveyor_forces",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "vbd"},
+    test_suffix="vbd",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_conveyor_forces",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "mujoco"},
+    test_suffix="mujoco",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
     name="basic.example_basic_dzhanibekov",
     devices=test_devices,
     use_viewer=True,
@@ -621,6 +662,13 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
+    name="robot.example_robot_omniwheel",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 500},
+    use_viewer=True,
+)
+add_example_test(
+    TestRobotExamples,
     name="robot.example_robot_ur10",
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
@@ -638,7 +686,8 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 720},
+    # Deterministic contacts keep the pick-and-place check from flaking.
+    test_options={"usd_required": True, "num-frames": 720, "deterministic": True},
     use_viewer=True,
 )
 
@@ -717,6 +766,7 @@ add_example_test(
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
     test_options={"num-frames": 100, "onnx_required": True},
+    allow_output_regexes=[(_ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE, "stderr")],
     use_viewer=True,
 )
 
@@ -736,6 +786,19 @@ add_example_test(
     name="ik.example_ik_cube_stacking",
     test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,
+    use_viewer=True,
+)
+
+
+class TestMuJoCoExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestMuJoCoExamples,
+    name="mujoco.example_mujoco_sleeping",
+    devices=cuda_test_devices,
+    test_options={"stack-count": 2, "num-frames": 300},
     use_viewer=True,
 )
 
@@ -886,6 +949,15 @@ add_example_test(
 
 add_example_test(
     TestMPMExamples,
+    name="mpm.example_mpm_granular",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 5, "from_usd": True},
+    use_viewer=True,
+    test_suffix="authored_usd",
+)
+
+add_example_test(
+    TestMPMExamples,
     name="mpm.example_mpm_multi_material",
     devices=cuda_test_devices,
     test_options={"num-frames": 10},
@@ -943,37 +1015,72 @@ add_basic_example_test(
 )
 
 
-class TestContactsExamples(unittest.TestCase):
+class TestContactsExamples(NewtonTestCase):
     pass
 
 
-add_example_test(
-    TestContactsExamples,
+_CONTACT_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
+    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+    (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
+]
+
+
+def add_contact_example_test(**kwargs: Any) -> None:
+    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
+    allow_output_regexes = [*_CONTACT_EXAMPLE_ALLOW_OUTPUT_REGEXES, *extra_allow_output_regexes]
+    add_example_test(TestContactsExamples, allow_output_regexes=allow_output_regexes, **kwargs)
+
+
+for example_name in (
+    "contacts.example_balance_bird",
+    "contacts.example_domino_spiral",
+    "contacts.example_newton_cradle",
+):
+    for solver in ("xpbd", "vbd"):
+        add_contact_example_test(
+            name=example_name,
+            devices=cuda_test_devices,
+            test_options={"num-frames": 60, "solver": solver},
+            use_viewer=True,
+            test_suffix=solver,
+        )
+
+
+add_contact_example_test(
     name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
     use_viewer=True,
+    expect_output_regexes=[
+        (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
+        (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),
+    ],
+    allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
-add_example_test(
-    TestContactsExamples,
+add_contact_example_test(
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
     use_viewer=True,
+    expect_output_regexes=[
+        (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
+        (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),
+    ],
+    allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
-add_example_test(
-    TestContactsExamples,
+add_contact_example_test(
     name="contacts.example_brick_stacking",
     devices=cuda_test_devices,
     test_options={"num-frames": 1200},
     use_viewer=True,
+    allow_output_regexes=[(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
-add_example_test(
-    TestContactsExamples,
+add_contact_example_test(
     name="contacts.example_pyramid",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5},
     use_viewer=True,
+    expect_output_regexes=[(_PYRAMID_BUILD_OUTPUT_RE, "stdout")],
 )
 
 
@@ -1116,7 +1223,7 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_proxy_joint_gripper",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
 )
@@ -1195,6 +1302,19 @@ add_example_test(
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_anymal_d",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 500},
+    use_viewer=True,
+)
+
+
+class TestControllersExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestControllersExamples,
+    name="controllers.example_controller_joint_impedance_heterogeneous",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,

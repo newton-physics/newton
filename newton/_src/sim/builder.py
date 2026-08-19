@@ -10,7 +10,9 @@ import ctypes
 import functools
 import inspect
 import math
+import os
 import warnings
+import weakref
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
@@ -49,10 +51,10 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
-from ..usd.schema_resolver import SchemaResolution, SchemaResolver
+from ..usd.schema_resolver import SchemaResolution, SchemaResolver, _track_omitted_usd_import_defaults
 from ..utils import compute_world_offsets
-from ..utils.deprecation import deprecate_nonkeyword_arguments
-from ..utils.mesh import MeshAdjacency
+from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
+from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -79,6 +81,8 @@ else:
     UsdStage = Any
 
 
+_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
+
 _SCALAR_GRAVITY_DEPRECATION_MSG = (
     "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
     "Scalar gravity will be removed in a future release."
@@ -88,6 +92,13 @@ _SCALAR_GRAVITY_DEPRECATION_MSG = (
 # dispatch through overload resolution and would initialize the Warp runtime at import.
 _IDENTITY_TRANSFORM = np.asarray(wp.transformf((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)), dtype=np.float32)
 _IDENTITY_ROTATION = np.asarray(wp.quatf(0.0, 0.0, 0.0, 1.0), dtype=np.float32)
+
+_MERGE_VALIDATION_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+"""Memoizes :meth:`ModelBuilder._validate_builder_merge` as ``dest -> {source: schema epochs}``.
+
+Kept out of the builders themselves: this is a memoization table, not model state, and it must
+not show up in builder-state comparisons or survive past either builder's lifetime.
+"""
 
 
 @dataclass(frozen=True)
@@ -366,7 +377,7 @@ class ModelBuilder:
         frame = frame.f_back
         stacklevel = 1
         try:
-            while frame is not None and frame.f_code.co_filename == __file__:
+            while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
                 frame = frame.f_back
                 stacklevel += 1
             return stacklevel
@@ -424,6 +435,9 @@ class ModelBuilder:
         shape_constructor: str | None = None
         """Warp model shape BVH constructor backend. If ``None``, Warp's default is used."""
 
+        shape_flags: ShapeFlags = ShapeFlags.VISIBLE
+        """Mask of :class:`~newton.ShapeFlags`; a shape is included in the model shape BVH if any of its flags are set in the mask."""
+
     @dataclass
     class MeshApproximationConfig:
         """Default settings for mesh approximation.
@@ -467,9 +481,9 @@ class ModelBuilder:
         on the solver constructor for this field to take effect.
         """
         mu_torsional: float = 0.005
-        """The coefficient of torsional friction (resistance to spinning at contact point)."""
+        """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
         mu_rolling: float = 0.0001
-        """The coefficient of rolling friction (resistance to rolling motion)."""
+        """The coefficient of rolling friction [m] (resistance to rolling motion)."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
@@ -492,7 +506,7 @@ class ModelBuilder:
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
         is_site: bool = False
         """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
-        sdf_narrow_band_range: tuple[float, float] = (-0.1, 0.1)
+        sdf_narrow_band_range: tuple[float, float] | list[float] = (-0.1, 0.1)
         """The narrow band distance range (inner, outer) for primitive SDF computation."""
         sdf_target_voxel_size: float | None = None
         """Target voxel size for sparse SDF grid.
@@ -601,13 +615,40 @@ class ModelBuilder:
                 raise ValueError(
                     f"Unknown sdf_texture_format {self.sdf_texture_format!r}. Expected one of {list(_valid_tex_fmts)}."
                 )
+            if not math.isfinite(self.density) or self.density < 0.0:
+                raise ValueError(f"density must be finite and >= 0 (got {self.density}).")
+
+            if self.sdf_target_voxel_size is not None and (
+                not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
+            ):
+                raise ValueError(f"sdf_target_voxel_size must be finite and > 0 (got {self.sdf_target_voxel_size}).")
+
+            if self.sdf_padding is not None and (not math.isfinite(self.sdf_padding) or self.sdf_padding < 0.0):
+                raise ValueError(f"sdf_padding must be finite and >= 0 (got {self.sdf_padding}).")
+
+            if not isinstance(self.sdf_narrow_band_range, (tuple, list)) or len(self.sdf_narrow_band_range) != 2:
+                raise ValueError(
+                    "sdf_narrow_band_range must contain two distances (inner, outer) with inner < 0 < outer."
+                )
+            inner, outer = self.sdf_narrow_band_range
+            if not math.isfinite(inner) or not math.isfinite(outer) or not inner < 0.0 < outer:
+                raise ValueError(
+                    f"sdf_narrow_band_range must contain finite values satisfying inner < 0 < outer "
+                    f"(got {self.sdf_narrow_band_range})."
+                )
+
             if self.sdf_max_resolution is not None and self.sdf_target_voxel_size is not None:
                 raise ValueError("Set only one of sdf_max_resolution or sdf_target_voxel_size, not both.")
-            if self.sdf_max_resolution is not None and self.sdf_max_resolution % 8 != 0:
-                raise ValueError(
-                    f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
-                    "This is required because SDF volumes are allocated in 8x8x8 tiles."
-                )
+            if self.sdf_max_resolution is not None:
+                if self.sdf_max_resolution <= 0:
+                    raise ValueError(f"sdf_max_resolution must be > 0 (got {self.sdf_max_resolution}).")
+                if self.sdf_max_resolution >= (1 << 16):
+                    raise ValueError(f"sdf_max_resolution must be less than {1 << 16}.")
+                if self.sdf_max_resolution % 8 != 0:
+                    raise ValueError(
+                        f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
+                        "This is required because SDF volumes are allocated in 8x8x8 tiles."
+                    )
             hydroelastic_supported = shape_type not in (GeoType.PLANE, GeoType.HFIELD)
             hydroelastic_requires_configured_sdf = shape_type in (
                 GeoType.SPHERE,
@@ -1067,6 +1108,7 @@ class ModelBuilder:
         self,
         up_axis: AxisType = Axis.Z,
         gravity: float | Vec3 | None = None,
+        sdf_texture_paired_samples: bool = True,
     ):
         """
         Initializes a new ModelBuilder instance for constructing simulation models.
@@ -1077,9 +1119,18 @@ class ModelBuilder:
             gravity: Default gravity vector [m/s^2]. The deprecated scalar form
                 applies acceleration along ``up_axis``. If omitted, gravity
                 defaults to -9.81 along ``up_axis``.
+            sdf_texture_paired_samples: Store adjacent X samples together in
+                SDF textures for faster software interpolation. Disable to
+                halve SDF texture memory at the cost of slower hydroelastic
+                sampling. Every prebuilt mesh SDF added to this builder must
+                use the same layout, selected by the ``paired_samples``
+                argument to :meth:`Mesh.build_sdf`.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
+
+        self.sdf_texture_paired_samples = bool(sdf_texture_paired_samples)
+        """Whether generated SDF textures store adjacent X samples together."""
 
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
@@ -1252,6 +1303,10 @@ class ModelBuilder:
         self._shape_collision_filter_pairs: _BuilderShapeCollisionFilterPairs | list[tuple[int, int]] = (
             _BuilderShapeCollisionFilterPairs()
         )
+        self._merge_filter_template: tuple[list[tuple[int, int]], int, tuple[tuple[int, int], ...]] | None = None
+        """Cache backing :meth:`_materialized_filter_template`, as ``(source, length, template)``."""
+        self._custom_schema_epoch: int = 0
+        """Bumped whenever the custom attribute/frequency registry changes; keys the merge-validation cache."""
 
         self._requested_contact_attributes: set[str] = set()
         """Optional contact attributes requested via :meth:`request_contact_attributes`."""
@@ -1494,7 +1549,7 @@ class ModelBuilder:
         self.up_axis: Axis = Axis.from_any(up_axis)
         """Up axis used by geometry helpers and for resolving default or scalar gravity."""
         self._gravity: float | wp.vec3 | None = None
-        """Explicitly set gravity; ``None`` means -9.81 along the current :attr:`up_axis`."""
+        """Explicit global/default gravity; ``None`` means -9.81 along the current :attr:`up_axis`."""
         if gravity is not None:
             self._set_gravity(gravity, stacklevel=3)
 
@@ -1609,6 +1664,25 @@ class ModelBuilder:
     def shape_collision_filter_pairs(self, pairs: list[tuple[int, int]]) -> None:
         self._shape_collision_filter_pairs = pairs
 
+    def _materialized_filter_template(self) -> tuple[tuple[int, int], ...]:
+        """This builder's filter pairs as one tuple, stable across repeated merges.
+
+        Merging a source builder world-by-world (one :meth:`add_builder` per world) must
+        hand out the *same* tuple object every time: the collision-filter and
+        contact-pair template caches in :meth:`finalize` are keyed by object identity, so
+        a freshly built tuple per world silently disables them and makes finalization
+        scale with world count instead of with the number of distinct sources.
+        """
+        pairs = self._shape_collision_filter_pairs
+        if isinstance(pairs, _BuilderShapeCollisionFilterPairs):
+            return pairs.template_pairs()
+        cached = self._merge_filter_template
+        if cached is not None and cached[0] is pairs and cached[1] == len(pairs):
+            return cached[2]
+        template = tuple(pairs)
+        self._merge_filter_template = (pairs, len(pairs), template)
+        return template
+
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
 
@@ -1707,6 +1781,7 @@ class ModelBuilder:
             )
 
         self.custom_attributes[key] = attribute
+        self._custom_schema_epoch += 1
 
     def _add_custom_attribute_model_finalizer(
         self,
@@ -1760,6 +1835,7 @@ class ModelBuilder:
             return
 
         self.custom_frequencies[freq_key] = freq_obj
+        self._custom_schema_epoch += 1
         if freq_key not in self._custom_frequency_counts:
             self._custom_frequency_counts[freq_key] = 0
 
@@ -2304,7 +2380,7 @@ class ModelBuilder:
 
     @property
     def gravity(self) -> float | wp.vec3:
-        """Default gravity vector [m/s^2], or a deprecated scalar along :attr:`up_axis`."""
+        """Global/default gravity vector [m/s^2], or a deprecated scalar along :attr:`up_axis`."""
         if np.isscalar(self._gravity):
             warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             return self._gravity
@@ -2424,102 +2500,10 @@ class ModelBuilder:
         """
         return len(self.articulation_start)
 
-    @property
-    def joint_target_pos(self) -> list[float]:
-        """Deprecated alias for :attr:`joint_target_q` (DOF-shape).
-
-        Returns a fresh DOF-shaped list — for FREE/BALL/DISTANCE the quat-w
-        slot is dropped; other joints copy verbatim. Mutating the returned
-        list does not propagate back; assign to this alias to update the
-        underlying targets during the deprecation window. Raises
-        :class:`AttributeError` under
-        :data:`newton.use_coord_layout_targets` ``True``.
-
-        .. deprecated:: 1.3
-            Use :attr:`joint_target_q` instead.
-        """
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
-            raise AttributeError(
-                "ModelBuilder.joint_target_pos is unavailable when "
-                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_q."
-            )
-        warnings.warn(
-            "ModelBuilder.joint_target_pos is deprecated; use ModelBuilder.joint_target_q "
-            "(coord-shaped). For per-axis configuration set JointDofConfig.target_pos before "
-            "calling add_joint*(). The attribute will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._project_target_q_to_dof()
-
-    @joint_target_pos.setter
-    def joint_target_pos(self, value: Sequence[float]) -> None:
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
-            raise AttributeError(
-                "ModelBuilder.joint_target_pos is unavailable when "
-                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_q."
-            )
-        warnings.warn(
-            "ModelBuilder.joint_target_pos is deprecated; use ModelBuilder.joint_target_q "
-            "(coord-shaped). Assignments to the legacy alias are converted from DOF layout "
-            "during the deprecation window. The attribute will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._assign_target_q_from_dof(value)
-
-    @property
-    def joint_target_vel(self) -> list[float]:
-        """Deprecated alias for :attr:`joint_target_qd`.
-
-        Returns a fresh copy — mutating it does not propagate back; assign to
-        this alias to update :attr:`joint_target_qd` during the deprecation
-        window. Raises
-        :class:`AttributeError` under
-        :data:`newton.use_coord_layout_targets` ``True``.
-
-        .. deprecated:: 1.3
-            Use :attr:`joint_target_qd` instead.
-        """
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
-            raise AttributeError(
-                "ModelBuilder.joint_target_vel is unavailable when "
-                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_qd."
-            )
-        warnings.warn(
-            "ModelBuilder.joint_target_vel is deprecated; use ModelBuilder.joint_target_qd. "
-            "The attribute will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return list(self.joint_target_qd)
-
-    @joint_target_vel.setter
-    def joint_target_vel(self, value: Sequence[float]) -> None:
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
-            raise AttributeError(
-                "ModelBuilder.joint_target_vel is unavailable when "
-                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_qd."
-            )
-        warnings.warn(
-            "ModelBuilder.joint_target_vel is deprecated; use ModelBuilder.joint_target_qd. "
-            "Assignments to the legacy alias are forwarded during the deprecation window. "
-            "The attribute will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        values = list(value)
-        if len(values) != self.joint_dof_count:
-            raise ValueError(f"ModelBuilder.joint_target_vel expects {self.joint_dof_count} values, got {len(values)}.")
-        self.joint_target_qd = values
+    # Tombstones so that assigning the 1.3-era names fails loudly instead of
+    # creating an unused instance attribute whose targets are never applied.
+    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
+    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     def _project_target_q_to_dof(self) -> list[float]:
         """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
@@ -2543,31 +2527,6 @@ class ModelBuilder:
                 num_lin, num_ang = self.joint_dof_dim[j]
                 result.extend(self.joint_target_q[q_start : q_start + num_lin + num_ang])
         return result
-
-    def _assign_target_q_from_dof(self, values: Sequence[float]) -> None:
-        """Write DOF-shaped legacy target values into the coord-sized buffer."""
-        values = list(values)
-        if len(values) != self.joint_dof_count:
-            raise ValueError(f"ModelBuilder.joint_target_pos expects {self.joint_dof_count} values, got {len(values)}.")
-
-        value_start = 0
-        for j, jtype in enumerate(self.joint_type):
-            q_start = self.joint_q_start[j]
-            if jtype == JointType.BALL:
-                self.joint_target_q[q_start : q_start + 3] = values[value_start : value_start + 3]
-                self.joint_target_q[q_start + 3] = 1.0
-                value_start += 3
-            elif jtype == JointType.FREE or jtype == JointType.DISTANCE:
-                self.joint_target_q[q_start : q_start + 6] = values[value_start : value_start + 6]
-                self.joint_target_q[q_start + 6] = 1.0
-                value_start += 6
-            elif jtype == JointType.FIXED:
-                pass
-            else:
-                num_lin, num_ang = self.joint_dof_dim[j]
-                dof_count = num_lin + num_ang
-                self.joint_target_q[q_start : q_start + dof_count] = values[value_start : value_start + dof_count]
-                value_start += dof_count
 
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
@@ -2837,11 +2796,7 @@ class ModelBuilder:
 
         source_filter_pairs = builder._shape_collision_filter_pairs
         if source_filter_pairs:
-            template_pairs = (
-                source_filter_pairs.template_pairs()
-                if isinstance(source_filter_pairs, _BuilderShapeCollisionFilterPairs)
-                else tuple(source_filter_pairs)
-            )
+            template_pairs = builder._materialized_filter_template()
             for world, shape_start in zip(worlds.tolist(), shape_starts.tolist(), strict=True):
                 if isinstance(self._shape_collision_filter_pairs, _BuilderShapeCollisionFilterPairs):
                     self._shape_collision_filter_pairs.extend_offset(
@@ -3020,6 +2975,18 @@ class ModelBuilder:
         return bool(matches)
 
     def _validate_builder_merge(self, builder: ModelBuilder, entity_kinds: set[str]) -> None:
+        # Replication merges the same handful of source builders once per world, and this
+        # check is pure schema validation: it compares custom-attribute specs and defaults,
+        # which cannot change unless one of the two registries changes. Both are versioned,
+        # so a repeat merge of an unchanged pair is skipped. Without this the element-wise
+        # equality on Warp-typed defaults runs once per attribute per world.
+        # ``valid_references`` only ever grows as merges accumulate frequency counts, so a
+        # pair that validated before still validates.
+        cache_key = (self._custom_schema_epoch, builder._custom_schema_epoch, frozenset(entity_kinds))
+        validated = _MERGE_VALIDATION_CACHE.setdefault(self, weakref.WeakKeyDictionary())
+        if validated.get(builder) == cache_key:
+            return
+
         valid_references = entity_kinds | set(self._custom_frequency_counts) | set(builder._custom_frequency_counts)
 
         for freq_key, frequency in builder.custom_frequencies.items():
@@ -3067,6 +3034,8 @@ class ModelBuilder:
                     f"Custom attribute finalizer '{key}' is already registered with a different callback "
                     f"({existing!r} != {finalizer!r})."
                 )
+
+        validated[builder] = cache_key
 
     def add_articulation(
         self, joints: list[int], label: str | None = None, custom_attributes: dict[str, Any] | None = None
@@ -3368,6 +3337,7 @@ class ModelBuilder:
             override_root_xform=override_root_xform,
         )
 
+    @_track_omitted_usd_import_defaults(mesh_maxhullvert=Mesh.MAX_HULL_VERTICES)
     def add_usd(
         self,
         source: str | UsdStage,
@@ -3390,20 +3360,21 @@ class ModelBuilder:
         skip_mesh_approximation: bool = False,
         load_sites: bool = True,
         load_visual_shapes: bool = True,
+        load_static_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
         force_show_colliders: bool = False,
         parse_mujoco_options: bool = True,
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         schema_resolution: SchemaResolution | None = None,
-        use_applied_schema_fallbacks: bool = False,
+        use_registered_schema_fallbacks: bool = False,
         force_position_velocity_actuation: bool = False,
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
         return_deformable_results: bool = False,
     ) -> dict[str, Any]:
-        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
+        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -3486,11 +3457,25 @@ class ModelBuilder:
 
             only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
-            joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
+            joint_drive_gains_scaling: When omitted, use ``1.0`` as the importer
+                default for scaling PD control gains. With
+                ``use_registered_schema_fallbacks=True``, an explicitly provided value
+                overrides ``newton:joint_drive_gains_scaling`` on the PhysicsScene.
+                Legacy resolution continues to treat it as an importer default.
             verbose: If True, print additional information about the parsed USD file. Default is False.
             ignore_paths: A list of regular expressions matching prim paths to ignore.
-            collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-            enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+            collapse_fixed_joints: When omitted, use ``False`` as the
+                importer default for removing fixed joints and merging their bodies.
+                With ``use_registered_schema_fallbacks=True``, an explicitly provided
+                value overrides ``newton:collapse_fixed_joints`` on the PhysicsScene.
+                Legacy resolution continues to treat it as an importer default.
+            enable_self_collisions: When omitted, use ``True`` as the importer
+                default for self-collisions within an articulation. With
+                ``use_registered_schema_fallbacks=True``, an explicitly provided value
+                overrides the corresponding authored USD value and schema fallback.
+                Legacy resolution continues to treat it as an importer default. USD
+                resolution reads ``newton:selfCollisionEnabled``
+                (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``.
             apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path: The USD path to import, defaults to "/".
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
@@ -3498,6 +3483,9 @@ class ModelBuilder:
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+            load_static_visual_shapes: If True, supported visual-only geometry outside
+                rigid-body hierarchies is loaded as static shapes when
+                ``load_visual_shapes`` is also True. Default is True.
             hide_collision_shapes: If True, collision shapes on bodies that already
                 have visual-only geometry are hidden unconditionally, regardless of
                 whether the collider has authored PBR material data. Default is False.
@@ -3510,7 +3498,13 @@ class ModelBuilder:
                 joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
                 equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
                 and finalize under ``model.mujoco.equality_constraint_*``.
-            mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+            mesh_maxhullvert: When omitted, use
+                :attr:`newton.Mesh.MAX_HULL_VERTICES` as the importer default for
+                convex hull approximation. Passing ``None`` explicitly selects
+                the same limit. With
+                ``use_registered_schema_fallbacks=True``, an explicitly provided value
+                overrides the corresponding authored USD value and schema fallback.
+                Legacy resolution continues to treat it as an importer default.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
                 These include namespaced attributes such as ``newton:*``, ``physx*``
@@ -3521,19 +3515,26 @@ class ModelBuilder:
 
                 .. experimental::
 
-                    The ``schema_resolvers``, ``schema_resolution``, and
-                    ``use_applied_schema_fallbacks`` arguments may change without
-                    prior notice.
+                    The ``schema_resolvers`` and ``schema_resolution`` arguments may
+                    change without prior notice.
             schema_resolution: Reusable source-neutral schema resolution. It is
-                mutually exclusive with ``schema_resolvers`` and owns the applied
+                mutually exclusive with ``schema_resolvers`` and owns the registered
                 schema fallback policy when provided.
-            use_applied_schema_fallbacks: True uses an applied schema's registered
-                USD fallback before importer defaults and lower-priority resolvers,
-                opting into the future behavior without migration warnings. The
-                relevant schema plugins must be registered with USD for first-class
-                fallback ownership; unregistered schemas retain resolver compatibility
-                defaults after importer defaults. False explicitly retains legacy
-                resolution and is the default during the compatibility period.
+            use_registered_schema_fallbacks: If True, resolve each ordered resolver's
+                authored value and registered schema fallback before advancing to the
+                next resolver, then use importer and unregistered compatibility defaults.
+                False retains deprecated legacy precedence and warns when future
+                precedence would change the interpreted property or its source-dependent
+                meaning.
+
+                .. experimental::
+
+                    The ``use_registered_schema_fallbacks`` argument may change without
+                    prior notice.
+
+                .. deprecated:: 1.6
+                    Passing False selects deprecated legacy fallback precedence. Pass
+                    True to adopt registered schema fallback precedence.
             force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
                 If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -3569,6 +3570,35 @@ class ModelBuilder:
             diagnostic text, not a stable code, and a prim absent from a realized map may still
             appear in the authored metadata.
 
+            ``path_particle_map`` is always returned. It maps each imported
+            ``UsdGeom.Points`` prim carrying ``NewtonPointsDeformableSimAPI`` whose
+            governing ``PhysicsDeformableBodyAPI`` resolves to a
+            ``NewtonMPMSceneAPI`` owner to its half-open ``[start, end)`` builder
+            particle range. These ranges are build-time snapshots and are not
+            updated by later structural builder mutations.
+            Each resolved whole-prim or point-``GeomSubset`` physics material must
+            apply ``NewtonMPMMaterialAPI``, ``PhysicsMaterialAPI``, or
+            ``PhysicsVolumeDeformableMaterialAPI``. MPM elasticity is read from
+            ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. After
+            unit conversion, Young's modulus is in Pa and density is in kg/m^3.
+            Unbound Points use Newton's registered material defaults and
+            ``ModelBuilder.default_shape_cfg`` density. All Points imported by one
+            call must resolve to the same MPM scene; unrelated PhysicsScenes
+            and particle systems are ignored. ``particle_scene_path`` contains the
+            governing ``UsdPhysics.Scene`` prim path, or ``None`` when no particles
+            are imported.
+
+            Particle widths are diameters. Newton converts each radius as
+            ``width / 2`` after applying stage units and the prim's uniform world
+            scale; converted widths and radii are in meters. Authored
+            ``physics:masses`` take precedence over body mass or density, then
+            material density. Density-derived mass uses
+            ``physics:density * width**3``; converted masses are in kilograms.
+            Without widths, it uses ``ModelBuilder.default_particle_radius`` and a
+            support width of twice that radius. Non-uniform scale or shear is
+            rejected because one scalar width cannot preserve a spherical particle
+            under that transform.
+
             The returned mapping has the following entries:
 
             .. list-table::
@@ -3588,6 +3618,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_particle_map"``
+                  - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
                 * - ``"path_cable_map"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_map"``
@@ -3610,6 +3642,8 @@ class ModelBuilder:
                   - The stage's Meters Per Unit (MPU) definition (1.0 by default)
                 * - ``"scene_attributes"``
                   - Dictionary of all attributes applied to the PhysicsScene prim
+                * - ``"physics_scene_path"``
+                  - Prim path of the PhysicsScene selected during import, or ``None`` if no PhysicsScene was found
                 * - ``"collapse_results"``
                   - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if ``collapse_fixed_joints`` is True, otherwise None.
                 * - ``"physics_dt"``
@@ -3618,6 +3652,8 @@ class ModelBuilder:
                   - Dictionary of collected per-prim schema attributes (dict)
                 * - ``"max_solver_iterations"``
                   - The resolved maximum solver iterations (int or None)
+                * - ``"particle_scene_path"``
+                  - Governing ``UsdPhysics.Scene`` prim path for imported particle simulation geometry, or ``None`` when no particles are imported
                 * - ``"path_body_relative_transform"``
                   - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
                 * - ``"path_original_body_map"``
@@ -3648,13 +3684,14 @@ class ModelBuilder:
             skip_mesh_approximation=skip_mesh_approximation,
             load_sites=load_sites,
             load_visual_shapes=load_visual_shapes,
+            load_static_visual_shapes=load_static_visual_shapes,
             hide_collision_shapes=hide_collision_shapes,
             force_show_colliders=force_show_colliders,
             parse_mujoco_options=parse_mujoco_options,
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
             schema_resolution=schema_resolution,
-            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+            use_registered_schema_fallbacks=use_registered_schema_fallbacks,
             force_position_velocity_actuation=force_position_velocity_actuation,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
@@ -4013,6 +4050,29 @@ class ModelBuilder:
     ) -> None:
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
+        # Builders allocate MJCF mask-domain IDs independently. Remap every
+        # incoming domain as one unit so its IDs cannot collide with domains
+        # already present in the destination builder.
+        collision_mask_domain_key = "mujoco:collision_mask_domain"
+        collision_mask_domain_remap: dict[int, int] = {}
+        source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
+        if source_domain_attr is not None and source_domain_attr.values:
+            source_items = (
+                source_domain_attr.values.items()
+                if isinstance(source_domain_attr.values, dict)
+                else enumerate(source_domain_attr.values)
+            )
+            # Copied shape ranges never overlap, so the first destination shape
+            # in each source domain is already a unique, deterministic ID. This
+            # avoids rescanning the growing destination during replication.
+            shape_offset = entity_offsets["shape"]
+            for shape, value in source_items:
+                if value is None:
+                    continue
+                source_domain = int(value)
+                if source_domain >= 0:
+                    collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
+
         def get_offset(entity_or_key: str | None) -> int:
             if entity_or_key is None:
                 return 0
@@ -4033,6 +4093,7 @@ class ModelBuilder:
                     freq_key = attr.frequency
                     mapped_values = [] if isinstance(freq_key, str) else {}
                     self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                    self._custom_schema_epoch += 1
                 continue
 
             freq_key = attr.frequency
@@ -4048,7 +4109,10 @@ class ModelBuilder:
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
-            needs_remap = value_offset != 0 or use_current_world or is_equality_target_attr
+            is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
+            needs_remap = (
+                value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
+            )
 
             if needs_remap:
 
@@ -4104,9 +4168,12 @@ class ModelBuilder:
                     entity_idx: int,
                     value: Any,
                     is_equality_target: bool = is_equality_target_attr,
+                    is_collision_mask_domain: bool = is_collision_mask_domain_attr,
                 ) -> Any:
                     if is_equality_target:
                         return transform_equality_target_value(entity_idx, value)
+                    if is_collision_mask_domain:
+                        return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
 
             merged = self.custom_attributes.get(full_key)
@@ -4124,6 +4191,7 @@ class ModelBuilder:
                 else:
                     mapped_values = {index_offset + idx: value for idx, value in attr.values.items()}
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                self._custom_schema_epoch += 1
                 continue
 
             if not self._custom_attribute_defaults_match(merged.default, attr.default):
@@ -4162,6 +4230,7 @@ class ModelBuilder:
         for freq_key, freq_obj in builder.custom_frequencies.items():
             if freq_key not in self.custom_frequencies:
                 self.custom_frequencies[freq_key] = freq_obj
+                self._custom_schema_epoch += 1
 
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
@@ -4466,6 +4535,12 @@ class ModelBuilder:
 
         Returns:
             The index of the added joint.
+
+        .. note::
+            Avoid creating several joints between the same pair of bodies, as this is ambiguous and may be handled
+            differently by different solvers. Bodies created with :meth:`add_body` are implicitly connected to the
+            world by a free joint. To connect a body to the world with a different joint type, use :meth:`add_link`
+            instead.
         """
         if linear_axes is None:
             linear_axes = []
@@ -4501,6 +4576,38 @@ class ModelBuilder:
                 f"Cannot create joint: child body {child} belongs to world {self.body_world[child]}, "
                 f"but current world is {self.current_world}"
             )
+
+        has_parallel_joint = False
+        parallel_free = False
+        for existing_body, existing_joint_idx in (
+            *self.joint_parents.get(child, ()),
+            *self.joint_children.get(child, ()),
+        ):
+            if existing_body == parent:
+                has_parallel_joint = True
+                parallel_free = joint_type == JointType.FREE or self.joint_type[existing_joint_idx] == JointType.FREE
+                if parallel_free:
+                    break
+
+        if has_parallel_joint:
+            if parallel_free:
+                warnings.warn(
+                    f"Adding a {joint_type.name} joint between parent {parent} and "
+                    f"child {child} (label: {self.body_label[child]!r}), but another joint already connects these "
+                    f"bodies. A FREE joint parallel to another joint is inconsistent. Use add_link() "
+                    f"with the appropriate joint type instead of add_body().",
+                    UserWarning,
+                    stacklevel=self._external_warning_stacklevel(),
+                )
+            else:
+                warnings.warn(
+                    f"Adding a {joint_type.name} joint between parent {parent} and "
+                    f"child {child} (label: {self.body_label[child]!r}), but another joint already connects these "
+                    f"bodies. Parallel joints between the same pair of bodies have undefined semantics and may not "
+                    f"behave as expected.",
+                    UserWarning,
+                    stacklevel=self._external_warning_stacklevel(),
+                )
 
         self.joint_type.append(joint_type)
         joint_idx = self.joint_count - 1
@@ -5166,8 +5273,8 @@ class ModelBuilder:
     ) -> int:
         """Adds a cable joint to the model.
 
-        Cable joints have split linear stretch/shear DoFs plus separate angular
-        bend and twist DoFs. When both ``shear_stiffness`` and
+        Cable joints have split linear stretch/shear material slots plus separate
+        angular bend and twist material slots. When both ``shear_stiffness`` and
         ``shear_damping`` are omitted, shear uses the stretch stiffness /
         damping, reproducing the isotropic linear energy while using the
         split layout. When both ``twist_stiffness`` and ``twist_damping`` are
@@ -5268,6 +5375,34 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
             **kwargs,
         )
+
+    def _set_joint_cable_stiffnesses(
+        self,
+        joint: int,
+        *,
+        stretch_stiffness: float | None,
+        shear_stiffness: float | None,
+        bend_stiffness: float | None,
+        twist_stiffness: float | None,
+    ) -> None:
+        """Overwrite each non-None stiffness and its inferred target mode, in :meth:`add_joint_cable` axis order."""
+        joint_type = self.joint_type[joint]
+        joint_dof_dim = self.joint_dof_dim[joint]
+        if joint_type != JointType.CABLE or joint_dof_dim != (2, 2):
+            raise ValueError(
+                "_set_joint_cable_stiffnesses() expected the four-DOF CABLE layout "
+                f"(2 linear, 2 angular); got joint type {JointType(joint_type).name} with dimensions "
+                f"{joint_dof_dim}. Update the CABLE material-slot mapping when changing its DOF layout."
+            )
+        dof_start = self.joint_qd_start[joint]
+        for offset, stiffness in enumerate((stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)):
+            if stiffness is not None:
+                dof = dof_start + offset
+                damping = self.joint_target_kd[dof]
+                self.joint_target_ke[dof] = stiffness
+                self.joint_target_mode[dof] = int(
+                    JointTargetMode.from_gains(stiffness, damping, has_drive=stiffness != 0.0 or damping != 0.0)
+                )
 
     def add_constraint_mimic(
         self,
@@ -6405,6 +6540,11 @@ class ModelBuilder:
             GeoType.GAUSSIAN,
         ):
             scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
+            site_size_is_display = cfg.is_site and bool(
+                custom_attributes and custom_attributes.get("mujoco:site_size_is_display", False)
+            )
+            if type == GeoType.CYLINDER and not site_size_is_display and scale[2] != 0.0 and scale[2] < scale[1]:
+                raise ValueError(f"Cylinder barrel radius must be zero or at least the half-height; got scale={scale}.")
         elif type == GeoType.CONE:
             if float(scale[1]) < 0.0:
                 raise ValueError(
@@ -6863,6 +7003,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
+        barrel_radius: float = 0.0,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
@@ -6876,8 +7017,11 @@ class ModelBuilder:
         Args:
             body: The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform: The transform of the cylinder in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
-            radius: The radius of the cylinder. Defaults to `1.0`.
-            half_height: The half-length of the cylinder along the Z-axis. Defaults to `0.5`.
+            radius: The radius of the cylinder at its ends [m]. Defaults to `1.0`.
+            half_height: The half-length of the cylinder along the Z-axis [m]. Defaults to `0.5`.
+            barrel_radius: The radius of the symmetric circular arc revolved around the Z-axis to form
+                the cylinder's side [m]. Use `0.0` for a straight-sided cylinder. Nonzero values must be
+                at least `half_height`. Defaults to `0.0`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
@@ -6898,7 +7042,7 @@ class ModelBuilder:
         else:
             xform = wp.transform(*xform)
 
-        scale = wp.vec3(radius, half_height, 0.0)
+        scale = wp.vec3(radius, half_height, barrel_radius)
         return self.add_shape(
             body=body,
             type=GeoType.CYLINDER,
@@ -7279,6 +7423,8 @@ class ModelBuilder:
 
             The ``coacd`` and ``vhacd`` methods require additional dependencies (``coacd`` or ``trimesh`` and ``vhacdx`` respectively) to be installed.
             The convex hull approximation requires ``scipy`` to be installed.
+            For ``coacd`` and ``vhacd``, each geometrically connected component
+            is decomposed separately and may produce one or more convex shapes.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -7408,6 +7554,15 @@ class ModelBuilder:
                     import trimesh
 
                 decompositions = {}
+                filtered_shapes_by_shape: dict[int, set[int]] = {}
+                convex_parts_by_shape: dict[int, list[int]] = {}
+                source_shapes = set(shape_indices)
+                # Snapshot source filters before adding convex parts, without materializing compact storage.
+                for shape_a, shape_b in self._shape_collision_filter_pairs:
+                    if shape_a in source_shapes:
+                        filtered_shapes_by_shape.setdefault(shape_a, set()).add(shape_b)
+                    if shape_b in source_shapes:
+                        filtered_shapes_by_shape.setdefault(shape_b, set()).add(shape_a)
 
                 for shape in shape_indices:
                     mesh: Mesh = self.shape_source[shape]
@@ -7416,33 +7571,42 @@ class ModelBuilder:
                     if hash_m in decompositions:
                         decomposition = decompositions[hash_m]
                     else:
-                        if method == "coacd":
-                            cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
-                            coacd_settings = {
-                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
-                                "mcts_nodes": 20,
-                                "mcts_iterations": 5,
-                                "mcts_max_depth": 1,
-                                "merge": False,
-                                "max_convex_hull": mesh.maxhullvert,
-                            }
-                            coacd_settings.update(remeshing_kwargs)
-                            decomposition = coacd.run_coacd(cmesh, **coacd_settings)
-                        else:
-                            tmesh = trimesh.Trimesh(mesh.vertices, mesh.indices.reshape(-1, 3))
-                            vhacd_settings = {
-                                "maxNumVerticesPerCH": mesh.maxhullvert,
-                            }
-                            vhacd_settings.update(remeshing_kwargs)
-                            decomposition = trimesh.decomposition.convex_decomposition(tmesh, **vhacd_settings)
-                            decomposition = [(d["vertices"], d["faces"]) for d in decomposition]
+                        decomposition = []
+                        # Decomposition backends may merge disconnected convex parts into one hull.
+                        for component_vertices, component_faces in split_mesh_components(mesh):
+                            if method == "coacd":
+                                cmesh = coacd.Mesh(component_vertices, component_faces)
+                                coacd_settings = {
+                                    "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                    "mcts_nodes": 20,
+                                    "mcts_iterations": 5,
+                                    "mcts_max_depth": 1,
+                                    "merge": False,
+                                    "max_convex_hull": mesh.maxhullvert,
+                                }
+                                coacd_settings.update(remeshing_kwargs)
+                                decomposition.extend(coacd.run_coacd(cmesh, **coacd_settings))
+                            else:
+                                tmesh = trimesh.Trimesh(component_vertices, component_faces)
+                                vhacd_settings = {
+                                    "maxNumVerticesPerCH": mesh.maxhullvert,
+                                }
+                                vhacd_settings.update(remeshing_kwargs)
+                                component_decomposition = trimesh.decomposition.convex_decomposition(
+                                    tmesh, **vhacd_settings
+                                )
+                                decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
                         decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
-                    self.shape_source[shape] = self.shape_source[shape].copy(
+                    replacement_mesh = self.shape_source[shape].copy(
                         vertices=decomposition[0][0], indices=decomposition[0][1]
                     )
+                    # Decomposition outputs do not provide attributes remapped to the new vertices.
+                    replacement_mesh._normals = None
+                    replacement_mesh._uvs = None
+                    self.shape_source[shape] = replacement_mesh
                     # mark as convex mesh type
                     self.shape_type[shape] = GeoType.CONVEX_MESH
                     if len(decomposition) > 1:
@@ -7450,8 +7614,12 @@ class ModelBuilder:
                         xform = self.shape_transform[shape]
                         color = self.shape_color[shape]
                         custom_attributes = get_shape_custom_attributes(shape)
+                        filtered_shapes = sorted(
+                            filtered_shape
+                            for filtered_shape in filtered_shapes_by_shape.get(shape, ())
+                            if self.shape_body[filtered_shape] != body
+                        )
                         cfg = ModelBuilder.ShapeConfig(
-                            density=0.0,  # do not add extra mass / inertia
                             ke=self.shape_material_ke[shape],
                             kd=self.shape_material_kd[shape],
                             kf=self.shape_material_kf[shape],
@@ -7463,13 +7631,16 @@ class ModelBuilder:
                             kh=self.shape_material_kh[shape],
                             margin=self.shape_margin[shape],
                             is_solid=self.shape_is_solid[shape],
-                            collision_group=self.shape_collision_group[shape],
-                            collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
+                            force_sdf=self.shape_force_sdf[shape],
                         )
                         cfg.flags = self.shape_flags[shape]
+                        cfg.density = 0.0  # do not add extra mass / inertia
+                        cfg.gap = self.shape_gap[shape]
+                        cfg.collision_group = self.shape_collision_group[shape]
+                        cfg.collision_filter_parent = False
                         for i in range(1, len(decomposition)):
                             # add additional convex parts as convex meshes
-                            self.add_shape_convex_hull(
+                            extra_shape = self.add_shape_convex_hull(
                                 body=body,
                                 xform=xform,
                                 mesh=Mesh(decomposition[i][0], decomposition[i][1]),
@@ -7479,6 +7650,11 @@ class ModelBuilder:
                                 label=f"{self.shape_label[shape]}_convex_{i}",
                                 custom_attributes=custom_attributes,
                             )
+                            for filtered_shape in filtered_shapes:
+                                self.add_shape_collision_filter_pair(filtered_shape, extra_shape)
+                                for filtered_part in convex_parts_by_shape.get(filtered_shape, ()):
+                                    self.add_shape_collision_filter_pair(filtered_part, extra_shape)
+                            convex_parts_by_shape.setdefault(shape, []).append(extra_shape)
                     remeshed_shapes.add(shape)
             except Exception as e:
                 if raise_on_failure:
@@ -8541,6 +8717,18 @@ class ModelBuilder:
         if len(valid_inds) < len(areas):
             print("inverted or degenerate triangle elements")
 
+        filtered_custom_attributes = None
+        if custom_attributes:
+            filtered_custom_attributes = {}
+            for key, value in custom_attributes.items():
+                is_sequence = isinstance(value, (list, tuple)) or (isinstance(value, np.ndarray) and value.ndim != 0)
+                if is_sequence:
+                    if len(value) != len(areas):
+                        raise ValueError(f"Expected {len(areas)} values, got {len(value)}")
+                    filtered_custom_attributes[key] = [value[index] for index in valid_inds]
+                else:
+                    filtered_custom_attributes[key] = value
+
         D[areas == 0.0] = np.eye(2)[None, ...]
         inv_D = np.linalg.inv(D)
 
@@ -8576,18 +8764,18 @@ class ModelBuilder:
                 strict=False,
             )
         )
-        areas = areas.tolist()
-        self.tri_areas.extend(areas)
+        areas_list = areas.tolist()
+        self.tri_areas.extend(areas[valid_inds].tolist())
 
         # Process custom attributes
-        if custom_attributes and len(valid_inds) > 0:
+        if filtered_custom_attributes and len(valid_inds) > 0:
             tri_indices = list(range(tri_start, tri_start + len(valid_inds)))
             self._process_custom_attributes(
                 entity_index=tri_indices,
-                custom_attrs=custom_attributes,
+                custom_attrs=filtered_custom_attributes,
                 expected_frequency=Model.AttributeFrequency.TRIANGLE,
             )
-        return areas
+        return areas_list
 
     def add_tetrahedron(
         self,
@@ -10369,6 +10557,7 @@ class ModelBuilder:
 
         - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
         - Joint references: equality_constraint_joint1/2
+        - Particle references: spring, triangle, edge, and tetrahedron connectivity
         - Self-referential joints: joint_parent[i] != joint_child[i]
         - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start, articulation_end
         - Array length consistency: per-DOF and per-coord arrays
@@ -10571,6 +10760,61 @@ class ModelBuilder:
                     f"Array length mismatch: {name} has length {len(values)}, "
                     f"but expected {particle_count} (particle_count)."
                 )
+
+        def _topology_array(name: str, values: list, expected_shape: tuple[int, ...]) -> np.ndarray:
+            try:
+                source = np.asarray(values)
+                if np.iscomplexobj(source):
+                    raise ValueError
+                array = np.asarray(values, dtype=np.int64)
+                if not np.array_equal(source, array):
+                    raise ValueError
+            except (OverflowError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Invalid {name}: expected integer indices representable as int32 with shape {expected_shape}."
+                ) from exc
+            if array.size == 0 and expected_shape[0] == 0:
+                return array.reshape(expected_shape)
+            if array.shape != expected_shape:
+                raise ValueError(f"Invalid {name} shape: expected {expected_shape}, got {array.shape}.")
+            int32_info = np.iinfo(np.int32)
+            if array.size > 0 and (int(array.min()) < int32_info.min or int(array.max()) > int32_info.max):
+                raise ValueError(
+                    f"Invalid {name}: expected integer indices representable as int32 with shape {expected_shape}."
+                )
+            return array
+
+        def _validate_particle_topology(name: str, indices: np.ndarray) -> None:
+            invalid_mask = (indices < 0) | (indices >= particle_count)
+            if np.any(invalid_mask):
+                element, slot = np.argwhere(invalid_mask)[0]
+                index = int(indices[element, slot])
+                raise ValueError(
+                    f"Invalid particle reference in {name}: element {element}, slot {slot} references particle "
+                    f"{index}, but valid range is [0, {particle_count - 1}] (particle count={particle_count})."
+                )
+
+        spring_indices = _topology_array("spring_indices", self.spring_indices, (self.spring_count * 2,)).reshape(-1, 2)
+        tri_indices = _topology_array("tri_indices", self.tri_indices, (self.tri_count, 3))
+        edge_indices = _topology_array("edge_indices", self.edge_indices, (self.edge_count, 4))
+        tet_indices = _topology_array("tet_indices", self.tet_indices, (self.tet_count, 4))
+
+        _validate_particle_topology("spring_indices", spring_indices)
+        _validate_particle_topology("tri_indices", tri_indices)
+        _validate_particle_topology("tet_indices", tet_indices)
+
+        if edge_indices.size > 0:
+            opposite_vertices = edge_indices[:, :2]
+            invalid_opposite_mask = (opposite_vertices < -1) | (opposite_vertices >= particle_count)
+            if np.any(invalid_opposite_mask):
+                element, slot = np.argwhere(invalid_opposite_mask)[0]
+                index = int(opposite_vertices[element, slot])
+                raise ValueError(
+                    f"Invalid particle reference in edge_indices: element {element}, opposite vertex {slot} "
+                    f"references particle {index}, but valid values are -1 or [0, {particle_count - 1}] "
+                    f"(particle count={particle_count})."
+                )
+            _validate_particle_topology("edge_indices", edge_indices[:, 2:])
 
         if joint_count > 0:
             # Per-DOF arrays should have length == joint_dof_count
@@ -10923,7 +11167,7 @@ class ModelBuilder:
                 must belong to an articulation or close a loop; standalone world-root joints are allowed.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
-                array lengths, monotonicity). Default is False.
+                particle topology, array lengths, monotonicity). Default is False.
             skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
                 articulations. Default is True (opt-in) because this check has O(n log n) complexity.
 
@@ -10977,6 +11221,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m._sdf_texture_paired_samples = self.sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
@@ -11070,6 +11315,7 @@ class ModelBuilder:
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
             heightfield_meshes = []
+            mesh_keep_alive = []
             for geo in generated_shape_sources:
                 if not geo:
                     geo_sources.append(0)
@@ -11107,6 +11353,11 @@ class ModelBuilder:
                             device=device,
                             bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                         )
+                        # keep mesh alive for the model's lifetime: geometry objects
+                        # can be shared with other builders (see replicate() and
+                        # add_builder()), so the model must not rely on the geometry
+                        # object keeping the finalized wp.Mesh alive
+                        mesh_keep_alive.append(geo.mesh)
                     elif isinstance(geo, Gaussian):
                         finalized_geos[geo_hash] = len(gaussians)
                         gaussians.append(
@@ -11140,6 +11391,7 @@ class ModelBuilder:
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
             m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
+            m._mesh_keep_alive = mesh_keep_alive
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
@@ -11214,12 +11466,21 @@ class ModelBuilder:
 
                 return nx, ny, nz
 
+            site_display_size_attr = self.custom_attributes.get("mujoco:site_size_is_display")
             for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
                 zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
             ):
+                site_size_is_display = bool(
+                    site_display_size_attr
+                    and site_display_size_attr.values.get(_shape_idx, site_display_size_attr.default)
+                )
                 # Create cache key based on shape type and parameters
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
                     cache_key = (shape_type, id(shape_src), tuple(shape_scale))
+                elif shape_type == GeoType.CYLINDER and site_size_is_display:
+                    # MuJoCo cylinder sites may carry an unused third display-size component.
+                    # It is not Newton's barrel radius and does not affect their bounds.
+                    cache_key = (shape_type, (shape_scale[0], shape_scale[1], 0.0))
                 else:
                     cache_key = (shape_type, tuple(shape_scale))
 
@@ -11276,11 +11537,17 @@ class ModelBuilder:
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CYLINDER:
-                        # Cylinder: shape_scale = (radius, half_height, radius)
-                        # Cylinder is along Z axis (matches SDF in kernels.py)
-                        r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r, -r, -half_height])
-                        aabb_upper = np.array([r, r, half_height])
+                        # Cylinder: shape_scale = (end_radius, half_height, barrel_radius)
+                        r, half_height, barrel_radius = shape_scale
+                        if site_size_is_display:
+                            barrel_radius = 0.0
+                        radial_extent = r
+                        if barrel_radius > 0.0:
+                            radial_extent += (half_height * half_height) / (
+                                barrel_radius + np.sqrt(barrel_radius * barrel_radius - half_height * half_height)
+                            )
+                        aabb_lower = np.array([-radial_extent, -radial_extent, -half_height])
+                        aabb_upper = np.array([radial_extent, radial_extent, half_height])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CONE:
@@ -11418,6 +11685,7 @@ class ModelBuilder:
                         sdf_kwargs["margin"] = sdf_gen_margin
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
+                        sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
                         deferred_key = (
                             id(shape_src),
                             tuple(shape_scale),
@@ -11438,6 +11706,16 @@ class ModelBuilder:
                         if deferred_key in deferred_collision_edges_cache:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
+                        coarse_texture = getattr(mesh_sdf, "_coarse_texture", None)
+                        if coarse_texture is not None and (
+                            (coarse_texture.num_channels == 2) != self.sdf_texture_paired_samples
+                        ):
+                            mode = "paired" if self.sdf_texture_paired_samples else "scalar"
+                            raise ValueError(
+                                f"ModelBuilder requires {mode} SDF textures, but shape {i} uses a prebuilt SDF "
+                                "with a different layout. Rebuild it with mesh.build_sdf(paired_samples="
+                                f"{self.sdf_texture_paired_samples})."
+                            )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                 elif has_shape_collision and (
                     is_hydroelastic
@@ -11491,6 +11769,7 @@ class ModelBuilder:
                                     target_voxel_size=sdf_target_voxel_size,
                                     quantization_mode=_tex_fmt_map[sdf_tex_fmt],
                                     scale_baked=True,
+                                    paired_samples=self.sdf_texture_paired_samples,
                                     device=device,
                                 )
                             except NotImplementedError:
@@ -11577,6 +11856,7 @@ class ModelBuilder:
                             quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
                             scale_baked=False,
                             device=device,
+                            paired_samples=self.sdf_texture_paired_samples,
                         )
                     except Exception as e:
                         warnings.warn(
@@ -11666,6 +11946,8 @@ class ModelBuilder:
 
             shape_edge_ranges = []
             edge_chunks = []
+            edge_center_chunks = []
+            edge_half_chunks = []
             edge_offset = 0
             edge_cache = {}  # mesh python id → (start, count)
 
@@ -11676,11 +11958,13 @@ class ModelBuilder:
                     and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
                     mesh = generated_shape_sources[i]
+                    shape_scale = np.asarray(self.shape_scale[i], dtype=np.float32)
+                    scale_key = tuple(float(value) for value in shape_scale)
                     deferred_edges = deferred_collision_edges.get(i)
                     if deferred_edges is not None:
-                        mesh_key = ("deferred", id(deferred_edges))
+                        mesh_key = ("deferred", id(deferred_edges), scale_key)
                     else:
-                        mesh_key = id(mesh)
+                        mesh_key = (id(mesh), scale_key)
                     if mesh_key in edge_cache:
                         shape_edge_ranges.append(edge_cache[mesh_key])
                     else:
@@ -11696,6 +11980,30 @@ class ModelBuilder:
                         start = edge_offset
                         count = len(edges)
                         edge_chunks.append(edges)
+                        if count > 0:
+                            vertices = np.asarray(mesh.vertices, dtype=np.float32) * shape_scale
+                            edge_v0 = vertices[edges[:, 0]]
+                            edge_v1 = vertices[edges[:, 1]]
+                            edge_halves = np.ascontiguousarray((edge_v1 - edge_v0) * 0.5, dtype=np.float32)
+                            edge_centers = np.ascontiguousarray((edge_v0 + edge_v1) * 0.5, dtype=np.float32)
+                            edge_radii = np.linalg.norm(edge_halves, axis=1, keepdims=True)
+                            canonical_edges = mesh._canonical_vertex_ids()[edges].reshape(-1)
+                            endpoint_indices = np.arange(2 * count, dtype=np.int64)
+                            first_endpoint = np.full(int(canonical_edges.max()) + 1, 2 * count, dtype=np.int64)
+                            np.minimum.at(first_endpoint, canonical_edges, endpoint_indices)
+                            owns_endpoint = (first_endpoint[canonical_edges] == endpoint_indices).reshape(-1, 2)
+                            # Zero remains the legacy "both endpoints owned" encoding.
+                            corner_ownership = (
+                                4.0 + owns_endpoint[:, 0].astype(np.float32) + 2.0 * owns_endpoint[:, 1]
+                            ).reshape(-1, 1)
+                            edge_center_chunks.append(
+                                np.ascontiguousarray(
+                                    np.concatenate((edge_centers, edge_radii), axis=1), dtype=np.float32
+                                )
+                            )
+                            edge_half_chunks.append(
+                                np.ascontiguousarray(np.concatenate((edge_halves, corner_ownership), axis=1))
+                            )
                         edge_offset += count
                         entry = (start, count)
                         edge_cache[mesh_key] = entry
@@ -11710,8 +12018,18 @@ class ModelBuilder:
             )
             m.mesh_edge_indices = (
                 wp.array(np.concatenate(edge_chunks), dtype=wp.vec2i, device=device)
-                if edge_chunks
+                if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec2i, device=device)
+            )
+            m.mesh_edge_centers = (
+                wp.array(np.concatenate(edge_center_chunks), dtype=wp.vec4, device=device)
+                if edge_offset > 0
+                else wp.zeros(1, dtype=wp.vec4, device=device)
+            )
+            m.mesh_edge_halves = (
+                wp.array(np.concatenate(edge_half_chunks), dtype=wp.vec4, device=device)
+                if edge_offset > 0
+                else wp.zeros(1, dtype=wp.vec4, device=device)
             )
 
             # ---------------------
@@ -11933,6 +12251,17 @@ class ModelBuilder:
             if newton.use_coord_layout_targets:
                 target_q_values = self.joint_target_q
             else:
+                if self.joint_coord_count != self.joint_dof_count:
+                    warnings.warn(
+                        "The legacy DOF-shaped joint_target_q layout is deprecated for models "
+                        "whose joint coordinate and DOF counts differ (free/ball/distance "
+                        "joints). In a future release joint_target_q will always use the "
+                        "coordinate layout (matching joint_q) and newton.use_coord_layout_targets "
+                        "will be removed. Set newton.use_coord_layout_targets = True before "
+                        "building models and index targets via Model.joint_target_q_start.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
                 target_q_values = self._project_target_q_to_dof()
             m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_qd = wp.array(self.joint_target_qd, dtype=wp.float32, requires_grad=requires_grad)
@@ -12034,12 +12363,13 @@ class ModelBuilder:
             # enable ground plane
             m.up_axis = self.up_axis
 
-            # set gravity - create per-world gravity array for multi-world support
+            # Explicit local worlds need a trailing global entry. Implicit
+            # single-world models retain their legacy shared gravity entry.
+            global_gravity = self._gravity_as_vector()
             if self.world_gravity:
-                # Use per-world gravity from world_gravity list
-                gravity_vecs = self.world_gravity
+                gravity_vecs = [*self.world_gravity, global_gravity]
             else:
-                gravity_vecs = [self._gravity_as_vector()] * self.world_count
+                gravity_vecs = [global_gravity for _ in range(self.world_count)]
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,
@@ -12092,8 +12422,6 @@ class ModelBuilder:
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
                     target_pos_indices=target_pos_indices_arg,
-                    control_target_pos_attr="joint_target_q",
-                    control_target_vel_attr="joint_target_qd",
                     requires_grad=requires_grad,
                 )
 
@@ -12102,7 +12430,11 @@ class ModelBuilder:
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
-                m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
+                m.bvh_build_shapes(
+                    m,
+                    bvh_constructor=self.default_bvh_cfg.shape_constructor,
+                    shape_flags=self.default_bvh_cfg.shape_flags,
+                )
                 m.bvh_build_particles(m)
                 return m
 
@@ -12209,7 +12541,11 @@ class ModelBuilder:
                     custom_attr.references,
                 )
 
-            m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
+            m.bvh_build_shapes(
+                m,
+                bvh_constructor=self.default_bvh_cfg.shape_constructor,
+                shape_flags=self.default_bvh_cfg.shape_flags,
+            )
             m.bvh_build_particles(m)
             return m
 
@@ -12392,34 +12728,36 @@ class ModelBuilder:
                 self._iter_validated_shape_collision_filter_pairs((*filter_pairs.explicit_pairs, *floating_block_pairs))
             )
 
-        # Builder-side compact blocks are valid only while they describe the
-        # model's filters exactly; otherwise the general path queries the model.
-        use_filter_blocks = bool(world_filter_blocks) and allow_filter_blocks
-        if use_filter_blocks:
+        # Builder-side storage is valid only while it describes the model's
+        # filters exactly; otherwise the general path queries the model.
+        use_world_templates = (
+            allow_filter_blocks and self.world_count > 0 and isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs)
+        )
+        if use_world_templates:
             shape_world_np = np.asarray(self.shape_world, dtype=np.int32)
             starts = self.shape_world_start
             if len(starts) != self.world_count + 2:
-                use_filter_blocks = False
+                use_world_templates = False
             else:
                 segment_worlds = np.full(self.shape_count, -1, dtype=np.int32)
                 for world in range(self.world_count):
                     segment_worlds[starts[world] : starts[world + 1]] = world
-                use_filter_blocks = np.array_equal(segment_worlds, shape_world_np)
+                use_world_templates = np.array_equal(segment_worlds, shape_world_np)
 
-        if use_filter_blocks:
+        if use_world_templates:
             blocks_by_world = {}
             global_filter_pairs = set()
             explicit_filters_by_world = {}
             for block in world_filter_blocks:
                 world = block.world
                 if world < 0 or world >= self.world_count:
-                    use_filter_blocks = False
+                    use_world_templates = False
                     break
 
                 world_start = self.shape_world_start[world]
                 world_end = self.shape_world_start[world + 1]
                 if block.shape_start < world_start or block.shape_start + block.shape_count > world_end:
-                    use_filter_blocks = False
+                    use_world_templates = False
                     break
 
                 # Store block starts as world-local offsets for the template cache
@@ -12428,7 +12766,7 @@ class ModelBuilder:
                     (block.shape_start - world_start, block.shape_count, block.local_pairs)
                 )
 
-            if use_filter_blocks:
+            if use_world_templates:
                 # Residual explicit filters may involve global shapes, so split
                 # them into globally keyed filters and per-world local filters.
                 for shape_a, shape_b in explicit_filter_pairs:
@@ -12452,7 +12790,7 @@ class ModelBuilder:
                         )
                     # Cross-world pairs never collide, so filtering them is a no-op.
 
-            if use_filter_blocks:
+            if use_world_templates:
                 contact_pairs = []
                 shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
                 colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0

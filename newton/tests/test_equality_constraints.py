@@ -150,10 +150,12 @@ class TestEqualityConstraints(unittest.TestCase):
         # Pure equality rows default to MjcEqualityTargetKind.NONE / target -1 and carry the
         # objtype implied by their EqType (BODY for connect/weld, JOINT for joint).
         builder = newton.ModelBuilder()
-        b0 = builder.add_body()
-        builder.add_joint_free(b0)
-        b1 = builder.add_body()
-        builder.add_joint_free(b1)
+        b0 = builder.add_link()
+        j0 = builder.add_joint_free(b0)
+        b1 = builder.add_link()
+        j1 = builder.add_joint_free(b1)
+        builder.add_articulation([j0])
+        builder.add_articulation([j1])
 
         _add_equality_constraint(
             builder, constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT, body1=b0, body2=b1
@@ -162,8 +164,8 @@ class TestEqualityConstraints(unittest.TestCase):
         _add_equality_constraint(
             builder,
             constraint_type=newton.solvers.SolverMuJoCo.EqType.JOINT,
-            joint1=0,
-            joint2=1,
+            joint1=j0,
+            joint2=j1,
             polycoef=[0.0, 1.0, 0.0, 0.0, 0.0],
         )
 

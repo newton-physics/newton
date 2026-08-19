@@ -270,6 +270,9 @@ class PADMMConfigStruct:
     Must be non-negative. Defaults to `0.0`.
     """
 
+    warmstart_scale: wp.float32
+    """Scale applied to cached constraint forces during warm-starting. Defaults to `0.9`."""
+
 
 @wp.struct
 class PADMMStatus:
@@ -300,7 +303,7 @@ class PADMMStatus:
         r_dz: The total dual iterate residual.
             Computed as the L2-norm `r_dz := || z - z_p ||_2`.
         r_a: The total combined primal-dual residual used for acceleration restart checks.
-            Computed as `r_a := rho * r_dy + (1.0 / rho) * r_dz`.
+            Computed as `r_a := rho * r_dy^2 + (1.0 / rho) * r_dz^2`.
         r_a_p: The previous total combined primal-dual residual.
         r_a_pp: An auxiliary cache of the previous total combined primal-dual residual.
         restart: A flag indicating whether gradient acceleration requires a restart (`1`) or not (`0`).
@@ -363,7 +366,7 @@ class PADMMStatus:
     r_a: wp.float32
     """
     The total combined primal-dual residual used for acceleration restart checks.
-    Computed as `r_a := rho * r_dy + (1.0 / rho) * r_dz`.
+    Computed as `r_a := rho * r_dy^2 + (1.0 / rho) * r_dz^2`.
     """
 
     r_a_p: wp.float32
@@ -1269,4 +1272,5 @@ def convert_config_to_struct(config: PADMMSolverConfig) -> PADMMConfigStruct:
     config_struct.penalty_update_method = PADMMPenaltyUpdate.from_string(config.penalty_update_method)
     config_struct.linear_solver_tolerance = config.linear_solver_tolerance
     config_struct.linear_solver_tolerance_ratio = config.linear_solver_tolerance_ratio
+    config_struct.warmstart_scale = config.warmstart_scale
     return config_struct

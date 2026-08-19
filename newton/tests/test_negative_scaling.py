@@ -76,7 +76,21 @@ class TestBuilderNormalization(unittest.TestCase):
         body = builder.add_body()
         shape = builder.add_shape_cylinder(body=body, radius=-0.4, half_height=-0.6)
         scale = builder.shape_scale[shape]
-        np.testing.assert_allclose(scale[:2], (0.4, 0.6), rtol=1e-6)
+        np.testing.assert_allclose(scale, (0.4, 0.6, 0.0), rtol=1e-6)
+
+    def test_cylinder_barrel_radius_stored(self):
+        """Verify cylinders store the barrel radius in the third scale component."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        shape = builder.add_shape_cylinder(body=body, radius=0.4, half_height=0.6, barrel_radius=1.0)
+        np.testing.assert_allclose(builder.shape_scale[shape], (0.4, 0.6, 1.0), rtol=1e-6)
+
+    def test_cylinder_barrel_radius_rejects_short_arc(self):
+        """Verify a barrel arc spans the full cylinder height."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        with self.assertRaises(ValueError):
+            builder.add_shape_cylinder(body=body, half_height=0.6, barrel_radius=0.5)
 
     def test_ellipsoid_negative_absorbed(self):
         builder = newton.ModelBuilder()

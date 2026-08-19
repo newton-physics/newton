@@ -712,6 +712,61 @@ class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.Te
         self.assertEqual(metadata, {"effort_scale": 3.0})
         self.assertFalse([w for w in caught if "checkpoints" in str(w.message)])
 
+    def test_dict_checkpoint_uses_target_pos_indices(self):
+        """Verify target_pos uses target_pos_indices, not sequential or pos_indices.
+
+        Regression test for a bug where the Torch path fell back to sequential indices
+        into target_pos whenever target_pos_indices was not literally the same array
+        object as pos_indices. This matters in practice for a floating-base robot: the
+        free joint occupies 7 coordinate ("q", position-layout) DOFs but only 6 velocity
+        ("qd") DOFs, so ``pos_indices`` (coord layout) and ``indices``/``target_pos_indices``
+        (default legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
+        differently for the two actuated joints that follow it, and neither equals a plain
+        ``arange(n)``.
+        """
+        self.torch.manual_seed(0)
+        net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
+        path = self._save_dict(net, metadata={"effort_scale": 1.0})
+        ctrl = ControllerNeuralMLP(model_path=path)
+        n = 2
+        ctrl.finalize(self.device, n)
+        state_a = ctrl.state(n, self.device)
+
+        # joint_q layout: 7 free-joint DOFs, then the 2 actuated revolute joints at 7, 8.
+        positions = wp.array([0.0] * 7 + [0.3, -0.2], dtype=wp.float32, device=self.device)
+        pos_indices = wp.array([7, 8], dtype=wp.uint32, device=self.device)
+        # joint_qd / legacy target layout: 6 free-joint DOFs, then the actuated joints at 6, 7.
+        velocities = wp.zeros(8, dtype=wp.float32, device=self.device)
+        vel_indices = wp.array([6, 7], dtype=wp.uint32, device=self.device)
+        target_pos = wp.array([0.0] * 6 + [1.0, 2.0], dtype=wp.float32, device=self.device)
+        target_pos_indices = wp.array([6, 7], dtype=wp.uint32, device=self.device)
+        target_vel = wp.zeros(n, dtype=wp.float32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+
+        ctrl.compute(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            None,
+            pos_indices,
+            vel_indices,
+            target_pos_indices,
+            target_pos_indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+
+        pos_error = self.torch.tensor([0.7, 2.2], device=self._torch_dev)  # target_pos[[6, 7]] - positions[[7, 8]]
+        vel = self.torch.tensor([0.0, 0.0], device=self._torch_dev)
+        net_input = self.torch.stack([pos_error, vel], dim=1)
+        with self.torch.inference_mode():
+            expected = net(net_input).reshape(n)
+
+        np.testing.assert_allclose(forces.numpy(), expected.cpu().numpy(), rtol=1e-4, atol=1e-6)
+
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
 class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
@@ -821,6 +876,123 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
             ControllerNeuralLSTM(model_path=ts_path)
         with self.assertWarnsRegex(DeprecationWarning, "dict checkpoints"):
             ControllerNeuralLSTM(model_path=dict_path)
+
+    def test_dict_checkpoint_uses_target_pos_indices(self):
+        """Verify target_pos uses target_pos_indices, not sequential or pos_indices.
+
+        Regression test for a bug where the Torch path fell back to sequential indices
+        into target_pos whenever target_pos_indices was not literally the same array
+        object as pos_indices. This matters in practice for a floating-base robot: the
+        free joint occupies 7 coordinate ("q", position-layout) DOFs but only 6 velocity
+        ("qd") DOFs, so ``pos_indices`` (coord layout) and ``indices``/``target_pos_indices``
+        (default legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
+        differently for the two actuated joints that follow it, and neither equals a plain
+        ``arange(n)``.
+        """
+        net = self._make_lstm(hidden=4, layers=1)
+        path = self._save_dict(net, metadata={"effort_scale": 1.0})
+        ctrl = ControllerNeuralLSTM(model_path=path)
+        n = 2
+        ctrl.finalize(self.device, n)
+        state_a = ctrl.state(n, self.device)
+
+        # joint_q layout: 7 free-joint DOFs, then the 2 actuated revolute joints at 7, 8.
+        positions = wp.array([0.0] * 7 + [0.3, -0.2], dtype=wp.float32, device=self.device)
+        pos_indices = wp.array([7, 8], dtype=wp.uint32, device=self.device)
+        # joint_qd / legacy target layout: 6 free-joint DOFs, then the actuated joints at 6, 7.
+        velocities = wp.zeros(8, dtype=wp.float32, device=self.device)
+        vel_indices = wp.array([6, 7], dtype=wp.uint32, device=self.device)
+        target_pos = wp.array([0.0] * 6 + [1.0, 2.0], dtype=wp.float32, device=self.device)
+        target_pos_indices = wp.array([6, 7], dtype=wp.uint32, device=self.device)
+        target_vel = wp.zeros(n, dtype=wp.float32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+
+        ctrl.compute(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            None,
+            pos_indices,
+            vel_indices,
+            target_pos_indices,
+            target_pos_indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+
+        pos_error = self.torch.tensor([0.7, 2.2], device=self._torch_dev)  # target_pos[[6, 7]] - positions[[7, 8]]
+        vel = self.torch.tensor([0.0, 0.0], device=self._torch_dev)
+        net_input = self.torch.stack([pos_error, vel], dim=1).unsqueeze(1)
+        h = self.torch.zeros(1, n, 4, device=self._torch_dev)
+        c = self.torch.zeros(1, n, 4, device=self._torch_dev)
+        with self.torch.inference_mode():
+            expected, _ = net(net_input, (h, c))
+        expected = expected.reshape(n)
+
+        np.testing.assert_allclose(forces.numpy(), expected.cpu().numpy(), rtol=1e-4, atol=1e-6)
+
+    def test_masked_reset_after_inference_mode_output(self):
+        """Verify masked reset clears selected LSTM state without raising.
+
+        Regression test: masked resets used to write in-place into the hidden/cell tensors
+        produced by the network under torch.inference_mode(), which raised
+        ``RuntimeError: Inplace update to inference tensor outside InferenceMode is not
+        allowed``.
+        """
+        net = self._make_lstm(hidden=4, layers=1)
+        path = self._save_dict(net, metadata={"effort_scale": 1.0})
+        ctrl = ControllerNeuralLSTM(model_path=path)
+        n = 3
+        ctrl.finalize(self.device, n)
+        state_a = ctrl.state(n, self.device)
+        state_b = ctrl.state(n, self.device)
+
+        indices = wp.array(list(range(n)), dtype=wp.uint32, device=self.device)
+        positions = wp.zeros(n, dtype=wp.float32, device=self.device)
+        velocities = wp.array([1.0, 2.0, 3.0], dtype=wp.float32, device=self.device)
+        target_pos = wp.array([1.0, 1.0, 1.0], dtype=wp.float32, device=self.device)
+        target_vel = wp.zeros(n, dtype=wp.float32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+
+        ctrl.compute(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        ctrl.update_state(state_a, state_b)
+        self.assertTrue(state_b.hidden.is_inference(), "precondition: hidden must be a network output")
+
+        hidden_before = state_b.hidden.clone()
+        cell_before = state_b.cell.clone()
+
+        masked = [True, False, True]
+        mask = wp.array(masked, dtype=wp.bool, device=self.device)
+        state_b.reset(mask)  # must not raise RuntimeError
+
+        for b, is_masked in enumerate(masked):
+            if is_masked:
+                self.assertTrue(self.torch.all(state_b.hidden[:, b, :] == 0.0).item(), f"actuator {b} not zeroed")
+                self.assertTrue(self.torch.all(state_b.cell[:, b, :] == 0.0).item(), f"actuator {b} not zeroed")
+            else:
+                self.assertTrue(
+                    self.torch.equal(state_b.hidden[:, b, :], hidden_before[:, b, :]), f"actuator {b} not preserved"
+                )
+                self.assertTrue(
+                    self.torch.equal(state_b.cell[:, b, :], cell_before[:, b, :]), f"actuator {b} not preserved"
+                )
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
@@ -2146,7 +2318,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
 
 class TestTargetPosIndicesSeparation(unittest.TestCase):
-    """Actuator must read joint_target_pos via target_pos_indices, not pos_indices."""
+    """Actuator must read joint_target_q via target_pos_indices, not pos_indices."""
 
     def test_target_pos_read_from_dof_index_not_coord_index(self):
         device = wp.get_device()
@@ -2161,32 +2333,29 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 
         indices = _a([1], dtype=wp.uint32)  # DOF index 1
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
-        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
+        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (legacy DOF target layout)
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
-        # This test deliberately exercises the legacy DOF-shaped target layout via
-        # the default attr resolution, which is deprecated and warns.
-        with self.assertWarns(DeprecationWarning):
-            actuator = Actuator(
-                indices=indices,
-                controller=ctrl,
-                pos_indices=pos_indices,
-                target_pos_indices=target_pos_indices,
-            )
+        actuator = Actuator(
+            indices=indices,
+            controller=ctrl,
+            pos_indices=pos_indices,
+            target_pos_indices=target_pos_indices,
+        )
 
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])
         joint_qd = _a([0.0, 0.0])
-        # joint_target_pos padded to size 4 so both index 1 (correct) and
+        # joint_target_q padded to size 4 so both index 1 (correct) and
         # index 3 (sentinel) are reachable — lets us distinguish the two code paths
-        joint_target_pos = _a([0.0, correct_target, 0.0, sentinel])
-        joint_target_vel = _a([0.0, 0.0, 0.0, 0.0])
+        joint_target_q = _a([0.0, correct_target, 0.0, sentinel])
+        joint_target_qd = _a([0.0, 0.0, 0.0, 0.0])
         joint_f = wp.zeros(4, dtype=wp.float32, device=device)
 
         sim_state = types.SimpleNamespace(joint_q=joint_q, joint_qd=joint_qd)
         sim_control = types.SimpleNamespace(
-            joint_target_pos=joint_target_pos,
-            joint_target_vel=joint_target_vel,
+            joint_target_q=joint_target_q,
+            joint_target_qd=joint_target_qd,
             joint_act=None,
             joint_f=joint_f,
         )
@@ -2205,6 +2374,62 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
                 f"got {got}. If {wrong}, pos_indices was wrongly used for target lookup."
             ),
         )
+
+
+class TestControlTargetAttrDefaults(unittest.TestCase):
+    """``control_target_pos_attr`` / ``control_target_vel_attr`` accept ``None``.
+
+    Both parameters used to default to ``None``, meaning "resolve against the
+    active target layout". The layout switch removed that resolution step, but
+    callers may still pass ``None`` explicitly; it must keep selecting the
+    canonical names instead of reaching ``getattr()`` with a non-string.
+    """
+
+    def _actuator(self, **kwargs):
+        device = wp.get_device()
+        indices = wp.array([0], dtype=wp.uint32, device=device)
+        controller = ControllerPD(
+            kp=wp.array([10.0], dtype=wp.float32, device=device),
+            kd=wp.array([0.0], dtype=wp.float32, device=device),
+        )
+        return Actuator(indices=indices, controller=controller, **kwargs)
+
+    def test_omitted_attrs_default_to_canonical_names(self):
+        """Verify omitted attributes select canonical names."""
+        actuator = self._actuator()
+        self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
+        self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
+
+    def test_explicit_none_normalizes_to_canonical_names(self):
+        """Verify explicit None normalizes to canonical names."""
+        actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
+        self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
+        self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
+
+    def test_explicit_none_still_steps(self):
+        """Verify stepping succeeds after passing explicit None."""
+        device = wp.get_device()
+        actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
+
+        def _a(vals):
+            return wp.array(vals, dtype=wp.float32, device=device)
+
+        sim_state = types.SimpleNamespace(joint_q=_a([0.0]), joint_qd=_a([0.0]))
+        sim_control = types.SimpleNamespace(
+            joint_target_q=_a([1.0]),
+            joint_target_qd=_a([0.0]),
+            joint_act=None,
+            joint_f=wp.zeros(1, dtype=wp.float32, device=device),
+        )
+        actuator.step(sim_state, sim_control, dt=0.01)
+        # kp * (target - pos) = 10 * (1.0 - 0.0)
+        self.assertAlmostEqual(float(sim_control.joint_f.numpy()[0]), 10.0, places=4)
+
+    def test_custom_attr_names_are_preserved(self):
+        """Verify caller-supplied attribute names remain unchanged."""
+        actuator = self._actuator(control_target_pos_attr="my_pos", control_target_vel_attr="my_vel")
+        self.assertEqual(actuator.control_target_pos_attr, "my_pos")
+        self.assertEqual(actuator.control_target_vel_attr, "my_vel")
 
 
 if __name__ == "__main__":

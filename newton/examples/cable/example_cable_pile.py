@@ -54,7 +54,7 @@ class Example:
         self.cable_length = self.num_elements * segment_length
         cable_radius = 0.012
         stretch_stiffness = 5.0e5
-        bend_stiffness = 2.0e1
+        bend_stiffness = 1.0e2
 
         # Layers and lanes
         self.layers = layers
@@ -165,13 +165,14 @@ class Example:
         builder.color()
 
         self.model = builder.finalize()
-        # Size persistent contact history before CUDA graph capture.
-        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        # Size persistent contact history before graph capture.
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="sticky")
         self.contacts = self.collision_pipeline.contacts()
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
             rigid_body_contact_buffer_size=256,
             rigid_contact_history=True,
         )

@@ -532,7 +532,8 @@ def compute_body_twist_update_with_eom(
     tau_i = wp.spatial_bottom(w_i)
 
     # Compute velocity update equations
-    v_i_n = v_i + dt * (g + inv_m_i * f_i)
+    # Disable gravity acceleration for massless bodies because inv_m * m i = 0.0 for such bodies, not 1.0.
+    v_i_n = v_i + dt * (g * wp.nonzero(inv_m_i) + inv_m_i * f_i)
     omega_i_n = omega_i + dt * inv_I_i @ (-S_i @ (I_i @ omega_i) + tau_i)
 
     # Return the updated velocities

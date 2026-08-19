@@ -144,9 +144,9 @@ class Example:
         builder = newton.ModelBuilder()
 
         # Set default material properties before adding any shapes
-        builder.default_shape_cfg.ke = 1.0e4  # Contact stiffness
+        builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
         builder.default_shape_cfg.kd = 0.0
-        builder.default_shape_cfg.mu = 1.0e0  # Friction coefficient
+        builder.default_shape_cfg.mu = 5.0e-1  # Friction coefficient
 
         kinematic_body_indices = []
         self.cable_bodies_list = []
@@ -207,9 +207,12 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
-        # Use full hard-contact correction (contact alpha 0.0) for stronger repulsion with low iterations.
         self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_avbd_contact_alpha=0.0)
+        self.solver = newton.solvers.SolverVBD(
+            self.model,
+            iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -226,13 +229,10 @@ class Example:
         self.capture()
 
     def capture(self):
-        """Capture simulation loop into a CUDA graph for optimal GPU performance."""
-        if self.solver.device.is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        """Capture simulation loop into a graph for optimal replay performance."""
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         """Execute all simulation substeps for one frame."""

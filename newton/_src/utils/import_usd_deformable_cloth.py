@@ -10,7 +10,6 @@ surface material onto the isotropic membrane. Driven by :func:`.import_usd.parse
 
 from __future__ import annotations
 
-import math
 import warnings
 
 import numpy as np
@@ -46,7 +45,6 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
     from pxr import UsdGeom
 
     from ..usd import utils as usd  # noqa: PLC0415
-    from ..usd.schema_resolver import PrimType  # noqa: PLC0415
 
     builder = ctx.builder
     root_prim = ctx.root_prim
@@ -55,7 +53,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
     verbose = ctx.verbose
     deformable_read = ctx.deformable_read
     get_prim_world_mat = ctx.get_prim_world_mat
-    resolver = ctx.resolver
+    resolution = ctx.resolution_policy
     path_cloth_map = ctx.path_cloth_map
     path_cloth_attrs = ctx.path_cloth_attrs
 
@@ -144,11 +142,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # shell mass model's thickness (NewtonMassAPI massModel="shell" / shellThickness,
         # resolved across Newton / MuJoCo like the rigid shape path above).
         thickness = cloth_mat.get("thickness")
-        if thickness is None and resolver.get_value(prim, PrimType.SHAPE, "mass_model", default="solid") == "shell":
-            shell_thickness_val = resolver.get_value(prim, PrimType.SHAPE, "shell_thickness")
-            if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
-                if float(shell_thickness_val) > 0.0:
-                    thickness = float(shell_thickness_val)
+        if thickness is None:
+            thickness = resolution.resolve_cloth_shell_thickness(prim)
         # Resolve the volumetric density before the thickness fallback: a density authored on
         # the deformable body or a base physics material carries no thickness by construction
         # (only the surface material can author one), yet still needs the areal conversion.

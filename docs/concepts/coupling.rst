@@ -61,7 +61,7 @@ one sub-solver:
 
    entry = SolverCoupled.Entry(
        name="soft",
-       solver=lambda view: SolverVBD(model=view, iterations=20),
+       solver=lambda view: SolverVBD(model=view, iterations=20, rigid_compliant_alm=True),
        bodies=soft_body_ids,
        particles=cloth_particle_ids,
        shapes=cloth_shape_ids,
@@ -207,9 +207,12 @@ usually better served by a custom harvest hook.
 Proxy-local collision detection is optional. A proxy can provide a
 ``collision_pipeline`` factory that receives the destination ``ModelView``. If
 the factory returns a pipeline, the coupler owns a persistent contact buffer and
-refreshes it at ``collide_interval``. If the factory returns ``None`` or no
-factory is supplied, the destination solve uses contacts passed to the outer
-``step()`` call.
+refreshes it at ``collide_interval``; inner proxy iterations reuse that result.
+Masked resets preserve both this cadence and cached contacts, and mark matching
+history for entities selected by the mask, including global entities when the
+final mask entry is set, for invalidation on the next refresh. If the factory
+returns ``None`` or no factory is supplied, the destination solve uses contacts
+passed to the outer ``step()`` call.
 
 The generic proxy loop currently supports at most two solver entries. Within
 that limit, body and particle mappings are grouped by ``(source,
@@ -376,6 +379,11 @@ The coupled-solver framework is useful today, but it is still experimental:
   custom hook is available.
 - USD ownership, automatic coupled-solver construction, and high-level tuning
   guidance are not part of the experimental public API yet.
+- Full-surface (edge/face) rigid-soft contacts are consumed by
+  :class:`~newton.solvers.SolverVBD` only. The per-entry contact filter drops
+  them for other sub-solvers while preserving particle contacts, and keeps them
+  for VBD only when the entry owns every referenced corner. A record spanning
+  two entries is dropped by both. Proxy particles do not support them at all.
 
 Treat coupled solvers as an advanced feature for controlled experiments and
 solver integration work. Prefer focused regression tests and explicit scene

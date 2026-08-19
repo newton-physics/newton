@@ -1,0 +1,1 @@
+Deprecate `Contacts.rigid_contact_diff_*` in Newton 1.6 in favor of caller-allocated outputs passed to `newton.eval_rigid_contact_kinematics()`; use `Contacts.rigid_contact_normal` for the frozen world-space normal.

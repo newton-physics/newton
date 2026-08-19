@@ -176,7 +176,9 @@ formulation.
   :class:`~newton.solvers.SolverMuJoCo`, and
   :class:`~newton.solvers.SolverVBD`.
 - ``kf`` / ``ka``: :class:`~newton.solvers.SolverFeatherstone` and
-  :class:`~newton.solvers.SolverSemiImplicit`.
+  :class:`~newton.solvers.SolverSemiImplicit`; ``kf`` is also used by
+  :class:`~newton.solvers.SolverMuJoCo`
+  (see :ref:`mujoco-contact-friction-solreffriction`).
 - ``restitution``: :class:`~newton.solvers.SolverXPBD` when
   ``enable_restitution=True``, and :class:`~newton.solvers.SolverKamino`.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
@@ -200,7 +202,8 @@ operate on :ref:`articulations <Articulations>` (generalized/reduced coordinates
 The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
 enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
-:class:`~newton.solvers.SolverVBD` supports a subset of joint types via soft constraints (AVBD).
+:class:`~newton.solvers.SolverVBD` supports a subset of joint types through maximal-coordinate
+constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path.
 :class:`~newton.solvers.SolverStyle3D` and :class:`~newton.solvers.SolverImplicitMPM` do not support joints.
 
 **Joint types**

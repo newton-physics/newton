@@ -32,8 +32,13 @@ import newton.viewer
 
 wp.init()
 
-SKIP_EXAMPLES = {
-    "robot_policy",  # non-standard constructor: (viewer, config, asset_directory, mjc_to_physx, physx_to_mjc)
+CUDA_REQUIRED_EXAMPLES = {
+    "brick_stacking",
+    "contacts_rj45_plug",
+    "mujoco_sleeping",
+    "nut_bolt_hydro",
+    "nut_bolt_sdf",
+    "robot_panda_hydro",
 }
 
 
@@ -43,6 +48,12 @@ def _step_and_render(example, num_frames):
             example.step()
         if hasattr(example, "render"):
             example.render()
+
+
+def _get_skip_reason(name, cuda_available):
+    if not cuda_available and name in CUDA_REQUIRED_EXAMPLES:
+        return "requires CUDA"
+    return None
 
 
 def main():
@@ -59,15 +70,29 @@ def main():
     create_parser = newton.examples.create_parser
     default_args = newton.examples.default_args
 
-    matched = {
-        name: mod
-        for name, mod in sorted(example_map.items())
-        if name not in SKIP_EXAMPLES and any(fnmatch.fnmatch(name, p) for p in cli_args.patterns)
+    selected = {
+        name: module_path
+        for name, module_path in sorted(example_map.items())
+        if any(fnmatch.fnmatch(name, pattern) for pattern in cli_args.patterns)
     }
 
-    if not matched:
+    if not selected:
         print(f"No examples matched patterns: {cli_args.patterns}")
         return 1
+
+    cuda_available = wp.is_cuda_available()
+    skipped = {name: reason for name in selected if (reason := _get_skip_reason(name, cuda_available)) is not None}
+    matched = {name: module_path for name, module_path in selected.items() if name not in skipped}
+
+    if skipped:
+        print(f"Skipping {len(skipped)} example(s):")
+        for name, reason in skipped.items():
+            print(f"  {name}: {reason}")
+        print()
+
+    if not matched:
+        print("No runnable examples matched.")
+        return 0
 
     viewer = newton.viewer.ViewerGL()
 
@@ -123,7 +148,7 @@ def main():
     reset_fail = [r for r in results if r["reset"] not in ("OK", None)]
 
     print("\n" + "=" * 70, flush=True)
-    print(f"RESULTS: {switch_ok}/{total} switch OK, {reset_ok}/{total} reset OK")
+    print(f"RESULTS: {switch_ok}/{total} switch OK, {reset_ok}/{total} reset OK, {len(skipped)} skipped")
     print("=" * 70)
 
     if switch_fail:
@@ -141,7 +166,7 @@ def main():
                 print(f"    {line}")
 
     if not switch_fail and not reset_fail:
-        print("\nAll examples passed!")
+        print("\nAll runnable examples passed!" if skipped else "\nAll examples passed!")
 
     return 1 if (switch_fail or reset_fail) else 0
 
