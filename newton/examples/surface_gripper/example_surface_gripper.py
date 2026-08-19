@@ -723,6 +723,7 @@ class Example:
         return parser
 
     def __init__(self, viewer: ViewerBase, args: argparse.Namespace):
+        newton.use_coord_layout_targets = True
 
         # Cache the viewer
         self.viewer = viewer
@@ -957,16 +958,13 @@ class Example:
         )
         self.crate_grip_q_wp = wp.array(crate_grip_q.flatten(), dtype=wp.float32, device=self.model.device)
 
-        # Per-world offsets and strides for the arm's joint arrays. state.joint_q uses the coord
-        # layout; control.joint_target_q uses the dof layout (they differ whenever a world contains
-        # free joints, whose coord count (7) exceeds their dof count (6)).
+        # Per-world offset and stride for the arm's joint arrays, in the coord layout shared by
+        # state.joint_q and (with newton.use_coord_layout_targets = True, set above)
+        # control.joint_target_q.
         arm_view = ArticulationView(self.model, pattern=ROBOT_ARTICULATION_PATTERN)
         arm_coord_layout = arm_view.frequency_layouts[newton.Model.AttributeFrequency.JOINT_COORD]
-        arm_dof_layout = arm_view.frequency_layouts[newton.Model.AttributeFrequency.JOINT_DOF]
-        self.arm_coord_offset = arm_coord_layout.offset  # into state.joint_q (coord layout)
+        self.arm_coord_offset = arm_coord_layout.offset  # into state.joint_q / control.joint_target_q
         self.arm_coord_stride = arm_coord_layout.stride_between_worlds
-        self.arm_dof_offset = arm_dof_layout.offset  # into control.joint_target_q (dof layout)
-        self.arm_dof_stride = arm_dof_layout.stride_between_worlds
 
         # Start each world's arm at the first recorded pose.
         initial_arm_q = self.robot_arm_playback.rec_targets_wp.numpy()[0]  # drive target at t=0, the start pose
@@ -1021,7 +1019,7 @@ class Example:
                 wp.launch(
                     broadcast_arm_targets_kernel,
                     dim=(self.world_count - 1) * NUM_ARM_DOFS,
-                    inputs=[NUM_ARM_DOFS, self.arm_dof_offset, self.arm_dof_stride, self.control.joint_target_q],
+                    inputs=[NUM_ARM_DOFS, self.arm_coord_offset, self.arm_coord_stride, self.control.joint_target_q],
                 )
                 wp.launch(
                     broadcast_gripper_command_kernel,
