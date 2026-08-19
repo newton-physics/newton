@@ -106,9 +106,11 @@ class ControllerNeuralLSTM(Controller):
                     self.hidden.zero_()
                     self.cell.zero_()
             elif type(self.hidden).__module__.startswith("torch"):
-                t = wp.to_torch(mask).bool()
-                self.hidden[:, t, :] = 0.0
-                self.cell[:, t, :] = 0.0
+                # Network outputs are produced under torch.inference_mode(); in-place
+                # writes to them outside that mode raise, so build new tensors instead.
+                t = wp.to_torch(mask).bool().view(1, -1, 1)
+                self.hidden = self.hidden.masked_fill(t, 0.0)
+                self.cell = self.cell.masked_fill(t, 0.0)
             else:
                 wp.launch(
                     _zero_masked_3d_kernel,
@@ -219,7 +221,7 @@ class ControllerNeuralLSTM(Controller):
         self._num_actuators = 0
         self._torch_input_indices: torch.Tensor | None = None
         self._torch_vel_indices: torch.Tensor | None = None
-        self._torch_sequential_indices: torch.Tensor | None = None
+        self._torch_target_pos_indices: torch.Tensor | None = None
         self._hidden: torch.Tensor | None = None
         self._cell: torch.Tensor | None = None
         self._net_input: wp.array3d[float] | None = None
@@ -235,7 +237,6 @@ class ControllerNeuralLSTM(Controller):
 
             self._torch_device = torch.device(f"cuda:{device.ordinal}" if device.is_cuda else "cpu")
             self.network = self.network.to(self._torch_device)
-            self._torch_sequential_indices = torch.arange(num_actuators, dtype=torch.long, device=self._torch_device)
             return
 
         runtime, _ = load_checkpoint(
@@ -318,11 +319,9 @@ class ControllerNeuralLSTM(Controller):
                 positions,
                 velocities,
                 target_pos,
-                target_vel,
                 pos_indices,
                 vel_indices,
                 target_pos_indices,
-                target_vel_indices,
                 forces,
                 state,
             )
@@ -385,29 +384,24 @@ class ControllerNeuralLSTM(Controller):
         positions: wp.array[float],
         velocities: wp.array[float],
         target_pos: wp.array[float],
-        target_vel: wp.array[float],
         pos_indices: wp.array[wp.uint32],
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
-        target_vel_indices: wp.array[wp.uint32],
         forces: wp.array[float],
         state: ControllerNeuralLSTM.State,
     ) -> None:
         import torch
 
         if self._torch_input_indices is None:
-            self._torch_input_indices = torch.tensor(pos_indices.numpy(), dtype=torch.long, device=self._torch_device)
-            self._torch_vel_indices = torch.tensor(vel_indices.numpy(), dtype=torch.long, device=self._torch_device)
+            self._torch_input_indices = wp.to_torch(pos_indices).long()
+            self._torch_vel_indices = wp.to_torch(vel_indices).long()
+            self._torch_target_pos_indices = wp.to_torch(target_pos_indices).long()
 
         current_pos = wp.to_torch(positions)
         current_vel = wp.to_torch(velocities)
         target_p = wp.to_torch(target_pos)
 
-        torch_target_pos_idx = (
-            self._torch_input_indices if target_pos_indices is pos_indices else self._torch_sequential_indices
-        )
-
-        pos_error = target_p[torch_target_pos_idx] - current_pos[self._torch_input_indices]
+        pos_error = target_p[self._torch_target_pos_indices] - current_pos[self._torch_input_indices]
         vel = current_vel[self._torch_vel_indices]
 
         net_input = torch.stack([pos_error * self.pos_scale, vel * self.vel_scale], dim=1).unsqueeze(1)
