@@ -1069,11 +1069,13 @@ class Example:
                 )
             else:
                 attach_seal(
+                    self.model,
                     self.state_0,
                     self.gripper_model,
                     self.gripper_state_input_prev,
                     self.gripper_state_output,
                     self.gripper_state_input_curr,
+                    self.shape_mesh_id_wp,
                 )
 
             # Per-pad seal quality (RMS perimeter-gap deviation from the seated pose) at this sub-step's

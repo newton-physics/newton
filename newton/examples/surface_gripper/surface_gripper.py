@@ -322,16 +322,42 @@ def _attach_seal_kernel(
     hold_pose_body_b: wp.array[
         wp.transform
     ],  # GB0 per body: raw body_q (attach_seal) or the fitted seated pose (attach_seal_seated)
+    shape_mesh_id: wp.array[wp.uint64],  # shape_id -> SDF mesh id
+    shape_transform: wp.array[wp.transform],  # shape_transform[shape_b] = T_bs for the gripped shape
+    pad_perimeter_local: wp.array[
+        wp.vec3
+    ],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
+    pad_perimeter_start: wp.array[
+        int
+    ],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
+    max_dist: float,  # SDF search radius [m]
     # outputs
     pad_anchor_b: wp.array[wp.transform],
+    pad_perimeter_sdf0: wp.array[
+        float
+    ],  # perimeter signed distances at the raw anchor, cached at engagement (indexed by pad_perimeter_start)
 ):
-    """On a disengaged->engaged rising edge, cache SB = GB0^-1 * SA0 into pad_anchor_b (see Frame nomenclature)."""
+    """On a disengaged->engaged rising edge, cache SB = GB0^-1 * SA0 into pad_anchor_b (see Frame nomenclature),
+    and cache the perimeter signed distances at that anchor into ``pad_perimeter_sdf0`` -- the same baseline
+    :func:`_attach_seal_seated_kernel` caches, so :func:`evaluate_seal_quality`'s RMS reads a real deviation
+    from this pad's engagement pose regardless of which attach path (seated or raw) engaged it."""
     pad = wp.tid()
     body_b = pad_engaged_bs_curr[pad][0]  # the body this pad is engaging to; the gate below keeps it valid
-    if body_b >= 0 and pad_engaged_bs_prev[pad][0] < 0:
+    shape_b = pad_engaged_bs_curr[pad][1]  # its collision shape, used to index shape_mesh_id below
+    # Both ids must be valid: shape_b indexes shape_mesh_id and shape_transform, so a negative one
+    # would read out of bounds even when body_b is a real body.
+    if body_b >= 0 and shape_b >= 0 and pad_engaged_bs_prev[pad][0] < 0:
         gripper_id = pad_gripper[pad]
         seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]  # SA
-        pad_anchor_b[pad] = wp.transform_inverse(hold_pose_body_b[body_b]) * seal_world
+        anchor_b = wp.transform_inverse(hold_pose_body_b[body_b]) * seal_world
+        pad_anchor_b[pad] = anchor_b
+        # Cache pad_perimeter_sdf0: SDF at each perimeter point placed by SB (in mesh frame), mirroring
+        # _attach_seal_seated_kernel's baseline but around the raw (unfit) anchor.
+        mesh_b = shape_mesh_id[shape_b]
+        anchor_in_mesh = wp.transform_inverse(shape_transform[shape_b]) * anchor_b
+        for k in range(pad_perimeter_start[pad], pad_perimeter_start[pad + 1]):
+            perimeter_mesh = wp.transform_point(anchor_in_mesh, pad_perimeter_local[k])
+            pad_perimeter_sdf0[k] = sdf_mesh(mesh_b, perimeter_mesh, max_dist)
 
 
 @wp.kernel
@@ -1139,27 +1165,36 @@ class SurfaceGripperModel:
 
 
 def attach_seal(
+    model: newton.Model,
     state: newton.State,
     gripper_model: "SurfaceGripperModel",
     gripper_state_input_prev: SurfaceGripperStateInput,
     gripper_state_output: SurfaceGripperStateOutput,
     gripper_state_input_curr: SurfaceGripperStateInput,
+    shape_mesh_id: wp.array[wp.uint64],
+    max_dist: float = 1.0,
 ) -> None:
     """Latch ``pad_anchor_b`` for pads that just engaged, then commit the seal state.
 
     On a disengaged->engaged rising edge (``gripper_state_input_prev.pad_engaged_bs[..][0] < 0`` and
     ``gripper_state_input_curr.pad_engaged_bs[..][0] >= 0``), cache SB into ``pad_anchor_b`` against
-    the body's raw pose (``state.body_q``).
+    the body's raw pose (``state.body_q``), and ``pad_perimeter_sdf0`` with the perimeter signed
+    distances at that anchor -- the same baseline :func:`evaluate_seal_quality` measures deviation from.
     Cf. :func:`attach_seal_seated`, which seats against the inline-fitted pose.
 
     Args:
+        model: Finalized Newton model; source of ``shape_transform`` (T_bs per shape).
         state: Simulation state; source of ``body_q`` (world body poses).
         gripper_model: Finalized gripper holding the pad/gripper layout arrays.
         gripper_state_input_prev: Previous sub-step's input state; ``pad_engaged_bs[..][0]``
             (< 0 = released last step) detects the rising edge.
-        gripper_state_output: Per-pad output state; ``pad_anchor_b`` is written on each rising edge.
+        gripper_state_output: Per-pad output state; ``pad_anchor_b`` and ``pad_perimeter_sdf0``
+            are written on each rising edge.
         gripper_state_input_curr: Current sub-step's input state; ``pad_engaged_bs[..][0]``
-            (>= 0 = engaged this step) detects the rising edge and identifies the target body.
+            (>= 0 = engaged this step) detects the rising edge and identifies the target body,
+            while ``[..][1]`` identifies the gripped collision shape.
+        shape_mesh_id: shape id -> SDF mesh id (:class:`warp.Mesh`), shape [n_shapes].
+        max_dist: SDF search radius [m].
     """
     n_pads = gripper_model.pad_xform.shape[0]
     if n_pads == 0:
@@ -1176,7 +1211,13 @@ def attach_seal(
             gripper_model.pad_xform,
             state.body_q,
             state.body_q,  # hold pose = the body's raw pose
+            shape_mesh_id,
+            model.shape_transform,
+            gripper_model.pad_perimeter_local,
+            gripper_model.pad_perimeter_start,
+            max_dist,
             gripper_state_output.pad_anchor_b,
+            gripper_state_output.pad_perimeter_sdf0,
         ],
         device=gripper_model.pad_xform.device,
     )
@@ -1360,6 +1401,8 @@ def evaluate_seal_quality(
     In preparing and engaged modes, sdf_now(i) is the signed distance of the ith sample point at the
     current pose.
 
+    Engaged-mode ``sdf_baseline`` comes from ``gripper_state_output.pad_perimeter_sdf0``, cached on the
+    rising edge by whichever of :func:`attach_seal` or :func:`attach_seal_seated` engaged the pad.
 
     Args:
         model: Finalized Newton model; source of ``shape_transform`` (T_bs per shape).
