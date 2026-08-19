@@ -856,7 +856,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # One surface gripper per world, attached to the end effector body. Pads placed at the
         # transforms read from the arm USD. The seal's stiffness/damping are set once, from the first crate's
@@ -1129,7 +1130,7 @@ class Example:
                 self.sim_dt,
             )
 
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             self.state_0, self.state_1 = self.state_1, self.state_0
