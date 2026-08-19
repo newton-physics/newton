@@ -90,6 +90,10 @@ def _composed_resolution(*args, **kwargs):
     return SchemaResolution(*args, **kwargs)
 
 
+def _result_values(results):
+    return {key: result.value for key, result in results.items()}
+
+
 if USD_AVAILABLE:
     try:
         from pxr import Sdf, UsdGeom, UsdPhysics, UsdShade
@@ -103,6 +107,78 @@ else:
 
 
 class TestSourceNeutralSchemaResolution(unittest.TestCase):
+    def test_results_expose_winning_provenance(self):
+        """Expose the winning value and provenance through one result."""
+        resolver = SchemaResolverNewton()
+        resolution = _composed_resolution([resolver])
+
+        result = resolution.resolve(
+            PrimType.JOINT,
+            {"newton:armature": 0.25},
+            schemas={"NewtonJointAPI"},
+            keys=("armature",),
+        )["armature"]
+
+        self.assertIsInstance(result, SchemaResolution.Result)
+        self.assertEqual(result.value, 0.25)
+        self.assertEqual(result.source, SchemaResolution.Source.AUTHORED)
+        self.assertIs(result.resolver, resolver)
+        self.assertEqual(result.schema_name, "NewtonJointAPI")
+        self.assertEqual(result.attribute_names, ("newton:armature",))
+
+    def test_results_distinguish_non_authored_sources(self):
+        """Distinguish every non-authored terminal source."""
+
+        class CustomResolver(SchemaResolver):
+            name = "custom"
+            schema_names: ClassVar = {PrimType.JOINT: "CustomJointAPI"}
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "armature": SchemaResolver.SchemaAttribute("custom:armature", 0.5),
+                }
+            }
+
+        resolver = CustomResolver()
+        resolution = _composed_resolution([resolver])
+        registered = resolution.resolve(
+            PrimType.JOINT,
+            {},
+            schemas={"CustomJointAPI"},
+            schema_fallbacks={"CustomJointAPI": {"custom:armature": 0.25}},
+            keys=("armature",),
+        )["armature"]
+        importer = resolution.resolve(
+            PrimType.JOINT,
+            {},
+            defaults={"armature": 0.75},
+            keys=("armature",),
+        )["armature"]
+        compatibility = resolution.resolve(
+            PrimType.JOINT,
+            {},
+            schemas={"CustomJointAPI"},
+            keys=("armature",),
+        )["armature"]
+        unresolved = _composed_resolution([SchemaResolverNewton()]).resolve(
+            PrimType.JOINT,
+            {},
+            keys=("armature",),
+        )["armature"]
+
+        self.assertEqual(registered.source, SchemaResolution.Source.REGISTERED_FALLBACK)
+        self.assertIs(registered.resolver, resolver)
+        self.assertEqual(registered.schema_name, "CustomJointAPI")
+        self.assertEqual(registered.attribute_names, ("custom:armature",))
+        self.assertEqual(importer.source, SchemaResolution.Source.IMPORTER_DEFAULT)
+        self.assertIsNone(importer.resolver)
+        self.assertIsNone(importer.schema_name)
+        self.assertEqual(importer.attribute_names, ())
+        self.assertEqual(compatibility.source, SchemaResolution.Source.COMPATIBILITY_DEFAULT)
+        self.assertIs(compatibility.resolver, resolver)
+        self.assertEqual(compatibility.schema_name, "CustomJointAPI")
+        self.assertEqual(unresolved.source, SchemaResolution.Source.UNRESOLVED)
+        self.assertIsNone(unresolved.value)
+
     def test_default_policy_retains_legacy_values(self):
         """Preserve legacy values under the default source-neutral policy."""
         resolution = SchemaResolution([SchemaResolverPhysx(), SchemaResolverNewton()])
@@ -117,7 +193,7 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
                 keys=("armature",),
             )
 
-        self.assertEqual(resolved, {"armature": 0.1})
+        self.assertEqual(_result_values(resolved), {"armature": 0.1})
 
     def test_explicit_none_suppresses_legacy_resolver_default(self):
         """Treat an explicit null importer default as authoritative."""
@@ -130,7 +206,7 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
             keys=("velocity_limit",),
         )
 
-        self.assertEqual(resolved, {"velocity_limit": None})
+        self.assertEqual(_result_values(resolved), {"velocity_limit": None})
 
     def test_owned_legacy_defaults_do_not_affect_composed_resolution(self):
         """Ignore owned compatibility defaults under registered precedence."""
@@ -139,7 +215,7 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
         resolved = resolution.resolve(PrimType.JOINT, {}, keys=("armature",))
 
         self.assertEqual(SchemaResolverNewton.mapping[PrimType.JOINT]["armature"].default, 0.0)
-        self.assertEqual(resolved, {"armature": None})
+        self.assertEqual(_result_values(resolved), {"armature": None})
 
     def test_multi_apply_owners_match_attribute_instances(self):
         """Match multi-apply schema owners to their attribute instances."""
@@ -166,10 +242,10 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
             defaults={"damping": 0.3, "friction": 0.4},
         )
 
-        self.assertEqual(resolved["armature"], 0.2)
-        self.assertEqual(resolved["damping"], 0.3)
-        self.assertEqual(resolved["friction"], 0.4)
-        self.assertIsNone(resolved["velocity_limit"])
+        self.assertEqual(resolved["armature"].value, 0.2)
+        self.assertEqual(resolved["damping"].value, 0.3)
+        self.assertEqual(resolved["friction"].value, 0.4)
+        self.assertIsNone(resolved["velocity_limit"].value)
 
     def test_applied_schema_owns_its_fallback(self):
         """Use a fallback owned by an applicable registered schema."""
@@ -184,15 +260,17 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
             keys=("armature",),
         )
 
-        self.assertEqual(resolved, {"armature": 0.0})
+        self.assertEqual(_result_values(resolved), {"armature": 0.0})
 
         self.assertEqual(
-            _composed_resolution([SchemaResolverPhysx()]).resolve(
-                PrimType.JOINT,
-                {},
-                schemas="PhysxJointAPI",
-                schema_fallbacks=_SOURCE_SCHEMA_FALLBACKS,
-                keys=("armature",),
+            _result_values(
+                _composed_resolution([SchemaResolverPhysx()]).resolve(
+                    PrimType.JOINT,
+                    {},
+                    schemas="PhysxJointAPI",
+                    schema_fallbacks=_SOURCE_SCHEMA_FALLBACKS,
+                    keys=("armature",),
+                )
             ),
             {"armature": 0.0},
         )
@@ -208,12 +286,14 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
         resolution = _composed_resolution([CustomResolver()])
 
         self.assertEqual(
-            resolution.resolve(
-                PrimType.JOINT,
-                {},
-                schemas={"CustomJointAPI"},
-                defaults={"armature": 0.3},
-                keys=("armature",),
+            _result_values(
+                resolution.resolve(
+                    PrimType.JOINT,
+                    {},
+                    schemas={"CustomJointAPI"},
+                    defaults={"armature": 0.3},
+                    keys=("armature",),
+                )
             ),
             {"armature": 0.3},
         )
@@ -229,7 +309,7 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
             keys=("armature",),
         )
 
-        self.assertEqual(resolved, {"armature": 0.3})
+        self.assertEqual(_result_values(resolved), {"armature": 0.3})
 
     def test_requirements_include_composite_inputs(self):
         """Include every source input required by composite properties."""
@@ -256,9 +336,9 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
         )
 
         self.assertEqual(requirements, ("physxJoint:armature",))
-        self.assertEqual(resolved, {"armature": 0.25})
+        self.assertEqual(_result_values(resolved), {"armature": 0.25})
         self.assertEqual(
-            resolution.resolve(PrimType.JOINT, {"physxJoint:armature": 0.25}, keys="armature"),
+            _result_values(resolution.resolve(PrimType.JOINT, {"physxJoint:armature": 0.25}, keys="armature")),
             {"armature": 0.25},
         )
 
@@ -282,12 +362,14 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
             ("physxLimit:transX:stiffness",),
         )
         self.assertEqual(
-            resolution.resolve(
-                PrimType.JOINT,
-                {},
-                schemas={"PhysxLimitAPI:transX"},
-                schema_fallbacks=_SOURCE_SCHEMA_FALLBACKS,
-                keys=("limit_transX_ke",),
+            _result_values(
+                resolution.resolve(
+                    PrimType.JOINT,
+                    {},
+                    schemas={"PhysxLimitAPI:transX"},
+                    schema_fallbacks=_SOURCE_SCHEMA_FALLBACKS,
+                    keys=("limit_transX_ke",),
+                )
             ),
             {"limit_transX_ke": 0.0},
         )
@@ -311,9 +393,9 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
             },
         )
 
-        self.assertFalse(scene["gravity_enabled"])
-        self.assertEqual(scene["time_steps_per_second"], 100)
-        self.assertAlmostEqual(shape["gap"], 0.04)
+        self.assertFalse(scene["gravity_enabled"].value)
+        self.assertEqual(scene["time_steps_per_second"].value, 100)
+        self.assertAlmostEqual(shape["gap"].value, 0.04)
 
     def test_mjc_collision_schema_owns_solref_fallback(self):
         """Resolve the MuJoCo collision fallback from its owning schema."""
@@ -327,8 +409,8 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
             keys=("ke", "kd"),
         )
 
-        self.assertAlmostEqual(resolved["ke"], 2500.0, places=3)
-        self.assertAlmostEqual(resolved["kd"], 100.0, places=3)
+        self.assertAlmostEqual(resolved["ke"].value, 2500.0, places=3)
+        self.assertAlmostEqual(resolved["kd"].value, 100.0, places=3)
 
     def test_composite_fallback_may_resolve_to_none(self):
         """Allow a composite registered fallback to remain unresolved."""
@@ -342,7 +424,7 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
             keys=("gap",),
         )
 
-        self.assertEqual(resolved, {"gap": None})
+        self.assertEqual(_result_values(resolved), {"gap": None})
 
     def test_source_neutral_getters_preserve_warnings(self):
         """Preserve warnings emitted by source-neutral value getters."""
@@ -354,7 +436,7 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
                 {"newton:angular:limitStiffness": 10.0},
             )
 
-        self.assertEqual(resolved["limit_angular_ke"], 10.0)
+        self.assertEqual(resolved["limit_angular_ke"].value, 10.0)
 
     def test_legacy_pxr_getter_remains_available(self):
         """Keep legacy PXR-only getters available on the PXR adapter."""
@@ -417,19 +499,24 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
         self.assertEqual(manager.get_value(None, PrimType.JOINT, "armature"), 0.25)
 
         resolution = _composed_resolution([CustomResolver()])
-        self.assertEqual(resolution.resolve(PrimType.JOINT, {}, keys=("armature",)), {"armature": 0.25})
+        self.assertEqual(
+            _result_values(resolution.resolve(PrimType.JOINT, {}, keys=("armature",))),
+            {"armature": 0.25},
+        )
 
     def test_source_adapter_supplies_registered_fallback(self):
         """Accept registered fallbacks supplied by a source adapter."""
         resolution = _composed_resolution([SchemaResolverNewton()])
 
         self.assertEqual(
-            resolution.resolve(
-                PrimType.JOINT,
-                {},
-                schemas={"NewtonJointAPI"},
-                schema_fallbacks={"NewtonJointAPI": {"newton:armature": 9.0}},
-                keys=("armature",),
+            _result_values(
+                resolution.resolve(
+                    PrimType.JOINT,
+                    {},
+                    schemas={"NewtonJointAPI"},
+                    schema_fallbacks={"NewtonJointAPI": {"newton:armature": 9.0}},
+                    keys=("armature",),
+                )
             ),
             {"armature": 9.0},
         )
@@ -2465,7 +2552,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         self.assertAlmostEqual(
             manager.get_value(joint, PrimType.JOINT, "armature", default=0.3),
-            mapping_result["armature"],
+            mapping_result["armature"].value,
         )
         self.assertFalse(manager._legacy_fallback_properties)
 
@@ -2509,12 +2596,14 @@ class TestSchemaResolver(unittest.TestCase):
         joint.AddAppliedSchema("NewtonJointAPI")
         resolution = _composed_resolution([SchemaResolverNewton()])
         self.assertEqual(
-            resolution.resolve(
-                PrimType.JOINT,
-                {},
-                schemas={"NewtonJointAPI"},
-                schema_fallbacks={"NewtonJointAPI": {"newton:armature": 9.0}},
-                keys=("armature",),
+            _result_values(
+                resolution.resolve(
+                    PrimType.JOINT,
+                    {},
+                    schemas={"NewtonJointAPI"},
+                    schema_fallbacks={"NewtonJointAPI": {"newton:armature": 9.0}},
+                    keys=("armature",),
+                )
             ),
             {"armature": 9.0},
         )

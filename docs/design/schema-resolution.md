@@ -19,9 +19,10 @@ identify ownership and conversion. The source adapter supplies registered
 schema fallbacks: the PXR adapter reads them from `Usd.SchemaRegistry`, while a
 PXR-free adapter provides the equivalent versioned schema metadata explicitly.
 Property interpretation and multi-input assembly live in the private
-`_usd_resolution_policy.py` module. Batched resolution, Warp functions,
-complete public provenance, dynamic applicability, and direct ModelBuilder
-buffer population are deliberately deferred.
+`_usd_resolution_policy.py` module. Each source-neutral result reports its
+value, source category, resolver, schema ownership, and source attributes.
+Batched resolution, Warp functions, dynamic schema discovery, and direct
+ModelBuilder buffer population are deliberately deferred.
 
 ## Goals
 
@@ -31,7 +32,8 @@ buffer population are deliberately deferred.
 - Read fallbacks from registered USD schemas on the PXR path.
 - Accept registered schema fallbacks from schema-neutral source adapters.
 - Keep schema metadata versioning in the adapter that owns the scene source.
-- Keep the external mechanism small and hide candidates, provenance, and storage.
+- Keep the public interface small and hide candidates and storage.
+- Report the winning source without exposing internal candidate state.
 - Make the scalar contract suitable for later columnar and Warp execution.
 - Let non-PXR scene consumers reuse the resolver without changing their
   construction loops.
@@ -43,6 +45,8 @@ buffer population are deliberately deferred.
 - Defining an external scene representation or public batch API.
 - Making arbitrary downstream resolver definitions device-capable.
 - Introducing a scene intermediate representation.
+- Applying importer-specific SDF, contact, joint-axis, or builder rules to
+  source-neutral results.
 
 ## Current behavior
 
@@ -81,18 +85,18 @@ decides whether that candidate is usable.
 The resolver engine consumes source values and schema identity:
 
 ```text
-read(attribute_name) -> value or missing
-schemas -> applied API and typed schema names
+read(attribute_name) -> authored value, blocked value, or missing
+schemas -> every applicable API and typed schema identity
 fallback(schema_name, attribute_name) -> raw USD value or missing
 ```
 
 The PXR adapter reads authored values and applied/type metadata, then asks
 `Usd.SchemaRegistry` for the composed prim definition and its attribute
-fallbacks. A non-PXR source provides already-composed values, recorded schema
-identity, and the fallbacks for schemas it treats as registered. Resolver
-priority, transformations, and private selected-source provenance are shared.
-The public scalar result contains canonical values rather than provenance
-records.
+fallbacks. A non-PXR source provides already-composed values, applicable schema
+identity, and the fallbacks for schemas it treats as registered. The adapter
+expands typed-schema ancestry when its source supports it. Resolver priority,
+transformations, candidate selection, and selected-source provenance are
+shared.
 
 Schemas without authoritative metadata remain a second-class compatibility
 path. Their authored values still participate in resolver priority, while
@@ -155,6 +159,9 @@ properties = resolution.resolve(
     },
     defaults={"armature": builder.default_joint_cfg.armature},
 )
+
+armature = properties["armature"]
+print(armature.value, armature.source, armature.resolver)
 ```
 
 Fallback tables contain raw USD values; the common resolver applies the same
@@ -163,12 +170,13 @@ methods accept an optional `keys=` selection so an integration can request only
 the logical properties it can preserve.
 
 `SchemaResolution` is public and typed; its internals are not. Candidate types,
-provenance, mapping definitions, transforms, diagnostics, compatibility policy,
-and future Warp storage remain private. `requirements()` returns source
-attribute names, `schemas()` returns the schema identities needed for
-ownership, and `resolve()` returns canonical logical keys and values. This
-scalar mapping interface is intended for the existing `ModelBuilder.add_*()`
-path, not the future hot path.
+mapping definitions, transforms, diagnostics, compatibility policy, and future
+Warp storage remain private. `requirements()` returns source attribute names,
+`schemas()` returns the schema identities needed for ownership, and `resolve()`
+returns one `SchemaResolution.Result` per logical key. A result contains the
+canonical value, its `SchemaResolution.Source`, the winning resolver, declared
+schema ownership, and source attribute names. This scalar mapping interface is
+intended for the existing `ModelBuilder.add_*()` path, not the future hot path.
 
 ## `add_usd()` migration
 
@@ -190,13 +198,14 @@ It does not traverse the stage or mutate the builder.
 
 ## Non-PXR source integration
 
-A schema-aware scene source supplies attribute values plus typed and applied
-schema identities to the same `SchemaResolution` inside its existing body,
-shape, and joint loops. It also supplies the registered fallbacks for the
-schema versions its transport exposes. Topology discovery, ordering, and
-`ModelBuilder.add_*()` calls remain source concerns. Equivalent local
-precedence and conversion code can be removed as each entity family moves to
-the shared engine.
+A schema-aware scene source supplies attribute values plus every typed and
+applied schema identity that is applicable to the same `SchemaResolution`
+inside its existing body, shape, and joint loops. It also supplies the
+registered fallbacks for the schema versions its transport exposes. Topology
+discovery, ordering, and `ModelBuilder.add_*()` calls remain source concerns.
+Equivalent local precedence code can be removed as each entity family moves to
+the shared engine. Source-specific construction and importer interpretation do
+not move into schema resolution.
 
 A non-PXR source must preserve the USD fallback semantics expected by the
 resolver. A source that substitutes an engine descriptor default for a USD
@@ -233,6 +242,7 @@ host to report after execution. Diagnostic representation is not public.
   sources.
 - Adapter-supplied fallbacks establish registered ownership without importing
   PXR.
+- Every terminal source reports its value and winning provenance.
 - Registered Newton schema fallbacks are read directly from the PXR registry.
 - Legacy PXR-only callbacks continue to work and fail explicitly through the
   source-neutral facade.
@@ -265,13 +275,13 @@ contracts exist. The narrow typed facade leaves those choices open.
 ## Implementation status
 
 The typed setup object, shared scalar engine, PXR adapter, ownership metadata,
-migration audit, and importer property policy are implemented. The default
-still returns legacy values while auditing registered-schema precedence.
+public scalar provenance, migration audit, and importer property policy are
+implemented. The default still returns legacy values while auditing
+registered-schema precedence.
 
 Remaining work is to adopt the scalar facade in non-PXR scene integrations,
-complete public provenance and dynamic applicability as required follow-up work
-for issue #3307, finish the deprecation window, and design batch column binding
-separately.
+expand adapter-specific schema applicability where needed, finish the
+deprecation window, and design batch column binding separately.
 
 ## Open questions
 

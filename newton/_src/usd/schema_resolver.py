@@ -592,6 +592,38 @@ class SchemaResolution:
             compatibility period.
     """
 
+    class Source(IntEnum):
+        """Identify the source that supplied a resolved property."""
+
+        UNRESOLVED = 0
+        """No candidate supplied a usable value."""
+        AUTHORED = 1
+        """An authored source attribute supplied the value."""
+        REGISTERED_FALLBACK = 2
+        """A registered schema fallback supplied the value."""
+        IMPORTER_DEFAULT = 3
+        """The caller's importer default supplied the value."""
+        COMPATIBILITY_DEFAULT = 4
+        """A resolver mapping compatibility default supplied the value."""
+
+    @dataclass(frozen=True)
+    class Result:
+        """Describe a resolved property and its winning source.
+
+        Args:
+            value: Canonical value produced by the configured resolver.
+            source: Source category that supplied the value.
+            resolver: Resolver that supplied the value, when applicable.
+            schema_name: Schema declared to own the property, when applicable.
+            attribute_names: Source attributes read for the property.
+        """
+
+        value: Any
+        source: SchemaResolution.Source
+        resolver: SchemaResolver | None
+        schema_name: str | None
+        attribute_names: tuple[str, ...]
+
     def __init__(
         self,
         resolvers: Sequence[SchemaResolver],
@@ -736,6 +768,24 @@ class SchemaResolution:
         names = ", ".join(spec.attribute_names or (spec.name,))
         return f"{schema_name or resolver.name} ({names})"
 
+    def _public_result(self, resolved: _ResolvedValue, prim_type: PrimType, key: str) -> Result:
+        resolver = resolved.resolver or resolved.compatibility_resolver
+        if resolver is None:
+            schema_name = None
+            attribute_names = ()
+        else:
+            mapping_key = resolved.mapping_key or key
+            spec = resolver.mapping.get(prim_type, {}).get(mapping_key)
+            schema_name = resolver._schema_name(prim_type, key)
+            attribute_names = () if spec is None else tuple(spec.attribute_names or (spec.name,))
+        return self.Result(
+            value=resolved.value,
+            source=self.Source(resolved.source.value),
+            resolver=resolver,
+            schema_name=schema_name,
+            attribute_names=attribute_names,
+        )
+
     def resolve(
         self,
         prim_type: PrimType,
@@ -745,7 +795,7 @@ class SchemaResolution:
         schema_fallbacks: Mapping[str, Mapping[str, Any]] | None = None,
         defaults: Mapping[str, Any] | None = None,
         keys: Sequence[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Result]:
         """Resolve logical keys from source values and applied schemas.
 
         Args:
@@ -758,7 +808,7 @@ class SchemaResolution:
             keys: Optional logical keys to resolve.
 
         Returns:
-            Resolved values keyed by logical key.
+            Resolution results keyed by logical key.
 
         Raises:
             TypeError: If a resolver requires a PXR prim.
@@ -790,7 +840,7 @@ class SchemaResolution:
             value_cache[cache_key] = _ResolverValue(value, value is not None)
             return value_cache[cache_key]
 
-        resolved: dict[str, Any] = {}
+        resolved: dict[str, SchemaResolution.Result] = {}
         compatibility_changes: set[str] = set()
         for key in logical_keys:
             has_default = key in defaults
@@ -822,7 +872,7 @@ class SchemaResolution:
                 )
                 if not SchemaResolverManager._values_equal(selected_value.value, registered.value):
                     compatibility_changes.add(self._fallback_label(registered, prim_type, key))
-            resolved[key] = selected_value.value
+            resolved[key] = self._public_result(selected_value, prim_type, key)
 
         if compatibility_changes:
             properties = ", ".join(sorted(compatibility_changes))
