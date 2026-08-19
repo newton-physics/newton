@@ -10,6 +10,8 @@ produces as one square block per articulation: the multiply kernel stays flat
 and indexes into those blocks, while the gather kernel launches over them.
 """
 
+from __future__ import annotations
+
 import warp as wp
 
 from ....core.types import Devicelike
