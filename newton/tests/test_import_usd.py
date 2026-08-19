@@ -12646,6 +12646,57 @@ def Xform "Body" (
             self.assertAlmostEqual(channel, want, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_uniform_indexed_normals_are_expanded(self):
+        """Verify indexed uniform normals survive import rather than being dropped.
+
+        A flat-shaded mesh commonly authors one normal per face, indexed so each distinct
+        direction is stored once. Only faceVarying was handled, so the raw value count was
+        compared against the vertex and corner counts, matched neither, and the normals
+        were discarded with a warning.
+        """
+        from pxr import Sdf, Usd, UsdGeom, Vt
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        # Two quads meeting at a right angle, so the two face normals differ.
+        mesh.CreatePointsAttr().Set([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (1, 0, 1), (0, 1, 1)])
+        mesh.CreateFaceVertexCountsAttr().Set([4, 4])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 3, 1, 4, 5, 2])
+        normals = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.uniform
+        )
+        normals.Set(Vt.Vec3fArray([(0, 0, 1), (1, 0, 0)]))
+        normals.SetIndices(Vt.IntArray([0, 1]))
+        # Authored normals are only loaded for meshes carrying material subsets, so the
+        # subsets are what makes this reachable at all.
+        for name, face in (("a", 0), ("b", 1)):
+            subset = UsdGeom.Subset.Define(stage, f"/Mesh/{name}")
+            subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+            subset.CreateIndicesAttr().Set(Vt.IntArray([face]))
+            subset.CreateFamilyNameAttr().Set("materialBind")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage, load_visual_shapes=True)
+        self.assertFalse([w for w in caught if "normals" in str(w.message).lower()])
+
+        directions = set()
+        for path, shape in result["path_shape_map"].items():
+            if not path.startswith("/Mesh"):
+                continue
+            source = builder.shape_source[shape]
+            self.assertIsNotNone(source.normals, f"{path} lost its normals")
+            imported = np.asarray(source.normals)
+            self.assertEqual(len(imported), len(source.vertices))
+            np.testing.assert_allclose(np.linalg.norm(imported, axis=1), 1.0, atol=1e-6)
+            directions.update(tuple(np.round(n, 4)) for n in imported)
+        # Both authored directions must survive; dropping the indices would collapse them.
+        self.assertIn((0.0, 0.0, 1.0), directions)
+        self.assertIn((1.0, 0.0, 0.0), directions)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_fallback_with_material(self):
         """Colliders with material stay visible when the body has no other visual shapes."""
         stage = self._create_stage_with_pbr_collision_mesh(

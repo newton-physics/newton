@@ -1584,6 +1584,21 @@ def get_mesh(
 
     if normals is not None:
         normals = np.array(normals, dtype=np.float64)
+        if normals_interpolation == UsdGeom.Tokens.uniform:
+            # One normal per face, commonly indexed so that flat-shaded geometry stores each
+            # distinct direction once. Resolve the indices and hand each face's normal to its
+            # own corners, which is the faceVarying form the rest of this function expects.
+            prim_path = str(prim.GetPath())
+            if normal_indices is not None and len(normal_indices) > 0:
+                normals = _expand_indexed_primvar(normals, normal_indices, "Normal", prim_path)
+                normal_indices = None
+            if len(normals) != len(counts):
+                raise ValueError(
+                    f"Length of uniform normals ({len(normals)}) does not match number of faces "
+                    f"({len(counts)}) for mesh {prim_path}"
+                )
+            normals = np.repeat(normals, np.asarray(counts, dtype=np.int32), axis=0)
+            normals_interpolation = UsdGeom.Tokens.faceVarying
         if normals_interpolation == UsdGeom.Tokens.faceVarying:
             prim_path = str(prim.GetPath())
             if normal_indices is not None and len(normal_indices) > 0:

@@ -2368,6 +2368,11 @@ All broad phase classes expose a ``launch`` method that writes candidate pairs
    * - :class:`~geometry.BroadPhaseExplicit`
      - Tests precomputed ``shape_pairs`` against AABBs. No constructor arguments.
 
+When :class:`~CollisionPipeline` uses the ``"explicit"`` broad-phase mode, the
+explicit pair array is fixed for the lifetime of the pipeline. Its initial pair
+count and shape types determine internal buffer sizes and narrow-phase
+specializations. Rebuild the pipeline after modifying or resizing the pair array.
+
 .. code-block:: python
 
     from newton.geometry import BroadPhaseSAP

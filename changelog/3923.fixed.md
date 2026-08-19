@@ -1,0 +1,1 @@
+Index Torch neural controller targets with the supplied `target_pos_indices`. `ControllerNeuralMLP` and `ControllerNeuralLSTM` previously selected between position and sequential indices by Python object identity, which produced wrong position errors whenever the target and position layouts differ, such as DOF-layout targets on a floating-base robot.

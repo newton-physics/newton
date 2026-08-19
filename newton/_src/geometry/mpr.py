@@ -35,7 +35,14 @@ from typing import Any
 
 import warp as wp
 
-from .support_function import GeoTypeEx, closest_point_on_triangle, unpack_mesh_ptr
+from .support_function import (
+    GeoTypeEx,
+    _support_map_box,
+    closest_point_on_triangle,
+    support_map,
+    support_map_lean,
+    unpack_mesh_ptr,
+)
 from .types import GeoType
 
 MPR_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
@@ -55,7 +62,7 @@ def vert_a(vert: Vert) -> wp.vec3:
     return vert.B + vert.BtoA
 
 
-def create_support_map_function(support_func: Any):
+def create_support_map_function(support_func: Any, use_precomputed_center: bool = False):
     """
     Factory function to create support mapping functions for MPR algorithm.
 
@@ -65,6 +72,7 @@ def create_support_map_function(support_func: Any):
     Args:
         support_func: Support mapping function for individual shapes that takes
                      (geometry, direction, data_provider) and returns a support point
+        use_precomputed_center: Whether the geometry data supplies a cached center.
 
     Returns:
         Tuple of three functions:
@@ -72,6 +80,20 @@ def create_support_map_function(support_func: Any):
         - minkowski_support: Support mapping for Minkowski difference A - B
         - geometric_center: Computes geometric center of Minkowski difference
     """
+
+    fuse_builtin_box_support = support_func is support_map or support_func is support_map_lean
+
+    @wp.func
+    def shape_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+        result = wp.vec3(0.0, 0.0, 0.0)
+        if wp.static(fuse_builtin_box_support):
+            if geom.shape_type == GeoType.BOX:
+                result = _support_map_box(geom, direction)
+            else:
+                result = support_func(geom, direction, data_provider)
+        else:
+            result = support_func(geom, direction, data_provider)
+        return result
 
     # Support mapping functions (these replace the MinkowskiDiff struct methods)
     @wp.func
@@ -99,7 +121,7 @@ def create_support_map_function(support_func: Any):
         tmp = wp.quat_rotate_inv(orientation_b, direction)
 
         # Get support point in local space
-        result = support_func(geom_b, tmp, data_provider)
+        result = shape_support(geom_b, tmp, data_provider)
 
         # Transform result to world space
         result = wp.quat_rotate(orientation_b, result)
@@ -135,7 +157,7 @@ def create_support_map_function(support_func: Any):
         v = Vert()
 
         # Support point on A in positive direction
-        point_a = support_func(geom_a, direction, data_provider)
+        point_a = shape_support(geom_a, direction, data_provider)
 
         # Support point on B in negative direction
         tmp_direction = -direction
@@ -170,14 +192,13 @@ def create_support_map_function(support_func: Any):
         because the chosen ray direction can produce supports that all
         collapse onto a single vertex of the partner.
 
-        For most primitives the local origin is already a sensible
-        interior point, but for ``CONVEX_MESH`` (an arbitrary convex
-        hull) the authoring origin is not guaranteed to lie inside the
-        hull — many assets place hulls far from their body frame.  For
-        those shapes we compute the AABB of the (scaled) hull vertices
-        on the fly and use the AABB center, which is always inside the
-        hull's bounding box and typically very close to the hull
-        interior.
+        For most primitives the local origin is already a sensible interior
+        point. For ``CONVEX_MESH``, the uncached mode computes the scaled hull
+        AABB and uses its center. When ``use_precomputed_center`` is enabled,
+        this scan is skipped and ``geom.center`` is used for both shapes.
+        Callers selecting that mode must populate each convex mesh center with
+        a valid interior-point approximation rather than relying on the default
+        zero vector.
 
         For triangles (and triangle prisms) on shape A the center on
         shape A is replaced by the closest point on the triangle to
@@ -200,36 +221,40 @@ def create_support_map_function(support_func: Any):
         """
         center = Vert()
 
-        center_a = wp.vec3(0.0, 0.0, 0.0)
-        center_b_local = wp.vec3(0.0, 0.0, 0.0)
+        if wp.static(use_precomputed_center):
+            center_a = geom_a.center
+            center_b_local = geom_b.center
+        else:
+            center_a = wp.vec3(0.0, 0.0, 0.0)
+            center_b_local = wp.vec3(0.0, 0.0, 0.0)
 
-        if geom_a.shape_type == int(GeoType.CONVEX_MESH):
-            mesh_ptr_a = unpack_mesh_ptr(geom_a.auxiliary)
-            mesh_a = wp.mesh_get(mesh_ptr_a)
-            scale_a = geom_a.scale
-            num_verts_a = mesh_a.points.shape[0]
-            v0_a = wp.cw_mul(mesh_a.points[0], scale_a)
-            min_a = v0_a
-            max_a = v0_a
-            for i in range(1, num_verts_a):
-                v_a = wp.cw_mul(mesh_a.points[i], scale_a)
-                min_a = wp.min(min_a, v_a)
-                max_a = wp.max(max_a, v_a)
-            center_a = 0.5 * (min_a + max_a)
+            if geom_a.shape_type == int(GeoType.CONVEX_MESH):
+                mesh_ptr_a = unpack_mesh_ptr(geom_a.auxiliary)
+                mesh_a = wp.mesh_get(mesh_ptr_a)
+                scale_a = geom_a.scale
+                num_verts_a = mesh_a.points.shape[0]
+                v0_a = wp.cw_mul(mesh_a.points[0], scale_a)
+                min_a = v0_a
+                max_a = v0_a
+                for i in range(1, num_verts_a):
+                    v_a = wp.cw_mul(mesh_a.points[i], scale_a)
+                    min_a = wp.min(min_a, v_a)
+                    max_a = wp.max(max_a, v_a)
+                center_a = 0.5 * (min_a + max_a)
 
-        if geom_b.shape_type == int(GeoType.CONVEX_MESH):
-            mesh_ptr_b = unpack_mesh_ptr(geom_b.auxiliary)
-            mesh_b = wp.mesh_get(mesh_ptr_b)
-            scale_b = geom_b.scale
-            num_verts_b = mesh_b.points.shape[0]
-            v0_b = wp.cw_mul(mesh_b.points[0], scale_b)
-            min_b = v0_b
-            max_b = v0_b
-            for i in range(1, num_verts_b):
-                v_b = wp.cw_mul(mesh_b.points[i], scale_b)
-                min_b = wp.min(min_b, v_b)
-                max_b = wp.max(max_b, v_b)
-            center_b_local = 0.5 * (min_b + max_b)
+            if geom_b.shape_type == int(GeoType.CONVEX_MESH):
+                mesh_ptr_b = unpack_mesh_ptr(geom_b.auxiliary)
+                mesh_b = wp.mesh_get(mesh_ptr_b)
+                scale_b = geom_b.scale
+                num_verts_b = mesh_b.points.shape[0]
+                v0_b = wp.cw_mul(mesh_b.points[0], scale_b)
+                min_b = v0_b
+                max_b = v0_b
+                for i in range(1, num_verts_b):
+                    v_b = wp.cw_mul(mesh_b.points[i], scale_b)
+                    min_b = wp.min(min_b, v_b)
+                    max_b = wp.max(max_b, v_b)
+                center_b_local = 0.5 * (min_b + max_b)
 
         center_b_world = position_b + wp.quat_rotate(orientation_b, center_b_local)
         center_b_to_a = center_a - center_b_world
@@ -307,20 +332,40 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
     else:
         _support_map_b, _minkowski_support, geometric_center = create_support_map_function(support_func)
 
+    fuse_builtin_box_support = support_func is support_map or support_func is support_map_lean
+
     @wp.func
     def centered_box_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
-        result = support_func(geom, direction, data_provider)
-        if geom.shape_type == GeoType.BOX:
-            # A nearly tied box face has infinitely many valid support points. Its center
-            # avoids feeding solver-scale rotation noise into MPR's portal topology.
-            contribution = wp.cw_mul(wp.abs(direction), geom.scale)
-            threshold = MPR_BOX_SUPPORT_TIE_EPSILON * (contribution[0] + contribution[1] + contribution[2])
-            if contribution[0] <= threshold:
-                result[0] = 0.0
-            if contribution[1] <= threshold:
-                result[1] = 0.0
-            if contribution[2] <= threshold:
-                result[2] = 0.0
+        result = wp.vec3(0.0, 0.0, 0.0)
+        if wp.static(fuse_builtin_box_support):
+            if geom.shape_type == GeoType.BOX:
+                # Reuse the absolute direction for the built-in box support and MPR's tie policy.
+                abs_direction = wp.vec3(wp.abs(direction[0]), wp.abs(direction[1]), wp.abs(direction[2]))
+                result = _support_map_box(geom, direction)
+
+                contribution = wp.cw_mul(abs_direction, geom.scale)
+                threshold = MPR_BOX_SUPPORT_TIE_EPSILON * (contribution[0] + contribution[1] + contribution[2])
+                if contribution[0] <= threshold:
+                    result[0] = 0.0
+                if contribution[1] <= threshold:
+                    result[1] = 0.0
+                if contribution[2] <= threshold:
+                    result[2] = 0.0
+            else:
+                result = support_func(geom, direction, data_provider)
+        else:
+            result = support_func(geom, direction, data_provider)
+            if geom.shape_type == GeoType.BOX:
+                # A nearly tied box face has infinitely many valid support points. Its center
+                # avoids feeding solver-scale rotation noise into MPR's portal topology.
+                contribution = wp.cw_mul(wp.abs(direction), geom.scale)
+                threshold = MPR_BOX_SUPPORT_TIE_EPSILON * (contribution[0] + contribution[1] + contribution[2])
+                if contribution[0] <= threshold:
+                    result[0] = 0.0
+                if contribution[1] <= threshold:
+                    result[1] = 0.0
+                if contribution[2] <= threshold:
+                    result[2] = 0.0
         return result
 
     _, mpr_support, _ = create_support_map_function(centered_box_support)
