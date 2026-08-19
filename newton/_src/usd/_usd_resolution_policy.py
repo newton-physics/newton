@@ -20,6 +20,7 @@ from .schema_resolver import (
     _PolicySelection,
     _ResolvedValue,
     _ResolverValue,
+    _values_equal,
     _ValueSource,
 )
 
@@ -1375,9 +1376,9 @@ class _UsdResolutionPolicy:
         """Audit the inputs that contribute to assembled joint-limit changes."""
         changed = set()
         for change in changes:
-            if not self._resolver._values_equal(change.legacy.ke, change.composed.ke):
+            if not _values_equal(change.legacy.ke, change.composed.ke):
                 changed.update((change.legacy_owners[0], change.composed_owners[0]))
-            if not self._resolver._values_equal(change.legacy.kd, change.composed.kd):
+            if not _values_equal(change.legacy.kd, change.composed.kd):
                 changed.update((change.legacy_owners[1], change.composed_owners[1]))
             if change.legacy.solref_mode != change.composed.solref_mode:
                 changed.update((*change.legacy_owners, *change.composed_owners))

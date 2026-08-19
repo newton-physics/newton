@@ -50,6 +50,7 @@ from newton._src.usd.schema_resolver import (
     _registered_attribute_fallbacks,
     _ResolvedValue,
     _SchemaResolutionPolicy,
+    _values_equal,
     _ValueSource,
 )
 from newton.solvers import SolverMuJoCo
@@ -618,6 +619,29 @@ class TestSchemaResolver(unittest.TestCase):
         shape = result["path_shape_map"]["/cube"]
         self.assertEqual(builder.shape_material_kh[shape], 2.0)
 
+    def test_typed_base_schema_owns_derived_prim_fallback(self):
+        """Apply typed-schema ownership to derived concrete prims."""
+
+        class GprimResolver(SchemaResolver):
+            name = "gprim"
+            schema_names: ClassVar = {PrimType.SHAPE: "Gprim"}
+            mapping: ClassVar = {
+                PrimType.SHAPE: {
+                    "visibility": SchemaResolver.SchemaAttribute("visibility"),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        cube = UsdGeom.Cube.Define(stage, "/cube").GetPrim()
+        manager = SchemaResolverManager(
+            resolution=_composed_resolution([GprimResolver()]),
+        )
+
+        self.assertEqual(
+            manager.get_value(cube, PrimType.SHAPE, "visibility"),
+            UsdGeom.Tokens.inherited,
+        )
+
     def test_resolution_accepts_source_neutral_values(self):
         """Accept plain values from source-neutral resolver adapters."""
 
@@ -1152,10 +1176,10 @@ class TestSchemaResolver(unittest.TestCase):
 
         for left, right in equal_pairs:
             with self.subTest(left=left, right=right):
-                self.assertTrue(SchemaResolverManager._values_equal(left, right))
+                self.assertTrue(_values_equal(left, right))
         for left, right in different_pairs:
             with self.subTest(left=left, right=right):
-                self.assertFalse(SchemaResolverManager._values_equal(left, right))
+                self.assertFalse(_values_equal(left, right))
 
     def test_interpreted_value_is_reused_for_audit_and_consumption(self):
         """Interpret the selected value once while auditing the future value."""
@@ -2555,6 +2579,30 @@ class TestSchemaResolver(unittest.TestCase):
             mapping_result["armature"].value,
         )
         self.assertFalse(manager._legacy_fallback_properties)
+
+    def test_mapping_and_pxr_adapters_share_registered_resolution(self):
+        """Match registered fallback values and provenance across adapters."""
+        resolver = SchemaResolverNewton()
+        resolution = _composed_resolution([resolver])
+        mapping = resolution.resolve(
+            PrimType.JOINT,
+            {},
+            schemas={"NewtonJointAPI"},
+            schema_fallbacks={"NewtonJointAPI": {"newton:armature": 0.0}},
+            keys=("armature",),
+        )["armature"]
+
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("NewtonJointAPI")
+        manager = SchemaResolverManager(resolution=resolution)
+        pxr = manager._resolve_value(joint, PrimType.JOINT, "armature")
+
+        self.assertEqual(mapping.value, pxr.value)
+        self.assertEqual(mapping.source.value, pxr.source.value)
+        self.assertIs(mapping.resolver, pxr.resolver)
+        self.assertEqual(mapping.schema_name, "NewtonJointAPI")
+        self.assertEqual(mapping.attribute_names, ("newton:armature",))
 
     def test_pxr_only_getter_remains_compatible_during_audit(self):
         """Keep PXR-only getters compatible during migration auditing."""

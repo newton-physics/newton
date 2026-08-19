@@ -112,6 +112,38 @@ def _importer_default(default: Any) -> tuple[bool, Any]:
     return default is not None, default
 
 
+def _values_equal(left: Any, right: Any) -> bool:
+    """Compare scalar and structured resolution values."""
+    if left is right:
+        return True
+    if isinstance(left, Real) and isinstance(right, Real):
+        if math.isnan(float(left)) and math.isnan(float(right)):
+            return True
+        return math.isclose(float(left), float(right), rel_tol=1.0e-7, abs_tol=1.0e-12)
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping) or left.keys() != right.keys():
+            return False
+        return all(_values_equal(left[key], right[key]) for key in left)
+    if isinstance(left, Set) or isinstance(right, Set):
+        return isinstance(left, Set) and isinstance(right, Set) and left == right
+    if (
+        isinstance(left, Sequence)
+        and isinstance(right, Sequence)
+        and not isinstance(left, (str, bytes))
+        and not isinstance(right, (str, bytes))
+    ):
+        return len(left) == len(right) and all(_values_equal(a, b) for a, b in zip(left, right, strict=True))
+    try:
+        equal = left == right
+        if isinstance(equal, bool):
+            return equal
+        if hasattr(equal, "all"):
+            return bool(equal.all())
+        return all(equal)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 @dataclass(frozen=True)
 class _ResolverValue:
     value: Any
@@ -347,7 +379,13 @@ class SchemaResolver:
         schema_name = self._schema_name(prim_type, key)
         if schema_name is None or prim is None:
             return False
-        return str(prim.GetTypeName()) == schema_name or usd.has_applied_api_schema(prim, schema_name)
+        if usd.has_applied_api_schema(prim, schema_name):
+            return True
+
+        from pxr import Usd
+
+        schema_type = Usd.SchemaRegistry.GetTypeFromName(schema_name)
+        return bool(schema_type) and prim.IsA(schema_type)
 
     def _get_value_with_reader(
         self,
@@ -804,7 +842,8 @@ class SchemaResolution:
         Args:
             prim_type: Prim category to resolve.
             values: Raw source attributes keyed by name.
-            schemas: Applied API schemas and typed prim schemas.
+            schemas: Every applicable API and typed schema identity. Include
+                inherited typed schemas when the source supports them.
             schema_fallbacks: Registered schema fallbacks supplied by the
                 source adapter.
             defaults: Optional importer defaults keyed by logical key.
@@ -872,7 +911,7 @@ class SchemaResolution:
                     key,
                     default=_ImporterDefault(default) if has_default else None,
                 )
-                if not SchemaResolverManager._values_equal(selected_value.value, registered.value):
+                if not _values_equal(selected_value.value, registered.value):
                     compatibility_changes.add(self._fallback_label(registered, prim_type, key))
             resolved[key] = self._public_result(selected_value, prim_type, key)
 
@@ -1470,39 +1509,6 @@ class SchemaResolverManager:
             self._collect_on_first_use(resolved.resolver, prim)
         return resolved
 
-    @staticmethod
-    def _values_equal(left: Any, right: Any) -> bool:
-        if left is right:
-            return True
-        if isinstance(left, Real) and isinstance(right, Real):
-            if math.isnan(float(left)) and math.isnan(float(right)):
-                return True
-            return math.isclose(float(left), float(right), rel_tol=1.0e-7, abs_tol=1.0e-12)
-        if isinstance(left, Mapping) or isinstance(right, Mapping):
-            if not isinstance(left, Mapping) or not isinstance(right, Mapping) or left.keys() != right.keys():
-                return False
-            return all(SchemaResolverManager._values_equal(left[key], right[key]) for key in left)
-        if isinstance(left, Set) or isinstance(right, Set):
-            return isinstance(left, Set) and isinstance(right, Set) and left == right
-        if (
-            isinstance(left, Sequence)
-            and isinstance(right, Sequence)
-            and not isinstance(left, (str, bytes))
-            and not isinstance(right, (str, bytes))
-        ):
-            return len(left) == len(right) and all(
-                SchemaResolverManager._values_equal(a, b) for a, b in zip(left, right, strict=True)
-            )
-        try:
-            equal = left == right
-            if isinstance(equal, bool):
-                return equal
-            if hasattr(equal, "all"):
-                return bool(equal.all())
-            return all(equal)
-        except (TypeError, ValueError, OverflowError):
-            return False
-
     def _record_legacy_fallback(
         self,
         prim: Usd.Prim,
@@ -1543,7 +1549,7 @@ class SchemaResolverManager:
         else:
             legacy_comparison = comparison_key(legacy.value, legacy.resolver)
             composed_comparison = comparison_key(resolved.value, resolved.resolver)
-        values_differ = not self._values_equal(legacy_comparison, composed_comparison)
+        values_differ = not _values_equal(legacy_comparison, composed_comparison)
         provenance_differ = (
             comparison_key is None
             and result_interpreter is None
@@ -1575,7 +1581,7 @@ class SchemaResolverManager:
         candidates: Sequence[SchemaResolverManager._PolicyChangeCandidate],
     ) -> None:
         """Audit inputs that contribute to an assembled property change."""
-        if self._uses_composed_fallbacks or self._values_equal(legacy_comparison, composed_comparison):
+        if self._uses_composed_fallbacks or _values_equal(legacy_comparison, composed_comparison):
             return
 
         for candidate in candidates:
@@ -1590,7 +1596,7 @@ class SchemaResolverManager:
             else:
                 legacy_value = candidate.legacy_comparison
                 composed_value = candidate.composed_comparison
-            values_differ = not self._values_equal(legacy_value, composed_value)
+            values_differ = not _values_equal(legacy_value, composed_value)
             sources_differ = legacy.source != composed.source or legacy.resolver is not composed.resolver
             if not values_differ and not (candidate.compare_source and sources_differ):
                 continue
@@ -1766,8 +1772,9 @@ class SchemaResolverManager:
         cache_key = (prim_type_name, schema_name)
         if cache_key not in self._registered_schema_fallbacks:
             registry = Usd.SchemaRegistry()
-            if prim_type_name == schema_name:
-                prim_definition = registry.FindConcretePrimDefinition(schema_name)
+            schema_type = registry.GetTypeFromName(schema_name)
+            if schema_type and prim.IsA(schema_type):
+                prim_definition = registry.FindConcretePrimDefinition(prim_type_name)
             else:
                 schema_type_name, _ = registry.GetTypeNameAndInstance(schema_name)
                 schema_definition = registry.FindAppliedAPIPrimDefinition(schema_type_name)
