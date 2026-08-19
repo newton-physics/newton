@@ -206,26 +206,33 @@ def _write_dof_values(model, array, dof_indices, values):
     wp.copy(array, wp.array(arr_np, dtype=float, device=model.device))
 
 
-def _build_pendulum(device):
-    """Single revolute joint with an offset COM and no gravity — one scalar DOF."""
+def _build_pendulum(device, worlds: int = 1):
+    """Single revolute joint with an offset COM and no gravity — one scalar DOF.
+
+    Args:
+        device: Device to finalize the model on.
+        worlds: Number of identical worlds to replicate the pendulum into.
+    """
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = template.add_link(mass=1.0)
+    template.body_com[body] = wp.vec3(0.5, 0.0, 0.0)
+    joint = template.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+    template.add_articulation([joint])
+    if worlds == 1:
+        return template.finalize(device=device)
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    body = builder.add_link(mass=1.0)
-    builder.body_com[body] = wp.vec3(0.5, 0.0, 0.0)
-    joint = builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
-    builder.add_articulation([joint])
+    builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
     return builder.finalize(device=device)
 
 
 def _two_link_builder(armature: float = 0.0, dummy_body: bool = False):
     """Builder for a two-link revolute chain — one articulation, two coupled DOFs.
 
-    With *dummy_body*, a standalone hinged body is declared before the chain and
-    left out of the articulation. MuJoCo orders articulated bodies ahead of
-    standalone ones while Newton keeps declaration order, so
-    ``mjc_dof_to_newton_dof`` becomes a real permutation instead of the identity.
-    The body carries no shape and gravity is off, so it never interacts with the
-    chain. Its DOF also belongs to no articulation, which exercises the branch
-    that drops such entries.
+    Args:
+        armature: Rotor inertia added to each joint.
+        dummy_body: Add a hinged body before the chain, outside the articulation.
+            MuJoCo orders articulated bodies first, so ``mjc_dof_to_newton_dof``
+            becomes a permutation rather than the identity.
     """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     if dummy_body:
@@ -246,9 +253,27 @@ def _two_link_builder(armature: float = 0.0, dummy_body: bool = False):
     return builder
 
 
-def _build_two_link(device, dummy_body: bool = False):
-    """Two-link revolute chain — one articulation, two inertially coupled DOFs."""
-    return _two_link_builder(dummy_body=dummy_body).finalize(device=device)
+def _build_two_link(device, dummy_body: bool = False, worlds: int = 1):
+    """Two-link revolute chain — one articulation, two inertially coupled DOFs.
+
+    Args:
+        device: Device to finalize the model on.
+        dummy_body: See :func:`_two_link_builder`.
+        worlds: Number of identical worlds to replicate the chain into.
+    """
+    template = _two_link_builder(dummy_body=dummy_body)
+    if worlds == 1:
+        return template.finalize(device=device)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
+    return builder.finalize(device=device)
+
+
+def _assert_worlds_match(test_case, model, array, rtol: float = 1e-5, atol: float = 1e-6) -> None:
+    """Assert every world's slice of a per-DOF array equals world 0's."""
+    per_world = _arm_values(model, array).reshape(model.world_count, -1)
+    for world in range(1, model.world_count):
+        np.testing.assert_allclose(per_world[world], per_world[0], rtol=rtol, atol=atol)
 
 
 def _response_at(model, q, qd):
@@ -1770,6 +1795,7 @@ class TestActuatorStep(unittest.TestCase):
         expect=None,
         check_forces=True,
         expect_integral_saturated=False,
+        worlds=1,
     ):
         """Run the actuator pipeline for one controller / clamp / effort-mode combination.
 
@@ -1810,23 +1836,29 @@ class TestActuatorStep(unittest.TestCase):
             check_forces: Compare each step's effort against the reference.
             expect_integral_saturated: Require the PID integral to end at
                 ``integral_max``, proving anti-windup actually bound.
+            worlds: Replicate the model into this many identical worlds. The
+                reference is computed once and compared against every world.
         """
         if clamp is not None and dofs != 1:
             raise ValueError("the clamped reference bisects a scalar residual, so it needs a single DOF")
 
-        model = _build_pendulum(device) if dofs == 1 else _build_two_link(device)
-        n = model.joint_dof_count
-        self.assertEqual(n, dofs)
-        clamping, limit = _pipeline_clamping(clamp, device, n)
+        model = _build_pendulum(device, worlds=worlds) if dofs == 1 else _build_two_link(device, worlds=worlds)
+        n = dofs
+        total = n * worlds
+        self.assertEqual(model.joint_dof_count, total)
+        clamping, limit = _pipeline_clamping(clamp, device, total)
 
         def _vec(value):
             return np.full(n, value, dtype=np.float32) if np.isscalar(value) else np.asarray(value, dtype=np.float32)
+
+        def _tiled(values):
+            return np.tile(np.asarray(values), worlds)
 
         kp, kd, ki = _vec(kp), _vec(kd), _vec(ki)
         integral_max, q0, qd0, target = _vec(integral_max), _vec(q0), _vec(qd0), _vec(target)
 
         def _arr(values):
-            return wp.array(values, dtype=float, device=device)
+            return wp.array(_tiled(values), dtype=float, device=device)
 
         if controller == "pd":
             control_law = ControllerPD(kp=_arr(kp), kd=_arr(kd))
@@ -1837,7 +1869,7 @@ class TestActuatorStep(unittest.TestCase):
 
         oracle = ResponseOracle(model)
         actuator = Actuator(
-            indices=wp.array(np.arange(n, dtype=np.uint32), device=device),
+            indices=wp.array(np.arange(total, dtype=np.uint32), device=device),
             controller=control_law,
             clamping=clamping,
             control_target_pos_attr="joint_target_q",
@@ -1855,7 +1887,7 @@ class TestActuatorStep(unittest.TestCase):
                 law = kp_now * (target - q) - kd_now * qd + feedforward
                 return law if clamp is None else np.clip(law, *limit(float(q[0]), float(qd[0])))
 
-            response = _response_at(model, q, qd)
+            response = _response_at(model, _tiled(q), _tiled(qd))
             if clamp is None:
                 # Linear law: one dense solve, which also couples the two-link chain.
                 gain = dt * kp_now + kd_now
@@ -1874,11 +1906,11 @@ class TestActuatorStep(unittest.TestCase):
             return np.array([_solve_clamped_effort(residual)], dtype=np.float64)
 
         state_in, state_out = model.state(), model.state()
-        state_in.joint_q.assign(q0)
-        state_in.joint_qd.assign(qd0)
+        state_in.joint_q.assign(_tiled(q0))
+        state_in.joint_qd.assign(_tiled(qd0))
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
         control = model.control()
-        control.joint_target_q.assign(target)
+        control.joint_target_q.assign(_tiled(target))
         solver = newton.solvers.SolverFeatherstone(model)
         act_a, act_b = actuator.state(), actuator.state()
 
@@ -1920,8 +1952,8 @@ class TestActuatorStep(unittest.TestCase):
 
         def check_effort(step_label, kp_now, kd_now, integral):
             """Step once from the live state and compare the effort to the reference."""
-            q = state_in.joint_q.numpy().astype(np.float64)
-            qd = state_in.joint_qd.numpy().astype(np.float64)
+            q = state_in.joint_q.numpy().astype(np.float64)[:n]
+            qd = state_in.joint_qd.numpy().astype(np.float64)[:n]
             if controller == "pid":
                 integral[:] = np.clip(integral + (target - q) * dt, -integral_max, integral_max)
 
@@ -1932,17 +1964,18 @@ class TestActuatorStep(unittest.TestCase):
                 expected = reference(q, qd, integral, kp_now, kd_now)
                 self.assertTrue(np.all(np.isfinite(effort)), msg=f"{step_label}: effort must stay finite")
                 np.testing.assert_allclose(
-                    effort,
+                    effort[:n],
                     expected,
                     rtol=2.0e-3,
                     atol=1.0e-4,
                     err_msg=f"{step_label}: q={q} qd={qd} integral={integral}",
                 )
+                _assert_worlds_match(self, model, control.joint_f)
                 if controller == "pid":
                     # act_b holds the integral this step just advanced to.
                     np.testing.assert_allclose(
                         act_b.controller_state.integral.numpy(),
-                        integral,
+                        _tiled(integral),
                         rtol=1.0e-4,
                         atol=1.0e-9,
                         err_msg=f"{step_label}: advanced integral",
@@ -1957,9 +1990,9 @@ class TestActuatorStep(unittest.TestCase):
 
         if retune:
             kp_now, kd_now = (4.0 * kp).astype(np.float32), (4.0 * kd).astype(np.float32)
-            actuator.controller.kp.assign(kp_now)
-            actuator.controller.kd.assign(kd_now)
-            np.testing.assert_allclose(actuator.controller.kp.numpy(), kp_now, rtol=1e-6)
+            actuator.controller.kp.assign(_tiled(kp_now))
+            actuator.controller.kd.assign(_tiled(kd_now))
+            np.testing.assert_allclose(actuator.controller.kp.numpy(), _tiled(kp_now), rtol=1e-6)
             retuned = check_effort("retune", kp_now, kd_now, integral)
 
             if clamp == "max_effort":
@@ -1976,10 +2009,10 @@ class TestActuatorStep(unittest.TestCase):
         q_final = state_in.joint_q.numpy()
         if expect == "converge":
             self.assertTrue(np.all(np.isfinite(q_final)))
-            np.testing.assert_allclose(q_final, target, atol=0.05)
+            np.testing.assert_allclose(q_final, _tiled(target), atol=0.05)
         elif expect == "diverge":
             self.assertFalse(
-                np.all(np.isfinite(q_final)) and np.all(np.abs(q_final) < 10.0 * np.abs(target)),
+                np.all(np.isfinite(q_final)) and np.all(np.abs(q_final) < 10.0 * np.abs(_tiled(target))),
                 msg=f"explicit mode should not stay bounded at these gains, got q={q_final}",
             )
         elif expect is not None:
@@ -1999,7 +2032,7 @@ class TestActuatorStep(unittest.TestCase):
 
     def test_pipeline_pd_dc_motor_implicit(self):
         """Verify the DC-motor envelope binds at the predicted end-of-step velocity."""
-        self.run_test_actuator_pipeline(controller="pd", clamp="dc_motor", kp=5.0e4, kd=0.0, q0=0.0, qd0=1.0)
+        self.run_test_actuator_pipeline(controller="pd", clamp="dc_motor", kp=5.0e4, kd=0.0, q0=0.0, qd0=1.0, worlds=2)
 
     def test_pipeline_pd_dc_motor_explicit(self):
         """Verify the DC-motor envelope binds at the current velocity in explicit mode."""
@@ -2029,6 +2062,7 @@ class TestActuatorStep(unittest.TestCase):
             integral_max=0.02,
             steps=5,
             expect_integral_saturated=True,
+            worlds=2,
         )
 
     def test_pipeline_pd_coupled_implicit(self):
@@ -2040,6 +2074,7 @@ class TestActuatorStep(unittest.TestCase):
             kd=[40.0, 30.0],
             q0=[0.3, -0.8],
             target=[0.6, 0.4],
+            worlds=2,
         )
 
     def test_pipeline_pid_coupled_implicit(self):
@@ -2058,7 +2093,7 @@ class TestActuatorStep(unittest.TestCase):
 
     def test_pipeline_pd_implicit_retune(self):
         """Verify gain and clamp writes reach the installed implicit solve."""
-        self.run_test_actuator_pipeline(controller="pd", clamp="max_effort", retune=True)
+        self.run_test_actuator_pipeline(controller="pd", clamp="max_effort", retune=True, worlds=2)
 
     def test_pipeline_pd_stiff_implicit_converges(self):
         """Verify stiff gains converge to the target over a long implicit run."""
@@ -2602,18 +2637,22 @@ class TestResponseOracle(unittest.TestCase):
         inverse_blocks[a] must equal inv(H_a).
         """
         device = wp.get_device()
-        model = _build_two_link(device)
-        n = model.joint_dof_count
+        model = _build_two_link(device, worlds=2)
+        n = len(_arm_dofs(model)) // model.world_count
         q0 = np.array([0.3, -0.8], dtype=np.float32)
         state = model.state()
-        state.joint_q.assign(q0)
+        _set_arm(model, state.joint_q, np.tile(q0, model.world_count))
 
         oracle = ResponseOracle(model)
         oracle.refresh(state)
 
-        Hinv = _response_at(model, q0, np.zeros(n, dtype=np.float32))
-        block = oracle.inverse_blocks.numpy()[0, :n, :n]
-        np.testing.assert_allclose(block, Hinv, rtol=1e-4, atol=1e-6)
+        blocks = oracle.inverse_blocks.numpy()
+        dofs = len(_arm_dofs(model))
+        Hinv = _response_at(model, np.tile(q0, model.world_count), np.zeros(dofs, dtype=np.float32))
+        np.testing.assert_allclose(blocks[0, :n, :n], Hinv, rtol=1e-4, atol=1e-6)
+        # Each world holds an identical articulation, so their blocks must agree.
+        for art in range(1, model.articulation_count):
+            np.testing.assert_allclose(blocks[art, :n, :n], blocks[0, :n, :n], rtol=1e-5, atol=1e-6)
 
     def test_armature_enters_the_response(self):
         """Joint armature is rotor inertia the solver feels, so it must reduce alpha."""
@@ -2759,19 +2798,20 @@ class TestResponseOracle(unittest.TestCase):
         q0 = np.array([0.3, -0.8], dtype=np.float32)  # away from qpos0: alpha differs from invweight0
         target = np.array([0.6, 0.4], dtype=np.float32)
 
-        model = _build_two_link(device, dummy_body=True)
+        model = _build_two_link(device, dummy_body=True, worlds=2)
+        worlds = model.world_count
         state = model.state()
-        _set_arm(model, state.joint_q, q0)
+        _set_arm(model, state.joint_q, np.tile(q0, worlds))
         control = model.control()
-        _set_arm(model, control.joint_target_q, target)
+        _set_arm(model, control.joint_target_q, np.tile(target, worlds))
 
         # One solver step populates qM at the state's pose (computed before integration).
         solver = _mujoco_solver(self, model)
         state_out = model.state()
         solver.step(state, state_out, control, None, h)
 
-        n = len(_arm_dofs(model))
-        self.assertEqual(solver.mj_model.nv, model.joint_dof_count)
+        n = len(_arm_dofs(model)) // worlds
+        self.assertEqual(solver.mj_model.nv * worlds, model.joint_dof_count)
 
         mjc_oracle = ResponseOracle(model)
         mjc_oracle.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
@@ -2786,8 +2826,8 @@ class TestResponseOracle(unittest.TestCase):
         actuator, oracle = _make_implicit_actuator(
             model,
             device,
-            kp=wp.array(kp, dtype=float, device=device),
-            kd=wp.array(kd, dtype=float, device=device),
+            kp=wp.array(np.tile(kp, worlds), dtype=float, device=device),
+            kd=wp.array(np.tile(kd, worlds), dtype=float, device=device),
         )
         oracle.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
         np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], response_newton, rtol=1e-4)
@@ -2797,7 +2837,8 @@ class TestResponseOracle(unittest.TestCase):
         f0 = kp * (target - q0)
         jacobian = np.eye(n) + h * np.diag(h * kp + kd) @ response_newton
         expected = np.linalg.solve(jacobian, h * f0) / h
-        np.testing.assert_allclose(_arm_values(model, control.joint_f), expected, rtol=1e-3, atol=1e-3)
+        np.testing.assert_allclose(_arm_values(model, control.joint_f)[:n], expected, rtol=1e-3, atol=1e-3)
+        _assert_worlds_match(self, model, control.joint_f, rtol=1e-4, atol=1e-4)
 
     def test_full_loop_response_from_mujoco_matches_refresh(self):
         """Closed-loop run with the coupled response from MuJoCo's inertia.
