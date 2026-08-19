@@ -624,7 +624,7 @@ Custom Resolver Ownership
 
 Custom :class:`~newton.usd.SchemaResolver` subclasses can declare static schema ownership with ``schema_names``. A schema name for a prim type owns every mapped key in that category; a nested mapping declares ownership per logical key. Schema names may identify typed, applied, or multiple-apply schemas.
 
-Set ``use_compatibility_defaults`` to ``False`` when the resolver must never use mapping defaults for unregistered or unowned properties. Its default is ``True`` so existing custom resolvers retain their compatibility behavior. Unknown schema names are valid because their plugins may not be installed, but malformed ownership declarations are rejected when the resolver is constructed.
+Set ``use_compatibility_defaults`` to ``False`` when registered-schema precedence should exclude mapping defaults for unregistered or unowned properties. Its default is ``True`` so existing custom resolvers retain their compatibility behavior. Unknown schema names are valid because their plugins may not be installed, but malformed ownership declarations are rejected when the resolver is constructed.
 
 .. code-block:: python
 

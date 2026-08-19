@@ -9,7 +9,7 @@ orphan: true
 
 ## Status
 
-This document describes the design implemented by PR #3888. The PR continues and supersedes PR #3572, addresses the fallback-precedence part of issue #3307, and prepares the internal seam needed by PR #3568. Complete public provenance remains follow-up work.
+This document describes the design implemented by PR #3888. The PR continues and supersedes PR #3572, addresses the fallback-precedence part of issue #3307, and prepares the internal seam needed by PR #3568. Complete public provenance remains future work.
 
 ## Goal
 
@@ -115,7 +115,7 @@ When adding a resolved property:
 5. Compare the final interpreted or assembled property.
 6. Test both policies and the terminal sources relevant to that property.
 
-## Follow-up work
+## Future work
 
 This PR does not:
 
