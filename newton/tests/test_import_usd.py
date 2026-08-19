@@ -32,6 +32,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
+from newton._src.utils.color import color_linear_to_srgb
 from newton._src.utils.import_usd import _is_uniform_scale
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
@@ -7515,9 +7516,13 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage)
 
-        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+        shape = result["path_shape_map"]["/Body/VisualMesh"]
+        src = builder.shape_source[shape]
         self.assertIsNotNone(src.texture)
         np.testing.assert_allclose(np.array(src.color), np.array([1.0, 1.0, 1.0]))
+        # The viewer reads shape_color, and ModelBuilder prefers it over src.color, so the
+        # white has to survive there too or the shader multiplies it into every texel.
+        np.testing.assert_allclose(np.array(builder.shape_color[shape]), np.array([1.0, 1.0, 1.0]))
 
     @staticmethod
     def _build_uvless_textured_visual_mesh_stage(*, material_subset: bool):
@@ -12560,6 +12565,138 @@ def Xform "Body" (
         self.assertEqual(drawn, [path_shape_map["/Body/VisualSphere"]])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unmaterialed_visual_shape_uses_neutral_color(self):
+        """Verify a visual prim with no bound material gets the neutral default, not the palette.
+
+        ModelBuilder colors an uncolored shape from a per-shape debug palette, which suits
+        procedurally built scenes but makes an imported stage render in colors the asset
+        never authored. USD renderers draw an unmaterialed prim in UsdPreviewSurface's
+        ``diffuseColor`` default instead, so the importer supplies that.
+        """
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.Xform.Define(stage, "/World")
+        UsdGeom.Cube.Define(stage, "/World/Bare")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=True)
+        shape = result["path_shape_map"]["/World/Bare"]
+
+        self.assertTrue(builder.shape_flags[shape] & ShapeFlags.VISIBLE)
+        color = builder.shape_color[shape]
+        # 0.18 linear, display-encoded the same way an authored color would be.
+        expected = color_linear_to_srgb((0.18, 0.18, 0.18))
+        for channel, want in zip(color, expected, strict=True):
+            self.assertAlmostEqual(channel, want, places=5)
+        # Guard the actual defect: the palette varies with shape index, a neutral does not.
+        self.assertAlmostEqual(color[0], color[1], places=6)
+        self.assertAlmostEqual(color[1], color[2], places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_color_used_without_bound_material(self):
+        """Verify primvars:displayColor is honored on a prim that binds no material.
+
+        displayColor was only consulted once a material had been resolved but supplied no
+        color, so it never reached prims with no material at all -- the case where it is
+        the only color the prim carries.
+        """
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.Xform.Define(stage, "/World")
+        cube = UsdGeom.Cube.Define(stage, "/World/Colored")
+        cube.GetDisplayColorAttr().Set([(0.463, 0.725, 0.0)])
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=True)
+        color = builder.shape_color[result["path_shape_map"]["/World/Colored"]]
+
+        expected = color_linear_to_srgb((0.463, 0.725, 0.0))
+        for channel, want in zip(color, expected, strict=True):
+            self.assertAlmostEqual(channel, want, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_color_inherited_from_ancestor(self):
+        """Verify a constant displayColor authored on an ancestor reaches its descendants.
+
+        Constant primvars inherit down the hierarchy, so authoring one on an Xform is a
+        legitimate way to color a whole subtree. ``GetPrimvar`` only inspects the prim
+        itself and returns a primvar whose value is None, which reads as "no color".
+        """
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        group = UsdGeom.Xform.Define(stage, "/World")
+        primvar = UsdGeom.PrimvarsAPI(group.GetPrim()).CreatePrimvar(
+            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant
+        )
+        primvar.Set([(0.1, 0.2, 0.3)])
+        UsdGeom.Cube.Define(stage, "/World/Inheriting")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=True)
+        color = builder.shape_color[result["path_shape_map"]["/World/Inheriting"]]
+
+        expected = color_linear_to_srgb((0.1, 0.2, 0.3))
+        for channel, want in zip(color, expected, strict=True):
+            self.assertAlmostEqual(channel, want, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_uniform_indexed_normals_are_expanded(self):
+        """Verify indexed uniform normals survive import rather than being dropped.
+
+        A flat-shaded mesh commonly authors one normal per face, indexed so each distinct
+        direction is stored once. Only faceVarying was handled, so the raw value count was
+        compared against the vertex and corner counts, matched neither, and the normals
+        were discarded with a warning.
+        """
+        from pxr import Sdf, Usd, UsdGeom, Vt
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        # Two quads meeting at a right angle, so the two face normals differ.
+        mesh.CreatePointsAttr().Set([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (1, 0, 1), (0, 1, 1)])
+        mesh.CreateFaceVertexCountsAttr().Set([4, 4])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 3, 1, 4, 5, 2])
+        normals = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.uniform
+        )
+        normals.Set(Vt.Vec3fArray([(0, 0, 1), (1, 0, 0)]))
+        normals.SetIndices(Vt.IntArray([0, 1]))
+        # Authored normals are only loaded for meshes carrying material subsets, so the
+        # subsets are what makes this reachable at all.
+        for name, face in (("a", 0), ("b", 1)):
+            subset = UsdGeom.Subset.Define(stage, f"/Mesh/{name}")
+            subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+            subset.CreateIndicesAttr().Set(Vt.IntArray([face]))
+            subset.CreateFamilyNameAttr().Set("materialBind")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage, load_visual_shapes=True)
+        self.assertFalse([w for w in caught if "normals" in str(w.message).lower()])
+
+        directions = set()
+        for path, shape in result["path_shape_map"].items():
+            if not path.startswith("/Mesh"):
+                continue
+            source = builder.shape_source[shape]
+            self.assertIsNotNone(source.normals, f"{path} lost its normals")
+            imported = np.asarray(source.normals)
+            self.assertEqual(len(imported), len(source.vertices))
+            np.testing.assert_allclose(np.linalg.norm(imported, axis=1), 1.0, atol=1e-6)
+            directions.update(tuple(np.round(n, 4)) for n in imported)
+        # Both authored directions must survive; dropping the indices would collapse them.
+        self.assertIn((0.0, 0.0, 1.0), directions)
+        self.assertIn((1.0, 0.0, 0.0), directions)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_fallback_with_material(self):
         """Colliders with material stay visible when the body has no other visual shapes."""
         stage = self._create_stage_with_pbr_collision_mesh(
@@ -14979,12 +15116,19 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
         return posixpath.join("_external_usd", digest, basename)
 
-    def _run_resolve(self, url_to_layer, base_url="https://example.com/assets/scene.usd"):
+    def _run_resolve(
+        self,
+        url_to_layer,
+        base_url="https://example.com/assets/scene.usd",
+        prepare_target=None,
+    ):
         """Run resolve_usd_from_url with mocked network and USD stage I/O.
 
         Args:
             url_to_layer: mapping from URL to USDA layer string content.
             base_url: the top-level URL passed to resolve_usd_from_url.
+            prepare_target: Optional callback invoked with the cache directory
+                before resolution begins.
 
         Returns:
             Tuple of (result_path, target_dir, downloaded_urls).
@@ -15011,7 +15155,11 @@ class TestResolveUsdFromUrl(unittest.TestCase):
 
         # Map cache-relative path -> layer string so the mock stage can return it.
         file_to_layer = {}
-        tmpdir = tempfile.mkdtemp()
+        # The resolver canonicalizes the cache directory. Mirror that here so
+        # mocked file lookups remain stable across symlinked temporary roots.
+        tmpdir = os.path.realpath(tempfile.mkdtemp())
+        if prepare_target is not None:
+            prepare_target(tmpdir)
 
         # Precompute exact local-key -> layer mapping from URLs.
         base_url_dir = base_url.rsplit("/", 1)[0]
@@ -15142,16 +15290,138 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(tmpdir, "robots", "collisions.usd")))
         self.assertFalse(os.path.exists(os.path.join(tmpdir, "collisions.usd")))
 
+    def test_nested_parent_reference_stays_within_cache(self):
+        """Resolve a nested parent reference that remains inside the cache."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @robots/robot.usd@",
+            "https://example.com/assets/robots/robot.usd": "references = @../common.usd@",
+            "https://example.com/assets/common.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/common.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "common.usd")))
+
     def test_path_traversal_rejected(self):
-        """References with .. that escape the target folder are skipped."""
+        """Reject references that escape the target folder."""
         url_to_layer = {
             "https://example.com/assets/scene.usd": "references = @../secret.usd@",
         }
-        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
-        # Escaped reference must not be fetched or written.
-        escaped_urls = [u for u in downloaded_urls if "secret.usd" in u]
-        self.assertEqual(len(escaped_urls), 0)
-        self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
+        with self.assertRaisesRegex(ValueError, "escapes the target folder"):
+            self._run_resolve(url_to_layer)
+
+    def test_reference_list_preserves_internal_references(self):
+        """Preserve internal references while resolving asset references in a list."""
+        safe_url = "https://example.com/assets/safe.usd"
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": """#usda 1.0
+def Xform "Root" (
+    references = [</Local>, @safe.usd@</Remote>]
+)
+{
+}
+""",
+            safe_url: "",
+        }
+
+        result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+
+        self.assertEqual(
+            downloaded_urls,
+            ["https://example.com/assets/scene.usd", safe_url],
+        )
+        with open(result) as f:
+            layer_str = f.read()
+        self.assertIn("</Local>", layer_str)
+        self.assertIn("@safe.usd@</Remote>", layer_str)
+
+    def test_reference_list_rejects_escaping_entries(self):
+        """Reject an escaping asset reference in a mixed reference list."""
+        safe_url = "https://example.com/assets/safe.usd"
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": """#usda 1.0
+def Xform "Root" (
+    references = [</Local>, @safe.usd@, @../secret.usd@]
+)
+{
+}
+""",
+            safe_url: "",
+        }
+
+        with self.assertRaisesRegex(ValueError, "escapes the target folder"):
+            self._run_resolve(url_to_layer)
+
+    def test_reference_with_prim_path_escape_is_rejected(self):
+        """Reject an escaping asset reference that includes a prim path."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": """#usda 1.0
+def Xform "Root" (
+    references = @../secret.usd@</Root>
+)
+{
+}
+""",
+        }
+
+        with self.assertRaisesRegex(ValueError, "escapes the target folder"):
+            self._run_resolve(url_to_layer)
+
+    def test_windows_reference_escapes_are_rejected(self):
+        """Reject Windows and mixed-separator references that escape the cache."""
+        malicious_references = (
+            (r"..\..\escape.usd", r"https://example.com/assets/..\..\escape.usd"),
+            (r"safe\..\..\escape.usd", r"https://example.com/assets/safe\..\..\escape.usd"),
+            (r"\\server\share\escape.usd", r"https://example.com/assets/\\server\share\escape.usd"),
+            (r"C:\escape.usd", r"C:\escape.usd"),
+        )
+
+        for raw_ref, resolved_url in malicious_references:
+            with self.subTest(raw_ref=raw_ref):
+                url_to_layer = {
+                    "https://example.com/assets/scene.usd": f"references = @{raw_ref}@",
+                    resolved_url: "",
+                }
+                with self.assertRaises(ValueError):
+                    self._run_resolve(url_to_layer)
+
+    def test_nested_windows_reference_escapes_are_rejected(self):
+        """Reject rooted Windows references found in nested layers."""
+        malicious_references = (r"C:\escape.usd", r"\\server\share\escape.usd")
+
+        for raw_ref in malicious_references:
+            with self.subTest(raw_ref=raw_ref):
+                url_to_layer = {
+                    "https://example.com/assets/scene.usd": "references = @robots/robot.usd@",
+                    "https://example.com/assets/robots/robot.usd": f"references = @{raw_ref}@",
+                }
+                with self.assertRaises(ValueError):
+                    self._run_resolve(url_to_layer)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "Requires symlink support")
+    def test_reference_symlink_escape_is_rejected(self):
+        """Reject a reference whose canonical path leaves the cache through a symlink."""
+        child_url = "https://example.com/assets/link/escape.usd"
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @link/escape.usd@",
+            child_url: "",
+        }
+
+        with tempfile.TemporaryDirectory() as outside_dir:
+
+            def prepare_target(cache_dir):
+                try:
+                    os.symlink(outside_dir, os.path.join(cache_dir, "link"))
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) == 1314:
+                        raise unittest.SkipTest("Requires permission to create symlinks") from exc
+                    raise
+
+            with self.assertRaisesRegex(ValueError, "escapes the target folder"):
+                self._run_resolve(
+                    url_to_layer,
+                    prepare_target=prepare_target,
+                )
+            self.assertFalse(os.path.exists(os.path.join(outside_dir, "escape.usd")))
 
     def test_cleartext_top_level_url_rejected(self):
         """Top-level USD downloads must use HTTPS."""

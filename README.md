@@ -473,7 +473,8 @@ If you run the examples from a source checkout with uv, use
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>python -m newton.examples mpm_granular</code>
+      <code>python -m newton.examples mpm_granular</code><br>
+      <code>python -m newton.examples mpm_granular --from-usd</code>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples mpm_anymal</code>
