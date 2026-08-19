@@ -36,6 +36,7 @@ def _write_soft_contact(
     soft_contact_indices: wp.array[wp.vec3i],
     soft_contact_barycentric: wp.array[wp.vec3],
     soft_contact_shape: wp.array[wp.int32],
+    soft_contact_rigid_indices: wp.array[wp.vec3i],
     soft_contact_body_pos: wp.array[wp.vec3],
     soft_contact_body_vel: wp.array[wp.vec3],
     soft_contact_normal: wp.array[wp.vec3],
@@ -43,6 +44,7 @@ def _write_soft_contact(
     corners: wp.vec3i,
     bary: wp.vec3,
     shape_index: wp.int32,
+    rigid_indices: wp.vec3i,
     body_pos: wp.vec3,
     body_vel: wp.vec3,
     normal: wp.vec3,
@@ -64,6 +66,7 @@ def _write_soft_contact(
         soft_contact_indices[idx] = corners
         soft_contact_barycentric[idx] = bary
         soft_contact_shape[idx] = shape_index
+        soft_contact_rigid_indices[idx] = rigid_indices
         soft_contact_body_pos[idx] = body_pos
         soft_contact_body_vel[idx] = body_vel
         soft_contact_normal[idx] = normal

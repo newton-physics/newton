@@ -397,6 +397,24 @@ class Contacts:
             self.soft_contact_barycentric = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Barycentric weights of the contact point on the soft feature's particles [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
+            # Allocated unconditionally (like the other soft-contact fields): every
+            # writer stamps this field — non-BVH rows store the (-1, -1, -1) sentinel —
+            # so full capacity must exist regardless of the active back-end.
+            self.soft_contact_rigid_indices = wp.full(soft_contact_max, wp.vec3i(-1, -1, -1), dtype=wp.vec3i)
+            """Rigid mesh face-vertex indices per full-surface BVH contact, shape (soft_contact_max,), dtype :class:`vec3i`.
+
+            ``(v0, v1, v2)`` identifies a rigid triangle for soft-vertex/rigid-triangle
+            contacts, ``(v0, v1, -1)`` a rigid edge, and ``(v0, -1, -1)`` a rigid
+            vertex. Non-BVH contacts contain ``(-1, -1, -1)`` because an analytic SDF
+            row does not identify a complete rigid mesh primitive. Shape-local mesh
+            points are obtained with :func:`warp.mesh_get_point` and transformed using
+            :attr:`soft_contact_shape`.
+
+            The indices are stable identifiers but not canonical: the same physical
+            rigid vertex may appear under different face-vertex indices depending on
+            the record family (a triangle corner slot vs. the vertex/edge table
+            representative), so do not use the triple as a cross-record key.
+            """
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`.
 
@@ -517,6 +535,7 @@ class Contacts:
                 self.rigid_contact_match_index.fill_(-1)
 
             self.soft_contact_indices.fill_(wp.vec3i(-1, -1, -1))
+            self.soft_contact_rigid_indices.fill_(wp.vec3i(-1, -1, -1))
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)

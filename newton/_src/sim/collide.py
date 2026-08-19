@@ -2409,6 +2409,7 @@ class CollisionPipeline:
                     contacts.soft_contact_indices,
                     contacts.soft_contact_barycentric,
                     contacts.soft_contact_shape,
+                    contacts.soft_contact_rigid_indices,
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_body_vel,
                     contacts.soft_contact_normal,

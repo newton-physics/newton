@@ -889,6 +889,7 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
     soft_contact_indices = wp.empty(1, dtype=wp.vec3i, device=device)
     soft_contact_barycentric = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_shape = wp.empty(1, dtype=wp.int32, device=device)
+    soft_contact_rigid_indices = wp.empty(1, dtype=wp.vec3i, device=device)
     soft_contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
@@ -927,6 +928,7 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             soft_contact_indices,
             soft_contact_barycentric,
             soft_contact_shape,
+            soft_contact_rigid_indices,
             soft_contact_body_pos,
             soft_contact_body_vel,
             soft_contact_normal,
@@ -1088,6 +1090,7 @@ def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties
     contact_indices = wp.empty(1, dtype=wp.vec3i, device=device)
     contact_barycentric = wp.empty(1, dtype=wp.vec3, device=device)
     contact_shape = wp.empty(1, dtype=wp.int32, device=device)
+    contact_rigid_indices = wp.empty(1, dtype=wp.vec3i, device=device)
     contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
     contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
     contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
@@ -1123,6 +1126,7 @@ def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties
             contact_indices,
             contact_barycentric,
             contact_shape,
+            contact_rigid_indices,
             contact_body_pos,
             contact_body_vel,
             contact_normal,

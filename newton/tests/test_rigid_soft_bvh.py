@@ -657,6 +657,7 @@ def test_bvh_kernel_emit(test, device):
     out_indices = wp.zeros(n_max, dtype=wp.vec3i, device=device)
     out_bary = wp.zeros(n_max, dtype=wp.vec3, device=device)
     out_shape = wp.full(n_max, -7, dtype=wp.int32, device=device)
+    out_rigid_indices = wp.full(n_max, wp.vec3i(-1, -1, -1), dtype=wp.vec3i, device=device)
     out_body_pos = wp.zeros(n_max, dtype=wp.vec3, device=device)
     out_body_vel = wp.zeros(n_max, dtype=wp.vec3, device=device)
     out_normal = wp.zeros(n_max, dtype=wp.vec3, device=device)
@@ -690,6 +691,7 @@ def test_bvh_kernel_emit(test, device):
             out_indices,
             out_bary,
             out_shape,
+            out_rigid_indices,
             out_body_pos,
             out_body_vel,
             out_normal,
@@ -786,6 +788,8 @@ def test_bvh_vertex_over_rigid_face(test, device):
     test.assertEqual(n, 1, "one particle over one face interior: exactly one VT record")
     idx = contacts.soft_contact_indices.numpy()[0]
     test.assertTrue(np.all(idx == [0, -1, -1]))
+    rigid_idx = contacts.soft_contact_rigid_indices.numpy()[0]
+    test.assertEqual(int((rigid_idx >= 0).sum()), 3, "VT identifies all three rigid triangle vertices")
     test.assertEqual(int(contacts.soft_contact_particle.numpy()[0]), 0, "VT keeps the particle-only view")
     bvh_pos = contacts.soft_contact_body_pos.numpy()[0]
     bvh_normal = contacts.soft_contact_normal.numpy()[0]
@@ -799,6 +803,43 @@ def test_bvh_vertex_over_rigid_face(test, device):
     test.assertEqual(int(c2.soft_contact_count.numpy()[0]), 1)
     test.assertTrue(np.allclose(c2.soft_contact_body_pos.numpy()[0], bvh_pos, atol=1e-5))
     test.assertTrue(np.allclose(c2.soft_contact_normal.numpy()[0], bvh_normal, atol=1e-5))
+    test.assertTrue(np.all(c2.soft_contact_rigid_indices.numpy()[0] == [-1, -1, -1]))
+
+
+def test_bvh_rigid_metadata_overwritten_on_buffer_reuse(test, device):
+    """A legacy/SDF row reusing a former BVH slot must clear exact mesh metadata."""
+    builder = newton.ModelBuilder()
+    mesh_shape = builder.add_shape_mesh(-1, mesh=newton.Mesh.create_box(0.2, 0.2, 0.1))
+    sdf_shape = builder.add_shape_sphere(
+        -1, xform=wp.transform(wp.vec3(0.05, 0.0, 0.005), wp.quat_identity()), radius=0.1
+    )
+    builder.add_particle(pos=wp.vec3(0.05, 0.0, 0.105), vel=wp.vec3(0.0), mass=0.1, radius=0.0)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        soft_contact_gap=0.01,
+        enable_rigid_soft_full_surface_contact=True,
+        full_surface_mesh_backend="bvh",
+    )
+    contacts = pipeline.contacts()
+    state = model.state()
+
+    flags = model.shape_flags.numpy()
+    flags[sdf_shape] &= ~int(ShapeFlags.COLLIDE_PARTICLES)
+    model.shape_flags.assign(flags)
+    pipeline.collide(state, contacts)
+    test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
+    test.assertTrue(np.any(contacts.soft_contact_rigid_indices.numpy()[0] >= 0))
+
+    flags[mesh_shape] &= ~int(ShapeFlags.COLLIDE_PARTICLES)
+    flags[sdf_shape] |= int(ShapeFlags.COLLIDE_PARTICLES)
+    model.shape_flags.assign(flags)
+    pipeline.collide(state, contacts)
+    test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
+    test.assertTrue(
+        np.all(contacts.soft_contact_rigid_indices.numpy()[0] == [-1, -1, -1]),
+        "the analytic row must overwrite stale BVH primitive indices",
+    )
 
 
 def test_bvh_edge_across_rigid_edge(test, device):
@@ -832,7 +873,10 @@ def test_bvh_edge_across_rigid_edge(test, device):
     total = int(contacts.soft_contact_count.numpy()[0])
     idx = contacts.soft_contact_indices.numpy()[:total]
     ee = idx[(idx[:, 1] >= 0) & (idx[:, 2] < 0)]
+    rigid_idx = contacts.soft_contact_rigid_indices.numpy()[:total]
+    rigid_ee = rigid_idx[(idx[:, 1] >= 0) & (idx[:, 2] < 0)]
     test.assertGreater(len(ee), 0, "EE pass must catch the edge-over-edge crossing")
+    test.assertTrue(np.all((rigid_ee >= 0).sum(axis=1) == 2), "EE identifies both rigid edge vertices")
     test.assertTrue(np.any((ee == [0, 1, -1]).all(axis=1) | (ee == [1, 0, -1]).all(axis=1)))
     # All soft vertices are clear of the box: no particle (VT) records at all.
     test.assertEqual(int(((idx[:total, 1] < 0) & (idx[:total, 0] >= 0)).sum()), 0)
@@ -864,7 +908,10 @@ def test_bvh_face_over_rigid_vertex(test, device):
     total = int(contacts.soft_contact_count.numpy()[0])
     idx = contacts.soft_contact_indices.numpy()[:total]
     tv = idx[idx[:, 2] >= 0]
+    rigid_idx = contacts.soft_contact_rigid_indices.numpy()[:total]
+    rigid_tv = rigid_idx[idx[:, 2] >= 0]
     test.assertGreater(len(tv), 0, "TV pass must catch the face-over-vertex configuration")
+    test.assertTrue(np.all((rigid_tv >= 0).sum(axis=1) == 1), "TV identifies the rigid vertex")
     particle_view = contacts.soft_contact_particle.numpy()[:total][idx[:, 2] >= 0]
     test.assertTrue(np.all(particle_view == -1), "face records carry no particle-only view")
     body_pos = contacts.soft_contact_body_pos.numpy()[:total][idx[:, 2] >= 0]
@@ -1277,6 +1324,12 @@ add_function_test(
 )
 add_function_test(
     TestBvhFullSurfaceSoftContact,
+    "test_bvh_rigid_metadata_overwritten_on_buffer_reuse",
+    test_bvh_rigid_metadata_overwritten_on_buffer_reuse,
+    devices=soft_devices,
+)
+add_function_test(
+    TestBvhFullSurfaceSoftContact,
     "test_bvh_edge_across_rigid_edge",
     test_bvh_edge_across_rigid_edge,
     devices=soft_devices,
@@ -1355,6 +1408,7 @@ def _emit_records_with_tape(device, rig, particles, tri_rows, edge_rows, candida
     out_indices = wp.zeros(1, dtype=wp.vec3i, device=device)
     out_bary = wp.zeros(1, dtype=wp.vec3, requires_grad=True, device=device)
     out_shape = wp.zeros(1, dtype=wp.int32, device=device)
+    out_rigid_indices = wp.full(1, wp.vec3i(-1, -1, -1), dtype=wp.vec3i, device=device)
     out_body_pos = wp.zeros(1, dtype=wp.vec3, requires_grad=True, device=device)
     out_body_vel = wp.zeros(1, dtype=wp.vec3, requires_grad=True, device=device)
     out_normal = wp.zeros(1, dtype=wp.vec3, requires_grad=True, device=device)
@@ -1390,6 +1444,7 @@ def _emit_records_with_tape(device, rig, particles, tri_rows, edge_rows, candida
                 out_indices,
                 out_bary,
                 out_shape,
+                out_rigid_indices,
                 out_body_pos,
                 out_body_vel,
                 out_normal,
@@ -1986,12 +2041,14 @@ def test_bvh_contact_headroom(test, device):
     test.assertGreater(threads, 0)
     test.assertEqual(p7.soft_contact_max - p0.soft_contact_max, 7 * threads)
     # In this mesh-only scene ALL capacity comes from the headroom, so headroom 0 means a
-    # zero-capacity stream: collide runs but emits nothing.
+    # zero-capacity stream: collide still performs candidate counting so overflow
+    # diagnostics can distinguish "no storage" from "no nearby pairs", but emits nothing.
     test.assertEqual(p0.soft_contact_max, 0)
     c0 = p0.contacts()
     state = model.state()
     p0.refit_soft_contact_bvh(state)
     p0.collide(state, c0)
+    test.assertGreater(int(p0._full_surface_bvh_candidate_count.numpy()[0]), 0)
     test.assertEqual(int(c0.soft_contact_count.numpy()[0]), 0)
 
 

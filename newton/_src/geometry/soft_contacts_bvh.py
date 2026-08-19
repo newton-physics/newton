@@ -544,6 +544,7 @@ def emit_bvh_contacts(
     soft_contact_indices: wp.array[wp.vec3i],
     soft_contact_barycentric: wp.array[wp.vec3],
     soft_contact_shape: wp.array[wp.int32],
+    soft_contact_rigid_indices: wp.array[wp.vec3i],
     soft_contact_body_pos: wp.array[wp.vec3],
     soft_contact_body_vel: wp.array[wp.vec3],
     soft_contact_normal: wp.array[wp.vec3],
@@ -570,6 +571,7 @@ def emit_bvh_contacts(
 
     particle = wp.int32(-1)
     corners = wp.vec3i(-1, -1, -1)
+    rigid_indices = wp.vec3i(-1, -1, -1)
     bary = wp.vec3(0.0)
     body_pos = wp.vec3(0.0)
     body_vel = wp.vec3(0.0)
@@ -580,6 +582,7 @@ def emit_bvh_contacts(
         corners = wp.vec3i(particle, -1, -1)
         bary = wp.vec3(1.0, 0.0, 0.0)
         face = rigid_feature
+        rigid_indices = wp.vec3i(face * 3 + 0, face * 3 + 1, face * 3 + 2)
         x_local = wp.transform_point(X_sw, particle_q[particle])
         a = wp.cw_mul(wp.mesh_get_point(mesh, face * 3 + 0), scale)
         b = wp.cw_mul(wp.mesh_get_point(mesh, face * 3 + 1), scale)
@@ -597,6 +600,7 @@ def emit_bvh_contacts(
     elif family == BVH_CANDIDATE_TV:
         vertex_entry = rigid_vertex_table[rigid_feature]
         index = vertex_entry[1]
+        rigid_indices = wp.vec3i(index, -1, -1)
         t0 = tri_indices[soft_feature, 0]
         t1 = tri_indices[soft_feature, 1]
         t2 = tri_indices[soft_feature, 2]
@@ -614,6 +618,7 @@ def emit_bvh_contacts(
         edge_entry = rigid_edge_table[rigid_feature]
         index0 = edge_entry[1]
         index1 = edge_entry[2]
+        rigid_indices = wp.vec3i(index0, index1, -1)
         sv0 = edge_indices[soft_feature, 2]
         sv1 = edge_indices[soft_feature, 3]
         corners = wp.vec3i(sv0, sv1, -1)
@@ -662,6 +667,7 @@ def emit_bvh_contacts(
         soft_contact_indices,
         soft_contact_barycentric,
         soft_contact_shape,
+        soft_contact_rigid_indices,
         soft_contact_body_pos,
         soft_contact_body_vel,
         soft_contact_normal,
@@ -669,6 +675,7 @@ def emit_bvh_contacts(
         corners,
         bary,
         shape_index,
+        rigid_indices,
         body_pos,
         body_vel,
         normal,
@@ -725,10 +732,9 @@ def launch_soft_bvh_contacts(
     n_tv = int(rigid_vertex_table.shape[0])
     n_ee = int(rigid_edge_table.shape[0])
     candidate_max = int(candidates.shape[0])
-    if candidate_max == 0 or (n_vt == 0 and n_tv == 0 and n_ee == 0):
-        return
-
     candidate_count.zero_()
+    if n_vt == 0 and n_tv == 0 and n_ee == 0:
+        return
 
     shape_args = [
         state.body_q,
@@ -815,6 +821,12 @@ def launch_soft_bvh_contacts(
             record_tape=False,
         )
 
+    # Detection must still run at zero capacity: candidate_count records the
+    # attempted count, which lets diagnostics and safety consumers fail closed
+    # instead of mistaking an unprovisioned candidate buffer for an empty query.
+    if candidate_max == 0:
+        return
+
     wp.launch(
         emit_bvh_contacts,
         dim=candidate_max,
@@ -845,6 +857,7 @@ def launch_soft_bvh_contacts(
             contacts.soft_contact_indices,
             contacts.soft_contact_barycentric,
             contacts.soft_contact_shape,
+            contacts.soft_contact_rigid_indices,
             contacts.soft_contact_body_pos,
             contacts.soft_contact_body_vel,
             contacts.soft_contact_normal,
