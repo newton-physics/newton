@@ -118,10 +118,10 @@ Deformable Bodies
    subset and limitations below -- and is not fully proposal-compliant. It also does not
    import native OmniPhysics/PhysX deformable assets (see the vendor-namespace note below).
 
-:meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the `AOUSD UsdPhysics
-Deformables proposal
-<https://github.com/aousd/OpenUSD-proposals/blob/61d83b54b7efbe97ad2f480de885255cd1e593be/proposals/physics_deformables/wp_deformable_physics.md>`_,
-across three families:
+.. _AOUSD UsdPhysics Deformables proposal: https://github.com/PixarAnimationStudios/OpenUSD-proposals/pull/111
+
+:meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the
+`AOUSD UsdPhysics Deformables proposal`_, across three families:
 
 * **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI``
   becomes a rod: a chain of capsule bodies joined by cable joints, usable by any solver that
@@ -153,9 +153,9 @@ during the deprecation window.
    Most deformable properties do not yet use registered schema fallbacks.
    They read authored ``physics:`` values first, followed by resolver-enabled vendor namespaces.
    Cloth ``mass_model`` and ``shell_thickness`` already use the common resolver.
-   These properties are described by the experimental `AOUSD UsdPhysics Deformables proposal
-   <https://github.com/PixarAnimationStudios/OpenUSD-proposals/pull/111>`_. Registered-fallback
-   support for the remaining deformable properties will be expanded in the future.
+   These properties are described by the experimental `AOUSD UsdPhysics Deformables proposal`_.
+   Registered-fallback support for the remaining deformable properties will be expanded in the
+   future.
 
 Supported subset
 ~~~~~~~~~~~~~~~~
