@@ -71,6 +71,11 @@ the Model target when constructed; changing an independent
 :attr:`newton.Control.joint_target_q` has no effect. Construct a new solver
 after changing cable rest.
 
+:meth:`newton.ModelBuilder.add_rod` with ``rest_straight=True`` sets Cable rest
+rotations to identity, removing intrinsic bend and twist without changing
+initial poses, anchors, or segment lengths. Closed rods retain their closing
+rest translation and may remain prestrained.
+
 SolverVBD interprets the six per-axis :attr:`newton.Model.joint_target_ke` and
 :attr:`newton.Model.joint_target_kd` entries in canonical XYZ linear/angular
 order: ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``; every axis

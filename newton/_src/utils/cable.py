@@ -21,8 +21,8 @@ class CableStiffness(NamedTuple):
     Fields:
 
     * ``stretch`` -- axial stiffness ``E * A / L`` [N/m]
-    * ``bend``    -- bending stiffness ``E * I / L`` [N*m / rad]
-    * ``twist``   -- torsional stiffness ``G * J / L`` [N*m / rad]
+    * ``bend``    -- bending stiffness ``E * I / L`` [N·m/rad]
+    * ``twist``   -- torsional stiffness ``G * J / L`` [N·m/rad]
 
     For a circular cross-section the two bending axes are equivalent
     (``EI1 == EI2 == EI``); the single ``bend`` field is used for both axes
@@ -84,8 +84,8 @@ def create_cable_stiffness_from_elastic_moduli(
     :meth:`ModelBuilder.add_rod` and :meth:`ModelBuilder.add_rod_graph`:
 
     * ``stretch = E * A / L``     [N/m]
-    * ``bend    = E * I / L``     [N*m / rad]
-    * ``twist   = G * J / L``     [N*m / rad]    (returned only when
+    * ``bend    = E * I / L``     [N·m/rad]
+    * ``twist   = G * J / L``     [N·m/rad]    (returned only when
       ``poissons_ratio`` or ``shear_modulus`` is supplied)
 
     where ``A = pi * r^2``, ``I = pi * r^4 / 4`` (area moment of inertia about

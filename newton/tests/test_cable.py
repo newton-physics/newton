@@ -4174,6 +4174,74 @@ def _cable_rod_separate_rest_and_initial_pose_impl(test: unittest.TestCase, devi
     test.assertGreater(float(np.linalg.norm(state_1.body_qd.numpy()[rod_bodies[1]])), 1.0e-5)
 
 
+def _cable_rod_rest_straight_impl(test: unittest.TestCase, _device):
+    """Verify rest_straight changes only generated Cable rest rotations."""
+    positions = [
+        wp.vec3(0.0, 0.0, 0.0),
+        wp.vec3(1.0, 0.0, 0.0),
+        wp.vec3(1.0, 1.0, 0.0),
+        wp.vec3(2.0, 1.0, 0.0),
+    ]
+    quaternions = newton.utils.create_parallel_transport_cable_quaternions(positions)
+    quaternions = [
+        wp.quat_from_axis_angle(wp.normalize(end - start), roll) * rotation
+        for start, end, rotation, roll in zip(
+            positions[:-1],
+            positions[1:],
+            quaternions,
+            (0.0, 0.3, -0.2),
+            strict=True,
+        )
+    ]
+
+    for closed in (False, True):
+        with test.subTest(closed=closed):
+            baseline = newton.ModelBuilder()
+            _, baseline_joints = baseline.add_rod(
+                positions,
+                quaternions=quaternions,
+                closed=closed,
+                body_frame_origin="com",
+            )
+            builder = newton.ModelBuilder()
+            _, joints = builder.add_rod(
+                positions,
+                quaternions=quaternions,
+                rest_straight=True,
+                closed=closed,
+                body_frame_origin="com",
+            )
+
+            np.testing.assert_array_equal(np.asarray(builder.body_q), np.asarray(baseline.body_q))
+            np.testing.assert_array_equal(builder.joint_q, baseline.joint_q)
+            for joint, baseline_joint in zip(joints, baseline_joints, strict=True):
+                q_start = builder.joint_q_start[joint]
+                baseline_q_start = baseline.joint_q_start[baseline_joint]
+                np.testing.assert_array_equal(
+                    builder.joint_target_q[q_start : q_start + 3],
+                    baseline.joint_target_q[baseline_q_start : baseline_q_start + 3],
+                )
+                np.testing.assert_array_equal(
+                    builder.joint_target_q[q_start + 3 : q_start + 7],
+                    [0.0, 0.0, 0.0, 1.0],
+                )
+
+    for rest_kwargs in (
+        {"rest_positions": positions},
+        {"rest_quaternions": quaternions},
+    ):
+        with test.subTest(rest_kwargs=rest_kwargs):
+            with test.assertRaisesRegex(
+                ValueError, "cannot be combined with explicit rest_positions or rest_quaternions"
+            ):
+                newton.ModelBuilder().add_rod(
+                    positions,
+                    rest_straight=True,
+                    body_frame_origin="com",
+                    **rest_kwargs,
+                )
+
+
 def _cable_rest_offset_threshold_is_scale_relative_impl(test: unittest.TestCase, device):
     """Verify cable Hessian-arm selection rejects noise relative to anchor scale."""
     test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
@@ -6737,6 +6805,11 @@ add_function_test(
     "test_cable_rod_separate_rest_and_initial_pose",
     _cable_rod_separate_rest_and_initial_pose_impl,
     devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rod_rest_straight",
+    _cable_rod_rest_straight_impl,
 )
 add_function_test(
     TestCable,

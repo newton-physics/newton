@@ -5358,10 +5358,10 @@ class ModelBuilder:
             shear_damping: Optional transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise
                 defaults to 0.0.
-            bend_stiffness: Cable bend stiffness (stored as ``target_ke``) [N*m]
-                (torque per radian). If None, defaults to 0.0.
+            bend_stiffness: Cable bend stiffness (stored as ``target_ke``) [N·m/rad].
+                If None, defaults to 0.0.
             bend_damping: Cable bend damping [N·m·s/rad] (stored as ``target_kd``). If None, defaults to 0.0.
-            twist_stiffness: Optional twist stiffness [N*m] (torque per radian). If None,
+            twist_stiffness: Optional twist stiffness [N·m/rad]. If None,
                 defaults to ``bend_stiffness``.
             twist_damping: Optional twist damping [N·m·s/rad]. If None, defaults to ``bend_damping`` only when
                 both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
@@ -7858,6 +7858,7 @@ class ModelBuilder:
         quaternions: list[Quat] | None = None,
         rest_positions: list[Vec3] | None = None,
         rest_quaternions: list[Quat] | None = None,
+        rest_straight: bool = False,
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
@@ -7897,6 +7898,11 @@ class ModelBuilder:
             rest_quaternions: Optional per-segment structural-rest material-frame orientations
                 in world space [unitless quaternion]. If None, initial material roll is transported
                 to the rest tangents.
+            rest_straight: If True, gives every Cable joint identity structural-rest rotation,
+                producing zero intrinsic bend and twist. Initial poses, joint anchors, segment
+                lengths, and any closing rest translation remain unchanged. Nonzero bend or twist
+                stiffness is required for a straightening or untwisting response. Cannot be
+                combined with explicit ``rest_positions`` or ``rest_quaternions``.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
@@ -7907,11 +7913,11 @@ class ModelBuilder:
                 ``stretch_stiffness``.
             shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m]
-                (torque per radian). If None, defaults to 0.0.
+            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N·m/rad].
+                If None, defaults to 0.0.
             bend_damping: Bend damping [N·m·s/rad] for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
-            twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
+            twist_stiffness: Optional per-joint cable twist stiffness [N·m/rad]. If None, defaults to
                 ``bend_stiffness``.
             twist_damping: Optional per-joint cable twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
@@ -7950,6 +7956,8 @@ class ModelBuilder:
             ValueError: If a supplied material-frame quaternion is non-finite, has zero norm, or
                 does not satisfy the required tangent alignment.
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
+            ValueError: If ``rest_straight=True`` is combined with explicit ``rest_positions`` or
+                ``rest_quaternions``.
 
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
@@ -7968,6 +7976,10 @@ class ModelBuilder:
         """
         if cfg is None:
             cfg = self.default_shape_cfg
+        if rest_straight and (rest_positions is not None or rest_quaternions is not None):
+            raise ValueError(
+                "add_rod: rest_straight=True cannot be combined with explicit rest_positions or rest_quaternions"
+            )
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
@@ -8170,6 +8182,12 @@ class ModelBuilder:
                 )
                 link_joints.append(j_loop)
 
+        if rest_straight:
+            # Builder targets are coordinate-sized; identity survives legacy projection unchanged.
+            for joint in link_joints:
+                q_start = self.joint_q_start[joint]
+                self.joint_target_q[q_start + 3 : q_start + 7] = [0.0, 0.0, 0.0, 1.0]
+
         return link_bodies, link_joints
 
     @deprecate_nonkeyword_arguments
@@ -8240,10 +8258,10 @@ class ModelBuilder:
                 ``stretch_stiffness``.
             shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m].
+            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N·m/rad].
                 Defaults to 0.0.
             bend_damping: Bend damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
+            twist_stiffness: Optional per-joint cable twist stiffness [N·m/rad]. If None, defaults to
                 ``bend_stiffness``.
             twist_damping: Optional per-joint cable twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
