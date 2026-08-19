@@ -3468,7 +3468,7 @@ def parse_usd(
                     material = material_specs[material_path]
                     if verbose:
                         print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
+                            f"\tMaterial of '{path}':\tfriction: {material.dynamic_friction},\ttorsional friction: {material.torsional_friction},\trolling friction: {material.rolling_friction},\trestitution: {material.restitution},\tdensity: {material.density}"
                         )
                 elif verbose:
                     print(f"No material found for shape at '{path}'.")
@@ -3600,10 +3600,10 @@ def parse_usd(
                         ka=shape_ka,
                         margin=inertia_margin,
                         gap=gap_val,
-                        mu=material.dynamicFriction,
+                        mu=material.dynamic_friction,
                         restitution=material.restitution,
-                        mu_torsional=material.torsionalFriction,
-                        mu_rolling=material.rollingFriction,
+                        mu_torsional=material.torsional_friction,
+                        mu_rolling=material.rolling_friction,
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
