@@ -2,22 +2,76 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverKamino, SolverSemiImplicit, SolverXPBD
+from newton.solvers import SolverKamino, SolverSemiImplicit, SolverVBD, SolverXPBD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 class TestRuntimeGravity(unittest.TestCase):
-    pass
+    def test_builder_vector_gravity(self):
+        builder = newton.ModelBuilder(gravity=(1.0, 2.0, 3.0))
+        builder.up_axis = newton.Axis.X
+        np.testing.assert_allclose(builder.gravity, (1.0, 2.0, 3.0))
+
+        copied = newton.ModelBuilder(up_axis=newton.Axis.X)
+        copied.add_builder(builder)
+        np.testing.assert_allclose(copied.gravity, (1.0, 2.0, 3.0))
+
+        builder.begin_world()
+        np.testing.assert_allclose(builder.world_gravity[0], (1.0, 2.0, 3.0))
+
+    def test_builder_scalar_gravity_deprecated(self):
+        with self.assertWarnsRegex(DeprecationWarning, "Scalar ModelBuilder.gravity"):
+            builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=-4.0)
+        with self.assertWarnsRegex(DeprecationWarning, "Scalar ModelBuilder.gravity"):
+            self.assertEqual(builder.gravity, -4.0)
+
+        with self.assertWarnsRegex(DeprecationWarning, "Scalar ModelBuilder.gravity"):
+            builder.gravity = -2.0
+        builder.begin_world()
+        np.testing.assert_allclose(builder.world_gravity[0], (0.0, -2.0, 0.0))
+
+    def test_builder_default_gravity_follows_up_axis(self):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+        builder.up_axis = newton.Axis.X
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            np.testing.assert_allclose(builder.gravity, (-9.81, 0.0, 0.0))
+        builder.begin_world()
+        np.testing.assert_allclose(builder.world_gravity[0], (-9.81, 0.0, 0.0))
+
+    def test_world_gravity_entries_not_aliased(self):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -5.0))
+        builder.begin_world()
+        builder.end_world()
+        builder.begin_world()
+        builder.end_world()
+        self.assertIsNot(builder.world_gravity[0], builder.world_gravity[1])
+        builder.world_gravity[0][2] = 42.0
+        np.testing.assert_allclose(builder.world_gravity[1], (0.0, 0.0, -5.0))
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -5.0))
+
+        source = newton.ModelBuilder(gravity=(0.0, 0.0, -3.0))
+        dest = newton.ModelBuilder()
+        dest.begin_world()
+        dest.add_builder(source)
+        dest.end_world()
+        dest.world_gravity[0][2] = 7.0
+        np.testing.assert_allclose(source.gravity, (0.0, 0.0, -3.0))
+
+    def test_builder_rejects_invalid_gravity_vector(self):
+        with self.assertRaisesRegex(ValueError, "shape \\(3,\\)"):
+            newton.ModelBuilder(gravity=(1.0, 2.0))
 
 
 def test_runtime_gravity_particles(test, device, solver_fn):
     """Test that particles respond correctly to runtime gravity changes"""
-    builder = newton.ModelBuilder(gravity=-9.81)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
 
     # Add a particle
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
@@ -69,7 +123,7 @@ def test_runtime_gravity_particles(test, device, solver_fn):
 
 def test_runtime_gravity_bodies(test, device, solver_fn):
     """Test that rigid bodies respond correctly to runtime gravity changes"""
-    builder = newton.ModelBuilder(gravity=-9.81)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
 
     # Set default shape density
     builder.default_shape_cfg.density = 1000.0
@@ -111,7 +165,7 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
 
 def test_gravity_fallback(test, device):
     """Test that solvers fall back to model gravity when state gravity is not set"""
-    builder = newton.ModelBuilder(gravity=-9.81)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
 
     # Add a particle
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
@@ -123,7 +177,7 @@ def test_gravity_fallback(test, device):
     control = model.control()
 
     # Verify model gravity is set correctly
-    gravity_vec = model.gravity.numpy()[0]
+    gravity_vec = model.gravity.numpy()[-1]
     test.assertAlmostEqual(gravity_vec[2], -9.81, places=4)
 
     dt = 0.01
@@ -143,7 +197,7 @@ def test_runtime_gravity_with_cuda_graph(test, device):
     if not device.is_cuda:
         test.skipTest("CUDA graph capture only available on CUDA devices")
 
-    builder = newton.ModelBuilder(gravity=-9.81)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
 
     # Add a few particles
     for i in range(5):
@@ -212,13 +266,13 @@ def test_runtime_gravity_with_cuda_graph(test, device):
 def test_per_world_gravity_bodies(test, device, solver_fn):
     """Test that different worlds can have different gravity values"""
     # Create a world template with a single body
-    world_builder = newton.ModelBuilder(gravity=-9.81)
+    world_builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
     world_builder.default_shape_cfg.density = 1000.0
     b = world_builder.add_body()
     world_builder.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
 
     # Create main builder with 3 worlds
-    main_builder = newton.ModelBuilder(gravity=-9.81)
+    main_builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
     world_count = 3
     main_builder.replicate(world_builder, world_count)
 
@@ -226,7 +280,7 @@ def test_per_world_gravity_bodies(test, device, solver_fn):
     solver = solver_fn(model)
 
     # Verify gravity array has correct size
-    test.assertEqual(model.gravity.shape[0], world_count)
+    test.assertEqual(model.gravity.shape[0], world_count + 1)
 
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -264,14 +318,102 @@ def test_per_world_gravity_bodies(test, device, solver_fn):
     test.assertLess(z_vel_world2, -0.5)
 
 
+def test_per_world_gravity_particles_vbd(test, device):
+    """Verify SolverVBD applies each world's gravity to its particles."""
+    builder = newton.ModelBuilder()
+    for x in (0.0, 1.0):
+        builder.begin_world()
+        builder.add_particle(pos=(x, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        builder.end_world()
+
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -1.0), world=0)
+    model.set_gravity((0.0, 0.0, -5.0), world=1)
+
+    state_in, state_out = model.state(), model.state()
+    solver = SolverVBD(model)
+    solver.step(state_in, state_out, model.control(), None, 0.1)
+
+    np.testing.assert_allclose(state_out.particle_qd.numpy()[:, 2], [-0.1, -0.5], atol=1.0e-6)
+    np.testing.assert_allclose(state_out.particle_q.numpy()[:, 2], [-0.01, -0.05], atol=1.0e-6)
+
+
+def test_global_gravity_particles(test, device, solver_fn):
+    """Apply dedicated global gravity to global particles."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
+    global_particle = builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+
+    builder.begin_world(gravity=(0.0, 0.0, -5.0))
+    local_particle = builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+    builder.end_world()
+    builder.color()
+
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    solver = solver_fn(model)
+    solver.step(state_in, state_out, model.control(), None, 0.1)
+
+    particle_qd = state_out.particle_qd.numpy()
+    test.assertAlmostEqual(particle_qd[global_particle, 2], -0.2, places=6)
+    test.assertAlmostEqual(particle_qd[local_particle, 2], -0.5, places=6)
+
+
+def test_global_gravity_bodies(test, device, solver_fn):
+    """Apply dedicated global gravity to global rigid bodies."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
+    inertia = wp.mat33(np.eye(3))
+    global_body = builder.add_body(mass=1.0, inertia=inertia)
+
+    builder.begin_world(gravity=(0.0, 0.0, -5.0))
+    local_body = builder.add_body(mass=1.0, inertia=inertia)
+    builder.end_world()
+    builder.color()
+
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    solver = solver_fn(model)
+    solver.step(state_in, state_out, model.control(), None, 0.1)
+
+    np.testing.assert_array_equal(model.body_world.numpy(), (-1, 0))
+    body_qd = state_out.body_qd.numpy()
+    test.assertAlmostEqual(body_qd[global_body, 2], -0.2, places=6)
+    test.assertAlmostEqual(body_qd[local_body, 2], -0.5, places=6)
+
+
+def test_global_gravity_coupling_acceleration(test, device, solver_fn):
+    """Report dedicated global gravity through solver coupling hooks."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
+    global_particle = builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+    global_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+
+    builder.begin_world(gravity=(0.0, 0.0, -5.0))
+    local_particle = builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+    local_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    builder.end_world()
+
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+    particle_acceleration = wp.empty(model.particle_count, dtype=wp.vec3, device=device)
+    body_acceleration = wp.empty(model.body_count, dtype=wp.vec3, device=device)
+    solver.coupling_eval_gravity_acceleration(body_acceleration, particle_acceleration)
+
+    particle_acceleration_np = particle_acceleration.numpy()
+    body_acceleration_np = body_acceleration.numpy()
+    np.testing.assert_allclose(particle_acceleration_np[global_particle], (0.0, 0.0, -2.0), atol=1.0e-6)
+    np.testing.assert_allclose(particle_acceleration_np[local_particle], (0.0, 0.0, -5.0), atol=1.0e-6)
+    np.testing.assert_allclose(body_acceleration_np[global_body], (0.0, 0.0, -2.0), atol=1.0e-6)
+    np.testing.assert_allclose(body_acceleration_np[local_body], (0.0, 0.0, -5.0), atol=1.0e-6)
+
+
 def test_per_world_gravity_bodies_mujoco_warp(test, device):
     """Test per-world gravity with MuJoCo Warp solver (CUDA only)"""
-    world_builder = newton.ModelBuilder(gravity=-9.81)
+    world_builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
     world_builder.default_shape_cfg.density = 1000.0
     b = world_builder.add_body()
     world_builder.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
 
-    main_builder = newton.ModelBuilder(gravity=-9.81)
+    main_builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
     main_builder.replicate(world_builder, 3)
 
     model = main_builder.finalize(device=device)
@@ -318,7 +460,7 @@ def test_per_world_gravity_bodies_mujoco_warp(test, device):
 
 def test_set_gravity_per_world(test, device):
     """Test setting gravity for individual worlds"""
-    builder = newton.ModelBuilder(gravity=-9.81)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
 
     # Create 2 worlds with particles
     for world_idx in range(2):
@@ -331,9 +473,10 @@ def test_set_gravity_per_world(test, device):
 
     # Verify initial gravity is the same for both worlds
     gravity_np = model.gravity.numpy()
-    test.assertEqual(len(gravity_np), 2)
+    test.assertEqual(len(gravity_np), 3)
     test.assertAlmostEqual(gravity_np[0, 2], -9.81, places=4)
     test.assertAlmostEqual(gravity_np[1, 2], -9.81, places=4)
+    test.assertAlmostEqual(gravity_np[-1, 2], -9.81, places=4)
 
     # Set different gravity for world 0 only
     model.set_gravity((0.0, 0.0, 0.0), world=0)
@@ -343,6 +486,7 @@ def test_set_gravity_per_world(test, device):
     gravity_np = model.gravity.numpy()
     test.assertAlmostEqual(gravity_np[0, 2], 0.0, places=4)  # World 0: no gravity
     test.assertAlmostEqual(gravity_np[1, 2], -9.81, places=4)  # World 1: unchanged
+    test.assertAlmostEqual(gravity_np[-1, 2], -9.81, places=4)  # Global: unchanged
 
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -368,7 +512,7 @@ def test_set_gravity_per_world(test, device):
 
 def test_set_gravity_array(test, device):
     """Test setting per-world gravity using an array"""
-    builder = newton.ModelBuilder(gravity=-9.81)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
 
     # Create 4 worlds with particles (curriculum learning scenario)
     world_count = 4
@@ -391,6 +535,7 @@ def test_set_gravity_array(test, device):
     for i in range(world_count):
         expected_g = gravities[i, 2]
         test.assertAlmostEqual(gravity_np[i, 2], expected_g, places=4)
+    test.assertAlmostEqual(gravity_np[-1, 2], -9.81, places=4)
 
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -411,9 +556,53 @@ def test_set_gravity_array(test, device):
         test.assertGreaterEqual(z_vel_i, z_vel_next)
 
 
+def test_set_gravity_global_world(test, device):
+    """Update local and global gravity independently and compatibly."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+    builder.begin_world(gravity=(0.0, 0.0, -1.0))
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+    builder.end_world()
+    model = builder.finalize(device=device)
+
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -1.0), (0.0, 0.0, -9.81)), atol=1.0e-6)
+
+    model.set_gravity((0.0, 0.0, -2.0), world=-1)
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -1.0), (0.0, 0.0, -2.0)), atol=1.0e-6)
+
+    model.set_gravity(np.array(((0.0, 0.0, -3.0),), dtype=np.float32))
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -3.0), (0.0, 0.0, -2.0)), atol=1.0e-6)
+
+    model.set_gravity(np.array(((0.0, 0.0, -4.0), (0.0, 0.0, -5.0)), dtype=np.float32))
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -4.0), (0.0, 0.0, -5.0)), atol=1.0e-6)
+
+    model.set_gravity((0.0, 0.0, -6.0))
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -6.0), (0.0, 0.0, -6.0)), atol=1.0e-6)
+
+
+def test_set_gravity_implicit_world_compatibility(test, device):
+    """Preserve legacy gravity updates for implicit single-world models."""
+    builder = newton.ModelBuilder()
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+    model = builder.finalize(device=device)
+
+    test.assertEqual(model.world_count, 1)
+    test.assertEqual(model.gravity.shape, (1,))
+
+    model.set_gravity((0.0, 0.0, -2.0), world=0)
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -2.0),), atol=1.0e-6)
+
+    model.set_gravity(np.array(((0.0, 0.0, -3.0),), dtype=np.float32))
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -3.0),), atol=1.0e-6)
+
+    model.gravity.assign(np.array(((0.0, 0.0, -4.0),), dtype=np.float32))
+    state_in, state_out = model.state(), model.state()
+    SolverSemiImplicit(model).step(state_in, state_out, model.control(), None, 0.1)
+    test.assertAlmostEqual(state_out.particle_qd.numpy()[0, 2], -0.4, places=6)
+
+
 def test_set_gravity_invalid_world(test, device):
-    """Test that set_gravity raises IndexError for invalid world index"""
-    builder = newton.ModelBuilder(gravity=-9.81)
+    """Reject gravity updates for invalid world indices."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
     model = builder.finalize(device=device)
 
@@ -422,18 +611,21 @@ def test_set_gravity_invalid_world(test, device):
         model.set_gravity((0.0, 0.0, 0.0), world=1)
 
     with test.assertRaises(IndexError):
-        model.set_gravity((0.0, 0.0, 0.0), world=-1)
+        model.set_gravity((0.0, 0.0, 0.0), world=-2)
 
 
 def test_set_gravity_invalid_array_size(test, device):
     """Test that set_gravity raises ValueError for mismatched array size"""
-    builder = newton.ModelBuilder(gravity=-9.81)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
     model = builder.finalize(device=device)
 
     # Model has 1 world, but we pass 3 gravity vectors
     with test.assertRaises(ValueError):
         model.set_gravity([(0.0, 0.0, -9.81), (0.0, 0.0, -4.9), (0.0, 0.0, 0.0)])
+
+    with test.assertRaises(ValueError):
+        model.set_gravity((0.0, -9.81))
 
     # Passing array with world parameter should raise ValueError
     with test.assertRaises(ValueError):
@@ -443,7 +635,7 @@ def test_set_gravity_invalid_array_size(test, device):
 def test_replicate_gravity(test, device):
     """Test that replicate() copies gravity from source builder to all worlds"""
     # Create a robot builder with zero gravity
-    robot = newton.ModelBuilder(gravity=0)
+    robot = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     robot.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     # Replicate into a main builder (which has default gravity -9.81)
@@ -455,15 +647,16 @@ def test_replicate_gravity(test, device):
     gravity = model.gravity.numpy()
 
     # All worlds should have zero gravity (inherited from robot builder)
-    test.assertEqual(len(gravity), world_count)
+    test.assertEqual(len(gravity), world_count + 1)
     for i in range(world_count):
         np.testing.assert_allclose(gravity[i], [0.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(gravity[-1], [0.0, 0.0, -9.81], atol=1e-6)
 
 
 def test_replicate_gravity_nonzero(test, device):
     """Test that replicate() copies non-zero gravity from source builder"""
     # Create a robot builder with custom gravity
-    robot = newton.ModelBuilder(gravity=-4.905)  # Half gravity
+    robot = newton.ModelBuilder(gravity=(0.0, 0.0, -4.905))  # Half gravity
     robot.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     # Replicate into a main builder
@@ -475,15 +668,16 @@ def test_replicate_gravity_nonzero(test, device):
     gravity = model.gravity.numpy()
 
     # All worlds should have half gravity (inherited from robot builder)
-    test.assertEqual(len(gravity), world_count)
+    test.assertEqual(len(gravity), world_count + 1)
     for i in range(world_count):
         np.testing.assert_allclose(gravity[i], [0.0, 0.0, -4.905], atol=1e-6)
+    np.testing.assert_allclose(gravity[-1], [0.0, 0.0, -9.81], atol=1e-6)
 
 
 def test_replicate_gravity_simulation(test, device):
     """Test that replicated gravity actually affects simulation behavior"""
     # Create a robot builder with zero gravity
-    robot = newton.ModelBuilder(gravity=0)
+    robot = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     robot.default_shape_cfg.density = 1000.0
     b = robot.add_body()
     robot.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
@@ -513,26 +707,27 @@ def test_replicate_gravity_simulation(test, device):
 
 def test_add_world_copies_gravity(test, device):
     """Test that add_world() copies gravity from source builder to world_gravity"""
-    builder1 = newton.ModelBuilder(gravity=-5.0)
+    builder1 = newton.ModelBuilder(gravity=(1.0, 2.0, 3.0))
     builder1.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
-    builder2 = newton.ModelBuilder(gravity=-2.0)
+    builder2 = newton.ModelBuilder(gravity=(-4.0, 5.0, 6.0))
     builder2.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     builder = newton.ModelBuilder()
     builder.add_world(builder1)
     builder.add_world(builder2)
 
-    # Check world_gravity was set correctly (gravity * up_vector, default up is Z)
+    # Check world_gravity was set correctly
     test.assertEqual(len(builder.world_gravity), 2)
-    np.testing.assert_allclose(builder.world_gravity[0], (0.0, 0.0, -5.0), atol=1e-6)
-    np.testing.assert_allclose(builder.world_gravity[1], (0.0, 0.0, -2.0), atol=1e-6)
+    np.testing.assert_allclose(builder.world_gravity[0], (1.0, 2.0, 3.0), atol=1e-6)
+    np.testing.assert_allclose(builder.world_gravity[1], (-4.0, 5.0, 6.0), atol=1e-6)
 
     # Verify finalized model has correct gravity
     model = builder.finalize(device=device)
     gravity = model.gravity.numpy()
-    np.testing.assert_allclose(gravity[0], [0.0, 0.0, -5.0], atol=1e-6)
-    np.testing.assert_allclose(gravity[1], [0.0, 0.0, -2.0], atol=1e-6)
+    np.testing.assert_allclose(gravity[0], [1.0, 2.0, 3.0], atol=1e-6)
+    np.testing.assert_allclose(gravity[1], [-4.0, 5.0, 6.0], atol=1e-6)
+    np.testing.assert_allclose(gravity[-1], [0.0, 0.0, -9.81], atol=1e-6)
 
 
 def test_begin_world_gravity_parameter(test, device):
@@ -562,10 +757,11 @@ def test_begin_world_gravity_parameter(test, device):
 
     # Verify gravity was set correctly for each world
     gravity = model.gravity.numpy()
-    test.assertEqual(len(gravity), 3)
+    test.assertEqual(len(gravity), 4)
     np.testing.assert_allclose(gravity[0], [0.0, 0.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(gravity[1], [0.0, 0.0, -4.905], atol=1e-6)
     np.testing.assert_allclose(gravity[2], [0.0, 0.0, -9.81], atol=1e-6)
+    np.testing.assert_allclose(gravity[-1], [0.0, 0.0, -9.81], atol=1e-6)
 
     # Verify simulation behavior
     solver = SolverXPBD(model)
@@ -604,6 +800,21 @@ solvers_bodies = {
     "semi_implicit": SolverSemiImplicit,
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0),
+    "kamino": SolverKamino,
+}
+
+solvers_global_particles = {
+    "xpbd": SolverXPBD,
+    "semi_implicit": SolverSemiImplicit,
+    "vbd": SolverVBD,
+}
+
+solvers_global_bodies = {
+    "xpbd": SolverXPBD,
+    "semi_implicit": SolverSemiImplicit,
+    "vbd": lambda model: SolverVBD(model, rigid_compliant_alm=True),
+    "mujoco_cpu": solvers_bodies["mujoco_cpu"],
+    "mujoco_warp": solvers_bodies["mujoco_warp"],
     "kamino": SolverKamino,
 }
 
@@ -659,6 +870,44 @@ for device in devices:
             solver_fn=solver_fn,
         )
 
+    add_function_test(
+        TestRuntimeGravity,
+        "test_per_world_gravity_particles_vbd",
+        test_per_world_gravity_particles_vbd,
+        devices=[device],
+    )
+
+    for solver_name, solver_fn in solvers_global_particles.items():
+        add_function_test(
+            TestRuntimeGravity,
+            f"test_global_gravity_particles_{solver_name}",
+            test_global_gravity_particles,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
+
+    for solver_name, solver_fn in solvers_global_bodies.items():
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        add_function_test(
+            TestRuntimeGravity,
+            f"test_global_gravity_bodies_{solver_name}",
+            test_global_gravity_bodies,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
+
+    for solver_name in ("semi_implicit", "mujoco_cpu", "mujoco_warp"):
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        add_function_test(
+            TestRuntimeGravity,
+            f"test_global_gravity_coupling_acceleration_{solver_name}",
+            test_global_gravity_coupling_acceleration,
+            devices=[device],
+            solver_fn=solvers_bodies[solver_name],
+        )
+
     # Per-world gravity for MuJoCo Warp (only on CUDA - CPU MuJoCo uses single gravity)
     if device.is_cuda:
         add_function_test(
@@ -685,6 +934,18 @@ for device in devices:
     )
 
     # Test set_gravity error cases (once per device)
+    add_function_test(
+        TestRuntimeGravity,
+        "test_set_gravity_global_world",
+        test_set_gravity_global_world,
+        devices=[device],
+    )
+    add_function_test(
+        TestRuntimeGravity,
+        "test_set_gravity_implicit_world_compatibility",
+        test_set_gravity_implicit_world_compatibility,
+        devices=[device],
+    )
     add_function_test(
         TestRuntimeGravity,
         "test_set_gravity_invalid_world",

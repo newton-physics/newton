@@ -4,6 +4,7 @@
 from .articulation import eval_fk, eval_ik, eval_inverse_dynamics_force, eval_jacobian, eval_mass_matrix
 from .builder import ModelBuilder
 from .collide import CollisionPipeline
+from .contact_kinematics import eval_rigid_contact_kinematics
 from .contacts import Contacts
 from .control import Control
 from .enums import (
@@ -14,7 +15,7 @@ from .enums import (
     ModelFlags,
     StateFlags,
 )
-from .inverse_dynamics import InverseDynamics, eval_inverse_dynamics
+from .inverse_dynamics import eval_inverse_dynamics_passive
 from .model import Model
 from .state import State
 
@@ -24,7 +25,6 @@ __all__ = [
     "Contacts",
     "Control",
     "EqType",
-    "InverseDynamics",
     "JointTargetMode",
     "JointType",
     "Model",
@@ -34,8 +34,9 @@ __all__ = [
     "StateFlags",
     "eval_fk",
     "eval_ik",
-    "eval_inverse_dynamics",
     "eval_inverse_dynamics_force",
+    "eval_inverse_dynamics_passive",
     "eval_jacobian",
     "eval_mass_matrix",
+    "eval_rigid_contact_kinematics",
 ]

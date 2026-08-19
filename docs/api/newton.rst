@@ -10,6 +10,7 @@ newton
 .. rubric:: Submodules
 
 - :doc:`newton.actuators <newton_actuators>`
+- :doc:`newton.controllers <newton_controllers>`
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
 - :doc:`newton.math <newton_math>`
@@ -35,7 +36,6 @@ newton
    Gaussian
    GeoType
    Heightfield
-   InverseDynamics
    JointTargetMode
    JointType
    Mesh
@@ -58,10 +58,11 @@ newton
    AxisType
    eval_fk
    eval_ik
-   eval_inverse_dynamics
    eval_inverse_dynamics_force
+   eval_inverse_dynamics_passive
    eval_jacobian
    eval_mass_matrix
+   eval_rigid_contact_kinematics
    intersect_ray
 
 .. rubric:: Constants
@@ -74,6 +75,6 @@ newton
    * - ``MAXVAL``
      - ``10000000000.0``
    * - ``__version__``
-     - ``1.4.0.dev0``
+     - ``1.6.0.dev0``
    * - ``use_coord_layout_targets``
      - ``False``

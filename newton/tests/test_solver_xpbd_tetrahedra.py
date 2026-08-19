@@ -33,7 +33,8 @@ def _step_compressed_tet(points, device, k_mu, k_lambda):
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
 
     rest_q = state_0.particle_q.numpy()
     tet = model.tet_indices.numpy().reshape(-1, 4)[0]
@@ -63,7 +64,8 @@ def _step_activated_tet(points, device, activation):
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
 
     control.tet_activations.assign(np.array([activation], dtype=np.float32))
 

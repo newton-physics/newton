@@ -24,11 +24,12 @@ import newton.usd
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -36,12 +37,11 @@ class Example:
 
         builder = newton.ModelBuilder()
 
-        builder.default_shape_cfg.mu = 0.5  # Friction coefficient
+        builder.default_shape_cfg.mu = 1.0  # Friction coefficient
 
         if self.solver_type == "vbd":
-            # VBD: Higher stiffness for stable rigid body contacts
-            builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
-            builder.default_shape_cfg.kd = 1.0e7  # Contact damping
+            builder.default_shape_cfg.ke = 1.0e8
+            builder.default_shape_cfg.kd = 5.0e5
         else:
             builder.default_shape_cfg.mu_torsional = 0.01  # Contact stiffness
             builder.default_shape_cfg.mu_rolling = 3e-3  # Contact stiffness
@@ -105,16 +105,18 @@ class Example:
         if self.solver_type == "vbd":
             self.solver = newton.solvers.SolverVBD(
                 self.model,
-                iterations=10,
+                iterations=5,
+                rigid_compliant_alm=True,
             )
         else:
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -130,12 +132,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -144,7 +143,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states

@@ -21,7 +21,7 @@ def _build_single_sphere_model():
 def _render_tiny_color_and_hdr(model, *, output_color_space=newton.utils.ColorSpace.SRGB):
     sensor = SensorTiledCamera(
         model=model,
-        config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
+        default_render_config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
     )
     state = model.state()
 
@@ -30,7 +30,7 @@ def _render_tiny_color_and_hdr(model, *, output_color_space=newton.utils.ColorSp
         dtype=wp.transformf,
         device="cpu",
     )
-    camera_rays = sensor.utils.compute_pinhole_camera_rays(4, 4, math.radians(45.0))
+    camera_rays = sensor.utils.compute_camera_rays_pinhole(4, 4, camera_fovs=math.radians(45.0))
     color_image = sensor.utils.create_color_image_output(4, 4, 1)
     hdr_color_image = sensor.utils.create_hdr_color_image_output(4, 4, 1)
 

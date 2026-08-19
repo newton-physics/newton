@@ -61,7 +61,7 @@ import warp as wp
 from .....core.types import override
 from ...config import ConfigBase, ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from ..core.data import DataKamino
-from ..core.math import FLOAT32_EPS, screw, screw_angular, screw_linear
+from ..core.math import FLOAT32_EPS
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
 from ..core.types import vec6f
@@ -85,7 +85,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -343,7 +343,7 @@ def gravity_plus_coriolis_wrench(
     """
     f_gi_i = m_i * g
     tau_gi_i = -wp.skew(omega_i) @ (I_i @ omega_i)
-    return screw(f_gi_i, tau_gi_i)
+    return wp.spatial_vectorf(*f_gi_i, *tau_gi_i)
 
 
 @wp.func
@@ -361,6 +361,58 @@ def gravity_plus_coriolis_wrench_split(
     return f_gi_i, tau_gi_i
 
 
+@wp.func
+def precondition_scalar(d: wp.float32) -> wp.float32:
+    """Compute a scalar preconditioner from a diagonal matrix entry.
+
+    Produces an entry of the diagonal preconditioner P used to scale the
+    system as P D Pᵀ. Clamping bounds the scale factor to preserve float32
+    solver precision during scaling and unscaling.
+
+    The upper bound of 50.0 limits matrix scaling to approximately 10³,
+    retaining roughly four significant digits for the solver.
+
+    Args:
+        d: Diagonal matrix entry.
+    """
+    inv_sqrt_d = 1.0 / wp.sqrt(wp.abs(d) + FLOAT32_EPS)
+    return wp.clamp(inv_sqrt_d, wp.float32(1.0 / 50.0), wp.float32(50.0))
+
+
+@wp.func
+def _build_dual_preconditioner_entry(
+    tid: wp.int32,
+    njlc: wp.int32,
+    diagonal: wp.array[wp.float32],
+    diagonal_offset: wp.int32,
+    diagonal_stride: wp.int32,
+    vio: wp.int32,
+    problem_P: wp.array[wp.float32],
+):
+    """Build one scalar or three-dimensional contact preconditioner entries."""
+    diagonal_idx = diagonal_offset + diagonal_stride * tid
+    # First handle joint and limit constraints, then contact constraints.
+    if tid < njlc:
+        problem_P[vio + tid] = precondition_scalar(diagonal[diagonal_idx])
+    else:
+        ccid = tid - njlc
+        # Only the first contact-dimension thread computes the preconditioner.
+        if ccid % 3 == 0:
+            # Retrieve the Delassus-matrix diagonal entries for the contact set.
+            d_kk_0 = diagonal[diagonal_idx]
+            d_kk_1 = diagonal[diagonal_idx + diagonal_stride]
+            d_kk_2 = diagonal[diagonal_idx + 2 * diagonal_stride]
+            # Compute the effective diagonal entry.
+            # Possible options are mean, min, max.
+            # d_kk = (d_kk_0 + d_kk_1 + d_kk_2) / 3.0
+            # d_kk = wp.min(wp.vec3f(d_kk_0, d_kk_1, d_kk_2))
+            d_kk = wp.max(wp.vec3f(d_kk_0, d_kk_1, d_kk_2))
+            p_k = precondition_scalar(d_kk)
+            problem_P[vio + tid] = p_k
+            problem_P[vio + tid + 1] = p_k
+            problem_P[vio + tid + 2] = p_k
+
+
 ###
 # Kernels
 ###
@@ -370,7 +422,7 @@ def gravity_plus_coriolis_wrench_split(
 def _build_nonlinear_generalized_force(
     # Inputs:
     model_time_dt: wp.array[wp.float32],
-    model_gravity_vector: wp.array[wp.vec4f],
+    model_gravity_vector: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_m_i: wp.array[wp.float32],
     state_bodies_u_i: wp.array[wp.spatial_vectorf],
@@ -393,13 +445,10 @@ def _build_nonlinear_generalized_force(
 
     # Get world data
     dt = model_time_dt[wid]
-    gv = model_gravity_vector[wid]
-
-    # Extract the effective gravity vector
-    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
+    g = model_gravity_vector[wid]
 
     # Extract the linear and angular components of the generalized velocity
-    omega_i = screw_angular(u_i)
+    omega_i = wp.spatial_bottom(u_i)
 
     # Compute the net external wrench on the body
     h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i)
@@ -412,7 +461,7 @@ def _build_nonlinear_generalized_force(
 def _build_generalized_free_velocity(
     # Inputs:
     model_time_dt: wp.array[wp.float32],
-    model_gravity_vector: wp.array[wp.vec4f],
+    model_gravity_vector: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_m_i: wp.array[wp.float32],
     model_bodies_inv_m_i: wp.array[wp.float32],
@@ -439,26 +488,23 @@ def _build_generalized_free_velocity(
 
     # Get world data
     dt = model_time_dt[wid]
-    gv = model_gravity_vector[wid]
-
-    # Extract the effective gravity vector
-    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
+    g = model_gravity_vector[wid]
 
     # Extract the linear and angular components of the generalized velocity
-    v_i = screw_linear(u_i)
-    omega_i = screw_angular(u_i)
+    v_i = wp.spatial_top(u_i)
+    omega_i = wp.spatial_bottom(u_i)
 
     # Compute the net external wrench on the body
     h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i)
-    f_h_i = screw_linear(h_i)
-    tau_h_i = screw_angular(h_i)
+    f_h_i = wp.spatial_top(h_i)
+    tau_h_i = wp.spatial_bottom(h_i)
 
     # Compute the generalized free-velocity vector components
     v_f_i = v_i + dt * (inv_m_i * f_h_i)
     omega_f_i = omega_i + dt * (inv_I_i @ tau_h_i)
 
     # Store the generalized free-velocity vector
-    problem_u_f[bid] = screw(v_f_i, omega_f_i)
+    problem_u_f[bid] = wp.spatial_vectorf(*v_f_i, *omega_f_i)
 
 
 @wp.kernel
@@ -832,31 +878,15 @@ def _build_dual_preconditioner_all_constraints(
     nl = problem_nl[wid]
     njlc = njc + nl
 
-    # Compute the preconditioner entry for the current constraint
-    # First handle joint and limit constraints, then contact constraints
-    if tid < njlc:
-        # Retrieve the diagonal entry of the Delassus matrix
-        D_ii = problem_D[mio + ncts * tid + tid]
-        # Compute the corresponding Jacobi preconditioner entry
-        problem_P[vio + tid] = wp.sqrt(1.0 / (wp.abs(D_ii) + FLOAT32_EPS))
-    else:
-        # Compute the contact constraint index
-        ccid = tid - njlc
-        # Only the thread of the first contact constraint dimension computes the preconditioner
-        if ccid % 3 == 0:
-            # Retrieve the diagonal entries of the Delassus matrix for the contact constraint set
-            D_kk_0 = problem_D[mio + ncts * (tid + 0) + (tid + 0)]
-            D_kk_1 = problem_D[mio + ncts * (tid + 1) + (tid + 1)]
-            D_kk_2 = problem_D[mio + ncts * (tid + 2) + (tid + 2)]
-            # Compute the effective diagonal entry
-            # D_kk = (D_kk_0 + D_kk_1 + D_kk_2) / 3.0
-            # D_kk = wp.min(wp.vec3f(D_kk_0, D_kk_1, D_kk_2))
-            D_kk = wp.max(wp.vec3f(D_kk_0, D_kk_1, D_kk_2))
-            # Compute the corresponding Jacobi preconditioner entry
-            P_k = wp.sqrt(1.0 / (wp.abs(D_kk) + FLOAT32_EPS))
-            problem_P[vio + tid] = P_k
-            problem_P[vio + tid + 1] = P_k
-            problem_P[vio + tid + 2] = P_k
+    _build_dual_preconditioner_entry(
+        tid,
+        njlc,
+        problem_D,
+        mio,
+        ncts + 1,
+        vio,
+        problem_P,
+    )
 
 
 @wp.kernel
@@ -891,31 +921,15 @@ def _build_dual_preconditioner_all_constraints_sparse(
     nl = problem_nl[wid]
     njlc = njc + nl
 
-    # Compute the preconditioner entry for the current constraint
-    # First handle joint and limit constraints, then contact constraints
-    if tid < njlc:
-        # Retrieve the diagonal entry of the Delassus matrix
-        D_ii = problem_P[vio + tid]
-        # Compute the corresponding Jacobi preconditioner entry
-        problem_P[vio + tid] = wp.sqrt(1.0 / (wp.abs(D_ii) + FLOAT32_EPS))
-    else:
-        # Compute the contact constraint index
-        ccid = tid - njlc
-        # Only the thread of the first contact constraint dimension computes the preconditioner
-        if ccid % 3 == 0:
-            # Retrieve the diagonal entries of the Delassus matrix for the contact constraint set
-            D_kk_0 = problem_P[vio + tid]
-            D_kk_1 = problem_P[vio + tid + 1]
-            D_kk_2 = problem_P[vio + tid + 2]
-            # Compute the effective diagonal entry
-            # D_kk = (D_kk_0 + D_kk_1 + D_kk_2) / 3.0
-            # D_kk = wp.min(wp.vec3f(D_kk_0, D_kk_1, D_kk_2))
-            D_kk = wp.max(wp.vec3f(D_kk_0, D_kk_1, D_kk_2))
-            # Compute the corresponding Jacobi preconditioner entry
-            P_k = wp.sqrt(1.0 / (wp.abs(D_kk) + FLOAT32_EPS))
-            problem_P[vio + tid] = P_k
-            problem_P[vio + tid + 1] = P_k
-            problem_P[vio + tid + 2] = P_k
+    _build_dual_preconditioner_entry(
+        tid,
+        njlc,
+        problem_P,
+        vio,
+        1,
+        vio,
+        problem_P,
+    )
 
 
 @wp.kernel

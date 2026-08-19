@@ -14,10 +14,12 @@ import sys
 import numpy as np
 import warp as wp
 
+from ......sim import ModelFlags
 from ....config import ForwardKinematicsSolverConfig
 from ...core.joints import JointActuationType, JointDoFType
 from ...core.model import ModelKamino
-from ...core.types import assign_to_warp_int32_array, to_warp_int32_array
+from ...core.types import assign_to_warp_int32_array, to_warp_int32_array, vec7f
+from ...kinematics.resets import get_base_q_from_joint_q_and_body_q
 from ...linalg.blas import (
     block_sparse_ATA_blockwise_3_4_inv_diagonal_2d,
     block_sparse_ATA_inv_diagonal_2d,
@@ -27,12 +29,16 @@ from ...linalg.conjugate import BatchedLinearOperator, CGSolver
 from ...linalg.factorize.llt_blocked_semi_sparse import SemiSparseBlockCholeskySolverBatched
 from ...linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ...linalg.sparse_operator import BlockSparseLinearOperators
+from ...utils import logger as msg
 from ...utils.tile import get_block_dim, get_num_tiles, get_tile_size
 from ...utils.world_equivalence import DiscreteSignature, compute_equivalence_classes
 from .kernels import (
     _add_regularizer_to_diagonal,
     _apply_line_search_step,
+    _compute_fk_axis_joint_frames,
+    _compute_fk_joint_frames,
     _correct_actuator_coords,
+    _correct_universal_constraint_velocities,
     _eval_actuator_coords,
     _eval_body_velocities,
     _eval_fk_actuated_dofs_or_coords,
@@ -51,6 +57,7 @@ from .kernels import (
     _newton_check,
     _reset_state,
     _reset_state_base_q,
+    _resolve_fk_actuation_types,
     _update_cg_tolerance_kernel,
     create_1d_tile_based_kernels,
     create_2d_tile_based_kernels,
@@ -58,6 +65,7 @@ from .kernels import (
     create_eval_joint_constraints_kernel,
     create_eval_joint_constraints_sparse_jacobian_kernel,
     create_eval_min_num_iterations_kernel,
+    validate_fk_actuation_updates,
 )
 from .types import FKJointDoFType, ForwardKinematicsPreconditionerType, ForwardKinematicsStatus
 
@@ -181,46 +189,83 @@ class ForwardKinematicsSolver:
         num_joints_prev = self.model.info.num_joints.numpy().copy()  # Number of joints per world
         first_joint_id_prev = np.concatenate(([0], num_joints_prev.cumsum()))  # Index of first joint per world
 
+        # Resolve custom actuation types
+        if self.model.joints.fk_act_flag is not None:
+            fk_act_flag = self.model.joints.fk_act_flag.numpy()
+            invalid = np.flatnonzero((fk_act_flag < -1) | (fk_act_flag > 1))
+            if invalid.size > 0:
+                joint = int(invalid[0])
+                raise ValueError(f"Invalid FK actuation flag for joint {joint}: expected -1, 0, or 1")
+        resolved_act_type = wp.empty(
+            shape=self.model.size.sum_of_num_joints,
+            dtype=wp.int32,
+            device=self.device,
+        )
+        if self.model.size.sum_of_num_joints > 0:
+            wp.launch(
+                _resolve_fk_actuation_types,
+                dim=self.model.size.sum_of_num_joints,
+                inputs=[
+                    self.model.joints.act_type,
+                    self.model.joints.fk_act_flag,
+                    resolved_act_type,
+                ],
+                device=self.device,
+            )
+        joints_act_type_prev = resolved_act_type.numpy()
+        # Indexed by model joint: 0 is passive, 1 is actuated, and -1 skips
+        # validation for an explicit base joint that FK replaces.
+        built_fk_actuated = (joints_act_type_prev != JointActuationType.PASSIVE).astype(np.int32)
+
         # Retrieve / compute dimensions - Actuated coordinates/dofs (main model)
-        actuated_coord_offsets_prev = self.model.joints.actuated_coords_offset.numpy().copy()
-        actuated_dof_offsets_prev = self.model.joints.actuated_dofs_offset.numpy().copy()
+        if self.model.joints.fk_act_flag is None:
+            actuated_coord_offsets_prev = self.model.joints.actuated_coords_offset.numpy().copy()
+            actuated_dof_offsets_prev = self.model.joints.actuated_dofs_offset.numpy().copy()
+        else:
+            num_act_coords = self.model.joints.num_coords.numpy()
+            num_act_dofs = self.model.joints.num_dofs.numpy()
+            passive_mask = joints_act_type_prev == JointActuationType.PASSIVE
+            num_act_coords[passive_mask] = 0
+            num_act_dofs[passive_mask] = 0
+            actuated_coord_offsets_prev = np.concatenate(([0], num_act_coords.cumsum()))
+            actuated_dof_offsets_prev = np.concatenate(([0], num_act_dofs.cumsum()))
 
         # Determine which worlds are equivalent for FK (at least discrete data)
         classes = compute_fk_equivalence_classes(self.model)
         num_classes = len(classes)
 
+        # Resolve discrete joint data (e.g. types and indices) first, then
+        # copy or compute continuous joint data (e.g. frames).
         # Create a copy of the model's joints with added joints as needed:
         # - actuated free joints to reset the base position/orientation
         # - axis joints to factor out superfluous DoFs at tie rods
         joints_dof_type_prev = self.model.joints.dof_type.numpy().copy()
-        joints_act_type_prev = self.model.joints.act_type.numpy().copy()
         joints_bid_B_prev = self.model.joints.bid_B.numpy().copy()
         joints_bid_F_prev = self.model.joints.bid_F.numpy().copy()
-        joints_B_r_Bj_prev = self.model.joints.B_r_Bj.numpy().copy()
-        joints_F_r_Fj_prev = self.model.joints.F_r_Fj.numpy().copy()
-        joints_X_Bj_prev = self.model.joints.X_Bj.numpy().copy()
-        joints_X_Fj_prev = self.model.joints.X_Fj.numpy().copy()
         joints_num_coords_prev = self.model.joints.num_coords.numpy().copy()
         joints_num_dofs_prev = self.model.joints.num_dofs.numpy().copy()
         joints_dof_type = []
         joints_act_type = []
         joints_bid_B = []
         joints_bid_F = []
-        joints_B_r_Bj = []
-        joints_F_r_Fj = []
-        joints_X_Bj = []
-        joints_X_Fj = []
         joints_num_actuated_coords = []  # Number of actuated coordinates per joint (0 for passive joints)
         joints_num_actuated_dofs = []  # Number of actuated dofs per joint (0 for passive joints)
+        joints_source_id = []  # Source joint in the main model, or -1 for synthetic joints
+        fk_axis_joint = []  # FK index of each synthetic axis joint
+        fk_axis_body = []  # Body defining each synthetic axis joint
+        fk_axis_source_joint_0 = []  # First source joint defining each synthetic axis joint
+        fk_axis_source_joint_1 = []  # Second source joint defining each synthetic axis joint
         num_joints = np.zeros(self.num_worlds, dtype=np.int32)  # Number of joints per world
         self.num_joints_tot = 0  # Number of joints for all worlds
         actuated_coords_map = []  # Map of new actuated coordinates to these in the model or to the base coordinates
         actuated_dofs_map = []  # Map of new actuated dofs to these in the model or to the base dofs
-        base_q_default = np.zeros(7 * self.num_worlds, dtype=np.float32)  # Default base pose
-        bodies_q_0 = self.model.bodies.q_i_0.numpy()
         base_joint_ids = self.num_worlds * [-1]  # Base joint id per world
         base_joint_ids_input = self.model.info.base_joint_index.numpy().tolist()
         base_body_ids_input = self.model.info.base_body_index.numpy().tolist()
+        for base_joint_id in base_joint_ids_input:
+            if base_joint_id >= 0:
+                # FK always replaces an explicit base joint with an actuated free joint.
+                built_fk_actuated[base_joint_id] = -1
         for wd_id in range(self.num_worlds):
             # Retrieve base joint id
             base_joint_id = base_joint_ids_input[wd_id]
@@ -236,10 +281,7 @@ class ForwardKinematicsSolver:
                 joints_act_type.append(joints_act_type_prev[jt_id_prev])
                 joints_bid_B.append(joints_bid_B_prev[jt_id_prev])
                 joints_bid_F.append(joints_bid_F_prev[jt_id_prev])
-                joints_B_r_Bj.append(joints_B_r_Bj_prev[jt_id_prev])
-                joints_F_r_Fj.append(joints_F_r_Fj_prev[jt_id_prev])
-                joints_X_Bj.append(joints_X_Bj_prev[jt_id_prev])
-                joints_X_Fj.append(joints_X_Fj_prev[jt_id_prev])
+                joints_source_id.append(jt_id_prev)
                 if joints_act_type[-1] != JointActuationType.PASSIVE:
                     num_coords_jt = joints_num_coords_prev[jt_id_prev]
                     joints_num_actuated_coords.append(num_coords_jt)
@@ -256,75 +298,38 @@ class ForwardKinematicsSolver:
 
             # Add axis joints as needed
             if self.config.add_axis_joints:
-                # Find all bodies incident to two spherical joints (and nothing more)
+                # Find all bodies incident to two pure 3-DoF rotation joints.
                 num_joints_per_body = np.zeros(dtype=np.int32, shape=num_bodies[wd_id])
-                spherical_joints_per_body = [[] for i in range(num_bodies[wd_id])]
+                rotation_joints_per_body = [[] for _ in range(num_bodies[wd_id])]
                 for jt_id_prev in world_joint_ids:
-                    is_spherical = joints_dof_type_prev[jt_id_prev] == JointDoFType.SPHERICAL
+                    is_rotation = JointDoFType(joints_dof_type_prev[jt_id_prev]).is_pure_three_dof_rotation
                     bid_B = joints_bid_B_prev[jt_id_prev]
                     if bid_B >= 0:
                         bid_B -= first_body_id[wd_id]
                         num_joints_per_body[bid_B] += 1
-                        if is_spherical:
-                            spherical_joints_per_body[bid_B].append(jt_id_prev)
+                        if is_rotation:
+                            rotation_joints_per_body[bid_B].append(jt_id_prev)
                     bid_F = joints_bid_F_prev[jt_id_prev] - first_body_id[wd_id]
                     num_joints_per_body[bid_F] += 1
-                    if is_spherical:
-                        spherical_joints_per_body[bid_F].append(jt_id_prev)
+                    if is_rotation:
+                        rotation_joints_per_body[bid_F].append(jt_id_prev)
 
                 # Add an axis joint for each such body
                 for rb_id in range(num_bodies[wd_id]):
-                    if num_joints_per_body[rb_id] != 2 or len(spherical_joints_per_body[rb_id]) != 2:
+                    if num_joints_per_body[rb_id] != 2 or len(rotation_joints_per_body[rb_id]) != 2:
                         continue
                     rb_id_tot = first_body_id[wd_id] + rb_id
                     joints_dof_type.append(FKJointDoFType.AXIS)
                     joints_act_type.append(JointActuationType.PASSIVE)
                     joints_bid_B.append(-1)
                     joints_bid_F.append(rb_id_tot)
-                    joints_B_r_Bj.append(np.zeros(dtype=np.float32, shape=3))
-                    joints_F_r_Fj.append(np.zeros(dtype=np.float32, shape=3))
+                    joints_source_id.append(-1)
+                    fk_axis_joint.append(len(joints_dof_type) - 1)
+                    fk_axis_body.append(rb_id_tot)
+                    fk_axis_source_joint_0.append(rotation_joints_per_body[rb_id][0])
+                    fk_axis_source_joint_1.append(rotation_joints_per_body[rb_id][1])
                     joints_num_actuated_coords.append(0)
                     joints_num_actuated_dofs.append(0)
-
-                    # Compute position of both spherical joints on initial pose
-                    def eval_joint_pos_init(jt_id_prev):
-                        bid_B = joints_bid_B_prev[jt_id_prev]
-                        bid_F = joints_bid_F_prev[jt_id_prev]
-                        if bid_B == rb_id_tot:  # Body is the joint's base  # noqa: B023
-                            q_B = bodies_q_0[bid_B]
-                            B_r_B = joints_B_r_Bj_prev[jt_id_prev]
-                            return q_B[:3] + np.array(wp.quat_rotate(wp.quat(q_B[3:]), wp.vec3f(B_r_B)))
-                        else:  # Body is the joint's follower
-                            assert bid_F == rb_id_tot  # noqa: B023
-                            q_F = bodies_q_0[bid_F]
-                            F_r_F = joints_F_r_Fj_prev[jt_id_prev]
-                            return q_F[:3] + np.array(wp.quat_rotate(wp.quat(q_F[3:]), wp.vec3f(F_r_F)))
-
-                    pos_0 = eval_joint_pos_init(spherical_joints_per_body[rb_id][0])
-                    pos_1 = eval_joint_pos_init(spherical_joints_per_body[rb_id][1])
-
-                    # Joint frame on base = in world coordinates
-                    # Set X axis that connects both spherical joints (= tie rod axis)
-                    a_x = pos_1 - pos_0
-                    a_x /= np.linalg.norm(a_x)
-                    if np.abs(a_x[2]) < 0.99:
-                        a_y = np.cross(np.array([0.0, 0.0, 1.0]), a_x)
-                    else:
-                        a_y = np.cross(np.array([0.0, 1.0, 0.0]), a_x)
-                    a_y /= np.linalg.norm(a_y)
-                    a_z = np.cross(a_x, a_y)
-                    a_z /= np.linalg.norm(a_z)
-                    axis_X_j = np.stack((a_x, a_y, a_z), axis=1)
-                    joints_X_Bj.append(axis_X_j)
-
-                    # Joint frame on follower: set so that matches with frame on base on initial pose
-                    q_F_0 = bodies_q_0[rb_id_tot][3:]
-                    if np.max(np.abs(q_F_0 - np.array([0.0, 0.0, 0.0, 1.0]))) > 1e-8:
-                        R_F_0_wp = wp.quat_to_matrix(wp.quatf(q_F_0))
-                        R_F_0 = np.reshape(np.array(R_F_0_wp), shape=(3, 3))
-                        joints_X_Fj.append(R_F_0 @ axis_X_j)
-                    else:
-                        joints_X_Fj.append(axis_X_j)
 
             # Add joint for base joint / base body
             if base_joint_id >= 0:  # Replace base joint with an actuated free joint
@@ -332,22 +337,10 @@ class ForwardKinematicsSolver:
                 joints_act_type.append(JointActuationType.FORCE)
                 joints_bid_B.append(-1)
                 joints_bid_F.append(joints_bid_F_prev[base_joint_id])
-                joints_B_r_Bj.append(joints_B_r_Bj_prev[base_joint_id])
-                joints_F_r_Fj.append(joints_F_r_Fj_prev[base_joint_id])
-                joints_X_Bj.append(joints_X_Bj_prev[base_joint_id])
-                joints_X_Fj.append(joints_X_Fj_prev[base_joint_id])
+                joints_source_id.append(base_joint_id)
                 joints_num_actuated_coords.append(7)
                 coord_offset = -7 * wd_id - 1  # We encode offsets in base_q negatively with i -> -i - 1
                 actuated_coords_map.extend(range(coord_offset, coord_offset - 7, -1))
-                base_q_default[7 * wd_id : 7 * wd_id + 7] = [
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                ]  # Default to zero of free joint
                 joints_num_actuated_dofs.append(6)
                 dof_offset = -6 * wd_id - 1  # We encode offsets in base_u negatively with i -> -i - 1
                 actuated_dofs_map.extend(range(dof_offset, dof_offset - 6, -1))
@@ -358,17 +351,10 @@ class ForwardKinematicsSolver:
                 joints_act_type.append(JointActuationType.FORCE)
                 joints_bid_B.append(-1)
                 joints_bid_F.append(base_body_id)
-                joints_B_r_Bj.append(np.zeros(3, dtype=np.float32))
-                joints_F_r_Fj.append(np.zeros(3, dtype=np.float32))
-                joints_X_Bj.append(np.eye(3, 3, dtype=np.float32))
-                joints_X_Fj.append(np.eye(3, 3, dtype=np.float32))
+                joints_source_id.append(-1)
                 joints_num_actuated_coords.append(7)
-                # Note: we rely on the initial body orientations being identity
-                # Only then will the corresponding joint coordinates be interpretable as
-                # specifying the absolute base position and orientation
                 coord_offset = -7 * wd_id - 1  # We encode offsets in base_q negatively with i -> -i - 1
                 actuated_coords_map.extend(range(coord_offset, coord_offset - 7, -1))
-                base_q_default[7 * wd_id : 7 * wd_id + 7] = bodies_q_0[base_body_id]  # Default to initial body pose
                 joints_num_actuated_dofs.append(6)
                 dof_offset = -6 * wd_id - 1  # We encode offsets in base_u negatively with i -> -i - 1
                 actuated_dofs_map.extend(range(dof_offset, dof_offset - 6, -1))
@@ -407,7 +393,8 @@ class ForwardKinematicsSolver:
 
         # Retrieve / compute dimensions - Constraints
         num_constraints = num_bodies.copy()  # Number of kinematic constraints per world (unit quat. + joints)
-        has_universal_joints = False  # Whether the model has a least one passive universal joint
+        has_universal_joints = False  # Whether the model has at least one passive universal joint
+        self.has_universal_actuators = False  # Whether the model has at least one actuated universal joint
         constraint_full_to_red_map = np.full(6 * self.num_joints_tot, -1, dtype=np.int32)
         for eq_class in classes:
             # Count constraints for first world in equivalence class
@@ -415,12 +402,14 @@ class ForwardKinematicsSolver:
             ct_count = num_constraints[wd_id]
             for jt_id in range(first_joint_id[wd_id], first_joint_id[wd_id + 1]):
                 act_type = joints_act_type[jt_id]
+                dof_type = joints_dof_type[jt_id]
                 if act_type != JointActuationType.PASSIVE:  # Actuator: select all six constraints
                     for i in range(6):
                         constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
                     ct_count += 6
+                    if dof_type == FKJointDoFType.UNIVERSAL:
+                        self.has_universal_actuators = True
                 else:
-                    dof_type = joints_dof_type[jt_id]
                     if dof_type == FKJointDoFType.AXIS:
                         constraint_full_to_red_map[6 * jt_id + 3] = ct_count
                         ct_count += 1
@@ -453,6 +442,10 @@ class ForwardKinematicsSolver:
                         constraint_full_to_red_map[6 * jt_id + 5] = ct_count + 4
                         ct_count += 5
                     elif dof_type == FKJointDoFType.SPHERICAL:
+                        for i in range(3):
+                            constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
+                        ct_count += 3
+                    elif dof_type == FKJointDoFType.GIMBAL or dof_type == FKJointDoFType.GIMBAL_LEFT_HANDED:
                         for i in range(3):
                             constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
                         ct_count += 3
@@ -509,6 +502,9 @@ class ForwardKinematicsSolver:
                     elif dof_type == FKJointDoFType.SPHERICAL:
                         for i in range(4):
                             delta_q_max[coord_id + i] = max_step_quat
+                    elif dof_type == FKJointDoFType.GIMBAL or dof_type == FKJointDoFType.GIMBAL_LEFT_HANDED:
+                        for i in range(3):
+                            delta_q_max[coord_id + i] = max_step_angular
                     elif dof_type == FKJointDoFType.UNIVERSAL:
                         delta_q_max[coord_id] = max_step_angular
                         delta_q_max[coord_id + 1] = max_step_angular
@@ -552,19 +548,29 @@ class ForwardKinematicsSolver:
             self.num_constraints = to_warp_int32_array(num_constraints)
             self.constraint_full_to_red_map = to_warp_int32_array(constraint_full_to_red_map)
 
+            # Helper data for model updates validation
+            self._built_fk_actuated = to_warp_int32_array(built_fk_actuated)
+            self._fk_actuation_violations = wp.empty(2, dtype=wp.int32)
+
             # Modified joints
             self.joints_dof_type = to_warp_int32_array(joints_dof_type)
             self.joints_act_type = to_warp_int32_array(joints_act_type)
             self.joints_bid_B = to_warp_int32_array(joints_bid_B)
             self.joints_bid_F = to_warp_int32_array(joints_bid_F)
-            self.joints_B_r_Bj = wp.from_numpy(joints_B_r_Bj, dtype=wp.vec3f)
-            self.joints_F_r_Fj = wp.from_numpy(joints_F_r_Fj, dtype=wp.vec3f)
-            self.joints_X_Bj = wp.from_numpy(joints_X_Bj, dtype=wp.mat33f)
-            self.joints_X_Fj = wp.from_numpy(joints_X_Fj, dtype=wp.mat33f)
+            self.joints_B_r_Bj = wp.empty(self.num_joints_tot, dtype=wp.vec3f)
+            self.joints_F_r_Fj = wp.empty(self.num_joints_tot, dtype=wp.vec3f)
+            self.joints_X_Bj = wp.empty(self.num_joints_tot, dtype=wp.mat33f)
+            self.joints_X_Fj = wp.empty(self.num_joints_tot, dtype=wp.mat33f)
+            self.joints_source_id = to_warp_int32_array(joints_source_id)
+            self.fk_axis_joint = to_warp_int32_array(fk_axis_joint)
+            self.fk_axis_body = to_warp_int32_array(fk_axis_body)
+            self.fk_axis_source_joint_0 = to_warp_int32_array(fk_axis_source_joint_0)
+            self.fk_axis_source_joint_1 = to_warp_int32_array(fk_axis_source_joint_1)
+            self.num_axis_joints = len(fk_axis_joint)
             self.base_joint_id = to_warp_int32_array(base_joint_ids)
 
             # Default base state
-            self.base_q_default = wp.from_numpy(base_q_default, dtype=wp.transformf)
+            self.base_q_default = wp.zeros(shape=self.num_worlds, dtype=wp.transformf)
             self.base_u_default = wp.zeros(shape=(self.num_worlds,), dtype=wp.spatial_vectorf)
 
             # Line search
@@ -760,8 +766,10 @@ class ForwardKinematicsSolver:
 
         # Compute sparsity pattern and initialize linear solver for sparse case
         if self.config.use_sparsity:
-            self.sparse_jacobian = BlockSparseMatrices(
-                device=self.device, nzb_dtype=BlockDType(dtype=wp.float32, shape=(7,)), num_matrices=self.num_worlds
+            self.sparse_jacobian: BlockSparseMatrices[wp.float32, wp.int32, vec7f] = BlockSparseMatrices(
+                device=self.device,
+                nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(7,)),
+                num_matrices=self.num_worlds,
             )
             jacobian_dims = list(zip(num_constraints.tolist(), (7 * num_bodies).tolist(), strict=True))
 
@@ -831,7 +839,7 @@ class ForwardKinematicsSolver:
             )
 
             # Initialize Jacobian linear operator
-            self.sparse_jacobian_op = BlockSparseLinearOperators(self.sparse_jacobian)
+            self.sparse_jacobian_op = BlockSparseLinearOperators[wp.float32, wp.int32](self.sparse_jacobian)
 
             # Compute flat-array offsets for the CG solver (uniform world dimensions)
             cg_vio = wp.from_numpy(np.arange(self.num_worlds, dtype=np.int32) * self.num_states_max, device=self.device)
@@ -907,6 +915,121 @@ class ForwardKinematicsSolver:
                 rtol=self.cg_rtol,
                 maxiter=self.cg_max_iter,
             )
+
+        # Initialize continuous joint data (e.g. joint frames)
+        self._update_joint_frames()
+        self._update_axis_joint_frames()
+        self._update_base_q_default()
+
+    def validate_model_changed(self, flags: ModelFlags | int) -> None:
+        """Validate FK structural invariants before model values are updated.
+
+        Args:
+            flags: Bitmask indicating which model properties changed.
+
+        Raises:
+            RuntimeError: If the effective set of joints that are actuated for FK changed.
+            ValueError: If an FK actuation override is invalid.
+        """
+        if not flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES):
+            return
+        joint_count = self.model.size.sum_of_num_joints
+        if joint_count == 0:
+            return
+
+        self._fk_actuation_violations.fill_(joint_count)
+        wp.launch(
+            validate_fk_actuation_updates,
+            dim=joint_count,
+            inputs=[
+                self.model.joints.act_type,
+                self.model.joints.fk_act_flag,
+                self._built_fk_actuated,
+                self._fk_actuation_violations,
+            ],
+            device=self.device,
+        )
+        changed_joint, invalid_joint = self._fk_actuation_violations.numpy()
+        if invalid_joint != joint_count:
+            raise ValueError(f"Invalid FK actuation flag for joint {int(invalid_joint)}: expected -1, 0, or 1")
+        if changed_joint != joint_count:
+            raise RuntimeError(
+                f"Changing the actuated vs passive status of joint {int(changed_joint)} for FK is not supported; "
+                "recreate SolverKamino to apply the change."
+            )
+
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        """Refresh FK-owned values after an in-place model update.
+
+        Structural changes must be rejected by the owning solver before this
+        method is called. Updates here preserve allocations and pointers.
+
+        Args:
+            flags: Bitmask indicating which model properties changed.
+        """
+        if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            self._update_joint_frames()
+
+        if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            self._update_axis_joint_frames()
+
+        if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            self._update_base_q_default()
+
+    def _update_joint_frames(self) -> None:
+        """Compute FK joint frames from the current Kamino model."""
+        if self.num_joints_tot == 0:
+            return
+        wp.launch(
+            _compute_fk_joint_frames,
+            dim=self.num_joints_tot,
+            inputs=[
+                self.joints_source_id,
+                self.model.joints.B_r_Bj,
+                self.model.joints.F_r_Fj,
+                self.model.joints.X_Bj,
+                self.model.joints.X_Fj,
+                self.joints_B_r_Bj,
+                self.joints_F_r_Fj,
+                self.joints_X_Bj,
+                self.joints_X_Fj,
+            ],
+            device=self.device,
+        )
+
+    def _update_axis_joint_frames(self) -> None:
+        """Compute synthetic axis-joint frames from the current model."""
+        if self.num_axis_joints == 0:
+            return
+        wp.launch(
+            _compute_fk_axis_joint_frames,
+            dim=self.num_axis_joints,
+            inputs=[
+                self.fk_axis_joint,
+                self.fk_axis_body,
+                self.fk_axis_source_joint_0,
+                self.fk_axis_source_joint_1,
+                self.model.joints.bid_B,
+                self.model.joints.B_r_Bj,
+                self.model.joints.F_r_Fj,
+                self.model.bodies.q_i_0,
+                self.joints_X_Bj,
+                self.joints_X_Fj,
+            ],
+            device=self.device,
+        )
+
+    def _update_base_q_default(self) -> None:
+        """Compute default FK base poses from the current reference pose."""
+        if self.num_worlds == 0:
+            return
+        get_base_q_from_joint_q_and_body_q(
+            model=self.model,
+            joint_q=self.model.joints.q_j_0,
+            body_q=self.model.bodies.q_i_0,
+            base_q=self.base_q_default,
+            world_mask=self.all_worlds_mask,
+        )
 
     ###
     # Internal evaluators (graph-capturable functions working on pre-allocated data)
@@ -1154,6 +1277,7 @@ class ForwardKinematicsSolver:
                 self.joints_bid_B,
                 self.joints_bid_F,
                 self.joints_X_Bj,
+                self.joints_X_Fj,
                 self.joints_B_r_Bj,
                 self.joints_F_r_Fj,
                 bodies_q,
@@ -1229,6 +1353,7 @@ class ForwardKinematicsSolver:
                 self.joints_bid_B,
                 self.joints_bid_F,
                 self.joints_X_Bj,
+                self.joints_X_Fj,
                 self.joints_B_r_Bj,
                 self.joints_F_r_Fj,
                 bodies_q,
@@ -1281,6 +1406,7 @@ class ForwardKinematicsSolver:
                 self.joints_bid_B,
                 self.joints_bid_F,
                 self.joints_X_Bj,
+                self.joints_X_Fj,
                 self.joints_B_r_Bj,
                 self.joints_F_r_Fj,
                 bodies_q,
@@ -1715,6 +1841,7 @@ class ForwardKinematicsSolver:
         )
 
         # Compute target constraint velocities (prescribed for actuated dofs, zero for passive constraints)
+        self._eval_actuator_coords(bodies_q, self.actuators_q_next)
         self.target_cts_u.zero_()
         wp.launch(
             _eval_target_constraint_velocities,
@@ -1727,14 +1854,39 @@ class ForwardKinematicsSolver:
                 self.first_joint_id,
                 self.joints_dof_type,
                 self.joints_act_type,
+                self.actuated_coord_offsets,
                 self.actuated_dof_offsets,
                 self.constraint_full_to_red_map,
+                self.actuators_q_next,
                 self.actuators_u,
                 world_mask,
                 self.target_cts_u,
             ],
             device=self.device,
         )
+        if self.has_universal_actuators:
+            wp.launch(
+                _correct_universal_constraint_velocities,
+                dim=(
+                    self.num_worlds,
+                    self.num_joints_max,
+                ),
+                inputs=[
+                    self.num_joints,
+                    self.first_joint_id,
+                    self.joints_dof_type,
+                    self.joints_act_type,
+                    self.joints_bid_B,
+                    self.joints_bid_F,
+                    self.joints_X_Bj,
+                    self.joints_X_Fj,
+                    self.constraint_full_to_red_map,
+                    bodies_q,
+                    world_mask,
+                    self.target_cts_u,
+                ],
+                device=self.device,
+            )
 
         # Update constraints Jacobian
         self._update_jacobian(bodies_q, target_rel_transforms, world_mask)
@@ -1880,7 +2032,7 @@ class ForwardKinematicsSolver:
 
         Args:
             actuators_u: Array of actuated joint velocities.
-                Expects shape of ``(sum_of_num_actuated_joint_dofs,)``.
+                Expects shape of ``(sum_of_num_fk_actuated_joint_dofs,)``.
             bodies_q: Array of rigid body poses. Must be the solution of FK given the position-control transforms.
                 Expects shape of ``(num_bodies,)``.
             bodies_u: Array of rigid body velocities (twists), written out by the solver.
@@ -1943,7 +2095,7 @@ class ForwardKinematicsSolver:
 
         Args:
             actuators_q: Array of actuated joint coordinates.
-                Expects shape of ``(sum_of_num_actuated_joint_coords,)``.
+                Expects shape of ``(sum_of_num_fk_actuated_joint_coords,)``.
             bodies_q: Array of rigid body poses, written out by the solver and read in as initial guess if the reset_state
                 solver setting is False.
                 Expects shape of ``(num_bodies,)``.
@@ -1955,7 +2107,7 @@ class ForwardKinematicsSolver:
             actuators_u: Array of actuated joint velocities.
                 Must be provided when solving for body velocities, i.e. if bodies_u is provided.
                 If this function is captured in a graph, must be either always or never provided.
-                Expects shape of ``(sum_of_num_actuated_joint_dofs,)``.
+                Expects shape of ``(sum_of_num_fk_actuated_joint_dofs,)``.
             base_u: Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
                 absolute otherwise.
                 If not provided, will default to zero. Ignored if no base body or joint was set for this model.
@@ -2067,7 +2219,7 @@ class ForwardKinematicsSolver:
 
         Args:
             actuators_q: Array of actuated joint coordinates.
-                Expects shape of ``(sum_of_num_actuated_joint_coords,)``.
+                Expects shape of ``(sum_of_num_fk_actuated_joint_coords,)``.
             bodies_q: Array of rigid body poses, written out by the solver and read in as initial guess if the reset_state
                 solver setting is False.
                 Expects shape of ``(num_bodies,)``.
@@ -2077,7 +2229,7 @@ class ForwardKinematicsSolver:
                 Expects shape of ``(num_worlds,)``.
             actuators_u: Array of actuated joint velocities.
                 Must be provided when solving for body velocities, i.e. if bodies_u is provided.
-                Expects shape of ``(sum_of_num_actuated_joint_dofs,)``.
+                Expects shape of ``(sum_of_num_fk_actuated_joint_dofs,)``.
             base_u: Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
                 absolute otherwise.
                 If not provided, will default to zero. Ignored if no base body or joint was set for this model.
@@ -2102,6 +2254,13 @@ class ForwardKinematicsSolver:
         assert base_u is None or base_u.device == self.device
         assert actuators_u is None or actuators_u.device == self.device
         assert bodies_u is None or bodies_u.device == self.device
+
+        # Warn if any world does not have an assigned base body when base attributes are provided.
+        if (base_q is not None or base_u is not None) and self.model.info.has_world_without_base_body:
+            msg.warning(
+                "Some worlds have no free-floating base body assigned, possibly due to a non-free articulation root (fixed-base system). "
+                "Base pose/velocity updates for forward kinematics will have no effect for those worlds."
+            )
 
         # Run solve (with or without graph)
         if use_graph:
@@ -2176,14 +2335,23 @@ def compute_fk_equivalence_classes(model: ModelKamino) -> list[list[int]]:
         world_delta=model.info.joints_offset,
         ignore_negative=True,
     )
-    return compute_equivalence_classes(
-        [
-            sig_num_bodies,
-            sig_joint_act_type,
-            sig_joint_dof_type,
-            sig_joint_bid_B,
-            sig_joint_bid_F,
-            sig_base_body,
-            sig_base_joint,
-        ]
-    )
+    signatures = [
+        sig_num_bodies,
+        sig_joint_act_type,
+        sig_joint_dof_type,
+        sig_joint_bid_B,
+        sig_joint_bid_F,
+        sig_base_body,
+        sig_base_joint,
+    ]
+
+    if model.joints.fk_act_flag is not None:
+        sig_joint_fk_act_flag = DiscreteSignature(
+            num_worlds=model.size.num_worlds,
+            data=model.joints.fk_act_flag,
+            world_offset=model.info.joints_offset,
+            world_size=model.info.num_joints,
+        )
+        signatures.append(sig_joint_fk_act_flag)
+
+    return compute_equivalence_classes(signatures)

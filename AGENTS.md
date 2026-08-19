@@ -40,6 +40,7 @@ uv run --extra dev --extra torch-cu12 -m newton.tests                  # with Py
 
 ### Testing guidelines
 
+- Give every test function or method a docstring using triple double quotes (`"""..."""`). Start with a concise one-line summary in imperative mood that states what the test verifies. For a particularly complex test, add a body that elaborates on the tested behavior, separated from the summary by a blank line following Google-style docstring conventions.
 - Never call `wp.synchronize()` or `wp.synchronize_device()` right before `.numpy()` on a Warp array. This is redundant as `.numpy()` performs a synchronous device-to-host copy that completes all outstanding work.
 
 ```bash
@@ -50,8 +51,8 @@ uvx --with virtualenv asv run --launch-method spawn main^!
 ## PR Instructions
 
 - If opening a pull request on GitHub, use the template in `.github/PULL_REQUEST_TEMPLATE.md`.
-- If a change modifies user-facing behavior, insert an entry at a random position within the correct category (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`) in `CHANGELOG.md`'s `[Unreleased]` section. Use imperative present tense ("Add X") and avoid internal implementation details.
-- For `Deprecated`, `Changed`, and `Removed` entries, include migration guidance: "Deprecate `Model.geo_meshes` in favor of `Model.shapes`".
+- Follow `changelog/README.md`: add a Towncrier fragment for user-facing changes instead of editing `CHANGELOG.md` directly. A `.skip` reason is optional for changes without user-facing impact.
+- Preview fragments with `uvx --from towncrier==25.8.0 towncrier build --draft --version X.Y.Z --date YYYY-MM-DD`.
 
 ## Examples
 

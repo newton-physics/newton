@@ -3,7 +3,6 @@
 
 import logging
 import os
-import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
@@ -26,7 +25,7 @@ from .types import GeoType, Mesh
 
 logger = logging.getLogger(__name__)
 
-SignMethod = Literal["auto", "parity", "winding"]
+SignMethod = Literal["auto", "parity", "winding", "normal"]
 
 if TYPE_CHECKING:
     from .sdf_texture import TextureSDFData
@@ -213,28 +212,6 @@ class SDF:
         self._coarse_texture = _coarse_texture
         self._subgrid_texture = _subgrid_texture
 
-    @property
-    def texture_block_coords(self) -> None:
-        """Deprecated.  Always returns ``None``.
-
-        Texture-SDF block coordinates were removed when the hydroelastic
-        broadphase started deriving them arithmetically from the per-shape
-        coarse-texture dimensions.  The attribute is retained for one
-        release cycle so existing callers do not break.
-
-        .. deprecated:: 1.3
-            This attribute will be removed in a future release.
-        """
-        warnings.warn(
-            "SDF.texture_block_coords is deprecated and always returns None; "
-            "it will be removed in a future release. The hydroelastic broadphase "
-            "now derives block coordinates arithmetically from each SDF's "
-            "coarse-texture dimensions and no longer needs this attribute.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return None
-
     def to_kernel_data(self) -> SDFData:
         """Return kernel-facing SDF payload."""
         return self.data
@@ -386,6 +363,7 @@ class SDF:
         texture_format: str = "uint16",
         sign_method: SignMethod = "auto",
         cache_dir: str | os.PathLike[str] | None = None,
+        paired_samples: bool = True,
     ) -> "SDF":
         """Create an SDF from a mesh in local mesh coordinates.
 
@@ -430,6 +408,11 @@ class SDF:
                   ``wp.mesh_query_point_sign_winding_number``. Robust for
                   general (possibly open or non-manifold) meshes but more
                   expensive to build and query.
+                * ``"normal"``: always use
+                  ``wp.mesh_query_point_sign_normal`` (angle-weighted
+                  pseudo-normal). Signs voxels by the local side of the
+                  nearest surface; the choice for open sheets, where
+                  neither parity nor winding defines a consistent inside.
             cache_dir: Optional directory holding cached cooked SDFs. When
                 provided, the cooked SDF data (everything that backs the
                 GPU 3D textures) is keyed by mesh content + build
@@ -440,6 +423,9 @@ class SDF:
                 build. ``shape_margin`` is applied at sample time and
                 is *not* part of the cache key. Defaults to ``None``
                 (cache disabled).
+            paired_samples: Store each SDF sample with its positive-X
+                neighbor for faster software interpolation. Disable to halve
+                texture memory at the cost of slower hydroelastic sampling.
 
         Returns:
             A validated :class:`SDF` runtime handle.
@@ -457,7 +443,7 @@ class SDF:
                 "No CUDA-capable device was detected."
             )
 
-        valid_sign_methods: tuple[SignMethod, ...] = ("auto", "parity", "winding")
+        valid_sign_methods: tuple[SignMethod, ...] = ("auto", "parity", "winding", "normal")
         if sign_method not in valid_sign_methods:
             raise ValueError(f"Unknown sign_method {sign_method!r}. Expected one of {list(valid_sign_methods)}.")
 
@@ -467,17 +453,24 @@ class SDF:
         is_watertight = mesh.is_watertight
 
         if sign_method == "auto":
-            use_parity = is_watertight
+            sign_method_resolved = "parity" if is_watertight else "winding"
         else:
-            use_parity = sign_method == "parity"
-
-        sign_method_resolved = "parity" if use_parity else "winding"
+            sign_method_resolved = sign_method
 
         from .sdf_texture import (  # noqa: PLC0415
+            SIGN_MODE_NORMAL,
+            SIGN_MODE_PARITY,
+            SIGN_MODE_WINDING,
             QuantizationMode,
             create_sparse_sdf_textures,
             create_texture_sdf_from_mesh,
         )
+
+        _sign_mode_map = {
+            "winding": SIGN_MODE_WINDING,
+            "parity": SIGN_MODE_PARITY,
+            "normal": SIGN_MODE_NORMAL,
+        }
 
         _tex_fmt_map = {
             "float32": QuantizationMode.FLOAT32,
@@ -516,7 +509,9 @@ class SDF:
         with wp.ScopedDevice(device):
             if loaded_sparse_data is not None:
                 sdf_device = str(wp.get_device())
-                sdf_params, coarse_texture, subgrid_texture = create_sparse_sdf_textures(loaded_sparse_data, sdf_device)
+                sdf_params, coarse_texture, subgrid_texture = create_sparse_sdf_textures(
+                    loaded_sparse_data, sdf_device, paired_samples
+                )
                 sdf_params.scale_baked = bake_scale
                 texture_data = sdf_params
             else:
@@ -525,12 +520,14 @@ class SDF:
                 indices = wp.array(mesh.indices, dtype=wp.int32)
 
                 winding_threshold = 0.5
-                if use_parity:
-                    tex_mesh = wp.Mesh(points=pos, indices=indices)
-                else:
+                if sign_method_resolved == "winding":
                     tex_mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
                     signed_volume = compute_mesh_signed_volume(pos, indices)
                     winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
+                else:
+                    # Parity and pseudo-normal queries need no winding-number
+                    # acceleration on the mesh.
+                    tex_mesh = wp.Mesh(points=pos, indices=indices)
 
                 want_sparse = cache_dir is not None
                 res = effective_max_resolution if effective_max_resolution is not None else 64
@@ -543,8 +540,9 @@ class SDF:
                     quantization_mode=qmode,
                     winding_threshold=winding_threshold,
                     scale_baked=bake_scale,
-                    use_parity=use_parity,
+                    sign_mode=_sign_mode_map[sign_method_resolved],
                     return_sparse_data=want_sparse,
+                    paired_samples=paired_samples,
                 )
                 if want_sparse:
                     texture_data, coarse_texture, subgrid_texture, sparse_data = result
@@ -686,6 +684,21 @@ def get_distance_to_mesh_parity(mesh: wp.uint64, point: wp.vec3, max_dist: wp.fl
     return max_dist
 
 
+@wp.func
+def get_distance_to_mesh_normal(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32):
+    """Signed distance using the angle-weighted pseudo-normal for the sign.
+
+    Gives a stable local side-of-surface classification for open
+    (non-watertight) meshes, where neither parity nor winding numbers define
+    a consistent inside. Needs no winding-number acceleration on the mesh.
+    """
+    res = wp.mesh_query_point_sign_normal(mesh, point, max_dist)
+    if res.result:
+        closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
+        return res.sign * wp.length(closest - point)
+    return max_dist
+
+
 @wp.kernel
 def sdf_from_mesh_kernel(
     mesh: wp.uint64,
@@ -740,7 +753,7 @@ def sdf_from_primitive_kernel(
     elif shape_type == GeoType.CAPSULE:
         signed_distance = sdf_capsule(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
     elif shape_type == GeoType.CYLINDER:
-        signed_distance = sdf_cylinder(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
+        signed_distance = sdf_cylinder(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z), -1.0, shape_scale[2])
     elif shape_type == GeoType.ELLIPSOID:
         signed_distance = sdf_ellipsoid(sample_pos, shape_scale)
     elif shape_type == GeoType.CONE:
@@ -788,7 +801,7 @@ def check_tile_occupied_primitive_kernel(
     elif shape_type == GeoType.CAPSULE:
         signed_distance = sdf_capsule(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
     elif shape_type == GeoType.CYLINDER:
-        signed_distance = sdf_cylinder(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
+        signed_distance = sdf_cylinder(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z), -1.0, shape_scale[2])
     elif shape_type == GeoType.ELLIPSOID:
         signed_distance = sdf_ellipsoid(sample_pos, shape_scale)
     elif shape_type == GeoType.CONE:
@@ -825,8 +838,11 @@ def get_primitive_extents(shape_type: int, shape_scale: Sequence[float]) -> tupl
         min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1] - shape_scale[0]]
         max_ext = [shape_scale[0], shape_scale[0], shape_scale[1] + shape_scale[0]]
     elif shape_type == GeoType.CYLINDER:
-        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1]]
-        max_ext = [shape_scale[0], shape_scale[0], shape_scale[1]]
+        radial_extent = shape_scale[0]
+        if shape_scale[2] > 0.0:
+            radial_extent += shape_scale[2] - (shape_scale[2] ** 2 - shape_scale[1] ** 2) ** 0.5
+        min_ext = [-radial_extent, -radial_extent, -shape_scale[1]]
+        max_ext = [radial_extent, radial_extent, shape_scale[1]]
     elif shape_type == GeoType.ELLIPSOID:
         min_ext = [-shape_scale[0], -shape_scale[1], -shape_scale[2]]
         max_ext = [shape_scale[0], shape_scale[1], shape_scale[2]]
@@ -1438,7 +1454,7 @@ def _populate_dense_sdf_kernel(
     elif shape_type == GeoType.CAPSULE:
         d = sdf_capsule(pos, shape_scale[0], shape_scale[1], int(Axis.Z))
     elif shape_type == GeoType.CYLINDER:
-        d = sdf_cylinder(pos, shape_scale[0], shape_scale[1], int(Axis.Z))
+        d = sdf_cylinder(pos, shape_scale[0], shape_scale[1], int(Axis.Z), -1.0, shape_scale[2])
     elif shape_type == GeoType.ELLIPSOID:
         d = sdf_ellipsoid(pos, shape_scale)
     elif shape_type == GeoType.CONE:
@@ -1515,10 +1531,10 @@ def _generate_dense_mc_kernel(
             p_0 = wp.vec3f(corner_offsets_table[ev[0]])
             p_1 = wp.vec3f(corner_offsets_table[ev[1]])
             val_diff = val_1 - val_0
-            if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
+            if wp.abs(val_diff) < MC_EDGE_VAL_DIFF_EPS:
                 p = 0.5 * (p_0 + p_1)
             else:
-                t = wp.clamp((0.0 - val_0) / val_diff, wp.static(MC_EDGE_CLAMP_MIN), wp.static(MC_EDGE_CLAMP_MAX))
+                t = wp.clamp((0.0 - val_0) / val_diff, MC_EDGE_CLAMP_MIN, MC_EDGE_CLAMP_MAX)
                 p = p_0 + t * (p_1 - p_0)
             local = base + p
             face_verts[vi] = wp.vec3(
@@ -1528,7 +1544,7 @@ def _generate_dense_mc_kernel(
             )
         n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
         n_sq = wp.dot(n, n)
-        if n_sq < wp.static(MC_DEGENERATE_N_SQ_EPS):
+        if n_sq < MC_DEGENERATE_N_SQ_EPS:
             normal = wp.vec3(0.0, 0.0, 1.0)
         else:
             normal = n / wp.sqrt(n_sq)

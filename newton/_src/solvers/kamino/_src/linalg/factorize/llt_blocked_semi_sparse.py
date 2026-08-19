@@ -26,7 +26,7 @@ __all__ = ["SemiSparseBlockCholeskySolverBatched"]
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 def cuthill_mckee_ordering(M):
@@ -75,7 +75,7 @@ def compute_inverse_ordering(ordering):
     return inv_ordering
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel
 def reorder_rows_kernel(
     src: wp.array3d[float],
     dst: wp.array3d[float],
@@ -93,7 +93,7 @@ def reorder_rows_kernel(
         dst[batch_id, i, j] = src[batch_id, src_row, src_col]
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel
 def reorder_rows_kernel_col_vector(
     src: wp.array3d[float],
     dst: wp.array3d[float],
@@ -172,7 +172,7 @@ def symbolic_cholesky_dense(M, tile_size):
 
 @cache
 def create_blocked_cholesky_kernel(block_size: int):
-    @wp.kernel(enable_backward=False)
+    @wp.kernel
     def blocked_cholesky_kernel(
         A_batched: wp.array3d[float],
         L_batched: wp.array3d[float],
@@ -305,7 +305,7 @@ def create_blocked_cholesky_kernel(block_size: int):
 
 @cache
 def create_blocked_cholesky_solve_kernel(block_size: int):
-    @wp.kernel(enable_backward=False)
+    @wp.kernel
     def blocked_cholesky_solve_kernel(
         L_batched: wp.array3d[float],
         L_tile_pattern_batched: wp.array3d[int],

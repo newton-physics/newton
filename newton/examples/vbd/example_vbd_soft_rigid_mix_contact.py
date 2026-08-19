@@ -68,7 +68,7 @@ PARAMS = {
     "soft_contact_ke": 1e3,
     "soft_contact_kd": 1e0,
     "soft_contact_mu": 0.8,
-    "gravity": -9.8,
+    "gravity": (0.0, 0.0, -9.8),
     "initial_paused": False,
     "body_drop_offset": 0.08,
     "body_drop_spacing": 0.05,
@@ -315,6 +315,7 @@ def setup_sim(builder, info, params):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
+        rigid_compliant_alm=True,
         rigid_body_particle_contact_buffer_size=params["rigid_body_particle_contact_buffer_size"],
         rigid_body_contact_buffer_size=512,
         particle_enable_self_contact=False,

@@ -22,12 +22,13 @@ from newton._src.solvers.kamino._src.utils.control import AnimationJointReferenc
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino._src.utils.sim import SimulationLogger, Simulator, ViewerKamino
 from newton._src.solvers.kamino.examples import get_examples_output_path, run_headless
+from newton._src.solvers.kamino.solver_kamino import SolverKamino
 
 ###
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -149,9 +150,12 @@ class Example:
         gravity: bool = True,
         ground: bool = True,
         logging: bool = False,
-        linear_solver: str = "LLTB",
+        dynamics_solver: str = "padmm",
+        linear_solver: str | None = None,
         linear_solver_maxiter: int = 0,
         use_graph_conditionals: bool = False,
+        sparse: bool = False,
+        asset: str = "dr_legs_with_meshes_and_boxes.usda",
         headless: bool = False,
         record_video: bool = False,
         async_save: bool = False,
@@ -159,9 +163,13 @@ class Example:
         # Initialize target frames per second and corresponding time-steps
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
-        target_sim_dt = 0.01 if implicit_pd else 0.001
+        target_sim_dt = self.frame_dt / 12 if dynamics_solver == "dvi" else 0.01 if implicit_pd else 0.001
         self.sim_substeps = max(1, round(self.frame_dt / target_sim_dt))
         self.sim_dt = self.frame_dt / self.sim_substeps
+        # DVI benefits from early contact detection because it solves inequality
+        # constraints slightly less accurately than PADMM. Contact forces remain
+        # zero until the shapes overlap.
+        dvi_contact_margin = 5.0e-4 if dynamics_solver == "dvi" else 0.0
         msg.info(f"Using sim_dt = {self.sim_dt} ({self.sim_substeps} substeps per frame)")
         self.max_steps = max_steps
 
@@ -173,7 +181,7 @@ class Example:
 
         # Load the DR Legs USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
-        asset_file = str(asset_path / "dr_legs/usd" / "dr_legs_with_meshes_and_boxes.usda")
+        asset_file = str(asset_path / "dr_legs/usd" / asset)
 
         # Create a model builder from the imported USD
         msg.notif("Constructing builder from imported USD ...")
@@ -198,10 +206,14 @@ class Example:
         if ground:
             for w in range(num_worlds):
                 add_ground_box(self.builder, world_index=w)
+        if dvi_contact_margin > 0.0:
+            for geom in self.builder.all_geoms:
+                geom.margin = max(geom.margin, dvi_contact_margin)
 
         # Set gravity
-        for w in range(self.builder.num_worlds):
-            self.builder.gravity[w].enabled = gravity
+        if not gravity:
+            for w in range(self.builder.num_worlds):
+                self.builder.set_gravity(wp.vec3f(0.0), w)
 
         # Set joint armatures, and verify that correct gains were loaded from the USD file
         for joint in self.builder.all_joints:
@@ -211,15 +223,24 @@ class Example:
                 assert abs(joint.k_p_j[0] - 50.0) < 1e-4
                 assert abs(joint.k_d_j[0] - 1.0) < 1e-4
 
+        if linear_solver is None:
+            linear_solver = "CR" if dynamics_solver == "dvi" else "LLTB"
+        if dynamics_solver == "dvi" and linear_solver == "CR" and linear_solver_maxiter == 0:
+            linear_solver_maxiter = 9
+
         # Parse the linear solver max iterations for iterative solvers from the command-line arguments
         linear_solver_kwargs = {"maxiter": linear_solver_maxiter} if linear_solver_maxiter > 0 else {}
 
         # Set solver config
         config = Simulator.Config()
+        config.solver = SolverKamino.Config(dynamics_solver=dynamics_solver)
         config.dt = self.sim_dt
         config.collision_detector.pipeline = "unified"  # Select from {"primitive", "unified"}
-        config.solver.sparse_jacobian = False
-        config.solver.sparse_dynamics = False
+        # DVI requires the sparse path; otherwise honor the explicit --sparse flag.
+        sparse = sparse or dynamics_solver == "dvi"
+        config.solver.sparse_jacobian = sparse
+        config.solver.sparse_dynamics = sparse
+        config.solver.use_collision_detector = True
         config.solver.integrator = "moreau"  # Select from {"euler", "moreau"}
         config.solver.constraints.alpha = 0.1
         config.solver.constraints.beta = 0.011
@@ -229,16 +250,30 @@ class Example:
         config.solver.padmm.compl_tolerance = 1e-4
         config.solver.padmm.max_iterations = 200
         config.solver.padmm.eta = 1e-5
+        config.solver.padmm.use_acceleration = True
         config.solver.padmm.rho_0 = 0.02  # try 0.02 for Balanced update
         config.solver.padmm.rho_min = 0.05
         config.solver.padmm.penalty_update_method = "fixed"  # try "balanced"
-        config.solver.padmm.use_acceleration = True
         config.solver.padmm.warmstart_mode = "containers"
         config.solver.padmm.contact_warmstart_method = "geom_pair_net_force"
         config.solver.collect_solver_info = False
         config.solver.compute_solution_metrics = logging and not use_cuda_graph
         config.solver.dynamics.linear_solver_type = linear_solver
         config.solver.dynamics.linear_solver_kwargs = linear_solver_kwargs
+        config.solver.dynamics.preconditioning = dynamics_solver != "dvi"
+        if dynamics_solver == "dvi":
+            config.solver.constraints.gamma = 0.015
+            config.solver.dynamics.linear_solver_type = "CR"
+            config.solver.dynamics.linear_solver_kwargs = {"maxiter": 9}
+            config.solver.dvi.bilateral_solver_type = "LLTBRCM"
+            config.solver.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
+            config.solver.dvi.tolerance = 1e-4
+            config.solver.dvi.regularization = 1e-5
+            config.solver.dvi.max_alternating_iterations = 4
+            config.solver.dvi.inequality_sweeps_per_iteration = 3
+            config.solver.dvi.bilateral_solve_interval = 1
+            config.solver.dvi.warmstart_mode = "containers"
+            config.solver.dvi.contact_warmstart_method = "key_and_position_with_net_force_backup"
         config.solver.padmm.use_graph_conditionals = use_graph_conditionals
         config.solver.angular_velocity_damping = 0.0
 
@@ -471,11 +506,17 @@ if __name__ == "__main__":
         help="Enable frame recording: 'sync' for synchronous, 'async' for asynchronous (non-blocking)",
     )
     parser.add_argument(
+        "--dynamics-solver",
+        default="padmm",
+        choices=["padmm", "dvi"],
+        help="Dynamics solver to use",
+    )
+    parser.add_argument(
         "--linear-solver",
-        default="LLTB",
+        default=None,
         choices=LinearSolverShorthand.values(),
         type=str.upper,
-        help="Linear solver to use",
+        help="Linear solver to use; defaults to LLTB for PADMM and CR for DVI",
     )
     parser.add_argument(
         "--linear-solver-maxiter", default=0, type=int, help="Max number of iterations for iterative linear solvers"
@@ -485,6 +526,18 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Use CUDA graph conditional nodes in iterative solvers",
+    )
+    parser.add_argument(
+        "--sparse",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use the sparse Jacobian and sparse dynamics solver path",
+    )
+    parser.add_argument(
+        "--asset",
+        type=str,
+        default="dr_legs_with_meshes_and_boxes.usda",
+        help="dr_legs USD asset filename under dr_legs/usd/",
     )
     args = parser.parse_args()
 
@@ -508,7 +561,7 @@ if __name__ == "__main__":
         device = wp.get_preferred_device()
 
     # Determine if CUDA graphs should be used for execution
-    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device) and not wp.config.verify_cuda
     use_cuda_graph = can_use_cuda_graph and args.cuda_graph
     msg.info(f"can_use_cuda_graph: {can_use_cuda_graph}")
     msg.info(f"use_cuda_graph: {use_cuda_graph}")
@@ -519,9 +572,12 @@ if __name__ == "__main__":
         device=device,
         use_cuda_graph=use_cuda_graph,
         num_worlds=args.num_worlds,
+        dynamics_solver=args.dynamics_solver,
         linear_solver=args.linear_solver,
         linear_solver_maxiter=args.linear_solver_maxiter,
         use_graph_conditionals=args.use_graph_conditionals,
+        sparse=args.sparse,
+        asset=args.asset,
         max_steps=args.num_steps,
         implicit_pd=args.implicit_pd,
         gravity=args.gravity,

@@ -26,6 +26,7 @@ PARAMS = {
     "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
     "shape_size": 0.042,
     "shape_margin": 0.005,
+    "rigid_gap": 0.01,
     "box_width_scale": 10.0,
     "box_depth_scale": 10.0,
     "box_height_scale": 5.0,
@@ -42,7 +43,7 @@ PARAMS = {
     "container_ke": 1e3,
     "container_kd": 0,
     "container_mu": 0.8,
-    "gravity": -9.8,
+    "gravity": (0.0, 0.0, -9.8),
     "initial_paused": True,
     "body_drop_offset_scale": 4.0,
     "body_drop_spacing_scale": 3.0,
@@ -68,6 +69,7 @@ def _load_bear_mesh(target_size):
 
 def build_model(builder, params, seed=42):
     rng = np.random.default_rng(seed)
+    builder.rigid_gap = params["rigid_gap"]
 
     r = params["shape_size"]
     hx = r * params["box_width_scale"] / 2
@@ -196,8 +198,8 @@ def setup_sim(builder, params):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
+        rigid_compliant_alm=True,
         rigid_body_contact_buffer_size=params["rigid_body_contact_buffer_size"],
-        # rigid_contact_hard=False,
     )
 
     return model, solver
@@ -222,7 +224,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
@@ -246,7 +249,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

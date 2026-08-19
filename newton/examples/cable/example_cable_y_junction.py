@@ -7,6 +7,12 @@
 # This example shows how to simulate a Y-junction using `builder.add_rod_graph(...)`
 # with a shared junction node.
 #
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --test --viewer null
+#
 ###########################################################################
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 20
         self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -49,7 +55,7 @@ class Example:
         segment_length = 0.03
 
         stretch_stiffness = 1.0e7
-        bend_stiffness = 1.0e4
+        bend_stiffness = 5.0e3
         bend_damping = 1.0e3
 
         builder = newton.ModelBuilder()
@@ -109,28 +115,29 @@ class Example:
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, float(getattr(args, "gravity_z", -9.81))))
 
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.contacts = self.collision_pipeline.contacts()
 
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
         self.pinned_body_q0 = self.state_0.body_q.numpy()[self.pinned_body].copy()
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.graph_bodies)
 
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:
             pick_state = picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = 2.0
-            pick_state[0]["pick_damping"] = 0.0
+            pick_state[0]["pick_stiffness"] = 0.1
+            pick_state[0]["pick_damping"] = 0.01
             picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(
@@ -142,18 +149,15 @@ class Example:
         self.capture()
 
     def capture(self):
-        if self.solver.device.is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

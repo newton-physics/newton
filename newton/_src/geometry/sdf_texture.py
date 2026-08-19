@@ -6,9 +6,9 @@
 This module provides a GPU-accelerated sparse SDF implementation using 3D CUDA textures.
 Construction mirrors the NanoVDB sparse-volume pattern in ``sdf_utils.py``:
 
-1. Check subgrid occupancy by querying mesh SDF at subgrid centers
-2. Build background/coarse SDF by querying mesh at subgrid corner positions
-3. Populate only occupied subgrid textures by querying mesh at each texel
+1. Check subgrid occupancy by querying the source SDF at subgrid centers
+2. Build the background/coarse SDF by querying the source at subgrid corner positions
+3. Populate only occupied subgrid textures by querying the source at each texel
 
 The format uses:
 - A coarse 3D texture for background/far-field sampling
@@ -21,16 +21,68 @@ providing exact accuracy with only 8 texture reads (vs 56 for finite differences
 
 from __future__ import annotations
 
+import functools
+import types
+from collections.abc import Callable, Sequence
+
 import numpy as np
 import warp as wp
 
+from ..core.types import Axis
+from .kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_ellipsoid, sdf_sphere
 from .sdf_mc import MC_EDGE_CLAMP_MAX, MC_EDGE_CLAMP_MIN, MC_EDGE_VAL_DIFF_EPS
-from .sdf_utils import get_distance_to_mesh, get_distance_to_mesh_parity
+from .sdf_utils import (
+    get_distance_to_mesh,
+    get_distance_to_mesh_normal,
+    get_distance_to_mesh_parity,
+    get_primitive_extents,
+)
+from .types import GeoType
 
 # Sentinel values for subgrid indirection slots.
-# Plain int so wp.static() works in kernels; numpy casts on assignment.
-SLOT_EMPTY = 0xFFFFFFFF  # No subgrid data (empty/far-field cell)
-SLOT_LINEAR = 0xFFFFFFFE  # Subgrid demoted to coarse interpolation
+# Typed uint32 so kernel codegen doesn't overflow an int32 constant.
+SLOT_EMPTY = wp.uint32(0xFFFFFFFF)  # No subgrid data (empty/far-field cell)
+SLOT_LINEAR = wp.uint32(0xFFFFFFFE)  # Subgrid demoted to coarse interpolation
+
+# Inside/outside sign strategies for the mesh distance queries during the
+# bake. Winding is 0 so a legacy ``use_parity`` boolean maps onto the same
+# semantics (False -> winding, True -> parity).
+SIGN_MODE_WINDING = 0
+SIGN_MODE_PARITY = 1
+SIGN_MODE_NORMAL = 2
+
+_SDF_SOURCE_MESH = 0
+_SDF_SOURCE_PRIMITIVE = 1
+
+_SUPPORTED_PRIMITIVE_SDF_TYPES = frozenset(
+    {
+        int(GeoType.SPHERE),
+        int(GeoType.BOX),
+        int(GeoType.CAPSULE),
+        int(GeoType.CYLINDER),
+        int(GeoType.ELLIPSOID),
+        int(GeoType.CONE),
+    }
+)
+
+
+def _validate_primitive_sdf_inputs(
+    shape_type: int,
+    shape_scale: Sequence[float],
+) -> tuple[int, tuple[float, float, float]]:
+    shape_type = int(shape_type)
+    if shape_type not in _SUPPORTED_PRIMITIVE_SDF_TYPES:
+        raise NotImplementedError(f"Texture SDF generation is not implemented for shape type: {shape_type}")
+    if len(shape_scale) != 3:
+        raise ValueError("shape_scale must contain exactly 3 components")
+
+    scale = tuple(float(v) for v in shape_scale)
+    if not np.all(np.isfinite(scale)):
+        raise ValueError("shape_scale components must be finite")
+    if any(v < 0.0 for v in scale):
+        raise ValueError("shape_scale components must be non-negative")
+    return shape_type, scale
+
 
 # ============================================================================
 # SDF texture-sampling paths
@@ -39,11 +91,11 @@ SLOT_LINEAR = 0xFFFFFFFE  # Subgrid demoted to coarse interpolation
 # Two pairs of trilinear samplers are provided -- pick at the call site:
 #
 # * :func:`texture_sample_sdf` / :func:`texture_sample_sdf_grad` --
-#   ``"software"`` path. 8 point-sampled corner reads + float32 trilinear
-#   blend. Most accurate; avoids the 8-bit fixed-point interpolation weights
-#   the texture unit's hardware filter uses. Default for hydroelastic
-#   contact, where contact-force precision feeds back into the stress
-#   integration over the volume.
+#   ``"software"`` path. Four point-sampled reads, each returning adjacent
+#   X samples, followed by a float32 trilinear blend. Most accurate; avoids
+#   the 8-bit fixed-point interpolation weights the texture unit's hardware
+#   filter uses. Default for hydroelastic contact, where contact-force
+#   precision feeds back into the stress integration over the volume.
 #
 # * :func:`texture_sample_sdf_hw` / :func:`texture_sample_sdf_grad_hw` --
 #   ``"hardware"`` path. One ``wp.texture_sample`` for the value, six
@@ -52,10 +104,11 @@ SLOT_LINEAR = 0xFFFFFFFE  # Subgrid demoted to coarse interpolation
 #   (8-bit fixed-point interpolation weights). Used by the mesh-SDF
 #   narrow phase, where the small extra jitter is absorbed by PGS.
 #
-# Both paths read from the same underlying ``LINEAR``-filtered textures
-# (sampling at ``int + 0.5`` resolves to the exact texel value under any
-# filter mode), so the choice only affects the kernel that inlines the
-# sampler.
+# Paired storage uses two-channel, ``LINEAR``-filtered textures: channel zero
+# stores the sample at X and channel one its +X neighbor. Scalar storage uses
+# one channel per texel. Sampling at ``int + 0.5`` resolves to the exact texel
+# value in either layout; the selected sampler controls how adjacent X values
+# are fetched.
 
 # ============================================================================
 # Texture SDF Data Structure
@@ -102,6 +155,7 @@ class TextureSDFData:
     subgrids_min_sdf_value: float
     subgrids_sdf_value_range: float  # max - min
 
+    paired_samples: wp.bool
     # Whether shape_scale was baked into the SDF
     scale_baked: wp.bool
 
@@ -128,17 +182,22 @@ def _id_to_xyz(idx: int, size_x: int, size_y: int) -> wp.vec3i:
 
 
 @wp.func
-def _query_mesh_sdf(
-    mesh: wp.uint64,
-    point: wp.vec3,
-    max_dist: wp.float32,
-    winding_threshold: wp.float32,
-    use_parity: wp.int32,
-) -> float:
-    """Dispatch to winding-number or parity sign query based on *use_parity*."""
-    if use_parity != 0:
-        return get_distance_to_mesh_parity(mesh, point, max_dist)
-    return get_distance_to_mesh(mesh, point, max_dist, winding_threshold)
+def _query_primitive_sdf(shape_type: wp.int32, shape_scale: wp.vec3, point: wp.vec3) -> float:
+    """Evaluate an analytical primitive SDF in the shape-local frame."""
+    signed_distance = float(1.0e6)
+    if shape_type == GeoType.SPHERE:
+        signed_distance = sdf_sphere(point, shape_scale[0])
+    elif shape_type == GeoType.BOX:
+        signed_distance = sdf_box(point, shape_scale[0], shape_scale[1], shape_scale[2])
+    elif shape_type == GeoType.CAPSULE:
+        signed_distance = sdf_capsule(point, shape_scale[0], shape_scale[1], int(Axis.Z))
+    elif shape_type == GeoType.CYLINDER:
+        signed_distance = sdf_cylinder(point, shape_scale[0], shape_scale[1], int(Axis.Z), -1.0, shape_scale[2])
+    elif shape_type == GeoType.ELLIPSOID:
+        signed_distance = sdf_ellipsoid(point, shape_scale)
+    elif shape_type == GeoType.CONE:
+        signed_distance = sdf_cone(point, shape_scale[0], shape_scale[1], int(Axis.Z))
+    return signed_distance
 
 
 @wp.func
@@ -220,113 +279,429 @@ def _write_subgrid_slot(
     return addr_coords
 
 
-@wp.kernel
-def _check_subgrid_occupied_kernel(
-    mesh: wp.uint64,
-    threshold: wp.vec2f,
-    winding_threshold: float,
-    use_parity: wp.int32,
-    subgrid_required: wp.array[wp.int32],
-    cells_per_subgrid: int,
-    num_subgrids_x: int,
-    num_subgrids_y: int,
-    min_corner: wp.vec3,
-    cell_size: wp.vec3,
-):
-    """Mark subgrids that overlap the narrow band by checking mesh SDF at center."""
-    tid = wp.tid()
-    coords = _id_to_xyz(tid, num_subgrids_x, num_subgrids_y)
-    sample_pos = min_corner + wp.vec3(
-        (float(coords[0] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[0],
-        (float(coords[1] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[1],
-        (float(coords[2] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[2],
-    )
+@functools.cache
+def _create_source_kernels(source_kind: int, sign_mode: int):
+    """Generate bake kernels specialized for one source and sign strategy.
 
-    signed_distance = _query_mesh_sdf(mesh, sample_pos, 10000.0, winding_threshold, use_parity)
-    if _is_in_narrow_band(signed_distance, threshold):
-        subgrid_required[tid] = 1
-    else:
-        subgrid_required[tid] = 0
-
-
-@wp.kernel
-def _accumulate_subgrid_linearity_error_kernel(
-    mesh: wp.uint64,
-    background_sdf: wp.array[float],
-    subgrid_required: wp.array[wp.int32],
-    linearity_errors: wp.array[float],
-    cells_per_subgrid: int,
-    min_corner: wp.vec3,
-    cell_size: wp.vec3,
-    winding_threshold: float,
-    use_parity: wp.int32,
-    num_subgrids_x: int,
-    num_subgrids_y: int,
-    num_subgrids_z: int,
-    bg_size_x: int,
-    bg_size_y: int,
-    bg_size_z: int,
-):
-    """Sample mesh SDF at every fine-grid point of every occupied subgrid and
-    accumulate the maximum absolute deviation from the trilinearly interpolated
-    coarse SDF via ``wp.atomic_max``.
-
-    Launched over ``total_subgrids * samples_per_subgrid`` threads so the 9^3
-    inner loop is parallelized across the GPU — a per-subgrid launch would
-    serialize the inner sampling loop on SM occupancy when mesh BVH queries
-    dominate throughput.
+    The query dispatch is resolved at kernel-generation time instead of a
+    runtime branch. This keeps analytic primitive queries separate from mesh
+    queries and ensures the default parity/winding mesh bakes never compile
+    the heavier pseudo-normal query.
     """
-    tid = wp.tid()
+    if source_kind == _SDF_SOURCE_PRIMITIVE:
 
-    total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
-    samples_per_dim = cells_per_subgrid + 1
-    samples_per_subgrid = samples_per_dim * samples_per_dim * samples_per_dim
+        @wp.func
+        def query_sdf(
+            mesh: wp.uint64,
+            shape_type: wp.int32,
+            shape_scale: wp.vec3,
+            point: wp.vec3,
+            max_dist: wp.float32,
+            winding_threshold: wp.float32,
+        ) -> float:
+            return _query_primitive_sdf(shape_type, shape_scale, point)
 
-    subgrid_idx = tid // samples_per_subgrid
-    local_sample = tid - subgrid_idx * samples_per_subgrid
+    elif sign_mode == SIGN_MODE_PARITY:
 
-    if subgrid_idx >= total_subgrids:
-        return
-    if subgrid_required[subgrid_idx] == 0:
-        return
+        @wp.func
+        def query_sdf(
+            mesh: wp.uint64,
+            shape_type: wp.int32,
+            shape_scale: wp.vec3,
+            point: wp.vec3,
+            max_dist: wp.float32,
+            winding_threshold: wp.float32,
+        ) -> float:
+            return get_distance_to_mesh_parity(mesh, point, max_dist)
 
-    subgrid_coords = _id_to_xyz(subgrid_idx, num_subgrids_x, num_subgrids_y)
-    block_x = subgrid_coords[0]
-    block_y = subgrid_coords[1]
-    block_z = subgrid_coords[2]
+    elif sign_mode == SIGN_MODE_NORMAL:
 
-    local_coords = _id_to_xyz(local_sample, samples_per_dim, samples_per_dim)
-    lx = local_coords[0]
-    ly = local_coords[1]
-    lz = local_coords[2]
+        @wp.func
+        def query_sdf(
+            mesh: wp.uint64,
+            shape_type: wp.int32,
+            shape_scale: wp.vec3,
+            point: wp.vec3,
+            max_dist: wp.float32,
+            winding_threshold: wp.float32,
+        ) -> float:
+            return get_distance_to_mesh_normal(mesh, point, max_dist)
 
-    gx = block_x * cells_per_subgrid + lx
-    gy = block_y * cells_per_subgrid + ly
-    gz = block_z * cells_per_subgrid + lz
+    else:
 
-    pos = min_corner + wp.vec3(
-        float(gx) * cell_size[0],
-        float(gy) * cell_size[1],
-        float(gz) * cell_size[2],
+        @wp.func
+        def query_sdf(
+            mesh: wp.uint64,
+            shape_type: wp.int32,
+            shape_scale: wp.vec3,
+            point: wp.vec3,
+            max_dist: wp.float32,
+            winding_threshold: wp.float32,
+        ) -> float:
+            return get_distance_to_mesh(mesh, point, max_dist, winding_threshold)
+
+    @wp.kernel
+    def check_subgrid_occupied_kernel(
+        mesh: wp.uint64,
+        shape_type: wp.int32,
+        shape_scale: wp.vec3,
+        threshold: wp.vec2f,
+        winding_threshold: float,
+        subgrid_required: wp.array[wp.int32],
+        cells_per_subgrid: int,
+        num_subgrids_x: int,
+        num_subgrids_y: int,
+        min_corner: wp.vec3,
+        cell_size: wp.vec3,
+    ):
+        """Mark subgrids that overlap the narrow band by checking the source SDF at the center."""
+        tid = wp.tid()
+        coords = _id_to_xyz(tid, num_subgrids_x, num_subgrids_y)
+        sample_pos = min_corner + wp.vec3(
+            (float(coords[0] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[0],
+            (float(coords[1] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[1],
+            (float(coords[2] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[2],
+        )
+
+        signed_distance = query_sdf(mesh, shape_type, shape_scale, sample_pos, 10000.0, winding_threshold)
+        if _is_in_narrow_band(signed_distance, threshold):
+            subgrid_required[tid] = 1
+        else:
+            subgrid_required[tid] = 0
+
+    @wp.kernel
+    def accumulate_subgrid_linearity_error_kernel(
+        mesh: wp.uint64,
+        shape_type: wp.int32,
+        shape_scale: wp.vec3,
+        background_sdf: wp.array[float],
+        subgrid_required: wp.array[wp.int32],
+        linearity_errors: wp.array[float],
+        cells_per_subgrid: int,
+        min_corner: wp.vec3,
+        cell_size: wp.vec3,
+        winding_threshold: float,
+        num_subgrids_x: int,
+        num_subgrids_y: int,
+        num_subgrids_z: int,
+        bg_size_x: int,
+        bg_size_y: int,
+        bg_size_z: int,
+    ):
+        """Sample the source SDF at every fine-grid point of every occupied subgrid and
+        accumulate the maximum absolute deviation from the trilinearly interpolated
+        coarse SDF via ``wp.atomic_max``.
+
+        Launched over ``total_subgrids * samples_per_subgrid`` threads so the 9^3
+        inner loop is parallelized across the GPU — a per-subgrid launch would
+        serialize the inner sampling loop on SM occupancy when mesh BVH queries
+        dominate throughput.
+        """
+        tid = wp.tid()
+
+        total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
+        samples_per_dim = cells_per_subgrid + 1
+        samples_per_subgrid = samples_per_dim * samples_per_dim * samples_per_dim
+
+        subgrid_idx = tid // samples_per_subgrid
+        local_sample = tid - subgrid_idx * samples_per_subgrid
+
+        if subgrid_idx >= total_subgrids:
+            return
+        if subgrid_required[subgrid_idx] == 0:
+            return
+
+        subgrid_coords = _id_to_xyz(subgrid_idx, num_subgrids_x, num_subgrids_y)
+        block_x = subgrid_coords[0]
+        block_y = subgrid_coords[1]
+        block_z = subgrid_coords[2]
+
+        local_coords = _id_to_xyz(local_sample, samples_per_dim, samples_per_dim)
+        lx = local_coords[0]
+        ly = local_coords[1]
+        lz = local_coords[2]
+
+        gx = block_x * cells_per_subgrid + lx
+        gy = block_y * cells_per_subgrid + ly
+        gz = block_z * cells_per_subgrid + lz
+
+        pos = min_corner + wp.vec3(
+            float(gx) * cell_size[0],
+            float(gy) * cell_size[1],
+            float(gz) * cell_size[2],
+        )
+        sdf_value = query_sdf(mesh, shape_type, shape_scale, pos, 10000.0, winding_threshold)
+
+        inv_cpsg = 1.0 / float(cells_per_subgrid)
+        coarse_val = _interp_coarse_sdf(
+            background_sdf,
+            block_x,
+            block_y,
+            block_z,
+            lx,
+            ly,
+            lz,
+            inv_cpsg,
+            bg_size_x,
+            bg_size_y,
+            bg_size_z,
+        )
+
+        wp.atomic_max(linearity_errors, subgrid_idx, wp.abs(sdf_value - coarse_val))
+
+    @wp.kernel
+    def build_coarse_sdf_kernel(
+        mesh: wp.uint64,
+        shape_type: wp.int32,
+        shape_scale: wp.vec3,
+        background_sdf: wp.array[float],
+        min_corner: wp.vec3,
+        cell_size: wp.vec3,
+        cells_per_subgrid: int,
+        bg_size_x: int,
+        bg_size_y: int,
+        bg_size_z: int,
+        winding_threshold: float,
+    ):
+        """Populate the background SDF by querying the source at subgrid corner positions."""
+        tid = wp.tid()
+
+        total_bg = bg_size_x * bg_size_y * bg_size_z
+        if tid >= total_bg:
+            return
+
+        coords = _id_to_xyz(tid, bg_size_x, bg_size_y)
+        x_block = coords[0]
+        y_block = coords[1]
+        z_block = coords[2]
+
+        pos = min_corner + wp.vec3(
+            float(x_block * cells_per_subgrid) * cell_size[0],
+            float(y_block * cells_per_subgrid) * cell_size[1],
+            float(z_block * cells_per_subgrid) * cell_size[2],
+        )
+
+        background_sdf[tid] = query_sdf(mesh, shape_type, shape_scale, pos, 10000.0, winding_threshold)
+
+    @wp.kernel
+    def populate_subgrid_texture_float32_kernel(
+        mesh: wp.uint64,
+        shape_type: wp.int32,
+        shape_scale: wp.vec3,
+        subgrid_required: wp.array[wp.int32],
+        subgrid_addresses: wp.array[wp.int32],
+        subgrid_start_slots: wp.array3d[wp.uint32],
+        subgrid_texture: wp.array[float],
+        cells_per_subgrid: int,
+        min_corner: wp.vec3,
+        cell_size: wp.vec3,
+        winding_threshold: float,
+        num_subgrids_x: int,
+        num_subgrids_y: int,
+        num_subgrids_z: int,
+        tex_blocks_per_dim: int,
+        tex_size: int,
+    ):
+        """Populate the subgrid texture by querying the source SDF (float32 version)."""
+        tid = wp.tid()
+
+        total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
+        samples_per_dim = cells_per_subgrid + 1
+        samples_per_subgrid = samples_per_dim * samples_per_dim * samples_per_dim
+
+        subgrid_idx = tid // samples_per_subgrid
+        local_sample = tid - subgrid_idx * samples_per_subgrid
+
+        if subgrid_idx >= total_subgrids:
+            return
+        if subgrid_required[subgrid_idx] == 0:
+            return
+
+        subgrid_coords = _id_to_xyz(subgrid_idx, num_subgrids_x, num_subgrids_y)
+        block_x = subgrid_coords[0]
+        block_y = subgrid_coords[1]
+        block_z = subgrid_coords[2]
+
+        local_coords = _id_to_xyz(local_sample, samples_per_dim, samples_per_dim)
+        lx = local_coords[0]
+        ly = local_coords[1]
+        lz = local_coords[2]
+
+        gx = block_x * cells_per_subgrid + lx
+        gy = block_y * cells_per_subgrid + ly
+        gz = block_z * cells_per_subgrid + lz
+
+        pos = min_corner + wp.vec3(
+            float(gx) * cell_size[0],
+            float(gy) * cell_size[1],
+            float(gz) * cell_size[2],
+        )
+        sdf_val = query_sdf(mesh, shape_type, shape_scale, pos, 10000.0, winding_threshold)
+
+        address = subgrid_addresses[subgrid_idx]
+        if address < 0:
+            return
+
+        ac = _write_subgrid_slot(
+            subgrid_start_slots, address, tex_blocks_per_dim, block_x, block_y, block_z, local_sample
+        )
+        tex_idx = _idx3d(
+            ac[0] * samples_per_dim + lx, ac[1] * samples_per_dim + ly, ac[2] * samples_per_dim + lz, tex_size, tex_size
+        )
+        subgrid_texture[tex_idx] = sdf_val
+
+    @wp.kernel
+    def populate_subgrid_texture_uint16_kernel(
+        mesh: wp.uint64,
+        shape_type: wp.int32,
+        shape_scale: wp.vec3,
+        subgrid_required: wp.array[wp.int32],
+        subgrid_addresses: wp.array[wp.int32],
+        subgrid_start_slots: wp.array3d[wp.uint32],
+        subgrid_texture: wp.array[wp.uint16],
+        cells_per_subgrid: int,
+        min_corner: wp.vec3,
+        cell_size: wp.vec3,
+        winding_threshold: float,
+        num_subgrids_x: int,
+        num_subgrids_y: int,
+        num_subgrids_z: int,
+        tex_blocks_per_dim: int,
+        tex_size: int,
+        sdf_min: float,
+        sdf_range_inv: float,
+    ):
+        """Populate the subgrid texture by querying the source SDF (uint16 quantized version)."""
+        tid = wp.tid()
+
+        total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
+        samples_per_dim = cells_per_subgrid + 1
+        samples_per_subgrid = samples_per_dim * samples_per_dim * samples_per_dim
+
+        subgrid_idx = tid // samples_per_subgrid
+        local_sample = tid - subgrid_idx * samples_per_subgrid
+
+        if subgrid_idx >= total_subgrids:
+            return
+        if subgrid_required[subgrid_idx] == 0:
+            return
+
+        subgrid_coords = _id_to_xyz(subgrid_idx, num_subgrids_x, num_subgrids_y)
+        block_x = subgrid_coords[0]
+        block_y = subgrid_coords[1]
+        block_z = subgrid_coords[2]
+
+        local_coords = _id_to_xyz(local_sample, samples_per_dim, samples_per_dim)
+        lx = local_coords[0]
+        ly = local_coords[1]
+        lz = local_coords[2]
+
+        gx = block_x * cells_per_subgrid + lx
+        gy = block_y * cells_per_subgrid + ly
+        gz = block_z * cells_per_subgrid + lz
+
+        pos = min_corner + wp.vec3(
+            float(gx) * cell_size[0],
+            float(gy) * cell_size[1],
+            float(gz) * cell_size[2],
+        )
+        sdf_val = query_sdf(mesh, shape_type, shape_scale, pos, 10000.0, winding_threshold)
+
+        address = subgrid_addresses[subgrid_idx]
+        if address < 0:
+            return
+
+        ac = _write_subgrid_slot(
+            subgrid_start_slots, address, tex_blocks_per_dim, block_x, block_y, block_z, local_sample
+        )
+        tex_idx = _idx3d(
+            ac[0] * samples_per_dim + lx, ac[1] * samples_per_dim + ly, ac[2] * samples_per_dim + lz, tex_size, tex_size
+        )
+        v_normalized = wp.clamp((sdf_val - sdf_min) * sdf_range_inv, 0.0, 1.0)
+        subgrid_texture[tex_idx] = wp.uint16(v_normalized * 65535.0)
+
+    @wp.kernel
+    def populate_subgrid_texture_uint8_kernel(
+        mesh: wp.uint64,
+        shape_type: wp.int32,
+        shape_scale: wp.vec3,
+        subgrid_required: wp.array[wp.int32],
+        subgrid_addresses: wp.array[wp.int32],
+        subgrid_start_slots: wp.array3d[wp.uint32],
+        subgrid_texture: wp.array[wp.uint8],
+        cells_per_subgrid: int,
+        min_corner: wp.vec3,
+        cell_size: wp.vec3,
+        winding_threshold: float,
+        num_subgrids_x: int,
+        num_subgrids_y: int,
+        num_subgrids_z: int,
+        tex_blocks_per_dim: int,
+        tex_size: int,
+        sdf_min: float,
+        sdf_range_inv: float,
+    ):
+        """Populate the subgrid texture by querying the source SDF (uint8 quantized version)."""
+        tid = wp.tid()
+
+        total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
+        samples_per_dim = cells_per_subgrid + 1
+        samples_per_subgrid = samples_per_dim * samples_per_dim * samples_per_dim
+
+        subgrid_idx = tid // samples_per_subgrid
+        local_sample = tid - subgrid_idx * samples_per_subgrid
+
+        if subgrid_idx >= total_subgrids:
+            return
+        if subgrid_required[subgrid_idx] == 0:
+            return
+
+        subgrid_coords = _id_to_xyz(subgrid_idx, num_subgrids_x, num_subgrids_y)
+        block_x = subgrid_coords[0]
+        block_y = subgrid_coords[1]
+        block_z = subgrid_coords[2]
+
+        local_coords = _id_to_xyz(local_sample, samples_per_dim, samples_per_dim)
+        lx = local_coords[0]
+        ly = local_coords[1]
+        lz = local_coords[2]
+
+        gx = block_x * cells_per_subgrid + lx
+        gy = block_y * cells_per_subgrid + ly
+        gz = block_z * cells_per_subgrid + lz
+
+        pos = min_corner + wp.vec3(
+            float(gx) * cell_size[0],
+            float(gy) * cell_size[1],
+            float(gz) * cell_size[2],
+        )
+        sdf_val = query_sdf(mesh, shape_type, shape_scale, pos, 10000.0, winding_threshold)
+
+        address = subgrid_addresses[subgrid_idx]
+        if address < 0:
+            return
+
+        ac = _write_subgrid_slot(
+            subgrid_start_slots, address, tex_blocks_per_dim, block_x, block_y, block_z, local_sample
+        )
+        tex_idx = _idx3d(
+            ac[0] * samples_per_dim + lx, ac[1] * samples_per_dim + ly, ac[2] * samples_per_dim + lz, tex_size, tex_size
+        )
+        v_normalized = wp.clamp((sdf_val - sdf_min) * sdf_range_inv, 0.0, 1.0)
+        subgrid_texture[tex_idx] = wp.uint8(v_normalized * 255.0)
+
+    # ============================================================================
+    # Volume Sampling Kernel (for NanoVDB → texture conversion)
+    # ============================================================================
+
+    return types.SimpleNamespace(
+        check_subgrid_occupied_kernel=check_subgrid_occupied_kernel,
+        accumulate_subgrid_linearity_error_kernel=accumulate_subgrid_linearity_error_kernel,
+        build_coarse_sdf_kernel=build_coarse_sdf_kernel,
+        populate_subgrid_texture_float32_kernel=populate_subgrid_texture_float32_kernel,
+        populate_subgrid_texture_uint16_kernel=populate_subgrid_texture_uint16_kernel,
+        populate_subgrid_texture_uint8_kernel=populate_subgrid_texture_uint8_kernel,
     )
-    mesh_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
-
-    inv_cpsg = 1.0 / float(cells_per_subgrid)
-    coarse_val = _interp_coarse_sdf(
-        background_sdf,
-        block_x,
-        block_y,
-        block_z,
-        lx,
-        ly,
-        lz,
-        inv_cpsg,
-        bg_size_x,
-        bg_size_y,
-        bg_size_z,
-    )
-
-    wp.atomic_max(linearity_errors, subgrid_idx, wp.abs(mesh_val - coarse_val))
 
 
 @wp.kernel
@@ -352,246 +727,6 @@ def _apply_subgrid_linearity_kernel(
 
 
 @wp.kernel
-def _build_coarse_sdf_from_mesh_kernel(
-    mesh: wp.uint64,
-    background_sdf: wp.array[float],
-    min_corner: wp.vec3,
-    cell_size: wp.vec3,
-    cells_per_subgrid: int,
-    bg_size_x: int,
-    bg_size_y: int,
-    bg_size_z: int,
-    winding_threshold: float,
-    use_parity: wp.int32,
-):
-    """Populate background SDF by querying mesh at subgrid corner positions."""
-    tid = wp.tid()
-
-    total_bg = bg_size_x * bg_size_y * bg_size_z
-    if tid >= total_bg:
-        return
-
-    coords = _id_to_xyz(tid, bg_size_x, bg_size_y)
-    x_block = coords[0]
-    y_block = coords[1]
-    z_block = coords[2]
-
-    pos = min_corner + wp.vec3(
-        float(x_block * cells_per_subgrid) * cell_size[0],
-        float(y_block * cells_per_subgrid) * cell_size[1],
-        float(z_block * cells_per_subgrid) * cell_size[2],
-    )
-
-    background_sdf[tid] = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
-
-
-@wp.kernel
-def _populate_subgrid_texture_float32_kernel(
-    mesh: wp.uint64,
-    subgrid_required: wp.array[wp.int32],
-    subgrid_addresses: wp.array[wp.int32],
-    subgrid_start_slots: wp.array3d[wp.uint32],
-    subgrid_texture: wp.array[float],
-    cells_per_subgrid: int,
-    min_corner: wp.vec3,
-    cell_size: wp.vec3,
-    winding_threshold: float,
-    use_parity: wp.int32,
-    num_subgrids_x: int,
-    num_subgrids_y: int,
-    num_subgrids_z: int,
-    tex_blocks_per_dim: int,
-    tex_size: int,
-):
-    """Populate subgrid texture by querying mesh SDF (float32 version)."""
-    tid = wp.tid()
-
-    total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
-    samples_per_dim = cells_per_subgrid + 1
-    samples_per_subgrid = samples_per_dim * samples_per_dim * samples_per_dim
-
-    subgrid_idx = tid // samples_per_subgrid
-    local_sample = tid - subgrid_idx * samples_per_subgrid
-
-    if subgrid_idx >= total_subgrids:
-        return
-    if subgrid_required[subgrid_idx] == 0:
-        return
-
-    subgrid_coords = _id_to_xyz(subgrid_idx, num_subgrids_x, num_subgrids_y)
-    block_x = subgrid_coords[0]
-    block_y = subgrid_coords[1]
-    block_z = subgrid_coords[2]
-
-    local_coords = _id_to_xyz(local_sample, samples_per_dim, samples_per_dim)
-    lx = local_coords[0]
-    ly = local_coords[1]
-    lz = local_coords[2]
-
-    gx = block_x * cells_per_subgrid + lx
-    gy = block_y * cells_per_subgrid + ly
-    gz = block_z * cells_per_subgrid + lz
-
-    pos = min_corner + wp.vec3(
-        float(gx) * cell_size[0],
-        float(gy) * cell_size[1],
-        float(gz) * cell_size[2],
-    )
-    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
-
-    address = subgrid_addresses[subgrid_idx]
-    if address < 0:
-        return
-
-    ac = _write_subgrid_slot(subgrid_start_slots, address, tex_blocks_per_dim, block_x, block_y, block_z, local_sample)
-    tex_idx = _idx3d(
-        ac[0] * samples_per_dim + lx, ac[1] * samples_per_dim + ly, ac[2] * samples_per_dim + lz, tex_size, tex_size
-    )
-    subgrid_texture[tex_idx] = sdf_val
-
-
-@wp.kernel
-def _populate_subgrid_texture_uint16_kernel(
-    mesh: wp.uint64,
-    subgrid_required: wp.array[wp.int32],
-    subgrid_addresses: wp.array[wp.int32],
-    subgrid_start_slots: wp.array3d[wp.uint32],
-    subgrid_texture: wp.array[wp.uint16],
-    cells_per_subgrid: int,
-    min_corner: wp.vec3,
-    cell_size: wp.vec3,
-    winding_threshold: float,
-    use_parity: wp.int32,
-    num_subgrids_x: int,
-    num_subgrids_y: int,
-    num_subgrids_z: int,
-    tex_blocks_per_dim: int,
-    tex_size: int,
-    sdf_min: float,
-    sdf_range_inv: float,
-):
-    """Populate subgrid texture by querying mesh SDF (uint16 quantized version)."""
-    tid = wp.tid()
-
-    total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
-    samples_per_dim = cells_per_subgrid + 1
-    samples_per_subgrid = samples_per_dim * samples_per_dim * samples_per_dim
-
-    subgrid_idx = tid // samples_per_subgrid
-    local_sample = tid - subgrid_idx * samples_per_subgrid
-
-    if subgrid_idx >= total_subgrids:
-        return
-    if subgrid_required[subgrid_idx] == 0:
-        return
-
-    subgrid_coords = _id_to_xyz(subgrid_idx, num_subgrids_x, num_subgrids_y)
-    block_x = subgrid_coords[0]
-    block_y = subgrid_coords[1]
-    block_z = subgrid_coords[2]
-
-    local_coords = _id_to_xyz(local_sample, samples_per_dim, samples_per_dim)
-    lx = local_coords[0]
-    ly = local_coords[1]
-    lz = local_coords[2]
-
-    gx = block_x * cells_per_subgrid + lx
-    gy = block_y * cells_per_subgrid + ly
-    gz = block_z * cells_per_subgrid + lz
-
-    pos = min_corner + wp.vec3(
-        float(gx) * cell_size[0],
-        float(gy) * cell_size[1],
-        float(gz) * cell_size[2],
-    )
-    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
-
-    address = subgrid_addresses[subgrid_idx]
-    if address < 0:
-        return
-
-    ac = _write_subgrid_slot(subgrid_start_slots, address, tex_blocks_per_dim, block_x, block_y, block_z, local_sample)
-    tex_idx = _idx3d(
-        ac[0] * samples_per_dim + lx, ac[1] * samples_per_dim + ly, ac[2] * samples_per_dim + lz, tex_size, tex_size
-    )
-    v_normalized = wp.clamp((sdf_val - sdf_min) * sdf_range_inv, 0.0, 1.0)
-    subgrid_texture[tex_idx] = wp.uint16(v_normalized * 65535.0)
-
-
-@wp.kernel
-def _populate_subgrid_texture_uint8_kernel(
-    mesh: wp.uint64,
-    subgrid_required: wp.array[wp.int32],
-    subgrid_addresses: wp.array[wp.int32],
-    subgrid_start_slots: wp.array3d[wp.uint32],
-    subgrid_texture: wp.array[wp.uint8],
-    cells_per_subgrid: int,
-    min_corner: wp.vec3,
-    cell_size: wp.vec3,
-    winding_threshold: float,
-    use_parity: wp.int32,
-    num_subgrids_x: int,
-    num_subgrids_y: int,
-    num_subgrids_z: int,
-    tex_blocks_per_dim: int,
-    tex_size: int,
-    sdf_min: float,
-    sdf_range_inv: float,
-):
-    """Populate subgrid texture by querying mesh SDF (uint8 quantized version)."""
-    tid = wp.tid()
-
-    total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
-    samples_per_dim = cells_per_subgrid + 1
-    samples_per_subgrid = samples_per_dim * samples_per_dim * samples_per_dim
-
-    subgrid_idx = tid // samples_per_subgrid
-    local_sample = tid - subgrid_idx * samples_per_subgrid
-
-    if subgrid_idx >= total_subgrids:
-        return
-    if subgrid_required[subgrid_idx] == 0:
-        return
-
-    subgrid_coords = _id_to_xyz(subgrid_idx, num_subgrids_x, num_subgrids_y)
-    block_x = subgrid_coords[0]
-    block_y = subgrid_coords[1]
-    block_z = subgrid_coords[2]
-
-    local_coords = _id_to_xyz(local_sample, samples_per_dim, samples_per_dim)
-    lx = local_coords[0]
-    ly = local_coords[1]
-    lz = local_coords[2]
-
-    gx = block_x * cells_per_subgrid + lx
-    gy = block_y * cells_per_subgrid + ly
-    gz = block_z * cells_per_subgrid + lz
-
-    pos = min_corner + wp.vec3(
-        float(gx) * cell_size[0],
-        float(gy) * cell_size[1],
-        float(gz) * cell_size[2],
-    )
-    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
-
-    address = subgrid_addresses[subgrid_idx]
-    if address < 0:
-        return
-
-    ac = _write_subgrid_slot(subgrid_start_slots, address, tex_blocks_per_dim, block_x, block_y, block_z, local_sample)
-    tex_idx = _idx3d(
-        ac[0] * samples_per_dim + lx, ac[1] * samples_per_dim + ly, ac[2] * samples_per_dim + lz, tex_size, tex_size
-    )
-    v_normalized = wp.clamp((sdf_val - sdf_min) * sdf_range_inv, 0.0, 1.0)
-    subgrid_texture[tex_idx] = wp.uint8(v_normalized * 255.0)
-
-
-# ============================================================================
-# Volume Sampling Kernel (for NanoVDB → texture conversion)
-# ============================================================================
-
-
-@wp.kernel
 def _sample_volume_at_positions_kernel(
     volume: wp.uint64,
     positions: wp.array[wp.vec3],
@@ -613,6 +748,14 @@ def _sample_volume_at_positions_kernel(
 def apply_subgrid_sdf_scale(raw_value: float, min_value: float, value_range: float) -> float:
     """Apply quantization scale to convert normalized [0,1] value back to SDF distance."""
     return raw_value * value_range + min_value
+
+
+@wp.func
+def _texture_sample_sdf_x0(texture: wp.Texture3D, uvw: wp.vec3f, paired_samples: bool) -> float:
+    """Sample the original SDF value from channel zero."""
+    if paired_samples:
+        return wp.texture_sample(texture, uvw, dtype=wp.vec2)[0]
+    return wp.texture_sample(texture, uvw, dtype=float)
 
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
@@ -640,8 +783,8 @@ class _CellLookup:
 
 
 @wp.func
-def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
-    """Resolve the cell coordinates / start slot shared by every sampler.
+def _locate_cell_coords(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
+    """Resolve cell coordinates without loading the subgrid slot.
 
     See :class:`_CellLookup` for the field layout.
     """
@@ -671,8 +814,6 @@ def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
     y_base = wp.clamp(int(float(iy) * sdf.fine_to_coarse), 0, coarse_y - 1)
     z_base = wp.clamp(int(float(iz) * sdf.fine_to_coarse), 0, coarse_z - 1)
 
-    start_slot = sdf.subgrid_start_slots[x_base, y_base, z_base]
-
     loc = _CellLookup()
     loc.ix = ix
     loc.iy = iy
@@ -683,8 +824,30 @@ def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
     loc.x_base = x_base
     loc.y_base = y_base
     loc.z_base = z_base
-    loc.start_slot = start_slot
+    loc.start_slot = SLOT_EMPTY
     return loc
+
+
+@wp.func
+def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
+    """Resolve cell coordinates and the corresponding subgrid slot."""
+    loc = _locate_cell_coords(sdf, f)
+    loc.start_slot = sdf.subgrid_start_slots[loc.x_base, loc.y_base, loc.z_base]
+    return loc
+
+
+@wp.func
+def _locate_cell_pair(sdf: TextureSDFData, f0: wp.vec3, f1: wp.vec3) -> tuple[_CellLookup, _CellLookup]:
+    """Resolve two cells while sharing a common subgrid-slot lookup."""
+    loc0 = _locate_cell_coords(sdf, f0)
+    loc1 = _locate_cell_coords(sdf, f1)
+    start_slot0 = sdf.subgrid_start_slots[loc0.x_base, loc0.y_base, loc0.z_base]
+    start_slot1 = start_slot0
+    if loc0.x_base != loc1.x_base or loc0.y_base != loc1.y_base or loc0.z_base != loc1.z_base:
+        start_slot1 = sdf.subgrid_start_slots[loc1.x_base, loc1.y_base, loc1.z_base]
+    loc0.start_slot = start_slot0
+    loc1.start_slot = start_slot1
+    return loc0, loc1
 
 
 @wp.func
@@ -723,7 +886,7 @@ def _read_cell_corners(
     ty = loc.ty
     tz = loc.tz
 
-    if loc.start_slot >= wp.static(SLOT_LINEAR):
+    if loc.start_slot >= SLOT_LINEAR:
         cx = float(loc.x_base)
         cy = float(loc.y_base)
         cz = float(loc.z_base)
@@ -731,14 +894,14 @@ def _read_cell_corners(
         tx = coarse_f[0] - cx
         ty = coarse_f[1] - cy
         tz = coarse_f[2] - cz
-        v000 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 0.5), dtype=float)
-        v100 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 0.5, cz + 0.5), dtype=float)
-        v010 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 0.5), dtype=float)
-        v110 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 1.5, cz + 0.5), dtype=float)
-        v001 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 1.5), dtype=float)
-        v101 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 0.5, cz + 1.5), dtype=float)
-        v011 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 1.5), dtype=float)
-        v111 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 1.5, cz + 1.5), dtype=float)
+        v000 = _texture_sample_sdf_x0(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 0.5), sdf.paired_samples)
+        v100 = _texture_sample_sdf_x0(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 0.5, cz + 0.5), sdf.paired_samples)
+        v010 = _texture_sample_sdf_x0(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 0.5), sdf.paired_samples)
+        v110 = _texture_sample_sdf_x0(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 1.5, cz + 0.5), sdf.paired_samples)
+        v001 = _texture_sample_sdf_x0(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 1.5), sdf.paired_samples)
+        v101 = _texture_sample_sdf_x0(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 0.5, cz + 1.5), sdf.paired_samples)
+        v011 = _texture_sample_sdf_x0(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 1.5), sdf.paired_samples)
+        v111 = _texture_sample_sdf_x0(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 1.5, cz + 1.5), sdf.paired_samples)
     else:
         block_x = float(loc.start_slot & wp.uint32(0x3FF))
         block_y = float((loc.start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
@@ -749,14 +912,14 @@ def _read_cell_corners(
         ox = block_x * sdf.subgrid_samples_f + lx + 0.5
         oy = block_y * sdf.subgrid_samples_f + ly + 0.5
         oz = block_z * sdf.subgrid_samples_f + lz + 0.5
-        v000 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz), dtype=float)
-        v100 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy, oz), dtype=float)
-        v010 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz), dtype=float)
-        v110 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy + 1.0, oz), dtype=float)
-        v001 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz + 1.0), dtype=float)
-        v101 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy, oz + 1.0), dtype=float)
-        v011 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz + 1.0), dtype=float)
-        v111 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy + 1.0, oz + 1.0), dtype=float)
+        v000 = _texture_sample_sdf_x0(sdf.subgrid_texture, wp.vec3f(ox, oy, oz), sdf.paired_samples)
+        v100 = _texture_sample_sdf_x0(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy, oz), sdf.paired_samples)
+        v010 = _texture_sample_sdf_x0(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz), sdf.paired_samples)
+        v110 = _texture_sample_sdf_x0(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy + 1.0, oz), sdf.paired_samples)
+        v001 = _texture_sample_sdf_x0(sdf.subgrid_texture, wp.vec3f(ox, oy, oz + 1.0), sdf.paired_samples)
+        v101 = _texture_sample_sdf_x0(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy, oz + 1.0), sdf.paired_samples)
+        v011 = _texture_sample_sdf_x0(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz + 1.0), sdf.paired_samples)
+        v111 = _texture_sample_sdf_x0(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy + 1.0, oz + 1.0), sdf.paired_samples)
         v000 = apply_subgrid_sdf_scale(v000, sdf.subgrids_min_sdf_value, sdf.subgrids_sdf_value_range)
         v100 = apply_subgrid_sdf_scale(v100, sdf.subgrids_min_sdf_value, sdf.subgrids_sdf_value_range)
         v010 = apply_subgrid_sdf_scale(v010, sdf.subgrids_min_sdf_value, sdf.subgrids_sdf_value_range)
@@ -783,11 +946,12 @@ def _trilinear(corners: vec8f, tx: float, ty: float, tz: float) -> float:
 
 
 @wp.func
-def texture_sample_sdf_at_voxel(
+def _texture_sample_sdf_at_voxel_variant(
     sdf: TextureSDFData,
     ix: int,
     iy: int,
     iz: int,
+    paired_samples: bool,
 ) -> float:
     """Sample SDF at an exact integer fine-grid vertex with a single texel read.
 
@@ -815,10 +979,9 @@ def texture_sample_sdf_at_voxel(
     x_base = wp.clamp(int(float(ix) * sdf.fine_to_coarse), 0, coarse_x - 1)
     y_base = wp.clamp(int(float(iy) * sdf.fine_to_coarse), 0, coarse_y - 1)
     z_base = wp.clamp(int(float(iz) * sdf.fine_to_coarse), 0, coarse_z - 1)
-
     start_slot = sdf.subgrid_start_slots[x_base, y_base, z_base]
 
-    if start_slot < wp.static(SLOT_LINEAR):
+    if start_slot < SLOT_LINEAR:
         block_x = float(start_slot & wp.uint32(0x3FF))
         block_y = float((start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
         block_z = float((start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
@@ -831,37 +994,37 @@ def texture_sample_sdf_at_voxel(
         oy = block_y * sdf.subgrid_samples_f + ly + 0.5
         oz = block_z * sdf.subgrid_samples_f + lz + 0.5
 
-        raw = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz), dtype=float)
+        raw = _texture_sample_sdf_x0(sdf.subgrid_texture, wp.vec3f(ox, oy, oz), paired_samples)
         return raw * sdf.subgrids_sdf_value_range + sdf.subgrids_min_sdf_value
 
     local_pos = sdf.sdf_box_lower + wp.cw_mul(
         wp.vec3(float(ix), float(iy), float(iz)),
         sdf.voxel_size,
     )
-    return texture_sample_sdf(sdf, local_pos)
+    return _texture_sample_sdf_variant(sdf, local_pos, paired_samples)
 
 
 @wp.func
-def texture_sample_sdf(
+def _texture_sample_sdf_variant(
     sdf: TextureSDFData,
     local_pos: wp.vec3,
+    paired_samples: bool,
 ) -> float:
     """Sample SDF value (software trilinear).
 
-    8 point-sampled corner reads at ``int + 0.5`` coordinates followed by
-    a float32 trilinear blend. Reads through a ``LINEAR``-filtered texture
-    but the ``int + 0.5`` sampling positions collapse the trilinear
-    weights to ``(1, 0, ...)`` so the corner values are returned
-    bit-exactly (modulo a ~1/256 weight-quantisation that's far below
-    contact precision). Used by paths that prefer accuracy over fetch
-    count -- e.g. hydroelastic stress integration.
+    Four point-sampled reads return the eight corners as adjacent X pairs,
+    followed by a float32 trilinear blend. Sampling at ``int + 0.5``
+    collapses the texture-filter weights so the packed texel values are
+    returned exactly. Used by paths that prefer accuracy over fetch count,
+    such as hydroelastic stress integration.
 
     Fuses cell lookup, texel reads, trilinear blend, and quantization
     de-scale into a single pass for the value-only path.
 
     Args:
-        sdf: texture SDF data
-        local_pos: query position in local SDF space [m]
+        sdf: Texture SDF data.
+        local_pos: Query position in local SDF space [m].
+        paired_samples: Whether to read paired-X or scalar texture storage.
 
     Returns:
         Signed distance value [m].
@@ -871,7 +1034,8 @@ def texture_sample_sdf(
         wp.clamp(local_pos[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
         wp.clamp(local_pos[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
     )
-    diff_mag = wp.length(local_pos - clamped)
+    diff = local_pos - clamped
+    diff_sq = wp.dot(diff, diff)
 
     f = wp.cw_mul(clamped - sdf.sdf_box_lower, sdf.inv_sdf_dx)
     loc = _locate_cell(sdf, f)
@@ -890,7 +1054,7 @@ def texture_sample_sdf(
     ty = loc.ty
     tz = loc.tz
 
-    if loc.start_slot >= wp.static(SLOT_LINEAR):
+    if loc.start_slot >= SLOT_LINEAR:
         cx = float(loc.x_base)
         cy = float(loc.y_base)
         cz = float(loc.z_base)
@@ -898,14 +1062,24 @@ def texture_sample_sdf(
         tx = coarse_f[0] - cx
         ty = coarse_f[1] - cy
         tz = coarse_f[2] - cz
-        v000 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 0.5), dtype=float)
-        v100 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 0.5, cz + 0.5), dtype=float)
-        v010 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 0.5), dtype=float)
-        v110 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 1.5, cz + 0.5), dtype=float)
-        v001 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 1.5), dtype=float)
-        v101 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 0.5, cz + 1.5), dtype=float)
-        v011 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 1.5), dtype=float)
-        v111 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 1.5, cz + 1.5), dtype=float)
+        if paired_samples:
+            v00 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 0.5), dtype=wp.vec2)
+            v10 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 0.5), dtype=wp.vec2)
+            v01 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 1.5), dtype=wp.vec2)
+            v11 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 1.5), dtype=wp.vec2)
+            v000, v100 = v00[0], v00[1]
+            v010, v110 = v10[0], v10[1]
+            v001, v101 = v01[0], v01[1]
+            v011, v111 = v11[0], v11[1]
+        else:
+            v000 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 0.5), dtype=float)
+            v100 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 0.5, cz + 0.5), dtype=float)
+            v010 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 0.5), dtype=float)
+            v110 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 1.5, cz + 0.5), dtype=float)
+            v001 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 1.5), dtype=float)
+            v101 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 0.5, cz + 1.5), dtype=float)
+            v011 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 1.5), dtype=float)
+            v111 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 1.5, cz + 1.5), dtype=float)
     else:
         needs_scale = True
         block_x = float(loc.start_slot & wp.uint32(0x3FF))
@@ -917,15 +1091,27 @@ def texture_sample_sdf(
         ox = block_x * sdf.subgrid_samples_f + lx + 0.5
         oy = block_y * sdf.subgrid_samples_f + ly + 0.5
         oz = block_z * sdf.subgrid_samples_f + lz + 0.5
-        v000 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz), dtype=float)
-        v100 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy, oz), dtype=float)
-        v010 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz), dtype=float)
-        v110 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy + 1.0, oz), dtype=float)
-        v001 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz + 1.0), dtype=float)
-        v101 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy, oz + 1.0), dtype=float)
-        v011 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz + 1.0), dtype=float)
-        v111 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy + 1.0, oz + 1.0), dtype=float)
+        if paired_samples:
+            v00 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz), dtype=wp.vec2)
+            v10 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz), dtype=wp.vec2)
+            v01 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz + 1.0), dtype=wp.vec2)
+            v11 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz + 1.0), dtype=wp.vec2)
+            v000, v100 = v00[0], v00[1]
+            v010, v110 = v10[0], v10[1]
+            v001, v101 = v01[0], v01[1]
+            v011, v111 = v11[0], v11[1]
+        else:
+            v000 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz), dtype=float)
+            v100 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy, oz), dtype=float)
+            v010 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz), dtype=float)
+            v110 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy + 1.0, oz), dtype=float)
+            v001 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz + 1.0), dtype=float)
+            v101 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy, oz + 1.0), dtype=float)
+            v011 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz + 1.0), dtype=float)
+            v111 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy + 1.0, oz + 1.0), dtype=float)
 
+    # Cover texture latency with the independent extrapolation root.
+    diff_mag = wp.sqrt(diff_sq)
     c00 = v000 + (v100 - v000) * tx
     c10 = v010 + (v110 - v010) * tx
     c01 = v001 + (v101 - v001) * tx
@@ -941,9 +1127,375 @@ def texture_sample_sdf(
 
 
 @wp.func
-def texture_sample_sdf_hw(
+def texture_sample_sdf(
     sdf: TextureSDFData,
     local_pos: wp.vec3,
+) -> float:
+    """Sample an SDF using its stored texture layout and software interpolation."""
+    return _texture_sample_sdf_variant(sdf, local_pos, sdf.paired_samples)
+
+
+@wp.func
+def _texture_sample_sdf_paired(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> float:
+    """Sample an X-paired SDF texture with software trilinear interpolation."""
+    return _texture_sample_sdf_variant(sdf, local_pos, True)
+
+
+@wp.func
+def _texture_sample_sdf_zfiltered(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> float:
+    """Sample a paired SDF with hardware Z filtering and float32 X/Y blends."""
+    clamped = wp.vec3(
+        wp.clamp(local_pos[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0]),
+        wp.clamp(local_pos[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
+        wp.clamp(local_pos[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
+    )
+    diff = local_pos - clamped
+    diff_sq = wp.dot(diff, diff)
+
+    f = wp.cw_mul(clamped - sdf.sdf_box_lower, sdf.inv_sdf_dx)
+    loc = _locate_cell(sdf, f)
+    tx = loc.tx
+    ty = loc.ty
+    tz = loc.tz
+    needs_scale = False
+
+    texture = sdf.coarse_texture
+    x = float(0.0)
+    y0 = float(0.0)
+    y1 = float(0.0)
+    z = float(0.0)
+    if loc.start_slot >= SLOT_LINEAR:
+        cx = float(loc.x_base)
+        cy = float(loc.y_base)
+        cz = float(loc.z_base)
+        coarse_f = wp.vec3(float(loc.ix) + loc.tx, float(loc.iy) + loc.ty, float(loc.iz) + loc.tz) * sdf.fine_to_coarse
+        tx = coarse_f[0] - cx
+        ty = coarse_f[1] - cy
+        tz = coarse_f[2] - cz
+        x = cx + 0.5
+        y0 = cy + 0.5
+        y1 = cy + 1.5
+        z = cz + tz + 0.5
+    else:
+        needs_scale = True
+        texture = sdf.subgrid_texture
+        block_x = float(loc.start_slot & wp.uint32(0x3FF))
+        block_y = float((loc.start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
+        block_z = float((loc.start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
+        lx = float(loc.ix) - float(loc.x_base) * sdf.subgrid_size_f
+        ly = float(loc.iy) - float(loc.y_base) * sdf.subgrid_size_f
+        lz = float(loc.iz) - float(loc.z_base) * sdf.subgrid_size_f
+        x = block_x * sdf.subgrid_samples_f + lx + 0.5
+        y0 = block_y * sdf.subgrid_samples_f + ly + 0.5
+        y1 = y0 + 1.0
+        z = block_z * sdf.subgrid_samples_f + lz + tz + 0.5
+
+    x_values_y0 = wp.texture_sample(texture, wp.vec3f(x, y0, z), dtype=wp.vec2)
+    x_values_y1 = wp.texture_sample(texture, wp.vec3f(x, y1, z), dtype=wp.vec2)
+    x0 = x_values_y0[0] + (x_values_y1[0] - x_values_y0[0]) * ty
+    x1 = x_values_y0[1] + (x_values_y1[1] - x_values_y0[1]) * ty
+    sdf_val = x0 + (x1 - x0) * tx
+    if needs_scale:
+        sdf_val = sdf_val * sdf.subgrids_sdf_value_range + sdf.subgrids_min_sdf_value
+
+    return sdf_val + wp.sqrt(diff_sq)
+
+
+@wp.func
+def _texture_sample_sdf_scalar(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> float:
+    """Sample a scalar SDF texture with software trilinear interpolation."""
+    return _texture_sample_sdf_variant(sdf, local_pos, False)
+
+
+@wp.func
+def texture_sample_sdf_at_voxel(
+    sdf: TextureSDFData,
+    ix: int,
+    iy: int,
+    iz: int,
+) -> float:
+    """Sample an integer fine-grid vertex using the stored texture layout."""
+    return _texture_sample_sdf_at_voxel_variant(sdf, ix, iy, iz, sdf.paired_samples)
+
+
+@wp.func
+def _texture_sample_sdf_at_voxel_paired(
+    sdf: TextureSDFData,
+    ix: int,
+    iy: int,
+    iz: int,
+) -> float:
+    """Sample an X-paired SDF texture at an integer fine-grid vertex."""
+    return _texture_sample_sdf_at_voxel_variant(sdf, ix, iy, iz, True)
+
+
+@wp.func
+def _texture_sample_sdf_at_voxel_scalar(
+    sdf: TextureSDFData,
+    ix: int,
+    iy: int,
+    iz: int,
+) -> float:
+    """Sample a scalar SDF texture at an integer fine-grid vertex."""
+    return _texture_sample_sdf_at_voxel_variant(sdf, ix, iy, iz, False)
+
+
+@wp.func
+def _texture_sample_pair(
+    texture0: wp.Texture3D,
+    uvw0: wp.vec3f,
+    texture1: wp.Texture3D,
+    uvw1: wp.vec3f,
+    paired_samples: bool,
+) -> wp.vec2f:
+    """Issue two independent hardware texture samples before consuming either."""
+    value0 = _texture_sample_sdf_x0(texture0, uvw0, paired_samples)
+    value1 = _texture_sample_sdf_x0(texture1, uvw1, paired_samples)
+    return wp.vec2f(value0, value1)
+
+
+@wp.func
+def _texture_sample_sdf_hw_clamped_pair_variant(
+    sdf: TextureSDFData,
+    clamped0: wp.vec3,
+    clamped1: wp.vec3,
+    diff_sq0: float,
+    diff_sq1: float,
+    paired_samples: bool,
+) -> wp.vec2f:
+    """Sample two already-clamped SDF positions while overlapping texture latency."""
+
+    f0 = wp.cw_mul(clamped0 - sdf.sdf_box_lower, sdf.inv_sdf_dx)
+    f1 = wp.cw_mul(clamped1 - sdf.sdf_box_lower, sdf.inv_sdf_dx)
+    loc0, loc1 = _locate_cell_pair(sdf, f0, f1)
+
+    texture0 = sdf.coarse_texture
+    texture1 = sdf.coarse_texture
+    uvw0 = wp.vec3f(0.0)
+    uvw1 = wp.vec3f(0.0)
+
+    if loc0.start_slot >= SLOT_LINEAR:
+        cx0 = float(loc0.x_base)
+        cy0 = float(loc0.y_base)
+        cz0 = float(loc0.z_base)
+        coarse_f0 = (
+            wp.vec3(float(loc0.ix) + loc0.tx, float(loc0.iy) + loc0.ty, float(loc0.iz) + loc0.tz) * sdf.fine_to_coarse
+        )
+        uvw0 = wp.vec3f(
+            cx0 + (coarse_f0[0] - cx0) + 0.5,
+            cy0 + (coarse_f0[1] - cy0) + 0.5,
+            cz0 + (coarse_f0[2] - cz0) + 0.5,
+        )
+    else:
+        texture0 = sdf.subgrid_texture
+        block_x0 = float(loc0.start_slot & wp.uint32(0x3FF))
+        block_y0 = float((loc0.start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
+        block_z0 = float((loc0.start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
+        lx0 = float(loc0.ix) - float(loc0.x_base) * sdf.subgrid_size_f
+        ly0 = float(loc0.iy) - float(loc0.y_base) * sdf.subgrid_size_f
+        lz0 = float(loc0.iz) - float(loc0.z_base) * sdf.subgrid_size_f
+        uvw0 = wp.vec3f(
+            block_x0 * sdf.subgrid_samples_f + lx0 + 0.5 + loc0.tx,
+            block_y0 * sdf.subgrid_samples_f + ly0 + 0.5 + loc0.ty,
+            block_z0 * sdf.subgrid_samples_f + lz0 + 0.5 + loc0.tz,
+        )
+
+    if loc1.start_slot >= SLOT_LINEAR:
+        cx1 = float(loc1.x_base)
+        cy1 = float(loc1.y_base)
+        cz1 = float(loc1.z_base)
+        coarse_f1 = (
+            wp.vec3(float(loc1.ix) + loc1.tx, float(loc1.iy) + loc1.ty, float(loc1.iz) + loc1.tz) * sdf.fine_to_coarse
+        )
+        uvw1 = wp.vec3f(
+            cx1 + (coarse_f1[0] - cx1) + 0.5,
+            cy1 + (coarse_f1[1] - cy1) + 0.5,
+            cz1 + (coarse_f1[2] - cz1) + 0.5,
+        )
+    else:
+        texture1 = sdf.subgrid_texture
+        block_x1 = float(loc1.start_slot & wp.uint32(0x3FF))
+        block_y1 = float((loc1.start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
+        block_z1 = float((loc1.start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
+        lx1 = float(loc1.ix) - float(loc1.x_base) * sdf.subgrid_size_f
+        ly1 = float(loc1.iy) - float(loc1.y_base) * sdf.subgrid_size_f
+        lz1 = float(loc1.iz) - float(loc1.z_base) * sdf.subgrid_size_f
+        uvw1 = wp.vec3f(
+            block_x1 * sdf.subgrid_samples_f + lx1 + 0.5 + loc1.tx,
+            block_y1 * sdf.subgrid_samples_f + ly1 + 0.5 + loc1.ty,
+            block_z1 * sdf.subgrid_samples_f + lz1 + 0.5 + loc1.tz,
+        )
+
+    values = _texture_sample_pair(texture0, uvw0, texture1, uvw1, paired_samples)
+    # Cover texture latency with the independent extrapolation roots.
+    diff_mag0 = float(0.0)
+    diff_mag1 = float(0.0)
+    if diff_sq0 != 0.0:
+        diff_mag0 = wp.sqrt(diff_sq0)
+    if diff_sq1 != 0.0:
+        diff_mag1 = wp.sqrt(diff_sq1)
+    value0 = values[0]
+    value1 = values[1]
+    if loc0.start_slot < SLOT_LINEAR:
+        value0 = value0 * sdf.subgrids_sdf_value_range + sdf.subgrids_min_sdf_value
+    if loc1.start_slot < SLOT_LINEAR:
+        value1 = value1 * sdf.subgrids_sdf_value_range + sdf.subgrids_min_sdf_value
+    return wp.vec2f(value0 + diff_mag0, value1 + diff_mag1)
+
+
+@wp.func
+def _texture_sample_sdf_hw_pair_variant(
+    sdf: TextureSDFData,
+    local_pos0: wp.vec3,
+    local_pos1: wp.vec3,
+    paired_samples: bool,
+) -> wp.vec2f:
+    """Sample two SDF positions while overlapping their texture latency."""
+    clamped0 = wp.vec3(
+        wp.clamp(local_pos0[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0]),
+        wp.clamp(local_pos0[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
+        wp.clamp(local_pos0[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
+    )
+    clamped1 = wp.vec3(
+        wp.clamp(local_pos1[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0]),
+        wp.clamp(local_pos1[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
+        wp.clamp(local_pos1[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
+    )
+    diff0 = local_pos0 - clamped0
+    diff1 = local_pos1 - clamped1
+    diff_sq0 = float(0.0)
+    diff_sq1 = float(0.0)
+    if diff0[0] != 0.0 or diff0[1] != 0.0 or diff0[2] != 0.0:
+        diff_sq0 = wp.dot(diff0, diff0)
+    if diff1[0] != 0.0 or diff1[1] != 0.0 or diff1[2] != 0.0:
+        diff_sq1 = wp.dot(diff1, diff1)
+    return _texture_sample_sdf_hw_clamped_pair_variant(sdf, clamped0, clamped1, diff_sq0, diff_sq1, paired_samples)
+
+
+@wp.func
+def _texture_sample_sdf_hw_pair(
+    sdf: TextureSDFData,
+    local_pos0: wp.vec3,
+    local_pos1: wp.vec3,
+) -> wp.vec2f:
+    """Sample two SDF positions using their stored texture layout."""
+    return _texture_sample_sdf_hw_pair_variant(sdf, local_pos0, local_pos1, sdf.paired_samples)
+
+
+@wp.func
+def _texture_sample_sdf_hw_pair_paired(
+    sdf: TextureSDFData,
+    local_pos0: wp.vec3,
+    local_pos1: wp.vec3,
+) -> wp.vec2f:
+    """Sample two positions from an X-paired SDF texture."""
+    return _texture_sample_sdf_hw_pair_variant(sdf, local_pos0, local_pos1, True)
+
+
+@wp.func
+def _texture_sample_sdf_hw_pair_scalar(
+    sdf: TextureSDFData,
+    local_pos0: wp.vec3,
+    local_pos1: wp.vec3,
+) -> wp.vec2f:
+    """Sample two positions from a scalar SDF texture."""
+    return _texture_sample_sdf_hw_pair_variant(sdf, local_pos0, local_pos1, False)
+
+
+@wp.func
+def _texture_sample_sdf_hw_clamped_variant(
+    sdf: TextureSDFData,
+    clamped: wp.vec3,
+    diff_mag: float,
+    paired_samples: bool,
+) -> float:
+    """Sample a hardware SDF from a point already clamped to its domain."""
+    f = wp.cw_mul(clamped - sdf.sdf_box_lower, sdf.inv_sdf_dx)
+    loc = _locate_cell(sdf, f)
+
+    sdf_val = float(0.0)
+
+    if loc.start_slot >= SLOT_LINEAR:
+        # ``cx + tx + 0.5`` lands at the centre of voxel (cx, cy, cz) and
+        # ``+tx`` walks toward (cx+1, ...). The HW filter returns the
+        # interpolated value in one fetch.
+        cx = float(loc.x_base)
+        cy = float(loc.y_base)
+        cz = float(loc.z_base)
+        coarse_f = wp.vec3(float(loc.ix) + loc.tx, float(loc.iy) + loc.ty, float(loc.iz) + loc.tz) * sdf.fine_to_coarse
+        sdf_val = _texture_sample_sdf_x0(
+            sdf.coarse_texture,
+            wp.vec3f(
+                cx + (coarse_f[0] - cx) + 0.5,
+                cy + (coarse_f[1] - cy) + 0.5,
+                cz + (coarse_f[2] - cz) + 0.5,
+            ),
+            paired_samples,
+        )
+    else:
+        block_x = float(loc.start_slot & wp.uint32(0x3FF))
+        block_y = float((loc.start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
+        block_z = float((loc.start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
+        lx = float(loc.ix) - float(loc.x_base) * sdf.subgrid_size_f
+        ly = float(loc.iy) - float(loc.y_base) * sdf.subgrid_size_f
+        lz = float(loc.iz) - float(loc.z_base) * sdf.subgrid_size_f
+        ox = block_x * sdf.subgrid_samples_f + lx + 0.5
+        oy = block_y * sdf.subgrid_samples_f + ly + 0.5
+        oz = block_z * sdf.subgrid_samples_f + lz + 0.5
+        raw = _texture_sample_sdf_x0(
+            sdf.subgrid_texture,
+            wp.vec3f(ox + loc.tx, oy + loc.ty, oz + loc.tz),
+            paired_samples,
+        )
+        sdf_val = raw * sdf.subgrids_sdf_value_range + sdf.subgrids_min_sdf_value
+
+    return sdf_val + diff_mag
+
+
+@wp.func
+def _texture_sample_sdf_hw_clamped(
+    sdf: TextureSDFData,
+    clamped: wp.vec3,
+    diff_mag: float,
+) -> float:
+    """Sample a clamped SDF position using its stored texture layout."""
+    return _texture_sample_sdf_hw_clamped_variant(sdf, clamped, diff_mag, sdf.paired_samples)
+
+
+@wp.func
+def _texture_sample_sdf_hw_clamped_paired(
+    sdf: TextureSDFData,
+    clamped: wp.vec3,
+    diff_mag: float,
+) -> float:
+    """Sample a clamped position from an X-paired SDF texture."""
+    return _texture_sample_sdf_hw_clamped_variant(sdf, clamped, diff_mag, True)
+
+
+@wp.func
+def _texture_sample_sdf_hw_clamped_scalar(
+    sdf: TextureSDFData,
+    clamped: wp.vec3,
+    diff_mag: float,
+) -> float:
+    """Sample a clamped position from a scalar SDF texture."""
+    return _texture_sample_sdf_hw_clamped_variant(sdf, clamped, diff_mag, False)
+
+
+@wp.func
+def _texture_sample_sdf_hw_variant(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+    paired_samples: bool,
 ) -> float:
     """Sample SDF value via the GPU's hardware trilinear filter.
 
@@ -956,8 +1508,9 @@ def texture_sample_sdf_hw(
     avoided in stress-integration paths like hydroelastic contact.
 
     Args:
-        sdf: texture SDF data
-        local_pos: query position in local SDF space [m]
+        sdf: Texture SDF data.
+        local_pos: Query position in local SDF space [m].
+        paired_samples: Whether to read paired-X or scalar texture storage.
 
     Returns:
         Signed distance value [m].
@@ -967,48 +1520,40 @@ def texture_sample_sdf_hw(
         wp.clamp(local_pos[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
         wp.clamp(local_pos[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
     )
-    diff_mag = wp.length(local_pos - clamped)
+    diff = local_pos - clamped
+    diff_mag = float(0.0)
+    # Avoid a square root for the common in-box path.
+    if diff[0] != 0.0 or diff[1] != 0.0 or diff[2] != 0.0:
+        diff_mag = wp.length(diff)
 
-    f = wp.cw_mul(clamped - sdf.sdf_box_lower, sdf.inv_sdf_dx)
-    loc = _locate_cell(sdf, f)
+    return _texture_sample_sdf_hw_clamped_variant(sdf, clamped, diff_mag, paired_samples)
 
-    sdf_val = float(0.0)
 
-    if loc.start_slot >= wp.static(SLOT_LINEAR):
-        # ``cx + tx + 0.5`` lands at the centre of voxel (cx, cy, cz) and
-        # ``+tx`` walks toward (cx+1, ...). The HW filter returns the
-        # interpolated value in one fetch.
-        cx = float(loc.x_base)
-        cy = float(loc.y_base)
-        cz = float(loc.z_base)
-        coarse_f = wp.vec3(float(loc.ix) + loc.tx, float(loc.iy) + loc.ty, float(loc.iz) + loc.tz) * sdf.fine_to_coarse
-        sdf_val = wp.texture_sample(
-            sdf.coarse_texture,
-            wp.vec3f(
-                cx + (coarse_f[0] - cx) + 0.5,
-                cy + (coarse_f[1] - cy) + 0.5,
-                cz + (coarse_f[2] - cz) + 0.5,
-            ),
-            dtype=float,
-        )
-    else:
-        block_x = float(loc.start_slot & wp.uint32(0x3FF))
-        block_y = float((loc.start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
-        block_z = float((loc.start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
-        lx = float(loc.ix) - float(loc.x_base) * sdf.subgrid_size_f
-        ly = float(loc.iy) - float(loc.y_base) * sdf.subgrid_size_f
-        lz = float(loc.iz) - float(loc.z_base) * sdf.subgrid_size_f
-        ox = block_x * sdf.subgrid_samples_f + lx + 0.5
-        oy = block_y * sdf.subgrid_samples_f + ly + 0.5
-        oz = block_z * sdf.subgrid_samples_f + lz + 0.5
-        raw = wp.texture_sample(
-            sdf.subgrid_texture,
-            wp.vec3f(ox + loc.tx, oy + loc.ty, oz + loc.tz),
-            dtype=float,
-        )
-        sdf_val = raw * sdf.subgrids_sdf_value_range + sdf.subgrids_min_sdf_value
+@wp.func
+def texture_sample_sdf_hw(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> float:
+    """Sample an SDF using its stored texture layout."""
+    return _texture_sample_sdf_hw_variant(sdf, local_pos, sdf.paired_samples)
 
-    return sdf_val + diff_mag
+
+@wp.func
+def _texture_sample_sdf_hw_paired(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> float:
+    """Sample an X-paired SDF with hardware interpolation."""
+    return _texture_sample_sdf_hw_variant(sdf, local_pos, True)
+
+
+@wp.func
+def _texture_sample_sdf_hw_scalar(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> float:
+    """Sample a scalar SDF with hardware interpolation."""
+    return _texture_sample_sdf_hw_variant(sdf, local_pos, False)
 
 
 @wp.func
@@ -1071,9 +1616,10 @@ def texture_sample_sdf_grad(
 
 
 @wp.func
-def _texture_sample_sdf_grad_hw_impl(
+def _texture_sample_sdf_grad_hw_impl_variant(
     sdf: TextureSDFData,
     local_pos: wp.vec3,
+    paired_samples: bool,
 ) -> wp.vec3:
     """Hardware FD gradient at ``local_pos``, with out-of-box extrapolation.
 
@@ -1091,29 +1637,72 @@ def _texture_sample_sdf_grad_hw_impl(
         wp.clamp(local_pos[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
     )
     diff = local_pos - clamped
-    diff_mag = wp.length(diff)
 
     # Out-of-box: the clamp-direction extrapolation defines the gradient
     # exactly, so skip the six FD texture fetches that would be discarded.
-    if diff_mag > 0.0:
-        return diff / diff_mag
+    if diff[0] != 0.0 or diff[1] != 0.0 or diff[2] != 0.0:
+        diff_mag = wp.length(diff)
+        if diff_mag > 0.0:
+            return diff / diff_mag
 
     h_x = 0.5 / sdf.inv_sdf_dx[0]
+    x_pos0 = local_pos + wp.vec3(h_x, 0.0, 0.0)
+    x_pos1 = local_pos - wp.vec3(h_x, 0.0, 0.0)
+    x_coord0 = wp.clamp(x_pos0[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0])
+    x_coord1 = wp.clamp(x_pos1[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0])
+    x_delta0 = x_pos0[0] - x_coord0
+    x_delta1 = x_pos1[0] - x_coord1
+    x_values = _texture_sample_sdf_hw_clamped_pair_variant(
+        sdf,
+        wp.vec3(x_coord0, x_pos0[1], x_pos0[2]),
+        wp.vec3(x_coord1, x_pos1[1], x_pos1[2]),
+        x_delta0 * x_delta0,
+        x_delta1 * x_delta1,
+        paired_samples,
+    )
+    gx = (x_values[0] - x_values[1]) * sdf.inv_sdf_dx[0]
     h_y = 0.5 / sdf.inv_sdf_dx[1]
+    y_pos0 = local_pos + wp.vec3(0.0, h_y, 0.0)
+    y_pos1 = local_pos - wp.vec3(0.0, h_y, 0.0)
+    y_coord0 = wp.clamp(y_pos0[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1])
+    y_coord1 = wp.clamp(y_pos1[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1])
+    y_delta0 = y_pos0[1] - y_coord0
+    y_delta1 = y_pos1[1] - y_coord1
+    y_values = _texture_sample_sdf_hw_clamped_pair_variant(
+        sdf,
+        wp.vec3(y_pos0[0], y_coord0, y_pos0[2]),
+        wp.vec3(y_pos1[0], y_coord1, y_pos1[2]),
+        y_delta0 * y_delta0,
+        y_delta1 * y_delta1,
+        paired_samples,
+    )
+    gy = (y_values[0] - y_values[1]) * sdf.inv_sdf_dx[1]
     h_z = 0.5 / sdf.inv_sdf_dx[2]
-    gx = (
-        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(h_x, 0.0, 0.0))
-        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(h_x, 0.0, 0.0))
-    ) / (2.0 * h_x)
-    gy = (
-        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(0.0, h_y, 0.0))
-        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(0.0, h_y, 0.0))
-    ) / (2.0 * h_y)
-    gz = (
-        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(0.0, 0.0, h_z))
-        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(0.0, 0.0, h_z))
-    ) / (2.0 * h_z)
+    z_pos0 = local_pos + wp.vec3(0.0, 0.0, h_z)
+    z_pos1 = local_pos - wp.vec3(0.0, 0.0, h_z)
+    z_coord0 = wp.clamp(z_pos0[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2])
+    z_coord1 = wp.clamp(z_pos1[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2])
+    z_delta0 = z_pos0[2] - z_coord0
+    z_delta1 = z_pos1[2] - z_coord1
+    z_values = _texture_sample_sdf_hw_clamped_pair_variant(
+        sdf,
+        wp.vec3(z_pos0[0], z_pos0[1], z_coord0),
+        wp.vec3(z_pos1[0], z_pos1[1], z_coord1),
+        z_delta0 * z_delta0,
+        z_delta1 * z_delta1,
+        paired_samples,
+    )
+    gz = (z_values[0] - z_values[1]) * sdf.inv_sdf_dx[2]
     return wp.vec3(gx, gy, gz)
+
+
+@wp.func
+def _texture_sample_sdf_grad_hw_impl(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> wp.vec3:
+    """Sample a hardware gradient using the stored texture layout."""
+    return _texture_sample_sdf_grad_hw_impl_variant(sdf, local_pos, sdf.paired_samples)
 
 
 @wp.func
@@ -1170,13 +1759,34 @@ def texture_sample_sdf_grad_only_hw(
     return _texture_sample_sdf_grad_hw_impl(sdf, local_pos)
 
 
+@wp.func
+def _texture_sample_sdf_grad_only_hw_paired(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> wp.vec3:
+    """Sample an X-paired SDF hardware gradient."""
+    return _texture_sample_sdf_grad_hw_impl_variant(sdf, local_pos, True)
+
+
+@wp.func
+def _texture_sample_sdf_grad_only_hw_scalar(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> wp.vec3:
+    """Sample a scalar SDF hardware gradient."""
+    return _texture_sample_sdf_grad_hw_impl_variant(sdf, local_pos, False)
+
+
 # ============================================================================
 # Host-side Construction Functions
 # ============================================================================
 
 
-def build_sparse_sdf_from_mesh(
-    mesh: wp.Mesh,
+def _build_sparse_sdf(
+    source_kind: int,
+    mesh: wp.Mesh | None,
+    shape_type: int,
+    shape_scale: Sequence[float],
     grid_size_x: int,
     grid_size_y: int,
     grid_size_z: int,
@@ -1188,10 +1798,10 @@ def build_sparse_sdf_from_mesh(
     quantization_mode: int = QuantizationMode.UINT16,
     winding_threshold: float = 0.5,
     linearization_error_threshold: float | None = None,
-    use_parity: bool = False,
+    sign_mode: int = SIGN_MODE_WINDING,
     device: str = "cuda",
 ) -> dict:
-    """Build sparse SDF texture representation by querying mesh directly.
+    """Build sparse SDF texture representation by querying a source directly.
 
     Mirrors the NanoVDB sparse-volume construction pattern: check subgrid
     occupancy at centers, then populate only occupied subgrids.  Linearity
@@ -1200,8 +1810,10 @@ def build_sparse_sdf_from_mesh(
     texture memory.
 
     Args:
-        mesh: Warp mesh.  Must have ``support_winding_number=True`` unless
-            *use_parity* is ``True``.
+        source_kind: SDF query source, either mesh or analytic primitive.
+        mesh: Warp mesh for mesh query sources.
+        shape_type: Primitive :class:`GeoType` for primitive query sources.
+        shape_scale: Primitive shape scale [m].
         grid_size_x: fine grid X dimension [sample].
         grid_size_y: fine grid Y dimension [sample].
         grid_size_z: fine grid Z dimension [sample].
@@ -1216,10 +1828,13 @@ def build_sparse_sdf_from_mesh(
             which an occupied subgrid is considered linear and its high-res
             data is omitted.  ``None`` auto-computes from domain extents,
             ``0.0`` disables the optimization.
-        use_parity: when ``True``, use parity-based inside/outside
-            classification (:func:`wp.mesh_query_point_sign_parity`) instead
-            of winding numbers. Cheaper per sample but requires a closed,
-            manifold mesh; results on open meshes are undefined.
+        sign_mode: inside/outside strategy for the distance queries.
+            :data:`SIGN_MODE_WINDING` (default) uses winding numbers (robust
+            for general meshes, needs winding-number support on the mesh);
+            :data:`SIGN_MODE_PARITY` uses parity ray-casts (cheaper, requires
+            a closed manifold mesh); :data:`SIGN_MODE_NORMAL` uses the
+            angle-weighted pseudo-normal (local side-of-surface, for open
+            meshes).
         device: Warp device string.
 
     Returns:
@@ -1239,6 +1854,9 @@ def build_sparse_sdf_from_mesh(
 
     min_corner_wp = wp.vec3(float(min_corner[0]), float(min_corner[1]), float(min_corner[2]))
     cell_size_wp = wp.vec3(float(cell_size[0]), float(cell_size[1]), float(cell_size[2]))
+    mesh_id = mesh.id if mesh is not None else wp.uint64(0)
+    shape_type_wp = wp.int32(shape_type)
+    shape_scale_wp = wp.vec3(float(shape_scale[0]), float(shape_scale[1]), float(shape_scale[2]))
 
     bg_size_x = w + 1
     bg_size_y = h + 1
@@ -1249,20 +1867,22 @@ def build_sparse_sdf_from_mesh(
     subgrid_radius = float(np.linalg.norm(half_subgrid))
 
     # -------------------------------------------------------------------
-    # Unified build: *use_parity* selects the cheaper parity-based sign
-    # query (for watertight meshes), otherwise winding numbers are used.
-    # Linearity is evaluated before the texture is sized so that subgrids
-    # whose SDF is well-approximated by the coarse grid consume no
-    # high-resolution texture memory.
+    # Unified build: *sign_mode* selects the inside/outside strategy for
+    # the mesh distance queries (winding numbers, parity ray-casts, or the
+    # angle-weighted pseudo-normal). Linearity is evaluated before the
+    # texture is sized so that subgrids whose SDF is well-approximated by
+    # the coarse grid consume no high-resolution texture memory.
     # -------------------------------------------------------------------
-    parity_flag = wp.int32(1 if use_parity else 0)
+    source_kernels = _create_source_kernels(int(source_kind), int(sign_mode))
 
     background_sdf = wp.zeros(total_bg, dtype=float, device=device)
     wp.launch(
-        _build_coarse_sdf_from_mesh_kernel,
+        source_kernels.build_coarse_sdf_kernel,
         dim=total_bg,
         inputs=[
-            mesh.id,
+            mesh_id,
+            shape_type_wp,
+            shape_scale_wp,
             background_sdf,
             min_corner_wp,
             cell_size_wp,
@@ -1271,7 +1891,6 @@ def build_sparse_sdf_from_mesh(
             bg_size_y,
             bg_size_z,
             winding_threshold,
-            parity_flag,
         ],
         device=device,
     )
@@ -1279,13 +1898,14 @@ def build_sparse_sdf_from_mesh(
     subgrid_required = wp.zeros(total_subgrids, dtype=wp.int32, device=device)
     threshold = wp.vec2f(-narrow_band_thickness - subgrid_radius, narrow_band_thickness + subgrid_radius)
     wp.launch(
-        _check_subgrid_occupied_kernel,
+        source_kernels.check_subgrid_occupied_kernel,
         dim=total_subgrids,
         inputs=[
-            mesh.id,
+            mesh_id,
+            shape_type_wp,
+            shape_scale_wp,
             threshold,
             winding_threshold,
-            parity_flag,
             subgrid_required,
             subgrid_size,
             w,
@@ -1303,10 +1923,10 @@ def build_sparse_sdf_from_mesh(
     if linearization_error_threshold > 0.0:
         # Per-sample launch so the 9^3 inner loop is parallelized across
         # threads; atomic_max accumulates the per-subgrid linearity error.
-        # We deliberately do NOT cache the mesh samples for reuse in the
+        # We deliberately do NOT cache the source samples for reuse in the
         # populate pass: an empirical test showed the cache (one float32
         # per sample, total_subgrids * 9^3 bytes transient) costs more in
-        # global-memory traffic than re-querying the mesh BVH, both for
+        # global-memory traffic than re-querying the source SDF. This was measured for
         # small meshes (cube: 12 tris) and medium meshes (icosphere:
         # 5120 tris) at resolutions up to 256.
         samples_per_dim = subgrid_size + 1
@@ -1315,10 +1935,12 @@ def build_sparse_sdf_from_mesh(
 
         linearity_errors = wp.zeros(total_subgrids, dtype=float, device=device)
         wp.launch(
-            _accumulate_subgrid_linearity_error_kernel,
+            source_kernels.accumulate_subgrid_linearity_error_kernel,
             dim=total_work,
             inputs=[
-                mesh.id,
+                mesh_id,
+                shape_type_wp,
+                shape_scale_wp,
                 background_sdf,
                 subgrid_required,
                 linearity_errors,
@@ -1326,7 +1948,6 @@ def build_sparse_sdf_from_mesh(
                 min_corner_wp,
                 cell_size_wp,
                 winding_threshold,
-                parity_flag,
                 w,
                 h,
                 d,
@@ -1392,10 +2013,12 @@ def build_sparse_sdf_from_mesh(
         if quantization_mode == QuantizationMode.FLOAT32:
             subgrid_texture_gpu = wp.zeros(total_tex_samples, dtype=float, device=device)
             wp.launch(
-                _populate_subgrid_texture_float32_kernel,
+                source_kernels.populate_subgrid_texture_float32_kernel,
                 dim=total_work,
                 inputs=[
-                    mesh.id,
+                    mesh_id,
+                    shape_type_wp,
+                    shape_scale_wp,
                     subgrid_required,
                     subgrid_addresses,
                     subgrid_start_slots_gpu,
@@ -1404,7 +2027,6 @@ def build_sparse_sdf_from_mesh(
                     min_corner_wp,
                     cell_size_wp,
                     winding_threshold,
-                    parity_flag,
                     w,
                     h,
                     d,
@@ -1419,10 +2041,12 @@ def build_sparse_sdf_from_mesh(
         elif quantization_mode == QuantizationMode.UINT16:
             subgrid_texture_gpu = wp.zeros(total_tex_samples, dtype=wp.uint16, device=device)
             wp.launch(
-                _populate_subgrid_texture_uint16_kernel,
+                source_kernels.populate_subgrid_texture_uint16_kernel,
                 dim=total_work,
                 inputs=[
-                    mesh.id,
+                    mesh_id,
+                    shape_type_wp,
+                    shape_scale_wp,
                     subgrid_required,
                     subgrid_addresses,
                     subgrid_start_slots_gpu,
@@ -1431,7 +2055,6 @@ def build_sparse_sdf_from_mesh(
                     min_corner_wp,
                     cell_size_wp,
                     winding_threshold,
-                    parity_flag,
                     w,
                     h,
                     d,
@@ -1448,10 +2071,12 @@ def build_sparse_sdf_from_mesh(
         elif quantization_mode == QuantizationMode.UINT8:
             subgrid_texture_gpu = wp.zeros(total_tex_samples, dtype=wp.uint8, device=device)
             wp.launch(
-                _populate_subgrid_texture_uint8_kernel,
+                source_kernels.populate_subgrid_texture_uint8_kernel,
                 dim=total_work,
                 inputs=[
-                    mesh.id,
+                    mesh_id,
+                    shape_type_wp,
+                    shape_scale_wp,
                     subgrid_required,
                     subgrid_addresses,
                     subgrid_start_slots_gpu,
@@ -1460,7 +2085,6 @@ def build_sparse_sdf_from_mesh(
                     min_corner_wp,
                     cell_size_wp,
                     winding_threshold,
-                    parity_flag,
                     w,
                     h,
                     d,
@@ -1517,31 +2141,155 @@ def build_sparse_sdf_from_mesh(
     }
 
 
+def build_sparse_sdf_from_mesh(
+    mesh: wp.Mesh,
+    grid_size_x: int,
+    grid_size_y: int,
+    grid_size_z: int,
+    cell_size: np.ndarray,
+    min_corner: np.ndarray,
+    max_corner: np.ndarray,
+    subgrid_size: int = 8,
+    narrow_band_thickness: float = 0.1,
+    quantization_mode: int = QuantizationMode.UINT16,
+    winding_threshold: float = 0.5,
+    linearization_error_threshold: float | None = None,
+    sign_mode: int = SIGN_MODE_WINDING,
+    device: str = "cuda",
+) -> dict:
+    """Build sparse SDF texture representation by querying a mesh directly.
+
+    Args:
+        mesh: Warp mesh. Must have ``support_winding_number=True`` unless
+            *sign_mode* is :data:`SIGN_MODE_PARITY` or :data:`SIGN_MODE_NORMAL`.
+        grid_size_x: fine grid X dimension [sample].
+        grid_size_y: fine grid Y dimension [sample].
+        grid_size_z: fine grid Z dimension [sample].
+        cell_size: fine grid cell size per axis [m].
+        min_corner: lower corner of domain [m].
+        max_corner: upper corner of domain [m].
+        subgrid_size: cells per subgrid.
+        narrow_band_thickness: distance threshold for subgrids [m].
+        quantization_mode: :class:`QuantizationMode` value.
+        winding_threshold: winding number threshold for inside/outside.
+        linearization_error_threshold: maximum absolute SDF error [m] below
+            which an occupied subgrid is considered linear.
+        sign_mode: inside/outside strategy for mesh distance queries.
+        device: Warp device string.
+
+    Returns:
+        Dictionary with all sparse SDF data.
+    """
+    return _build_sparse_sdf(
+        _SDF_SOURCE_MESH,
+        mesh,
+        0,
+        (1.0, 1.0, 1.0),
+        grid_size_x,
+        grid_size_y,
+        grid_size_z,
+        cell_size,
+        min_corner,
+        max_corner,
+        subgrid_size=subgrid_size,
+        narrow_band_thickness=narrow_band_thickness,
+        quantization_mode=quantization_mode,
+        winding_threshold=winding_threshold,
+        linearization_error_threshold=linearization_error_threshold,
+        sign_mode=sign_mode,
+        device=device,
+    )
+
+
+def build_sparse_sdf_from_primitive(
+    shape_type: int,
+    shape_scale: Sequence[float],
+    grid_size_x: int,
+    grid_size_y: int,
+    grid_size_z: int,
+    cell_size: np.ndarray,
+    min_corner: np.ndarray,
+    max_corner: np.ndarray,
+    subgrid_size: int = 8,
+    narrow_band_thickness: float = 0.1,
+    quantization_mode: int = QuantizationMode.UINT16,
+    linearization_error_threshold: float | None = None,
+    device: str = "cuda",
+) -> dict:
+    """Build sparse SDF texture representation from an analytical primitive.
+
+    Args:
+        shape_type: Primitive :class:`GeoType`.
+        shape_scale: Primitive shape scale [m].
+        grid_size_x: fine grid X dimension [sample].
+        grid_size_y: fine grid Y dimension [sample].
+        grid_size_z: fine grid Z dimension [sample].
+        cell_size: fine grid cell size per axis [m].
+        min_corner: lower corner of domain [m].
+        max_corner: upper corner of domain [m].
+        subgrid_size: cells per subgrid.
+        narrow_band_thickness: distance threshold for subgrids [m].
+        quantization_mode: :class:`QuantizationMode` value.
+        linearization_error_threshold: maximum absolute SDF error [m] below
+            which an occupied subgrid is considered linear.
+        device: Warp device string.
+
+    Returns:
+        Dictionary with all sparse SDF data.
+    """
+    shape_type, shape_scale = _validate_primitive_sdf_inputs(shape_type, shape_scale)
+    return _build_sparse_sdf(
+        _SDF_SOURCE_PRIMITIVE,
+        None,
+        shape_type,
+        shape_scale,
+        grid_size_x,
+        grid_size_y,
+        grid_size_z,
+        cell_size,
+        min_corner,
+        max_corner,
+        subgrid_size=subgrid_size,
+        narrow_band_thickness=narrow_band_thickness,
+        quantization_mode=quantization_mode,
+        linearization_error_threshold=linearization_error_threshold,
+        device=device,
+    )
+
+
+def _pack_sdf_x_pairs(data: np.ndarray) -> np.ndarray:
+    """Pack each SDF sample with its clamped positive-X neighbor."""
+    pairs = np.empty((*data.shape, 2), dtype=data.dtype)
+    pairs[..., 0] = data
+    pairs[..., :-1, 1] = data[..., 1:]
+    pairs[..., -1, 1] = data[..., -1]
+    return pairs
+
+
 def create_sparse_sdf_textures(
     sparse_data: dict,
     device: str = "cuda",
+    paired_samples: bool = True,
 ) -> tuple[TextureSDFData, wp.Texture3D, wp.Texture3D]:
     """Create TextureSDFData struct with GPU textures from sparse data.
 
     Args:
-        sparse_data: dictionary from :func:`build_sparse_sdf_from_mesh`.
+        sparse_data: Dictionary produced by a sparse SDF builder.
         device: Warp device string.
+        paired_samples: Store adjacent X samples together for faster software interpolation.
 
     Returns:
         Tuple of ``(texture_sdf, coarse_texture, subgrid_texture)``.
         Caller must keep texture references alive to prevent GC.
     """
-    # Always create the texture with ``LINEAR`` filter mode -- both the
-    # software (:func:`texture_sample_sdf`) and hardware
-    # (:func:`texture_sample_sdf_hw`) paths share the same underlying
-    # texture. Under LINEAR, sampling at an exact texel centre
-    # (``integer + 0.5``) still resolves to that texel's value -- the
-    # trilinear weights collapse to ``(1, 0, ...)`` -- so the software
-    # path's 8-corner reads remain effectively bit-exact (modulo a
-    # ~1/256 weight-quantisation error that is far below any physically
-    # meaningful contact precision).
+    # Pair adjacent X samples so the software sampler obtains eight corners
+    # with four reads. Channel zero preserves the original scalar field for
+    # hardware filtering. At an exact texel center, LINEAR filtering returns
+    # the stored values exactly, preserving the software interpolation path.
+    coarse_data = _pack_sdf_x_pairs(sparse_data["coarse_sdf"]) if paired_samples else sparse_data["coarse_sdf"]
+    subgrid_data = _pack_sdf_x_pairs(sparse_data["subgrid_data"]) if paired_samples else sparse_data["subgrid_data"]
     coarse_tex = wp.Texture3D(
-        sparse_data["coarse_sdf"],
+        coarse_data,
         filter_mode=wp.TextureFilterMode.LINEAR,
         address_mode=wp.TextureAddressMode.CLAMP,
         normalized_coords=False,
@@ -1549,7 +2297,7 @@ def create_sparse_sdf_textures(
     )
 
     subgrid_tex = wp.Texture3D(
-        sparse_data["subgrid_data"],
+        subgrid_data,
         filter_mode=wp.TextureFilterMode.LINEAR,
         address_mode=wp.TextureAddressMode.CLAMP,
         normalized_coords=False,
@@ -1580,8 +2328,73 @@ def create_sparse_sdf_textures(
 
     sdf_params.subgrids_min_sdf_value = sparse_data["subgrids_min_sdf_value"]
     sdf_params.subgrids_sdf_value_range = sparse_data["subgrids_sdf_value_range"]
+    sdf_params.paired_samples = paired_samples
     sdf_params.scale_baked = False
 
+    return sdf_params, coarse_tex, subgrid_tex
+
+
+def _create_texture_sdf_from_source(
+    min_ext: np.ndarray,
+    max_ext: np.ndarray,
+    *,
+    sparse_sdf_builder: Callable[..., dict],
+    narrow_band_range: tuple[float, float],
+    max_resolution: int | None,
+    target_voxel_size: float | None,
+    subgrid_size: int,
+    quantization_mode: int,
+    scale_baked: bool,
+    device: str,
+    paired_samples: bool,
+    return_sparse_data: bool = False,
+) -> tuple[TextureSDFData, wp.Texture3D, wp.Texture3D] | tuple[TextureSDFData, wp.Texture3D, wp.Texture3D, dict | None]:
+    """Create a texture SDF from source extents and a bound sparse-data builder."""
+    ext = max_ext - min_ext
+    max_ext_scalar = np.max(ext)
+    if max_ext_scalar < 1e-10:
+        empty = (create_empty_texture_sdf_data(), None, None)
+        return (*empty, None) if return_sparse_data else empty
+
+    if target_voxel_size is not None:
+        if target_voxel_size <= 0.0:
+            raise ValueError("target_voxel_size must be > 0")
+        derived_res = int(np.ceil(max_ext_scalar / float(target_voxel_size)))
+        derived_res = max(8, ((derived_res + 7) // 8) * 8)
+        max_resolution = derived_res
+    elif max_resolution is None:
+        max_resolution = 64
+
+    max_resolution = int(max_resolution)
+    if max_resolution <= 0:
+        raise ValueError("max_resolution must be > 0")
+    if max_resolution >= (1 << 16):
+        raise ValueError(f"max_resolution must be less than {1 << 16}")
+
+    cell_size_scalar = max_ext_scalar / max_resolution
+    dims = np.ceil(ext / cell_size_scalar).astype(int) + 1
+    grid_x, grid_y, grid_z = int(dims[0]), int(dims[1]), int(dims[2])
+    cell_size = ext / (dims - 1)
+    narrow_band_thickness = max(abs(narrow_band_range[0]), abs(narrow_band_range[1]))
+
+    sparse_data = sparse_sdf_builder(
+        grid_x,
+        grid_y,
+        grid_z,
+        cell_size,
+        min_ext,
+        max_ext,
+        subgrid_size=subgrid_size,
+        narrow_band_thickness=narrow_band_thickness,
+        quantization_mode=quantization_mode,
+        device=device,
+    )
+
+    sdf_params, coarse_tex, subgrid_tex = create_sparse_sdf_textures(sparse_data, device, paired_samples)
+    sdf_params.scale_baked = scale_baked
+
+    if return_sparse_data:
+        return sdf_params, coarse_tex, subgrid_tex, sparse_data
     return sdf_params, coarse_tex, subgrid_tex
 
 
@@ -1596,7 +2409,8 @@ def create_texture_sdf_from_mesh(
     quantization_mode: int = QuantizationMode.UINT16,
     winding_threshold: float = 0.5,
     scale_baked: bool = False,
-    use_parity: bool = False,
+    sign_mode: int = SIGN_MODE_WINDING,
+    paired_samples: bool = True,
     device: str | None = None,
     return_sparse_data: bool = False,
 ) -> tuple[TextureSDFData, wp.Texture3D, wp.Texture3D] | tuple[TextureSDFData, wp.Texture3D, wp.Texture3D, dict | None]:
@@ -1607,7 +2421,7 @@ def create_texture_sdf_from_mesh(
 
     Args:
         mesh: Warp mesh.  Must have ``support_winding_number=True`` unless
-            *use_parity* is ``True``.
+            *sign_mode* is :data:`SIGN_MODE_PARITY` or :data:`SIGN_MODE_NORMAL`.
         margin: extra AABB padding [m].
         narrow_band_range: signed narrow-band distance range [m] as ``(inner, outer)``.
         max_resolution: maximum grid dimension [voxel]. Used when
@@ -1622,10 +2436,12 @@ def create_texture_sdf_from_mesh(
         quantization_mode: :class:`QuantizationMode` value.
         winding_threshold: winding number threshold for inside/outside classification.
         scale_baked: whether shape scale was baked into the mesh vertices.
-        use_parity: when ``True``, use parity-based inside/outside
-            classification (:func:`wp.mesh_query_point_sign_parity`).
-            Cheaper per sample than winding numbers; requires a closed,
-            manifold mesh.
+        sign_mode: inside/outside strategy for the distance queries.
+            :data:`SIGN_MODE_WINDING` (default) uses winding numbers;
+            :data:`SIGN_MODE_PARITY` uses parity ray-casts (cheaper,
+            requires a closed manifold mesh); :data:`SIGN_MODE_NORMAL`
+            uses the angle-weighted pseudo-normal (for open meshes).
+        paired_samples: Store adjacent X samples together for faster software interpolation.
         device: Warp device string. ``None`` uses the mesh's device.
         return_sparse_data: when ``True``, also return the raw cooked
             ``sparse_data`` dict produced by
@@ -1651,61 +2467,88 @@ def create_texture_sdf_from_mesh(
     min_ext = mesh_min - margin
     max_ext = mesh_max + margin
 
-    # Compute grid dimensions (same math as the former build_dense_sdf)
-    ext = max_ext - min_ext
-    max_ext_scalar = np.max(ext)
-    if max_ext_scalar < 1e-10:
-        empty = (create_empty_texture_sdf_data(), None, None)
-        return (*empty, None) if return_sparse_data else empty
-
-    # Resolve max_resolution, honoring target_voxel_size when provided.
-    # Mirrors the sparse SDF path in sdf_utils._compute_sdf_from_shape_impl
-    # so texture and sparse grids agree on resolution.
-    if target_voxel_size is not None:
-        if target_voxel_size <= 0.0:
-            raise ValueError("target_voxel_size must be > 0")
-        derived_res = int(np.ceil(max_ext_scalar / float(target_voxel_size)))
-        # Keep alignment with tiled SDF builders that operate on 8-voxel chunks.
-        derived_res = max(8, ((derived_res + 7) // 8) * 8)
-        max_resolution = derived_res
-    elif max_resolution is None:
-        max_resolution = 64
-
-    max_resolution = int(max_resolution)
-    if max_resolution <= 0:
-        raise ValueError("max_resolution must be > 0")
-    if max_resolution >= (1 << 16):
-        raise ValueError(f"max_resolution must be less than {1 << 16}")
-
-    cell_size_scalar = max_ext_scalar / max_resolution
-    dims = np.ceil(ext / cell_size_scalar).astype(int) + 1
-    grid_x, grid_y, grid_z = int(dims[0]), int(dims[1]), int(dims[2])
-    cell_size = ext / (dims - 1)
-
-    narrow_band_thickness = max(abs(narrow_band_range[0]), abs(narrow_band_range[1]))
-
-    sparse_data = build_sparse_sdf_from_mesh(
+    sparse_sdf_builder = functools.partial(
+        build_sparse_sdf_from_mesh,
         mesh,
-        grid_x,
-        grid_y,
-        grid_z,
-        cell_size,
+        winding_threshold=winding_threshold,
+        sign_mode=sign_mode,
+    )
+    return _create_texture_sdf_from_source(
         min_ext,
         max_ext,
+        sparse_sdf_builder=sparse_sdf_builder,
+        narrow_band_range=narrow_band_range,
+        max_resolution=max_resolution,
+        target_voxel_size=target_voxel_size,
         subgrid_size=subgrid_size,
-        narrow_band_thickness=narrow_band_thickness,
         quantization_mode=quantization_mode,
-        winding_threshold=winding_threshold,
-        use_parity=use_parity,
+        scale_baked=scale_baked,
         device=device,
+        return_sparse_data=return_sparse_data,
+        paired_samples=paired_samples,
     )
 
-    sdf_params, coarse_tex, subgrid_tex = create_sparse_sdf_textures(sparse_data, device)
-    sdf_params.scale_baked = scale_baked
 
-    if return_sparse_data:
-        return sdf_params, coarse_tex, subgrid_tex, sparse_data
-    return sdf_params, coarse_tex, subgrid_tex
+def create_texture_sdf_from_primitive(
+    shape_type: int,
+    shape_scale: Sequence[float],
+    *,
+    margin: float = 0.05,
+    narrow_band_range: tuple[float, float] = (-0.1, 0.1),
+    max_resolution: int | None = None,
+    target_voxel_size: float | None = None,
+    subgrid_size: int = 8,
+    quantization_mode: int = QuantizationMode.UINT16,
+    scale_baked: bool = False,
+    paired_samples: bool = True,
+    device: str = "cuda",
+) -> tuple[TextureSDFData, wp.Texture3D, wp.Texture3D]:
+    """Create texture SDF from an analytical primitive.
+
+    Args:
+        shape_type: Primitive :class:`GeoType`.
+        shape_scale: Primitive shape scale [m], shape [3].
+        margin: extra AABB padding [m].
+        narrow_band_range: signed narrow-band distance range [m] as ``(inner, outer)``.
+        max_resolution: maximum grid dimension [voxel]. Used when
+            ``target_voxel_size`` is not provided. Defaults to 64 when both
+            ``max_resolution`` and ``target_voxel_size`` are ``None``.
+        target_voxel_size: target voxel size [m] along the longest padded-AABB
+            axis. When provided, takes precedence over ``max_resolution``.
+        subgrid_size: cells per subgrid.
+        quantization_mode: :class:`QuantizationMode` value.
+        scale_baked: whether shape scale was baked into the SDF values.
+        paired_samples: Store adjacent X samples together for faster software interpolation.
+        device: Warp device string.
+
+    Returns:
+        Tuple of ``(texture_sdf, coarse_texture, subgrid_texture)``.
+        Caller must keep texture references alive to prevent GC.
+    """
+    shape_type, shape_scale = _validate_primitive_sdf_inputs(shape_type, shape_scale)
+
+    min_prim, max_prim = get_primitive_extents(shape_type, shape_scale)
+    min_ext = np.asarray(min_prim, dtype=float) - margin
+    max_ext = np.asarray(max_prim, dtype=float) + margin
+
+    sparse_sdf_builder = functools.partial(
+        build_sparse_sdf_from_primitive,
+        shape_type,
+        shape_scale,
+    )
+    return _create_texture_sdf_from_source(
+        min_ext,
+        max_ext,
+        sparse_sdf_builder=sparse_sdf_builder,
+        narrow_band_range=narrow_band_range,
+        max_resolution=max_resolution,
+        target_voxel_size=target_voxel_size,
+        subgrid_size=subgrid_size,
+        quantization_mode=quantization_mode,
+        scale_baked=scale_baked,
+        device=device,
+        paired_samples=paired_samples,
+    )
 
 
 def create_texture_sdf_from_volume(
@@ -1719,6 +2562,7 @@ def create_texture_sdf_from_volume(
     subgrid_size: int = 8,
     scale_baked: bool = False,
     linearization_error_threshold: float | None = None,
+    paired_samples: bool = True,
     device: str = "cuda",
 ) -> tuple[TextureSDFData, wp.Texture3D, wp.Texture3D]:
     """Create texture SDF from existing NanoVDB sparse and coarse volumes.
@@ -1740,6 +2584,7 @@ def create_texture_sdf_from_volume(
             which an occupied subgrid is considered linear and its high-res
             data is omitted.  ``None`` auto-computes from domain extents,
             ``0.0`` disables the optimization.
+        paired_samples: Store adjacent X samples together for faster software interpolation.
         device: Warp device string.
 
     Returns:
@@ -2053,7 +2898,7 @@ def create_texture_sdf_from_volume(
         "subgrid_required": subgrid_required,
     }
 
-    sdf_params, coarse_tex, subgrid_tex = create_sparse_sdf_textures(sparse_data, device)
+    sdf_params, coarse_tex, subgrid_tex = create_sparse_sdf_textures(sparse_data, device, paired_samples)
     sdf_params.scale_baked = scale_baked
 
     return sdf_params, coarse_tex, subgrid_tex
@@ -2081,6 +2926,7 @@ def create_empty_texture_sdf_data() -> TextureSDFData:
     sdf.subgrids_min_sdf_value = 0.0
     sdf.subgrids_sdf_value_range = 1.0
     sdf.scale_baked = False
+    sdf.paired_samples = True
     return sdf
 
 
@@ -2173,10 +3019,10 @@ def _generate_isomesh_texture_kernel(
             p_0 = wp.vec3f(corner_offsets_table[v_from])
             p_1 = wp.vec3f(corner_offsets_table[v_to])
             val_diff = val_1 - val_0
-            if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
+            if wp.abs(val_diff) < MC_EDGE_VAL_DIFF_EPS:
                 p = 0.5 * (p_0 + p_1)
             else:
-                t = wp.clamp((isovalue - val_0) / val_diff, wp.static(MC_EDGE_CLAMP_MIN), wp.static(MC_EDGE_CLAMP_MAX))
+                t = wp.clamp((isovalue - val_0) / val_diff, MC_EDGE_CLAMP_MIN, MC_EDGE_CLAMP_MAX)
                 p = p_0 + t * (p_1 - p_0)
             vol_idx = p + wp.vec3(float(x_id), float(y_id), float(z_id))
             local_pos = sdf.sdf_box_lower + wp.cw_mul(vol_idx, sdf.voxel_size)

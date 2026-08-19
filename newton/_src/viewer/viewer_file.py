@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -457,8 +458,9 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
 
         # Iterables (like list, tuple, set)
         if isinstance(obj, Iterable) and not isinstance(obj, str | bytes | bytearray):
+            type_name = "set" if isinstance(obj, set) else type(obj).__name__
             return {
-                "__type__": type(obj).__name__,
+                "__type__": type_name,
                 "items": [
                     serialize(
                         item, callback, _visited, f"{_path}[{i}]" if _path else f"[{i}]", format_type, cache=cache
@@ -657,6 +659,13 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
     for attr_name, source_value in source_dict.items():
         if attr_name.startswith("_"):
             continue
+
+        if isinstance(target_obj, Model) and attr_name == "shape_collision_filter_pairs":
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                target_obj.shape_collision_filter_pairs = source_value
+            continue
+
         target_value = getattr(target_obj, attr_name, _MISSING)
 
         # Source carries a reconstructed AttributeNamespace (e.g. ``model.mujoco``).

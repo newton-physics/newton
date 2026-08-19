@@ -22,6 +22,29 @@ def check_conditional_graph_support():
     return wp.is_conditional_graph_supported()
 
 
+def is_graph_capture_allocation_enabled(device) -> bool:
+    """Whether device allocation during graph capture is safe on ``device``.
+
+    CUDA needs its stream-ordered memory pool active so that
+    ``cudaMallocAsync`` can be captured as a memory-alloc node in the graph;
+    for CPU the concept does not apply -- plain host allocation is always
+    safe during CPU graph capture -- so this always returns ``True`` for CPU
+    devices. Solvers that grow internal buffers on demand should call this
+    before raising a "cannot allocate during capture" error.
+
+    Args:
+        device: A Warp device or device identifier.
+
+    Returns:
+        ``True`` if allocation during graph capture is currently safe on
+        ``device``; ``False`` otherwise.
+    """
+    device = wp.get_device(device)
+    if device.is_cpu:
+        return True
+    return device.is_mempool_enabled
+
+
 def compute_world_offsets(world_count: int, spacing: tuple[float, float, float], up_axis: Any = None):
     """
     Compute positional offsets for multiple worlds arranged in a grid.
@@ -96,6 +119,7 @@ __all__ = [
     "clear_git_cache",
     "compute_world_offsets",
     "download_asset",
+    "is_graph_capture_allocation_enabled",
     "load_texture",
     "normalize_texture",
     "topological_sort",

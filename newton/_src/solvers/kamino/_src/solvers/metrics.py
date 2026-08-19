@@ -79,7 +79,6 @@ from dataclasses import dataclass
 import warp as wp
 
 from ..core.data import DataKamino
-from ..core.math import screw, screw_angular, screw_linear
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..core.types import vec6f
@@ -113,7 +112,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -241,10 +240,9 @@ class SolutionMetricsData:
     """
     The largest constraint violation residual across all contact constraints.
 
-    Computed as the maximum absolute value (i.e. infinity-norm) over contact constraint residuals.
-
-    Equivalent to `r_cts_contacts := || d_k ||_inf`, where `d_k` would be an array of
-    contact penetrations extracted from the `gapfunc` elements of :class:`ContactsKaminoData`.
+    Equivalent to `r_cts_contacts := max_k max(0, -d_k)`, where `d_k` is the
+    margin-shifted signed distance stored in the ``w`` component of the contact
+    `gapfunc`. Negative `d_k` denotes penetration.
 
     Shape of ``(num_worlds,)``.
     """
@@ -592,7 +590,7 @@ def compute_vector_difference_infnorm(
 def _compute_eom_residual(
     # Inputs
     model_time_dt: wp.array[wp.float32],
-    model_gravity: wp.array[wp.vec4f],
+    model_gravity: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_m_i: wp.array[wp.float32],
     state_bodies_I_i: wp.array[wp.mat33f],
@@ -616,22 +614,21 @@ def _compute_eom_residual(
 
     # Retrieve the time step
     dt = model_time_dt[wid]
-    gravity = model_gravity[wid]
-    g = gravity.w * wp.vec3f(gravity.x, gravity.y, gravity.z)
+    g = model_gravity[wid]
 
     # Decompose into linear and angular parts
-    f_i = screw_linear(w_i)
-    v_i = screw_linear(u_i)
-    v_i_p = screw_linear(u_i_p)
-    tau_i = screw_angular(w_i)
-    omega_i = screw_angular(u_i)
-    omega_i_p = screw_angular(u_i_p)
+    f_i = wp.spatial_top(w_i)
+    v_i = wp.spatial_top(u_i)
+    v_i_p = wp.spatial_top(u_i_p)
+    tau_i = wp.spatial_bottom(w_i)
+    omega_i = wp.spatial_bottom(u_i)
+    omega_i_p = wp.spatial_bottom(u_i_p)
     S_i = wp.skew(omega_i_p)
 
     # Compute the per-body EoM residual over linear and angular parts
     r_linear_i = wp.abs(m_i * (v_i - v_i_p) - dt * (m_i * g + f_i))
     r_angular_i = wp.abs(I_i @ (omega_i - omega_i_p) - dt * (tau_i - S_i @ (I_i @ omega_i_p)))
-    r_i = screw(r_linear_i, r_angular_i)
+    r_i = wp.spatial_vectorf(*r_linear_i, *r_angular_i)
 
     # Compute the per-body maximum residual and argmax index
     r_eom_i = wp.max(r_i)
@@ -873,12 +870,12 @@ def _compute_cts_contacts_residual(
     wcid = contact_cid[cid]
     gapfunc = contact_gapfunc[cid]
 
-    # Compute the per-contact constraint residual (infinity-norm)
-    r_cts_contacts_k = wp.abs(gapfunc[3])
+    # Compute unilateral penetration depth from the margin-shifted signed distance.
+    r_cts_contacts_k = wp.max(0.0, -gapfunc[3])
 
     # Update the per-world maximum residual and argmax index
     previous_max = wp.atomic_max(metric_r_cts_contacts, wid, r_cts_contacts_k)
-    if r_cts_contacts_k >= previous_max:
+    if r_cts_contacts_k > 0.0 and r_cts_contacts_k >= previous_max:
         wp.atomic_exch(metric_r_cts_contacts_argmax, wid, wcid)
 
 
@@ -965,7 +962,7 @@ def _compute_dual_problem_metrics(
 
     # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
     r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
-        nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
+        njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
     )
 
     # Store the computed metrics in the output arrays
@@ -1062,7 +1059,7 @@ def _compute_dual_problem_metrics_sparse(
 
     # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
     r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
-        nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
+        njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
     )
 
     # Store the computed metrics in the output arrays

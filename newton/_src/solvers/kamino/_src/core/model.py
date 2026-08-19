@@ -387,7 +387,8 @@ class ModelKaminoInfo:
 
     base_body_index: wp.array[wp.int32] | None = None
     """
-    The index of the base body assigned in each world w.r.t the model.
+    The index of the base body assigned in each world w.r.t the model (-1 if not assigned).
+    Must be assigned to enable setting the base pose/velocity in reset operations.
     If a base joint is also assigned, must be the follower body of that joint.
     Shape of ``(num_worlds,)``.
     """
@@ -395,36 +396,18 @@ class ModelKaminoInfo:
     base_joint_index: wp.array[wp.int32] | None = None
     """
     The index of the base joint assigned in each world w.r.t the model (-1 if not assigned).
-    If assigned, must be a unary, non-universal, joint.
+    If assigned, reset operations will interpret the base pose/velocity in the base joint frame.
+    If assigned, must be a unary free joint.
     Shape of ``(num_worlds,)``.
     """
 
     ###
-    # Inertial Properties
+    # Host-side Metadata
     ###
 
-    mass_min: wp.array[wp.float32] | None = None
+    has_world_without_base_body: bool = False
     """
-    Smallest mass amongst all bodies in each world.
-    Shape of ``(num_worlds,)``.
-    """
-
-    mass_max: wp.array[wp.float32] | None = None
-    """
-    Largest mass amongst all bodies in each world.
-    Shape of ``(num_worlds,)``.
-    """
-
-    mass_total: wp.array[wp.float32] | None = None
-    """
-    Total mass over all bodies in each world.
-    Shape of ``(num_worlds,)``.
-    """
-
-    inertia_total: wp.array[wp.float32] | None = None
-    """
-    Total diagonal inertia over all bodies in each world.
-    Shape of ``(num_worlds,)``.
+    Host-side flag to indicate whether any world could not be assigned a free-floating base body.
     """
 
 
@@ -708,9 +691,11 @@ class ModelKamino:
                 f"ModelKamino.from_newton() requires a newton.Model or ModelView instance, got {type(model).__name__}."
             )
 
-        # Single-world Newton models may have world index -1 (unassigned).
-        # Normalize to 0 so downstream world-based grouping works correctly.
+        # Normalize conversion-only grouping metadata for single-world models.
+        conversion_model = model
         if model.world_count == 1:
+            conversion_model = ModelView(model, "kamino_worlds")
+            has_dedicated_global_gravity = model.gravity.shape[0] > model.world_count
             for attr, start_attr in (
                 ("body_world", "body_world_start"),
                 ("joint_world", "joint_world_start"),
@@ -719,14 +704,21 @@ class ModelKamino:
                 arr = getattr(model, attr)
                 arr_np = arr.numpy()
                 if np.any(arr_np < 0):
-                    arr_np[arr_np < 0] = 0
-                    arr.assign(arr_np)
+                    # Preserve body -1 only when it selects a dedicated global gravity entry.
+                    if attr != "body_world" or not has_dedicated_global_gravity:
+                        arr_np = arr_np.copy()
+                        arr_np[arr_np < 0] = 0
+                        setattr(conversion_model, attr, wp.array(arr_np, dtype=wp.int32, device=model.device))
                     # Update world start indices
                     arr_start = getattr(model, start_attr)
-                    arr_start_np = arr_start.numpy()
+                    arr_start_np = arr_start.numpy().copy()
                     arr_start_np[0] = 0
                     arr_start_np[-2] = arr_start_np[-1]
-                    arr_start.assign(arr_start_np)
+                    setattr(
+                        conversion_model,
+                        start_attr,
+                        wp.array(arr_start_np, dtype=wp.int32, device=model.device),
+                    )
 
         # Initialize materials manager
         materials_manager = MaterialManager()
@@ -753,18 +745,18 @@ class ModelKamino:
             model_gravity = GravityModel.from_newton(model)
 
             # Bodies
-            model_bodies = convert_rigid_bodies(model, model_size, model_info)
+            model_bodies = convert_rigid_bodies(conversion_model, model_size, model_info)
 
             # Joints
             model_joints = convert_joints(
-                model,
+                conversion_model,
                 model_size,
                 model_info,
             )
 
             # Geometries
             model_geoms = convert_geometries(
-                model=model,
+                model=conversion_model,
                 model_size=model_size,
                 model_bodies=model_bodies,
                 materials_manager=materials_manager,

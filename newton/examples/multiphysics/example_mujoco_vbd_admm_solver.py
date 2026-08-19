@@ -77,7 +77,7 @@ def _rigid_solver_entry_args(
 
 
 def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, enabled: bool = True):
-    if not enabled or not model.device.is_cuda:
+    if not enabled:
         return None
 
     with wp.ScopedDevice(model.device):
@@ -85,7 +85,7 @@ def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, e
             simulate()
 
     if capture.graph is None:
-        raise RuntimeError(f"CUDA graph capture failed on device {model.device}")
+        raise RuntimeError(f"Graph capture failed on device {model.device}")
     return capture.graph
 
 
@@ -100,6 +100,7 @@ def _launch_frame_graph(model: newton.Model, graph) -> bool:
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -213,7 +214,7 @@ class Example:
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=8),
+                    solver=lambda v: SolverVBD(model=v, iterations=8, rigid_compliant_alm=True),
                     bodies=[self.payload_body],
                     joints=[self.payload_free_joint],
                     particles=list(range(self.model.particle_count)),
@@ -231,7 +232,8 @@ class Example:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.control = self.model.control()
 
         newton.examples.configure_coupled_view(self, args)
@@ -255,7 +257,7 @@ class Example:
             # ADMM builds this example's coupling from joints and
             # body-particle attachments, so keep state_0/contacts empty here
             # rather than asking collide() to add redundant constraints.
-            # self.model.collide(self.state_0, self.contacts)
+            # self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             newton.eval_ik(self.model, self.state_1, self.state_1.joint_q, self.state_1.joint_qd)
             self.state_0, self.state_1 = self.state_1, self.state_0

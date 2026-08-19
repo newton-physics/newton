@@ -42,10 +42,10 @@ class Example:
         quadruped.default_joint_cfg.armature = 0.01
 
         if self.solver_type == "vbd":
-            quadruped.default_joint_cfg.target_ke = 1.0e4
-            quadruped.default_joint_cfg.target_kd = 0.0
-            quadruped.default_shape_cfg.ke = 5.0e5
-            quadruped.default_shape_cfg.kd = 0.0
+            quadruped.default_joint_cfg.target_ke = 2.0e3
+            quadruped.default_joint_cfg.target_kd = 1.0e1
+            quadruped.default_shape_cfg.ke = 1.0e5
+            quadruped.default_shape_cfg.kd = 1.0e4
             quadruped.default_shape_cfg.mu = 1.0
         else:
             quadruped.default_joint_cfg.target_ke = 2000.0
@@ -91,6 +91,7 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=2,
+                rigid_compliant_alm=True,
             )
         else:
             self.update_step_interval = 1
@@ -100,7 +101,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -108,12 +110,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for substep in range(self.sim_substeps):
@@ -125,7 +124,7 @@ class Example:
             # Collision detection and contact refresh cadence.
             refresh_contacts = (substep % self.update_step_interval) == 0
             if refresh_contacts:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             if self.solver_type == "vbd":
                 self.solver.set_rigid_history_update(refresh_contacts)

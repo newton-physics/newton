@@ -60,7 +60,8 @@ class HeightfieldCollision:
         self.num_frames = 50
         self.model = _build_heightfield_scene(num_bodies=200, nrow=100, ncol=100)
         self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -72,7 +73,7 @@ class HeightfieldCollision:
         with wp.ScopedCapture() as capture:
             for _sub in range(self.sim_substeps):
                 self.state_0.clear_forces()
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
                 self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
                 self.state_0, self.state_1 = self.state_1, self.state_0
         self.graph = capture.graph

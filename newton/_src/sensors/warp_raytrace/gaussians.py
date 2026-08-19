@@ -9,7 +9,7 @@ import warp as wp
 
 from ...geometry import Gaussian
 from ...geometry.bvh import compute_ellipsoid_bounds
-from ...geometry.raycast import map_ray_to_local_scaled
+from ...geometry.raycast import map_ray_to_local
 from ...math import safe_div
 from .types import GaussianRenderMode
 
@@ -99,9 +99,7 @@ def ray_gsplat_hit_response(
     camera_forward: wp.vec3f,
     max_distance: wp.float32,
 ) -> tuple[wp.float32, wp.float32]:
-    ray_origin_local, ray_direction_local = map_ray_to_local_scaled(
-        transform, scale, ray_origin_world, ray_direction_world
-    )
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world, scale)
 
     hit_distance = 0.0
     if sorting_mode == wp.static(Gaussian.SortingMode.CAMERA_DISTANCE):
@@ -140,7 +138,7 @@ def create_shade_function(config: RenderContext.Config, state: RenderContext.Sta
         result_normal = wp.vec3f(0.0)
         result_color = wp.vec3f(0.0)
 
-        ray_origin_local, ray_direction_local = map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
+        ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin, ray_direction, scale)
 
         hit_index = wp.int32(0)
         min_distance = wp.float32(0.0)

@@ -68,7 +68,7 @@ def _make_kamino_config() -> SolverKamino.Config:
 def _rigid_solver_entry_args(rigid_solver: str):
     rigid_solver = _normalized_rigid_solver_name(rigid_solver)
     if rigid_solver == "vbd":
-        return "avbd", SolverVBD, {"iterations": 10}
+        return "rigid_vbd", SolverVBD, {"iterations": 10, "rigid_compliant_alm": True}
     if rigid_solver == "kamino":
         return "kamino", SolverKamino, {"config": _make_kamino_config()}
     if rigid_solver == "mjc":
@@ -89,7 +89,7 @@ def _soft_solver_entry_args(soft_solver: str, args):
                 "iterations": args.vbd_iterations,
                 "particle_enable_self_contact": False,
                 "particle_enable_tile_solve": False,
-                "rigid_contact_hard": False,
+                "rigid_compliant_alm": True,
                 "rigid_body_particle_contact_buffer_size": 512,
             },
         )
@@ -98,6 +98,7 @@ def _soft_solver_entry_args(soft_solver: str, args):
 
 class Example:
     def __init__(self, viewer: ViewerBase, args):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.solver_type = args.solver
         self.rigid_solver = _normalized_rigid_solver_name(args.rigid_solver)
@@ -208,7 +209,7 @@ class Example:
                 iterations=10,
                 particle_enable_self_contact=False,
                 particle_enable_tile_solve=False,
-                rigid_contact_hard=False,
+                rigid_compliant_alm=True,
                 rigid_body_particle_contact_buffer_size=512,
             )
         elif self.solver_type == "coupled":
@@ -249,7 +250,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         newton.examples.configure_coupled_view(self, args)
         self.viewer.set_camera(
@@ -273,7 +275,7 @@ class Example:
             self.state_0.clear_forces()
 
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             self.state_0, self.state_1 = self.state_1, self.state_0

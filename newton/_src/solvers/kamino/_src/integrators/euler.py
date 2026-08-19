@@ -14,11 +14,7 @@ import warp as wp
 from .....core.types import override
 from ..core.control import ControlKamino
 from ..core.data import DataKamino
-from ..core.math import (
-    compute_body_pose_update_with_logmap,
-    compute_body_twist_update_with_eom,
-    screw,
-)
+from ..core.math import compute_body_pose_update_with_logmap, compute_body_twist_update_with_eom
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..geometry.contacts import ContactsKamino
@@ -39,7 +35,7 @@ __all__ = ["IntegratorEuler"]
 ###
 
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -82,7 +78,7 @@ def euler_semi_implicit_with_logmap(
     )
 
     # Return the new pose and twist
-    return p_i_n, screw(v_i_n, omega_i_n)
+    return p_i_n, wp.spatial_vectorf(*v_i_n, *omega_i_n)
 
 
 ###
@@ -95,7 +91,7 @@ def _integrate_semi_implicit_euler_inplace(
     # Inputs:
     alpha: float,
     model_dt: wp.array[wp.float32],
-    model_gravity: wp.array[wp.vec4f],
+    model_gravity: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_inv_m: wp.array[wp.float32],
     model_bodies_I: wp.array[wp.mat33f],
@@ -113,8 +109,7 @@ def _integrate_semi_implicit_euler_inplace(
 
     # Retrieve the time step and gravity vector
     dt = model_dt[wid]
-    gv = model_gravity[wid]
-    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
+    g = model_gravity[wid]
 
     # Retrieve the model data
     inv_m_i = model_bodies_inv_m[tid]

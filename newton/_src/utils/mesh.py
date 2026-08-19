@@ -80,7 +80,7 @@ def compute_vertex_normals(
 
     Args:
         points: Vertex positions (wp.vec3 array or Nx3 NumPy array).
-        indices: Triangle indices (flattened or Nx3). Warp arrays are expected to be flattened.
+        indices: Triangle indices (flattened or Nx3).
         normals: Optional output array to reuse (Warp or NumPy to match ``points``).
         device: Warp device to run on. NumPy inputs default to CPU.
         normalize: Whether to normalize the accumulated normals.
@@ -96,11 +96,19 @@ def compute_vertex_normals(
         if isinstance(indices, np.ndarray):
             indices_np = np.asarray(indices, dtype=np.int32)
             if indices_np.ndim == 2:
+                if indices_np.shape[1] != 3:
+                    raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
                 indices_np = indices_np.reshape(-1)
             elif indices_np.ndim != 1:
                 raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
             indices_wp = wp.array(indices_np, dtype=wp.int32, device=device_obj)
         indices_wp = cast(wp.array, indices_wp)
+        if indices_wp.ndim == 2:
+            if indices_wp.shape[1] != 3:
+                raise ValueError("indices must be flat or (N, 3) for Warp inputs.")
+            indices_wp = indices_wp.flatten()
+        elif indices_wp.ndim != 1:
+            raise ValueError("indices must be flat or (N, 3) for Warp inputs.")
         if normals is None:
             normals_wp = wp.zeros_like(points)
         else:
@@ -123,6 +131,8 @@ def compute_vertex_normals(
     points_np = np.asarray(points, dtype=np.float32).reshape(-1, 3)
     indices_np = np.asarray(indices, dtype=np.int32)
     if indices_np.ndim == 2:
+        if indices_np.shape[1] != 3:
+            raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
         indices_np = indices_np.reshape(-1)
     elif indices_np.ndim != 1:
         raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
@@ -174,6 +184,87 @@ def smooth_vertex_normals_by_position(
     lengths = np.maximum(lengths, 1.0e-8)
     accum = accum / lengths
     return accum[inverse]
+
+
+def split_mesh_components(mesh: Mesh) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Split a triangle mesh into geometrically connected components.
+
+    Faces are connected when they share either a vertex index or vertices in the
+    same 1e-7 m position bucket. Coincident vertices are welded in the returned
+    topology so downstream mesh processing does not need to repair seams introduced
+    by duplicated normals or UV coordinates.
+
+    Args:
+        mesh: Triangle mesh to split.
+
+    Returns:
+        Connected components as ``(vertices, faces)`` pairs. Each ``vertices`` array
+        has shape ``[vertex_count, 3]`` and each ``faces`` array has shape
+        ``[face_count, 3]`` with component-local indices.
+    """
+
+    def find_face_roots(face_vertices: np.ndarray, vertex_count: int) -> np.ndarray:
+        """Label face components from their vertex IDs.
+
+        Args:
+            face_vertices: Triangle vertex IDs, shape ``[face_count, 3]``.
+            vertex_count: Number of unique vertex IDs.
+
+        Returns:
+            Root vertex ID for each face, shape ``[face_count]``.
+        """
+        parents = np.arange(vertex_count, dtype=np.int32)
+        left = np.concatenate((face_vertices[:, 0], face_vertices[:, 0]))
+        right = np.concatenate((face_vertices[:, 1], face_vertices[:, 2]))
+        # Vectorized root hooking avoids a Python graph walk for the common connected-mesh case.
+        while True:
+            previous_parents = parents.copy()
+            parents = parents[parents]
+            left_roots = parents[left]
+            right_roots = parents[right]
+            high_roots = np.maximum(left_roots, right_roots)
+            low_roots = np.minimum(left_roots, right_roots)
+            np.minimum.at(parents, high_roots, low_roots)
+            parents = parents[parents]
+            if np.array_equal(parents, previous_parents):
+                break
+        return parents[face_vertices[:, 0]]
+
+    faces = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
+    if len(faces) <= 1:
+        return [(mesh.vertices, faces)]
+
+    face_roots = find_face_roots(faces, len(mesh.vertices))
+    component_roots, first_faces, component_sizes = np.unique(face_roots, return_index=True, return_counts=True)
+    if len(component_roots) == 1:
+        return [(mesh.vertices, faces)]
+
+    # UV seams and hard normals duplicate vertex indices without separating geometry.
+    canonical_vertices = mesh._canonical_vertex_ids()
+    canonical_vertex_count = int(np.max(canonical_vertices)) + 1
+    vertices = mesh.vertices
+    if canonical_vertex_count < len(mesh.vertices):
+        faces = canonical_vertices[faces]
+        _, first_vertices = np.unique(canonical_vertices, return_index=True)
+        vertices = vertices[first_vertices]
+        face_roots = find_face_roots(faces, canonical_vertex_count)
+        component_roots, first_faces, component_sizes = np.unique(face_roots, return_index=True, return_counts=True)
+        # Avoid forcing downstream mesh processing to repair seam-duplicated topology.
+        if len(component_roots) == 1:
+            return [(vertices, faces)]
+
+    face_order = np.argsort(face_roots, kind="stable")
+    component_offsets = np.concatenate(([0], np.cumsum(component_sizes)))
+    split_components = []
+    for component_index in np.argsort(first_faces):
+        component_face_indices = face_order[component_offsets[component_index] : component_offsets[component_index + 1]]
+        component_faces = faces[component_face_indices]
+        used_vertices, inverse = np.unique(component_faces.reshape(-1), return_inverse=True)
+        component_vertices = vertices[used_vertices]
+        component_faces = inverse.astype(np.int32, copy=False).reshape(-1, 3)
+        split_components.append((component_vertices, component_faces))
+
+    return split_components
 
 
 # Default number of segments for mesh generation
@@ -1649,12 +1740,17 @@ def create_mesh_cylinder(
     up_axis: int = 1,
     segments: int = default_num_segments,
     top_radius: float | None = None,
+    barrel_radius: float = 0.0,
     compute_normals: bool = True,
     compute_uvs: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
-    """Create cylinder/truncated cone geometry data with optional normals/UVs."""
+    """Create cylinder, barrel cylinder, or truncated cone geometry data."""
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
+    if barrel_radius != 0.0 and barrel_radius < half_height:
+        raise ValueError("barrel_radius must be zero or at least half_height")
+    if barrel_radius != 0.0 and top_radius is not None and top_radius != radius:
+        raise ValueError("barrel_radius cannot be combined with a different top_radius")
 
     x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
     if top_radius is None:
@@ -1676,46 +1772,58 @@ def create_mesh_cylinder(
             uvs.append([0.0, 0.0] if uv is None else [uv[0], uv[1]])
         return idx
 
-    side_radial_component = 2.0 * half_height
-    side_axial_component = radius - top_radius
-
-    # Side vertices first (contiguous layout for robust indexing).
-    side_bottom_indices = []
-    for i in range(segments):
-        theta = 2 * np.pi * i / segments
-        cos_theta = np.cos(theta)
-        sin_theta = np.sin(theta)
-
-        position = np.array([radius * cos_theta, -half_height, radius * sin_theta], dtype=np.float32)
-        position = position[[x_dir, y_dir, z_dir]]
-
-        side_normal = None
-        if compute_normals:
-            side_normal = np.array(
-                [
-                    side_radial_component * cos_theta,
-                    side_axial_component,
-                    side_radial_component * sin_theta,
-                ],
-                dtype=np.float32,
-            )
-            normal_length = np.linalg.norm(side_normal)
-            if normal_length > 0.0:
-                side_normal = side_normal / normal_length
-            side_normal = side_normal[[x_dir, y_dir, z_dir]]
-
-        side_uv = (i / max(segments - 1, 1), 0.0) if compute_uvs else None
-        side_bottom_indices.append(add_vertex(position, side_normal, side_uv))
-
-    side_top_indices = []
+    side_ring_indices = []
     side_apex_index: int | None = None
-    if top_radius > 0.0:
+
+    if barrel_radius > 0.0:
+        profile_segments = max(2, segments // 2)
+        end_offset = np.sqrt(barrel_radius * barrel_radius - half_height * half_height)
+        for j in range(profile_segments + 1):
+            v = j / profile_segments
+            axial_position = -half_height + 2.0 * half_height * v
+            profile_offset = np.sqrt(max(barrel_radius * barrel_radius - axial_position * axial_position, 0.0))
+            offset_sum = profile_offset + end_offset
+            ring_radius = radius
+            if offset_sum > 0.0:
+                ring_radius += (half_height * half_height - axial_position * axial_position) / offset_sum
+
+            ring_indices = []
+            for i in range(segments):
+                theta = 2.0 * np.pi * i / segments
+                cos_theta = np.cos(theta)
+                sin_theta = np.sin(theta)
+                position = np.array(
+                    [ring_radius * cos_theta, axial_position, ring_radius * sin_theta], dtype=np.float32
+                )
+                position = position[[x_dir, y_dir, z_dir]]
+
+                side_normal = None
+                if compute_normals:
+                    side_normal = np.array(
+                        [
+                            profile_offset * cos_theta / barrel_radius,
+                            axial_position / barrel_radius,
+                            profile_offset * sin_theta / barrel_radius,
+                        ],
+                        dtype=np.float32,
+                    )[[x_dir, y_dir, z_dir]]
+
+                side_uv = (i / max(segments - 1, 1), v) if compute_uvs else None
+                ring_indices.append(add_vertex(position, side_normal, side_uv))
+            side_ring_indices.append(ring_indices)
+
+    else:
+        side_radial_component = 2.0 * half_height
+        side_axial_component = radius - top_radius
+
+        # Side vertices first (contiguous layout for robust indexing).
+        side_bottom_indices = []
         for i in range(segments):
             theta = 2 * np.pi * i / segments
             cos_theta = np.cos(theta)
             sin_theta = np.sin(theta)
 
-            position = np.array([top_radius * cos_theta, half_height, top_radius * sin_theta], dtype=np.float32)
+            position = np.array([radius * cos_theta, -half_height, radius * sin_theta], dtype=np.float32)
             position = position[[x_dir, y_dir, z_dir]]
 
             side_normal = None
@@ -1733,14 +1841,42 @@ def create_mesh_cylinder(
                     side_normal = side_normal / normal_length
                 side_normal = side_normal[[x_dir, y_dir, z_dir]]
 
-            side_uv = (i / max(segments - 1, 1), 1.0) if compute_uvs else None
-            side_top_indices.append(add_vertex(position, side_normal, side_uv))
-    else:
-        apex_position = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
-        apex_normal = None
-        if compute_normals:
-            apex_normal = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
-        side_apex_index = add_vertex(apex_position, apex_normal, (0.5, 1.0) if compute_uvs else None)
+            side_uv = (i / max(segments - 1, 1), 0.0) if compute_uvs else None
+            side_bottom_indices.append(add_vertex(position, side_normal, side_uv))
+
+        side_top_indices = []
+        if top_radius > 0.0:
+            for i in range(segments):
+                theta = 2 * np.pi * i / segments
+                cos_theta = np.cos(theta)
+                sin_theta = np.sin(theta)
+
+                position = np.array([top_radius * cos_theta, half_height, top_radius * sin_theta], dtype=np.float32)
+                position = position[[x_dir, y_dir, z_dir]]
+
+                side_normal = None
+                if compute_normals:
+                    side_normal = np.array(
+                        [
+                            side_radial_component * cos_theta,
+                            side_axial_component,
+                            side_radial_component * sin_theta,
+                        ],
+                        dtype=np.float32,
+                    )
+                    normal_length = np.linalg.norm(side_normal)
+                    if normal_length > 0.0:
+                        side_normal = side_normal / normal_length
+                    side_normal = side_normal[[x_dir, y_dir, z_dir]]
+
+                side_uv = (i / max(segments - 1, 1), 1.0) if compute_uvs else None
+                side_top_indices.append(add_vertex(position, side_normal, side_uv))
+        else:
+            apex_position = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+            apex_normal = None
+            if compute_normals:
+                apex_normal = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+            side_apex_index = add_vertex(apex_position, apex_normal, (0.5, 1.0) if compute_uvs else None)
 
     # Cap vertices after side vertices (also contiguous per cap).
     cap_center_bottom_idx: int | None = None
@@ -1803,17 +1939,28 @@ def create_mesh_cylinder(
             indices.extend([cap_center_top_idx, i1, i0])
 
     # Side faces
-    for i in range(segments):
-        bottom_i = side_bottom_indices[i]
-        bottom_next = side_bottom_indices[(i + 1) % segments]
+    if barrel_radius > 0.0:
+        for ring_index in range(len(side_ring_indices) - 1):
+            bottom_ring = side_ring_indices[ring_index]
+            top_ring = side_ring_indices[ring_index + 1]
+            for i in range(segments):
+                bottom_i = bottom_ring[i]
+                bottom_next = bottom_ring[(i + 1) % segments]
+                top_i = top_ring[i]
+                top_next = top_ring[(i + 1) % segments]
+                indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
+    else:
+        for i in range(segments):
+            bottom_i = side_bottom_indices[i]
+            bottom_next = side_bottom_indices[(i + 1) % segments]
 
-        if top_radius > 0.0:
-            top_i = side_top_indices[i]
-            top_next = side_top_indices[(i + 1) % segments]
-            indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
-        else:
-            assert side_apex_index is not None
-            indices.extend([side_apex_index, bottom_next, bottom_i])
+            if top_radius > 0.0:
+                top_i = side_top_indices[i]
+                top_next = side_top_indices[(i + 1) % segments]
+                indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
+            else:
+                assert side_apex_index is not None
+                indices.extend([side_apex_index, bottom_next, bottom_i])
 
     return (
         np.asarray(positions, dtype=np.float32),

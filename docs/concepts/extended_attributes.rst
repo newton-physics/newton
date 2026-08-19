@@ -31,7 +31,8 @@ Request them via :meth:`Model.request_contact_attributes <newton.Model.request_c
    # Request the "force" extended attribute directly
    model.request_contact_attributes("force")
 
-   contacts = model.contacts()
+   pipeline = newton.CollisionPipeline(model)
+   contacts = pipeline.contacts()
    print(contacts.force is not None)
 
 .. testoutput::
@@ -55,7 +56,8 @@ creating the sensor before allocating contacts is sufficient:
    model = builder.finalize()
 
    sensor = SensorContact(model, sensing_shapes="ball")
-   contacts = model.contacts()
+   pipeline = newton.CollisionPipeline(model)
+   contacts = pipeline.contacts()
    print(contacts.force is not None)
 
 .. testoutput::

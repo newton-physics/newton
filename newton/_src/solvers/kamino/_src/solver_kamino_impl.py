@@ -56,10 +56,12 @@ from .kinematics.resets import (
     set_body_q,
     set_floating_base,
 )
-from .linalg import ConjugateResidualSolver, IterativeSolver, LinearSolverNameToType
+from .linalg import ConjugateResidualSolver, ConjugateResidualSolverFused, IterativeSolver, LinearSolverNameToType
+from .solvers.common import WarmStartMode
+from .solvers.dvi import DVISolver
 from .solvers.fk import ForwardKinematicsSolver
 from .solvers.metrics import SolutionMetrics
-from .solvers.padmm import PADMMSolver, PADMMWarmStartMode
+from .solvers.padmm import PADMMSolver
 from .solvers.warmstart import WarmstarterContacts, WarmstarterLimits
 from .utils import logger as msg
 
@@ -91,10 +93,9 @@ class SolverKaminoImpl(SolverBase):
 
     Config = SolverKamino.Config
     """
-    Defines a type alias of the PADMM solver configurations container, including convergence
-    criteria, maximum iterations, and options for the linear solver and preconditioning.
-
-    See :class:`PADMMSolverConfig` for the full list of configuration options and their descriptions.
+    Defines a type alias of the public Kamino solver configuration container,
+    including the selected forward-dynamics solver, convergence criteria, and
+    options for the linear solver and preconditioning.
     """
 
     ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino], None]
@@ -151,7 +152,16 @@ class SolverKaminoImpl(SolverBase):
 
         # Cache the solver config and parse relevant options for internal use
         self._config: SolverKaminoImpl.Config = config
-        self._warmstart_mode: PADMMWarmStartMode = PADMMWarmStartMode.from_string(config.padmm.warmstart_mode)
+        if config.dynamics_solver == "padmm":
+            warmstart_mode = config.padmm.warmstart_mode
+            contact_warmstart_method = config.padmm.contact_warmstart_method
+        elif config.dynamics_solver == "dvi":
+            warmstart_mode = config.dvi.warmstart_mode
+            contact_warmstart_method = config.dvi.contact_warmstart_method
+        else:
+            raise ValueError(f"Unsupported dynamics solver: {config.dynamics_solver}")
+        self._warmstart_mode = WarmStartMode.from_string(warmstart_mode)
+        self._contact_warmstart_method = WarmstarterContacts.Method.from_string(contact_warmstart_method)
         self._rotation_correction: JointCorrectionMode = JointCorrectionMode.from_string(config.rotation_correction)
 
         # ---------------------------------------------------------------------------
@@ -173,6 +183,20 @@ class SolverKaminoImpl(SolverBase):
                 " Defaulting to 'ConjugateResidualSolver' as the PADMM linear solver."
             )
             linear_solver_type = ConjugateResidualSolver
+
+        # ConjugateResidualSolverFused requires a BlockSparseMatrixFreeDelassusOperator,
+        # which is only built when both sparse_dynamics and sparse_jacobian are enabled.
+        if issubclass(linear_solver_type, ConjugateResidualSolverFused):
+            if not self._config.sparse_dynamics:
+                msg.warning(
+                    "ConjugateResidualSolverFused requires sparse dynamics. Enabling sparse_dynamics automatically."
+                )
+                self._config.sparse_dynamics = True
+            if not self._config.sparse_jacobian:
+                msg.warning(
+                    "ConjugateResidualSolverFused requires sparse Jacobians. Enabling sparse_jacobian automatically."
+                )
+                self._config.sparse_jacobian = True
 
         # If graph conditionals are disabled in the PADMM solver, ensure that they
         # are also disabled in the linear solver if it is an iterative solver.
@@ -229,25 +253,50 @@ class SolverKaminoImpl(SolverBase):
         )
 
         # Allocate the forward dynamics solver on the device
-        self._solver_fd = PADMMSolver(
-            model=self._model,
-            config=self._config.padmm,
-            warmstart=self._warmstart_mode,
-            use_acceleration=self._config.padmm.use_acceleration,
-            use_graph_conditionals=self._config.padmm.use_graph_conditionals,
-            collect_info=self._config.collect_solver_info,
-        )
+        if self._config.dynamics_solver == "padmm":
+            self._solver_fd = PADMMSolver(
+                model=self._model,
+                config=self._config.padmm,
+                warmstart=self._warmstart_mode,
+                use_acceleration=self._config.padmm.use_acceleration,
+                use_graph_conditionals=self._config.padmm.use_graph_conditionals,
+                collect_info=self._config.collect_solver_info,
+            )
+        elif self._config.dynamics_solver == "dvi":
+            # DVI consumes Kamino's unified joint, limit, and contact
+            # DualProblem rather than rebuilding standalone constraint pipelines.
+            self._solver_fd = DVISolver(
+                model=self._model,
+                data=self._data,
+                limits=self._limits,
+                contacts=contacts,
+                jacobians=self._jacobians if isinstance(self._jacobians, SparseSystemJacobians) else None,
+                problem=self._problem_fd,
+                config=self._config.dvi,
+                warmstart=self._warmstart_mode,
+                collect_info=self._config.collect_solver_info,
+            )
+        else:
+            raise ValueError(f"Unsupported dynamics solver: {self._config.dynamics_solver}")
 
         # Allocate the forward kinematics solver on the device
         self._solver_fk = None
         if self._config.use_fk_solver:
             self._solver_fk = ForwardKinematicsSolver(model=self._model, config=self._config.fk)
 
-        # Create the time-integrator instance based on the config
+        # Contacts generated externally are evaluated at the start of a step, so they require
+        # Euler integration. Moreau-Jean is valid only with the internal mid-step detector.
         if self._config.integrator == "euler":
             self._integrator = IntegratorEuler(model=self._model)
         elif self._config.integrator == "moreau":
-            self._integrator = IntegratorMoreauJean(model=self._model)
+            if self._config.use_collision_detector:
+                self._integrator = IntegratorMoreauJean(model=self._model)
+            else:
+                msg.warning(
+                    "Falling back to the 'euler' integrator: 'moreau' requires "
+                    "`use_collision_detector=True` to generate contacts at the mid-point."
+                )
+                self._integrator = IntegratorEuler(model=self._model)
         else:
             raise ValueError(
                 f"Unsupported integrator type: Expected 'euler' or 'moreau', but got {self._config.integrator}."
@@ -255,7 +304,6 @@ class SolverKaminoImpl(SolverBase):
 
         # Allocate additional internal data for reset operations
         with wp.ScopedDevice(self._model.device):
-            self._all_worlds_mask = wp.ones(shape=(self._model.size.num_worlds,), dtype=wp.bool)
             self._base_q = wp.zeros(shape=(self._model.size.num_worlds,), dtype=wp.transformf)
             self._base_u = wp.zeros(shape=(self._model.size.num_worlds,), dtype=wp.spatial_vectorf)
             self._bodies_u_zeros = wp.zeros(shape=(self._model.size.sum_of_num_bodies,), dtype=wp.spatial_vectorf)
@@ -265,11 +313,11 @@ class SolverKaminoImpl(SolverBase):
         # Allocate the contacts warmstarter if enabled
         self._ws_limits: WarmstarterLimits | None = None
         self._ws_contacts: WarmstarterContacts | None = None
-        if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
+        if self._warmstart_mode == WarmStartMode.CONTAINERS:
             self._ws_limits = WarmstarterLimits(limits=self._limits)
             self._ws_contacts = WarmstarterContacts(
                 contacts=contacts,
-                method=WarmstarterContacts.Method.from_string(self._config.padmm.contact_warmstart_method),
+                method=self._contact_warmstart_method,
             )
 
         # Allocate the solution metrics evaluator if enabled
@@ -321,7 +369,7 @@ class SolverKaminoImpl(SolverBase):
         return self._problem_fd
 
     @property
-    def solver_fd(self) -> PADMMSolver:
+    def solver_fd(self) -> PADMMSolver | DVISolver:
         """
         Returns the forward dynamics solver.
         """
@@ -384,6 +432,7 @@ class SolverKaminoImpl(SolverBase):
         state: StateKamino,
         world_mask: wp.array[wp.bool] | None = None,
         config: SolverKamino.ResetConfig | None = None,
+        success_mask: wp.array[wp.bool] | None = None,
     ):
         """
         Reset the Kamino solver state.
@@ -404,14 +453,16 @@ class SolverKaminoImpl(SolverBase):
             config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
+            success_mask: Optional mask, filled with a success boolean per world if provided
+                (True if reset successfully, False if not reset due to world_mask, or if reset
+                was unsuccessful, e.g. due to an unconverged FK solve).
         """
 
         def _check_length(data: wp.array[Any], name: str, expected: int):
             if data is not None and data.shape[0] != expected:
                 raise ValueError(f"Invalid shape for {name}: Expected ({expected},), but got {data.shape}.")
 
-        # Resolve and validate world mask
-        world_mask = self._all_worlds_mask if world_mask is None else world_mask
+        # Validate world mask
         _check_length(world_mask, "world_mask", self._model.size.num_worlds)
 
         # Resolve and validate reset config
@@ -426,7 +477,7 @@ class SolverKaminoImpl(SolverBase):
             _check_length(
                 config.body_poses.actuator_q,
                 "config.body_poses.actuator_q",
-                self._model.size.sum_of_num_actuated_joint_coords,
+                self._model.size.sum_of_num_fk_actuated_joint_coords,
             )
         if isinstance(config.body_velocities, SolverKamino.ResetConfig.FromJointU):
             _check_length(
@@ -438,7 +489,7 @@ class SolverKaminoImpl(SolverBase):
             _check_length(
                 config.body_velocities.actuator_u,
                 "config.body_velocities.actuator_u",
-                self._model.size.sum_of_num_actuated_joint_dofs,
+                self._model.size.sum_of_num_fk_actuated_joint_dofs,
             )
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromJointQ):
             _check_length(
@@ -456,6 +507,22 @@ class SolverKaminoImpl(SolverBase):
             )
         if isinstance(config.base_velocity, SolverKamino.ResetConfig.FromBaseU):
             _check_length(config.base_velocity.base_u, "config.base_velocity.base_u", self._model.size.num_worlds)
+
+        # Warn if any world does not have an assigned base body when base attributes are provided.
+        if (
+            not (
+                isinstance(config.base_pose, SolverKamino.ResetConfig.ToDefault)
+                or isinstance(config.base_pose, SolverKamino.ResetConfig.Preserve)
+            )
+            or not (
+                isinstance(config.base_velocity, SolverKamino.ResetConfig.ToDefault)
+                or isinstance(config.base_velocity, SolverKamino.ResetConfig.Preserve)
+            )
+        ) and self._model.info.has_world_without_base_body:
+            msg.warning(
+                "Some worlds have no free-floating base body assigned, possibly due to a non-free articulation root (fixed-base system). "
+                "Base pose/velocity resets will have no effect for those worlds."
+            )
 
         # Run the pre-reset callback if it has been set
         self._run_pre_reset_callback(state_out=state)
@@ -489,11 +556,11 @@ class SolverKaminoImpl(SolverBase):
             # Extract joint state into pre-allocated actuator state buffers
             extract_actuators_state_from_joints(
                 model=self._model,
-                world_mask=world_mask,
                 joint_q=joint_q if joint_q is not None else state.q_j,
                 joint_u=joint_u if joint_u is not None else state.dq_j,
                 actuator_q=self._actuators_q,
                 actuator_u=self._actuators_u,
+                world_mask=world_mask,
             )
             actuator_q = self._actuators_q if joint_q is not None else actuator_q
             actuator_u = self._actuators_u if joint_u is not None else actuator_u
@@ -622,6 +689,16 @@ class SolverKaminoImpl(SolverBase):
         # Reset solver internals
         self._reset_solver_data(world_mask=world_mask)
 
+        # Fill success mask
+        if success_mask is not None:
+            # Currently, only the position-level (iterative) FK solve can fail
+            if actuator_q is not None:
+                wp.copy(success_mask, self._solver_fk.newton_success)
+            elif world_mask is not None:
+                wp.copy(success_mask, world_mask)
+            else:
+                success_mask.fill_(True)
+
         # Run the post-reset callback if it has been set
         self._run_post_reset_callback(state_out=state)
 
@@ -690,7 +767,13 @@ class SolverKaminoImpl(SolverBase):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        pass  # TODO: Migrate implementation when we fully integrate with Newton
+        if self._solver_fk is not None:
+            self._solver_fk.notify_model_changed(flags)
+
+    def validate_model_changed(self, flags: ModelFlags | int) -> None:
+        """Validate solver-specific structural invariants before model updates."""
+        if self._solver_fk is not None:
+            self._solver_fk.validate_model_changed(flags)
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
@@ -854,11 +937,10 @@ class SolverKaminoImpl(SolverBase):
         # on the first call to `step()`
         self._solver_fd.reset(problem=self._problem_fd, world_mask=world_mask)
 
-        # TODO: Enable this when world-masking is implemented
         # Reset the warm-starting caches if enabled
-        # if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
-        #     self._ws_limits.reset()
-        #     self._ws_contacts.reset()
+        if self._warmstart_mode == WarmStartMode.CONTAINERS:
+            self._ws_limits.reset(world_mask=world_mask)
+            self._ws_contacts.reset(world_mask=world_mask)
 
     ###
     # Internals - Step Operations
@@ -945,8 +1027,8 @@ class SolverKaminoImpl(SolverBase):
         """
         # If warm-starting is enabled, initialize unilateral
         # constraints containers from the current solver data
-        if self._warmstart_mode > PADMMWarmStartMode.NONE:
-            if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
+        if self._warmstart_mode > WarmStartMode.NONE:
+            if self._warmstart_mode == WarmStartMode.CONTAINERS:
                 self._ws_limits.warmstart(self._limits)
                 self._ws_contacts.warmstart(self._model, self._data, contacts)
             self._solver_fd.warmstart(
@@ -989,7 +1071,7 @@ class SolverKaminoImpl(SolverBase):
         # If warmstarting is enabled, update the limits and contacts caches
         # with the constraint reactions generated by the dynamics solver
         # NOTE: This needs to happen after unpacking the multipliers
-        if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
+        if self._warmstart_mode == WarmStartMode.CONTAINERS:
             self._ws_limits.update(self._limits)
             self._ws_contacts.update(contacts)
 
@@ -1053,7 +1135,7 @@ class SolverKaminoImpl(SolverBase):
         # If a collision detector is provided, use it to generate
         # update the set of active contacts at the current state
         if detector is not None:
-            detector.collide(data=self._data, state=state_in, contacts=contacts)
+            detector.collide(data=self._data, contacts=contacts)
 
         # If a limits container/detector is provided, run joint-limit
         # detection to generate active joint limits at the current state

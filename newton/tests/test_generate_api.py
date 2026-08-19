@@ -64,5 +64,24 @@ class TestGenerateApiCopyright(unittest.TestCase):
                 )
 
 
+@unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
+class TestGenerateApiDeprecatedSymbols(unittest.TestCase):
+    def test_deprecated_symbols_render_without_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            with (
+                mock.patch.object(generate_api, "OUTPUT_DIR", output_dir),
+                mock.patch.object(generate_api, "REPO_ROOT", output_dir.parent),
+            ):
+                generate_api.write_module_page("newton.geometry", api_toctree_modules=set())
+
+            page = (output_dir / "newton_geometry.rst").read_text(encoding="utf-8")
+            self.assertIn("MATCH_BROKEN", page)
+            self.assertIn("MATCH_NOT_FOUND", page)
+            self.assertIn("Do not rely on this value", page)
+            self.assertNotIn("``-1``", page)
+            self.assertNotIn("``-2``", page)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

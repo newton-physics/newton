@@ -78,6 +78,7 @@ from .admm_utils import (
     mark_local_indices_from_global_mask_kernel,
     particle_gravity_compensation_lumped_kernel,
     particle_particle_contacts_hashgrid_kernel,
+    reset_admm_history_kernel,
     scatter_body_effective_mass_block_kernel,
     scatter_effective_mass_kernel,
     u_update_quadratic_kernel,
@@ -663,7 +664,6 @@ class SolverCoupledADMM(SolverCoupled):
         self._admm_particle_particle_contact_specs: list[_AdmmParticleParticleContactSpec] = []
         self._admm_collision_pipeline = None
         self._admm_internal_contacts = None
-        self._admm_particle_contact_grid = None
         self._admm_particle_contact_query_radius = 0.0
         self._entry_body_sets: dict[str, set[int]] = {}
         self._entry_particle_sets: dict[str, set[int]] = {}
@@ -1107,14 +1107,14 @@ class SolverCoupledADMM(SolverCoupled):
 
         if self._admm_particle_particle_contact_specs:
             self._validate_particle_particle_contact_specs()
-            self._admm_dynamic_pp_contact_groups = self._build_collision_particle_particle_contact_groups()
-            if self._admm_dynamic_pp_contact_groups:
-                self._admm_particle_contact_query_radius = max(
-                    group.query_radius for group in self._admm_dynamic_pp_contact_groups
-                )
-                with wp.ScopedDevice(self.model.device):
-                    self._admm_particle_contact_grid = wp.HashGrid(128, 128, 128)
-                    self._admm_particle_contact_grid.reserve(self.model.particle_count)
+            if self.model.particle_grid is not None:
+                self._admm_dynamic_pp_contact_groups = self._build_collision_particle_particle_contact_groups()
+                if self._admm_dynamic_pp_contact_groups:
+                    self._admm_particle_contact_query_radius = max(
+                        group.query_radius for group in self._admm_dynamic_pp_contact_groups
+                    )
+                    with wp.ScopedDevice(self.model.device):
+                        self.model.particle_grid.reserve(self.model.particle_count)
 
         # Eagerly allocate the internal contact buffer so it exists before any
         # CUDA graph capture. Lazy allocation during capture leaves a bogus
@@ -1771,11 +1771,17 @@ class SolverCoupledADMM(SolverCoupled):
         self,
         state: State,
         *,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Clear ADMM warm-start and internal contact buffers after reset."""
         super()._reset_coupling_state(state, world_mask=world_mask, flags=flags)
+        if self._admm_collision_pipeline is not None:
+            self._reset_collision_provider_contact_matching(self._admm_collision_pipeline, world_mask)
+        if world_mask is not None:
+            self._reset_admm_history(world_mask)
+            return
+
         for name, entry in self._entries.items():
             buf = self._admm_buffers[name]
             if buf.body_q_n is not None:
@@ -1810,6 +1816,61 @@ class SolverCoupledADMM(SolverCoupled):
         if float(self._coupling.gamma) > 0.0:
             self._refresh_admm_proximal_masks()
             self._refresh_admm_proximal_view_overrides(refresh_supported_solvers=True)
+
+    def _reset_admm_history(self, world_mask: wp.array[wp.bool]) -> None:
+        """Clear selected persistent dual rows without touching solver scratch."""
+        rows = []
+        for group in (
+            *self._admm_rr_groups,
+            *self._admm_rr_angular_groups,
+            *self._admm_rr_revolute_angular_groups,
+            *self._admm_rr_angular_friction_groups,
+            *self._admm_dynamic_rr_contact_groups,
+        ):
+            entry_a = self._entries[group.body_entry_name_a]
+            entry_b = self._entries[group.body_entry_name_b]
+            rows.append((group, group.body_ids_a, entry_a.view.body_world, group.body_ids_b, entry_b.view.body_world))
+        for group in (*self._admm_rp_groups, *self._admm_dynamic_rp_contact_groups):
+            body_entry = self._entries[group.body_entry_name]
+            particle_entry = self._entries[group.particle_entry_name]
+            rows.append(
+                (
+                    group,
+                    group.body_ids,
+                    body_entry.view.body_world,
+                    group.particle_ids,
+                    particle_entry.view.particle_world,
+                )
+            )
+        for group in self._admm_dynamic_pp_contact_groups:
+            entry_a = self._entries[group.particle_entry_name_a]
+            entry_b = self._entries[group.particle_entry_name_b]
+            rows.append(
+                (
+                    group,
+                    group.particle_ids_a,
+                    entry_a.view.particle_world,
+                    group.particle_ids_b,
+                    entry_b.view.particle_world,
+                )
+            )
+
+        for group, endpoint_a, endpoint_world_a, endpoint_b, endpoint_world_b in rows:
+            wp.launch(
+                reset_admm_history_kernel,
+                dim=group.count,
+                inputs=[
+                    endpoint_a,
+                    endpoint_world_a,
+                    endpoint_b,
+                    endpoint_world_b,
+                    world_mask,
+                    self.model.world_count,
+                    group.u,
+                    group.lambda_,
+                ],
+                device=self.model.device,
+            )
 
     @staticmethod
     def _zero_array(array) -> None:
@@ -3039,10 +3100,11 @@ class SolverCoupledADMM(SolverCoupled):
                 )
 
         if self._admm_dynamic_pp_contact_groups:
-            self._admm_particle_contact_grid.build(
-                state_in.particle_q,
-                radius=self._admm_particle_contact_query_radius,
-            )
+            with wp.ScopedDevice(self.model.device):
+                self.model.particle_grid.build(
+                    state_in.particle_q,
+                    radius=self._admm_particle_contact_query_radius,
+                )
 
         for group in self._admm_dynamic_pp_contact_groups:
             if group.count == 0:
@@ -3094,7 +3156,7 @@ class SolverCoupledADMM(SolverCoupled):
                 particle_particle_contacts_hashgrid_kernel,
                 dim=self.model.particle_count,
                 inputs=[
-                    self._admm_particle_contact_grid.id,
+                    self.model.particle_grid.id,
                     state_in.particle_q,
                     self.model.particle_radius,
                     self.model.particle_flags,

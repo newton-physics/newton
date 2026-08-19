@@ -17,6 +17,12 @@ import numpy as np
 import torch  # noqa: TID253
 import warp as wp
 
+###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
 # ---------------------------------------------------------------------------
 # Rotation helpers  (xyzw convention, warp kernels with torch tensor wrappers)
 # ---------------------------------------------------------------------------

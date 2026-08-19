@@ -1575,6 +1575,7 @@ def build_boxes_fourbar(
         actuator_mode=JointTargetMode.EFFORT,
         limit_lower=qmin,
         limit_upper=qmax,
+        effort_limit=math.inf,  # Setting effort limit to match USD convention (`inf` for active joints)
         armature=0.1 if dynamic_joints else 0.0,
         friction=0.001 if dynamic_joints else 0.0,
     )
@@ -1583,6 +1584,7 @@ def build_boxes_fourbar(
         actuator_mode=JointTargetMode.EFFORT,
         limit_lower=qmin,
         limit_upper=qmax,
+        effort_limit=math.inf,  # Setting effort limit to match USD convention (`inf` for active joints)
     )
     pd_joint_dof_config = ModelBuilder.JointDofConfig(
         axis=Axis.Y,
@@ -1593,6 +1595,7 @@ def build_boxes_fourbar(
         target_kd=20.0,
         limit_lower=qmin,
         limit_upper=qmax,
+        effort_limit=math.inf,  # Setting effort limit to match USD convention (`inf` for active joints)
     )
 
     # Add a revolute joint between link 1 and link 2

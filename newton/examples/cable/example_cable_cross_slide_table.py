@@ -5,15 +5,22 @@
 # Example Cable Cross-Slide Table
 #
 # Demonstrates a cable-driven cross-slide table inspired by the Simscape
-# Multibody cable-driven XY table example https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html.
-# The mechanism is laid out on the ground plane: the blue base is fixed, the green carriage moves horizontally,
-# and the beige carriage moves vertically on the green carriage. The cable is
-# driven only by the two blue input pulleys.
+# Multibody cable-driven XY table example:
+# https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html
+# The mechanism is laid out on the ground plane: the blue base is fixed, the
+# green carriage moves horizontally, and the beige carriage moves vertically on
+# the green carriage. The cable is driven only by the two blue input pulleys.
 #
 # The sample combines passive revolute pulleys, a closed cable loop, and two
 # commanded input pulleys. The input rotations trace a rectangle with the
 # beige table marker while the solver resolves cable wrapping and contact
 # against the guides.
+#
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table --test --viewer null
 #
 ###########################################################################
 
@@ -37,6 +44,7 @@ JOINT_LIMIT_TOLERANCE = 0.003
 START_RAMP_DURATION = 1.2
 MOUSE_PICK_STIFFNESS = 0.01
 MOUSE_PICK_DAMPING = 0.001
+CONTACT_KE = 1.0e6
 
 
 @wp.kernel
@@ -198,8 +206,8 @@ def add_pulley(
     groove_half_width = 1.55 * cable_radius
     flange_half_thickness = 0.6 * cable_radius
     flange_radius = radius + 3.2 * cable_radius
-    sheave_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e5, kd=0.0, mu=sheave_mu)
-    flange_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e5, kd=0.0, mu=0.0)
+    sheave_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=CONTACT_KE, kd=0.0, mu=sheave_mu)
+    flange_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=CONTACT_KE, kd=0.0, mu=0.0)
     flange_color = _dim_color(color, 0.68)
 
     for suffix, z, shape_radius, half_height, cfg, shape_color in (
@@ -412,6 +420,7 @@ def add_visual_bar(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # Store viewer and configure simulation cadence.
         self.viewer = viewer
 
@@ -453,7 +462,7 @@ class Example:
         # so the cable remains guided by the pulley grooves.
         builder = newton.ModelBuilder()
         builder.rigid_gap = 5.0 * cable_radius
-        builder.default_shape_cfg.ke = 1.0e5
+        builder.default_shape_cfg.ke = CONTACT_KE
         builder.default_shape_cfg.kd = 0.0
         builder.default_shape_cfg.mu = 1.0
 
@@ -755,20 +764,22 @@ class Example:
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, 0.0))
 
+        # Preserve cable-pulley friction state and preallocate it before CUDA graph capture.
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=sim_iterations,
+            rigid_compliant_alm=True,
+            rigid_contact_history=True,
             rigid_body_contact_buffer_size=256,
-            rigid_contact_hard=False,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.model.contacts(collision_pipeline=pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
-        # Device arrays used by kernels during simulation and CUDA graph replay.
+        # Device arrays used by kernels during simulation and captured replay.
         self.kinematic_body_indices = wp.array(
             kinematic_body_indices,
             dtype=wp.int32,
@@ -816,8 +827,6 @@ class Example:
             pick_state = picking.pick_state.numpy()
             pick_state[0]["pick_stiffness"] = MOUSE_PICK_STIFFNESS
             pick_state[0]["pick_damping"] = MOUSE_PICK_DAMPING
-            picking.pick_stiffness = float(pick_state[0]["pick_stiffness"])
-            picking.pick_damping = float(pick_state[0]["pick_damping"])
             picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(
@@ -829,13 +838,10 @@ class Example:
         self.capture()
 
     def capture(self):
-        """Capture the simulation update when running on CUDA."""
-        if self.solver.device.is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        """Capture the simulation update into a graph for replay."""
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         """Advance the XY table simulation by one rendered frame."""
@@ -859,7 +865,7 @@ class Example:
             )
 
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

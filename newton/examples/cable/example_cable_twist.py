@@ -5,10 +5,16 @@
 # Example Cable Twist
 #
 # Demonstrates twist propagation along cables with dynamic spinning.
-# Shows 3 cables side-by-side with zigzag paths and increasing bend stiffness.
+# Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
 # The first segment of each cable continuously spins, propagating twist along the cable.
 # The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
 # is transported through cable joints and across bends.
+#
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_twist
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_twist --test --viewer null
 #
 ###########################################################################
 
@@ -128,19 +134,19 @@ class Example:
 
         stretch_stiffness = 1.0e6
 
-        # Stiffness sweep (increasing) for bend stiffness
-        bend_stiffness_values = [1.0e2, 1.0e3, 1.0e4]
+        # Isotropic angular stiffness sweep: bend and twist use matching values.
+        angular_stiffness_values = [1.0e2, 1.0e3, 1.0e4]
 
         # All cables start untwisted, will be spun dynamically
-        self.num_cables = len(bend_stiffness_values)
+        self.num_cables = len(angular_stiffness_values)
 
         # Create builder for the simulation
         builder = newton.ModelBuilder()
 
         # Set default material properties before adding any shapes
-        builder.default_shape_cfg.ke = 1.0e4  # Contact stiffness
+        builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
         builder.default_shape_cfg.kd = 0.0
-        builder.default_shape_cfg.mu = 1.0e0  # Friction coefficient
+        builder.default_shape_cfg.mu = 5.0e-1  # Friction coefficient
 
         kinematic_body_indices = []
         self.cable_bodies_list = []
@@ -149,7 +155,7 @@ class Example:
         y_separation = 3.0
 
         # Create 3 cables in a row along the y-axis, centered around origin
-        for i, bend_stiffness in enumerate(bend_stiffness_values):
+        for i, angular_stiffness in enumerate(angular_stiffness_values):
             # Center cables around origin: vary by y_separation
             y_pos = (i - (self.num_cables - 1) / 2.0) * y_separation
 
@@ -169,8 +175,10 @@ class Example:
                 quaternions=cable_edge_q,
                 radius=cable_radius,
                 stretch_stiffness=stretch_stiffness,
-                bend_stiffness=bend_stiffness,
-                bend_damping=1.0e-2 * bend_stiffness,
+                bend_stiffness=angular_stiffness,
+                twist_stiffness=angular_stiffness,
+                bend_damping=1.0e-2 * angular_stiffness,
+                twist_damping=1.0e-2 * angular_stiffness,
                 label=f"cable_{i}",
                 body_frame_origin="com",
             )
@@ -198,19 +206,21 @@ class Example:
 
         # Finalize model
         self.model = builder.finalize()
-        all_cable_bodies = [body for cable_bodies in self.cable_bodies_list for body in cable_bodies]
 
-        # Use full hard-contact correction (contact alpha 0.0) for stronger repulsion with low iterations.
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_avbd_contact_alpha=0.0)
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.solver = newton.solvers.SolverVBD(
+            self.model,
+            iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(all_cable_bodies)
 
         # Twist rates for first segments (radians per second)
         twist_rates = np.full(len(kinematic_body_indices), 0.5, dtype=np.float32)
@@ -219,13 +229,10 @@ class Example:
         self.capture()
 
     def capture(self):
-        """Capture simulation loop into a CUDA graph for optimal GPU performance."""
-        if self.solver.device.is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        """Capture simulation loop into a graph for optimal replay performance."""
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         """Execute all simulation substeps for one frame."""
@@ -246,7 +253,7 @@ class Example:
             # Collision detection and contact refresh cadence.
             refresh_contacts = (substep % self.update_step_interval) == 0
             if refresh_contacts:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.set_rigid_history_update(refresh_contacts)
             self.solver.step(
@@ -306,7 +313,8 @@ class Example:
                     expected_distance = segment_length
                     joint_tolerance = expected_distance * 0.1  # Allow 10% stretch max
                     assert distance < expected_distance + joint_tolerance, (
-                        f"Cable {cable_idx} segments {segment}-{segment + 1} too far apart: {distance:.3f} > {expected_distance + joint_tolerance:.3f}"
+                        f"Cable {cable_idx} segments {segment}-{segment + 1} too far apart: "
+                        f"{distance:.3f} > {expected_distance + joint_tolerance:.3f}"
                     )
 
             # Test 3: Check ground interaction

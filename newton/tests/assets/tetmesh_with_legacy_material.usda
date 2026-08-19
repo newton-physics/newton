@@ -1,0 +1,25 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World" ()
+{
+    def TetMesh "SoftBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/PhysicsMaterial>
+    }
+
+    def Material "PhysicsMaterial"
+    {
+        float omniphysics:density = 40
+        float omniphysics:youngsModulus = 300000
+        float omniphysics:poissonsRatio = 0.3
+    }
+}

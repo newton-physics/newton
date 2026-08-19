@@ -79,12 +79,24 @@ support label matching accept one of the following:
 - A **list of integer indices** -- selects directly by index.
 - A **single string pattern** -- selects all entries whose label matches the pattern via :func:`fnmatch.fnmatch`
   (supports ``*`` and ``?`` wildcards).
-- A **list of string patterns** -- selects all entries whose label matches at least one of the patterns.
+- A **list of string patterns** -- selects all entries whose label matches at least one pattern.
+- A **compiled string regular expression** -- selects all entries whose entire label or name matches the expression via
+  :meth:`re.Pattern.fullmatch`.
 
-Examples::
+Ordinary strings always use glob syntax. Compile a pattern with :func:`re.compile` to opt into regular-expression
+syntax. Callers who want a regular expression to match a substring can add ``.*`` around that substring explicitly.
+For :class:`~newton.selection.ArticulationView`, ``pattern`` is matched against full articulation labels. Joint and
+link filters are matched against the final path component of each label.
+
+.. code-block:: python
+
+   import re
 
    # single pattern: all shapes whose label starts with "foot_"
    SensorIMU(model, sites="foot_*")
+
+   # compiled regular expression: full-match an environment and object label
+   SensorIMU(model, sites=re.compile(r"/World/envs/env_[0-9]+/imu_(left|right)"))
 
    # list of patterns: union of two groups
    SensorContact(model, sensing_shapes=["*Plate*", "*Flap*"])
@@ -99,11 +111,44 @@ Newton provides five sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 
-* :class:`~newton.sensors.SensorContact` -- contact forces between bodies or shapes, including friction decomposition,
-  with optional per-counterpart breakdown.
+* :class:`~newton.sensors.SensorContact` -- contact forces between bodies or shapes, with friction decomposition,
+  optional per-counterpart force matrices, and force-weighted contact positions.
 * :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
 * :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
+
+Camera Rays from USD Data
+-------------------------
+
+``SensorTiledCamera`` can build standard USD pinhole camera rays directly. For lens models without standard USD
+attributes, read the attributes you use in your pipeline and pass the numeric values into the matching helper:
+
+.. code-block:: python
+
+   from pxr import Usd
+
+   from newton.sensors import SensorTiledCamera
+
+   stage = Usd.Stage.Open("scene.usda")
+   usd_camera = stage.GetPrimAtPath("/World/Camera")
+
+   sensor = SensorTiledCamera(model)
+   camera_rays = sensor.utils.compute_camera_rays_usd_pinhole(640, 480, usd_camera)
+   camera_transforms = sensor.utils.compute_camera_transforms_usd(usd_camera)
+
+   color = sensor.utils.create_color_image_output(640, 480)
+   sensor.update(
+       state,
+       camera_transforms,
+       camera_rays,
+       color_image=color,
+   )
+
+For fisheye cameras, extract the calibration values from your chosen USD attributes and call one of
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_opencv`,
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_ftheta`, or
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_kannala_brandt`. Each fisheye helper builds
+rays for one camera; pass ``out_rays`` and ``camera_index`` to fill a shared ray buffer.
 
 Extended Attributes
 -------------------
@@ -115,7 +160,7 @@ Some sensors depend on extended attributes that are not allocated by default:
   ``model.state()`` calls allocate it automatically.
 - ``SensorContact`` requires ``Contacts.force`` (per-contact spatial force
   wrenches). By default it requests this from the model at construction, so
-  subsequent ``model.contacts()`` calls allocate it automatically. The solver
+  subsequent :meth:`CollisionPipeline.contacts <newton.CollisionPipeline.contacts>` calls allocate it automatically. The solver
   must also support populating contact forces.
 
 Performance Considerations

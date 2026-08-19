@@ -46,8 +46,8 @@ FRANKA_Q = [
 # Cable: 19 capsule segments spaced 0.02 m (20 nodes), radius 0.005 m, per IsaacLab.
 CABLE_CENTER = wp.vec3(0.5, 0.0, 0.256)
 CABLE_LENGTH = 0.38
-CABLE_CONTACT_KE = 1.0e4
-CABLE_CONTACT_KD = 1.0e-5 * CABLE_CONTACT_KE
+CABLE_CONTACT_KE = 1.0e3
+CABLE_CONTACT_KD = 1.0e-1
 
 # Top-down gripper orientation: 180 deg about world x flips the hand z-axis to -z.
 GRIPPER_DOWN = (1.0, 0.0, 0.0, 0.0)  # (qx, qy, qz, qw)
@@ -108,6 +108,7 @@ class Example:
         self.surface_z = float(CABLE_CENTER[2]) - self.payload_radius
 
         self._build_scene()
+        self.use_graph = self.use_graph and self.device.is_cuda
         self.control = self.model.control()
         self._build_solvers(args)
         self._build_ik()
@@ -117,7 +118,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase="explicit",
-            shape_pairs_filtered=self._payload_ground_shape_pairs(),
+            shape_pairs_filtered=self._ground_shape_pairs(),
         )
         self.contacts = self.collision_pipeline.contacts()
         self.solver.prepare_contacts(self.contacts)
@@ -154,20 +155,29 @@ class Example:
         builder.joint_target_q[: len(FRANKA_Q)] = FRANKA_Q
 
     def _build_scene(self):
-        template = newton.ModelBuilder(gravity=-9.81)
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         template.rigid_gap = 0.01
         SolverMuJoCo.register_custom_attributes(template)
-        SolverVBD.register_custom_attributes(template, dahl_defaults_enabled=False)
+        SolverVBD.register_custom_attributes(template)
         self._emit_template(template)
 
         bodies_per_world = template.body_count
         joints_per_world = template.joint_count
         shapes_per_world = template.shape_count
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.rigid_gap = template.rigid_gap
         builder.replicate(template, world_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
+
+        # Match the gripper side to the cable material without overwriting
+        # unrelated Franka shapes imported from URDF.
+        gripper_bodies = set(self.gripper_bodies)
+        for shape, body in enumerate(builder.shape_body):
+            if body in gripper_bodies:
+                builder.shape_material_ke[shape] = CABLE_CONTACT_KE
+                builder.shape_material_kd[shape] = CABLE_CONTACT_KD
+                builder.shape_material_mu[shape] = 1.0
 
         # Working surface (cable rests on it).
         plane_cfg = newton.ModelBuilder.ShapeConfig(
@@ -184,11 +194,6 @@ class Example:
         builder.color()
         self.model = builder.finalize()
         self.device = self.model.device
-
-        # Uniform rigid contact material across all shapes (IsaacLab NewtonModelCfg).
-        self.model.shape_material_ke.fill_(CABLE_CONTACT_KE)
-        self.model.shape_material_kd.fill_(CABLE_CONTACT_KD)
-        self.model.shape_material_mu.fill_(1.0)
 
         # Build keyframe sequence now that the cable pose is known.
         self._build_keyframes()
@@ -242,13 +247,13 @@ class Example:
             num_segments=self.payload_segments,
             twist_total=0.0,
         )
-        stretch_stiffness = 1.0e6
-        bend_stiffness = 5.0e-4
+        stretch_stiffness = 1.0e2
+        bend_stiffness = 4.0e-4
         builder.add_rod(
             positions=points,
             quaternions=quats,
             radius=self.payload_radius,
-            body_frame_origin="start",
+            body_frame_origin="com",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=1.0e-1,
@@ -306,20 +311,17 @@ class Example:
                     ),
                     bodies=self.franka_bodies,
                     joints=self.franka_joints,
-                    shapes=self.franka_shapes,
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
                     solver=lambda v: SolverVBD(
                         model=v,
                         iterations=int(args.vbd_iterations),
-                        rigid_avbd_beta=float(args.vbd_rigid_avbd_beta),
-                        rigid_contact_k_start=float(args.vbd_rigid_contact_k_start),
+                        rigid_compliant_alm=True,
                         rigid_contact_history=False,
                     ),
                     bodies=self.payload_bodies,
                     joints=self.payload_joints,
-                    shapes=self.payload_shapes + self.ground_shapes,
                 ),
             ],
             coupling=SolverCoupledProxy.Config(
@@ -340,16 +342,16 @@ class Example:
             ),
         )
 
-    def _payload_ground_shape_pairs(self) -> wp.array:
-        payload_shapes = set(self.payload_shapes)
+    def _ground_shape_pairs(self) -> wp.array:
+        dynamic_shapes = set(self.franka_shapes) | set(self.payload_shapes)
         ground_shapes = set(self.ground_shapes)
         pairs = [
             (int(a), int(b))
             for a, b in self.model.shape_contact_pairs.numpy()
-            if ({int(a), int(b)} & payload_shapes) and ({int(a), int(b)} & ground_shapes)
+            if ({int(a), int(b)} & dynamic_shapes) and ({int(a), int(b)} & ground_shapes)
         ]
         if not pairs:
-            raise RuntimeError("No cable-ground contact pairs were generated")
+            raise RuntimeError("No robot- or cable-ground contact pairs were generated")
         return wp.array(np.asarray(pairs, dtype=np.int32), dtype=wp.vec2i, device=self.model.device)
 
     # ------------------------------------------------------------------
@@ -359,7 +361,7 @@ class Example:
         # IK runs on a standalone Franka-only model so the solver does not see the
         # cable's articulated bodies. The Franka is added first in the coupled model,
         # so its coords (0 .. n_coords) line up with this model's coords.
-        ik_builder = newton.ModelBuilder(gravity=-9.81)
+        ik_builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         self._add_franka(ik_builder, self.surface_z)
         self.ik_model = ik_builder.finalize(device=self.device)
 
@@ -465,9 +467,11 @@ class Example:
     # ------------------------------------------------------------------
     def capture(self):
         self.graph = None
-        if self.use_graph and self.device.is_cuda:
+        if self.use_graph:
             with wp.ScopedDevice(self.device), wp.ScopedCapture() as capture:
                 self.simulate()
+            if capture.graph is None:
+                raise RuntimeError(f"Graph capture failed on device {self.device}")
             self.graph = capture.graph
 
     def simulate(self):
@@ -484,7 +488,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
-            self.model.collide(self.state_0, self.contacts, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             newton.eval_ik(self.model, self.state_1, self.state_1.joint_q, self.state_1.joint_qd)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -504,6 +508,9 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        if self.use_graph:
+            assert self.graph is not None, "Graph capture was requested but no graph was captured"
+
         body_q = self.state_0.body_q.numpy()
         body_qd = self.state_0.body_qd.numpy()
         assert np.all(np.isfinite(body_q)), "Body positions contain NaN or inf values"
@@ -540,18 +547,6 @@ class Example:
         parser.add_argument("--payload-segments", type=int, default=19, help="Number of cable segments.")
         parser.add_argument("--payload-radius", type=float, default=0.005, help="Cable radius [m].")
         parser.add_argument("--vbd-iterations", type=int, default=20, help="VBD iterations per coupled substep.")
-        parser.add_argument(
-            "--vbd-rigid-avbd-beta",
-            type=float,
-            default=1.0e2,
-            help="VBD AVBD penalty ramp rate per iteration (0 disables ramping).",
-        )
-        parser.add_argument(
-            "--vbd-rigid-contact-k-start",
-            type=float,
-            default=1.0e3,
-            help="VBD body-particle contact penalty seed when AVBD ramping is enabled.",
-        )
         parser.add_argument("--mujoco-iterations", type=int, default=100, help="MuJoCo solver iterations.")
         parser.add_argument("--mujoco-ls-iterations", type=int, default=20, help="MuJoCo line-search iterations.")
         parser.add_argument(
@@ -559,14 +554,14 @@ class Example:
             action="store_false",
             dest="graph_capture",
             default=True,
-            help="Disable CUDA graph capture.",
+            help="Disable graph capture.",
         )
         return parser
 
 
 if __name__ == "__main__":
     parser = Example.create_parser()
-    parser.set_defaults(num_frames=400)
+    parser.set_defaults(num_frames=330)
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)

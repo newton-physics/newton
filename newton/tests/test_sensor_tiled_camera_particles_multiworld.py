@@ -98,9 +98,9 @@ def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.Test
 
     sensor = SensorTiledCamera(
         model=model,
-        config=SensorTiledCamera.RenderConfig(max_distance=max_distance),
+        default_render_config=SensorTiledCamera.RenderConfig(max_distance=max_distance),
     )
-    camera_rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
+    camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=fov)
 
     cam_quat = wp.quat_identity()
     camera_transforms = wp.array(

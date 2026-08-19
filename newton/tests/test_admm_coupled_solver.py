@@ -141,7 +141,7 @@ def _make_solver(
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(model=v, iterations=5),
+                solver=lambda v: SolverVBD(model=v, iterations=5, rigid_compliant_alm=True),
                 bodies=[int(i) for i in vbd_ids.numpy()],
                 particles=list(range(model.particle_count)),
             ),
@@ -159,13 +159,14 @@ def _run(solver, model: newton.Model, n_steps: int = 30, dt: float = 1.0 / 60.0)
     """Run ``n_steps`` of simulation and return (body_q, particle_q)."""
     state_0 = model.state()
     state_1 = model.state()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
     control = model.control()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     for _ in range(n_steps):
         state_0.clear_forces()
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, dt)
         state_0, state_1 = state_1, state_0
 
@@ -173,7 +174,7 @@ def _run(solver, model: newton.Model, n_steps: int = 30, dt: float = 1.0 / 60.0)
 
 
 def _build_two_particle_scene() -> newton.Model:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_particle(pos=(-0.5, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
     builder.add_particle(pos=(0.5, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
     builder.color()
@@ -186,13 +187,11 @@ def _build_two_particle_contact_scene(
     vel_b: tuple[float, float, float] = (0.0, 0.0, 0.0),
     radius: float = 0.05,
 ) -> newton.Model:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_particle(pos=(gap, 0.0, 0.0), vel=vel_a, mass=1.0, radius=radius)
     builder.add_particle(pos=(0.0, 0.0, 0.0), vel=vel_b, mass=1.0, radius=radius)
     builder.color()
-    model = builder.finalize(device="cpu")
-    model.particle_grid = None
-    return model
+    return builder.finalize(device="cpu")
 
 
 def _run_particles(solver, model: newton.Model, n_steps: int = 5, dt: float = 1.0 / 60.0):
@@ -255,7 +254,7 @@ def _make_semi_particle_solver(model: newton.Model):
 
 
 def _build_body_particle_contact_scene() -> newton.Model:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_body(
         xform=wp.transform(p=wp.vec3(-0.1, 0.0, 0.0), q=wp.quat_identity()),
         mass=1.0,
@@ -269,7 +268,7 @@ def _build_body_particle_contact_scene() -> newton.Model:
 
 
 def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(
         xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
         mass=1.0,
@@ -289,8 +288,24 @@ def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
     return model
 
 
+def _build_two_world_body_particle_attachment_scene() -> newton.Model:
+    """Build two worlds with one rigid-particle attachment each."""
+    world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = world.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    particle = world.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+    SolverCoupledADMM.add_body_particle_attachment(world, body, particle, stiffness=500.0)
+    world.color()
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_world(world)
+    builder.add_world(world)
+    model = builder.finalize(device="cpu")
+    model.particle_grid = None
+    return model
+
+
 def _build_two_body_contact_scene(gap: float = -0.1) -> newton.Model:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_body(
         xform=wp.transform(p=wp.vec3(gap, 0.0, 0.0), q=wp.quat_identity()),
         mass=1.0,
@@ -306,7 +321,7 @@ def _build_two_body_contact_scene(gap: float = -0.1) -> newton.Model:
 
 
 def _build_collision_contact_scene() -> tuple[newton.Model, int, int, int]:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     tray_body = builder.add_body(
         xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
         mass=0.1,
@@ -429,7 +444,7 @@ def _build_inclined_plane_particle_box_scene(
     box_half_extent: float = 0.06,
     penetration: float = 0.002,
 ) -> tuple[newton.Model, int, int, list[int]]:
-    builder = newton.ModelBuilder(gravity=-10.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     plane_q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), angle)
     plane_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), plane_q),
@@ -563,7 +578,7 @@ def _build_inclined_plane_rigid_box_scene(
     box_half_height: float = 0.08,
     penetration: float = 0.002,
 ) -> tuple[newton.Model, int, int]:
-    builder = newton.ModelBuilder(gravity=-10.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     plane_q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), angle)
     plane_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), plane_q),
@@ -592,7 +607,7 @@ def _build_collision_inclined_plane_rigid_box_scene(
     box_half_height: float = 0.08,
     penetration: float = 0.004,
 ) -> tuple[newton.Model, int, int]:
-    builder = newton.ModelBuilder(gravity=-10.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     plane_q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), angle)
     plane_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), plane_q),
@@ -787,7 +802,7 @@ class TestAdmmGraphCapture(unittest.TestCase):
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph capture requires CUDA")
     def test_xpbd_vbd_contact_proximal_refresh_is_graph_capturable(self):
         device = "cuda:0"
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.default_shape_cfg.density = 1000.0
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
         builder.add_shape_box(body=body_a, hx=0.05, hy=0.05, hz=0.05)
@@ -805,7 +820,7 @@ class TestAdmmGraphCapture(unittest.TestCase):
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=1),
+                    solver=lambda v: SolverVBD(model=v, iterations=1, rigid_compliant_alm=True),
                     bodies=[body_b],
                 ),
             ],
@@ -857,7 +872,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         *,
         friction: float = 0.0,
     ) -> tuple[newton.Model, int, int, int]:
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parent = builder.add_body(
             xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
             mass=1.0,
@@ -922,7 +937,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         self.assertLess(final_gap, 0.5 * initial_gap)
 
     def test_joint_proxy_shape_collisions_disabled_after_shape_compaction(self):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         unrelated = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_shape_sphere(body=unrelated, radius=0.05)
         parent = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -1015,6 +1030,49 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
 
         self.assertLess(final_gap, 0.5 * initial_gap)
 
+    def test_masked_reset_preserves_unselected_attachment_history(self):
+        """Clear selected attachment duals and preserve every other row."""
+        model = _build_two_world_body_particle_attachment_scene()
+        solver = SolverCoupledADMM(
+            model,
+            [
+                SolverCoupled.Entry(
+                    "body",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    bodies=range(model.body_count),
+                ),
+                SolverCoupled.Entry(
+                    "particle",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    particles=range(model.particle_count),
+                ),
+            ],
+            SolverCoupledADMM.Config(iterations=1),
+        )
+        group = solver._admm_rp_groups[0]
+        u_before = np.arange(1, group.u.numpy().size + 1, dtype=np.float32).reshape(group.u.numpy().shape)
+        lambda_before = u_before + 10.0
+        group.u.assign(u_before)
+        group.lambda_.assign(lambda_before)
+
+        solver.reset(
+            model.state(),
+            world_mask=wp.array((False, False, False), dtype=wp.bool, device=model.device),
+            flags=0,
+        )
+        np.testing.assert_array_equal(group.u.numpy(), u_before)
+        np.testing.assert_array_equal(group.lambda_.numpy(), lambda_before)
+
+        solver.reset(
+            model.state(),
+            world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
+            flags=0,
+        )
+        np.testing.assert_array_equal(group.u.numpy()[0], 0.0)
+        np.testing.assert_array_equal(group.lambda_.numpy()[0], 0.0)
+        np.testing.assert_array_equal(group.u.numpy()[1], u_before[1])
+        np.testing.assert_array_equal(group.lambda_.numpy()[1], lambda_before[1])
+
 
 class TestAdmmExternalForces(unittest.TestCase):
     """External forces set on ``state_in.body_f`` / ``particle_f`` by the
@@ -1028,12 +1086,13 @@ class TestAdmmExternalForces(unittest.TestCase):
         solver_a = _make_solver(model_a, rs, re, admm_iters=1)
         state_0 = model_a.state()
         state_1 = model_a.state()
-        contacts = model_a.contacts()
+        collision_pipeline = newton.CollisionPipeline(model_a)
+        contacts = collision_pipeline.contacts()
         control = model_a.control()
         newton.eval_fk(model_a, model_a.joint_q, model_a.joint_qd, state_0)
         for _ in range(5):
             state_0.clear_forces()
-            model_a.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver_a.step(state_0, state_1, control, contacts, 1.0 / 60.0)
             state_0, state_1 = state_1, state_0
         z_baseline = state_0.body_q.numpy()[0, 2]
@@ -1044,7 +1103,8 @@ class TestAdmmExternalForces(unittest.TestCase):
         solver_b = _make_solver(model_b, rs, re, admm_iters=1)
         state_0 = model_b.state()
         state_1 = model_b.state()
-        contacts = model_b.contacts()
+        collision_pipeline = newton.CollisionPipeline(model_b)
+        contacts = collision_pipeline.contacts()
         control = model_b.control()
         newton.eval_fk(model_b, model_b.joint_q, model_b.joint_qd, state_0)
         body_idx = rs  # only MuJoCo body
@@ -1055,7 +1115,7 @@ class TestAdmmExternalForces(unittest.TestCase):
             wrench = np.zeros((model_b.body_count, 6), dtype=np.float32)
             wrench[body_idx, 2] = upward_force  # linear z
             state_0.body_f = wp.array(wrench, dtype=wp.spatial_vector, device=model_b.device)
-            model_b.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver_b.step(state_0, state_1, control, contacts, 1.0 / 60.0)
             state_0, state_1 = state_1, state_0
         z_with_force = state_0.body_q.numpy()[0, 2]
@@ -1070,6 +1130,61 @@ class TestAdmmExternalForces(unittest.TestCase):
 
 class TestAdmmCollisionDetection(unittest.TestCase):
     """Collision-detected ADMM contact constraints."""
+
+    def test_masked_reset_preserves_unselected_contact_history(self):
+        """Clear only dynamic contact duals touching the reset world."""
+        world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        world.add_particle(pos=(-0.04, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.05)
+        world.add_particle(pos=(0.04, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.05)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_world(world)
+        builder.add_world(world, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+        model = builder.finalize(device="cpu")
+        solver = SolverCoupledADMM(
+            model,
+            [
+                SolverCoupled.Entry(
+                    "a",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    particles=(0, 2),
+                ),
+                SolverCoupled.Entry(
+                    "b",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    particles=(1, 3),
+                ),
+            ],
+            SolverCoupledADMM.Config(
+                iterations=1,
+                contact_pairs=[SolverCoupledADMM.ContactPair(source="a", destination="b")],
+            ),
+        )
+        solver._refresh_collision_contact_groups(model.state())
+        group = solver._admm_dynamic_pp_contact_groups[0]
+        active = np.flatnonzero(group.active.numpy())
+        self.assertEqual(active.size, 2)
+        ids_a = group.particle_ids_a.numpy()[active]
+        ids_b = group.particle_ids_b.numpy()[active]
+        worlds_a = solver._entries[group.particle_entry_name_a].view.particle_world.numpy()[ids_a]
+        worlds_b = solver._entries[group.particle_entry_name_b].view.particle_world.numpy()[ids_b]
+        selected = (worlds_a == 0) | (worlds_b == 0)
+
+        u_before = np.arange(1, group.u.numpy().size + 1, dtype=np.float32).reshape(group.u.numpy().shape)
+        lambda_before = u_before + 20.0
+        group.u.assign(u_before)
+        group.lambda_.assign(lambda_before)
+        solver.reset(
+            model.state(),
+            world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
+            flags=0,
+        )
+
+        after_u = group.u.numpy()[active]
+        after_lambda = group.lambda_.numpy()[active]
+        np.testing.assert_array_equal(after_u[selected], 0.0)
+        np.testing.assert_array_equal(after_lambda[selected], 0.0)
+        np.testing.assert_array_equal(after_u[~selected], u_before[active][~selected])
+        np.testing.assert_array_equal(after_lambda[~selected], lambda_before[active][~selected])
 
     def test_rigid_contact_detection_rejects_cross_world_pairs(self):
         builder = newton.ModelBuilder()
@@ -1141,6 +1256,32 @@ class TestAdmmCollisionDetection(unittest.TestCase):
 
         self.assertGreater(solver.collision_contact_count_max, 0)
         self.assertGreater(q_contact[1, 0] - q_contact[0, 0], 0.08 + 1.0e-3)
+
+    def test_collision_particle_particle_contacts_respect_disabled_model_particle_grid(self):
+        model = _build_two_particle_contact_scene(gap=-0.08)
+        model.particle_grid = None
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="a",
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+                    particles=[0],
+                ),
+                SolverCoupled.Entry(
+                    name="b",
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+                    particles=[1],
+                ),
+            ],
+            coupling=SolverCoupledADMM.Config(
+                contact_pairs=[SolverCoupledADMM.ContactPair(source="a", destination="b")],
+            ),
+        )
+
+        _run_particles(solver, model, n_steps=1)
+
+        self.assertEqual(solver.collision_contact_count_max, 0)
 
     def test_collision_frictional_contact_matches_inclined_plane_box_motion(self):
         friction = 0.4

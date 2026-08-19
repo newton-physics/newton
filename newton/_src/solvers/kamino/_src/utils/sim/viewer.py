@@ -23,6 +23,12 @@ from ...utils import logger as msg
 from .simulator import Simulator
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Kernels
 ###
 
@@ -427,7 +433,7 @@ class ViewerKamino(ViewerGL):
         # ======================================================================
 
         # Allocate buffers for force arrows
-        if not hasattr(self, "_contact_force_starts"):
+        if not hasattr(self, "_contact_force_colors"):
             self._contact_force_starts = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
             self._contact_force_ends = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
             self._contact_force_colors = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)

@@ -295,7 +295,7 @@ def eval_triangles_body_contact(
     # hard coded surface parameter tensor layout (ke, kd, kf, mu)
     ke = materials[c_mat * 4 + 0]  # restitution coefficient
     kd = materials[c_mat * 4 + 1]  # damping coefficient
-    kf = materials[c_mat * 4 + 2]  # friction coefficient
+    kf = materials[c_mat * 4 + 2]  # contact friction gain
     mu = materials[c_mat * 4 + 3]  # coulomb friction
 
     x0 = body_x[c_body]  # position of colliding body
@@ -414,7 +414,7 @@ def eval_body_contact(
     # retrieve contact margins, compute average contact material properties
     ke = 0.0  # contact normal force stiffness
     kd = 0.0  # damping coefficient
-    kf = 0.0  # friction force stiffness
+    kf = 0.0  # contact friction gain
     ka = 0.0  # adhesion distance
     mu = 0.0  # friction coefficient
     mat_nonzero = 0
@@ -658,6 +658,7 @@ def eval_particle_body_contact_forces(
     body_qd: wp.array | None = None,
 ):
     if contacts is not None and contacts.soft_contact_max:
+        contacts._assert_particle_only_soft_contacts("SolverSemiImplicit")
         if body_q is None:
             body_q = state.body_q
         if body_qd is None:

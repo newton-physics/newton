@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton import Heightfield
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 
@@ -106,20 +107,8 @@ class TestHeightfield(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         self.assertEqual(model.heightfield_count, 1)
-        with self.assertWarns(DeprecationWarning):
-            self.assertTrue(model.has_heightfields)
 
         empty_model = newton.Model(device="cpu")
-        self.assertEqual(empty_model.heightfield_count, 0)
-        with self.assertWarns(DeprecationWarning):
-            self.assertFalse(empty_model.has_heightfields)
-
-        with self.assertWarns(DeprecationWarning):
-            empty_model.has_heightfields = True
-        self.assertEqual(empty_model.heightfield_count, 1)
-
-        with self.assertWarns(DeprecationWarning):
-            empty_model.has_heightfields = False
         self.assertEqual(empty_model.heightfield_count, 0)
 
     def test_mjcf_hfield_parsing(self):
@@ -287,8 +276,8 @@ class TestHeightfield(unittest.TestCase):
         sim_dt = 1.0 / 240.0
 
         device = model.device
-        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
-        if use_cuda_graph:
+        use_graph = is_graph_capture_allocation_enabled(device)
+        if use_graph:
             # warmup (2 steps for full ping-pong cycle)
             solver.step(state_in, state_out, control, None, sim_dt)
             solver.step(state_out, state_in, control, None, sim_dt)
@@ -297,14 +286,14 @@ class TestHeightfield(unittest.TestCase):
                 solver.step(state_out, state_in, control, None, sim_dt)
             graph = capture.graph
 
-        remaining = 500 - (4 if use_cuda_graph else 0)
-        for _ in range(remaining // 2 if use_cuda_graph else remaining):
-            if use_cuda_graph:
+        remaining = 500 - (4 if use_graph else 0)
+        for _ in range(remaining // 2 if use_graph else remaining):
+            if use_graph:
                 wp.capture_launch(graph)
             else:
                 solver.step(state_in, state_out, control, None, sim_dt)
                 state_in, state_out = state_out, state_in
-        if use_cuda_graph and remaining % 2 == 1:
+        if use_graph and remaining % 2 == 1:
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 
@@ -452,7 +441,12 @@ class TestHeightfield(unittest.TestCase):
             indices=np.asarray(indices, dtype=np.int32),
         )
 
-    def _build_mesh_vs_heightfield(self, mesh: newton.Mesh, mesh_z: float = 0.15):
+    def _build_mesh_vs_heightfield(
+        self,
+        mesh: newton.Mesh,
+        mesh_z: float = 0.15,
+        mesh_scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    ):
         """Build a model with a non-convex mesh above a flat heightfield."""
         builder = newton.ModelBuilder()
         nrow, ncol = 10, 10
@@ -460,7 +454,7 @@ class TestHeightfield(unittest.TestCase):
         hfield = Heightfield(data=elevation, nrow=nrow, ncol=ncol, hx=5.0, hy=5.0, min_z=0.0, max_z=1.0)
         builder.add_shape_heightfield(heightfield=hfield)
         mesh_body = builder.add_body(xform=wp.transform((0.0, 0.0, mesh_z), wp.quat_identity()))
-        builder.add_shape_mesh(body=mesh_body, mesh=mesh)
+        builder.add_shape_mesh(body=mesh_body, mesh=mesh, scale=mesh_scale)
         return builder.finalize(), mesh_body
 
     @unittest.skipUnless(_cuda_available, "mesh-heightfield collision requires CUDA")
@@ -471,6 +465,8 @@ class TestHeightfield(unittest.TestCase):
         state = model.state()
 
         pipeline = newton.CollisionPipeline(model)
+        self.assertFalse(pipeline.narrow_phase.mesh_sdf_texture_only)
+        self.assertFalse(pipeline.narrow_phase.mesh_sdf_identity_scale_only)
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
 
@@ -486,11 +482,53 @@ class TestHeightfield(unittest.TestCase):
         state = model.state()
 
         pipeline = newton.CollisionPipeline(model)
+        self.assertTrue(pipeline.narrow_phase.mesh_sdf_texture_only)
+        self.assertTrue(pipeline.narrow_phase.mesh_sdf_identity_scale_only)
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
 
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(contact_count, 0, "No contacts between SDF mesh and heightfield")
+        normals = contacts.rigid_contact_normal.numpy()[:contact_count]
+        self.assertTrue(np.isfinite(normals).all())
+        np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, rtol=0.0, atol=1.0e-6)
+        self.assertGreater(np.min(normals[:, 2]), 0.99)
+
+    @unittest.skipUnless(_cuda_available, "build_sdf requires CUDA")
+    def test_scaled_mesh_sdf_identity_scale_specialization(self):
+        """Select identity SDF scaling only for unit-scale or scale-baked meshes."""
+        mesh = self._create_non_convex_mesh()
+        mesh.build_sdf(max_resolution=16)
+
+        scaled_model, _mesh_body = self._build_mesh_vs_heightfield(
+            mesh,
+            mesh_z=0.2,
+            mesh_scale=(1.25, 1.0, 1.0),
+        )
+        scaled_pipeline = newton.CollisionPipeline(scaled_model)
+        self.assertTrue(scaled_pipeline.narrow_phase.mesh_sdf_texture_only)
+        self.assertFalse(scaled_pipeline.narrow_phase.mesh_sdf_identity_scale_only)
+        scaled_contacts = scaled_pipeline.contacts()
+        scaled_pipeline.collide(scaled_model.state(), scaled_contacts)
+        self.assertGreater(int(scaled_contacts.rigid_contact_count.numpy()[0]), 0)
+
+        baked_mesh = self._create_non_convex_mesh()
+        baked_mesh.build_sdf(max_resolution=16, scale=(1.25, 1.0, 1.0))
+        baked_model, _mesh_body = self._build_mesh_vs_heightfield(
+            baked_mesh,
+            mesh_z=0.2,
+            mesh_scale=(1.25, 1.0, 1.0),
+        )
+        baked_pipeline = newton.CollisionPipeline(baked_model)
+        self.assertTrue(baked_pipeline.narrow_phase.mesh_sdf_texture_only)
+        self.assertTrue(baked_pipeline.narrow_phase.mesh_sdf_identity_scale_only)
+        baked_contacts = baked_pipeline.contacts()
+        baked_pipeline.collide(baked_model.state(), baked_contacts)
+        self.assertGreater(int(baked_contacts.rigid_contact_count.numpy()[0]), 0)
+        baked_normals = baked_contacts.rigid_contact_normal.numpy()[
+            : int(baked_contacts.rigid_contact_count.numpy()[0])
+        ]
+        self.assertTrue(np.isfinite(baked_normals).all())
 
     @unittest.skipUnless(_cuda_available, "mesh-heightfield collision requires CUDA")
     def test_non_convex_mesh_vs_heightfield_no_contact(self):
@@ -530,6 +568,121 @@ class TestHeightfield(unittest.TestCase):
         soft_count = int(contacts.soft_contact_count.numpy()[0])
         self.assertGreater(soft_count, 0)
         self.assertEqual(int(contacts.soft_contact_shape.numpy()[0]), hfield_shape)
+
+    def test_create_from_mesh_sloped_plane(self):
+        """Rasterize a sloped plane mesh and verify sampled heights and placement."""
+        # A single-valued surface z = 0.5*x + 0.25*y over [0, 4] x [0, 8].
+        xs = np.linspace(0.0, 4.0, 9, dtype=np.float32)
+        ys = np.linspace(0.0, 8.0, 17, dtype=np.float32)
+        gx, gy = np.meshgrid(xs, ys)
+        gz = 0.5 * gx + 0.25 * gy
+        verts = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=-1).astype(np.float32)
+
+        rows, cols = gx.shape
+        faces = []
+        for r in range(rows - 1):
+            for c in range(cols - 1):
+                v00 = r * cols + c
+                v10 = v00 + 1
+                v01 = v00 + cols
+                v11 = v01 + 1
+                faces += [v00, v10, v11, v00, v11, v01]
+        mesh = wp.Mesh(
+            points=wp.array(verts, dtype=wp.vec3),
+            indices=wp.array(np.array(faces, dtype=np.int32), dtype=wp.int32),
+        )
+
+        hfield, xform = newton.Heightfield.create_from_mesh(mesh, resolution=0.5)
+
+        # Grid dimensions: col -> x (extent 4), row -> y (extent 8) at 0.5 m spacing.
+        self.assertEqual(hfield.ncol, 9)
+        self.assertEqual(hfield.nrow, 17)
+        self.assertAlmostEqual(hfield.hx, 2.0, places=5)
+        self.assertAlmostEqual(hfield.hy, 4.0, places=5)
+
+        # Placement centers the origin-centered grid on the mesh XY center.
+        origin = wp.transform_get_translation(xform)
+        self.assertAlmostEqual(origin[0], 2.0, places=4)
+        self.assertAlmostEqual(origin[1], 4.0, places=4)
+
+        # World heights (denormalized) must match the analytic plane at every sample.
+        world = hfield.min_z + hfield.data * (hfield.max_z - hfield.min_z)
+        expected = 0.5 * gx + 0.25 * gy
+        assert_np_equal(world, expected.astype(np.float32), tol=1e-3)
+
+    def test_rasterize_mesh_rejects_small_max_cells_per_axis(self):
+        """Reject a maximum grid dimension smaller than two."""
+        mesh = wp.Mesh(
+            points=wp.array(
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                dtype=wp.vec3,
+            ),
+            indices=wp.array([0, 1, 2], dtype=wp.int32),
+        )
+
+        with self.assertRaisesRegex(ValueError, "max_cells_per_axis must be at least 2"):
+            newton.utils.rasterize_mesh_to_heightfield(mesh, resolution=0.5, max_cells_per_axis=1)
+
+    def test_rasterize_mesh_missed_rays_use_floor(self):
+        """Rasterize a mesh with a hole and verify missed rays fall back to min Z."""
+        # A flat quad at z = 1 covering only the +x half (x in [1, 2]) of the bounds,
+        # plus a lone low vertex at the origin so the mesh minimum Z is 0.
+        verts = np.array(
+            [[1.0, 0.0, 1.0], [2.0, 0.0, 1.0], [2.0, 2.0, 1.0], [1.0, 2.0, 1.0], [0.0, 0.0, 0.0]],
+            dtype=np.float32,
+        )
+        faces = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+        mesh = wp.Mesh(points=wp.array(verts, dtype=wp.vec3), indices=wp.array(faces, dtype=wp.int32))
+
+        heights, bounds = newton.utils.rasterize_mesh_to_heightfield(mesh, resolution=0.5)
+        self.assertEqual(bounds, (0.0, 0.0, 2.0, 2.0))
+
+        # Columns over the covered half (x >= 1) hit the quad at z = 1; columns over
+        # the uncovered half (x < 1) miss and fall back to the mesh minimum Z (0).
+        # Grid columns sample x = [0, 0.5, 1.0, 1.5, 2.0].
+        expected = np.tile([0.0, 0.0, 1.0, 1.0, 1.0], (heights.shape[0], 1)).astype(np.float32)
+        assert_np_equal(heights, expected, tol=1e-4)
+
+    def test_heightfield_uniform_data_normalization_contract(self):
+        """Rest spheres on uniform heightfields and verify the normalization contract.
+
+        Uniform data has no range of its own and normalizes to zeros, so with
+        an explicit ``min_z``/``max_z`` the surface sits at ``min_z`` — the
+        same convention MuJoCo compiles for constant elevation, keeping
+        ``SolverMuJoCo`` and the native pipeline in agreement. With the range
+        auto-derived, ``min_z == max_z == value`` places the flat field at its
+        value. Also guards the regression from issue #3897, where heightfield
+        contact generation ignored elevation entirely.
+        """
+
+        def rest_z(hfield):
+            builder = newton.ModelBuilder()
+            builder.add_shape_heightfield(heightfield=hfield)
+            sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0)
+            builder.add_shape_sphere(body=sphere_body, radius=0.1)
+            builder.gravity = wp.vec3(0.0, 0.0, -9.81)
+
+            model = builder.finalize()
+            solver = newton.solvers.SolverXPBD(model, iterations=10)
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            state_0, state_1 = model.state(), model.state()
+            control = model.control()
+            dt = 0.002
+            for _ in range(int(2.0 / dt)):
+                state_0.clear_forces()
+                pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+            return float(state_0.body_q.numpy()[sphere_body, 2])
+
+        data = np.full((9, 9), 0.5, dtype=np.float32)
+        # Explicit range: uniform data normalizes to zeros -> surface at min_z.
+        z_explicit = rest_z(Heightfield(data=data, nrow=9, ncol=9, hx=4.0, hy=4.0, min_z=0.0, max_z=0.8))
+        self.assertAlmostEqual(z_explicit, 0.1, delta=0.02)
+        # Auto-derived range: min_z == max_z == 0.5 -> flat field at its value.
+        z_auto = rest_z(Heightfield(data=data, nrow=9, ncol=9, hx=4.0, hy=4.0))
+        self.assertAlmostEqual(z_auto, 0.6, delta=0.02)
 
 
 if __name__ == "__main__":

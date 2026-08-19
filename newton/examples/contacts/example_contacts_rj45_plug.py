@@ -240,8 +240,8 @@ class Example:
         plug_mesh, pc = _load_mesh(stage, "/World/Plug")
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
-        builder = newton.ModelBuilder(gravity=-9.81)
-        SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        SolverVBD.register_custom_attributes(builder)
         builder.rigid_gap = 0.005
 
         builder.add_ground_plane()
@@ -386,20 +386,20 @@ class Example:
             pitch=-10.0,
             yaw=180.0,
         )
-        if hasattr(self.viewer, "_cam_speed"):
-            self.viewer._cam_speed = 0.2
+        self.viewer.camera_speed = 0.2
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self._initial_body_q = self.state_0.body_q.numpy().copy()
 
         self.solver = SolverVBD(
             self.model,
             iterations=12,
-            rigid_contact_hard=False,
+            rigid_compliant_alm=True,
             rigid_body_contact_buffer_size=256,
         )
 
@@ -408,16 +408,14 @@ class Example:
 
         self._pick_body = wp.array([-1], dtype=int, device=self.model.device)
         self._pick_target = wp.zeros(1, dtype=wp.vec3, device=self.model.device)
-        self._gravity = wp.vec3(*self.model.gravity.numpy()[0])
+        self._gravity = wp.vec3(*self.model.gravity.numpy()[-1])
 
         self.capture()
 
     def capture(self):
-        self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -458,7 +456,7 @@ class Example:
                 ),
                 device=self.model.device,
             )
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -479,7 +477,8 @@ class Example:
     def step(self):
         gp = wp.transform_get_translation(self.gizmo_tf)
 
-        picked_body = int(self.viewer.picking.pick_body.numpy()[0])
+        picking = getattr(self.viewer, "picking", None)
+        picked_body = int(picking.pick_body.numpy()[0]) if picking is not None else -1
 
         self._pick_body.assign([picked_body])
         self._pick_target.assign([gp])
@@ -500,7 +499,7 @@ class Example:
                 print(f"[contact overflow] body {label} (idx={i}): {counts[i]} contacts (buffer={buf})")
 
         # Snap gizmo to the plug when the user isn't dragging it.
-        gizmo_active = self.viewer.gizmo_is_using
+        gizmo_active = bool(getattr(self.viewer, "gizmo_is_using", False))
         if not gizmo_active:
             plug_tf = self.state_0.body_q.numpy()[self._plug_body]
             if picked_body >= 0:

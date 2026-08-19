@@ -262,6 +262,27 @@ class TestViewerLayers(unittest.TestCase):
 
         self.assertIn("X", clear_calls, "remove_layer must run clear_model under the removed layer")
 
+    def test_clear_all_layers_clears_every_layer(self):
+        """Full-scene clearing must release inactive layers, not only the active one."""
+        clear_calls: list[str] = []
+
+        class _ClearTrackingViewer(_RecordingViewer):
+            def clear_model(self):
+                clear_calls.append(self._active_layer_id)
+                super().clear_model()
+
+        viewer = _ClearTrackingViewer()
+        for layer_id in ("A", "B", "C"):
+            viewer.activate(layer_id)
+            viewer.set_model(_build_box_model())
+        clear_calls.clear()
+
+        viewer.clear_all_layers()
+
+        self.assertEqual(clear_calls, ["A", "B", "C", "__default__"])
+        self.assertEqual(list(viewer.layers), ["__default__"])
+        self.assertEqual(viewer.layer.name_prefix, "")
+
     def test_rtx_remove_layer_with_sibling_fails_loudly(self):
         """RTX should not silently wipe sibling layers during clear_model()."""
         viewer = _MinimalRTXViewer()
@@ -273,6 +294,17 @@ class TestViewerLayers(unittest.TestCase):
 
         self.assertIn("A", viewer.layers)
         self.assertIn("B", viewer.layers)
+
+    def test_rtx_clear_all_layers_allows_layered_scene_reset(self):
+        """RTX can reset a complete layered scene while keeping single-layer clear guarded."""
+        viewer = _MinimalRTXViewer()
+        viewer.activate("A")
+        viewer.activate("B")
+
+        viewer.clear_all_layers()
+
+        self.assertEqual(list(viewer.layers), ["__default__"])
+        self.assertEqual(viewer.layer.name_prefix, "")
 
     def test_activate_rejects_default_layer_id(self):
         """The internal default-layer id is reserved for legacy unprefixed output."""

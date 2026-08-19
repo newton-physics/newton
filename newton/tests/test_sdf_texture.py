@@ -17,14 +17,20 @@ import warp as wp
 import newton
 from newton import GeoType, Mesh
 from newton._src.geometry.sdf_texture import (
+    SIGN_MODE_NORMAL,
     QuantizationMode,
     TextureSDFData,
+    _texture_sample_sdf_grad_hw_impl,
+    build_sparse_sdf_from_primitive,
     compute_isomesh_from_texture_sdf,
     create_empty_texture_sdf_data,
     create_texture_sdf_from_mesh,
+    create_texture_sdf_from_primitive,
     create_texture_sdf_from_volume,
     texture_sample_sdf,
+    texture_sample_sdf_at_voxel,
     texture_sample_sdf_grad,
+    texture_sample_sdf_hw,
 )
 from newton._src.geometry.sdf_utils import (
     SDFData,
@@ -178,6 +184,21 @@ def _sample_texture_sdf_kernel(
 
 
 @wp.kernel
+def _compare_integer_voxel_samples_kernel(
+    sdf: TextureSDFData,
+    voxel_coords: wp.array[wp.vec3i],
+    interpolated: wp.array[float],
+    direct: wp.array[float],
+):
+    """Sample identical integer voxel coordinates through both texture paths."""
+    tid = wp.tid()
+    coord = voxel_coords[tid]
+    local_pos = sdf.sdf_box_lower + wp.cw_mul(wp.vec3f(coord), sdf.voxel_size)
+    interpolated[tid] = texture_sample_sdf(sdf, local_pos)
+    direct[tid] = texture_sample_sdf_at_voxel(sdf, coord[0], coord[1], coord[2])
+
+
+@wp.kernel
 def _sample_texture_sdf_grad_kernel(
     sdf: TextureSDFData,
     query_points: wp.array[wp.vec3],
@@ -188,6 +209,57 @@ def _sample_texture_sdf_grad_kernel(
     dist, grad = texture_sample_sdf_grad(sdf, query_points[tid])
     results[tid] = dist
     gradients[tid] = grad
+
+
+@wp.func
+def _texture_sample_sdf_grad_hw_scalar_reference(sdf: TextureSDFData, local_pos: wp.vec3) -> wp.vec3:
+    """Evaluate the hardware gradient with six independent scalar samples."""
+    clamped = wp.vec3(
+        wp.clamp(local_pos[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0]),
+        wp.clamp(local_pos[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
+        wp.clamp(local_pos[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
+    )
+    diff = local_pos - clamped
+    diff_mag = wp.length(diff)
+    if diff_mag > 0.0:
+        return diff / diff_mag
+
+    h_x = 0.5 / sdf.inv_sdf_dx[0]
+    h_y = 0.5 / sdf.inv_sdf_dx[1]
+    h_z = 0.5 / sdf.inv_sdf_dx[2]
+    gx = (
+        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(h_x, 0.0, 0.0))
+        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(h_x, 0.0, 0.0))
+    ) / (2.0 * h_x)
+    gy = (
+        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(0.0, h_y, 0.0))
+        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(0.0, h_y, 0.0))
+    ) / (2.0 * h_y)
+    gz = (
+        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(0.0, 0.0, h_z))
+        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(0.0, 0.0, h_z))
+    ) / (2.0 * h_z)
+    return wp.vec3(gx, gy, gz)
+
+
+@wp.kernel
+def _sample_texture_sdf_hw_gradient_paired_kernel(
+    sdf: TextureSDFData,
+    query_points: wp.array[wp.vec3],
+    paired: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    paired[tid] = _texture_sample_sdf_grad_hw_impl(sdf, query_points[tid])
+
+
+@wp.kernel
+def _sample_texture_sdf_hw_gradient_scalar_kernel(
+    sdf: TextureSDFData,
+    query_points: wp.array[wp.vec3],
+    scalar: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    scalar[tid] = _texture_sample_sdf_grad_hw_scalar_reference(sdf, query_points[tid])
 
 
 @wp.kernel
@@ -357,6 +429,128 @@ def test_texture_sdf_construction(test, device):
     test.assertTrue(np.all(box_upper >= mesh_max))
 
 
+def test_texture_sdf_integer_voxel_sampling(test, device):
+    """Match direct voxel reads to interpolation within float32 rounding."""
+    mesh = _create_box_mesh()
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    tex_sdf, _coarse_tex, _subgrid_tex = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        device=device,
+    )
+
+    lower = np.array(tex_sdf.sdf_box_lower, dtype=np.float32)
+    upper = np.array(tex_sdf.sdf_box_upper, dtype=np.float32)
+    voxel_size = np.array(tex_sdf.voxel_size, dtype=np.float32)
+    dims = np.rint((upper - lower) / voxel_size).astype(np.int32) + 1
+    rng = np.random.default_rng(2026)
+    coords = rng.integers(np.zeros(3, dtype=np.int32), dims, size=(256, 3), dtype=np.int32)
+
+    voxel_coords = wp.array(coords, dtype=wp.vec3i, device=device)
+    interpolated = wp.empty(len(coords), dtype=float, device=device)
+    direct = wp.empty(len(coords), dtype=float, device=device)
+    wp.launch(
+        _compare_integer_voxel_samples_kernel,
+        dim=len(coords),
+        inputs=[tex_sdf, voxel_coords, interpolated, direct],
+        device=device,
+    )
+
+    np.testing.assert_allclose(direct.numpy(), interpolated.numpy(), rtol=2.0e-5, atol=2.0e-6)
+
+
+def test_texture_sdf_software_sampling_honors_layout(test, device):
+    """Honor paired and scalar storage in the public software sampler."""
+    mesh = _create_box_mesh()
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    paired_sdf, paired_coarse, paired_subgrid = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        paired_samples=True,
+        device=device,
+    )
+    scalar_sdf, scalar_coarse, scalar_subgrid = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        paired_samples=False,
+        device=device,
+    )
+
+    test.assertEqual(paired_coarse.num_channels, 2)
+    test.assertEqual(paired_subgrid.num_channels, 2)
+    test.assertEqual(scalar_coarse.num_channels, 1)
+    test.assertEqual(scalar_subgrid.num_channels, 1)
+
+    lower = np.array(paired_sdf.sdf_box_lower, dtype=np.float32)
+    upper = np.array(paired_sdf.sdf_box_upper, dtype=np.float32)
+    voxel_size = np.array(paired_sdf.voxel_size, dtype=np.float32)
+    rng = np.random.default_rng(2027)
+    query_np = rng.uniform(lower - voxel_size, upper + voxel_size, size=(512, 3)).astype(np.float32)
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    paired_values = wp.empty(len(query_np), dtype=float, device=device)
+    scalar_values = wp.empty(len(query_np), dtype=float, device=device)
+    wp.launch(
+        _sample_texture_sdf_kernel,
+        dim=len(query_np),
+        inputs=[paired_sdf, query_points, paired_values],
+        device=device,
+    )
+    wp.launch(
+        _sample_texture_sdf_kernel,
+        dim=len(query_np),
+        inputs=[scalar_sdf, query_points, scalar_values],
+        device=device,
+    )
+
+    np.testing.assert_allclose(scalar_values.numpy(), paired_values.numpy(), rtol=0.0, atol=2.0e-6)
+
+
+def test_texture_sdf_scalar_extract_isomesh(test, device):
+    """Match public isomesh extraction across paired and scalar texture layouts."""
+    paired_mesh = _create_box_mesh(half_extents=(0.3, 0.3, 0.3))
+    scalar_mesh = _create_box_mesh(half_extents=(0.3, 0.3, 0.3))
+    paired_sdf = paired_mesh.build_sdf(max_resolution=64, paired_samples=True, device=device)
+    scalar_sdf = scalar_mesh.build_sdf(max_resolution=64, paired_samples=False, device=device)
+
+    paired_isomesh = paired_sdf.extract_isomesh(device=device)
+    scalar_isomesh = scalar_sdf.extract_isomesh(device=device)
+    test.assertIsNotNone(paired_isomesh)
+    test.assertIsNotNone(scalar_isomesh)
+    test.assertGreater(len(scalar_isomesh.vertices), 0)
+    test.assertEqual(len(scalar_isomesh.vertices), len(paired_isomesh.vertices))
+
+    paired_vertices = paired_isomesh.vertices
+    scalar_vertices = scalar_isomesh.vertices
+    np.testing.assert_allclose(
+        np.max(np.abs(scalar_vertices), axis=0),
+        np.max(np.abs(paired_vertices), axis=0),
+        rtol=0.0,
+        atol=1.0e-5,
+    )
+    paired_order = np.lexsort((paired_vertices[:, 2], paired_vertices[:, 1], paired_vertices[:, 0]))
+    scalar_order = np.lexsort((scalar_vertices[:, 2], scalar_vertices[:, 1], scalar_vertices[:, 0]))
+    np.testing.assert_allclose(
+        scalar_vertices[scalar_order],
+        paired_vertices[paired_order],
+        rtol=0.0,
+        atol=1.0e-5,
+    )
+
+
 def _compare_texture_vs_nanovdb(test, tex_sdf, nanovdb_data, query_points, narrow_band, device):
     """Shared helper: sample both SDFs and compute contact-zone error statistics.
 
@@ -472,6 +666,61 @@ def test_texture_sdf_gradient_accuracy(test, device):
     test.assertLess(s["nb_angle_mean"], 3.0, f"Contact-zone mean gradient angle: {s['nb_angle_mean']:.2f} deg")
     test.assertLess(s["nb_angle_median"], 0.5, f"Contact-zone median gradient angle: {s['nb_angle_median']:.2f} deg")
     test.assertLess(s["nb_angle_p95"], 15.0, f"Contact-zone p95 gradient angle: {s['nb_angle_p95']:.2f} deg")
+
+
+def test_texture_sdf_paired_hw_gradient_matches_scalar(test, device):
+    """Match paired hardware-gradient samples to the scalar stencil."""
+    mesh = _create_box_mesh()
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    tex_sdf, _coarse_tex, _subgrid_tex = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        quantization_mode=QuantizationMode.FLOAT32,
+        device=device,
+    )
+
+    lower = np.array(tex_sdf.sdf_box_lower, dtype=np.float32)
+    upper = np.array(tex_sdf.sdf_box_upper, dtype=np.float32)
+    voxel_size = np.array(tex_sdf.voxel_size, dtype=np.float32)
+    rng = np.random.default_rng(123)
+    query_parts = [rng.uniform(lower - voxel_size, upper + voxel_size, size=(1024, 3)).astype(np.float32)]
+
+    center = 0.5 * (lower + upper)
+    coarse_stride = voxel_size * tex_sdf.subgrid_size
+    boundary_points = []
+    for axis in range(3):
+        boundaries = np.arange(lower[axis], upper[axis] + coarse_stride[axis], coarse_stride[axis])
+        for boundary in boundaries:
+            for offset in (-0.25, 0.0, 0.25):
+                point = center.copy()
+                point[axis] = boundary + offset * voxel_size[axis]
+                boundary_points.append(point)
+    query_parts.append(np.asarray(boundary_points, dtype=np.float32))
+    query_np = np.concatenate(query_parts)
+
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    paired = wp.empty(len(query_np), dtype=wp.vec3, device=device)
+    scalar = wp.empty(len(query_np), dtype=wp.vec3, device=device)
+    wp.launch(
+        _sample_texture_sdf_hw_gradient_paired_kernel,
+        dim=len(query_np),
+        inputs=[tex_sdf, query_points, paired],
+        device=device,
+    )
+    wp.launch(
+        _sample_texture_sdf_hw_gradient_scalar_kernel,
+        dim=len(query_np),
+        inputs=[tex_sdf, query_points, scalar],
+        device=device,
+    )
+
+    np.testing.assert_allclose(paired.numpy(), scalar.numpy(), rtol=0.0, atol=1.0e-6)
 
 
 def test_texture_sdf_extrapolation(test, device):
@@ -607,7 +856,7 @@ def test_texture_sdf_multi_resolution(test, device):
 
 def test_texture_sdf_in_model(test, device):
     """Build a scene with 2 mesh shapes with SDFs and verify model._texture_sdf_data."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     for i in range(2):
         body = builder.add_body(xform=wp.transform(wp.vec3(float(i) * 2.0, 0.0, 0.0)))
@@ -1095,6 +1344,38 @@ def _generate_sphere_query_points(radius: float = 0.5, num_points: int = 3000, s
     return directions * (radius + radial_offsets)
 
 
+def test_hydroelastic_sphere_texture_sdf_matches_analytic_distance(test, device):
+    """Hydroelastic primitive spheres should build texture SDFs analytically."""
+    radius = 0.5
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body()
+    cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True, sdf_max_resolution=64, sdf_texture_format="float32")
+    shape = builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    sdf_idx = int(model._shape_sdf_index.numpy()[shape])
+    test.assertGreaterEqual(sdf_idx, 0)
+
+    query_np = _generate_sphere_query_points(radius=radius, num_points=2000, seed=123)
+    expected = np.linalg.norm(query_np, axis=1) - radius
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    tex_results = wp.zeros(len(query_np), dtype=float, device=device)
+    wp.launch(
+        _sample_texture_sdf_from_array_kernel,
+        dim=len(query_np),
+        inputs=[model._texture_sdf_data, sdf_idx, query_points, tex_results],
+        device=device,
+    )
+
+    diff = np.abs(tex_results.numpy() - expected)
+    test.assertLess(float(diff.mean()), 5e-4, f"mean analytic sphere distance error: {diff.mean():.4e}")
+    test.assertLess(
+        float(np.percentile(diff, 95)),
+        1e-3,
+        f"p95 analytic sphere distance error: {np.percentile(diff, 95):.4e}",
+    )
+
+
 def test_texture_sdf_vs_ground_truth_distance(test, device):
     """Compare texture SDF distance against BVH ground truth in the contact zone.
 
@@ -1361,14 +1642,171 @@ def test_create_texture_sdf_from_mesh_validates_target_voxel_size(test, device):
         )
 
 
+def test_create_texture_sdf_from_primitive_validates_inputs(test, device):
+    """Invalid primitive texture-SDF inputs must fail before GPU construction."""
+    with test.assertRaises(NotImplementedError):
+        create_texture_sdf_from_primitive(GeoType.PLANE, (1.0, 1.0, 1.0), max_resolution=8, device=device)
+
+    for invalid_scale in ((1.0, 1.0), (-1.0, 1.0, 1.0), (np.nan, 1.0, 1.0)):
+        with test.subTest(shape_scale=invalid_scale):
+            with test.assertRaises(ValueError):
+                create_texture_sdf_from_primitive(GeoType.SPHERE, invalid_scale, max_resolution=8, device=device)
+
+
+def test_create_texture_sdf_from_barrel_cylinder(test, device):
+    """Preserve the barrel bulge in a primitive texture SDF."""
+    radius = 0.5
+    half_height = 1.0
+    barrel_radius = 2.0
+    equator_radius = radius + barrel_radius - np.sqrt(barrel_radius**2 - half_height**2)
+    texture_sdf, coarse_texture, subgrid_texture = create_texture_sdf_from_primitive(
+        GeoType.CYLINDER,
+        (radius, half_height, barrel_radius),
+        margin=0.1,
+        max_resolution=48,
+        scale_baked=True,
+        device=device,
+    )
+    query_points = wp.array([[equator_radius, 0.0, 0.0], [0.6, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    results = wp.empty(2, dtype=float, device=device)
+    wp.launch(
+        _sample_texture_sdf_kernel,
+        dim=2,
+        inputs=[texture_sdf, query_points],
+        outputs=[results],
+        device=device,
+    )
+    distances = results.numpy()
+    test.assertAlmostEqual(float(distances[0]), 0.0, delta=0.06)
+    test.assertLess(float(distances[1]), -0.05)
+    test.assertIsNotNone(coarse_texture)
+    test.assertIsNotNone(subgrid_texture)
+
+
+def test_build_sparse_sdf_from_primitive_validates_inputs(test, device):
+    """Low-level primitive sparse-SDF construction must reject invalid inputs."""
+    cell_size = np.array([0.1, 0.1, 0.1], dtype=float)
+    min_corner = np.array([-0.1, -0.1, -0.1], dtype=float)
+    max_corner = np.array([0.1, 0.1, 0.1], dtype=float)
+
+    with test.assertRaises(NotImplementedError):
+        build_sparse_sdf_from_primitive(
+            GeoType.PLANE,
+            (1.0, 1.0, 1.0),
+            3,
+            3,
+            3,
+            cell_size,
+            min_corner,
+            max_corner,
+            subgrid_size=2,
+            device=device,
+        )
+
+    for invalid_scale in ((1.0, 1.0), (-1.0, 1.0, 1.0), (np.inf, 1.0, 1.0)):
+        with test.subTest(shape_scale=invalid_scale):
+            with test.assertRaises(ValueError):
+                build_sparse_sdf_from_primitive(
+                    GeoType.SPHERE,
+                    invalid_scale,
+                    3,
+                    3,
+                    3,
+                    cell_size,
+                    min_corner,
+                    max_corner,
+                    subgrid_size=2,
+                    device=device,
+                )
+
+
+def test_texture_sdf_sign_mode_normal_open_mesh(test, device):
+    """SIGN_MODE_NORMAL bakes pseudo-normal signs valid for an open mesh.
+
+    Open unit box with the top face removed: parity ray-casts leak through
+    the opening and wrongly sign interior points, while the pseudo-normal
+    signs by the local side of the nearest wall. Probes sit just inside and
+    just outside the +x wall, within the narrow band. The mesh is built
+    without winding-number support, which the normal query must not require.
+    """
+    vertices = np.array(
+        [
+            [-0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5],
+            [0.5, 0.5, -0.5],
+            [-0.5, 0.5, -0.5],
+            [-0.5, -0.5, 0.5],
+            [0.5, -0.5, 0.5],
+            [0.5, 0.5, 0.5],
+            [-0.5, 0.5, 0.5],
+        ],
+        dtype=np.float32,
+    )
+    # Outward-facing (CCW) triangles for every face except the top (4, 5, 6, 7).
+    faces = np.array(
+        [[0, 2, 1], [0, 3, 2], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]],
+        dtype=np.int32,
+    )
+    wp_mesh = wp.Mesh(
+        points=wp.array(vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(faces.reshape(-1), dtype=wp.int32, device=device),
+    )
+
+    tex_sdf, _coarse_tex, _subgrid_tex = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=32,
+        quantization_mode=QuantizationMode.FLOAT32,
+        sign_mode=SIGN_MODE_NORMAL,
+        device=device,
+    )
+
+    query_points = wp.array(
+        [wp.vec3(0.42, 0.0, 0.0), wp.vec3(0.58, 0.0, 0.0)],
+        dtype=wp.vec3,
+        device=device,
+    )
+    results = wp.zeros(2, dtype=float, device=device)
+    wp.launch(_sample_texture_sdf_kernel, dim=2, inputs=[tex_sdf, query_points, results], device=device)
+
+    values = results.numpy()
+    test.assertLess(float(values[0]), 0.0, f"interior probe should be inside, got {values[0]}")
+    test.assertGreater(float(values[1]), 0.0, f"exterior probe should be outside, got {values[1]}")
+
+
 # Register tests for CUDA devices
 devices = get_cuda_test_devices()
 add_function_test(TestTextureSDF, "test_texture_sdf_construction", test_texture_sdf_construction, devices=devices)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_integer_voxel_sampling",
+    test_texture_sdf_integer_voxel_sampling,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_software_sampling_honors_layout",
+    test_texture_sdf_software_sampling_honors_layout,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_scalar_extract_isomesh",
+    test_texture_sdf_scalar_extract_isomesh,
+    devices=devices,
+)
 add_function_test(
     TestTextureSDF, "test_texture_sdf_values_match_nanovdb", test_texture_sdf_values_match_nanovdb, devices=devices
 )
 add_function_test(
     TestTextureSDF, "test_texture_sdf_gradient_accuracy", test_texture_sdf_gradient_accuracy, devices=devices
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_paired_hw_gradient_matches_scalar",
+    test_texture_sdf_paired_hw_gradient_matches_scalar,
+    devices=devices,
 )
 add_function_test(TestTextureSDF, "test_texture_sdf_extrapolation", test_texture_sdf_extrapolation, devices=devices)
 add_function_test(TestTextureSDF, "test_texture_sdf_array_indexing", test_texture_sdf_array_indexing, devices=devices)
@@ -1422,6 +1860,36 @@ add_function_test(
     TestTextureSDF,
     "test_create_texture_sdf_from_mesh_validates_target_voxel_size",
     test_create_texture_sdf_from_mesh_validates_target_voxel_size,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_hydroelastic_sphere_texture_sdf_matches_analytic_distance",
+    test_hydroelastic_sphere_texture_sdf_matches_analytic_distance,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_create_texture_sdf_from_primitive_validates_inputs",
+    test_create_texture_sdf_from_primitive_validates_inputs,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_create_texture_sdf_from_barrel_cylinder",
+    test_create_texture_sdf_from_barrel_cylinder,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_build_sparse_sdf_from_primitive_validates_inputs",
+    test_build_sparse_sdf_from_primitive_validates_inputs,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_sign_mode_normal_open_mesh",
+    test_texture_sdf_sign_mode_normal_open_mesh,
     devices=devices,
 )
 add_function_test(
