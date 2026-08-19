@@ -242,6 +242,10 @@ than the control law nominally asks for. The trade-off is between stability at
 large timesteps with the implicit mode, and fidelity to the requested gains at
 small timesteps with the explicit mode.
 
+The predicted state accounts only for the actuator's own impulse. Gravity, any
+other applied force, other actuators driving the same articulation, and joint
+drive applied without the actuator are all absent from it.
+
 The implicit effort mode necessarily requires the joint-space inverse mass
 matrix. This is supplied by a :class:`~newton.actuators.ResponseOracle`, which
 is refreshed once per step at the current pose:

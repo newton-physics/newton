@@ -15,6 +15,10 @@ predicted end-of-step state:
 Here ``h`` is the timestep, ``g`` is the controller force law with clamping,
 and ``A`` is the coupled inverse-mass response supplied by
 :class:`ResponseOracle`. Options: :class:`ImplicitOptions`.
+
+``qd(p)`` advances the step-start velocity by this actuator's own impulse alone.
+Gravity, any other applied force, other actuators on the same articulation, and
+joint drive applied without the actuator do not enter the prediction.
 """
 
 from __future__ import annotations

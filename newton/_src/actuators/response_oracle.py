@@ -228,10 +228,13 @@ class ResponseOracle:
     def refresh(self, state) -> None:
         """Recompute :attr:`inverse_blocks` for *state*.
 
-        Reads *state* without modifying it. Includes ``joint_armature`` but not
-        joint damping, contacts, or constraint regularization; the response is
-        therefore an upper bound, which under-drives rather than destabilizes the
-        solve. Use :meth:`refresh_from_solve` for a solver-faithful response.
+        Reads *state* without modifying it. Includes ``joint_armature``. Joint
+        damping, joint limits, friction, contacts, constraint regularization and
+        kinematic loop closures are absent, so the response comes out larger than
+        anticipated and the solve yields a smaller effort than it otherwise would.
+        Use :meth:`refresh_from_solve` for a solver-faithful response; loop
+        closures are missing from that path too, since a solver enforces them as
+        constraints rather than folding them into its inertia.
 
         Args:
             state: Simulation state providing ``joint_q`` / ``joint_qd``.
