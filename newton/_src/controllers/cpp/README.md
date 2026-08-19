@@ -17,7 +17,7 @@ selection = select_joints(model)
 controller = ControllerJointImpedance(model, joint_q_idx=selection.q_idx, ...)
 inputs, outputs = controller.input(), controller.output()
 
-export_controller_graph(controller, inputs, outputs, "joint_impedance")
+export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path="joint_impedance")
 ```
 
 This writes `joint_impedance.wrp` and `joint_impedance_modules/`. Both must ship
@@ -57,7 +57,10 @@ auto output = controller.output();
 input["joint_q"] = {0.35f, -0.62f, 0.18f, 0.9f};
 input["joint_q_des"] = {0.0f, -0.3f, 0.5f};
 
-controller.step(input, output, 0.01f);
+if (!controller.step(input, output, 0.01f)) {
+    std::cerr << controller.last_error() << "\n";  // step never throws
+    return 1;
+}
 // output["joint_f"] now holds one torque per controlled DOF
 ```
 

@@ -23,27 +23,47 @@ namespace {
     throw std::runtime_error(what);
 }
 
-void check_size(APICGraph* graph, const std::string& name, std::size_t got_bytes) {
+std::string warp_detail(const std::string& what) {
+    const char* detail = wp_get_error_string();
+    return (detail && detail[0] != '\0') ? what + ": " + detail : what;
+}
+
+// Reports rather than throws: step() is required not to throw, so every failure
+// on the launch path becomes a message plus a false return.
+bool check_size(APICGraph* graph, const std::string& name, std::size_t got_bytes, std::string& error) {
     const std::size_t expected = wp_apic_get_param_size(graph, name.c_str());
+    if (expected == 0) {
+        error = "'" + name + "' is not a parameter of this graph";
+        return false;
+    }
     if (got_bytes != expected) {
-        throw std::runtime_error(
-            "Parameter '" + name + "' takes " + std::to_string(expected) + " bytes, got "
-            + std::to_string(got_bytes));
+        error = "Parameter '" + name + "' takes " + std::to_string(expected) + " bytes, got "
+                + std::to_string(got_bytes);
+        return false;
     }
+    return true;
 }
 
-void set_param(APICGraph* graph, const std::string& name, std::span<const float> data) {
-    check_size(graph, name, data.size_bytes());
+bool set_param(APICGraph* graph, const std::string& name, std::span<const float> data, std::string& error) {
+    if (!check_size(graph, name, data.size_bytes(), error)) {
+        return false;
+    }
     if (!wp_apic_set_param(graph, name.c_str(), data.data(), data.size_bytes())) {
-        throw_warp_error("Failed to set parameter '" + name + "'");
+        error = warp_detail("Failed to set parameter '" + name + "'");
+        return false;
     }
+    return true;
 }
 
-void get_param(APICGraph* graph, const std::string& name, std::span<float> data) {
-    check_size(graph, name, data.size_bytes());
-    if (!wp_apic_get_param(graph, name.c_str(), data.data(), data.size_bytes())) {
-        throw_warp_error("Failed to get parameter '" + name + "'");
+bool get_param(APICGraph* graph, const std::string& name, std::span<float> data, std::string& error) {
+    if (!check_size(graph, name, data.size_bytes(), error)) {
+        return false;
     }
+    if (!wp_apic_get_param(graph, name.c_str(), data.data(), data.size_bytes())) {
+        error = warp_detail("Failed to get parameter '" + name + "'");
+        return false;
+    }
+    return true;
 }
 
 ControllerBuffer buffer_for_prefix(APICGraph* graph, std::string_view prefix) {
@@ -66,6 +86,7 @@ ControllerBuffer buffer_for_prefix(APICGraph* graph, std::string_view prefix) {
 struct Controller::Impl {
     void* context{nullptr};
     APICGraph* graph{nullptr};
+    std::string last_error;
 
     ~Impl() {
         if (graph) {
@@ -120,20 +141,34 @@ Controller& Controller::operator=(Controller&& other) noexcept {
 ControllerBuffer Controller::input() const { return buffer_for_prefix(impl_->graph, "input."); }
 ControllerBuffer Controller::output() const { return buffer_for_prefix(impl_->graph, "output."); }
 
-void Controller::step(const ControllerBuffer& input, ControllerBuffer& output, float dt) {
+bool Controller::step(const ControllerBuffer& input, ControllerBuffer& output, float dt) noexcept {
+    impl_->last_error.clear();
+
     for (const auto& [field, values] : input.fields) {
-        set_param(impl_->graph, "input." + field, values);
+        if (!set_param(impl_->graph, "input." + field, values, impl_->last_error)) {
+            return false;
+        }
     }
-    set_param(impl_->graph, "dt", std::span<const float>{&dt, 1});
+    if (!set_param(impl_->graph, "dt", std::span<const float>{&dt, 1}, impl_->last_error)) {
+        return false;
+    }
 
     if (!wp_apic_launch(impl_->graph, nullptr)) {
-        throw_warp_error("Controller step failed");
+        impl_->last_error = warp_detail("Launch failed");
+        return false;
     }
     wp_cuda_context_synchronize(impl_->context);
 
     for (auto& [field, values] : output.fields) {
-        get_param(impl_->graph, "output." + field, values);
+        if (!get_param(impl_->graph, "output." + field, values, impl_->last_error)) {
+            return false;
+        }
     }
+    return true;
+}
+
+const std::string& Controller::last_error() const noexcept {
+    return impl_->last_error;
 }
 
 std::vector<ParamInfo> Controller::params() const {

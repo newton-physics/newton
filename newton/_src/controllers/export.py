@@ -29,6 +29,7 @@ _FLOAT32_CTYPE = ctypes.c_float
 
 
 def export_controller_graph(
+    *,
     controller: ControllerBase,
     inputs: Any,
     outputs: Any,

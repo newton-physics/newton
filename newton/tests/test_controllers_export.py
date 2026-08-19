@@ -68,7 +68,7 @@ class TestExportGraph(unittest.TestCase):
         inputs, outputs = controller.input(), controller.output()
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "controller"
-            export_controller_graph(controller, inputs, outputs, path)
+            export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=path)
             graph = wp.capture_load(str(path), device=device)
         self.assertEqual(
             set(graph.params),
@@ -90,7 +90,7 @@ class TestExportGraph(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "controller"
-            export_controller_graph(controller, inputs, outputs, path)
+            export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=path)
             graph = wp.capture_load(str(path), device=device)
             actual = _run_loaded(graph, "output.joint_f", 2, device)
         np.testing.assert_allclose(actual, expected, atol=1e-4)
@@ -124,7 +124,7 @@ class TestExportGraph(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "controller"
-            export_controller_graph(controller, inputs, outputs, path)
+            export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=path)
             graph = wp.capture_load(str(path), device=device)
             actual = _run_loaded(graph, "output.joint_f", 5, device)
 
@@ -140,7 +140,9 @@ class TestExportGraph(unittest.TestCase):
         inputs.joint_q = wp.zeros(2, dtype=wp.float64, device=device)
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(TypeError):
-                export_controller_graph(controller, inputs, outputs, Path(tmp) / "controller")
+                export_controller_graph(
+                    controller=controller, inputs=inputs, outputs=outputs, path=Path(tmp) / "controller"
+                )
 
 
 if __name__ == "__main__":

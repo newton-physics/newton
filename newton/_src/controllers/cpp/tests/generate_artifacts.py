@@ -27,6 +27,11 @@ from newton.controllers import ControllerJointImpedance, export_controller_graph
 # controlled. The uncontrolled wrist keeps the model-sized ports (joint_q,
 # joint_qd) a different length from the compact ones, which is what the C++
 # buffer sizing has to get right.
+#
+# The joints rotate about y and the links extend along x, so the arm swings in a
+# vertical plane and gravity loads every joint. Rotating about z instead would
+# put the arm in the xy-plane, where gravity exerts no moment and the gravity
+# term would silently contribute nothing to the reference torques.
 LINK_COUNT = 4
 CONTROLLED = ["shoulder", "elbow", "wrist"]
 LINK_LENGTH = 0.4  # [m]
@@ -62,7 +67,7 @@ def build_model(device) -> newton.Model:
         builder.add_joint_revolute(
             parent=parent,
             child=link,
-            axis=wp.vec3(0.0, 0.0, 1.0),
+            axis=wp.vec3(0.0, 1.0, 0.0),
             parent_xform=wp.transform(p=wp.vec3(LINK_LENGTH if index else 0.0, 0.0, 0.0)),
             label=labels[index],
         )
@@ -106,7 +111,9 @@ def export_with_views(model, selection, device, out_dir: Path) -> np.ndarray:
     controller.step(inputs=inputs, outputs=outputs, dt=DT)
     scattered_torques = sim_f.numpy().copy()
 
-    export_controller_graph(controller, inputs, outputs, out_dir / "joint_impedance_views")
+    export_controller_graph(
+        controller=controller, inputs=inputs, outputs=outputs, path=out_dir / "joint_impedance_views"
+    )
     return scattered_torques
 
 
@@ -132,7 +139,7 @@ def main(out_dir: Path) -> int:
     controller.step(inputs=inputs, outputs=outputs, dt=DT)
     expected = outputs.joint_f.numpy().copy()
 
-    export_controller_graph(controller, inputs, outputs, out_dir / "joint_impedance")
+    export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=out_dir / "joint_impedance")
     (out_dir / "joint_impedance_expected.txt").write_text("\n".join(f"{value:.9g}" for value in expected) + "\n")
 
     scattered = export_with_views(model, selection, device, out_dir)

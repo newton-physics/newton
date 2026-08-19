@@ -108,7 +108,35 @@ void test_unknown_field_throws(const std::filesystem::path& wrp) {
     } catch (const std::out_of_range&) {
         threw = true;
     }
-    check(threw, "an unknown field name throws std::out_of_range");
+    check(threw, "reading an unknown field name throws std::out_of_range");
+}
+
+void test_step_reports_a_bad_field_without_throwing(const std::filesystem::path& wrp) {
+    newton::controllers::Controller controller{wrp};
+    auto input = controller.input();
+    auto output = controller.output();
+
+    // A field of the wrong length: step() must report it rather than throw,
+    // since a control loop may not be able to afford an exception.
+    input["joint_q"].resize(kModelDofs + 1, 0.0f);
+
+    bool stepped = true;
+    try {
+        stepped = controller.step(input, output, kDt);
+    } catch (...) {
+        check(false, "step must not throw on a malformed buffer");
+        return;
+    }
+    check(!stepped, "step reports a wrongly sized field");
+    check(controller.last_error().find("joint_q") != std::string::npos,
+          "last_error names the offending field, got: " + controller.last_error());
+
+    // A field the graph does not define is reported the same way.
+    auto extra = controller.input();
+    extra.fields["not_a_field"] = {0.0f};
+    check(!controller.step(extra, output, kDt), "step reports an unknown field");
+    check(controller.last_error().find("not_a_field") != std::string::npos,
+          "last_error names the unknown field, got: " + controller.last_error());
 }
 
 void test_step_matches_python(const std::filesystem::path& wrp, const std::filesystem::path& reference_path) {
@@ -125,7 +153,7 @@ void test_step_matches_python(const std::filesystem::path& wrp, const std::files
     input["joint_q_des"] = kJointQDes;
     input["joint_qd_des"] = kJointQdDes;
 
-    controller.step(input, output, kDt);
+    check(controller.step(input, output, kDt), "step succeeds: " + controller.last_error());
 
     for (std::size_t dof = 0; dof < expected.size(); ++dof) {
         check_close(output["joint_f"][dof], expected[dof], 1e-3f,
@@ -134,7 +162,7 @@ void test_step_matches_python(const std::filesystem::path& wrp, const std::files
 
     // Stepping again with the same inputs must give the same torques.
     const std::vector<float> first = output["joint_f"];
-    controller.step(input, output, kDt);
+    check(controller.step(input, output, kDt), "a repeated step succeeds");
     for (std::size_t dof = 0; dof < first.size(); ++dof) {
         check_close(output["joint_f"][dof], first[dof], 0.0f, "a repeated step is deterministic");
     }
@@ -171,7 +199,7 @@ void test_view_bound_ports_round_trip(const std::filesystem::path& wrp,
         q_des[kViewIndices[dof]] = kJointQDes[dof];
     }
 
-    controller.step(input, output, kDt);
+    check(controller.step(input, output, kDt), "step with view-bound ports succeeds: " + controller.last_error());
 
     const std::vector<float>& joint_f = output["joint_f"];
     for (std::size_t dof = 0; dof < kViewIndices.size(); ++dof) {
@@ -209,6 +237,7 @@ int main(int argc, char** argv) {
         test_buffers_are_sized_from_the_graph(wrp);
         test_params_lists_every_parameter(wrp);
         test_unknown_field_throws(wrp);
+        test_step_reports_a_bad_field_without_throwing(wrp);
         test_step_matches_python(wrp, reference);
         test_view_bound_ports_round_trip(views_wrp, reference);
     } catch (const std::exception& error) {
