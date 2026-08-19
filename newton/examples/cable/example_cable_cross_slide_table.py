@@ -676,9 +676,9 @@ class Example:
             segment_length=initial_segment_length,
             wrap_clearance=cable_wrap_clearance,
         )
-        cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
+        cable_quats = newton.utils.rod_parallel_transport_quaternions(cable_points)
         cable_segment_count = len(cable_points) - 1
-        straight_cable_points, straight_cable_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        straight_cable_points, straight_cable_quats = newton.utils.rod_straight_points_and_quaternions(
             start=left_anchor_world,
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=cable_segment_count * cable_segment_length,
