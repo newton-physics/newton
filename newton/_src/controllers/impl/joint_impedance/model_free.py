@@ -33,9 +33,9 @@ from ...controller import ControllerBase
 from ...utils import _validate_array
 from ._common import (
     _add_term_kernel,
-    _gather_port_kernel,
     _mass_matrix_multiply_kernel,
     _pd_term_kernel,
+    _read_port,
     _scatter_port_kernel,
 )
 
@@ -124,7 +124,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         coriolis_force: wp.array[wp.float32] | None
         """Coriolis generalized forces [N or N·m], shape [total_controlled_dofs]. ``None`` unless ``use_coriolis_compensation=True``."""
         mass_matrix: wp.array3d[wp.float32] | None
-        """Per-robot mass matrices over the controlled DOFs, shape [controlled_robot_count, max_controlled_dofs, max_controlled_dofs]; a robot with fewer than ``max_controlled_dofs`` DOFs leaves the trailing rows and columns unread. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
+        """Per-robot mass matrices over the controlled DOFs, shape [controlled_robot_count, max_controlled_dofs, max_controlled_dofs]; a robot with fewer than ``max_controlled_dofs`` DOFs leaves the trailing rows and columns unread. May be bound to a view selecting those robots' blocks out of a larger set. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
         stiffness: wp.array[wp.float32] | None
         """Position-error gain Kp, shape [total_controlled_dofs]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
         damping: wp.array[wp.float32] | None
@@ -202,7 +202,10 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         self._has_qdd = bool(has_qdd_feedforward)
         self._requires_grad = requires_grad
 
-        self._controlled_dofs_per_robot = controlled_dofs_per_robot
+        # Copied, not stored: the kernels use this as a loop bound while the
+        # tables below are derived from the same host snapshot, so a later edit
+        # to the caller's array would send the multiply past the end of a buffer.
+        self._controlled_dofs_per_robot = wp.array(controlled_dofs_per_robot_np, dtype=wp.int32, device=self._device)
 
         # Flat-DOF -> (robot, slot) tables, so the mass-matrix multiply can run
         # as a flat launch over total_controlled_dofs instead of a padded 2-D one.
@@ -243,6 +246,19 @@ class ControllerJointImpedanceModelFree(ControllerBase):
 
         self._tau_buf = _buf()
         self._acc_buf: wp.array[wp.float32] | None = _buf() if self._use_inertia else None
+        # Only used when the mass matrix is bound to a view; a plain array is
+        # passed to the multiply kernel as it is. Allocated up front because
+        # allocation is not allowed during graph capture.
+        self._mass_matrix_buf: wp.array3d[wp.float32] | None = (
+            wp.zeros(
+                (controlled_robot_count, max_controlled_dofs, max_controlled_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
+            )
+            if self._use_inertia
+            else None
+        )
 
     def _bake_gain(self, value: wp.array[wp.float32] | None) -> wp.array[wp.float32] | None:
         """Copy a gain array so later edits to the caller's array have no effect.
@@ -260,23 +276,6 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         )
         wp.copy(baked, value)
         return baked
-
-    def _read_port(self, port: Any, buf: wp.array[wp.float32]) -> None:
-        """Copy a bound port into its internal buffer.
-
-        A view needs a kernel rather than :func:`warp.copy`, which is not
-        recordable under APIC graph capture when either side is non-contiguous.
-        """
-        if isinstance(port, wp.indexedarray):
-            wp.launch(
-                _gather_port_kernel,
-                dim=self._total_controlled_dofs,
-                inputs=[port],
-                outputs=[buf],
-                device=self._device,
-            )
-        else:
-            wp.copy(buf, port)
 
     @property
     def controlled_robot_count(self) -> int:
@@ -402,7 +401,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                 allow_indexed=True,
             )
             if buf is not None:
-                self._read_port(port, buf)
+                _read_port(port, buf, self._total_controlled_dofs, self._device)
 
         if self._use_inertia:
             _validate_array(
@@ -411,6 +410,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                 dtype=wp.float32,
                 shape=(self._controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
                 device=self._device,
+                allow_indexed=True,
             )
 
         stiffness = self._stiffness_baked if self._stiffness_baked is not None else self._stiffness_buf
@@ -430,11 +430,20 @@ class ControllerJointImpedanceModelFree(ControllerBase):
             wp.launch(_add_term_kernel, dim=dim, inputs=[self._qdd_buf], outputs=[working_buf], device=self._device)
 
         if self._use_inertia:
+            mass_matrix = inputs.mass_matrix
+            if isinstance(mass_matrix, wp.indexedarray):
+                _read_port(
+                    mass_matrix,
+                    self._mass_matrix_buf,
+                    (self._controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
+                    self._device,
+                )
+                mass_matrix = self._mass_matrix_buf
             wp.launch(
                 _mass_matrix_multiply_kernel,
                 dim=dim,
                 inputs=[
-                    inputs.mass_matrix,
+                    mass_matrix,
                     self._acc_buf,
                     self._robot_of_dof,
                     self._slot_of_dof,

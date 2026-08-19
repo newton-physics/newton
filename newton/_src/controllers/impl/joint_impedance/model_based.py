@@ -26,7 +26,7 @@ from newton._src.sim.model import Model
 
 from ...controller import ControllerBase
 from ...utils import _validate_array
-from ._common import _gather_mass_matrix_blocks_kernel
+from ._common import _gather_mass_matrix_blocks_kernel, _read_port
 from .model_free import ControllerJointImpedanceModelFree
 
 
@@ -484,11 +484,11 @@ class ControllerJointImpedance(ControllerBase):
                     f"would be ignored."
                 )
 
-        # Whole-model copies, not a gather of the controlled DOFs: an
+        # Whole-model reads, not a gather of the controlled DOFs: an
         # uncontrolled joint still sets its own body transform, and hence the
         # gravity/Coriolis/mass-matrix terms of every joint downstream of it.
-        wp.copy(self._model_state.joint_q, inputs.joint_q)
-        wp.copy(self._model_state.joint_qd, inputs.joint_qd)
+        _read_port(inputs.joint_q, self._model_state.joint_q, self._coord_count, self._device)
+        _read_port(inputs.joint_qd, self._model_state.joint_qd, self._dof_count, self._device)
 
         if self._needs_fk:
             eval_fk(

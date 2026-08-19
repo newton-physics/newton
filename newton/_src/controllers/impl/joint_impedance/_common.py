@@ -12,6 +12,8 @@ and indexes into those blocks, while the gather kernel launches over them.
 
 import warp as wp
 
+from ....core.types import Devicelike
+
 
 @wp.kernel
 def _pd_term_kernel(
@@ -38,12 +40,12 @@ def _add_term_kernel(
 
 @wp.kernel
 def _mass_matrix_multiply_kernel(
-    mass_matrix: wp.array3d[wp.float32],  # (model_robot_count, max_controlled_dofs, max_controlled_dofs)
+    mass_matrix: wp.array3d[wp.float32],  # (controlled_robot_count, max_controlled_dofs, max_controlled_dofs)
     vec: wp.array[wp.float32],  # (total_controlled_dofs,)
     robot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> owning robot
     slot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> row within that robot's block
-    dof_offsets: wp.array[wp.int32],  # (model_robot_count,) -> first flat DOF of each robot
-    controlled_dofs_per_robot: wp.array[wp.int32],  # (model_robot_count,)
+    dof_offsets: wp.array[wp.int32],  # (controlled_robot_count,) -> first flat DOF of each robot
+    controlled_dofs_per_robot: wp.array[wp.int32],  # (controlled_robot_count,)
     out: wp.array[wp.float32],  # (total_controlled_dofs,)
 ):
     dof = wp.tid()
@@ -73,22 +75,65 @@ def _gather_mass_matrix_blocks_kernel(
 
 # wp.copy is not recordable under APIC graph capture when either side is
 # non-contiguous, which every indexed-view port is. These two kernels do the
-# same work in a form that captures and serialises.
+# same work in a form that captures and serialises. Both controllers launch them
+# at their own port length: one entry per controlled DOF for a compact port, one
+# per model coordinate or DOF for the model-based controller's whole-model ports.
 
 
 @wp.kernel
 def _gather_port_kernel(
-    port: wp.indexedarray[wp.float32],  # (total_controlled_dofs,) view of a simulation-sized array
-    out: wp.array[wp.float32],  # (total_controlled_dofs,)
+    port: wp.indexedarray[wp.float32],  # view of a simulation-sized array
+    out: wp.array[wp.float32],  # one entry per element the view addresses
 ):
     dof = wp.tid()
     out[dof] = port[dof]
 
 
 @wp.kernel
+def _gather_mass_matrix_port_kernel(
+    port: wp.indexedarray(dtype=wp.float32, ndim=3),  # view selecting robots from a larger set of blocks
+    out: wp.array3d[wp.float32],  # (controlled_robot_count, max_controlled_dofs, max_controlled_dofs)
+):
+    robot, row, col = wp.tid()
+    out[robot, row, col] = port[robot, row, col]
+
+
+@wp.kernel
 def _scatter_port_kernel(
-    values: wp.array[wp.float32],  # (total_controlled_dofs,)
-    port: wp.indexedarray[wp.float32],  # (total_controlled_dofs,) view of a simulation-sized array
+    values: wp.array[wp.float32],  # one entry per element the view addresses
+    port: wp.indexedarray[wp.float32],  # view of a simulation-sized array
 ):
     dof = wp.tid()
     port[dof] = values[dof]
+
+
+def _read_port(
+    port: wp.array[wp.float32] | wp.array3d[wp.float32] | wp.indexedarray[wp.float32],
+    buffer: wp.array[wp.float32] | wp.array3d[wp.float32],
+    shape: int | tuple[int, ...],
+    device: Devicelike,
+) -> None:
+    """Copy a bound port into an internal buffer, whatever it is bound to.
+
+    A view has to go through a kernel: :func:`warp.copy` is not recordable under
+    APIC graph capture when either side is non-contiguous, so using it here would
+    make a controller that reports ``is_graphable()`` fail to export.
+
+    Args:
+        port: The caller-bound port, a :class:`warp.array` or a view of one.
+            1-D for a compact or whole-model port, 3-D for a mass matrix; a 3-D
+            view has no bracket spelling and is
+            ``wp.indexedarray(dtype=wp.float32, ndim=3)``.
+        buffer: Destination, matching ``port`` in shape and dtype.
+        shape: Launch shape — the length for a 1-D port, ``(robots, rows, cols)``
+            for a mass matrix.
+        device: Device to launch on.
+    """
+    if not isinstance(port, wp.indexedarray):
+        wp.copy(buffer, port)
+        return
+
+    # A kernel parameter's dimensionality is part of its type, so a view needs
+    # the kernel that matches its rank.
+    kernel = _gather_port_kernel if port.ndim == 1 else _gather_mass_matrix_port_kernel
+    wp.launch(kernel, dim=shape, inputs=[port], outputs=[buffer], device=device)

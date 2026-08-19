@@ -462,8 +462,61 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         with self.assertRaises(ValueError):
             ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
+    def test_controlled_dofs_per_robot_is_copied(self):
+        """Verify editing the caller's controlled_dofs_per_robot after construction changes nothing.
+
+        The kernels use it as a loop bound, while the flat-DOF tables and every
+        buffer are sized from a snapshot taken at construction. An entry grown
+        afterwards would walk the multiply past the end of those buffers.
+        """
+        device = wp.get_device()
+        dofs = _dofs_arr([2], device)
+        ctrl = ControllerJointImpedanceModelFree(
+            controlled_dofs_per_robot=dofs,
+            stiffness=_gains(2, 1.0, device),
+            damping=_gains(2, 0.0, device),
+            use_gravity_compensation=False,
+            use_coriolis_compensation=False,
+            use_inertia_decoupling=False,
+            device=device,
+        )
+        before = _run_mf(ctrl, q=[0.0, 0.0], qd=[0.0, 0.0], q_des=[1.0, 2.0], qd_des=[0.0, 0.0], device=device)
+
+        dofs.assign(np.array([5], dtype=np.int32))  # more DOFs than any buffer holds
+        after = _run_mf(ctrl, q=[0.0, 0.0], qd=[0.0, 0.0], q_des=[1.0, 2.0], qd_des=[0.0, 0.0], device=device)
+
+        np.testing.assert_allclose(after, before, atol=1e-6)
+        np.testing.assert_array_equal(ctrl._controlled_dofs_per_robot.numpy(), [2])
+
+    def test_mass_matrix_bound_to_a_view(self):
+        """Verify a mass matrix bound to a view of a larger set of blocks is gathered correctly.
+
+        The caller holds blocks for three robots and controls the middle one, so
+        the view selects a single block that the multiply must read in place of
+        the first.
+        """
+        device = wp.get_device()
+        ctrl = _make_mf(dofs_list=[2], kp=1.0, kd=0.0, device=device, use_inertia=True)
+
+        fleet = np.zeros((3, 2, 2), dtype=np.float32)
+        fleet[0] = np.eye(2) * 99.0  # a block the controller must not read
+        fleet[1] = np.array([[2.0, 0.0], [0.0, 4.0]], dtype=np.float32)
+        fleet[2] = np.eye(2) * -99.0
+        blocks = wp.array(fleet, dtype=wp.float32, device=device)
+
+        tau = _run_mf(
+            ctrl,
+            q=[0.0, 0.0],
+            qd=[0.0, 0.0],
+            q_des=[1.0, 1.0],
+            qd_des=[0.0, 0.0],
+            device=device,
+            mass_matrix=blocks[_idx([1], device)],
+        )
+        np.testing.assert_allclose(tau, [2.0, 4.0], atol=1e-5)
+
     def test_wrong_shape_mass_matrix_raises(self):
-        """Verify a mass matrix whose shape differs from (model_robot_count, max_controlled_dofs, max_controlled_dofs) raises."""
+        """Verify a mass matrix whose shape differs from (controlled_robot_count, max_controlled_dofs, max_controlled_dofs) raises."""
         device = wp.get_device()
         ctrl = _make_mf(dofs_list=[2, 2], kp=1.0, kd=0.0, device=device, use_inertia=True)
         ins, outs = ctrl.input(), ctrl.output()
