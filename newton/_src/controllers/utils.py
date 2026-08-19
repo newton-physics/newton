@@ -37,7 +37,7 @@ def _validate_array(
         required: Whether ``None`` is rejected.
         allow_indexed: Whether a :class:`wp.indexedarray` view is accepted.
             Set for caller-bound ports, which may be bound to a view of a
-            simulation-sized array rather than to a compact array.
+            simulation-sized array rather than to an array of its own.
     """
     if array is None:
         if required:
