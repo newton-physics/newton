@@ -42,7 +42,7 @@ ModelBuilder buffer population are deliberately deferred.
 
 - Changing canonical USDPhysics discovery, topology, or geometry parsing.
 - Replacing `ModelBuilder.add_*()` with direct array construction.
-- Defining an external scene representation or public batch API.
+- Defining an external scene representation or public batch interface.
 - Making arbitrary downstream resolver definitions device-capable.
 - Introducing a scene intermediate representation.
 - Applying importer-specific SDF, contact, joint-axis, or builder rules to

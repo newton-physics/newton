@@ -660,6 +660,12 @@ class _ResolvedValue:
 class SchemaResolution:
     """Reuse one resolver order and fallback policy across USD sources.
 
+    :meth:`resolve` returns one :class:`SchemaResolution.Result` per logical
+    property. Each result contains the canonical resolver value and the source
+    that supplied it. Source adapters provide applicable schema identities and
+    registered fallback metadata; importer-specific interpretation remains
+    with the importer.
+
     Args:
         resolvers: Resolver instances in priority order.
         use_registered_schema_fallbacks: Use registered schema fallbacks

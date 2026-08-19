@@ -9,7 +9,9 @@ orphan: true
 
 ## Status
 
-This document describes the design implemented by PR #3888. The PR continues and supersedes PR #3572, addresses the fallback-precedence part of issue #3307, and prepares the internal seam needed by PR #3568. Complete public provenance remains future work.
+This document describes registered USD schema fallback precedence and its
+source-neutral resolution interface. The implementation continues the work
+from PR #3572, PR #3568, and PR #3888 and addresses issue #3307.
 
 ## Goal
 
@@ -80,7 +82,7 @@ A property can mark a registered fallback as unset. Sentinel rules remain proper
 
 A blocked attribute is unauthored, but its applicable registered fallback remains eligible under Newton's accepted contract. If a PXR-only custom getter cannot evaluate one fallback candidate, only that candidate is skipped.
 
-Reader-backed compound properties resolve each constituent independently. Authored constituents are retained and missing or blocked constituents can come from the registered schema definition. The mixed result is classified as a registered fallback; per-constituent provenance is deferred to PR #3568.
+Reader-backed compound properties resolve each constituent independently. Authored constituents are retained and missing or blocked constituents can come from the registered schema definition. The mixed result is classified as a registered fallback and reports all contributing attribute names, but not each constituent's individual origin.
 
 ### Property interpretation
 
@@ -117,13 +119,15 @@ When adding a resolved property:
 
 ## Future work
 
-This PR does not:
+This work does not:
 
 - package PhysX or MuJoCo codeless schema plugins;
 - copy vendor fallback catalogs;
 - migrate the remaining deformable body and material proposal attributes;
-- expose complete public resolver/source provenance or dynamic applicability;
+- discover applicable schema identities for source adapters that cannot
+  enumerate them;
 - turn every `add_usd()` argument into a resolved option; or
 - remove the legacy policy.
 
-PR #3568 can build complete provenance and dynamic applicability on this seam. Codeless vendor schemas and deformable schema resolution remain separate integration tasks.
+Codeless vendor schemas and expanded deformable schema resolution remain
+separate integration tasks.
