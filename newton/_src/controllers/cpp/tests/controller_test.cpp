@@ -62,6 +62,16 @@ constexpr std::size_t kControlledDofs = 3;
 constexpr std::size_t kViewSimDofs = 6;
 const std::vector<std::size_t> kViewIndices{1, 3, 5};
 
+// The third artifact drives ControllerJointImpedanceModelFree with its mass
+// matrix bound to a view of one robot's block out of a fleet of three, so the
+// parameter is every block rather than the one in use.
+constexpr std::size_t kFleetRobots = 3;
+constexpr std::size_t kFleetControlledRobot = 1;
+constexpr std::size_t kFleetDofs = 2;
+constexpr float kFleetDecoy = 99.0f;
+const std::vector<float> kFleetBlock{2.0f, 0.0f, 0.0f, 4.0f};
+const std::vector<float> kFleetQDes{1.0f, 1.0f};
+
 void test_buffers_are_sized_from_the_graph(const std::filesystem::path& wrp) {
     newton::controllers::Controller controller{wrp};
     const auto input = controller.input();
@@ -219,6 +229,40 @@ void test_view_bound_ports_round_trip(const std::filesystem::path& wrp,
     }
 }
 
+void test_view_bound_mass_matrix(const std::filesystem::path& wrp, const std::filesystem::path& reference_path) {
+    const std::vector<float> expected = read_reference(reference_path);
+    if (expected.size() != kFleetDofs) {
+        check(false, "reference file holds one torque per controlled DOF");
+        return;
+    }
+
+    newton::controllers::Controller controller{wrp};
+    auto input = controller.input();
+    auto output = controller.output();
+
+    // The mass matrix is exchanged as the whole fleet, not the block in use.
+    check(input["mass_matrix"].size() == kFleetRobots * kFleetDofs * kFleetDofs,
+          "mass_matrix is exchanged as every block in the fleet");
+    check(input["joint_q_des"].size() == kFleetDofs, "joint_q_des stays at the controlled length");
+
+    // Fill every block with a decoy, then write the real one where the view
+    // points; reading the wrong block would be unmissable.
+    std::vector<float>& blocks = input["mass_matrix"];
+    blocks.assign(kFleetRobots * kFleetDofs * kFleetDofs, kFleetDecoy);
+    const std::size_t block_start = kFleetControlledRobot * kFleetDofs * kFleetDofs;
+    for (std::size_t element = 0; element < kFleetBlock.size(); ++element) {
+        blocks[block_start + element] = kFleetBlock[element];
+    }
+    input["joint_q_des"] = kFleetQDes;
+
+    check(controller.step(input, output, kDt), "step with a view-bound mass matrix succeeds: " + controller.last_error());
+
+    for (std::size_t dof = 0; dof < expected.size(); ++dof) {
+        check_close(output["joint_f"][dof], expected[dof], 1e-3f,
+                    "joint_f[" + std::to_string(dof) + "] matches the Python controller");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -226,9 +270,12 @@ int main(int argc, char** argv) {
     const std::filesystem::path wrp = artifacts / "joint_impedance.wrp";
     const std::filesystem::path views_wrp = artifacts / "joint_impedance_views.wrp";
     const std::filesystem::path reference = artifacts / "joint_impedance_expected.txt";
+    const std::filesystem::path mass_matrix_wrp = artifacts / "mass_matrix_view.wrp";
+    const std::filesystem::path mass_matrix_reference = artifacts / "mass_matrix_view_expected.txt";
 
     if (!std::filesystem::exists(wrp) || !std::filesystem::exists(views_wrp)
-        || !std::filesystem::exists(reference)) {
+        || !std::filesystem::exists(mass_matrix_wrp) || !std::filesystem::exists(reference)
+        || !std::filesystem::exists(mass_matrix_reference)) {
         std::cerr << "Missing artifacts in " << artifacts << "; run generate_artifacts.py first.\n";
         return 1;
     }
@@ -240,6 +287,7 @@ int main(int argc, char** argv) {
         test_step_reports_a_bad_field_without_throwing(wrp);
         test_step_matches_python(wrp, reference);
         test_view_bound_ports_round_trip(views_wrp, reference);
+        test_view_bound_mass_matrix(mass_matrix_wrp, mass_matrix_reference);
     } catch (const std::exception& error) {
         std::cerr << "FAILED: unexpected exception: " << error.what() << "\n";
         ++failures;

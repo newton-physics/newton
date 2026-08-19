@@ -21,7 +21,12 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.controllers import ControllerJointImpedance, export_controller_graph, select_joints
+from newton.controllers import (
+    ControllerJointImpedance,
+    ControllerJointImpedanceModelFree,
+    export_controller_graph,
+    select_joints,
+)
 
 # One robot: a four-link revolute arm, of which the first three joints are
 # controlled. The uncontrolled wrist keeps the model-sized ports (joint_q,
@@ -50,6 +55,18 @@ DT = 0.01  # [s], unused by the impedance law but written into the graph
 # matter. Same physics as the first artifact, so both produce the same torques.
 VIEW_SIM_DOFS = 6
 VIEW_INDICES = np.array([1, 3, 5], dtype=np.int32)
+
+# A third artifact drives ControllerJointImpedanceModelFree, whose mass matrix is
+# a port rather than something it computes. It is bound to a view selecting one
+# robot's block out of a fleet, so the host exchanges every block and the graph
+# reads only the addressed one.
+FLEET_ROBOTS = 3
+FLEET_CONTROLLED_ROBOT = 1
+FLEET_DOFS = 2
+FLEET_BLOCK = np.array([[2.0, 0.0], [0.0, 4.0]], dtype=np.float32)
+FLEET_DECOY = 99.0  # fills the blocks the controller must not read
+FLEET_Q_DES = np.array([1.0, 1.0], dtype=np.float32)  # [rad]
+FLEET_STIFFNESS = np.array([1.0, 1.0], dtype=np.float32)  # [1/s^2]
 
 
 def build_model(device) -> newton.Model:
@@ -117,6 +134,38 @@ def export_with_views(model, selection, device, out_dir: Path) -> np.ndarray:
     return scattered_torques
 
 
+def export_model_free_mass_matrix_view(device, out_dir: Path) -> np.ndarray:
+    """Export a model-free controller whose mass matrix is bound to a view.
+
+    The parameter the host exchanges is the whole fleet of blocks, not the one
+    block this controller uses, so the C++ buffer has to be sized from the graph
+    rather than from the controlled-DOF count.
+    """
+    controller = ControllerJointImpedanceModelFree(
+        controlled_dofs_per_robot=wp.array([FLEET_DOFS], dtype=wp.int32, device=device),
+        stiffness=wp.array(FLEET_STIFFNESS, dtype=wp.float32, device=device),
+        damping=wp.zeros(FLEET_DOFS, dtype=wp.float32, device=device),
+        use_gravity_compensation=False,
+        use_coriolis_compensation=False,
+        use_inertia_decoupling=True,
+        device=device,
+    )
+    inputs, outputs = controller.input(), controller.output()
+    inputs.joint_q_des.assign(FLEET_Q_DES)
+
+    blocks_np = np.full((FLEET_ROBOTS, FLEET_DOFS, FLEET_DOFS), FLEET_DECOY, dtype=np.float32)
+    blocks_np[FLEET_CONTROLLED_ROBOT] = FLEET_BLOCK
+    blocks = wp.array(blocks_np, dtype=wp.float32, device=device)
+    indices = wp.array(np.array([FLEET_CONTROLLED_ROBOT], dtype=np.int32), dtype=wp.int32, device=device)
+    inputs.mass_matrix = blocks[indices]
+
+    controller.step(inputs=inputs, outputs=outputs, dt=DT)
+    torques = outputs.joint_f.numpy().copy()
+
+    export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=out_dir / "mass_matrix_view")
+    return torques
+
+
 def main(out_dir: Path) -> int:
     if not wp.is_cuda_available():
         print("generate_artifacts: CUDA is required to capture a graph", file=sys.stderr)
@@ -147,9 +196,15 @@ def main(out_dir: Path) -> int:
     # law, so the same torques must appear at the addressed slots.
     np.testing.assert_allclose(scattered[VIEW_INDICES], expected, atol=1e-5)
 
-    print("generate_artifacts: wrote joint_impedance.wrp, joint_impedance_views.wrp")
+    fleet_torques = export_model_free_mass_matrix_view(device, out_dir)
+    # tau = M @ (Kp * dq), with M the addressed block and dq = FLEET_Q_DES.
+    np.testing.assert_allclose(fleet_torques, FLEET_BLOCK @ (FLEET_STIFFNESS * FLEET_Q_DES), atol=1e-5)
+    (out_dir / "mass_matrix_view_expected.txt").write_text("\n".join(f"{value:.9g}" for value in fleet_torques) + "\n")
+
+    print("generate_artifacts: wrote joint_impedance.wrp, joint_impedance_views.wrp, mass_matrix_view.wrp")
     print(f"                    reference torques {expected}")
     print(f"                    scattered into slots {VIEW_INDICES.tolist()} of {VIEW_SIM_DOFS}: {scattered}")
+    print(f"                    model-free torques from a view-bound mass matrix: {fleet_torques}")
     return 0
 
 
