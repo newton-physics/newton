@@ -9031,11 +9031,11 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
-        color: Vec3 | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
         label: str | None = None,
+        color: Vec3 | None = None,
     ):
         """Helper to create a regular planar cloth grid
 
@@ -9056,10 +9056,10 @@ class ModelBuilder:
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
-            color: Optional display RGB color with values in [0, 1] for every cloth particle.
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify
                 this cloth.
+            color: Optional display RGB color with values in [0, 1] for every cloth particle.
         """
 
         def grid_index(x, y, dim_x):
@@ -9155,13 +9155,13 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
-        color: Vec3 | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
         custom_attributes_springs: dict[str, Any] | None = None,
         validate_mesh: bool = False,
         label: str | None = None,
+        color: Vec3 | None = None,
     ) -> None:
         """Helper to create a cloth model from a regular triangle mesh
 
@@ -9176,7 +9176,6 @@ class ModelBuilder:
             indices: A list of triangle indices, 3 entries per-face
             density: The density per-area of the mesh
             particle_radius: The particle_radius which controls particle based collisions.
-            color: Optional display RGB color with values in [0, 1] for every cloth particle.
             custom_attributes_particles: Dictionary of custom attribute names to values for the particles.
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
@@ -9192,6 +9191,7 @@ class ModelBuilder:
                 :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
                 warning emitted with ``validate_mesh=True`` can identify
                 this cloth.
+            color: Optional display RGB color with values in [0, 1] for every cloth particle.
 
         Note:
             The mesh should be two-manifold.
@@ -9304,8 +9304,8 @@ class ModelBuilder:
         radius_mean: float | None = None,
         radius_std: float = 0.0,
         flags: list[int] | int | None = None,
-        color: Vec3 | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        color: Vec3 | None = None,
     ):
         """
         Adds a regular 3D grid of particles to the model.
@@ -9329,8 +9329,8 @@ class ModelBuilder:
             radius_mean: Mean radius for particles. If None, uses the builder's default.
             radius_std: Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
             flags: Flags to assign to each particle. If None, uses the builder's default.
-            color: Optional display RGB color with values in [0, 1] for every particle.
             custom_attributes: Dictionary of custom attribute names to values for the particles.
+            color: Optional display RGB color with values in [0, 1] for every particle.
 
         Returns:
             Nothing. The builder is updated in place.
@@ -9423,8 +9423,8 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
-        color: Vec3 | None = None,
         label: str | None = None,
+        color: Vec3 | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
 
@@ -9460,11 +9460,11 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
-            color: Optional display RGB color with values in [0, 1] for every soft-body particle.
             label: Optional name reserved for forwarding to mesh-quality
                 diagnostics. Currently unused by ``add_soft_grid`` (the
                 generated grid is degenerate-free by construction); kept
                 for signature consistency with the other ``add_*`` helpers.
+            color: Optional display RGB color with values in [0, 1] for every soft-body particle.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -9591,9 +9591,9 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
-        color: Vec3 | None = None,
         validate_mesh: bool = False,
         label: str | None = None,
+        color: Vec3 | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh.
 
@@ -9632,7 +9632,6 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
-            color: Optional display RGB color with values in [0, 1] for every soft-body particle.
             validate_mesh: If True, check for inverted or small-volume
                 tetrahedra, sliver tetrahedra, and non-manifold faces, and
                 emit warnings. See :func:`newton.utils.validate_tet_mesh`.
@@ -9640,6 +9639,7 @@ class ModelBuilder:
                 :func:`newton.utils.validate_tet_mesh` so a mesh-quality
                 warning emitted with ``validate_mesh=True`` can identify
                 this soft body.
+            color: Optional display RGB color with values in [0, 1] for every soft-body particle.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`

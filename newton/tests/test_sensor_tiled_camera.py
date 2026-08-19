@@ -315,10 +315,15 @@ class TestSensorTiledCamera(unittest.TestCase):
                 self.assertEqual(int(shape_index_image.numpy()[0, 0, 0, 0]), int(PARTICLES_SHAPE_ID))
 
     def test_triangle_albedo_interpolates_particle_display_color(self) -> None:
-        """Interpolate triangle display values before converting the result to linear color."""
+        """Interpolate triangle display values before converting the result to linear color.
+
+        The vertices are scalene and the sampled point sits at barycentric
+        weights (0.2, 0.3, 0.5), so every permutation of the three weights over
+        the three vertices produces a different pixel.
+        """
         builder = newton.ModelBuilder()
         builder.add_particles(
-            pos=[wp.vec3(-1.0, -1.0, -2.0), wp.vec3(1.0, -1.0, -2.0), wp.vec3(0.0, 1.0, -2.0)],
+            pos=[wp.vec3(-1.0, 0.0, -2.0), wp.vec3(0.0, -1.0, -2.0), wp.vec3(0.4, 0.6, -2.0)],
             vel=[wp.vec3(0.0)] * 3,
             mass=[1.0] * 3,
             radius=[0.01] * 3,
@@ -331,7 +336,7 @@ class TestSensorTiledCamera(unittest.TestCase):
             dtype=wp.transformf,
             device="cpu",
         )
-        display_mix = np.asarray((0.25, 0.25, 0.5), dtype=np.float32)
+        display_mix = np.asarray((0.2, 0.3, 0.5), dtype=np.float32)
 
         for output_color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
             with self.subTest(output_color_space=output_color_space):

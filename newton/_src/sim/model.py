@@ -792,7 +792,10 @@ class Model:
         """Particle display RGB colors in [0, 1], shape [particle_count, 3], float.
 
         This remains ``None`` when no particle has an authored color, allowing
-        renderers to retain their existing fallback appearance.
+        renderers to retain their existing fallback appearance. Authoring any
+        particle materializes the whole array with white in the unauthored
+        entries, so a partially colored model leaves those fallbacks behind for
+        every particle, not only the colored ones.
         """
         self.particle_world_start: wp.array[wp.int32] | None = None
         """Start index of the first particle per world, shape [world_count + 2], int.

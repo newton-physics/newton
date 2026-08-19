@@ -7,6 +7,22 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.viewer import ViewerNull
+
+
+class _ViewerFallbackProbe(ViewerNull):
+    """Capture the colors the shared viewer path sends for particles and surfaces."""
+
+    def __init__(self):
+        super().__init__(num_frames=1)
+        self.point_colors = None
+        self.mesh_colors = None
+
+    def log_points(self, name, points, radii=None, colors=None, hidden=False):
+        self.point_colors = colors
+
+    def log_mesh(self, _name, _points, _indices, *args, colors=None, **kwargs):
+        self.mesh_colors = colors
 
 
 class TestParticleDisplayColor(unittest.TestCase):
@@ -214,6 +230,53 @@ class TestParticleDisplayColor(unittest.TestCase):
                 dtype=np.float32,
             ),
         )
+
+    @staticmethod
+    def _build_surface(colors):
+        """Build one triangle whose three particles carry the given display colors."""
+        builder = newton.ModelBuilder()
+        builder.add_particles(
+            pos=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0)],
+            vel=[wp.vec3()] * 3,
+            mass=[1.0] * 3,
+            colors=colors,
+        )
+        builder.add_triangle(0, 1, 2)
+        return builder.finalize(device="cpu")
+
+    def test_partial_authoring_replaces_viewer_fallbacks(self):
+        """Send the model array for every particle once any particle is colored.
+
+        Authoring a single particle materializes the whole array, so the viewer
+        stops substituting its own default color for the unauthored remainder.
+        This pins the documented cost of the dense representation.
+        """
+        uncolored = self._build_surface(None)
+        self.assertIsNone(uncolored.particle_display_color)
+
+        probe = _ViewerFallbackProbe()
+        probe.set_model(uncolored)
+        probe.begin_frame(0.0)
+        probe.log_state(uncolored.state())
+
+        self.assertIsNone(probe.mesh_colors)
+        np.testing.assert_allclose(
+            probe.point_colors.numpy(),
+            np.tile(np.asarray((0.7, 0.6, 0.4), dtype=np.float32), (3, 1)),
+        )
+
+        partial = self._build_surface([(1.0, 0.0, 0.0), None, None])
+        probe = _ViewerFallbackProbe()
+        probe.set_model(partial)
+        probe.begin_frame(0.0)
+        probe.log_state(partial.state())
+
+        expected = np.asarray(
+            [(1.0, 0.0, 0.0), (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(probe.point_colors.numpy(), expected)
+        np.testing.assert_allclose(probe.mesh_colors.numpy(), expected)
 
 
 if __name__ == "__main__":
