@@ -7331,10 +7331,12 @@ def Xform "World"
             prepend apiSchemas = ["PhysicsMaterialAPI", "PhysicsCurvesDeformableMaterialAPI"]
         )
         {
-            float physics:thickness = 0.07
+            float physics:curvesThickness = 0.07
             float physics:density = 1000
-            float physics:bendStiffness = 2121182.08
-            float physics:stretchStiffness = 1299224.03
+            float physics:curvesStretchStiffness = 5000
+            float physics:curvesShearStiffness = 5000
+            float physics:curvesBendStiffness = 2.5
+            float physics:curvesTwistStiffness = 2.5
         }
 
         def Material "ClothPhysics" (

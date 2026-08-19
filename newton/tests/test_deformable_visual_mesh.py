@@ -1586,10 +1586,13 @@ class TestDeformableVisualMeshCameraParity(unittest.TestCase):
             "edge_rest_length",
         )
         for field in close_fields:
+            # USD converts structural rod stiffness using rest lengths reconstructed
+            # from point3f positions, while the procedural path receives per-joint gains.
+            rtol = 2.0e-6 if field == "joint_target_ke" else 1.0e-6
             np.testing.assert_allclose(
                 np.asarray(getattr(procedural, field)),
                 np.asarray(getattr(usd, field)),
-                rtol=1.0e-6,
+                rtol=rtol,
                 atol=1.0e-7,
             )
 
@@ -1612,7 +1615,6 @@ class TestDeformableVisualMeshCameraParity(unittest.TestCase):
             "body_inv_mass",
             "body_inertia",
             "body_inv_inertia",
-            "joint_target_ke",
             "joint_target_kd",
             "particle_q",
             "particle_mass",
@@ -1629,6 +1631,13 @@ class TestDeformableVisualMeshCameraParity(unittest.TestCase):
                 getattr(procedural_model, field).numpy(),
                 getattr(usd_model, field).numpy(),
             )
+
+        np.testing.assert_allclose(
+            procedural_model.joint_target_ke.numpy(),
+            usd_model.joint_target_ke.numpy(),
+            rtol=2.0e-6,
+            atol=1.0e-7,
+        )
 
         for procedural_visual, usd_visual in zip(
             procedural_model.deformable_visual_meshes, usd_model.deformable_visual_meshes, strict=True
