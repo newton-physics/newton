@@ -451,7 +451,8 @@ class RigidBodySim:
         self._q_i = wp.to_torch(self.sim.state.q_i).reshape(nw, nb, 7)
         self._u_i = wp.to_torch(self.sim.state.u_i).reshape(nw, nb, 6)
 
-        # Control tensors (writable views — all use DOF space)
+        # Control tensors (writable views)
+        # q_j_ref uses generalized coordinates (njc), dq_j_ref and tau_j_ref use DOFs (njd)
         self._q_j_ref = wp.to_torch(self.sim.control.q_j_ref).reshape(nw, njc)
         self._dq_j_ref = wp.to_torch(self.sim.control.dq_j_ref).reshape(nw, njd)
         self._tau_j_ref = wp.to_torch(self.sim.control.tau_j_ref).reshape(nw, njd)
@@ -792,7 +793,7 @@ class RigidBodySim:
         The actual reset happens on the next call to :meth:`apply_resets`.
 
         Args:
-            dof_positions: Joint positions ``(len(env_ids), num_joint_dofs)``.
+            dof_positions: Joint positions ``(len(env_ids), num_joint_coords)``.
             dof_velocities: Joint velocities ``(len(env_ids), num_joint_dofs)``.
             env_ids: Which worlds to reset.  ``None`` resets all.
         """

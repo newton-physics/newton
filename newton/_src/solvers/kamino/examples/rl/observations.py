@@ -523,7 +523,7 @@ class DrlegsBaseObservation(ObservationBuilder):
         else:
             num_root_coords = 0
         self._num_root_coords = num_root_coords
-        self._num_dofs = body_sim.num_joint_coords - num_root_coords
+        self._num_coords = body_sim.num_joint_coords - num_root_coords
         self._action_scale = action_scale
 
         # Action history buffers (actuated joints only).
@@ -540,14 +540,14 @@ class DrlegsBaseObservation(ObservationBuilder):
 
         # Pre-allocated observation buffer (eliminates torch.cat)
         self._obs_buffer = torch.zeros(
-            (body_sim.num_worlds, 3 + self._num_dofs + 2 * self._num_actions),
+            (body_sim.num_worlds, 3 + self._num_coords + 2 * self._num_actions),
             device=body_sim.torch_device,
             dtype=torch.float32,
         )
 
     @property
     def num_observations(self) -> int:
-        return 3 + self._num_dofs + self._num_actions + self._num_actions  # 63
+        return 3 + self._num_coords + self._num_actions + self._num_actions  # 63
 
     def compute(self, actions: torch.Tensor | None = None) -> torch.Tensor:
         if actions is not None:
@@ -557,7 +557,7 @@ class DrlegsBaseObservation(ObservationBuilder):
         root_pos = self._get_root_positions()
         q_j = self._get_joint_positions()[:, self._num_root_coords :]
 
-        d = self._num_dofs
+        d = self._num_coords
         a = self._num_actions
         self._obs_buffer[:, :3] = root_pos
         self._obs_buffer[:, 3 : 3 + d] = q_j

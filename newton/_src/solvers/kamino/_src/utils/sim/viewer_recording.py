@@ -16,7 +16,7 @@ to ``max_frames`` frames before automatically writing the video file.
 Example usage: (multi-clip mode, one video file per backend triggered by the UI):
 
     viewer, args = newton.examples.init(parser)
-    viewer = enable_recording(viewer, video_folder=base_dir)
+    viewer = enable_recording(viewer, default_video_folder=base_dir)
     ...
     # inside the GUI button handler:
     viewer.start_clip(
@@ -91,7 +91,9 @@ def enable_recording(
     default_video_folder: str = "./video",
     num_skipped_frames: int = 0,
     async_save: bool = False,
-):
+    start_clip: bool = False,
+    **kwargs,
+) -> bool:
     """Monkey-patch ``viewer`` with PNG recording and video file generation.
 
     Wires the recording machinery onto ``viewer`` but does **not** start
@@ -103,25 +105,26 @@ def enable_recording(
             ``newton.examples.init``). Must expose ``get_frame()`` and a
             ``renderer`` with ``_screen_width`` / ``_screen_height``.
         record_video: If False, this is a no-op.
-        video_folder: Default output directory used by clips that do not
+        default_video_folder: Default output directory used by clips that do not
             pass an explicit ``video_folder`` to ``start_clip``. Not created
             on disk until a clip starts.
         num_skipped_frames: Number of leading captured frames to drop before saving.
         async_save: If True, save each PNG on a background thread.
+        start_clip: If True, will directly start a new clip.
 
     Returns:
-        The same ``viewer`` instance (mutated in place) to allow chaining.
+        Flag indicating whether enabling the recording was successful.
     """
     if not record_video:
-        return viewer
+        return False
 
     if not hasattr(viewer, "get_frame"):
         msg.warning(f"enable_recording: viewer {type(viewer).__name__} has no get_frame(); recording disabled.")
-        return viewer
+        return False
 
     if getattr(viewer, "_recording", False):
         msg.warning("enable_recording: viewer already has recording enabled; skipping re-config.")
-        return viewer
+        return False
 
     viewer._recording = _VideoRecording(
         default_video_folder=default_video_folder,
@@ -145,7 +148,10 @@ def enable_recording(
     viewer.start_clip = MethodType(_start_clip, viewer)
     viewer.finish_clip = MethodType(_finish_clip, viewer)
 
-    return viewer
+    if start_clip:
+        viewer.start_clip(**kwargs)
+
+    return True
 
 
 def _clear_pngs(folder: str) -> int:
@@ -197,6 +203,9 @@ def _finish_clip(self):
     """Stop the current clip, flush async saves, and write the video file."""
     recording = self._recording
 
+    if not recording.recording_active:
+        return
+
     captured = recording.img_idx - recording.num_skipped_frames
     recording.recording_active = False
     recording.recording_stopped = True
@@ -242,7 +251,7 @@ def _reset_recording(self, video_folder: str | None = None) -> None:
         recording.default_video_folder = video_folder
         recording.created_video_folder = not os.path.exists(video_folder)
     elif not os.path.exists(recording.default_video_folder):
-        self._created_video_folder = True
+        recording.created_video_folder = True
     os.makedirs(recording.default_video_folder, exist_ok=True)
 
     removed = _clear_pngs(recording.default_video_folder)
@@ -337,7 +346,7 @@ def _generate_video(
     quality: int = 8,
     codec: str = "libx264",
 ) -> bool:
-    """Stitch the recorded PNGs in ``self._video_folder`` into a video file."""
+    """Stitch the recorded PNGs in ``default_video_folder`` into a video file."""
     try:
         import imageio_ffmpeg as ffmpeg  # noqa: PLC0415
     except ImportError:

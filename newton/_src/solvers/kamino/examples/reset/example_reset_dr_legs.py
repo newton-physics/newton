@@ -30,6 +30,7 @@ from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_re
 @wp.kernel
 def _actuate_selected_joint(
     dt: wp.float32,
+    dofs_per_world: wp.int32,
     has_started_resets: wp.array[wp.bool],
     reset_dof_index: wp.array[wp.int32],
     actuated_dof_idx: wp.array[wp.int32],
@@ -56,13 +57,14 @@ def _actuate_selected_joint(
 
     # Ad-hoc torque magnitude based on the selected joint
     # because we want higher actuation for the two hip joints
-    if dof_index == 0 or dof_index == 6:
+    local_index = dof_index % dofs_per_world
+    if local_index == 0 or local_index == 6:
         torque = wp.float32(0.01)
     else:
         torque = wp.float32(0.001)
 
     # Reverse torque direction for the first leg
-    if dof_index < 6:
+    if local_index < 6:
         torque = -torque
 
     dof = actuated_dof_idx[dof_index]
@@ -94,18 +96,15 @@ class Example:
         self.sim_steps = 0
         self.sim_reset_mode = 0
 
-        self.record_video = args.record_video if args else False
-        if self.record_video:
-            enable_recording(self.viewer)
-            if hasattr(self.viewer, "start_clip"):
-                output_filename = getattr(args, "video_path", None)
-                self.viewer.start_clip(
-                    output_path=output_filename if output_filename is not None else "recording.mp4",
-                    max_frames=1000,
-                    fps=self.fps,
-                )
-            else:
-                self.record_video = False
+        video_output_filename = getattr(args, "video_path", None)
+        self.record_video = enable_recording(
+            viewer=self.viewer,
+            record_video=args.record_video if args else False,
+            start_clip=True,
+            output_path=video_output_filename if video_output_filename is not None else "recording.mp4",
+            max_frames=getattr(args, "max_video_frames", 1000),
+            fps=self.fps,
+        )
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -224,6 +223,7 @@ class Example:
                 dim=1,
                 inputs=[
                     self.sim_dt,
+                    self.num_actuated_dofs // self.model.world_count,
                     self.has_started_resets,
                     self.reset_dof_index,
                     self.actuated_joint_dof_idx,
@@ -316,7 +316,7 @@ class Example:
     @staticmethod
     def _selected_joint_angle(dof_index: int) -> float:
         """Target angle for the actuated joint currently selected by the reset-cycling demo."""
-        return np.pi / 12 if dof_index < 6 else -np.pi / 12
+        return np.pi / 12 if dof_index < 6 and dof_index >= 0 else -np.pi / 12
 
     def _reset_config_base_pose(self):
         R_b = Rotation.from_rotvec(np.pi / 4 * np.array([0, 0, 1]))
@@ -368,6 +368,12 @@ class Example:
             type=str,
             default=None,
             help="Output video path (defaults to 'recording.mp4').",
+        )
+        parser.add_argument(
+            "--max-video-frames",
+            type=int,
+            default=1000,
+            help="Maximum number of frames recorded for the video (defaults to 1000).",
         )
         parser.set_defaults(world_count=1)
         return parser

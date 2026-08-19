@@ -66,7 +66,18 @@ class Example:
 
         if self.animated:
             # Increase P-gain for animation
-            robot_builder.joint_target_ke = [3.0 * ke for ke in robot_builder.joint_target_ke]
+            robot_builder.joint_target_ke = [150.0 if ke > 0.0 else 0.0 for ke in robot_builder.joint_target_ke]
+        else:
+            # Set joint armature and viscous damping for better
+            # stability of the implicit joint-space PD controller
+            robot_builder.joint_armature = [0.011] * robot_builder.joint_dof_count
+            robot_builder.joint_damping = [0.044] * robot_builder.joint_dof_count
+            robot_builder.joint_target_ke = [
+                10.0 if mode != newton.JointTargetMode.NONE else 0.0 for mode in robot_builder.joint_target_mode
+            ]
+            robot_builder.joint_target_kd = [
+                2.0 if mode != newton.JointTargetMode.NONE else 0.0 for mode in robot_builder.joint_target_mode
+            ]
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
@@ -120,15 +131,6 @@ class Example:
             self.config.dvi.bilateral_solve_interval = 1
             self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
-
-        if not self.animated:
-            # Set joint armature and viscous damping for better
-            # stability of the implicit joint-space PD controller
-            # TODO: Remove this once we add Newton USD schemas in the model asset
-            self.solver._solver_kamino._model.joints.a_j.fill_(0.011)  # Joint armature
-            self.solver._solver_kamino._model.joints.b_j.fill_(0.044)  # Joint viscous damping
-            self.solver._solver_kamino._model.joints.k_p_j.fill_(10.0)  # Proportional gain
-            self.solver._solver_kamino._model.joints.k_d_j.fill_(2.0)  # Derivative gain
 
         # Create state and control data containers
         self.state_0 = self.model.state()
@@ -339,7 +341,7 @@ class Example:
             "--animated",
             action=argparse.BooleanOptionalAction,
             default=False,
-            help="Animation the model based on an imported motion.",
+            help="Animation the model based on imported motion.",
         )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)

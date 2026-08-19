@@ -37,18 +37,15 @@ class Example:
         self.actuated = args.actuated if args else False
         self.time = wp.zeros((self.world_count,), device=self.device)
 
-        self.record_video = args.record_video
-        if self.record_video:
-            enable_recording(self.viewer)
-            if hasattr(self.viewer, "start_clip"):
-                output_filename = getattr(args, "video_path", None)
-                self.viewer.start_clip(
-                    output_path=output_filename if output_filename is not None else "recording.mp4",
-                    max_frames=1000,
-                    fps=self.fps,
-                )
-            else:
-                self.record_video = False
+        video_output_filename = getattr(args, "video_path", None)
+        self.record_video = enable_recording(
+            viewer=self.viewer,
+            record_video=args.record_video if args else False,
+            start_clip=True,
+            output_path=video_output_filename if video_output_filename is not None else "recording.mp4",
+            max_frames=getattr(args, "max_video_frames", 1000),
+            fps=self.fps,
+        )
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -278,6 +275,12 @@ class Example:
             type=str,
             default=None,
             help="Output video path (defaults to 'recording.mp4').",
+        )
+        parser.add_argument(
+            "--max-video-frames",
+            type=int,
+            default=1000,
+            help="Maximum number of frames recorded for the video (defaults to 1000).",
         )
         return parser
 

@@ -177,9 +177,8 @@ class Simulator:
         Initializes the simulator with the given model builder, time-step, and device.
 
         Args:
-            builder: The model builder defining the model to be simulated.
+            model: The model to be simulated.
             config: The simulator config to use. If None, the default config are used.
-            device: The device to run the simulation on. If None, the default device is used.
         """
         # Cache simulator config: If no config is provided, use default configs
         if config is None:
