@@ -39,6 +39,18 @@ from .types import GeoType
 BOX_SUPPORT_DEADBAND = 1.0e-10
 
 
+@wp.func_native("""
+#if defined(__CUDA_ARCH__)
+return __frsqrt_rn(value);
+#else
+return 1.0f / sqrtf(value);
+#endif
+""")
+def _support_rsqrt_rn(value: float) -> float:
+    """Return a round-to-nearest reciprocal square root of a positive value."""
+    ...
+
+
 # Is not allowed to share values with GeoType
 class GeoTypeEx(enum.IntEnum):
     TRIANGLE = 1000
@@ -91,7 +103,7 @@ class GenericShapeData:
       - SPHERE: radius in x
       - CAPSULE: radius in x, half-height in y (axis +Z)
       - ELLIPSOID: semi-axes (x, y, z)
-      - CYLINDER: radius in x, half-height in y (axis +Z)
+      - CYLINDER: end radius in x, half-height in y, barrel radius in z (axis +Z)
       - CONE: radius in x, half-height in y (axis +Z, apex at +Z)
       - PLANE: half-width in x, half-length in y (lies in XY plane at z=0, normal along +Z)
       - TRIANGLE: vertex B-A stored in scale, vertex C-A stored in auxiliary
@@ -101,6 +113,18 @@ class GenericShapeData:
     shape_type: int
     scale: wp.vec3
     auxiliary: wp.vec3
+    center: wp.vec3  # Precomputed local AABB center for convex seed initialization.
+
+
+@wp.func
+def _support_map_box(geom: GenericShapeData, direction: wp.vec3) -> wp.vec3:
+    """Return the support point of a box in its local frame."""
+    direction_scale = wp.max(wp.abs(direction[0]), wp.max(wp.abs(direction[1]), wp.abs(direction[2])))
+    threshold = BOX_SUPPORT_DEADBAND * direction_scale
+    sx = 1.0 if direction[0] >= -threshold else -1.0
+    sy = 1.0 if direction[1] >= -threshold else -1.0
+    sz = 1.0 if direction[2] >= -threshold else -1.0
+    return wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
 
 
 @wp.func
@@ -113,7 +137,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
     - SPHERE: radius in x component
     - CAPSULE: radius in x, half-height in y (axis along +Z)
     - ELLIPSOID: semi-axes in x/y/z
-    - CYLINDER: radius in x, half-height in y (axis along +Z)
+    - CYLINDER: end radius in x, half-height in y, barrel radius in z (axis along +Z)
     - CONE: radius in x, half-height in y (axis along +Z, apex at +Z)
     - PLANE: half-width in x, half-length in y (lies in XY plane at z=0, normal along +Z)
     - CONVEX_MESH: scale contains mesh scale, auxiliary contains packed mesh pointer
@@ -179,18 +203,13 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         # the non-primary components are zero; any vertex on that face
         # is an equally valid support point, so biasing toward +1 is
         # correct and keeps MPR's initial portal construction stable.
-        threshold = BOX_SUPPORT_DEADBAND * wp.length(direction)
-        sx = 1.0 if direction[0] >= -threshold else -1.0
-        sy = 1.0 if direction[1] >= -threshold else -1.0
-        sz = 1.0 if direction[2] >= -threshold else -1.0
-
-        result = wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
+        result = _support_map_box(geom, direction)
 
     elif geom.shape_type == GeoType.SPHERE:
         radius = geom.scale[0]
         dir_len_sq = wp.length_sq(direction)
         if dir_len_sq > eps:
-            n = wp.normalize(direction)
+            n = direction * _support_rsqrt_rn(dir_len_sq)
         else:
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
@@ -203,7 +222,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         # Sphere part: support in normalized direction
         dir_len_sq = wp.length_sq(direction)
         if dir_len_sq > eps:
-            n = wp.normalize(direction)
+            n = direction * _support_rsqrt_rn(dir_len_sq)
         else:
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
@@ -228,9 +247,11 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
             cdz = c * direction[2]
             denom_sq = adx * adx + bdy * bdy + cdz * cdz
             if denom_sq > eps:
-                denom = wp.sqrt(denom_sq)
+                inv_denom = _support_rsqrt_rn(denom_sq)
                 result = wp.vec3(
-                    (a * a) * direction[0] / denom, (b * b) * direction[1] / denom, (c * c) * direction[2] / denom
+                    (a * a) * direction[0] * inv_denom,
+                    (b * b) * direction[1] * inv_denom,
+                    (c * c) * direction[2] * inv_denom,
                 )
             else:
                 result = wp.vec3(a, 0.0, 0.0)
@@ -240,24 +261,48 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
     elif geom.shape_type == GeoType.CYLINDER:
         radius = geom.scale[0]
         half_height = geom.scale[1]
+        barrel_radius = geom.scale[2]
 
-        # Cylinder support: project direction to XY plane for lateral surface
         dir_xy = wp.vec3(direction[0], direction[1], 0.0)
         dir_xy_len_sq = wp.length_sq(dir_xy)
 
-        if dir_xy_len_sq > eps:
-            n_xy = wp.normalize(dir_xy)
-            lateral_point = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, 0.0)
-        else:
-            lateral_point = wp.vec3(radius, 0.0, 0.0)
+        if barrel_radius == 0.0:
+            # Keep the regular-cylinder path unchanged.
+            if dir_xy_len_sq > eps:
+                n_xy = dir_xy * _support_rsqrt_rn(dir_xy_len_sq)
+                lateral_point = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, 0.0)
+            else:
+                lateral_point = wp.vec3(radius, 0.0, 0.0)
 
-        # Choose between top cap, bottom cap, or lateral surface
-        if direction[2] > 0.0:
-            result = wp.vec3(lateral_point[0], lateral_point[1], half_height)
-        elif direction[2] < 0.0:
-            result = wp.vec3(lateral_point[0], lateral_point[1], -half_height)
+            if direction[2] > 0.0:
+                result = wp.vec3(lateral_point[0], lateral_point[1], half_height)
+            elif direction[2] < 0.0:
+                result = wp.vec3(lateral_point[0], lateral_point[1], -half_height)
+            else:
+                result = lateral_point
         else:
-            result = lateral_point
+            if dir_xy_len_sq > eps:
+                dir_xy_len = wp.sqrt(dir_xy_len_sq)
+                n_xy = dir_xy / dir_xy_len
+            else:
+                dir_xy_len = 0.0
+                n_xy = wp.vec3(1.0, 0.0, 0.0)
+
+            direction_len = wp.sqrt(dir_xy_len_sq + direction[2] * direction[2])
+            support_z = 0.0
+            if direction_len > eps:
+                support_z = wp.clamp(barrel_radius * direction[2] / direction_len, -half_height, half_height)
+
+            barrel_radius_sq = barrel_radius * barrel_radius
+            half_height_sq = half_height * half_height
+            support_z_sq = support_z * support_z
+            end_offset = wp.sqrt(barrel_radius_sq - half_height_sq)
+            support_offset = wp.sqrt(wp.max(barrel_radius_sq - support_z_sq, 0.0))
+            offset_sum = support_offset + end_offset
+            support_radius = radius
+            if offset_sum > eps:
+                support_radius += (half_height_sq - support_z_sq) / offset_sum
+            result = wp.vec3(n_xy[0] * support_radius, n_xy[1] * support_radius, support_z)
 
     elif geom.shape_type == GeoType.CONE:
         radius = geom.scale[0]
@@ -329,17 +374,13 @@ def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: 
         result = wp.cw_mul(mesh.points[best_idx], geom.scale)
 
     elif geom.shape_type == GeoType.BOX:
-        threshold = BOX_SUPPORT_DEADBAND * wp.length(direction)
-        sx = 1.0 if direction[0] >= -threshold else -1.0
-        sy = 1.0 if direction[1] >= -threshold else -1.0
-        sz = 1.0 if direction[2] >= -threshold else -1.0
-        result = wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
+        result = _support_map_box(geom, direction)
 
     elif geom.shape_type == GeoType.SPHERE:
         radius = geom.scale[0]
         dir_len_sq = wp.length_sq(direction)
         if dir_len_sq > 1.0e-12:
-            n = wp.normalize(direction)
+            n = direction * _support_rsqrt_rn(dir_len_sq)
         else:
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
@@ -385,6 +426,7 @@ def extract_shape_data(
     result.shape_type = shape_types[shape_idx]
     result.scale = scale
     result.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+    result.center = wp.vec3(0.0, 0.0, 0.0)
 
     # For CONVEX_MESH, pack the mesh pointer into auxiliary
     if shape_types[shape_idx] == GeoType.CONVEX_MESH:
@@ -424,7 +466,8 @@ def closest_point_on_triangle(
     ab_sq = wp.dot(ab, ab)
     ac_sq = wp.dot(ac, ac)
     EPS2 = 1.0e-20
-    if wp.dot(wp.cross(ab, ac), wp.cross(ab, ac)) < EPS2:
+    triangle_normal = wp.cross(ab, ac)
+    if wp.dot(triangle_normal, triangle_normal) < EPS2:
         bc = tri_c - tri_b
         bc_sq = wp.dot(bc, bc)
         if ab_sq >= ac_sq and ab_sq >= bc_sq:

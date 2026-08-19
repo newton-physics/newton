@@ -332,7 +332,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         stepping policy. The factory is called as ``solver(view)`` with the
         per-entry :class:`ModelView` and must return a configured
         :class:`SolverBase`. Bind any extra constructor arguments in the
-        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10)``).
+        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10, rigid_compliant_alm=True)``).
         Entry names must be unique. In-place stepping is only valid for solvers
         that explicitly support it. Shape ids remain in the parent model
         namespace so all entries can consume shared contact buffers.
@@ -425,7 +425,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 spec.compaction_policy,
             )
             for name, spec in model._iter_attribute_specs()
-            if spec.compaction_policy in {"generic", "end"} and not self._is_deprecated_namespace_alias(name)
+            if spec.compaction_policy in {"generic", "end"}
         )
 
     def _build_joint_constraint_starts(self) -> np.ndarray:
@@ -459,8 +459,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         for full_name, spec in self.model._iter_attribute_specs():
             flag = _CORE_RESET_STATE_FLAGS.get(full_name)
             if flag is None and spec.assignment != Model.AttributeAssignment.STATE:
-                continue
-            if self._is_deprecated_namespace_alias(full_name):
                 continue
             if flag is None and spec.frequency not in _RESET_RECONCILABLE_FREQUENCIES:
                 unsupported.append((full_name, spec.frequency))
@@ -524,16 +522,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             host = self._row_worlds_from_starts(starts, count, model.world_count)
             result[item_frequency] = wp.array(host, dtype=wp.int32, device=model.device)
         return result
-
-    def _is_deprecated_namespace_alias(self, full_name: str) -> bool:
-        """Return whether metadata names a warning-producing namespace alias."""
-        if ":" not in full_name:
-            return False
-        namespace_name, attribute_name = full_name.split(":", 1)
-        namespace = getattr(self.model, namespace_name, None)
-        if not isinstance(namespace, self.model.AttributeNamespace):
-            return False
-        return attribute_name in namespace._deprecated_aliases
 
     def _validate_entry_names(self) -> None:
         names: set[str] = set()
@@ -2811,21 +2799,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     ],
                     device=self.model.device,
                 )
-            if contacts.rigid_contact_diff_distance is not None and filtered.rigid_contact_diff_distance is not None:
+            if contacts._rigid_contact_diff_distance is not None and filtered._rigid_contact_diff_distance is not None:
                 wp.launch(
                     _copy_filtered_rigid_contact_diff_kernel,
                     dim=contacts.rigid_contact_max,
                     inputs=[
                         self._entry_rigid_contact_update[entry.name],
                         rigid_src_to_dst,
-                        contacts.rigid_contact_diff_distance,
-                        contacts.rigid_contact_diff_normal,
-                        contacts.rigid_contact_diff_point0_world,
-                        contacts.rigid_contact_diff_point1_world,
-                        filtered.rigid_contact_diff_distance,
-                        filtered.rigid_contact_diff_normal,
-                        filtered.rigid_contact_diff_point0_world,
-                        filtered.rigid_contact_diff_point1_world,
+                        contacts._rigid_contact_diff_distance,
+                        contacts._rigid_contact_diff_point0_world,
+                        contacts._rigid_contact_diff_point1_world,
+                        filtered._rigid_contact_diff_distance,
+                        filtered._rigid_contact_diff_point0_world,
+                        filtered._rigid_contact_diff_point1_world,
                     ],
                     device=self.model.device,
                 )
@@ -3642,11 +3628,9 @@ def _copy_filtered_rigid_contact_diff_kernel(
     update_filter: wp.array[wp.int32],
     src_to_dst: wp.array[wp.int32],
     src_distance: wp.array[wp.float32],
-    src_normal: wp.array[wp.vec3],
     src_point0_world: wp.array[wp.vec3],
     src_point1_world: wp.array[wp.vec3],
     dst_distance: wp.array[wp.float32],
-    dst_normal: wp.array[wp.vec3],
     dst_point0_world: wp.array[wp.vec3],
     dst_point1_world: wp.array[wp.vec3],
 ):
@@ -3659,7 +3643,6 @@ def _copy_filtered_rigid_contact_diff_kernel(
         return
 
     dst_distance[dst_id] = src_distance[src_id]
-    dst_normal[dst_id] = src_normal[src_id]
     dst_point0_world[dst_id] = src_point0_world[src_id]
     dst_point1_world[dst_id] = src_point1_world[src_id]
 
