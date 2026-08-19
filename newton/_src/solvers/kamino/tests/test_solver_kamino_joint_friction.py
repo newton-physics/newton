@@ -93,10 +93,39 @@ def _sparse_config(**kwargs) -> SolverKamino.Config:
     )
 
 
+def _dvi_dense_config(**kwargs) -> SolverKamino.Config:
+    """Create a dense DVI configuration."""
+    return SolverKamino.Config(
+        dynamics_solver="dvi",
+        use_fk_solver=False,
+        sparse_jacobian=False,
+        sparse_dynamics=False,
+        use_collision_detector=False,
+        **kwargs,
+    )
+
+
+def _dvi_sparse_config(**kwargs) -> SolverKamino.Config:
+    """Create a DVI configuration with the matrix-free sparse solve path."""
+    return SolverKamino.Config(
+        dynamics_solver="dvi",
+        use_fk_solver=False,
+        sparse_jacobian=True,
+        sparse_dynamics=True,
+        use_collision_detector=False,
+        **kwargs,
+    )
+
+
 _KAMINO_CONFIGS = (
     ("dense", _dense_config),
     ("sparse", _sparse_config),
+    ("dvi_dense", _dvi_dense_config),
+    ("dvi_sparse", _dvi_sparse_config),
 )
+
+# DVI has no `use_acceleration` knob, so only PADMM configs vary over it.
+_PADMM_CONFIG_NAMES = ("dense", "sparse")
 
 
 def _initialize_state(model: newton.Model, q: float = 0.0, qd: float = 0.0) -> newton.State:
@@ -339,7 +368,8 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         The accelerated / non-accelerated PADMM since their implementation use their own specialized kernels.
         """
         for config_name, config_factory in _KAMINO_CONFIGS:
-            for use_acceleration in (True, False):
+            use_acceleration_options = (True, False) if config_name in _PADMM_CONFIG_NAMES else (False,)
+            for use_acceleration in use_acceleration_options:
                 config = config_factory()
                 config.padmm.use_acceleration = use_acceleration
                 _run_spin_down_test(self, config_name, config)
@@ -352,7 +382,8 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         The accelerated / non-accelerated PADMM since their implementation use their own specialized kernels.
         """
         for config_name, config_factory in _KAMINO_CONFIGS:
-            for use_acceleration in (True, False):
+            use_acceleration_options = (True, False) if config_name in _PADMM_CONFIG_NAMES else (False,)
+            for use_acceleration in use_acceleration_options:
                 config = config_factory()
                 config.padmm.use_acceleration = use_acceleration
                 _run_hold_and_breakaway_test(self, config_name, config)
@@ -361,31 +392,34 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         """Test that friction is well behaved when interacting with limits.
 
         Drive the joint into a limit with initial velocity and feedforward
-        torque, and verify that friction remains within its bounds.
+        torque, and verify that friction remains within its bounds. Runs
+        against every Kamino dynamics-solver configuration.
         """
         limit = 0.1
         friction = 0.5
         feedforward_torque = 1.0
         initial_velocity = 2.0
-        model = _build_revolute(friction, limit=(-limit, limit))
-        model.set_gravity((0.0, 0.0, 0.0))
-        solver = SolverKamino(model, _dense_config())
-        state = _initialize_state(model, qd=initial_velocity)
-        _, coordinates, velocities, friction_torques = _rollout(
-            solver,
-            model,
-            state,
-            steps=500,
-            dt=0.001,
-            joint_force=feedforward_torque,
-        )
-        self.assertLessEqual(max(coordinates), limit + 1e-2)
-        self.assertAlmostEqual(coordinates[-1], limit, delta=1.0e-4)
-        self.assertAlmostEqual(velocities[-1], 0.0, delta=1e-4)
-        np.testing.assert_array_less(
-            np.abs(friction_torques),
-            friction + 1.0e-4,
-        )
+        for config_name, config_factory in _KAMINO_CONFIGS:
+            with self.subTest(config=config_name):
+                model = _build_revolute(friction, limit=(-limit, limit))
+                model.set_gravity((0.0, 0.0, 0.0))
+                solver = SolverKamino(model, config_factory())
+                state = _initialize_state(model, qd=initial_velocity)
+                _, coordinates, velocities, friction_torques = _rollout(
+                    solver,
+                    model,
+                    state,
+                    steps=500,
+                    dt=0.001,
+                    joint_force=feedforward_torque,
+                )
+                self.assertLessEqual(max(coordinates), limit + 1e-2)
+                self.assertAlmostEqual(coordinates[-1], limit, delta=1.0e-4)
+                self.assertAlmostEqual(velocities[-1], 0.0, delta=1e-4)
+                np.testing.assert_array_less(
+                    np.abs(friction_torques),
+                    friction + 1.0e-4,
+                )
 
     def test_box_natural_map_metrics(self):
         """Include bounded friction rows in iteration-info and solution natural maps."""

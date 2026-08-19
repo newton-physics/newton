@@ -10,6 +10,9 @@ import warp as wp
 from ...core.math import FLOAT32_EPS
 from ..padmm.math import project_to_coulomb_cone, project_to_coulomb_dual_cone
 from .projections import (
+    project_box_update as _project_box_update,
+)
+from .projections import (
     project_contact_normal_update as _project_contact_normal_update,
 )
 from .projections import (
@@ -225,12 +228,17 @@ def _compute_dvi_status_residuals(
     problem_dim: wp.array[int32],
     problem_vio: wp.array[int32],
     problem_njc: wp.array[int32],
+    problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
+    problem_bcgo: wp.array[int32],
     problem_lcgo: wp.array[int32],
     problem_ccgo: wp.array[int32],
+    problem_bcio: wp.array[int32],
     problem_cio: wp.array[int32],
     problem_mu: wp.array[float32],
+    problem_bound_lower: wp.array[float32],
+    problem_bound_upper: wp.array[float32],
     solver_config: wp.array[DVIConfigStruct],
     state_v_aug: wp.array[float32],
     solution_lambdas: wp.array[float32],
@@ -242,10 +250,13 @@ def _compute_dvi_status_residuals(
     ncts = problem_dim[wid]
     vio = problem_vio[wid]
     njc = problem_njc[wid]
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
+    bcgo = problem_bcgo[wid]
     lcgo = problem_lcgo[wid]
     ccgo = problem_ccgo[wid]
+    bcio = problem_bcio[wid]
     cio = problem_cio[wid]
     cfg = solver_config[wid]
 
@@ -264,6 +275,17 @@ def _compute_dvi_status_residuals(
     for jid in range(njc):
         v_j = state_v_aug[vio + jid]
         r_b = wp.max(r_b, wp.abs(v_j))
+
+    # Bounded-multiplier rows fold primal, dual, and complementarity feasibility into a
+    # single natural-map residual, since the box `[lower, upper]` has no cone-projection
+    # split analogous to the limit/contact terms below.
+    for bid in range(nbc):
+        bcio_v = vio + bcgo + bid
+        lambda_b = solution_lambdas[bcio_v]
+        v_b = state_v_aug[bcio_v]
+        lower = problem_bound_lower[bcio + bid]
+        upper = problem_bound_upper[bcio + bid]
+        r_c = wp.max(r_c, wp.abs(lambda_b - wp.clamp(lambda_b - v_b, lower, upper)))
 
     # Limits require lambda and v_aug in R+ with lambda * v_aug = 0.
     for lid in range(nl):
@@ -320,6 +342,7 @@ def _initialize_dvi_status(
 @wp.kernel
 def _set_dvi_direct_status_iterations(
     # Inputs:
+    problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
     solver_config: wp.array[DVIConfigStruct],
@@ -329,7 +352,7 @@ def _set_dvi_direct_status_iterations(
     wid = wp.tid()
     cfg = solver_config[wid]
     status = solver_status[wid]
-    if problem_nl[wid] == int32(0) and problem_nc[wid] == int32(0):
+    if problem_nbc[wid] == int32(0) and problem_nl[wid] == int32(0) and problem_nc[wid] == int32(0):
         status.iterations = int32(1)
     else:
         status.iterations = cfg.max_alternating_iterations * cfg.inequality_sweeps_per_iteration
@@ -340,6 +363,7 @@ def _set_dvi_direct_status_iterations(
 def _set_dvi_bilateral_active_dim(
     # Inputs:
     problem_njc: wp.array[int32],
+    problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
     block_iteration: int32,
@@ -349,7 +373,7 @@ def _set_dvi_bilateral_active_dim(
 ):
     wid = wp.tid()
     active_dim = int32(0)
-    if problem_nl[wid] > int32(0) or problem_nc[wid] > int32(0):
+    if problem_nbc[wid] > int32(0) or problem_nl[wid] > int32(0) or problem_nc[wid] > int32(0):
         if block_iteration < int32(0):
             active_dim = problem_njc[wid]
         else:
@@ -373,26 +397,27 @@ def _compute_dvi_unilateral_velocities(
     problem_dim: wp.array[int32],
     problem_mio: wp.array[int32],
     problem_vio: wp.array[int32],
+    problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    problem_ccgo: wp.array[int32],
+    problem_bcgo: wp.array[int32],
     problem_D: wp.array[float32],
     problem_v_f: wp.array[float32],
     solution_lambdas: wp.array[float32],
     state_v_aug: wp.array[float32],
 ):
-    """Evaluate every limit and contact row at the current dual iterate."""
+    """Evaluate every bounded, limit, and contact row at the current dual iterate."""
     wid, local_row = wp.tid()
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
-    unilateral_rows = nl + int32(3) * nc
+    unilateral_rows = nbc + nl + int32(3) * nc
     if local_row >= unilateral_rows:
         return
     ncts = problem_dim[wid]
     mio = problem_mio[wid]
     vio = problem_vio[wid]
-    row = problem_lcgo[wid] + local_row
+    row = problem_bcgo[wid] + local_row
     state_v_aug[vio + row] = _compute_row_velocity(ncts, mio, vio, row, problem_D, problem_v_f, solution_lambdas)
 
 
@@ -401,13 +426,18 @@ def _solve_dvi_inequalities_colored_pgs(
     problem_dim: wp.array[int32],
     problem_mio: wp.array[int32],
     problem_vio: wp.array[int32],
+    problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
+    problem_bcgo: wp.array[int32],
     problem_lcgo: wp.array[int32],
     problem_ccgo: wp.array[int32],
+    problem_bcio: wp.array[int32],
     problem_cio: wp.array[int32],
     problem_uio: wp.array[int32],
     problem_mu: wp.array[float32],
+    problem_bound_lower: wp.array[float32],
+    problem_bound_upper: wp.array[float32],
     problem_D: wp.array[float32],
     block_iteration: int32,
     inequality_num_colors: wp.array[int32],
@@ -426,16 +456,19 @@ def _solve_dvi_inequalities_colored_pgs(
     if block_iteration >= int32(0) and block_iteration >= cfg.max_alternating_iterations:
         return
 
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
-    nu = nl + nc
+    nu = nbc + nl + nc
     if nu == 0:
         return
     ncts = problem_dim[wid]
     mio = problem_mio[wid]
     vio = problem_vio[wid]
+    bcgo = problem_bcgo[wid]
     lcgo = problem_lcgo[wid]
     ccgo = problem_ccgo[wid]
+    bcio = problem_bcio[wid]
     cio = problem_cio[wid]
     uio = problem_uio[wid]
     schedule_offset = uio + wid
@@ -463,10 +496,30 @@ def _solve_dvi_inequalities_colored_pgs(
                     uid = inequality_ids_by_color[uio + color_slot]
                     delta_0 = float32(0.0)
                     delta_1 = float32(0.0)
-                    column = lcgo + uid
+                    column = bcgo + uid
                     column_count = int32(1)
                     active = int32(1)
-                    if uid < nl:
+                    if uid < nbc:
+                        if phase == int32(1):
+                            active = int32(0)
+                        else:
+                            vec_idx = vio + column
+                            bio = bcio + uid
+                            lambda_bound_old = solution_lambdas[vec_idx]
+                            diagonal = wp.abs(problem_D[mio + ncts * column + column])
+                            lambda_bound_new = _project_box_update(
+                                lambda_bound_old,
+                                state_v_aug[vec_idx],
+                                diagonal,
+                                cfg.regularization,
+                                cfg.omega,
+                                problem_bound_lower[bio],
+                                problem_bound_upper[bio],
+                            )
+                            solution_lambdas[vec_idx] = lambda_bound_new
+                            delta_0 = lambda_bound_new - lambda_bound_old
+                    elif uid < nbc + nl:
+                        column = lcgo + (uid - nbc)
                         if phase == int32(1):
                             active = int32(0)
                         else:
@@ -483,7 +536,7 @@ def _solve_dvi_inequalities_colored_pgs(
                             solution_lambdas[vec_idx] = lambda_limit_new
                             delta_0 = lambda_limit_new - lambda_limit_old
                     else:
-                        cid = uid - nl
+                        cid = uid - nbc - nl
                         column = ccgo + int32(3) * cid
                         if phase == int32(0):
                             column += int32(2)
@@ -522,7 +575,7 @@ def _solve_dvi_inequalities_colored_pgs(
                             delta_1 = lambda_t_new.y - lambda_t_old.y
 
                     if active != int32(0):
-                        row = lcgo
+                        row = bcgo
                         while row < contact_end:
                             row_mio = mio + ncts * row
                             dv = problem_D[row_mio + column] * delta_0

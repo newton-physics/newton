@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from ..core.data import DataKamino
@@ -1674,6 +1675,10 @@ class SparseSystemJacobians:
         self._J_cts_contact_nzb_offsets: wp.array[wp.int32] | None = None
         self._J_dofs_joint_nzb_offsets: wp.array[wp.int32] | None = None
 
+        # Static non-zero block offsets for each bounded-multiplier (currently: joint friction)
+        # constraint row, one entry per adjacent body (the second is -1 for unary joints).
+        self._J_cts_friction_nzb_offsets: wp.array[wp.vec2i] | None = None
+
         # Lists of number of non-zero blocks in each world connected to joint constraints
         self._J_cts_num_joint_nzb: wp.array[wp.int32] | None = None
 
@@ -1746,6 +1751,7 @@ class SparseSystemJacobians:
         joint_num_dynamic_cts = model.joints.num_dynamic_cts.numpy()
         joint_num_bounded_cts = model.joints.num_bounded_cts.numpy()
         joint_num_friction_cts = model.joints.num_friction_cts.numpy()
+        joint_bounded_cts_offset = model.joints.bounded_cts_offset.numpy()
         joint_num_dofs = model.joints.num_dofs.numpy()
         joint_q_j_min = model.joints.q_j_min.numpy()
         joint_q_j_max = model.joints.q_j_max.numpy()
@@ -1761,6 +1767,10 @@ class SparseSystemJacobians:
         J_dofs_nnzb = [0] * num_worlds
         J_cts_joint_nzb_offsets = [0] * model.size.sum_of_num_joints
         J_dofs_joint_nzb_offsets = [0] * model.size.sum_of_num_joints
+        # Static per-row nzb offsets for bounded-multiplier (friction) rows: one entry per
+        # adjacent body, with the second body's entry left at -1 for unary joints.
+        J_cts_friction_nzb_offsets_F = [0] * model.size.sum_of_num_bounded_cts
+        J_cts_friction_nzb_offsets_B = [-1] * model.size.sum_of_num_bounded_cts
         J_cts_nzb_row = [[] for _ in range(num_worlds)]
         J_cts_nzb_col = [[] for _ in range(num_worlds)]
         J_dofs_nzb_row = [[] for _ in range(num_worlds)]
@@ -1784,6 +1794,22 @@ class SparseSystemJacobians:
             J_cts_nnzb_min[w] += num_adjacent_bodies * (num_cts + num_bounded_cts)
             J_cts_nnzb_max[w] += num_adjacent_bodies * (num_cts + num_bounded_cts)
             J_dofs_nnzb[w] += num_adjacent_bodies * num_dofs
+
+            # Static friction-row nzb offsets, still relative to the world's local nzb block
+            # (converted to a global nzb index below, once `J_cts_nzb_start` is known). Block
+            # order within a joint's nzb region is [dynamic_F, dynamic_B, kinematic_F,
+            # kinematic_B, friction_F, friction_B] (see the nzb coordinate loops below), so the
+            # friction blocks start right after both bodies' dynamic+kinematic blocks.
+            if num_friction_cts > 0:
+                friction_row_start = joint_bounded_cts_offset[_j]
+                body_F_local_offset = J_cts_joint_nzb_offsets[_j] + num_adjacent_bodies * (
+                    num_dynamic_cts + num_kinematic_cts
+                )
+                body_B_local_offset = body_F_local_offset + num_friction_cts
+                for r in range(num_friction_cts):
+                    J_cts_friction_nzb_offsets_F[friction_row_start + r] = body_F_local_offset + r
+                    if is_binary:
+                        J_cts_friction_nzb_offsets_B[friction_row_start + r] = body_B_local_offset + r
 
             # Joint nzb coordinates
             dynamic_cts_offset = joint_dynamic_cts_offset_total_cts[_j] - world_cts_offset[w]
@@ -1879,6 +1905,13 @@ class SparseSystemJacobians:
                 w = joint_wid[_j]
                 J_cts_joint_nzb_offsets[_j] += J_cts_nzb_start[w]
                 J_dofs_joint_nzb_offsets[_j] += J_dofs_nzb_start[w]
+                num_friction_cts = int(joint_num_friction_cts[_j])
+                if num_friction_cts > 0:
+                    row_start = joint_bounded_cts_offset[_j]
+                    for r in range(num_friction_cts):
+                        J_cts_friction_nzb_offsets_F[row_start + r] += J_cts_nzb_start[w]
+                        if J_cts_friction_nzb_offsets_B[row_start + r] > -1:
+                            J_cts_friction_nzb_offsets_B[row_start + r] += J_cts_nzb_start[w]
 
             # Create/move precomputed helper arrays to device
             self._J_cts_joint_nzb_offsets = to_warp_int32_array(J_cts_joint_nzb_offsets, device=device)
@@ -1890,6 +1923,14 @@ class SparseSystemJacobians:
             )
             self._J_dofs_joint_nzb_offsets = to_warp_int32_array(J_dofs_joint_nzb_offsets, device=device)
             self._J_cts_num_joint_nzb = to_warp_int32_array(J_cts_nnzb_min, device=device)
+            friction_nzb_offsets = np.stack(
+                [
+                    np.asarray(J_cts_friction_nzb_offsets_F, dtype=np.int32),
+                    np.asarray(J_cts_friction_nzb_offsets_B, dtype=np.int32),
+                ],
+                axis=-1,
+            )
+            self._J_cts_friction_nzb_offsets = wp.array(friction_nzb_offsets, dtype=wp.vec2i, device=device)
 
     @property
     def joint_constraint_nzb_count(self) -> wp.array[wp.int32]:
@@ -1905,6 +1946,16 @@ class SparseSystemJacobians:
     def contact_constraint_nzb_offsets(self) -> wp.array[wp.int32]:
         """Global sparse-block offsets for each contact constraint."""
         return self._J_cts_contact_nzb_offsets
+
+    @property
+    def friction_constraint_nzb_offsets(self) -> wp.array[wp.vec2i]:
+        """Global sparse-block offsets for each bounded-multiplier (joint friction) row.
+
+        Entry ``x`` is body F's block offset, ``y`` is body B's (``-1`` for unary joints).
+        Unlike limit/contact offsets, this topology is static and computed once in
+        :meth:`configure`.
+        """
+        return self._J_cts_friction_nzb_offsets
 
     def build(
         self,
