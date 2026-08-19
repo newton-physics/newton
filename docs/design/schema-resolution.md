@@ -3,27 +3,25 @@
 
 # Source-neutral USD schema resolution
 
-Status: design proposal
+Status: implemented scalar design
 
 ## Summary
 
-Newton's schema resolvers currently read `Usd.Prim` objects, transform raw
-attributes, choose between configured schemas, and provide mapping defaults.
-Some source-sensitive precedence remains in `import_usd.py`. This couples the
-resolution policy to the PXR importer and prevents scene representations that
-do not expose PXR prims from reusing the same behavior.
+Newton's schema resolution separates attribute access from scalar resolution
+while keeping the current `ModelBuilder.add_usd()` construction path. The
+typed `SchemaResolution` object configures PXR and non-PXR consumers, while the
+existing `schema_resolvers=` argument remains a compatibility shorthand for
+the same internal policy.
 
-This proposal separates attribute access from scalar resolution while keeping
-the current `ModelBuilder.add_usd()` construction path and behavior. One typed
-`SchemaResolution` object configures both PXR and non-PXR consumers; the
-existing `schema_resolvers=` argument constructs that object internally.
 Applied schema identity is part of the input: an applied schema owns the
 properties it defines, including its USD fallbacks. Resolver definitions
 identify ownership and conversion. The source adapter supplies registered
 schema fallbacks: the PXR adapter reads them from `Usd.SchemaRegistry`, while a
 PXR-free adapter provides the equivalent versioned schema metadata explicitly.
-Batched resolution, Warp functions, and direct ModelBuilder buffer population
-are deliberately deferred.
+Property interpretation and multi-input assembly live in the private
+`_usd_resolution_policy.py` module. Batched resolution, Warp functions,
+complete public provenance, dynamic applicability, and direct ModelBuilder
+buffer population are deliberately deferred.
 
 ## Goals
 
@@ -78,7 +76,7 @@ entries may retain compatibility defaults after importer defaults. A schema
 fallback may itself be an engine-default sentinel; property-specific handling
 decides whether that candidate is usable.
 
-## Proposed boundary
+## Implemented boundary
 
 The resolver engine consumes source values and schema identity:
 
@@ -92,7 +90,9 @@ The PXR adapter reads authored values and applied/type metadata, then asks
 `Usd.SchemaRegistry` for the composed prim definition and its attribute
 fallbacks. A non-PXR source provides already-composed values, recorded schema
 identity, and the fallbacks for schemas it treats as registered. Resolver
-priority, transformations, and selected-source provenance are shared.
+priority, transformations, and private selected-source provenance are shared.
+The public scalar result contains canonical values rather than provenance
+records.
 
 Schemas without authoritative metadata remain a second-class compatibility
 path. Their authored values still participate in resolver priority, while
@@ -122,9 +122,12 @@ builder.add_usd(stage, schema_resolution=resolution)
 ```
 
 `schema_resolvers` and `schema_resolution` are mutually exclusive. The former
-is a compatibility shorthand for constructing `SchemaResolution(resolvers)`.
-The shared object owns the fallback-policy choice, so the direct
-`use_registered_schema_fallbacks` argument cannot also select that policy.
+is a compatibility shorthand for configuring the same internal policy. The
+shared object owns the fallback-policy choice, so explicitly passing either
+value for `use_registered_schema_fallbacks` at the same time is rejected. The
+importer tracks omission separately while preserving the public `False`
+default for signature inspection.
+
 After consumers have had time to migrate to a reusable object, the shorthand
 can be deprecated and then removed without changing resolution semantics.
 
@@ -169,19 +172,21 @@ path, not the future hot path.
 
 ## `add_usd()` migration
 
-`ModelBuilder.add_usd()` always delegates priority and fallback resolution to a
-`SchemaResolution` through the PXR adapter. It constructs a default Newton
-resolution when neither argument is supplied and wraps `schema_resolvers=` when
-that shorthand is used. The adapter caches composed schema fallbacks by prim
-type and schema. `Usd.SchemaRegistry` remains authoritative on this path;
-`schema_fallbacks` is input for source-neutral `resolve()` calls. Attribute
-collection for the returned `schema_attrs` dictionary remains separate and
-unchanged.
+`ModelBuilder.add_usd()` delegates priority and fallback resolution to
+`SchemaResolverManager`, which is the PXR adapter. The manager accepts either a
+shared `SchemaResolution` or the `schema_resolvers=` shorthand and owns their
+mutual-exclusion and policy validation. The importer supplies the Newton
+resolver when neither configuration is supplied.
 
-The first implementation does not move every higher-level rule out of
-`import_usd.py`. Source-specific branches such as MuJoCo raw-limit provenance,
-material-versus-shape contact precedence, and legacy margin handling migrate in
-small behavior-preserving changes after the common scalar engine is established.
+The adapter caches composed schema fallbacks by prim type and schema.
+`Usd.SchemaRegistry` remains authoritative on this path; `schema_fallbacks` is
+input for source-neutral `resolve()` calls. Attribute collection for the
+returned `schema_attrs` dictionary remains separate and unchanged.
+
+The private `_UsdResolutionPolicy` handles importer-facing interpretation and
+assembly, including MuJoCo joint-limit meaning, material-versus-shape contact
+precedence, margin and gap compatibility, joint properties, and SDF settings.
+It does not traverse the stage or mutate the builder.
 
 ## Non-PXR source integration
 
@@ -231,8 +236,8 @@ host to report after execution. Diagnostic representation is not public.
 - Registered Newton schema fallbacks are read directly from the PXR registry.
 - Legacy PXR-only callbacks continue to work and fail explicitly through the
   source-neutral facade.
-- Later cross-source tests compare final builder/model fields against
-  `add_usd()` for the same asset.
+- Cross-source tests compare mapping results with PXR-backed resolution for the
+  same values, schemas, and registered fallbacks.
 
 ## Alternatives
 
@@ -257,18 +262,15 @@ future bulk ModelBuilder design.
 This would freeze implementation details before the column and builder storage
 contracts exist. The narrow typed facade leaves those choices open.
 
-## Rollout
+## Implementation status
 
-1. Introduce the typed setup object and shared scalar engine.
-2. Route both `add_usd()` arguments through that object while retaining legacy
-   outputs behind one private compatibility policy.
-3. Declare property ownership and audit applied-schema fallback differences for
-   both PXR and mapping sources.
-4. Flip the private policy after the deprecation window, then remove the legacy
-   branch and eventually the `schema_resolvers=` shorthand.
-5. Move higher-level `add_usd()` resolver policy into shared entity helpers.
-6. Adopt those helpers incrementally in non-PXR scene integrations.
-7. Design batch column binding and ModelBuilder reservation separately.
+The typed setup object, shared scalar engine, PXR adapter, ownership metadata,
+migration audit, and importer property policy are implemented. The default
+still returns legacy values while auditing registered-schema precedence.
+
+Remaining work is to adopt the scalar facade in non-PXR scene integrations,
+complete public provenance and dynamic applicability if consumers need them,
+finish the deprecation window, and design batch column binding separately.
 
 ## Open questions
 
