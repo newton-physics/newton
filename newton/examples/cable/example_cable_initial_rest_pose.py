@@ -88,7 +88,7 @@ class Example:
             radius=helix_radius,
             turns=helix_turns,
         )
-        left_initial_quaternions = newton.utils.create_parallel_transport_cable_quaternions(left_initial_points)
+        left_initial_quaternions = newton.utils.rod_parallel_transport_quaternions(left_initial_points)
         # Keep the helical initial geometry but author zero intrinsic bend and twist.
         left_bodies, _ = builder.add_rod(
             positions=left_initial_points,
@@ -111,9 +111,9 @@ class Example:
             radius=helix_radius,
             turns=helix_turns,
         )
-        right_rest_quaternions = newton.utils.create_parallel_transport_cable_quaternions(right_rest_points)
+        right_rest_quaternions = newton.utils.rod_parallel_transport_quaternions(right_rest_points)
         segment_length = float(wp.length(right_rest_points[1] - right_rest_points[0]))
-        right_initial_points, right_initial_quaternions = newton.utils.create_straight_cable_points_and_quaternions(
+        right_initial_points, right_initial_quaternions = newton.utils.rod_straight_points_and_quaternions(
             start=wp.vec3(-0.5 * num_segments * segment_length, right_center[1], right_center[2]),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=num_segments * segment_length,

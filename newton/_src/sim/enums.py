@@ -146,8 +146,36 @@ class BodyFlags(IntEnum):
     """Filter bitmask selecting all body types."""
 
 
+def _warn_joint_type_cable_deprecated() -> None:
+    warnings.warn(
+        "newton.JointType.CABLE is deprecated in Newton 1.6; use newton.JointType.ROD instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
+class _DeprecatedJointTypeMeta(EnumMeta):
+    def __getattribute__(cls, name: str):
+        # Defined members resolve before EnumMeta.__getattr__, so intercept deprecated access here.
+        value = super().__getattribute__(name)
+        if name == "CABLE":
+            _warn_joint_type_cable_deprecated()
+        return value
+
+    def __getitem__(cls, name: str):
+        value = super().__getitem__(name)
+        if name == "CABLE":
+            _warn_joint_type_cable_deprecated()
+        return value
+
+    def __dir__(cls):
+        # EnumMeta.__dir__ omits aliases; keep the preferred ROD name discoverable.
+        names = super().__dir__()
+        return names if "ROD" in names else [*names, "ROD"]
+
+
 # Types of joints linking rigid bodies
-class JointType(IntEnum):
+class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
     """
     Enumeration of joint types supported in Newton.
     """
@@ -173,8 +201,16 @@ class JointType(IntEnum):
     D6 = 6
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
+    # Keep CABLE as the canonical enum name throughout its 1.6 deprecation.
     CABLE = 7
-    """Experimental cable joint: 7-coordinate relative pose and 6-DoF relative twist."""
+    """Deprecated name for :attr:`ROD`.
+
+    .. deprecated:: 1.6
+        Use :attr:`ROD` instead.
+    """
+
+    ROD = CABLE
+    """Experimental rod joint: 7-coordinate relative pose and 6-DoF relative twist."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """
@@ -192,7 +228,7 @@ class JointType(IntEnum):
         Notes:
             - For PRISMATIC and REVOLUTE joints, both values are 1 (single axis).
             - For BALL joints, dof_count is 3 (angular velocity), coord_count is 4 (quaternion).
-            - For FREE, DISTANCE, and CABLE joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
+            - For FREE, DISTANCE, and ROD joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
             - For FIXED joints, both values are 0.
         """
         dof_count = num_axes
@@ -200,7 +236,7 @@ class JointType(IntEnum):
         if self == JointType.BALL:
             dof_count = 3
             coord_count = 4
-        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.CABLE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.ROD:
             dof_count = 6
             coord_count = 7
         elif self == JointType.FIXED:
@@ -220,13 +256,13 @@ class JointType(IntEnum):
 
         Notes:
             - For PRISMATIC and REVOLUTE joints, this equals 5 (single DoF axis).
-            - For FREE, DISTANCE, and CABLE joints, `cts_count = 0` since they yield no constraints.
+            - For FREE, DISTANCE, and ROD joints, `cts_count = 0` since they yield no constraints.
             - For FIXED joints, `cts_count = 6` since it fully constrains the associated bodies.
         """
         cts_count = 6 - num_axes
         if self == JointType.BALL:
             cts_count = 3
-        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.CABLE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.ROD:
             cts_count = 0
         elif self == JointType.FIXED:
             cts_count = 6

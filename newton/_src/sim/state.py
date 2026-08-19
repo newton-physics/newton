@@ -168,7 +168,7 @@ class State:
 
         self.joint_qd: wp.array | None = None
         """Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float.
-        For FREE, DISTANCE, and CABLE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
+        For FREE, DISTANCE, and ROD joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
 
     @property
     def body_q_prev(self) -> wp.array | None:

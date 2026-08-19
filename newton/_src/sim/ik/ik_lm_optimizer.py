@@ -150,7 +150,7 @@ class IKOptimizerLM:
             not be modified after construction.
 
     Raises:
-        ValueError: If ``model`` contains a :attr:`~newton.JointType.CABLE`
+        ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
             joint, which is not yet supported by this optimizer.
     """
 
@@ -166,8 +166,8 @@ class IKOptimizerLM:
         *a: Any,
         **kw: Any,
     ) -> IKOptimizerLM:
-        if model._has_cable_joints and JointType.CABLE in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
-            raise ValueError("IKOptimizerLM does not support JointType.CABLE joints.")
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("IKOptimizerLM does not support JointType.ROD joints.")
 
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)

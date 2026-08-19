@@ -291,7 +291,7 @@ class ModelBuilder:
         _SHAPE_COLOR_PALETTE[0][2] / 255.0,
     )
     _ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE = (
-        "Omitting body_frame_origin when creating cable rods is deprecated because the implicit default "
+        "Omitting body_frame_origin when creating rods is deprecated because the implicit default "
         "will change from 'start' to 'com' in a future release. Pass body_frame_origin='start' to "
         "preserve the existing start-node body frame, or body_frame_origin='com' to opt into "
         "COM-centered capsule body frames."
@@ -2529,7 +2529,7 @@ class ModelBuilder:
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     def _project_target_q_to_dof(self) -> list[float]:
-        """Drop the quat-w padding slot for FREE/BALL/DISTANCE/CABLE joints to turn
+        """Drop the quat-w padding slot for FREE/BALL/DISTANCE/ROD joints to turn
         the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped list.
 
         Under :data:`newton.use_coord_layout_targets` ``False`` the builder
@@ -2542,7 +2542,7 @@ class ModelBuilder:
             q_start = self.joint_q_start[j]
             if jtype == JointType.BALL:
                 result.extend(self.joint_target_q[q_start : q_start + 3])
-            elif jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.CABLE:
+            elif jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.ROD:
                 result.extend(self.joint_target_q[q_start : q_start + 6])
             elif jtype == JointType.FIXED:
                 pass
@@ -4526,13 +4526,13 @@ class ModelBuilder:
         if angular_axes is None:
             angular_axes = []
 
-        if joint_type == JointType.CABLE:
-            # Cable material coordinates use canonical XYZ linear and angular ordering,
+        if joint_type == JointType.ROD:
+            # Rod material coordinates use canonical XYZ linear and angular ordering,
             # so the axis set is fixed rather than free-form.
             if len(linear_axes) != 3 or len(angular_axes) != 3:
                 raise ValueError(
-                    "JointType.CABLE requires exactly three linear and three angular axes; "
-                    "use ModelBuilder.add_joint_cable() to construct the canonical layout."
+                    "JointType.ROD requires exactly three linear and three angular axes; "
+                    "use ModelBuilder.add_joint_rod() to construct the canonical layout."
                 )
             expected_axes = (
                 axis_to_vec3(Axis.X),
@@ -4548,15 +4548,14 @@ class ModelBuilder:
                     for k in range(3)
                 ):
                     raise ValueError(
-                        "JointType.CABLE requires canonical XYZ linear and XYZ angular axis ordering; "
-                        "use ModelBuilder.add_joint_cable() to construct the canonical layout."
+                        "JointType.ROD requires canonical XYZ linear and XYZ angular axis ordering; "
+                        "use ModelBuilder.add_joint_rod() to construct the canonical layout."
                     )
                 if not math.isfinite(float(configured.target_pos)):
-                    raise ValueError("JointType.CABLE requires finite target_pos values for structural rest.")
+                    raise ValueError("JointType.ROD requires finite target_pos values for structural rest.")
                 if configured.actuator_mode is not None and configured.actuator_mode != JointTargetMode.NONE:
                     raise ValueError(
-                        "JointType.CABLE requires actuator_mode=JointTargetMode.NONE; "
-                        f"got {configured.actuator_mode!r}."
+                        f"JointType.ROD requires actuator_mode=JointTargetMode.NONE; got {configured.actuator_mode!r}."
                     )
 
         if collision_filter_parent is None:
@@ -4625,7 +4624,7 @@ class ModelBuilder:
             JointType.BALL,
             JointType.FREE,
             JointType.DISTANCE,
-            JointType.CABLE,
+            JointType.ROD,
         )
         target_uses_coord_layout = False
         if uses_quaternion_coords:
@@ -4659,8 +4658,8 @@ class ModelBuilder:
             self.joint_target_qd.append(dim.target_vel)
 
             # Use actuator_mode if explicitly set, otherwise infer from gains
-            if joint_type == JointType.CABLE:
-                # Cable stiffness does not enable joint actuation.
+            if joint_type == JointType.ROD:
+                # Rod stiffness does not enable joint actuation.
                 mode = int(JointTargetMode.NONE)
             elif dim.actuator_mode is not None:
                 mode = int(dim.actuator_mode)
@@ -4760,7 +4759,7 @@ class ModelBuilder:
                     self.add_shape_collision_filter_pair(parent_shape, child_shape)
 
         joint_index = self.joint_count - 1
-        if joint_type == JointType.CABLE:
+        if joint_type == JointType.ROD:
             self._init_joint_q_from_body_poses(joint_index, parent, child)
 
         # Process custom attributes
@@ -5286,14 +5285,13 @@ class ModelBuilder:
         )
 
     @deprecate_nonkeyword_arguments
-    def add_joint_cable(
+    def add_joint_rod(
         self,
         parent: int,
         child: int,
         *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
-        rest_xform: Transform | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
         shear_stiffness: float | None = None,
@@ -5306,17 +5304,17 @@ class ModelBuilder:
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
+        rest_xform: Transform | None = None,
         **kwargs,
     ) -> int:
-        """Adds a cable joint to the model.
+        """Adds a rod joint to the model.
 
         Its kinematic state uses a 7-coordinate relative pose in ``joint_q`` and
-        a 6-DoF relative twist in ``joint_qd``.
-        Its structural-rest pose uses translation plus a quaternion in
-        ``joint_target_q`` under coordinate layout, or translation plus extrinsic
-        ZYX angles under legacy layout.
+        a 6-DoF relative twist in ``joint_qd``. Its structural-rest pose uses
+        translation plus a quaternion in ``joint_target_q`` under coordinate
+        layout, or translation plus extrinsic ZYX angles under legacy layout.
 
-        Cable joints have split linear stretch/shear material response plus
+        Rod joints have split linear stretch/shear material response plus
         separate angular bend and twist response. When both ``shear_stiffness`` and
         ``shear_damping`` are omitted, shear uses the stretch stiffness /
         damping, reproducing the isotropic linear energy while using the
@@ -5326,15 +5324,15 @@ class ModelBuilder:
 
         .. note::
 
-            Cable joints are supported by :class:`newton.solvers.SolverVBD`. Their six canonical
-            axes represent four material responses: stretch, shear, bend, and twist. Cable body
-            transforms are integrated directly by
-            :class:`newton.solvers.SolverVBD`, while :func:`newton.eval_fk` can
-            reconstruct them from ``joint_q`` and ``joint_qd``.
+            Rod joints are supported by :class:`newton.solvers.SolverVBD`. Their
+            six canonical axes represent four material responses: stretch,
+            shear, bend, and twist. Rod body transforms are integrated directly
+            by :class:`newton.solvers.SolverVBD`, while :func:`newton.eval_fk`
+            can reconstruct them from ``joint_q`` and ``joint_qd``.
 
-            Split cables use each anchor frame's local ``+Z`` as the material
+            Rod joints use each anchor frame's local ``+Z`` as the material
             tangent axis for separating axial stretch from shear and twist from
-            bend. For a body-to-body cable span, the parent anchor ``+Z`` should
+            bend. For a body-to-body rod span, the parent anchor ``+Z`` should
             point from the parent attachment toward the child attachment.
             :meth:`add_rod` and :meth:`add_rod_graph` satisfy the tangent
             convention automatically.
@@ -5348,19 +5346,17 @@ class ModelBuilder:
             child_xform: The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point and its local ``+Z`` axis is the child-side material
                 tangent.
-            rest_xform: Child anchor transform relative to the parent anchor at structural rest
-                [m, unitless quaternion]. If None, it uses the initial joint transform at creation.
-            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
-            stretch_damping: Cable stretch damping [N·s/m] (stored as ``target_kd``). If None,
+            stretch_stiffness: Rod stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
+            stretch_damping: Rod stretch damping [N·s/m] (stored as ``target_kd``). If None,
                 defaults to 0.0.
             shear_stiffness: Optional transverse shear stiffness [N/m]. If None,
                 defaults to ``stretch_stiffness``.
             shear_damping: Optional transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise
                 defaults to 0.0.
-            bend_stiffness: Cable bend stiffness (stored as ``target_ke``) [N·m/rad].
+            bend_stiffness: Rod bend stiffness (stored as ``target_ke``) [N·m/rad].
                 If None, defaults to 0.0.
-            bend_damping: Cable bend damping [N·m·s/rad] (stored as ``target_kd``). If None, defaults to 0.0.
+            bend_damping: Rod bend damping [N·m·s/rad] (stored as ``target_kd``). If None, defaults to 0.0.
             twist_stiffness: Optional twist stiffness [N·m/rad]. If None,
                 defaults to ``bend_stiffness``.
             twist_damping: Optional twist damping [N·m·s/rad]. If None, defaults to ``bend_damping`` only when
@@ -5370,6 +5366,8 @@ class ModelBuilder:
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD
                 frequency attributes.
+            rest_xform: Child anchor transform relative to the parent anchor at structural rest
+                [m, unitless quaternion]. If None, it uses the initial joint transform at creation.
 
         Returns:
             The index of the added joint.
@@ -5380,7 +5378,7 @@ class ModelBuilder:
 
         .. experimental::
 
-            CABLE state and material conventions may change in a future release.
+            ROD state and material conventions may change in a future release.
 
         """
         rest_xform_value = None
@@ -5390,11 +5388,11 @@ class ModelBuilder:
             rotation = wp.transform_get_rotation(rest_xform_value)
             values = [float(position[i]) for i in range(3)] + [float(rotation[i]) for i in range(4)]
             if not all(math.isfinite(value) for value in values):
-                raise ValueError("add_joint_cable: rest_xform must contain finite values")
+                raise ValueError("add_joint_rod: rest_xform must contain finite values")
             rotation_norm = math.sqrt(sum(value * value for value in values[3:]))
             if rotation_norm <= 1.0e-9:
                 raise ValueError(
-                    "add_joint_cable: rest_xform must contain a nonzero quaternion (norm greater than 1.0e-9)"
+                    "add_joint_rod: rest_xform must contain a nonzero quaternion (norm greater than 1.0e-9)"
                 )
             rest_xform_value = wp.transform(position, rotation * (1.0 / rotation_norm))
 
@@ -5408,7 +5406,6 @@ class ModelBuilder:
         else:
             shear_ke = stretch_ke if shear_stiffness is None else shear_stiffness
             shear_kd = 0.0 if shear_damping is None else shear_damping
-
         # Angular DOFs (bend and twist). Default twist to bend so omitted twist
         # reproduces the isotropic angular energy in the split layout.
         bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
@@ -5421,9 +5418,8 @@ class ModelBuilder:
             twist_kd = 0.0 if twist_damping is None else twist_damping
         if stretch_ke < 0.0 or shear_ke < 0.0 or bend_ke < 0.0 or twist_ke < 0.0:
             raise ValueError(
-                "add_joint_cable: stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness must be >= 0"
+                "add_joint_rod: stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness must be >= 0"
             )
-
         material_axis = functools.partial(
             ModelBuilder.JointDofConfig,
             actuator_mode=JointTargetMode.NONE,
@@ -5440,7 +5436,7 @@ class ModelBuilder:
         ]
 
         joint_id = self.add_joint(
-            JointType.CABLE,
+            JointType.ROD,
             parent,
             child,
             parent_xform=parent_xform,
@@ -5469,7 +5465,61 @@ class ModelBuilder:
             self.joint_target_q[q_start + 6] = 1.0
         return joint_id
 
-    def _set_joint_cable_stiffnesses(
+    @deprecate_nonkeyword_arguments
+    def add_joint_cable(
+        self,
+        parent: int,
+        child: int,
+        *,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
+        label: str | None = None,
+        collision_filter_parent: bool | None = None,
+        enabled: bool = True,
+        custom_attributes: dict[str, Any] | None = None,
+        rest_xform: Transform | None = None,
+        **kwargs,
+    ) -> int:
+        """Deprecated alias for :meth:`add_joint_rod`.
+
+        .. deprecated:: 1.6
+            Use :meth:`add_joint_rod` instead.
+        """
+        warnings.warn(
+            "ModelBuilder.add_joint_cable() is deprecated in Newton 1.6; use add_joint_rod() instead.",
+            DeprecationWarning,
+            stacklevel=self._external_warning_stacklevel(),
+        )
+        return self.add_joint_rod(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            rest_xform=rest_xform,
+            stretch_stiffness=stretch_stiffness,
+            stretch_damping=stretch_damping,
+            shear_stiffness=shear_stiffness,
+            shear_damping=shear_damping,
+            bend_stiffness=bend_stiffness,
+            bend_damping=bend_damping,
+            twist_stiffness=twist_stiffness,
+            twist_damping=twist_damping,
+            label=label,
+            collision_filter_parent=collision_filter_parent,
+            enabled=enabled,
+            custom_attributes=custom_attributes,
+            **kwargs,
+        )
+
+    def _set_joint_rod_stiffnesses(
         self,
         joint: int,
         *,
@@ -5478,14 +5528,14 @@ class ModelBuilder:
         bend_stiffness: float | None,
         twist_stiffness: float | None,
     ) -> None:
-        """Overwrite each non-None stiffness in :meth:`add_joint_cable` axis order."""
+        """Overwrite each non-None stiffness in :meth:`add_joint_rod` axis order."""
         joint_type = self.joint_type[joint]
         joint_dof_dim = self.joint_dof_dim[joint]
-        if joint_type != JointType.CABLE or joint_dof_dim != (3, 3):
+        if joint_type != JointType.ROD or joint_dof_dim != (3, 3):
             raise ValueError(
-                "_set_joint_cable_stiffnesses() expected the six-DOF CABLE layout "
+                "_set_joint_rod_stiffnesses() expected the six-DOF ROD layout "
                 f"(3 linear, 3 angular); got joint type {JointType(joint_type).name} with dimensions "
-                f"{joint_dof_dim}. Update the CABLE material-slot mapping when changing its DOF layout."
+                f"{joint_dof_dim}. Update the ROD material-axis mapping when changing its DOF layout."
             )
         dof_start = self.joint_qd_start[joint]
         axis_stiffnesses = (
@@ -5606,8 +5656,8 @@ class ModelBuilder:
                 return "fixed"
             elif type == JointType.DISTANCE:
                 return "distance"
-            elif type == JointType.CABLE:
-                return "cable"
+            elif type == JointType.ROD:
+                return "rod"
             return "unknown"
 
         def shape_type_str(type):
@@ -6026,7 +6076,7 @@ class ModelBuilder:
             if joint["child"] not in velocity_updated_bodies or joint["type"] not in (
                 JointType.FREE,
                 JointType.DISTANCE,
-                JointType.CABLE,
+                JointType.ROD,
             ):
                 continue
 
@@ -6152,12 +6202,12 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by cable
+        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by rod
         # joints (never fixed), so they are not collapsed and their ranges stay contiguous; only their
         # indices shift as other bodies/joints are dropped. Cloth/volume ranges address particles and
         # triangles/tets/edges, which fixed-joint collapse never touches, so they are left untouched.
         def _remap_body_id(body_id: int) -> int:
-            # Cable bodies are linked only by non-fixed cable joints, so collapse must never
+            # Cable bodies are linked only by non-fixed rod joints, so collapse must never
             # merge or drop them; a violation would silently corrupt every recorded range.
             assert body_id in body_remap, f"cable body {body_id} was collapsed; cable ranges would be corrupt"
             return body_remap[body_id]
@@ -6170,7 +6220,7 @@ class ModelBuilder:
             if self._cable_joint_end[i] > self._cable_joint_start[i]:
                 first, last = self._cable_joint_start[i], self._cable_joint_end[i] - 1
                 assert first in joint_remap and last in joint_remap, (
-                    f"cable joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
+                    f"rod joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
                 )
                 self._cable_joint_start[i] = joint_remap[first]
                 self._cable_joint_end[i] = joint_remap[last] + 1
@@ -7856,9 +7906,6 @@ class ModelBuilder:
         positions: list[Vec3],
         *,
         quaternions: list[Quat] | None = None,
-        rest_positions: list[Vec3] | None = None,
-        rest_quaternions: list[Quat] | None = None,
-        rest_straight: bool = False,
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
@@ -7874,12 +7921,15 @@ class ModelBuilder:
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
+        rest_positions: list[Vec3] | None = None,
+        rest_quaternions: list[Quat] | None = None,
+        rest_straight: bool = False,
     ) -> tuple[list[int], list[int]]:
-        """Adds a rod composed of capsule bodies connected by cable joints.
+        """Adds a rod composed of capsule bodies connected by rod joints.
 
         Constructs a chain of capsule bodies from the given centerline points and orientations.
         Each segment is a capsule aligned by the corresponding quaternion, and adjacent capsules
-        are connected by cable joints with a relative pose and twist plus split linear
+        are connected by rod joints with a relative pose and twist plus split linear
         stretch/shear and angular bend/twist material response.
 
         Supplied initial and rest material frames must align local ``+Z`` with
@@ -7892,39 +7942,29 @@ class ModelBuilder:
                 that for ``N`` segments there are ``N+1`` positions.
             quaternions: Optional per-segment initial material-frame orientations in world space
                 [unitless quaternion]. If None, orientations are inferred from ``positions``.
-            rest_positions: Optional structural-rest centerline in world space [m]. Rest edge
-                lengths define capsule geometry, mass properties, and cable-joint anchors. If None,
-                ``positions`` is also used as the structural-rest centerline.
-            rest_quaternions: Optional per-segment structural-rest material-frame orientations
-                in world space [unitless quaternion]. If None, initial material roll is transported
-                to the rest tangents.
-            rest_straight: If True, gives every Cable joint identity structural-rest rotation,
-                producing zero intrinsic bend and twist. Initial poses, joint anchors, segment
-                lengths, and any closing rest translation remain unchanged. Nonzero bend or twist
-                stiffness is required for a straightening or untwisting response. Cannot be
-                combined with explicit ``rest_positions`` or ``rest_quaternions``.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
+            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, defaults to 1.0e5.
-            stretch_damping: Stretch damping [N·s/m] for the cable joints (applied per-joint; not length-normalized). If None,
+            stretch_damping: Stretch damping [N·s/m] for the rod joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
                 ``stretch_stiffness``.
             shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N·m/rad].
+            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
                 If None, defaults to 0.0.
-            bend_damping: Bend damping [N·m·s/rad] for the cable joints (applied per-joint; not length-normalized). If None,
+            bend_damping: Bend damping [N·m·s/rad] for the rod joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
-            twist_stiffness: Optional per-joint cable twist stiffness [N·m/rad]. If None, defaults to
+            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
                 ``bend_stiffness``.
-            twist_damping: Optional per-joint cable twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
+            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             closed: If True, connects the last segment to the first; otherwise leaves the chain open.
                 Explicit ``rest_positions`` must close; if omitted, the initial endpoint separation becomes
                 the closing joint's structural-rest translation. Rods require at least 2 segments.
-            label: Optional label prefix for bodies, shapes, and joints.
+            label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
+                retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
@@ -7936,6 +7976,17 @@ class ModelBuilder:
                 ``"start"`` for now with a
                 :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
                 pass ``"start"`` or ``"com"`` explicitly.
+            rest_positions: Optional structural-rest centerline in world space [m]. Rest edge
+                lengths define capsule geometry, mass properties, and rod-joint anchors. If None,
+                ``positions`` is also used as the structural-rest centerline.
+            rest_quaternions: Optional per-segment structural-rest material-frame orientations
+                in world space [unitless quaternion]. If None, initial material roll is transported
+                to the rest tangents.
+            rest_straight: If True, gives every rod joint identity structural-rest rotation,
+                producing zero intrinsic bend and twist. Initial poses, joint anchors, segment
+                lengths, and any closing rest translation remain unchanged. Nonzero bend or twist
+                stiffness is required for a straightening or untwisting response. Cannot be
+                combined with explicit ``rest_positions`` or ``rest_quaternions``.
 
         Returns:
             A pair ``(body_indices, joint_indices)``. For an open chain,
@@ -8026,7 +8077,7 @@ class ModelBuilder:
             )
 
         if num_segments < 2:
-            # A "rod" in this API is defined as multiple capsules coupled by cable joints.
+            # A "rod" in this API is defined as multiple capsules coupled by rod joints.
             # If you want a single capsule, create a body + capsule shape directly.
             raise ValueError(
                 f"add_rod: requires at least 2 segments (got {num_segments}); "
@@ -8081,7 +8132,7 @@ class ModelBuilder:
             rod_art_label = f"{label}_articulation" if label else None
             self.add_articulation(link_joints, label=rod_art_label)
 
-        # For closed loops, add one extra loop-closing cable joint that is intentionally
+        # For closed loops, add one extra loop-closing rod joint that is intentionally
         # *not* part of an articulation (articulations must be trees/forests).
         if closed:
             if not wrap_in_articulation:
@@ -8162,7 +8213,7 @@ class ModelBuilder:
                 )
 
                 loop_joint_label = f"{label}_cable_{len(link_joints) + 1}" if label else None
-                j_loop = self.add_joint_cable(
+                j_loop = self.add_joint_rod(
                     parent=last_body,
                     child=first_body,
                     parent_xform=parent_xform,
@@ -8196,7 +8247,6 @@ class ModelBuilder:
         node_positions: list[Vec3],
         edges: list[tuple[int, int]],
         *,
-        rest_node_positions: list[Vec3] | None = None,
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
@@ -8210,12 +8260,13 @@ class ModelBuilder:
         label: str | None = None,
         wrap_in_articulation: bool = True,
         quaternions: list[Quat] | None = None,
-        rest_quaternions: list[Quat] | None = None,
         junction_collision_filter: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
+        rest_node_positions: list[Vec3] | None = None,
+        rest_quaternions: list[Quat] | None = None,
     ) -> tuple[list[int], list[int]]:
-        """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
+        """Adds a rod *graph* (supports junctions) from nodes + edges.
 
         This is a generalization of :meth:`add_rod` to support branching/junction topologies.
 
@@ -8223,7 +8274,7 @@ class ModelBuilder:
 
         - Each *edge* becomes a capsule rigid body oriented from ``node_positions[u]`` toward
           ``node_positions[v]``. Its length comes from ``rest_node_positions`` when provided.
-        - Cable joints are created between edge-bodies that share a node, using a spanning-tree
+        - Rod joints are created between edge-bodies that share a node, using a spanning-tree
           traversal so that each body has a single parent when wrapped into an articulation.
 
         Notes:
@@ -8246,34 +8297,29 @@ class ModelBuilder:
             node_positions: Initial junction node positions in world space [m].
             edges: List of (u, v) node index pairs defining rod segments. Each edge creates one
                 capsule body oriented so its local +Z points from node ``u`` to node ``v``.
-            rest_node_positions: Optional structural-rest node positions in world space [m].
-                Rest edge lengths define capsule geometry, mass properties, and joint anchors. If
-                None, ``node_positions`` is also used as the structural-rest node positions.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
+            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
             stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
             shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
                 ``stretch_stiffness``.
             shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N·m/rad].
+            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
                 Defaults to 0.0.
             bend_damping: Bend damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            twist_stiffness: Optional per-joint cable twist stiffness [N·m/rad]. If None, defaults to
+            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
                 ``bend_stiffness``.
-            twist_damping: Optional per-joint cable twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
+            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations.
+            label: Optional label prefix for bodies, shapes, joints, and articulations. Generated
+                joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
             quaternions: Optional per-edge initial material-frame orientations in world space
                 [unitless quaternion], with one entry per edge. If None, orientations are inferred
                 from the edge directions.
-            rest_quaternions: Optional per-edge structural-rest material-frame orientations
-                in world space [unitless quaternion], with one entry per edge. If None, initial
-                material roll is transported to the rest tangents.
             junction_collision_filter: If True, adds collision filters between *non-jointed* segment
                 bodies that are incident to a junction node (degree >= 3). This prevents immediate
                 self-collision impulses at welded junctions, even though the joint set is a spanning
@@ -8286,6 +8332,12 @@ class ModelBuilder:
                 origin at the initial edge midpoint so the body origin and COM coincide. If None,
                 preserves ``"start"`` for now with a :class:`DeprecationWarning` because the implicit
                 default will change to ``"com"``; pass ``"start"`` or ``"com"`` explicitly.
+            rest_node_positions: Optional structural-rest node positions in world space [m].
+                Rest edge lengths define capsule geometry, mass properties, and joint anchors. If
+                None, ``node_positions`` is also used as the structural-rest node positions.
+            rest_quaternions: Optional per-edge structural-rest material-frame orientations
+                in world space [unitless quaternion], with one entry per edge. If None, initial
+                material roll is transported to the rest tangents.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
@@ -8529,7 +8581,7 @@ class ModelBuilder:
                     joint_counter += 1
                     joint_label = f"{label}_cable_{joint_counter}" if label else None
 
-                    j = self.add_joint_cable(
+                    j = self.add_joint_rod(
                         parent=parent_body,
                         child=child_body,
                         parent_xform=parent_xform,
@@ -8589,7 +8641,7 @@ class ModelBuilder:
                             joint_counter += 1
                             joint_label = f"{label}_cable_{joint_counter}" if label else None
 
-                            j = self.add_joint_cable(
+                            j = self.add_joint_rod(
                                 parent=parent_body,
                                 child=child_body,
                                 parent_xform=parent_xform,
@@ -8658,7 +8710,7 @@ class ModelBuilder:
         if junction_collision_filter:
             # Filter collisions among *non-jointed* sibling bodies incident to each junction node
             # (degree >= 3). Jointed parent/child pairs are already filtered by
-            # add_joint_cable(collision_filter_parent=True).
+            # add_joint_rod(collision_filter_parent=True).
             for inc in node_incidence:
                 if len(inc) < 3:
                     continue
@@ -8672,7 +8724,7 @@ class ModelBuilder:
                         bi = bodies[i]
                         bj = bodies[j]
                         if (bi, bj) in jointed_body_pairs:
-                            # Already filtered by add_joint_cable(collision_filter_parent=True).
+                            # Already filtered by add_joint_rod(collision_filter_parent=True).
                             continue
                         for si in self.body_shapes.get(bi, []):
                             if not self.shape_flags[si] & ShapeFlags.COLLIDE_SHAPES:
@@ -12503,7 +12555,7 @@ class ModelBuilder:
                 m.body_color_groups = [wp.array(group, dtype=int) for group in self.body_color_groups]
 
             # joints
-            m._has_cable_joints = JointType.CABLE in self.joint_type  # pyright: ignore[reportPrivateUsage]
+            m._has_rod_joints = JointType.ROD in self.joint_type  # pyright: ignore[reportPrivateUsage]
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
@@ -12539,7 +12591,7 @@ class ModelBuilder:
                 if self.joint_coord_count != self.joint_dof_count:
                     warnings.warn(
                         "The legacy DOF-shaped joint_target_q layout is deprecated for models "
-                        "whose joint coordinate and DOF counts differ (free/ball/distance/cable "
+                        "whose joint coordinate and DOF counts differ (free/ball/distance/rod "
                         "joints). In a future release joint_target_q will always use the "
                         "coordinate layout (matching joint_q) and newton.use_coord_layout_targets "
                         "will be removed. Set newton.use_coord_layout_targets = True before "

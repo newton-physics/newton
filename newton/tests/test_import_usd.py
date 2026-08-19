@@ -15116,12 +15116,19 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
         return posixpath.join("_external_usd", digest, basename)
 
-    def _run_resolve(self, url_to_layer, base_url="https://example.com/assets/scene.usd"):
+    def _run_resolve(
+        self,
+        url_to_layer,
+        base_url="https://example.com/assets/scene.usd",
+        prepare_target=None,
+    ):
         """Run resolve_usd_from_url with mocked network and USD stage I/O.
 
         Args:
             url_to_layer: mapping from URL to USDA layer string content.
             base_url: the top-level URL passed to resolve_usd_from_url.
+            prepare_target: Optional callback invoked with the cache directory
+                before resolution begins.
 
         Returns:
             Tuple of (result_path, target_dir, downloaded_urls).
@@ -15148,7 +15155,11 @@ class TestResolveUsdFromUrl(unittest.TestCase):
 
         # Map cache-relative path -> layer string so the mock stage can return it.
         file_to_layer = {}
-        tmpdir = tempfile.mkdtemp()
+        # The resolver canonicalizes the cache directory. Mirror that here so
+        # mocked file lookups remain stable across symlinked temporary roots.
+        tmpdir = os.path.realpath(tempfile.mkdtemp())
+        if prepare_target is not None:
+            prepare_target(tmpdir)
 
         # Precompute exact local-key -> layer mapping from URLs.
         base_url_dir = base_url.rsplit("/", 1)[0]
@@ -15279,16 +15290,138 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(tmpdir, "robots", "collisions.usd")))
         self.assertFalse(os.path.exists(os.path.join(tmpdir, "collisions.usd")))
 
+    def test_nested_parent_reference_stays_within_cache(self):
+        """Resolve a nested parent reference that remains inside the cache."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @robots/robot.usd@",
+            "https://example.com/assets/robots/robot.usd": "references = @../common.usd@",
+            "https://example.com/assets/common.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/common.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "common.usd")))
+
     def test_path_traversal_rejected(self):
-        """References with .. that escape the target folder are skipped."""
+        """Reject references that escape the target folder."""
         url_to_layer = {
             "https://example.com/assets/scene.usd": "references = @../secret.usd@",
         }
-        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
-        # Escaped reference must not be fetched or written.
-        escaped_urls = [u for u in downloaded_urls if "secret.usd" in u]
-        self.assertEqual(len(escaped_urls), 0)
-        self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
+        with self.assertRaisesRegex(ValueError, "escapes the target folder"):
+            self._run_resolve(url_to_layer)
+
+    def test_reference_list_preserves_internal_references(self):
+        """Preserve internal references while resolving asset references in a list."""
+        safe_url = "https://example.com/assets/safe.usd"
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": """#usda 1.0
+def Xform "Root" (
+    references = [</Local>, @safe.usd@</Remote>]
+)
+{
+}
+""",
+            safe_url: "",
+        }
+
+        result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+
+        self.assertEqual(
+            downloaded_urls,
+            ["https://example.com/assets/scene.usd", safe_url],
+        )
+        with open(result) as f:
+            layer_str = f.read()
+        self.assertIn("</Local>", layer_str)
+        self.assertIn("@safe.usd@</Remote>", layer_str)
+
+    def test_reference_list_rejects_escaping_entries(self):
+        """Reject an escaping asset reference in a mixed reference list."""
+        safe_url = "https://example.com/assets/safe.usd"
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": """#usda 1.0
+def Xform "Root" (
+    references = [</Local>, @safe.usd@, @../secret.usd@]
+)
+{
+}
+""",
+            safe_url: "",
+        }
+
+        with self.assertRaisesRegex(ValueError, "escapes the target folder"):
+            self._run_resolve(url_to_layer)
+
+    def test_reference_with_prim_path_escape_is_rejected(self):
+        """Reject an escaping asset reference that includes a prim path."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": """#usda 1.0
+def Xform "Root" (
+    references = @../secret.usd@</Root>
+)
+{
+}
+""",
+        }
+
+        with self.assertRaisesRegex(ValueError, "escapes the target folder"):
+            self._run_resolve(url_to_layer)
+
+    def test_windows_reference_escapes_are_rejected(self):
+        """Reject Windows and mixed-separator references that escape the cache."""
+        malicious_references = (
+            (r"..\..\escape.usd", r"https://example.com/assets/..\..\escape.usd"),
+            (r"safe\..\..\escape.usd", r"https://example.com/assets/safe\..\..\escape.usd"),
+            (r"\\server\share\escape.usd", r"https://example.com/assets/\\server\share\escape.usd"),
+            (r"C:\escape.usd", r"C:\escape.usd"),
+        )
+
+        for raw_ref, resolved_url in malicious_references:
+            with self.subTest(raw_ref=raw_ref):
+                url_to_layer = {
+                    "https://example.com/assets/scene.usd": f"references = @{raw_ref}@",
+                    resolved_url: "",
+                }
+                with self.assertRaises(ValueError):
+                    self._run_resolve(url_to_layer)
+
+    def test_nested_windows_reference_escapes_are_rejected(self):
+        """Reject rooted Windows references found in nested layers."""
+        malicious_references = (r"C:\escape.usd", r"\\server\share\escape.usd")
+
+        for raw_ref in malicious_references:
+            with self.subTest(raw_ref=raw_ref):
+                url_to_layer = {
+                    "https://example.com/assets/scene.usd": "references = @robots/robot.usd@",
+                    "https://example.com/assets/robots/robot.usd": f"references = @{raw_ref}@",
+                }
+                with self.assertRaises(ValueError):
+                    self._run_resolve(url_to_layer)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "Requires symlink support")
+    def test_reference_symlink_escape_is_rejected(self):
+        """Reject a reference whose canonical path leaves the cache through a symlink."""
+        child_url = "https://example.com/assets/link/escape.usd"
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @link/escape.usd@",
+            child_url: "",
+        }
+
+        with tempfile.TemporaryDirectory() as outside_dir:
+
+            def prepare_target(cache_dir):
+                try:
+                    os.symlink(outside_dir, os.path.join(cache_dir, "link"))
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) == 1314:
+                        raise unittest.SkipTest("Requires permission to create symlinks") from exc
+                    raise
+
+            with self.assertRaisesRegex(ValueError, "escapes the target folder"):
+                self._run_resolve(
+                    url_to_layer,
+                    prepare_target=prepare_target,
+                )
+            self.assertFalse(os.path.exists(os.path.join(outside_dir, "escape.usd")))
 
     def test_cleartext_top_level_url_rejected(self):
         """Top-level USD downloads must use HTTPS."""

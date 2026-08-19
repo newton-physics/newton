@@ -34,11 +34,11 @@ class Control:
         Array of generalized joint forces [N or N·m, depending on joint type] with shape ``(joint_dof_count,)``
         and type ``float``.
 
-        The degrees of freedom for FREE, DISTANCE, and CABLE joints are included in this array and have the same
+        The degrees of freedom for FREE, DISTANCE, and ROD joints are included in this array and have the same
         convention as the :attr:`newton.State.body_f` array where the 6D wrench is defined as
         ``(f_x, f_y, f_z, t_x, t_y, t_z)``, where ``f_x``, ``f_y``, and ``f_z`` are the components
         of the force vector (linear) [N] and ``t_x``, ``t_y``, and ``t_z`` are the
-        components of the torque vector (angular) [N·m]. For FREE, DISTANCE, and CABLE joints, the wrench is applied in world
+        components of the torque vector (angular) [N·m]. For FREE, DISTANCE, and ROD joints, the wrench is applied in world
         frame with the child body's center of mass (COM) as reference point.
         """
         self.joint_target_q: wp.array | None = None
@@ -77,13 +77,13 @@ class Control:
         """Reset all control inputs to zero.
 
         ``joint_target_q`` is special: zeroing it under coord layout corrupts
-        FREE/BALL/DISTANCE/CABLE quaternion slots (``(0,0,0,0)`` is not a valid
+        FREE/BALL/DISTANCE/ROD quaternion slots (``(0,0,0,0)`` is not a valid
         rotation). Pass ``model`` to restore it from ``model.joint_target_q``
         instead. Without ``model`` it falls back to the legacy zero-fill.
 
         Args:
             model: Optional source :class:`Model` whose ``joint_target_q``
-                seeds this Control. Required for models with FREE/BALL/DISTANCE/CABLE
+                seeds this Control. Required for models with FREE/BALL/DISTANCE/ROD
                 joints under coord layout.
         """
 

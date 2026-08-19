@@ -270,7 +270,7 @@ the wrench to a point offset by :math:`\mathbf{r}` changes the torque as:
 This convention is used in all Newton solvers.
 
 The array of joint forces (torques) in generalized coordinates is stored in :attr:`Control.joint_f <newton.Control.joint_f>`.
-For ``FREE``, ``DISTANCE``, and ``CABLE`` joints, the corresponding 6 dimensions in this
+For ``FREE``, ``DISTANCE``, and ``ROD`` joints, the corresponding 6 dimensions in this
 array are the physical wrench in world coordinates, with the force and torque
 referenced at the child body's center of mass (COM).
 

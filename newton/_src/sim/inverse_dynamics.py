@@ -398,7 +398,7 @@ def eval_inverse_dynamics_passive(
         loop-closure joints (``EqType.CONNECT``, ``EqType.WELD``, ``EqType.JOINT``)
         play no role in the inverse dynamics evaluation.
 
-        :attr:`~newton.JointType.CABLE` joints are not yet supported by the
+        :attr:`~newton.JointType.ROD` joints are not yet supported by the
         inverse-dynamics pipeline.
 
     .. experimental::
@@ -425,12 +425,12 @@ def eval_inverse_dynamics_passive(
             ``None``, all articulations are computed.
 
     Raises:
-        ValueError: If the model contains a :attr:`~newton.JointType.CABLE`
+        ValueError: If the model contains a :attr:`~newton.JointType.ROD`
             joint, no outputs are requested, or an output or mask has an
             unexpected shape.
     """
-    if model._has_cable_joints and JointType.CABLE in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
-        raise ValueError("eval_inverse_dynamics_passive() does not support JointType.CABLE joints.")
+    if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+        raise ValueError("eval_inverse_dynamics_passive() does not support JointType.ROD joints.")
 
     if mass_matrix is None and gravity_force is None and coriolis_force is None:
         raise ValueError("At least one inverse-dynamics output must be provided.")

@@ -1100,10 +1100,10 @@ class Model:
         """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
         self.joint_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float.
-        For FREE, DISTANCE, and CABLE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
+        For FREE, DISTANCE, and ROD joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
         self.joint_f: wp.array[wp.float32] | None = None
         """Default generalized joint forces [N or N·m, depending on joint type] used to initialize :attr:`newton.Control.joint_f`, shape [joint_dof_count], float.
-        For FREE, DISTANCE, and CABLE joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
+        For FREE, DISTANCE, and ROD joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
         self.joint_target_q: wp.array[wp.float32] | None = None
         """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]`` or ``[joint_dof_count]``, float.
 
@@ -1113,9 +1113,9 @@ class Model:
         :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
         :attr:`joint_qd_start` to match the active layout.
 
-        For CABLE joints, this array stores structural-rest translation [m] and
+        For ROD joints, this array stores structural-rest translation [m] and
         rotation: a unitless quaternion in coordinate layout or extrinsic ZYX
-        angles [rad] in legacy layout. See :ref:`Cable joints`.
+        angles [rad] in legacy layout. See :ref:`Rod joints`.
         """
         self.joint_target_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type] used to initialize :attr:`newton.Control.joint_target_qd`, shape [joint_dof_count], float.
@@ -1126,7 +1126,7 @@ class Model:
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
         self.joint_type: wp.array[wp.int32] | None = None
         """Joint type, shape [joint_count], int."""
-        self._has_cable_joints: bool = False
+        self._has_rod_joints: bool = False
         self.joint_articulation: wp.array[wp.int32] | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
         self.joint_parent: wp.array[wp.int32] | None = None

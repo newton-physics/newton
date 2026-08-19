@@ -85,7 +85,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     Joint limitations:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
-          CABLE joints are not supported.
+          ROD joints are not supported.
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
           are supported.
@@ -158,11 +158,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 ``wp.config.deterministic`` mode.
 
         Raises:
-            ValueError: If ``model`` contains a :attr:`~newton.JointType.CABLE`
+            ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
                 joint, which is not supported by this solver.
         """
-        if model._has_cable_joints and JointType.CABLE in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
-            raise ValueError("SolverFeatherstone does not support JointType.CABLE joints.")
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("SolverFeatherstone does not support JointType.ROD joints.")
 
         super().__init__(model)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic

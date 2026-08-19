@@ -1003,7 +1003,7 @@ def apply_joint_forces(
     t_total = wp.vec3()
     f_total = wp.vec3()
 
-    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         f_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
         t_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
         # Interpret six-DoF joint forces as a spatial wrench at the COM (same as body_f).
@@ -1012,7 +1012,7 @@ def apply_joint_forces(
         if id_p >= 0:
             wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total))
         # Record the contribution to the inbound joint wrench (used to populate
-        # ``State.body_parent_f``). For FREE and CABLE joints this is diagnostic
+        # ``State.body_parent_f``). For FREE and ROD joints this is diagnostic
         # only; for DISTANCE joints the constraint solver adds its contribution.
         # Convention: positive = wrench transmitted parent->child at child COM.
         if joint_impulse:
@@ -1226,7 +1226,7 @@ def solve_simple_body_joints(
 
     if not joint_enabled[tid]:
         return
-    if type == JointType.FREE or type == JointType.CABLE:
+    if type == JointType.FREE or type == JointType.ROD:
         return
     if type == JointType.DISTANCE:
         return
@@ -1546,7 +1546,7 @@ def solve_body_joints(
 
     if not joint_enabled[tid]:
         return
-    if type == JointType.FREE or type == JointType.CABLE:
+    if type == JointType.FREE or type == JointType.ROD:
         return
     # if type == JointType.FIXED:
     #     return

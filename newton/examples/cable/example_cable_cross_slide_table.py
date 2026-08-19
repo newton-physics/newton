@@ -661,7 +661,7 @@ class Example:
             segment_length=initial_segment_length,
             wrap_clearance=cable_wrap_clearance,
         )
-        cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
+        cable_quats = newton.utils.rod_parallel_transport_quaternions(cable_points)
 
         cable_cfg = builder.default_shape_cfg.copy()
         cable_cfg.density = 200.0

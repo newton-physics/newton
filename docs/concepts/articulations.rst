@@ -27,7 +27,7 @@ Maximal coordinates describe the configuration of an articulation in terms of th
 Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 The linear component of :attr:`newton.State.body_qd` is the world-frame velocity
-of the body's center of mass. For public ``FREE``, ``DISTANCE``, and ``CABLE`` joints,
+of the body's center of mass. For public ``FREE``, ``DISTANCE``, and ``ROD`` joints,
 :attr:`newton.State.joint_qd` stores the child-COM twist in the joint parent
 frame: the linear slice is child-COM velocity and the angular slice is angular
 velocity in that same frame.
@@ -45,33 +45,40 @@ use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 use maximal coordinates.
 Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
-.. _Cable joints:
+.. _Rod joints:
 
-Cable joints
-^^^^^^^^^^^^
+Rod joints
+^^^^^^^^^^
+
+Newton uses *cable* for the modeled object and *rod* for this discrete
+stretch/shear/bend/twist representation. Cable centerline geometry uses
+``cable`` terminology, while per-segment material frames, per-joint stiffness,
+and solver mechanics use ``rod`` terminology.
 
 .. experimental::
 
-   :attr:`newton.JointType.CABLE`, :meth:`newton.ModelBuilder.add_joint_cable`,
+   :attr:`newton.JointType.ROD`, :meth:`newton.ModelBuilder.add_joint_rod`,
    and their state and material conventions may change without prior notice.
+   ``JointType.CABLE`` and ``add_joint_cable()`` are deprecated compatibility
+   aliases through Newton 1.6.
 
-:attr:`newton.JointType.CABLE` uses the same kinematic state layout as a
+:attr:`newton.JointType.ROD` uses the same kinematic state layout as a
 :attr:`~newton.JointType.FREE` joint: ``joint_q`` stores a 7-coordinate relative
 pose (3D translation and a quaternion), while ``joint_qd`` stores the 6-DoF
-relative twist. :func:`newton.eval_fk` and
-:func:`newton.eval_ik` convert between this joint state and body state.
+relative twist. :func:`newton.eval_fk` and :func:`newton.eval_ik` convert between
+this joint state and body state.
 
-The cable's :attr:`newton.Model.joint_target_q` entry stores its structural-rest
+The rod's :attr:`newton.Model.joint_target_q` entry stores its structural-rest
 relative transform. Translation [m] defines rest shear X/Y and stretch Z;
 rotation defines rest bend and twist. Rotation uses a unitless quaternion in
 coordinate layout or extrinsic ZYX angles [rad] in legacy layout. If
-:meth:`newton.ModelBuilder.add_joint_cable` omits ``rest_xform``, the builder
+:meth:`newton.ModelBuilder.add_joint_rod` omits ``rest_xform``, the builder
 copies the initial joint transform. :class:`newton.solvers.SolverVBD` captures
 the Model target when constructed; changing an independent
 :attr:`newton.Control.joint_target_q` has no effect. Construct a new solver
-after changing cable rest.
+after changing rod rest.
 
-:meth:`newton.ModelBuilder.add_rod` with ``rest_straight=True`` sets Cable rest
+:meth:`newton.ModelBuilder.add_rod` with ``rest_straight=True`` sets rod rest
 rotations to identity, removing intrinsic bend and twist without changing
 initial poses, anchors, or segment lengths. Closed rods retain their closing
 rest translation and may remain prestrained.
@@ -81,8 +88,10 @@ SolverVBD interprets the six per-axis :attr:`newton.Model.joint_target_ke` and
 order: ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``; every axis
 uses :attr:`~newton.JointTargetMode.NONE`. Each anchor's local ``+Z`` is the
 material tangent. X/Y shear and X/Y bend entries must match because the
-transverse responses are isotropic about that tangent.
-:meth:`newton.ModelBuilder.add_joint_cable` creates the canonical axis layout
+transverse responses are isotropic about that tangent. SolverVBD reduces those
+axes to the four constraint/material scalars defined by
+:class:`~newton.solvers.SolverVBD.JointSlot`: stretch, shear, bend, and twist.
+:meth:`newton.ModelBuilder.add_joint_rod` creates the canonical axis layout
 automatically; generic :meth:`newton.ModelBuilder.add_joint` construction uses
 its six ``target_pos`` values as structural rest.
 
@@ -345,8 +354,8 @@ Joint types
      - Generic D6 joint with up to 3 translational and 3 rotational degrees of freedom
      - up to 6
      - up to 6
-   * - ``JointType.CABLE``
-     - Cable joint with a relative pose and twist
+   * - ``JointType.ROD``
+     - Rod joint with a relative pose and twist plus stretch/shear/bend/twist response
      - 7 (3D position + 4D quaternion)
      - 6
 
@@ -542,7 +551,7 @@ A robust pattern is:
             jt == newton.JointType.FREE
             or jt == newton.JointType.BALL
             or jt == newton.JointType.DISTANCE
-            or jt == newton.JointType.CABLE
+            or jt == newton.JointType.ROD
         ):
             return
 

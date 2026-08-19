@@ -81,7 +81,7 @@ For free and D6 joints, Newton stores linear DOFs before angular DOFs in per-axi
 particular, floating-base slices of :attr:`newton.State.joint_qd`, :attr:`newton.Control.joint_f`,
 :attr:`newton.Control.joint_target_q`, and :attr:`newton.Control.joint_target_qd` use
 ``(linear, angular)`` ordering, whereas ``warp.sim`` used ``(ang_vel, lin_vel)``.
-For public ``FREE``, ``DISTANCE``, and ``CABLE`` joints, :attr:`newton.State.joint_qd`
+For public ``FREE``, ``DISTANCE``, and ``ROD`` joints, :attr:`newton.State.joint_qd`
 stores the child-COM twist in the joint parent frame, while
 :attr:`newton.Control.joint_f` stores the world-frame COM wrench
 ``(f_world, tau_com_world)``.
