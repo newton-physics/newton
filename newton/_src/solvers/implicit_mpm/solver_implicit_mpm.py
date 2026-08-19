@@ -221,8 +221,11 @@ _RheologySolverName = Literal[
     "gauss-seidel-batched",
     "jacobi",
     "cg",
+    "conjugate-gradient",
     "cr",
+    "conjugate-residual",
     "gmres",
+    "generalized-minimal-residual",
 ]
 _MPMVelocityBasisName = Literal["Q1", "B2", "B3"]
 # Python typing cannot express the accepted ``"pic"`` / ``"picN"`` basis family.
@@ -827,9 +830,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         (B2, B3).  Accepted values: ``"auto"``, ``"gs"`` (or
         ``"gauss-seidel"``), ``"gs-soa"`` (or ``"gauss-seidel-soa"``),
         ``"gs-batched"`` (or ``"gauss-seidel-batched"``), ``"jacobi"``,
-        ``"cg"``, ``"cr"``, ``"gmres"``.  Pass an ordered sequence to
-        warmstart solvers left-to-right, e.g. ``("cr", "gs")`` or
-        ``("cg", "jacobi", "gs")``."""
+        ``"conjugate-gradient"`` (or ``"cg"``), ``"conjugate-residual"``
+        (or ``"cr"``), ``"generalized-minimal-residual"`` (or ``"gmres"``).
+        Pass an ordered sequence to warmstart solvers left-to-right, e.g.
+        ``("conjugate-residual", "gauss-seidel")`` or
+        ``("conjugate-gradient", "jacobi", "gauss-seidel")``."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
         """Warmstart mode to use for the rheology solver.
 
