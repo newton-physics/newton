@@ -96,10 +96,8 @@ def sample_playback_kernel(
     rec_targets: wp.array2d[float],  # [N, num_dofs] coupled arm targets [rad]
     rec_engaged: wp.array[wp.bool],  # [N] suction-cup engagement command (ro[0]) per frame
     rec_preparing: wp.array[wp.bool],  # [N] preparing-to-engage signal (ro[2]) per frame
-    sim_step_count: wp.array[
-        int
-    ],  # in/out: device sub-step counter (current time = sim_step_count[0] * dt); advanced in place
-    last_lo: wp.array[int],  # in/out: cached lower sample index; the forward search resumes from here
+    sim_step_count: wp.array[int],  # in: device sub-step counter (current time = sim_step_count[0] * dt)
+    last_lo: wp.array[int],  # in: cached lower sample index; the forward search resumes from here
     dt: float,  # physics sub-step [s]; sim time = sim_step_count * dt
     # outputs
     joint_target_q: wp.array[float],  # [num_dofs] interpolated position targets [rad]
@@ -107,23 +105,19 @@ def sample_playback_kernel(
     preparing: wp.array[wp.bool],  # [1] preparing-to-engage signal sampled at the current time
 ):
     """Interpolate the recorded joint position targets and sample the engagement command at the
-    current time (one thread per DOF); advance the sub-step counter for the next sub-step.
+    current time (one thread per DOF).
 
     The time is the integer sub-step count times ``dt`` (exact, no float accumulation). Since sim time
     only advances, the bracketing samples are found by a forward search resumed from the cached
-    ``last_lo`` (usually 0-1 steps) rather than a fresh binary search, and the new index is cached
-    back. Engagement is a step signal, so its value at ``t`` is ``rec_engaged[lo]``. Clamps to the
-    last sample past the end, so the arm holds the final recorded pose. ``preparing`` is sampled the same
-    way from ``rec_preparing`` (a lead-in before each engagement).
+    ``last_lo`` (usually 0-1 steps) rather than a fresh binary search. Engagement is a step signal, so
+    its value at ``t`` is ``rec_engaged[lo]``. Clamps to the last sample past the end, so the arm holds
+    the final recorded pose. ``preparing`` is sampled the same way from ``rec_preparing`` (a lead-in
+    before each engagement).
     """
     dof = wp.tid()
     n = rec_times.shape[0]
 
-    # every thread reads the shared scratch (counter, index) into a local first; then a single thread
-    # writes them back, so the reads and writes don't race (this launch is one warp, dim = NUM_ARM_DOFS).
     step = sim_step_count[0]
-    if dof == 0:
-        sim_step_count[0] = step + 1
     t = float(step) * dt
 
     # forward search from the cached index for the largest lo with rec_times[lo] <= t
@@ -132,7 +126,6 @@ def sample_playback_kernel(
         lo += 1
 
     if dof == 0:
-        last_lo[0] = lo
         engaged[0] = rec_engaged[lo]  # step signal: value of the most recent frame at or before t
         preparing[0] = rec_preparing[lo]  # step signal, same as engaged
 
@@ -157,6 +150,28 @@ def sample_playback_kernel(
         + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * f2
         + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * f3
     )
+
+
+@wp.kernel
+def advance_playback_kernel(
+    rec_times: wp.array[float],  # [N] recorded sample times [s], monotonic
+    dt: float,  # physics sub-step [s]; sim time = sim_step_count * dt
+    sim_step_count: wp.array[int],  # out: device sub-step counter, advanced in place
+    last_lo: wp.array[int],  # out: cached lower sample index, advanced in place
+):
+    """Advance the sub-step counter and commit the forward-search index for the next sub-step
+    (single thread).
+    """
+    n = rec_times.shape[0]
+    step = sim_step_count[0]
+    t = float(step) * dt
+
+    lo = last_lo[0]
+    while lo < n - 1 and rec_times[lo + 1] <= t:
+        lo += 1
+
+    last_lo[0] = lo
+    sim_step_count[0] = step + 1
 
 
 def _arm_targets_rad(frame: Frame, num_arm_dofs: int) -> np.ndarray:
@@ -233,7 +248,8 @@ class RobotPlayback:
         preparing: wp.array[wp.bool],
     ) -> None:
         """Launch :func:`sample_playback_kernel`: interpolate the arm drive targets and sample the
-        engagement (and preparing-to-engage) commands at the current sub-step time, advancing the clock.
+        engagement (and preparing-to-engage) commands at the current sub-step time, then advance the
+        clock with :func:`advance_playback_kernel`.
 
         Args:
             sim_step_count: [1] in/out device sub-step counter (current time = ``sim_step_count * dt``).
@@ -256,4 +272,10 @@ class RobotPlayback:
                 float(dt),
             ],
             outputs=[joint_target_q, engaged, preparing],
+        )
+        wp.launch(
+            advance_playback_kernel,
+            dim=1,
+            inputs=[self.rec_times_wp, float(dt)],
+            outputs=[sim_step_count, last_lo],
         )
