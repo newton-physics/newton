@@ -425,7 +425,7 @@ def _build_dual_preconditioner_entry(
 ):
     """Build one scalar or three-dimensional contact preconditioner entries."""
     diagonal_idx = diagonal_offset + diagonal_stride * tid
-    # First handle joint and limit constraints, then contact constraints.
+    # First handle joint, bounded, and limit constraints, then contact constraints.
     if tid < njlc:
         problem_P[vio + tid] = precondition_scalar(diagonal[diagonal_idx])
     else:
