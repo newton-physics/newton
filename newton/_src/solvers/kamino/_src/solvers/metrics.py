@@ -770,6 +770,7 @@ def _compute_eom_residual(
     argmax_key = wp.int64(build_pair_key2(wp.uint32(bid), wp.uint32(r_eom_argmax_i)))
     _atomic_update_metric_max(metric_r_eom, metric_r_eom_argmax, wid, r_eom_i, argmax_key)
 
+
 @wp.kernel
 def _compute_joint_kinematics_residual_dense(
     # Inputs:
@@ -990,7 +991,9 @@ def _compute_cts_contacts_residual(
     if wp.isnan(r_cts_contacts_k) or r_cts_contacts_k > 0.0:
         # Update the per-world maximum residual and argmax index
         argmax_key = wcid
-        _atomic_update_metric_max(metric_r_cts_contacts, metric_r_cts_contacts_argmax, wid, r_cts_contacts_k, argmax_key)
+        _atomic_update_metric_max(
+            metric_r_cts_contacts, metric_r_cts_contacts_argmax, wid, r_cts_contacts_k, argmax_key
+        )
 
 
 @wp.kernel
