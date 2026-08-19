@@ -467,7 +467,7 @@ class HydroelasticSDF:
         margin_contact_area: float = _DEPRECATED_MARGIN_CONTACT_AREA_UNSET
         """Deprecated speculative-contact area [m^2] retained for compatibility.
 
-        .. deprecated:: 1.5
+        .. deprecated:: 1.6
 
             This setting still controls speculative-contact activation
             stiffness during the deprecation period.

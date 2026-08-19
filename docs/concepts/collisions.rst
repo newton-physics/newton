@@ -1327,7 +1327,11 @@ by ``margin_a + margin_b``.
 For mesh-backed hydroelastic shapes, the padding passed to
 :meth:`~Mesh.build_sdf` must likewise be at least ``margin + gap``. Newton
 reports an actionable error when an attached SDF records smaller construction
-padding.
+padding. When attaching externally precomputed texture data with
+:meth:`~SDF.create_from_data`, pass the original AABB padding through
+``construction_padding``. If that padding is unknown, shape validation rejects
+the SDF because Newton cannot verify that it covers the hydroelastic contact
+band.
 
 The :meth:`~ModelBuilder.ShapeConfig.configure_sdf` helper sets SDF and hydroelastic
 options in one call:

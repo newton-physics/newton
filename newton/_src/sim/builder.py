@@ -10550,6 +10550,7 @@ class ModelBuilder:
                 and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
                 and sdf_padding is not None
                 and sdf_padding < margin + gap
+                and not math.isclose(sdf_padding, margin + gap, rel_tol=1.0e-9, abs_tol=1.0e-12)
             ):
                 raise ValueError(
                     f"Hydroelastic shape {i} requires sdf_padding >= margin + gap "
@@ -10568,9 +10569,20 @@ class ModelBuilder:
                     if mesh_sdf.texture_data is not None and construction_padding is None:
                         raise ValueError(
                             f"Hydroelastic shape {i} has precomputed SDF data with unknown construction padding. "
-                            "Rebuild it with Mesh.build_sdf(margin=margin + gap)."
+                            "Declare the original padding with "
+                            "SDF.create_from_data(construction_padding=...), or rebuild it with "
+                            "Mesh.build_sdf(margin=margin + gap)."
                         )
-                    if construction_padding is not None and construction_padding < required_sdf_padding:
+                    if (
+                        construction_padding is not None
+                        and construction_padding < required_sdf_padding
+                        and not math.isclose(
+                            construction_padding,
+                            required_sdf_padding,
+                            rel_tol=1.0e-9,
+                            abs_tol=1.0e-12,
+                        )
+                    ):
                         raise ValueError(
                             f"Hydroelastic shape {i} requires SDF construction padding >= margin + gap "
                             f"({required_sdf_padding:.6g}), but the attached SDF uses "

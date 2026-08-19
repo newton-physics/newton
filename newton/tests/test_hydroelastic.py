@@ -250,7 +250,19 @@ def test_hydroelastic_contact_band_boundaries(test, device):
 
 
 def test_hydroelastic_sdf_padding_covers_margin_and_gap(test, device):
-    """Reject hydroelastic SDF padding that cannot cover margin and gap."""
+    """Accept exact and reject insufficient hydroelastic SDF padding."""
+    exact_builder = newton.ModelBuilder()
+    exact_builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        margin=0.2,
+        gap=0.1,
+        sdf_max_resolution=32,
+        sdf_padding=0.3,
+    )
+    exact_builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+
+    test.assertTrue(exact_builder._validate_shapes())
+
     builder = newton.ModelBuilder()
     builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
         is_hydroelastic=True,
@@ -356,6 +368,55 @@ def test_hydroelastic_attached_sdf_requires_padding_metadata(test, device):
             model = builder.finalize(device=device, **skip_option)
 
             test.assertEqual(model.shape_count, 1)
+
+
+def test_hydroelastic_attached_sdf_uses_padding_metadata(test, device):
+    """Accept sufficient and reject insufficient declared SDF construction padding."""
+    mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    mesh.build_sdf(max_resolution=32, margin=0.3)
+    source_sdf = mesh.sdf
+    texture_data = source_sdf.texture_data
+
+    for construction_padding, succeeds in ((0.3, True), (0.29, False)):
+        with test.subTest(construction_padding=construction_padding):
+            mesh.sdf = newton.SDF.create_from_data(
+                texture_data=texture_data,
+                construction_padding=construction_padding,
+            )
+            builder = newton.ModelBuilder()
+            builder.add_shape_mesh(
+                body=-1,
+                mesh=mesh,
+                cfg=newton.ModelBuilder.ShapeConfig(
+                    is_hydroelastic=True,
+                    margin=0.2,
+                    gap=0.1,
+                ),
+            )
+
+            if succeeds:
+                model = builder.finalize(device=device)
+                test.assertEqual(model.shape_count, 1)
+            else:
+                with test.assertRaisesRegex(ValueError, r"construction padding >= margin \+ gap"):
+                    builder.finalize(device=device)
+
+
+def test_sdf_construction_padding_validation(test, device):
+    """Reject negative and non-finite SDF construction padding."""
+    del device
+    for construction_padding in (-0.1, np.nan, np.inf):
+        with test.subTest(construction_padding=construction_padding):
+            with test.assertRaisesRegex(ValueError, "construction_padding must be finite and >= 0"):
+                newton.SDF.create_from_data(construction_padding=construction_padding)
 
 
 def simulate(solver, model, state_0, state_1, control, contacts, collision_pipeline, sim_dt, substeps):
@@ -2020,8 +2081,8 @@ def test_translational_friction_invariance(test, device):
             )
 
 
-def test_exported_margin_stiffness_matches_shape_harmonic_mean(test, device):
-    """Verify exported margin stiffness uses the pairwise harmonic mean."""
+def test_exported_margin_stiffness_matches_shape_series_combination(test, device):
+    """Verify exported margin stiffness uses the pairwise series combination."""
     margin_contact_area = 0.0125
     with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*deprecated"):
         config = HydroelasticSDF.Config(
@@ -2078,7 +2139,7 @@ def test_exported_margin_stiffness_matches_shape_harmonic_mean(test, device):
         expected_stiffness,
         rtol=1.0e-5,
         atol=1.0e-3,
-        err_msg="Exported margin stiffness must use the pairwise harmonic mean",
+        err_msg="Exported margin stiffness must use the pairwise series combination",
     )
 
 
@@ -2595,6 +2656,20 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_hydroelastic_attached_sdf_uses_padding_metadata",
+    test_hydroelastic_attached_sdf_uses_padding_metadata,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_sdf_construction_padding_validation",
+    test_sdf_construction_padding_validation,
+    devices=["cpu"],
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_hydroelastic_pre_prune_writes_contact_fingerprints",
     test_hydroelastic_pre_prune_writes_contact_fingerprints,
     devices=cuda_devices,
@@ -2790,8 +2865,8 @@ add_function_test(
 )
 add_function_test(
     TestHydroelastic,
-    "test_exported_margin_stiffness_matches_shape_harmonic_mean",
-    test_exported_margin_stiffness_matches_shape_harmonic_mean,
+    "test_exported_margin_stiffness_matches_shape_series_combination",
+    test_exported_margin_stiffness_matches_shape_series_combination,
     devices=cuda_devices,
 )
 

@@ -1001,7 +1001,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
     This ensures the total contact force from the K reduced contacts equals the
     aggregate force from all original contacts under any user-supplied
     ``pressure_func``. Speculative contact activation stiffness uses the
-    configured compatibility area and the pair's harmonic-mean material slope.
+    configured compatibility area and the pair's series-combined material slope.
 
     .. important::
 
