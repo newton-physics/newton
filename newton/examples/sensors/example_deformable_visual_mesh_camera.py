@@ -287,15 +287,30 @@ class Example:
             axis=1,
         ).astype(np.float32)
 
-        rod_bodies, _ = builder.add_rod(
+        structural_stiffness = (5.0e3, 5.0e3, 2.5, 2.5)
+        nominal_segment_length = length / num_elements
+        rod_bodies, rod_joints = builder.add_rod(
             positions=[wp.vec3(*p) for p in nodes],
             radius=radius,
-            stretch_stiffness=1.0e5,
-            bend_stiffness=5.0e1,
+            stretch_stiffness=structural_stiffness[0] / nominal_segment_length,
+            shear_stiffness=structural_stiffness[1] / nominal_segment_length,
+            bend_stiffness=structural_stiffness[2] / nominal_segment_length,
+            twist_stiffness=structural_stiffness[3] / nominal_segment_length,
             bend_damping=1.0e0,
+            twist_damping=1.0e0,
             label="camera_cable",
             body_frame_origin="com",
         )
+
+        # Mirror the USD material conversion so both construction paths use each
+        # joint's actual dual rest length instead of only the nominal spacing.
+        segment_lengths = np.linalg.norm(np.diff(nodes, axis=0), axis=1)
+        for index, joint in enumerate(rod_joints):
+            joint_length = 0.5 * (segment_lengths[index] + segment_lengths[index + 1])
+            dof_start = builder.joint_qd_start[joint]
+            builder.joint_target_ke[dof_start : dof_start + 4] = [
+                stiffness / joint_length for stiffness in structural_stiffness
+            ]
 
         first = rod_bodies[0]
         builder.body_mass[first] = 0.0
