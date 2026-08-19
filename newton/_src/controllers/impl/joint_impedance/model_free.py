@@ -47,10 +47,11 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     correctly and write them into the input struct before every :meth:`step`.
 
     Every port is **compact**: a 1-D array with one entry per controlled DOF,
-    ordered robot 0's DOFs first, then robot 1's, matching ``dofs_per_robot``.
-    A port may be bound either to a plain compact array or to an indexed view of
-    a simulation-sized array, which is how a caller expresses a gather or
-    scatter without the controller owning an index table::
+    ordered robot 0's DOFs first, then robot 1's, matching
+    ``controlled_dofs_per_robot``. A port may be bound either to a plain compact
+    array or to an indexed view of a simulation-sized array, which is how a
+    caller expresses a gather or scatter without the controller owning an index
+    table::
 
         inputs.joint_q = state.joint_q[selection.q_idx]  # gather
         outputs.joint_f = control.joint_f[selection.qd_idx]  # scatter
@@ -62,10 +63,9 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     but not when a captured graph is replayed, since the checks run in Python
     at capture time only.
 
-    Supports heterogeneous robot fleets — robots in the batch may have
-    different DOF counts, including zero for a robot the caller counts but
-    does not control. Only the mass matrix is padded to ``max_dofs``; every
-    other buffer is compact.
+    Supports heterogeneous robot fleets — robots may have different
+    controlled-DOF counts. Only the mass matrix is padded, to
+    ``max_controlled_dofs``; every other buffer is compact.
 
     Allocate input and output structs via :meth:`input` and :meth:`output`.
     All field names on those structs are fixed — see :class:`Inputs` and
@@ -77,13 +77,14 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     gravity, and Coriolis terms internally from a Newton model.
 
     Args:
-        dofs_per_robot: Controlled-DOF count for each robot. Its length sets
-            :attr:`robot_count`, its sum sets :attr:`total_dofs` (the length of
-            every port), and its maximum sets :attr:`max_dofs` (the padded width
-            of the mass matrix). Entries may be zero.
-        stiffness: Position-error gain Kp, shape [total_dofs]. Units depend
-            on ``use_inertia_decoupling``: [1/s²] when enabled, since the PD
-            term is then an acceleration premultiplied by M(q); otherwise
+        controlled_dofs_per_robot: Controlled-DOF count for each robot. Its
+            length sets :attr:`controlled_robot_count`, its sum sets
+            :attr:`total_controlled_dofs` (the length of every port), and its
+            maximum sets :attr:`max_controlled_dofs` (the padded width of the
+            mass matrix). Every entry must be positive.
+        stiffness: Position-error gain Kp, shape [total_controlled_dofs]. Units
+            depend on ``use_inertia_decoupling``: [1/s²] when enabled, since the
+            PD term is then an acceleration premultiplied by M(q); otherwise
             [N/m or N·m/rad]. Pass an array to copy it at construction, or
             ``None`` to read ``inputs.stiffness`` each step.
         damping: Velocity-error gain Kd, [1/s] when ``use_inertia_decoupling``
@@ -101,41 +102,42 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     class Inputs:
         """Input struct returned by :meth:`~ControllerJointImpedanceModelFree.input`.
 
-        Every 1-D field is compact, shape [total_dofs]. Optional fields are
-        ``None`` when the corresponding feature is disabled at construction.
+        Every 1-D field is compact, shape [total_controlled_dofs]. Optional
+        fields are ``None`` when the corresponding feature is disabled at
+        construction.
         """
 
         joint_q: wp.array[wp.float32]
-        """Current joint positions [m or rad], shape [total_dofs]."""
+        """Current joint positions [m or rad], shape [total_controlled_dofs]."""
         joint_qd: wp.array[wp.float32]
-        """Current joint velocities [m/s or rad/s], shape [total_dofs]."""
+        """Current joint velocities [m/s or rad/s], shape [total_controlled_dofs]."""
         joint_q_des: wp.array[wp.float32]
-        """Desired joint positions [m or rad], shape [total_dofs]."""
+        """Desired joint positions [m or rad], shape [total_controlled_dofs]."""
         joint_qd_des: wp.array[wp.float32]
-        """Desired joint velocities [m/s or rad/s], shape [total_dofs]."""
+        """Desired joint velocities [m/s or rad/s], shape [total_controlled_dofs]."""
         joint_qdd: wp.array[wp.float32] | None
-        """Desired acceleration feedforward [m/s² or rad/s²], shape [total_dofs]. ``None`` unless ``has_qdd_feedforward=True``."""
+        """Desired acceleration feedforward [m/s² or rad/s²], shape [total_controlled_dofs]. ``None`` unless ``has_qdd_feedforward=True``."""
         gravity_force: wp.array[wp.float32] | None
-        """Gravity generalized forces [N or N·m], shape [total_dofs]. ``None`` unless ``use_gravity_compensation=True``."""
+        """Gravity generalized forces [N or N·m], shape [total_controlled_dofs]. ``None`` unless ``use_gravity_compensation=True``."""
         coriolis_force: wp.array[wp.float32] | None
-        """Coriolis generalized forces [N or N·m], shape [total_dofs]. ``None`` unless ``use_coriolis_compensation=True``."""
+        """Coriolis generalized forces [N or N·m], shape [total_controlled_dofs]. ``None`` unless ``use_coriolis_compensation=True``."""
         mass_matrix: wp.array3d[wp.float32] | None
-        """Per-robot mass matrices, shape [robot_count, max_dofs, max_dofs]. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
+        """Per-robot mass matrices over the controlled DOFs, shape [controlled_robot_count, max_controlled_dofs, max_controlled_dofs]; a robot with fewer than ``max_controlled_dofs`` DOFs leaves the trailing rows and columns unread. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
         stiffness: wp.array[wp.float32] | None
-        """Position-error gain Kp, shape [total_dofs]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
+        """Position-error gain Kp, shape [total_controlled_dofs]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
         damping: wp.array[wp.float32] | None
-        """Velocity-error gain Kd, shape [total_dofs]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction."""
+        """Velocity-error gain Kd, shape [total_controlled_dofs]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerJointImpedanceModelFree.output`."""
 
         joint_f: wp.array[wp.float32]
-        """Joint torque command [N or N·m], shape [total_dofs]."""
+        """Joint torque command [N or N·m], shape [total_controlled_dofs]."""
 
     def __init__(
         self,
         *,
-        dofs_per_robot: wp.array[wp.int32],
+        controlled_dofs_per_robot: wp.array[wp.int32],
         stiffness: wp.array[wp.float32] | None,
         damping: wp.array[wp.float32] | None,
         use_gravity_compensation: bool = True,
@@ -149,66 +151,71 @@ class ControllerJointImpedanceModelFree(ControllerBase):
 
         # ------------------------------------------------------------------
         # Validation: every wp.array argument is checked here, and nowhere
-        # else. dofs_per_robot comes first because the shapes below derive
+        # else. controlled_dofs_per_robot comes first because the shapes below derive
         # from it.
         # ------------------------------------------------------------------
         # Checked before reading .size below, which the shape argument depends on.
-        if not isinstance(dofs_per_robot, wp.array):
-            raise TypeError(f"dofs_per_robot must be a wp.array, got {type(dofs_per_robot).__name__}.")
+        if not isinstance(controlled_dofs_per_robot, wp.array):
+            raise TypeError(
+                f"controlled_dofs_per_robot must be a wp.array, got {type(controlled_dofs_per_robot).__name__}."
+            )
         _validate_array(
-            array=dofs_per_robot,
-            name="dofs_per_robot",
+            array=controlled_dofs_per_robot,
+            name="controlled_dofs_per_robot",
             dtype=wp.int32,
-            shape=(dofs_per_robot.size,),
+            shape=(controlled_dofs_per_robot.size,),
             device=self._device,
         )
 
-        dofs_per_robot_np = dofs_per_robot.numpy()
-        robot_count = int(dofs_per_robot_np.size)
-        if robot_count < 1:
-            raise ValueError("dofs_per_robot must not be empty.")
-        if dofs_per_robot_np.min() < 0:
-            raise ValueError(f"dofs_per_robot must be non-negative, got {dofs_per_robot_np.tolist()}.")
+        controlled_dofs_per_robot_np = controlled_dofs_per_robot.numpy()
+        controlled_robot_count = int(controlled_dofs_per_robot_np.size)
+        if controlled_robot_count < 1:
+            raise ValueError("controlled_dofs_per_robot must not be empty.")
+        if controlled_dofs_per_robot_np.min() < 1:
+            raise ValueError(
+                f"controlled_dofs_per_robot must be positive — a robot with no controlled DOF occupies no "
+                f"slot in any buffer, so leave it out; got {controlled_dofs_per_robot_np.tolist()}."
+            )
 
-        max_dofs = int(dofs_per_robot_np.max())
-        total_dofs = int(dofs_per_robot_np.sum())
-        if total_dofs < 1:
-            raise ValueError("dofs_per_robot sums to zero; there is nothing to control.")
+        max_controlled_dofs = int(controlled_dofs_per_robot_np.max())
+        total_controlled_dofs = int(controlled_dofs_per_robot_np.sum())
 
         for name, array in (("stiffness", stiffness), ("damping", damping)):
             _validate_array(
                 array=array,
                 name=name,
                 dtype=wp.float32,
-                shape=(total_dofs,),
+                shape=(total_controlled_dofs,),
                 device=self._device,
                 required=False,
             )
         # ------------------------------------------------------------------
 
-        self._robot_count = robot_count
-        self._max_dofs = max_dofs
-        self._total_dofs = total_dofs
+        self._controlled_robot_count = controlled_robot_count
+        self._max_controlled_dofs = max_controlled_dofs
+        self._total_controlled_dofs = total_controlled_dofs
         self._use_gravity = bool(use_gravity_compensation)
         self._use_coriolis = bool(use_coriolis_compensation)
         self._use_inertia = bool(use_inertia_decoupling)
         self._has_qdd = bool(has_qdd_feedforward)
         self._requires_grad = requires_grad
 
-        self._dofs_per_robot = dofs_per_robot
+        self._controlled_dofs_per_robot = controlled_dofs_per_robot
 
         # Flat-DOF -> (robot, slot) tables, so the mass-matrix multiply can run
-        # as a flat launch over total_dofs instead of a padded 2-D one.
-        offsets_np = np.zeros(robot_count, dtype=np.int32)
-        offsets_np[1:] = np.cumsum(dofs_per_robot_np[:-1])
+        # as a flat launch over total_controlled_dofs instead of a padded 2-D one.
+        offsets_np = np.zeros(controlled_robot_count, dtype=np.int32)
+        offsets_np[1:] = np.cumsum(controlled_dofs_per_robot_np[:-1])
         self._dof_offsets = wp.array(offsets_np, dtype=wp.int32, device=self._device)
         self._robot_of_dof = wp.array(
-            np.repeat(np.arange(robot_count, dtype=np.int32), dofs_per_robot_np),
+            np.repeat(np.arange(controlled_robot_count, dtype=np.int32), controlled_dofs_per_robot_np),
             dtype=wp.int32,
             device=self._device,
         )
         self._slot_of_dof = wp.array(
-            np.concatenate([np.arange(n, dtype=np.int32) for n in dofs_per_robot_np] or [np.empty(0, np.int32)]),
+            np.concatenate(
+                [np.arange(n, dtype=np.int32) for n in controlled_dofs_per_robot_np] or [np.empty(0, np.int32)]
+            ),
             dtype=wp.int32,
             device=self._device,
         )
@@ -217,7 +224,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         self._damping_baked = self._bake_gain(damping)
 
         def _buf():
-            return wp.zeros(total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+            return wp.zeros(total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
 
         # Every port is copied into one of these before any kernel runs, so a
         # port may be bound to a plain array or to an indexed view without the
@@ -244,7 +251,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         if value is None:
             return None
         baked = wp.zeros(
-            self._total_dofs,
+            self._total_controlled_dofs,
             dtype=wp.float32,
             device=self._device,
             requires_grad=self._requires_grad,
@@ -253,16 +260,16 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         return baked
 
     @property
-    def robot_count(self) -> int:
-        return self._robot_count
+    def controlled_robot_count(self) -> int:
+        return self._controlled_robot_count
 
     @property
-    def max_dofs(self) -> int:
-        return self._max_dofs
+    def max_controlled_dofs(self) -> int:
+        return self._max_controlled_dofs
 
     @property
-    def total_dofs(self) -> int:
-        return self._total_dofs
+    def total_controlled_dofs(self) -> int:
+        return self._total_controlled_dofs
 
     @property
     def device(self):
@@ -277,7 +284,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
 
     def input(self) -> Inputs:
         """Return a pre-allocated :class:`Inputs` with zero-initialised arrays."""
-        d, rg, n = self._device, self._requires_grad, self._total_dofs
+        d, rg, n = self._device, self._requires_grad, self._total_controlled_dofs
 
         def _port(enabled: bool) -> wp.array[wp.float32] | None:
             return wp.zeros(n, dtype=wp.float32, device=d, requires_grad=rg) if enabled else None
@@ -293,7 +300,12 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         inputs.stiffness = _port(self._stiffness_baked is None)
         inputs.damping = _port(self._damping_baked is None)
         inputs.mass_matrix = (
-            wp.zeros((self._robot_count, self._max_dofs, self._max_dofs), dtype=wp.float32, device=d, requires_grad=rg)
+            wp.zeros(
+                (self._controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
+                dtype=wp.float32,
+                device=d,
+                requires_grad=rg,
+            )
             if self._use_inertia
             else None
         )
@@ -303,7 +315,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         """Return a pre-allocated :class:`Outputs` with a compact torque array."""
         outputs = ControllerJointImpedanceModelFree.Outputs()
         outputs.joint_f = wp.zeros(
-            self._total_dofs, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad
+            self._total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad
         )
         return outputs
 
@@ -344,12 +356,29 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         # pass; a None destination marks it as written rather than read.
         bindings.append((outputs.joint_f, "outputs.joint_f", None))
 
+        # A port belonging to a disabled feature is never read, so writing one
+        # would go unnoticed. getattr because a caller may leave the field unset
+        # rather than None.
+        for name, enabled, switch in (
+            ("joint_qdd", self._has_qdd, "has_qdd_feedforward"),
+            ("gravity_force", self._use_gravity, "use_gravity_compensation"),
+            ("coriolis_force", self._use_coriolis, "use_coriolis_compensation"),
+            ("mass_matrix", self._use_inertia, "use_inertia_decoupling"),
+            ("stiffness", self._stiffness_baked is None, "a live stiffness"),
+            ("damping", self._damping_baked is None, "a live damping"),
+        ):
+            if not enabled and getattr(inputs, name, None) is not None:
+                raise ValueError(
+                    f"inputs.{name} is set, but the controller was built without {switch}, so the value "
+                    f"would be ignored."
+                )
+
         for port, name, buf in bindings:
             _validate_array(
                 array=port,
                 name=name,
                 dtype=wp.float32,
-                shape=(self._total_dofs,),
+                shape=(self._total_controlled_dofs,),
                 device=self._device,
                 allow_indexed=True,
             )
@@ -361,14 +390,14 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                 array=inputs.mass_matrix,
                 name="inputs.mass_matrix",
                 dtype=wp.float32,
-                shape=(self._robot_count, self._max_dofs, self._max_dofs),
+                shape=(self._controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
                 device=self._device,
             )
 
         stiffness = self._stiffness_baked if self._stiffness_baked is not None else self._stiffness_buf
         damping = self._damping_baked if self._damping_baked is not None else self._damping_buf
 
-        dim = self._total_dofs
+        dim = self._total_controlled_dofs
         working_buf = self._acc_buf if self._use_inertia else self._tau_buf
         wp.launch(
             _pd_term_kernel,
@@ -391,7 +420,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                     self._robot_of_dof,
                     self._slot_of_dof,
                     self._dof_offsets,
-                    self._dofs_per_robot,
+                    self._controlled_dofs_per_robot,
                 ],
                 outputs=[self._tau_buf],
                 device=self._device,

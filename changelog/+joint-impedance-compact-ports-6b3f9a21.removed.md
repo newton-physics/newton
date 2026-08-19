@@ -4,3 +4,5 @@ overrides (`joint_q_des_idx`, `joint_qd_des_idx`, `joint_qdd_idx`,
 impedance controllers. Bind an indexed view to the port instead —
 `inputs.joint_q_des = sim_q_des[selection.q_idx]` replaces a gather override, and
 `outputs.joint_f = control.joint_f[selection.qd_idx]` replaces `joint_f_idx`.
+`ControllerJointImpedanceModelFree` also drops its `robot_count` and `max_dofs`
+arguments, both of which are now derived from `dofs_per_robot`.

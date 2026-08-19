@@ -32,10 +32,10 @@ class JointSelection:
     :attr:`~newton.State.joint_qd`, since the two spaces differ once any
     uncontrolled joint upstream spans more coordinates than DOFs.
 
-    Controlled DOFs are grouped by articulation, matching the ``(robot 0's
+    Controlled DOFs are grouped by robot, matching the ``(robot 0's
     indices first, then robot 1's, ...)`` layout
-    :class:`~newton.controllers.ControllerJointImpedance` requires. Within an
-    articulation the order follows the ``joints`` argument when one is given,
+    :class:`~newton.controllers.ControllerJointImpedance` requires. Within a
+    robot the order follows the ``joints`` argument when one is given,
     and model joint index otherwise.
 
     Both arrays are ``int32`` so they can be used directly as Warp indexed-view
@@ -88,7 +88,7 @@ def select_joints(
 
     Returns:
         The matched coordinate/DOF index pair addressing the selected DOFs, in
-        the grouped-by-articulation layout
+        the grouped-by-robot layout
         :class:`~newton.controllers.ControllerJointImpedance` expects for
         ``joint_q_idx`` and ``joint_qd_idx``.
 
