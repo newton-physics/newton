@@ -21,6 +21,7 @@ from newton.geometry import HydroelasticSDF
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 8

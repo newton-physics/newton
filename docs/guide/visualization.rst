@@ -111,7 +111,8 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
 - :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
-- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image as a dockable window in :class:`~newton.viewer.ViewerGL` (no-op on other backends)
+- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in :class:`~newton.viewer.ViewerGL` as a dockable window or, with ``fullscreen=True``, as the main viewer surface for the current frame (no-op on other
+  backends)
 
 **Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
 All viewers support ``set_visible_worlds()`` to limit visualization to a subset of environments:
@@ -684,11 +685,13 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 **Logging images:**
 
 Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
-outputs from :class:`~newton.sensors.SensorTiledCamera`) as dockable windows in
-:class:`~newton.viewer.ViewerGL`. Accepted shapes are ``(H, W)``, ``(H, W, C)``,
-``(N, H, W)``, and ``(N, H, W, C)`` with ``C in (1, 3, 4)``. Accepted dtypes are
-``uint8`` (values in ``[0, 255]``) and ``float32`` (values in ``[0, 1]``; values
-outside the range are clipped).
+outputs from :class:`~newton.sensors.SensorTiledCamera`) in
+:class:`~newton.viewer.ViewerGL`. By default, non-headless :class:`~newton.viewer.ViewerGL`
+shows logged images as dockable windows. Pass ``fullscreen=True`` to draw the image
+as the main viewer surface for the current frame instead of the 3D scene. Accepted
+shapes are ``(H, W)``, ``(H, W, C)``, ``(N, H, W)``, and ``(N, H, W, C)`` with
+``C in (1, 3, 4)``. Accepted dtypes are ``uint8`` (values in ``[0, 255]``) and
+``float32`` (values in ``[0, 1]``; values outside the range are clipped).
 
 .. testcode:: viewer-log-image
 
@@ -721,6 +724,39 @@ For a 3D input, a last-axis of 1, 3, or 4 is interpreted as channel count
 for a single ``(H, W, C)`` image; otherwise the array is interpreted as a
 batch ``(N, H, W)`` of grayscale images. Pass a 4D array if the
 disambiguation matters.
+
+Use ``fullscreen=True`` for image-first viewers, camera-debug views, or headless
+frame capture where the image should replace the 3D scene:
+
+.. code-block:: python
+
+    from newton.sensors import SensorTiledCamera
+
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0)
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerNull()
+    viewer.set_model(model)
+
+    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
+    # output once and reuse it every frame; the RGBA conversion is a
+    # zero-copy view.
+    sensor = SensorTiledCamera(model=model)
+    W, H, camera_count = 16, 16, 1
+    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
+    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
+    rgba = sensor.utils.to_rgba_from_color(color_image)
+    viewer.log_image("tiled_camera", rgba, fullscreen=True)
+
+The ``fullscreen=True`` selection is per-frame: call
+:meth:`~newton.viewer.ViewerBase.log_image` with ``fullscreen=True`` after
+:meth:`~newton.viewer.ViewerBase.begin_frame` and before
+:meth:`~newton.viewer.ViewerBase.end_frame` on every frame that should show the
+image. If a frame does not log a fullscreen image, :class:`~newton.viewer.ViewerGL`
+renders the 3D scene for that frame. Image rendering is currently implemented only
+by :class:`~newton.viewer.ViewerGL`; other viewer backends inherit the no-op base
+implementation, so they ignore both the image and the ``fullscreen`` option.
 
 **Camera and world layout:**
 

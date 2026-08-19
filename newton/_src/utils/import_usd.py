@@ -154,6 +154,17 @@ def _cache_path_for_absolute_usd_reference(url: str) -> str:
     return posixpath.join("_external_usd", digest, basename)
 
 
+def _is_uniform_scale(scale, rel_tol: float = 1.0e-6) -> bool:
+    """Whether the three components of a scale vector agree to within ``rel_tol``.
+
+    Scales reach the importer through single-precision transform decomposition, so an
+    exactly uniform scale routinely comes back with components a few ULP apart. An exact
+    ``==`` comparison reports those as non-uniform.
+    """
+    lo, hi = min(scale), max(scale)
+    return hi - lo <= rel_tol * max(abs(lo), abs(hi))
+
+
 def _warn_mirrored_body_transform(usd_prim, key: str, xform_cache) -> None:
     """Warn when a rigid body prim has an improper (mirrored) world transform.
 
@@ -1367,8 +1378,8 @@ def parse_usd(
                     label=path_name,
                 )
             elif type_name == "sphere":
-                if not (scale[0] == scale[1] == scale[2]):
-                    print("Warning: Non-uniform scaling of spheres is not supported.")
+                if not _is_uniform_scale(scale):
+                    print(f"Warning: Non-uniform scaling of spheres is not supported, at {path_name}.")
                 radius = usd.get_float(prim, "radius", 1.0) * max(scale)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
@@ -1608,6 +1619,24 @@ def parse_usd(
         else:
             return parent_id, child_id
 
+    def resolve_joint_damping(jp_prim: Usd.Prim) -> tuple[float, float]:
+        """Resolve passive damping for linear and angular DOFs.
+
+        MuJoCo authors SI damping per radian for angular DOFs, while Newton's
+        regular USD damping mapping follows USD's per-degree convention.
+
+        Returns:
+            The linear and angular damping values in Newton units.
+        """
+        for resolver in R.resolvers:
+            for key, angular_scale in (("damping", 1.0 / DegreesToRadian), ("damping_per_rad", 1.0)):
+                damping = resolver.get_value(jp_prim, PrimType.JOINT, key)
+                if damping is not None:
+                    R._collect_on_first_use(resolver, jp_prim)
+                    damping = float(damping)
+                    return damping, damping * angular_scale
+        return default_joint_damping, default_joint_damping
+
     def resolve_dof_params(jp_prim: Usd.Prim, jd: UsdPhysics.JointDesc, is_revolute: bool) -> _DofParams:
         """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
 
@@ -1622,9 +1651,8 @@ def parse_usd(
         friction = R.get_value(
             jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
-        _damping_usd = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose)
-        damping_authored = _damping_usd is not None
-        damping = _damping_usd if damping_authored else default_joint_damping
+        linear_damping, angular_damping = resolve_joint_damping(jp_prim)
+        damping = angular_damping if is_revolute else linear_damping
         velocity_limit = R.get_value(
             jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
         )
@@ -1683,8 +1711,6 @@ def parse_usd(
             limit_upper *= DegreesToRadian
             limit_ke /= DegreesToRadian
             limit_kd /= DegreesToRadian
-            if damping_authored:
-                damping /= DegreesToRadian
             if has_drive:
                 target_pos *= DegreesToRadian
                 target_vel *= DegreesToRadian
@@ -1785,6 +1811,8 @@ def parse_usd(
             else:
                 joint_index = builder.add_joint_prismatic(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
+            _, joint_damping = resolve_joint_damping(joint_prim)
+            joint_params["damping"] = joint_damping
             joint_index = builder.add_joint_ball(**joint_params)
         elif key == UsdPhysics.ObjectType.D6Joint:
             joint_armature = R.get_value(
@@ -1793,11 +1821,7 @@ def parse_usd(
             joint_friction = R.get_value(
                 joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
             )
-            _joint_damping_usd = R.get_value(
-                joint_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
-            )
-            joint_damping_authored = _joint_damping_usd is not None
-            joint_damping = _joint_damping_usd if joint_damping_authored else default_joint_damping
+            joint_linear_damping, joint_angular_damping = resolve_joint_damping(joint_prim)
             joint_velocity_limit = R.get_value(
                 joint_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
@@ -1928,7 +1952,7 @@ def parse_usd(
                             target_vel=target_vel,
                             target_ke=target_ke,
                             target_kd=target_kd,
-                            damping=joint_damping,
+                            damping=joint_linear_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit
@@ -1994,7 +2018,7 @@ def parse_usd(
                             target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
-                            damping=joint_damping / DegreesToRadian if joint_damping_authored else joint_damping,
+                            damping=joint_angular_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit * DegreesToRadian
@@ -2014,15 +2038,11 @@ def parse_usd(
 
             joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
         elif key == UsdPhysics.ObjectType.DistanceJoint:
-            if joint_desc.limit.enabled and joint_desc.minEnabled:
-                min_dist = joint_desc.limit.lower
-            else:
-                min_dist = -1.0  # no limit
-            if joint_desc.limit.enabled and joint_desc.maxEnabled:
-                max_dist = joint_desc.limit.upper
-            else:
-                max_dist = -1.0
-            joint_index = builder.add_joint_distance(**joint_params, min_distance=min_dist, max_distance=max_dist)
+            joint_index = builder.add_joint_distance(
+                **joint_params,
+                min_distance=joint_desc.limit.lower if joint_desc.minEnabled else -1.0,
+                max_distance=joint_desc.limit.upper if joint_desc.maxEnabled else -1.0,
+            )
         else:
             raise NotImplementedError(f"Unsupported joint type {key}")
 
@@ -3781,8 +3801,8 @@ def parse_usd(
                         hz=hz,
                     )
                 elif key == UsdPhysics.ObjectType.SphereShape:
-                    if not (scale[0] == scale[1] == scale[2]):
-                        print("Warning: Non-uniform scaling of spheres is not supported.")
+                    if not _is_uniform_scale(scale):
+                        print(f"Warning: Non-uniform scaling of spheres is not supported, at {path}.")
                     radius = shape_spec.radius
                     shape_id = builder.add_shape_sphere(
                         **shape_params,
@@ -3871,7 +3891,7 @@ def parse_usd(
                     builder.shape_material_kh[shape_id] = kh
                     if is_hydroelastic:
                         builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
-                    if not skip_mesh_approximation:
+                    if collider_is_enabled and not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:
                             if has_sdf_api and approximation.lower() != "none":

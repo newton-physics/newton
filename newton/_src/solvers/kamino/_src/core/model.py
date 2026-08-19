@@ -401,6 +401,15 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
+    ###
+    # Host-side Metadata
+    ###
+
+    has_world_without_base_body: bool = False
+    """
+    Host-side flag to indicate whether any world could not be assigned a free-floating base body.
+    """
+
 
 @dataclass
 class ModelKamino:

@@ -48,13 +48,14 @@ from .contact_reduction_global import (
     VALUES_PER_KEY,
     GlobalContactReducer,
     GlobalContactReducerData,
+    _make_contact_value_det,
+    _make_contact_value_fast,
     _unpack_contact_id_det,
     _unpack_contact_id_fast,
     decode_oct,
     export_contact_to_buffer,
     is_contact_already_exported,
     make_contact_key,
-    make_contact_value,
     reduction_update_slot,
     unpack_contact_id,
 )
@@ -251,6 +252,11 @@ def _unpack_contact_id_variant(deterministic: bool):
     return _unpack_contact_id_det if deterministic else _unpack_contact_id_fast
 
 
+def _make_contact_value_variant(deterministic: bool):
+    """Select the contact-value packing function matching the reducer variant."""
+    return _make_contact_value_det if deterministic else _make_contact_value_fast
+
+
 @wp.func
 def _compute_normal_matching_rotation(
     selected_normal_sum: wp.vec3,
@@ -301,7 +307,6 @@ def _register_voxel_contact(
     bin_offset: int,
     voxel_idx: int,
     contact_value: wp.uint64,
-    k_eff: wp.float32,
     reducer_data: GlobalContactReducerData,
 ):
     """Register a contact in the voxel group selected by ``bin_offset``."""
@@ -315,7 +320,6 @@ def _register_voxel_contact(
         reducer_data.ht_active_slots,
     )
     if voxel_entry_idx >= 0:
-        reducer_data.entry_k_eff[voxel_entry_idx] = k_eff
         reduction_update_slot(
             voxel_entry_idx,
             voxel_local_slot,
@@ -383,7 +387,6 @@ def export_hydroelastic_contact_to_buffer(
 @wp.kernel(enable_backward=False)
 def _register_hydroelastic_normal_bins_kernel(
     reducer_data: GlobalContactReducerData,
-    shape_material_k_hydro: wp.array[wp.float32],
     total_num_threads: int,
 ):
     """Register normal-bin keys before deterministic aggregate accumulation."""
@@ -399,11 +402,7 @@ def _register_hydroelastic_normal_bins_kernel(
         key = make_contact_key(pair[0], pair[1], get_slot(normal))
         entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
         reducer_data.contact_nbin_entry[contact_id] = entry_idx
-        if entry_idx >= 0:
-            reducer_data.entry_k_eff[entry_idx] = _effective_stiffness(
-                shape_material_k_hydro[pair[0]], shape_material_k_hydro[pair[1]]
-            )
-        else:
+        if entry_idx < 0:
             wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
 
 
@@ -608,7 +607,6 @@ def get_reduce_hydroelastic_contacts_kernel(deterministic: bool = False):
     @wp.kernel(enable_backward=False)
     def reduce_hydroelastic_contacts_kernel(
         reducer_data: GlobalContactReducerData,
-        shape_material_k_hydro: wp.array[wp.float32],
         shape_transform: wp.array[wp.transform],
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
@@ -656,15 +654,10 @@ def get_reduce_hydroelastic_contacts_kernel(deterministic: bool = False):
                     shape_b,
                     wp.static(SPECULATIVE_BIN_OFFSET),
                     voxel_idx,
-                    make_contact_value(
+                    wp.static(_make_contact_value_variant(deterministic))(
                         -depth,
                         reducer_data.contact_fingerprints[contact_id],
                         contact_id,
-                        reducer_data.deterministic,
-                    ),
-                    _effective_stiffness(
-                        shape_material_k_hydro[shape_a],
-                        shape_material_k_hydro[shape_b],
                     ),
                     reducer_data,
                 )
@@ -693,10 +686,6 @@ def get_reduce_hydroelastic_contacts_kernel(deterministic: bool = False):
                 reducer_data.contact_nbin_entry[contact_id] = entry_idx
 
             if entry_idx >= 0:
-                # k_eff is constant for a shape pair, so redundant writes are safe.
-                reducer_data.entry_k_eff[entry_idx] = _effective_stiffness(
-                    shape_material_k_hydro[shape_a], shape_material_k_hydro[shape_b]
-                )
                 aabb_size = wp.length(aabb_upper - aabb_lower)
                 use_beta = depth < wp.static(BETA_THRESHOLD) * aabb_size
                 if use_beta:
@@ -707,19 +696,17 @@ def get_reduce_hydroelastic_contacts_kernel(deterministic: bool = False):
                     for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
                         dir_2d = get_spatial_direction_2d(dir_i)
                         score = wp.dot(pos_2d_centered, dir_2d) * pen_weight
-                        value = make_contact_value(
+                        value = wp.static(_make_contact_value_variant(deterministic))(
                             score,
                             reducer_data.contact_fingerprints[contact_id],
                             contact_id,
-                            reducer_data.deterministic,
                         )
                         reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
 
-                max_depth_value = make_contact_value(
+                max_depth_value = wp.static(_make_contact_value_variant(deterministic))(
                     -depth,
                     reducer_data.contact_fingerprints[contact_id],
                     contact_id,
-                    reducer_data.deterministic,
                 )
                 reduction_update_slot(
                     entry_idx,
@@ -750,15 +737,10 @@ def get_reduce_hydroelastic_contacts_kernel(deterministic: bool = False):
                 shape_b,
                 wp.static(NUM_NORMAL_BINS),
                 voxel_idx,
-                make_contact_value(
+                wp.static(_make_contact_value_variant(deterministic))(
                     -depth,
                     reducer_data.contact_fingerprints[contact_id],
                     contact_id,
-                    reducer_data.deterministic,
-                ),
-                _effective_stiffness(
-                    shape_material_k_hydro[shape_a],
-                    shape_material_k_hydro[shape_b],
                 ),
                 reducer_data,
             )
@@ -1069,7 +1051,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         contact_fingerprints: wp.array[wp.int32],
         contact_area: wp.array[wp.float32],
         contact_pressure: wp.array[wp.float32],
-        entry_k_eff: wp.array[wp.float32],
+        shape_material_k_hydro: wp.array[wp.float32],
         contact_nbin_entry: wp.array[wp.int32],
         # Pre-accumulated total depth of winning contacts per normal bin
         total_depth_reduced: wp.array[wp.float32],
@@ -1150,17 +1132,19 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 cached_nz[num_exported] = contact_normal[2]
                 num_exported = num_exported + 1
 
+                # Entries are keyed by shape pair, so the first unique contact provides both material indices.
+                if num_exported == 1:
+                    pair = shape_pairs[contact_id]
+                    shape_a_first = pair[0]
+                    shape_b_first = pair[1]
+                    k_eff_first = _effective_stiffness(
+                        shape_material_k_hydro[shape_a_first], shape_material_k_hydro[shape_b_first]
+                    )
+
                 # Track max penetration and normal matching (depth < 0 = penetrating)
                 if depth < 0.0:
                     pen_magnitude = -depth
                     max_pen_depth = wp.max(max_pen_depth, pen_magnitude)
-
-                # Store first contact's shape pair (same for all contacts in the entry)
-                if k_eff_first == 0.0:
-                    k_eff_first = entry_k_eff[entry_idx]
-                    pair = shape_pairs[contact_id]
-                    shape_a_first = pair[0]
-                    shape_b_first = pair[1]
 
             # Skip entries with no contacts
             if num_exported == 0:
@@ -1282,10 +1266,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 position = wp.vec3(pd[0], pd[1], pd[2])
                 contact_normal = wp.vec3(cached_nx[idx], cached_ny[idx], cached_nz[idx])
 
-                # Get shape pair
-                pair = shape_pairs[contact_id]
-                shape_a = pair[0]
-                shape_b = pair[1]
+                shape_a = shape_a_first
+                shape_b = shape_b_first
 
                 # Apply normal matching rotation for penetrating contacts (depth < 0)
                 final_normal = contact_normal
@@ -1544,7 +1526,13 @@ class HydroelasticContactReduction:
             # export_hydroelastic_contact_to_buffer(..., reduction.get_data_struct())
 
             reduction.reduce(shape_material_k_hydro, shape_transform, aabb_lower, aabb_upper, voxel_res, grid_size)
-            reduction.export(shape_gap, shape_transform, writer_data, grid_size)
+            reduction.export(
+                shape_material_k_hydro,
+                shape_gap,
+                shape_transform,
+                writer_data,
+                grid_size,
+            )
 
     Attributes:
         reducer: The underlying ``GlobalContactReducer`` instance.
@@ -1585,7 +1573,6 @@ class HydroelasticContactReduction:
         self.config = config
         self.device = device
         self.deterministic = deterministic
-
         # Create the underlying reducer with hydroelastic data storage enabled
         self.reducer = GlobalContactReducer(
             capacity=capacity,
@@ -1730,7 +1717,7 @@ class HydroelasticContactReduction:
             wp.launch(
                 kernel=_register_hydroelastic_normal_bins_kernel,
                 dim=[grid_size],
-                inputs=[reducer_data, shape_material_k_hydro, grid_size],
+                inputs=[reducer_data, grid_size],
                 device=self.device,
                 record_tape=False,
             )
@@ -1765,7 +1752,6 @@ class HydroelasticContactReduction:
             dim=[grid_size],
             inputs=[
                 reducer_data,
-                shape_material_k_hydro,
                 shape_transform,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
@@ -1779,6 +1765,7 @@ class HydroelasticContactReduction:
 
     def export(
         self,
+        shape_material_k_hydro: wp.array,
         shape_gap: wp.array,
         shape_transform: wp.array,
         writer_data: Any,
@@ -1793,6 +1780,7 @@ class HydroelasticContactReduction:
         global memory barrier).
 
         Args:
+            shape_material_k_hydro: Per-shape hydroelastic material stiffness (dtype: float).
             shape_gap: Per-shape contact gap (detection threshold) (dtype: float).
             shape_transform: Per-shape world transforms (dtype: wp.transform).
             writer_data: Data struct for the writer function.
@@ -1872,7 +1860,7 @@ class HydroelasticContactReduction:
                 self.reducer.contact_fingerprints,
                 self.reducer.contact_area,
                 self.reducer.contact_pressure,
-                self.reducer.entry_k_eff,
+                shape_material_k_hydro,
                 self.reducer.contact_nbin_entry,
                 self.reducer.total_depth_reduced,
                 self.reducer.total_normal_reduced,
@@ -1922,4 +1910,4 @@ class HydroelasticContactReduction:
             shape_voxel_resolution,
             grid_size,
         )
-        self.export(shape_gap, shape_transform, writer_data, grid_size)
+        self.export(shape_material_k_hydro, shape_gap, shape_transform, writer_data, grid_size)
