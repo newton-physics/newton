@@ -180,6 +180,136 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
         self.assertEqual(unresolved.source, SchemaResolution.Source.UNRESOLVED)
         self.assertIsNone(unresolved.value)
 
+    def test_authored_zero_precedes_registered_fallback(self):
+        """Preserve an authored zero and its provenance."""
+        resolver = SchemaResolverNewton()
+        result = _composed_resolution([resolver]).resolve(
+            PrimType.JOINT,
+            {"newton:armature": 0.0},
+            schemas={"NewtonJointAPI"},
+            schema_fallbacks={"NewtonJointAPI": {"newton:armature": 4.0}},
+            keys=("armature",),
+        )["armature"]
+
+        self.assertEqual(result.value, 0.0)
+        self.assertEqual(result.source, SchemaResolution.Source.AUTHORED)
+        self.assertIs(result.resolver, resolver)
+
+    def test_null_source_value_uses_registered_fallback(self):
+        """Treat a null source value as unavailable for fallback selection."""
+        resolver = SchemaResolverNewton()
+        result = _composed_resolution([resolver]).resolve(
+            PrimType.JOINT,
+            {"newton:armature": None},
+            schemas={"NewtonJointAPI"},
+            schema_fallbacks={"NewtonJointAPI": {"newton:armature": 0.5}},
+            keys=("armature",),
+        )["armature"]
+
+        self.assertEqual(result.value, 0.5)
+        self.assertEqual(result.source, SchemaResolution.Source.REGISTERED_FALLBACK)
+        self.assertIs(result.resolver, resolver)
+
+    def test_unset_registered_fallback_uses_importer_default(self):
+        """Skip a property-specific unset fallback before importer defaults."""
+        result = _composed_resolution([SchemaResolverNewton()]).resolve(
+            PrimType.JOINT,
+            {},
+            schemas={"NewtonJointAPI"},
+            schema_fallbacks={"NewtonJointAPI": {"newton:velocityLimit": float("inf")}},
+            defaults={"velocity_limit": 12.0},
+            keys=("velocity_limit",),
+        )["velocity_limit"]
+
+        self.assertEqual(result.value, 12.0)
+        self.assertEqual(result.source, SchemaResolution.Source.IMPORTER_DEFAULT)
+        self.assertIsNone(result.resolver)
+
+    def test_partial_compound_value_uses_registered_fallback(self):
+        """Compose authored and fallback constituents through one result."""
+        resolver = SchemaResolverPhysx()
+        result = _composed_resolution([resolver]).resolve(
+            PrimType.SHAPE,
+            {"physxCollision:contactOffset": 0.05},
+            schemas={"PhysxCollisionAPI"},
+            schema_fallbacks={
+                "PhysxCollisionAPI": {
+                    "physxCollision:contactOffset": 0.02,
+                    "physxCollision:restOffset": 0.01,
+                }
+            },
+            keys=("gap",),
+        )["gap"]
+
+        self.assertAlmostEqual(result.value, 0.04)
+        self.assertEqual(result.source, SchemaResolution.Source.REGISTERED_FALLBACK)
+        self.assertIs(result.resolver, resolver)
+        self.assertEqual(
+            result.attribute_names,
+            ("physxCollision:contactOffset", "physxCollision:restOffset"),
+        )
+
+    def test_unusable_compatibility_default_falls_through(self):
+        """Continue after a compatibility default transforms to null."""
+
+        class UnusableResolver(SchemaResolver):
+            name = "unusable"
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "armature": SchemaResolver.SchemaAttribute(
+                        "unusable:armature",
+                        -1.0,
+                        lambda _value: None,
+                    )
+                }
+            }
+
+        class BackupResolver(SchemaResolver):
+            name = "backup"
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "armature": SchemaResolver.SchemaAttribute("backup:armature", 0.25),
+                }
+            }
+
+        backup = BackupResolver()
+        result = _composed_resolution([UnusableResolver(), backup]).resolve(
+            PrimType.JOINT,
+            {},
+            keys=("armature",),
+        )["armature"]
+
+        self.assertEqual(result.value, 0.25)
+        self.assertEqual(result.source, SchemaResolution.Source.COMPATIBILITY_DEFAULT)
+        self.assertIs(result.resolver, backup)
+
+    def test_equal_values_retain_distinct_policy_sources(self):
+        """Report distinct winning sources when policy values are equal."""
+
+        class CustomResolver(SchemaResolver):
+            name = "custom"
+            schema_names: ClassVar = {PrimType.JOINT: "CustomJointAPI"}
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "armature": SchemaResolver.SchemaAttribute("custom:armature", 0.0),
+                }
+            }
+
+        resolver = CustomResolver()
+        inputs = {
+            "schemas": {"CustomJointAPI"},
+            "schema_fallbacks": {"CustomJointAPI": {"custom:armature": 0.0}},
+            "keys": ("armature",),
+        }
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            legacy = SchemaResolution([resolver]).resolve(PrimType.JOINT, {}, **inputs)["armature"]
+        registered = _composed_resolution([resolver]).resolve(PrimType.JOINT, {}, **inputs)["armature"]
+
+        self.assertEqual(legacy.value, registered.value)
+        self.assertEqual(legacy.source, SchemaResolution.Source.COMPATIBILITY_DEFAULT)
+        self.assertEqual(registered.source, SchemaResolution.Source.REGISTERED_FALLBACK)
+
     def test_default_policy_retains_legacy_values(self):
         """Preserve legacy values under the default source-neutral policy."""
         resolution = SchemaResolution([SchemaResolverPhysx(), SchemaResolverNewton()])
