@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .controller import ControllerBase
+from .export import export_controller_graph
 from .impl import ControllerJointImpedance, ControllerJointImpedanceModelFree
 
 __all__ = [
