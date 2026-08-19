@@ -315,7 +315,7 @@ class Example:
         builder.add_articulation([d6_joint, rev_joint])
 
         cable_points = _load_cable_centerline(stage)
-        cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
+        cable_quats = newton.utils.rod_parallel_transport_quaternions(cable_points)
         bend_stiffness = 1.0e1
 
         rod_bodies, _ = builder.add_rod(

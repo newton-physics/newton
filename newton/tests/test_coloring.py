@@ -342,7 +342,6 @@ def test_coloring_rigid_body_cable_chain(test, device):
         rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
         edge_q = [rot_z_to_x] * num_elements
 
-        # Add cable using rod (creates bodies + cable joints)
         _rod_bodies, _rod_joints = builder.add_rod(
             positions=points,
             quaternions=edge_q,

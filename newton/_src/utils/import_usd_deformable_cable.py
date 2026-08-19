@@ -4,7 +4,7 @@
 """USD cable / curve-deformable import passes.
 
 Imports linear ``UsdGeom.BasisCurves`` deformables as rods (chains of capsule bodies joined
-by cable joints, usable by any solver that supports them), welding curve-to-curve
+by rod joints, usable by any solver that supports them), welding curve-to-curve
 ``PhysicsAttachment`` junctions into shared rod graphs first, then importing remaining single
 curves. Driven by :func:`.import_usd.parse_usd` via a
 :class:`.import_usd_deformable_utils._DeformableImportContext`.
@@ -269,7 +269,7 @@ def _resolve_cable_structural_stiffnesses(
     )
 
 
-def _apply_local_cable_stiffnesses(
+def _apply_local_rod_stiffnesses(
     builder: ModelBuilder,
     bodies: list[int],
     joints: list[int],
@@ -278,7 +278,7 @@ def _apply_local_cable_stiffnesses(
     radius: float,
     linear_unit: float,
 ) -> None:
-    """Discretize structural stiffnesses using each joint's dual rest length.
+    """Discretize cable material stiffnesses using each rod joint's dual rest length.
 
     A joint spans half of each adjacent segment, so its length is ``0.5 * (L_parent + L_child)``.
     ``segment_rest_lengths[i]`` is the rest length of the segment body ``bodies[i]``. A curve
@@ -295,7 +295,7 @@ def _apply_local_cable_stiffnesses(
             body_rest_lengths[builder.joint_parent[joint]] + body_rest_lengths[builder.joint_child[joint]]
         )
         stretch, shear, bend, twist = (None if s is None else s / joint_rest_length for s in structural_stiffnesses)
-        builder._set_joint_cable_stiffnesses(
+        builder._set_joint_rod_stiffnesses(
             joint, stretch_stiffness=stretch, shear_stiffness=shear, bend_stiffness=bend, twist_stiffness=twist
         )
 
@@ -622,7 +622,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             wrap_in_articulation=True,
             body_frame_origin="com",
         )
-        _apply_local_cable_stiffnesses(
+        _apply_local_rod_stiffnesses(
             builder, body_ids, graph_joint_ids, material_edge_lengths, mat, radius, linear_unit
         )
         for key in rest_lengths_by_curve:
@@ -895,9 +895,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 wrap_in_articulation=True,
                 body_frame_origin="com",
             )
-            _apply_local_cable_stiffnesses(
-                builder, bodies, joints, material_seg_lengths, cable_mat, radius, linear_unit
-            )
+            _apply_local_rod_stiffnesses(builder, bodies, joints, material_seg_lengths, cable_mat, radius, linear_unit)
             has_valid_rest_shape |= rest_seg_lengths is not None
             cable_bodies.extend(bodies)
             cable_joints.extend(joints)
