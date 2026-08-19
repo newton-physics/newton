@@ -1740,6 +1740,19 @@ def _pipeline_clamping(clamp, device, n):
 
         return clamping, limit
 
+    if clamp in ("max_effort_then_open", "open_then_max_effort"):
+        # A DC-motor clamp with bounds far outside anything the solve produces is
+        # a no-op, so stacking it either side of the max-effort clamp must leave
+        # the result unchanged.
+        open_clamp = ClampingDCMotor(
+            saturation_effort=_full(1.0e9),
+            velocity_limit=_full(1.0e9),
+            max_motor_effort=_full(1.0e9),
+        )
+        bound = ClampingMaxEffort(max_effort=_full(_MAX_EFFORT))
+        order = [bound, open_clamp] if clamp == "max_effort_then_open" else [open_clamp, bound]
+        return order, lambda q, qd: (-_MAX_EFFORT, _MAX_EFFORT)
+
     raise ValueError(f"unknown clamp kind: {clamp}")
 
 
@@ -2052,6 +2065,12 @@ class TestActuatorStep(unittest.TestCase):
         """Verify a max-effort clamp bounds the implicit effort exactly."""
         self.run_test_actuator_pipeline(controller="pd", clamp="max_effort")
 
+    def test_pipeline_pd_stacked_clamps_implicit(self):
+        """Stacking an open clamp with a max-effort clamp gives the same bound in either order."""
+        for order in ("max_effort_then_open", "open_then_max_effort"):
+            with self.subTest(order=order):
+                self.run_test_actuator_pipeline(controller="pd", clamp=order)
+
     def test_pipeline_pd_dc_motor_implicit(self):
         """Verify the DC-motor envelope binds at the predicted end-of-step velocity."""
         self.run_test_actuator_pipeline(controller="pd", clamp="dc_motor", kp=5.0e4, kd=0.0, q0=0.0, qd0=1.0, worlds=2)
@@ -2097,6 +2116,60 @@ class TestActuatorStep(unittest.TestCase):
             q0=[0.3, -0.8],
             target=[0.6, 0.4],
             worlds=2,
+        )
+
+    def test_splitting_dofs_across_two_actuators(self):
+        """One actuator over both DOFs versus one actuator per DOF.
+
+        Explicit efforts match: the control law is evaluated per DOF, so it does
+        not matter which actuator evaluates it. Implicit efforts do not: an
+        actuator solves all of its own DOFs as one coupled system through the
+        submatrix of inv(H), so splitting them leaves each actuator solving its
+        DOF alone, without the cross-coupling term.
+        """
+        device = wp.get_device()
+        h = 0.01
+        kp = np.array([4000.0, 3000.0], dtype=np.float32)
+        kd = np.array([40.0, 30.0], dtype=np.float32)
+        q0 = np.array([0.3, -0.8], dtype=np.float32)
+        target = np.array([0.6, 0.4], dtype=np.float32)
+
+        def efforts(dof_groups, implicit):
+            model = _build_two_link(device)
+            state = model.state()
+            state.joint_q.assign(q0)
+            control = model.control()
+            control.joint_target_q.assign(target)
+            actuators, oracles = [], []
+            for group in dof_groups:
+                dofs = np.asarray(group)
+                actuator = Actuator(
+                    indices=wp.array(dofs.astype(np.uint32), dtype=wp.uint32, device=device),
+                    controller=ControllerPD(
+                        kp=wp.array(kp[dofs], dtype=float, device=device),
+                        kd=wp.array(kd[dofs], dtype=float, device=device),
+                    ),
+                    control_target_pos_attr="joint_target_q",
+                    control_target_vel_attr="joint_target_qd",
+                )
+                oracle = ResponseOracle(model)
+                if implicit:
+                    actuator.set_effort_mode_implicit(response=oracle)
+                actuators.append(actuator)
+                oracles.append(oracle)
+            control.joint_f.zero_()
+            for oracle in oracles:
+                oracle.refresh(state)
+            for actuator in actuators:
+                actuator.step(state, control, dt=h)
+            return control.joint_f.numpy().copy()
+
+        together, apart = efforts([[0, 1]], False), efforts([[0], [1]], False)
+        np.testing.assert_allclose(together, apart, rtol=1e-5, atol=1e-6)
+
+        together, apart = efforts([[0, 1]], True), efforts([[0], [1]], True)
+        self.assertFalse(
+            np.allclose(together, apart, rtol=1e-3), "the coupled solve must differ from two scalar solves"
         )
 
     def test_pipeline_pd_partially_actuated_implicit(self):
