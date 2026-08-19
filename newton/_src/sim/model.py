@@ -572,6 +572,7 @@ class Model:
         ),
         "joint_X_p": AttributeSpec(AttributeFrequency.JOINT),
         "joint_X_c": AttributeSpec(AttributeFrequency.JOINT),
+        "joint_cable_rest_orientation": AttributeSpec(AttributeFrequency.JOINT),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
         "joint_enabled": AttributeSpec(AttributeFrequency.JOINT),
         "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT),
@@ -1135,6 +1136,11 @@ class Model:
         """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""
         self.joint_X_c: wp.array[wp.transform] | None = None
         """Joint mass frame in child frame [m, unitless quaternion], shape [joint_count, 7], float."""
+        self.joint_cable_rest_orientation: wp.array[wp.quat] | None = None
+        """Cable child-anchor (:attr:`joint_X_c`) orientation relative to the parent anchor
+        (:attr:`joint_X_p`) at structural rest [unitless quaternion], shape [joint_count, 4],
+        float. A zero cable entry requests legacy derivation from :attr:`body_q`. Non-cable
+        entries are zero and ignored. Used by :class:`~newton.solvers.SolverVBD`."""
         self.joint_axis: wp.array[wp.vec3] | None = None
         """Joint axis in child frame, shape [joint_dof_count, 3], float."""
         self.joint_armature: wp.array[wp.float32] | None = None

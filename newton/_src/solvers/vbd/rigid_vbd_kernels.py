@@ -4108,6 +4108,7 @@ def init_cable_rest_bend_twist(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     body_q_rest: wp.array[wp.transform],
+    joint_cable_rest_orientation: wp.array[wp.quat],
     joint_cable_rest_kb_local: wp.array[wp.vec3],
     joint_cable_rest_twist: wp.array[float],
 ):
@@ -4119,19 +4120,26 @@ def init_cable_rest_bend_twist(
     if joint_type[j] != JointType.CABLE:
         return
 
-    child = joint_child[j]
-    if child < 0:
-        return
-
-    parent = joint_parent[j]
-    if parent >= 0:
-        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
+    # Zero preserves body_q-derived rest. A shared parent rotation cancels, so
+    # (identity, explicit_rest) gives the same parent-local convention.
+    explicit_rest = joint_cable_rest_orientation[j]
+    if wp.length_sq(explicit_rest) > 0.0:
+        q_wp_rest = wp.quat_identity()
+        q_wc_rest = wp.normalize(explicit_rest)
     else:
-        X_wp_rest = joint_X_p[j]
-    X_wc_rest = body_q_rest[child] * joint_X_c[j]
+        child = joint_child[j]
+        if child < 0:
+            return
 
-    q_wp_rest = wp.transform_get_rotation(X_wp_rest)
-    q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+        parent = joint_parent[j]
+        if parent >= 0:
+            X_wp_rest = body_q_rest[parent] * joint_X_p[j]
+        else:
+            X_wp_rest = joint_X_p[j]
+        X_wc_rest = body_q_rest[child] * joint_X_c[j]
+
+        q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+        q_wc_rest = wp.transform_get_rotation(X_wc_rest)
 
     # Rest DER bend (parent-local curvature binormal) and rest twist (transported
     # material spin), measured once so a pre-curved rest yields zero strain.

@@ -117,21 +117,6 @@ def advance_time(sim_time: wp.array[wp.float32], dt: float):
     sim_time[0] = sim_time[0] + dt
 
 
-@wp.kernel
-def set_body_xforms(
-    body_indices: wp.array[wp.int32],
-    body_xforms: wp.array[wp.transform],
-    body_q0: wp.array[wp.transform],
-    body_q1: wp.array[wp.transform],
-):
-    """Initialize selected body transforms in both state buffers."""
-    tid = wp.tid()
-    body = body_indices[tid]
-    xform = body_xforms[tid]
-    body_q0[body] = xform
-    body_q1[body] = xform
-
-
 def _symmetric_bounds(half_extent: float) -> tuple[float, float]:
     return (-half_extent, half_extent)
 
@@ -678,7 +663,7 @@ class Example:
         )
         cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
         cable_segment_count = len(cable_points) - 1
-        straight_cable_points, straight_cable_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        cable_rest_points, cable_rest_quats = newton.utils.create_straight_cable_points_and_quaternions(
             start=left_anchor_world,
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=cable_segment_count * cable_segment_length,
@@ -689,9 +674,12 @@ class Example:
         cable_cfg.density = 200.0
         cable_cfg.gap = 2.0 * cable_radius
 
+        # Start routed around the pulleys while retaining a length-matched straight structural rest.
         self.cable_bodies, cable_joints = builder.add_rod(
-            positions=straight_cable_points,
-            quaternions=straight_cable_quats,
+            positions=cable_points,
+            quaternions=cable_quats,
+            rest_positions=cable_rest_points,
+            rest_quaternions=cable_rest_quats,
             radius=cable_radius,
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
@@ -702,10 +690,6 @@ class Example:
             label="xy_table_cable",
             body_frame_origin="com",
         )
-        initial_cable_xforms = [
-            wp.transform(cable_points[i] + (cable_points[i + 1] - cable_points[i]) * 0.5, cable_quats[i])
-            for i in range(len(self.cable_bodies))
-        ]
         filter_body_group_collisions(builder, self.cable_bodies)
 
         # Ball joints close the cable loop at the table anchors.
@@ -796,28 +780,6 @@ class Example:
             device=self.model.device,
         )
         self.target_table_xy = wp.zeros(2, dtype=wp.float32, device=self.model.device)
-        cable_body_indices = wp.array(
-            self.cable_bodies,
-            dtype=wp.int32,
-            device=self.model.device,
-        )
-        cable_body_xforms = wp.array(
-            initial_cable_xforms,
-            dtype=wp.transform,
-            device=self.model.device,
-        )
-        wp.launch(
-            set_body_xforms,
-            dim=cable_body_indices.shape[0],
-            inputs=[
-                cable_body_indices,
-                cable_body_xforms,
-                self.state_0.body_q,
-                self.state_1.body_q,
-            ],
-            device=self.model.device,
-        )
-        self.solver.body_q_prev = wp.clone(self.state_0.body_q, device=self.solver.device)
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
 
         # Viewer setup.

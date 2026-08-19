@@ -3787,6 +3787,193 @@ def _cable_rod_origin_matches_com_impl(test: unittest.TestCase, device):
     np.testing.assert_allclose(joint_X_c[rod_joints[0], :3], np.array([0.0, 0.0, -half_length]), atol=1.0e-6)
 
 
+def _cable_separate_rest_and_initial_pose_impl(test: unittest.TestCase, device):
+    """Verify separate cable rest/initial poses and legacy behavior across the builder and VBD."""
+    builder = newton.ModelBuilder()
+    initial_points: list[Any] = [
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(1.0, 0.0, 1.0),
+        wp.vec3(1.5, 0.8660254, 1.0),
+    ]
+    rest_points: list[Any] = [
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(0.8, 0.0, 1.0),
+        wp.vec3(0.8, 1.2, 1.0),
+    ]
+    initial_quaternions: list[Any] = newton.utils.create_parallel_transport_cable_quaternions(initial_points)
+    rest_quaternions: list[Any] = newton.utils.create_parallel_transport_cable_quaternions(rest_points)
+    initial_tangent = wp.normalize(initial_points[2] - initial_points[1])
+    initial_quaternions[1] = wp.quat_from_axis_angle(initial_tangent, -0.2) * initial_quaternions[1]
+    rest_twist = 0.25
+    rest_quaternions[1] = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), rest_twist) * rest_quaternions[1]
+
+    with test.assertRaisesRegex(ValueError, "coincident first and last points"):
+        newton.ModelBuilder().add_rod(
+            positions=initial_points,
+            rest_positions=rest_points,
+            closed=True,
+            body_frame_origin="com",
+        )
+
+    # Preserve authored roll when inferring internal and loop-closing rest frames.
+    closed_points: list[Any] = [
+        wp.vec3(0.0, 0.0, 0.0),
+        wp.vec3(1.0, 0.0, 0.0),
+        wp.vec3(0.5, 0.8660254, 0.0),
+        wp.vec3(0.0, 0.0, 0.0),
+    ]
+    closed_quaternions = newton.utils.create_parallel_transport_cable_quaternions(closed_points)
+    tangent = wp.normalize(closed_points[2] - closed_points[1])
+    closed_quaternions[1] = wp.quat_from_axis_angle(tangent, 0.3) * closed_quaternions[1]
+    closed_builder = newton.ModelBuilder()
+    _, closed_joints = closed_builder.add_rod(
+        positions=closed_points,
+        quaternions=closed_quaternions,
+        rest_positions=closed_points,
+        closed=True,
+        body_frame_origin="com",
+    )
+    for joint_id, (parent_segment, child_segment) in zip(closed_joints, ((0, 1), (1, 2), (2, 0)), strict=True):
+        expected = wp.quat_inverse(closed_quaternions[parent_segment]) * closed_quaternions[child_segment]
+        np.testing.assert_allclose(
+            closed_builder.joint_cable_rest_orientation[joint_id], np.array(expected), atol=1.0e-6
+        )
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=initial_points,
+        quaternions=initial_quaternions,
+        rest_positions=rest_points,
+        rest_quaternions=rest_quaternions,
+        radius=0.01,
+        # Isolate the angular rest reference from the deliberately mismatched segment lengths.
+        stretch_stiffness=0.0,
+        shear_stiffness=0.0,
+        bend_stiffness=100.0,
+        bend_damping=2.0,
+        twist_stiffness=50.0,
+        twist_damping=1.0,
+        body_frame_origin="com",
+    )
+    test.assertEqual(len(rod_bodies), 2)
+    test.assertEqual(len(rod_joints), 1)
+    builder.body_flags[rod_bodies[0]] = int(newton.BodyFlags.KINEMATIC)
+
+    builder.color()
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+    joint = rod_joints[0]
+
+    body_q = model.body_q.numpy().copy()
+    np.testing.assert_allclose(body_q[rod_bodies[0], :3], np.array([0.5, 0.0, 1.0]), atol=1.0e-6)
+    np.testing.assert_allclose(body_q[rod_bodies[1], :3], np.array([1.25, 0.4330127, 1.0]), atol=1.0e-6)
+    np.testing.assert_allclose(model.state().body_q.numpy(), body_q, atol=1.0e-6)
+
+    shape_body = model.shape_body.numpy()
+    shape_scale = model.shape_scale.numpy()
+    expected_half_lengths = (0.4, 0.6)
+    for body, expected_half_length in zip(rod_bodies, expected_half_lengths, strict=True):
+        shape_ids = np.where(shape_body == body)[0]
+        test.assertEqual(len(shape_ids), 1)
+        test.assertAlmostEqual(float(shape_scale[shape_ids[0], 1]), expected_half_length, places=6)
+
+    np.testing.assert_allclose(model.joint_X_p.numpy()[joint, :3], np.array([0.0, 0.0, 0.4]), atol=1.0e-6)
+    np.testing.assert_allclose(model.joint_X_c.numpy()[joint, :3], np.array([0.0, 0.0, -0.6]), atol=1.0e-6)
+    expected_rest_q = wp.quat_inverse(rest_quaternions[0]) * rest_quaternions[1]
+    np.testing.assert_allclose(
+        model.joint_cable_rest_orientation.numpy()[joint], np.array(expected_rest_q), atol=1.0e-6
+    )
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+    rest_kb = solver.joint_cable_rest_kb_local.numpy()[joint].copy()
+    test.assertGreater(float(np.linalg.norm(rest_kb)), 0.1)
+    test.assertAlmostEqual(float(solver.joint_cable_rest_twist.numpy()[joint]), rest_twist, places=6)
+
+    rest_orientations = model.joint_cable_rest_orientation.numpy().copy()
+    identity_rest_orientations = rest_orientations.copy()
+    identity_rest_orientations[joint] = np.array([0.0, 0.0, 0.0, 1.0])
+    model.joint_cable_rest_orientation.assign(identity_rest_orientations)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    np.testing.assert_allclose(solver.joint_cable_rest_kb_local.numpy()[joint], np.zeros(3), atol=1.0e-6)
+    test.assertAlmostEqual(float(solver.joint_cable_rest_twist.numpy()[joint]), 0.0, places=6)
+    model.joint_cable_rest_orientation.assign(rest_orientations)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    np.testing.assert_allclose(solver.joint_cable_rest_kb_local.numpy()[joint], rest_kb, atol=1.0e-6)
+
+    # An authored rest orientation must not follow the default body poses.
+    perturbed_body_q = body_q.copy()
+    perturbed_child_q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.3) * wp.quat(*body_q[rod_bodies[1], 3:])
+    perturbed_body_q[rod_bodies[1], 3:] = np.array(perturbed_child_q)
+    model.body_q.assign(perturbed_body_q)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    np.testing.assert_allclose(solver.joint_cable_rest_kb_local.numpy()[joint], rest_kb, atol=1.0e-6)
+    model.body_q.assign(body_q)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+    def angular_rest_error(state: newton.State) -> float:
+        X_wp, X_wc = _get_joint_world_frames(model, state.body_q, joint)
+        q_rel = wp.quat_inverse(wp.transform_get_rotation(X_wp)) * wp.transform_get_rotation(X_wc)
+        q_error = wp.normalize(q_rel * wp.quat_inverse(expected_rest_q))
+        vector_norm = np.linalg.norm(np.array([q_error[0], q_error[1], q_error[2]]))
+        return float(2.0 * np.arctan2(vector_norm, abs(float(q_error[3]))))
+
+    state_0, state_1 = model.state(), model.state()
+    initial_error = angular_rest_error(state_0)
+    control = model.control()
+    for _ in range(20):
+        solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+    final_error = angular_rest_error(state_0)
+    test.assertLess(
+        final_error,
+        initial_error,
+        msg=f"Cable angular error did not decrease toward rest ({initial_error:.6g} -> {final_error:.6g})",
+    )
+    solver.reset(state_0)
+    np.testing.assert_allclose(state_0.body_q.numpy(), body_q, atol=1.0e-6)
+
+    copied_builder = newton.ModelBuilder()
+    copied_builder.add_builder(
+        builder,
+        xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5)),
+    )
+    copied_joint = copied_builder.joint_type.index(newton.JointType.CABLE)
+    test.assertEqual(len(copied_builder.joint_cable_rest_orientation), copied_builder.joint_count)
+    np.testing.assert_allclose(
+        copied_builder.joint_cable_rest_orientation[copied_joint], np.array(expected_rest_q), atol=1.0e-6
+    )
+    copied_builder.collapse_fixed_joints()
+    copied_joint = copied_builder.joint_type.index(newton.JointType.CABLE)
+    test.assertEqual(len(copied_builder.joint_cable_rest_orientation), copied_builder.joint_count)
+    np.testing.assert_allclose(
+        copied_builder.joint_cable_rest_orientation[copied_joint], np.array(expected_rest_q), atol=1.0e-6
+    )
+
+    legacy_builder = newton.ModelBuilder()
+    legacy_bodies, legacy_joints = legacy_builder.add_rod(
+        positions=initial_points,
+        quaternions=initial_quaternions,
+        bend_stiffness=1.0,
+        body_frame_origin="com",
+    )
+    legacy_builder.color()
+    legacy_model = legacy_builder.finalize(device=device)
+    legacy_joint = legacy_joints[0]
+    np.testing.assert_allclose(legacy_model.joint_cable_rest_orientation.numpy()[legacy_joint], np.zeros(4))
+    legacy_solver = newton.solvers.SolverVBD(legacy_model)
+    legacy_rest_kb = legacy_solver.joint_cable_rest_kb_local.numpy()[legacy_joint].copy()
+
+    legacy_body_q = legacy_model.body_q.numpy().copy()
+    child_q = wp.quat(*legacy_body_q[legacy_bodies[1], 3:])
+    child_q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.2) * child_q
+    legacy_body_q[legacy_bodies[1], 3:] = np.array(child_q)
+    legacy_model.body_q.assign(legacy_body_q)
+    legacy_solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    test.assertFalse(
+        np.allclose(legacy_solver.joint_cable_rest_kb_local.numpy()[legacy_joint], legacy_rest_kb, atol=1.0e-6)
+    )
+
+
 def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
     """Cable graph: collision filtering should be applied at junctions.
 
@@ -6137,6 +6324,12 @@ add_function_test(
     TestCable,
     "test_cable_rod_origin_matches_com",
     _cable_rod_origin_matches_com_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_separate_rest_and_initial_pose",
+    _cable_separate_rest_and_initial_pose_impl,
     devices=devices,
 )
 add_function_test(

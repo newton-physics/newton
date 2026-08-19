@@ -206,10 +206,16 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Call :meth:`newton.ModelBuilder.color` to automatically color both particles and rigid bodies.
 
-        VBD uses ``model.body_q`` as the structural rest pose and reads
-        ``model.joint_q`` for drive/limit rest-angle offsets. The body
-        transforms must match the joint angles at solver creation time
-        (see example below).
+        ``model.body_q`` stores the default initial/reset body poses. For conventional
+        joints, VBD also uses those transforms as structural rest and reads
+        ``model.joint_q`` for drive/limit rest-angle offsets.
+        The corresponding body transforms must match the joint angles at solver creation.
+        Cable stretch/shear rest is encoded by the joint anchors, while cable
+        bend/twist rest comes from :attr:`~newton.Model.joint_cable_rest_orientation`
+        when explicitly authored and otherwise follows ``model.body_q`` for
+        backward compatibility. After changing that array, call
+        :meth:`notify_model_changed` with
+        :attr:`newton.ModelFlags.JOINT_PROPERTIES`.
 
         For CUDA graph capture, the recommended construction order is
         ``CollisionPipeline`` -> ``Contacts`` -> ``SolverVBD``, all before capture.
@@ -1374,10 +1380,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
 
     def _refresh_cable_rest_bend_twist_cache(self) -> None:
-        """(Re)compute cable rest bend/twist invariants from the current rest pose.
+        """(Re)compute cable rest bend/twist invariants from model rest data.
 
         Called once at init and again from ``notify_model_changed`` whenever joint
-        frames or the rest pose change.
+        properties or default body poses change.
         """
         # The cache is only allocated when SolverVBD integrates the rigid system
         # (see _init_rigid_system); skip when bodies are handled externally.
@@ -1398,6 +1404,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.model.joint_X_p,
                 self.model.joint_X_c,
                 self.model.body_q,
+                self.model.joint_cable_rest_orientation,
             ],
             outputs=[
                 self.joint_cable_rest_kb_local,

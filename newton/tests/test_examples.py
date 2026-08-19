@@ -509,6 +509,13 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="vbd.example_cable_rest_initial_pose",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_pile",
     devices=test_devices,
     use_viewer=True,
