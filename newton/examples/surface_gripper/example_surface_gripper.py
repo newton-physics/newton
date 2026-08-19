@@ -760,6 +760,11 @@ class Example:
         # worlds), and the ground plane is added globally (world -1) so a single floor is shared by all.
         env = newton.ModelBuilder()
 
+        # Register MuJoCo's custom USD attributes (mjc:gainPrm, mjc:biasPrm, mjc:target, ...) up front so
+        # add_usd() recognizes the position actuators authored on the arm joints in ROBOT_USD; parse_usd()
+        # only registers the narrower equality-constraint subset on its own.
+        newton.solvers.SolverMuJoCo.register_custom_attributes(env)
+
         # Load the robot arm.
         robot = env.add_usd(str(ROBOT_USD), floating=False, collapse_fixed_joints=True)
         ee_body_local = env.body_count - 1  # last arm link (J6_link), the flange, within one env
