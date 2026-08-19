@@ -1018,6 +1018,11 @@ class RendererGL:
         try:
             import pyglet
 
+            if headless:
+                # Pyglet must select its headless backend before importing
+                # pyglet.graphics, which otherwise creates a display connection.
+                pyglet.options["headless"] = True
+
             # disable error checking for performance
             pyglet.options["debug_gl"] = False
 
