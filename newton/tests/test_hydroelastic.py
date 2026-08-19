@@ -392,19 +392,30 @@ def test_hydroelastic_attached_sdf_uses_padding_metadata(test, device):
                 construction_padding=construction_padding,
             )
             builder = newton.ModelBuilder()
-            builder.add_shape_mesh(
-                body=-1,
-                mesh=mesh,
-                cfg=newton.ModelBuilder.ShapeConfig(
-                    is_hydroelastic=True,
-                    margin=0.2,
-                    gap=0.1,
-                ),
+            body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+            body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.2), wp.quat_identity()))
+            cfg = newton.ModelBuilder.ShapeConfig(
+                is_hydroelastic=True,
+                margin=0.2,
+                gap=0.1,
             )
+            builder.add_shape_mesh(
+                body=body_a,
+                mesh=mesh,
+                cfg=cfg,
+            )
+            builder.add_shape_mesh(body=body_b, mesh=mesh, cfg=cfg)
 
             if succeeds:
                 model = builder.finalize(device=device)
-                test.assertEqual(model.shape_count, 1)
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+                contacts = pipeline.contacts()
+
+                pipeline.collide(state, contacts)
+
+                test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
             else:
                 with test.assertRaisesRegex(ValueError, r"construction padding >= margin \+ gap"):
                     builder.finalize(device=device)

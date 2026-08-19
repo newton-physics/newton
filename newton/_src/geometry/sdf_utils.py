@@ -634,6 +634,8 @@ class SDF:
             shape_margin=shape_margin,
             texture_data=texture_data,
             construction_padding=construction_padding,
+            _coarse_texture=texture_data.coarse_texture if texture_data is not None else None,
+            _subgrid_texture=texture_data.subgrid_texture if texture_data is not None else None,
             _internal=True,
         )
         sdf.validate()
