@@ -53,6 +53,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
+from ..utils.cable import create_cable_spline_shape
 from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .enums import (
@@ -8354,6 +8355,166 @@ class ModelBuilder:
                                 self.add_shape_collision_filter_pair(int(si), int(sj))
 
         return edge_bodies, all_joints
+
+    def add_cable_spline(
+        self,
+        control_points: list[Vec3],
+        *,
+        num_segments: int | None = None,
+        segment_length: float | None = None,
+        radius: float = 0.1,
+        cfg: ShapeConfig | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
+        closed: bool = False,
+        twist_total: float = 0.0,
+        normal_hint: Vec3 | None = None,
+        alpha: float = 0.5,
+        straight_rest_shape: bool = False,
+        label: str | None = None,
+        wrap_in_articulation: bool = True,
+        color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] | None = None,
+    ) -> tuple[list[int], list[int]]:
+        """Adds a rod/cable along a Catmull-Rom spline through the given control points.
+
+        The spline interpolates all control points and is sampled uniformly in arc length
+        (equal segment lengths). Per-segment orientations are generated with a
+        rotation-minimizing frame (double reflection method), which is free of the Frenet
+        frame's zero-curvature singularities; an optional total twist is distributed uniformly
+        along the cable. The sampled polyline and frames are then assembled into capsule bodies
+        connected by cable joints via :meth:`add_rod`.
+
+        The configuration conveyed by :attr:`Model.body_q` is the cable's rest shape: solvers
+        that measure cable stretch/bend relative to the rest configuration (e.g.
+        :class:`newton.solvers.SolverVBD`) keep it at equilibrium. By default the bodies are
+        built along the spline, so pre-shaped cables (coils, knots) hold their shape. With
+        ``straight_rest_shape=True`` the bodies are instead built at the cable's *natural*
+        (minimal bending, untwisted) configuration — a straight chain for open cables, a
+        circle of the same circumference for closed ones — and the spline only describes the
+        intended initial pose, which the caller writes into the simulation state:
+
+        .. code-block:: python
+
+            bodies, _ = builder.add_cable_spline(points, segment_length=0.04, straight_rest_shape=True)
+            model = builder.finalize()
+            solver = newton.solvers.SolverVBD(model)
+            state_0, state_1 = model.state(), model.state()
+
+            shape = newton.utils.create_cable_spline_shape(points, segment_length=0.04)
+            xforms = newton.utils.create_cable_body_transforms(shape.points, shape.quaternions)
+            body_q = state_0.body_q.numpy()
+            body_q[bodies] = [[*t.p, *t.q] for t in xforms]
+            state_0.body_q.assign(body_q)
+            state_1.body_q.assign(body_q)
+            solver.body_q_prev.assign(state_0.body_q)  # avoid a spurious first-step velocity
+
+        This is the routing workflow (cables tensioned around pulleys); see
+        ``newton/examples/cable/example_cable_cross_slide_table.py`` for a complete scene.
+
+        Args:
+            control_points: Control points the curve interpolates, in world space. At least 2
+                distinct points for an open curve, 3 for a closed one; consecutive duplicates
+                are merged.
+            num_segments: Number of capsule segments (>= 2). Exactly one of ``num_segments``
+                and ``segment_length`` must be provided.
+            segment_length: Target segment length [m]. The segment count is rounded so segments
+                have equal length close to this value. Useful together with
+                :func:`newton.utils.create_cable_stiffness_from_elastic_moduli`, which expects
+                the segment length.
+            radius: Capsule radius [m].
+            cfg: Shape configuration for the capsules. If ``None``, :attr:`default_shape_cfg`
+                is used. Segment mass follows from ``cfg.density``.
+            stretch_stiffness: Per-joint cable stretch stiffness [N/m]; see :meth:`add_rod`.
+            stretch_damping: Per-joint stretch damping [N·s/m]; see :meth:`add_rod`.
+            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]; see
+                :meth:`add_rod`.
+            shear_damping: Optional per-joint transverse shear damping [N·s/m]; see
+                :meth:`add_rod`.
+            bend_stiffness: Per-joint cable bend stiffness [N·m]; see :meth:`add_rod`.
+            bend_damping: Per-joint bend damping [N·m·s/rad]; see :meth:`add_rod`.
+            twist_stiffness: Optional per-joint cable twist stiffness [N·m]; see
+                :meth:`add_rod`.
+            twist_damping: Optional per-joint cable twist damping [N·m·s/rad]; see
+                :meth:`add_rod`.
+            closed: If True, the spline is a closed loop and a loop-closing cable joint is
+                added (see :meth:`add_rod`). The moving frame's holonomy around the loop is
+                distributed evenly so the frame field closes up.
+            twist_total: Total intrinsic twist [rad] distributed uniformly along the cable. For
+                closed cables this must be a multiple of ``2*pi`` (whole turns of stored twist).
+                With ``straight_rest_shape=True`` the rest configuration is untwisted, so the
+                twist appears only in the posed geometry written into the state and becomes
+                live strain.
+            normal_hint: Optional direction seeding the first cross-section normal (its
+                component orthogonal to the first segment is used). If ``None`` or nearly
+                parallel to the first segment, a world axis is chosen automatically.
+            alpha: Catmull-Rom parameterization exponent: 0.0 uniform, 0.5 centripetal
+                (default), 1.0 chordal. Centripetal avoids cusps and local self-intersections
+                within spans.
+            straight_rest_shape: If True, builds the bodies at the natural rest configuration
+                (straight chain, or a circle for closed cables) instead of along the spline;
+                see above and :func:`newton.utils.create_cable_spline_shape`.
+            label: Optional label prefix for bodies, shapes, and joints.
+            wrap_in_articulation: If True, wraps the created joints into a single articulation;
+                see :meth:`add_rod`.
+            color: Optional display RGB color in ``[0, 1]`` applied to all generated capsule
+                shapes; see :meth:`add_rod`.
+            body_frame_origin: Body-frame placement for each generated capsule (``"start"`` or
+                ``"com"``); see :meth:`add_rod`.
+
+        Returns:
+            A pair ``(body_indices, joint_indices)``, as returned by :meth:`add_rod`. For an
+            open cable there are ``num_segments`` bodies and ``num_segments - 1`` joints; a
+            closed cable has one additional loop-closing joint.
+
+        Raises:
+            ValueError: If neither or both of ``num_segments`` and ``segment_length`` are
+                given, if there are too few distinct control points, or if ``closed=True`` and
+                ``twist_total`` is not a multiple of ``2*pi``.
+        """
+        if closed and twist_total != 0.0:
+            turns = twist_total / (2.0 * math.pi)
+            if abs(turns - round(turns)) > 1.0e-6:
+                raise ValueError(
+                    "add_cable_spline: twist_total must be a multiple of 2*pi for closed cables "
+                    f"(got {twist_total} rad = {turns:.4f} turns)"
+                )
+        shape = create_cable_spline_shape(
+            control_points,
+            num_segments=num_segments,
+            segment_length=segment_length,
+            closed=closed,
+            twist_total=twist_total,
+            normal_hint=normal_hint,
+            alpha=alpha,
+            straight_rest_shape=straight_rest_shape,
+        )
+
+        return self.add_rod(
+            positions=shape.rest_points,
+            quaternions=shape.rest_quaternions,
+            radius=radius,
+            cfg=cfg,
+            stretch_stiffness=stretch_stiffness,
+            stretch_damping=stretch_damping,
+            shear_stiffness=shear_stiffness,
+            shear_damping=shear_damping,
+            bend_stiffness=bend_stiffness,
+            bend_damping=bend_damping,
+            twist_stiffness=twist_stiffness,
+            twist_damping=twist_damping,
+            closed=closed,
+            label=label,
+            wrap_in_articulation=wrap_in_articulation,
+            color=color,
+            body_frame_origin=body_frame_origin,
+        )
 
     # endregion
 

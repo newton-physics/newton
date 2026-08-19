@@ -5967,6 +5967,427 @@ def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
     np.testing.assert_allclose(d_kappa[twist_joint, :2], [0.0, 0.0], atol=1.0e-6)
 
 
+# -----------------------------------------------------------------------------
+# Cable spline (add_cable_spline / spline sampling / rotation-minimizing frames)
+# -----------------------------------------------------------------------------
+
+
+def _quat_axis(q: wp.quat, axis: wp.vec3) -> np.ndarray:
+    v = wp.quat_rotate(q, axis)
+    return np.array([v[0], v[1], v[2]], dtype=np.float64)
+
+
+def _points_to_np(points) -> np.ndarray:
+    return np.array([[p[0], p[1], p[2]] for p in points], dtype=np.float64)
+
+
+def _helix_control_points(num_points: int = 20, turns: float = 2.0) -> list[wp.vec3]:
+    ts = np.linspace(0.0, 2.0 * np.pi * turns, num_points)
+    return [wp.vec3(float(np.cos(t)), float(np.sin(t)), float(0.15 * t)) for t in ts]
+
+
+def _cable_spline_points_open_impl(test: unittest.TestCase, device):
+    """Verify open-spline endpoint interpolation, control-point proximity, and arc-length uniformity."""
+    control_points = _helix_control_points()
+    num_segments = 50
+    points = newton.utils.create_cable_spline_points(control_points, num_segments=num_segments)
+    test.assertEqual(len(points), num_segments + 1)
+
+    pts = _points_to_np(points)
+    cps = _points_to_np(control_points)
+
+    # Clamped ends interpolate the first/last control point.
+    test.assertLess(np.linalg.norm(pts[0] - cps[0]), 1.0e-6)
+    test.assertLess(np.linalg.norm(pts[-1] - cps[-1]), 1.0e-6)
+
+    # Equal segment lengths (uniform arc-length sampling).
+    seg_lengths = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    spread = (seg_lengths.max() - seg_lengths.min()) / seg_lengths.mean()
+    test.assertLess(spread, 0.01, f"segment lengths not uniform: relative spread {spread:.4f}")
+
+    # The curve interpolates the control points, so every control point must lie close to the
+    # sampled polyline (within a fraction of a segment length).
+    for cp in cps:
+        dist = np.linalg.norm(pts - cp, axis=1).min()
+        test.assertLess(dist, seg_lengths.mean(), f"control point {cp} too far from sampled polyline: {dist:.4f}")
+
+    # segment_length spec produces a matching segment count.
+    total_length = seg_lengths.sum()
+    target = total_length / 25.0
+    points_by_length = newton.utils.create_cable_spline_points(control_points, segment_length=target)
+    test.assertEqual(len(points_by_length), 26)
+
+
+def _cable_spline_points_closed_impl(test: unittest.TestCase, device):
+    """Verify closed-spline loop closure, segment uniformity, and input validation."""
+    ts = np.linspace(0.0, 2.0 * np.pi, 13)[:-1]
+    control_points = [wp.vec3(float(np.cos(t)), float(np.sin(t)), 0.0) for t in ts]
+
+    num_segments = 40
+    points = newton.utils.create_cable_spline_points(control_points, num_segments=num_segments, closed=True)
+    test.assertEqual(len(points), num_segments + 1)
+
+    pts = _points_to_np(points)
+    test.assertEqual(np.linalg.norm(pts[-1] - pts[0]), 0.0, "closed spline must end exactly where it starts")
+
+    seg_lengths = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    spread = (seg_lengths.max() - seg_lengths.min()) / seg_lengths.mean()
+    test.assertLess(spread, 0.01)
+
+    # Validation errors.
+    with test.assertRaises(ValueError):
+        newton.utils.create_cable_spline_points(control_points)  # neither segment spec
+    with test.assertRaises(ValueError):
+        newton.utils.create_cable_spline_points(control_points, num_segments=10, segment_length=0.1)  # both
+    with test.assertRaises(ValueError):
+        newton.utils.create_cable_spline_points(control_points[:2], num_segments=10, closed=True)  # too few
+    with test.assertRaises(ValueError):
+        newton.utils.create_cable_spline_points([control_points[0]], num_segments=10)  # too few (open)
+
+    # Consecutive duplicate control points are merged rather than producing NaNs.
+    duplicated = [control_points[0], control_points[0], *control_points[1:]]
+    points_dup = newton.utils.create_cable_spline_points(duplicated, num_segments=num_segments, closed=True)
+    test.assertTrue(np.isfinite(_points_to_np(points_dup)).all())
+
+
+def _rmf_quaternion_alignment_impl(test: unittest.TestCase, device):
+    """Verify RMF quaternions are unit norm, align +Z with chords, and form orthonormal frames."""
+    points = newton.utils.create_cable_spline_points(_helix_control_points(), num_segments=40)
+    quats = newton.utils.create_rotation_minimizing_cable_quaternions(points)
+    test.assertEqual(len(quats), len(points) - 1)
+
+    pts = _points_to_np(points)
+    for i, q in enumerate(quats):
+        test.assertAlmostEqual(wp.length(q), 1.0, places=5)
+        chord = pts[i + 1] - pts[i]
+        chord /= np.linalg.norm(chord)
+        z_axis = _quat_axis(q, wp.vec3(0.0, 0.0, 1.0))
+        test.assertLess(np.linalg.norm(z_axis - chord), 1.0e-5, f"segment {i}: +Z does not follow the chord")
+        x_axis = _quat_axis(q, wp.vec3(1.0, 0.0, 0.0))
+        test.assertLess(abs(float(x_axis @ z_axis)), 1.0e-5)
+
+
+def _rmf_planar_curve_no_flip_impl(test: unittest.TestCase, device):
+    """Verify the RMF cross-section normal stays constant through planar inflections.
+
+    This is exactly where the Frenet frame is undefined (zero curvature) and flips 180 degrees.
+    """
+    xs = np.linspace(0.0, 4.0 * np.pi, 30)
+    control_points = [wp.vec3(float(x), float(np.sin(x)), 0.0) for x in xs]
+    points = newton.utils.create_cable_spline_points(control_points, num_segments=60)
+    quats = newton.utils.create_rotation_minimizing_cable_quaternions(points, normal_hint=wp.vec3(0.0, 0.0, 1.0))
+
+    up = np.array([0.0, 0.0, 1.0])
+    for i, q in enumerate(quats):
+        x_axis = _quat_axis(q, wp.vec3(1.0, 0.0, 0.0))
+        test.assertGreater(float(x_axis @ up), 0.999, f"segment {i}: cross-section normal drifted or flipped")
+
+
+def _rmf_discretization_convergence_impl(test: unittest.TestCase, device):
+    """Verify coarse and fine RMF discretizations of the same curve agree.
+
+    The final frame of a coarse sampling is compared against a much finer sampling of the same
+    spline; the double reflection method should agree to a small roll angle.
+    """
+    control_points = _helix_control_points(num_points=25, turns=3.0)
+
+    def final_roll(num_segments: int) -> np.ndarray:
+        points = newton.utils.create_cable_spline_points(control_points, num_segments=num_segments)
+        quats = newton.utils.create_rotation_minimizing_cable_quaternions(points)
+        return _quat_axis(quats[-1], wp.vec3(1.0, 0.0, 0.0))
+
+    x_coarse = final_roll(48)
+    x_fine = final_roll(768)
+    # The final chords of the two samplings differ slightly, so compare the roll angle about
+    # their (nearly identical) tangent via the dot product.
+    misalignment = float(np.arccos(np.clip(x_coarse @ x_fine, -1.0, 1.0)))
+    test.assertLess(misalignment, 5.0e-2, f"RMF roll did not converge: {misalignment:.4f} rad")
+
+
+def _rmf_closed_loop_holonomy_impl(test: unittest.TestCase, device):
+    """Verify the frame field of a closed non-planar loop closes up with holonomy distributed evenly."""
+    ts = np.linspace(0.0, 2.0 * np.pi, 17)[:-1]
+    # Saddle-shaped loop: substantial out-of-plane variation gives a non-trivial holonomy.
+    control_points = [wp.vec3(float(np.cos(t)), float(np.sin(t)), float(0.4 * np.sin(2.0 * t))) for t in ts]
+    num_segments = 48
+    points = newton.utils.create_cable_spline_points(control_points, num_segments=num_segments, closed=True)
+    quats = newton.utils.create_rotation_minimizing_cable_quaternions(points, closed=True)
+
+    # Bring the last frame across the wrap: rotate it by the minimal rotation aligning the last
+    # chord with the first chord, then compare cross-section normals.
+    pts = _points_to_np(points)
+    chord_last = pts[-1] - pts[-2]
+    chord_first = pts[1] - pts[0]
+    chord_last /= np.linalg.norm(chord_last)
+    chord_first /= np.linalg.norm(chord_first)
+    x_last = _quat_axis(quats[-1], wp.vec3(1.0, 0.0, 0.0))
+    # Minimal rotation (Rodrigues) taking the last chord onto the first chord.
+    axis = np.cross(chord_last, chord_first)
+    sin_a = np.linalg.norm(axis)
+    cos_a = float(chord_last @ chord_first)
+    if sin_a > 1.0e-12:
+        axis = axis / sin_a
+        x_last_transported = (
+            x_last * cos_a + np.cross(axis, x_last) * sin_a + axis * float(axis @ x_last) * (1.0 - cos_a)
+        )
+    else:
+        x_last_transported = x_last
+    x_first = _quat_axis(quats[0], wp.vec3(1.0, 0.0, 0.0))
+    mismatch = float(np.arccos(np.clip(x_last_transported @ x_first, -1.0, 1.0)))
+    # With the holonomy distributed evenly, the residual per-joint roll is at most |phi| / N,
+    # far below the total holonomy of this loop.
+    test.assertLess(mismatch, 2.0 * np.pi / num_segments, f"closed frame field does not close: {mismatch:.4f} rad")
+
+
+def _rmf_twist_distribution_impl(test: unittest.TestCase, device):
+    """Verify uniform twist distribution: frame k of a straight cable is rolled by k * twist_total / N."""
+    num_segments = 20
+    points = newton.utils.create_straight_cable_points(
+        start=wp.vec3(0.0, 0.0, 0.0), direction=wp.vec3(1.0, 0.0, 0.0), length=2.0, num_segments=num_segments
+    )
+    twist_total = np.pi
+    quats = newton.utils.create_rotation_minimizing_cable_quaternions(points, twist_total=twist_total)
+
+    x0 = _quat_axis(quats[0], wp.vec3(1.0, 0.0, 0.0))
+    step = twist_total / num_segments
+    for k in range(len(quats)):
+        xk = _quat_axis(quats[k], wp.vec3(1.0, 0.0, 0.0))
+        expected = k * step  # roll of frame k relative to frame 0
+        actual = float(np.arccos(np.clip(x0 @ xk, -1.0, 1.0)))
+        test.assertAlmostEqual(actual, expected, places=5, msg=f"segment {k}: twist not uniform")
+
+
+def _add_cable_spline_builder_impl(test: unittest.TestCase, device):
+    """Verify add_cable_spline body/joint counts, labels, and input validation."""
+    control_points = _helix_control_points()
+
+    builder = newton.ModelBuilder()
+    num_segments = 24
+    bodies, joints = builder.add_cable_spline(
+        control_points,
+        num_segments=num_segments,
+        radius=0.02,
+        bend_stiffness=1.0,
+        label="spline_cable",
+        body_frame_origin="com",
+    )
+    test.assertEqual(len(bodies), num_segments)
+    test.assertEqual(len(joints), num_segments - 1)
+    test.assertTrue(any("spline_cable" in label for label in builder.body_label))
+
+    # Closed spline: one extra loop-closing joint.
+    ts = np.linspace(0.0, 2.0 * np.pi, 13)[:-1]
+    loop_points = [wp.vec3(float(np.cos(t)), float(np.sin(t)), 0.0) for t in ts]
+    builder_closed = newton.ModelBuilder()
+    bodies_closed, joints_closed = builder_closed.add_cable_spline(
+        loop_points, num_segments=16, radius=0.02, closed=True, body_frame_origin="com"
+    )
+    test.assertEqual(len(bodies_closed), 16)
+    test.assertEqual(len(joints_closed), 16)
+
+    # Whole turns of stored twist are allowed on closed cables; fractions are not.
+    builder_closed.add_cable_spline(
+        loop_points, num_segments=16, closed=True, twist_total=2.0 * np.pi, body_frame_origin="com"
+    )
+    with test.assertRaises(ValueError):
+        builder_closed.add_cable_spline(loop_points, num_segments=16, closed=True, twist_total=1.0)
+    with test.assertRaises(ValueError):
+        builder.add_cable_spline(control_points)  # missing segment spec
+
+
+def _add_cable_spline_holds_rest_shape_impl(test: unittest.TestCase, device):
+    """Verify a spline cable simulated without gravity holds its curved rest shape."""
+    control_points = _helix_control_points(num_points=12, turns=1.0)
+
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e4
+    builder.default_shape_cfg.kd = 0.0
+    builder.default_shape_cfg.mu = 1.0
+
+    num_segments = 24
+    bodies, _joints = builder.add_cable_spline(
+        control_points,
+        num_segments=num_segments,
+        radius=0.02,
+        stretch_stiffness=1.0e5,
+        bend_stiffness=1.0e1,
+        bend_damping=1.0e-2,
+        label="rest_shape_cable",
+        body_frame_origin="com",
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    solver = newton.solvers.SolverVBD(model, iterations=4)
+
+    q_initial = state0.body_q.numpy().copy()
+
+    sim_dt = 1.0 / 600.0
+    state = [state0, state1]
+
+    def simulate():
+        state[0].clear_forces()
+        solver.step(state[0], state[1], control, None, dt=sim_dt)
+        state[0], state[1] = state[1], state[0]
+        state[0].clear_forces()
+        solver.step(state[0], state[1], control, None, dt=sim_dt)
+        state[0], state[1] = state[1], state[0]
+
+    _run_sim_loop(simulate, 30, device)
+
+    q_final = state[0].body_q.numpy()
+    test.assertTrue(np.isfinite(q_final).all(), "non-finite body transforms")
+    drift = np.linalg.norm(q_final[bodies, :3] - q_initial[bodies, :3], axis=1).max()
+    test.assertLess(drift, 1.0e-3, f"cable drifted from its spline rest shape: max drift {drift:.6f} m")
+
+
+def _cable_spline_shape_straight_rest_impl(test: unittest.TestCase, device):
+    """Verify straight-rest shape generation: matched segment lengths, collinear open rest, circular closed rest."""
+    control_points = _helix_control_points(num_points=12, turns=1.0)
+    shape = newton.utils.create_cable_spline_shape(control_points, num_segments=24, straight_rest_shape=True)
+
+    posed = _points_to_np(shape.points)
+    rest = _points_to_np(shape.rest_points)
+    posed_lengths = np.linalg.norm(np.diff(posed, axis=0), axis=1)
+    rest_lengths = np.linalg.norm(np.diff(rest, axis=0), axis=1)
+    np.testing.assert_allclose(rest_lengths, posed_lengths, rtol=1.0e-6, err_msg="rest segment lengths must match")
+
+    # Open rest chain is collinear along the first posed segment direction, untwisted.
+    direction = (posed[1] - posed[0]) / np.linalg.norm(posed[1] - posed[0])
+    offsets = rest - rest[0]
+    residual = offsets - (offsets @ direction)[:, None] * direction
+    test.assertLess(np.linalg.norm(residual, axis=1).max(), 1.0e-6, "open rest chain is not straight")
+    first_x = _quat_axis(shape.rest_quaternions[0], wp.vec3(1.0, 0.0, 0.0))
+    for q in shape.rest_quaternions[1:]:
+        test.assertGreater(float(first_x @ _quat_axis(q, wp.vec3(1.0, 0.0, 0.0))), 1.0 - 1.0e-9)
+
+    # Without the flag, the rest fields alias the posed fields.
+    aliased = newton.utils.create_cable_spline_shape(control_points, num_segments=24)
+    test.assertIs(aliased.rest_points, aliased.points)
+    test.assertIs(aliased.rest_quaternions, aliased.quaternions)
+
+    # Closed loop: rest is a regular polygon of the same circumference at the loop centroid.
+    ts = np.linspace(0.0, 2.0 * np.pi, 17)[:-1]
+    loop_points = [wp.vec3(float(np.cos(t)), float(np.sin(t)), float(0.3 * np.sin(2.0 * t))) for t in ts]
+    loop = newton.utils.create_cable_spline_shape(loop_points, num_segments=32, closed=True, straight_rest_shape=True)
+    loop_rest = _points_to_np(loop.rest_points)
+    test.assertEqual(np.linalg.norm(loop_rest[-1] - loop_rest[0]), 0.0, "closed rest must end where it starts")
+    center = loop_rest[:-1].mean(axis=0)
+    radii = np.linalg.norm(loop_rest[:-1] - center, axis=1)
+    test.assertLess(radii.std() / radii.mean(), 1.0e-6, "closed rest is not a circle")
+    posed_circumference = np.linalg.norm(np.diff(_points_to_np(loop.points), axis=0), axis=1).sum()
+    rest_circumference = np.linalg.norm(np.diff(loop_rest, axis=0), axis=1).sum()
+    np.testing.assert_allclose(rest_circumference, posed_circumference, rtol=1.0e-6)
+
+
+def _cable_body_transforms_impl(test: unittest.TestCase, device):
+    """Verify create_cable_body_transforms places body origins at segment midpoints or start points."""
+    points = newton.utils.create_straight_cable_points(
+        start=wp.vec3(0.0, 0.0, 0.0), direction=wp.vec3(1.0, 0.0, 0.0), length=1.0, num_segments=4
+    )
+    quats = newton.utils.create_parallel_transport_cable_quaternions(points)
+
+    xforms_com = newton.utils.create_cable_body_transforms(points, quats, body_frame_origin="com")
+    xforms_start = newton.utils.create_cable_body_transforms(points, quats, body_frame_origin="start")
+    test.assertEqual(len(xforms_com), 4)
+    for i in range(4):
+        mid = 0.5 * (_points_to_np([points[i]])[0] + _points_to_np([points[i + 1]])[0])
+        np.testing.assert_allclose([*wp.transform_get_translation(xforms_com[i])], mid, atol=1.0e-9)
+        np.testing.assert_allclose(
+            [*wp.transform_get_translation(xforms_start[i])], _points_to_np([points[i]])[0], atol=1.0e-9
+        )
+
+    with test.assertRaises(ValueError):
+        newton.utils.create_cable_body_transforms(points, quats[:-1])
+
+
+def _add_cable_spline_straight_rest_relaxes_impl(test: unittest.TestCase, device):
+    """Verify a cable built with straight_rest_shape=True but posed curved relaxes toward straight.
+
+    Builds the rod at the straight rest configuration, writes the curved spline pose into the
+    simulation state (the routing workflow), and verifies the end-to-end distance grows toward
+    the full cable length under zero gravity.
+    """
+    control_points = [wp.vec3(float(x), float(0.4 * np.sin(2.5 * x)), 0.5) for x in np.linspace(0.0, 1.2, 10)]
+    num_segments = 24
+
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e4
+    builder.default_shape_cfg.kd = 0.0
+    builder.default_shape_cfg.mu = 1.0
+
+    bodies, _joints = builder.add_cable_spline(
+        control_points,
+        num_segments=num_segments,
+        radius=0.01,
+        stretch_stiffness=1.0e5,
+        bend_stiffness=5.0e0,
+        bend_damping=3.0e-1,
+        straight_rest_shape=True,
+        label="straight_rest_cable",
+        body_frame_origin="com",
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+
+    # The model conveys the straight rest configuration.
+    rest_q = model.body_q.numpy()
+    rest_positions = rest_q[bodies, :3]
+    rest_dirs = np.diff(rest_positions, axis=0)
+    rest_dirs /= np.linalg.norm(rest_dirs, axis=1)[:, None]
+    test.assertGreater(float((rest_dirs @ rest_dirs[0]).min()), 1.0 - 1.0e-6, "model rest pose is not straight")
+
+    solver = newton.solvers.SolverVBD(model, iterations=4)
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+
+    # Pose the cable along the curved spline through the state (routing workflow).
+    shape = newton.utils.create_cable_spline_shape(control_points, num_segments=num_segments)
+    xforms = newton.utils.create_cable_body_transforms(shape.points, shape.quaternions, body_frame_origin="com")
+    body_q = state0.body_q.numpy()
+    body_q[bodies] = [[*wp.transform_get_translation(t), *wp.transform_get_rotation(t)] for t in xforms]
+    state0.body_q.assign(body_q)
+    state1.body_q.assign(body_q)
+    solver.body_q_prev.assign(state0.body_q)
+
+    total_length = np.linalg.norm(np.diff(_points_to_np(shape.rest_points), axis=0), axis=1).sum()
+
+    def end_to_end(state) -> float:
+        q = state.body_q.numpy()
+        return float(np.linalg.norm(q[bodies[-1], :3] - q[bodies[0], :3]))
+
+    initial_span = end_to_end(state0)
+    test.assertLess(initial_span, 0.85 * total_length, "curved initial pose should be far from straight")
+
+    sim_dt = 1.0 / 600.0
+    state = [state0, state1]
+
+    def simulate():
+        state[0].clear_forces()
+        solver.step(state[0], state[1], control, None, dt=sim_dt)
+        state[0], state[1] = state[1], state[0]
+        state[0].clear_forces()
+        solver.step(state[0], state[1], control, None, dt=sim_dt)
+        state[0], state[1] = state[1], state[0]
+
+    _run_sim_loop(simulate, 300, device)
+
+    q_final = state[0].body_q.numpy()
+    test.assertTrue(np.isfinite(q_final).all(), "non-finite body transforms")
+    final_span = end_to_end(state[0])
+    test.assertGreater(
+        final_span,
+        0.95 * total_length,
+        f"straight-rest cable did not relax toward straight: span {final_span:.4f} of {total_length:.4f} m",
+    )
+
+
 class TestCable(unittest.TestCase):
     pass
 
@@ -6287,6 +6708,68 @@ add_function_test(
     TestCable,
     "test_split_cable_dahl_full_step_state_stays_in_active_subspace",
     _split_cable_dahl_full_step_state_stays_in_active_subspace,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_spline_points_open",
+    _cable_spline_points_open_impl,
+)
+add_function_test(
+    TestCable,
+    "test_cable_spline_points_closed",
+    _cable_spline_points_closed_impl,
+)
+add_function_test(
+    TestCable,
+    "test_rmf_quaternion_alignment",
+    _rmf_quaternion_alignment_impl,
+)
+add_function_test(
+    TestCable,
+    "test_rmf_planar_curve_no_flip",
+    _rmf_planar_curve_no_flip_impl,
+)
+add_function_test(
+    TestCable,
+    "test_rmf_discretization_convergence",
+    _rmf_discretization_convergence_impl,
+)
+add_function_test(
+    TestCable,
+    "test_rmf_closed_loop_holonomy",
+    _rmf_closed_loop_holonomy_impl,
+)
+add_function_test(
+    TestCable,
+    "test_rmf_twist_distribution",
+    _rmf_twist_distribution_impl,
+)
+add_function_test(
+    TestCable,
+    "test_add_cable_spline_builder",
+    _add_cable_spline_builder_impl,
+)
+add_function_test(
+    TestCable,
+    "test_add_cable_spline_holds_rest_shape",
+    _add_cable_spline_holds_rest_shape_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_spline_shape_straight_rest",
+    _cable_spline_shape_straight_rest_impl,
+)
+add_function_test(
+    TestCable,
+    "test_cable_body_transforms",
+    _cable_body_transforms_impl,
+)
+add_function_test(
+    TestCable,
+    "test_add_cable_spline_straight_rest_relaxes",
+    _add_cable_spline_straight_rest_relaxes_impl,
     devices=devices,
 )
 
