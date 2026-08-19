@@ -202,7 +202,7 @@ A non-PXR source must preserve the USD fallback semantics expected by the
 resolver. A source that substitutes an engine descriptor default for a USD
 fallback cannot provide exact parity for that property without provenance or a
 source-contract change. Any temporary value normalization belongs in the source
-adapter and must document the ambiguous explicitly-authored value.
+adapter and must document whether the value was authored or substituted.
 
 This is intentionally scalar. It establishes semantic parity before optimizing
 data movement.
@@ -269,8 +269,9 @@ migration audit, and importer property policy are implemented. The default
 still returns legacy values while auditing registered-schema precedence.
 
 Remaining work is to adopt the scalar facade in non-PXR scene integrations,
-complete public provenance and dynamic applicability if consumers need them,
-finish the deprecation window, and design batch column binding separately.
+complete public provenance and dynamic applicability as required follow-up work
+for issue #3307, finish the deprecation window, and design batch column binding
+separately.
 
 ## Open questions
 
