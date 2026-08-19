@@ -33,8 +33,10 @@ from ...controller import ControllerBase
 from ...utils import _validate_array
 from ._common import (
     _add_term_kernel,
+    _gather_port_kernel,
     _mass_matrix_multiply_kernel,
     _pd_term_kernel,
+    _scatter_port_kernel,
 )
 
 
@@ -259,6 +261,23 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         wp.copy(baked, value)
         return baked
 
+    def _read_port(self, port: Any, buf: wp.array[wp.float32]) -> None:
+        """Copy a bound port into its internal buffer.
+
+        A view needs a kernel rather than :func:`warp.copy`, which is not
+        recordable under APIC graph capture when either side is non-contiguous.
+        """
+        if isinstance(port, wp.indexedarray):
+            wp.launch(
+                _gather_port_kernel,
+                dim=self._total_controlled_dofs,
+                inputs=[port],
+                outputs=[buf],
+                device=self._device,
+            )
+        else:
+            wp.copy(buf, port)
+
     @property
     def controlled_robot_count(self) -> int:
         return self._controlled_robot_count
@@ -383,7 +402,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                 allow_indexed=True,
             )
             if buf is not None:
-                wp.copy(buf, port)
+                self._read_port(port, buf)
 
         if self._use_inertia:
             _validate_array(
@@ -431,4 +450,13 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         if self._use_coriolis:
             wp.launch(_add_term_kernel, dim=dim, inputs=[self._cor_buf], outputs=[self._tau_buf], device=self._device)
 
-        wp.copy(outputs.joint_f, self._tau_buf)
+        if isinstance(outputs.joint_f, wp.indexedarray):
+            wp.launch(
+                _scatter_port_kernel,
+                dim=self._total_controlled_dofs,
+                inputs=[self._tau_buf],
+                outputs=[outputs.joint_f],
+                device=self._device,
+            )
+        else:
+            wp.copy(outputs.joint_f, self._tau_buf)
