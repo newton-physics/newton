@@ -726,12 +726,12 @@ class GlobalContactReducerData:
     agg_depth_volume: wp.array[wp.vec3]
 
     # Weighted position sum per hashtable entry (for anchor contact computation)
-    # Accumulates sum(area * depth * position) for penetrating contacts
+    # Accumulates sum(area * pressure * position) for penetrating contacts
     # Divide by weight_sum to get center of pressure (anchor position)
     weighted_pos_sum: wp.array[wp.vec3]
 
     # Weight sum per hashtable entry (for anchor contact normalization)
-    # Accumulates sum(area * depth) for penetrating contacts
+    # Accumulates sum(area * pressure) for penetrating contacts
     weight_sum: wp.array[wp.float32]
 
     # Total depth of reduced (winning) contacts per normal bin entry.
@@ -1024,7 +1024,7 @@ class GlobalContactReducer:
         self.ht_values = wp.zeros(self.hashtable.capacity * self.values_per_key, dtype=wp.uint64, device=device)
 
         # Aggregate force per hashtable entry (for hydroelastic stiffness calculation)
-        # Accumulates sum(area * depth * normal) for all penetrating contacts per entry
+        # Accumulates sum(area * pressure * normal) for all penetrating contacts per entry
         if store_hydroelastic_data:
             self.agg_force = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
             self.agg_depth_volume = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
