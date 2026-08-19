@@ -509,22 +509,15 @@ def parse_usd(
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
     max_hull_vertices_override, max_hull_vertices_default = _interpret_import_argument(mesh_maxhullvert)
 
-    if schema_resolvers is not None and schema_resolution is not None:
-        raise ValueError("schema_resolvers and schema_resolution are mutually exclusive")
-    if schema_resolution is not None:
-        if use_registered_schema_fallbacks:
-            raise ValueError(
-                "use_registered_schema_fallbacks must be configured on schema_resolution when that object is provided"
-            )
-        schema_resolvers = list(schema_resolution._resolvers)
-        use_registered_schema_fallbacks = schema_resolution._use_registered_schema_fallbacks
-    else:
-        if schema_resolvers is None:
-            schema_resolvers = [SchemaResolverNewton()]
-        schema_resolution = SchemaResolution(
-            schema_resolvers,
-            use_registered_schema_fallbacks=use_registered_schema_fallbacks,
-        )
+    if schema_resolvers is None and schema_resolution is None:
+        schema_resolvers = [SchemaResolverNewton()]
+    resolver_manager = SchemaResolverManager(
+        schema_resolvers,
+        resolution=schema_resolution,
+        use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+    )
+    schema_resolvers = resolver_manager.resolvers
+    use_registered_schema_fallbacks = resolver_manager.use_registered_schema_fallbacks
     collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
@@ -675,9 +668,6 @@ def parse_usd(
                 f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
                 stacklevel=_external_stacklevel(),
             )
-
-    # Initialize schema resolver according to precedence
-    resolver_manager = SchemaResolverManager(resolution=schema_resolution)
 
     # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a
     # fallback to the canonical physics: deformable schema. Empty unless a

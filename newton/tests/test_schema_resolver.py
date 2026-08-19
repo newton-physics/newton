@@ -2548,6 +2548,21 @@ class TestSchemaResolver(unittest.TestCase):
                 schema_resolution=_composed_resolution([SchemaResolverNewton()]),
             )
 
+    def test_shared_resolution_rejects_explicit_policy_arguments(self):
+        """Reject direct policy arguments when a shared resolution owns policy."""
+        stage = Usd.Stage.CreateInMemory()
+        resolution = _composed_resolution([SchemaResolverNewton()])
+
+        ModelBuilder().add_usd(stage, schema_resolution=resolution)
+        for policy in (False, True):
+            with self.subTest(policy=policy):
+                with self.assertRaisesRegex(ValueError, "cannot be supplied"):
+                    ModelBuilder().add_usd(
+                        stage,
+                        schema_resolution=resolution,
+                        use_registered_schema_fallbacks=policy,
+                    )
+
     def test_max_solver_iterations(self):
         """
         Test maxSolverIterations priority.

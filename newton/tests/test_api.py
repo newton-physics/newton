@@ -143,6 +143,7 @@ class TestApi(unittest.TestCase):
             "collapse_fixed_joints": False,
             "enable_self_collisions": True,
             "mesh_maxhullvert": None,
+            "use_registered_schema_fallbacks": False,
         }
 
         for function in (parse_usd, ModelBuilder.add_usd):

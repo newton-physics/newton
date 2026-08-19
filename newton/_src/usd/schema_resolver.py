@@ -50,6 +50,9 @@ class _ImporterDefault:
         return f"<omitted; importer default={self.value!r}>"
 
 
+_OMITTED_SCHEMA_FALLBACK_POLICY = _ImporterDefault(False)
+
+
 def _default_when_omitted(value: Any) -> Any:
     """Mark a public importer argument's value as its omission default."""
     return _ImporterDefault(value)
@@ -81,6 +84,7 @@ def _track_omitted_usd_import_defaults(*, mesh_maxhullvert: int) -> Callable[[Ca
         collapse_fixed_joints=False,
         enable_self_collisions=True,
         mesh_maxhullvert=mesh_maxhullvert,
+        use_registered_schema_fallbacks=False,
     )
 
 
@@ -971,7 +975,7 @@ class SchemaResolverManager:
         resolvers: Sequence[SchemaResolver] | None = None,
         *,
         resolution: SchemaResolution | None = None,
-        use_registered_schema_fallbacks: bool = False,
+        use_registered_schema_fallbacks: bool | _ImporterDefault = _OMITTED_SCHEMA_FALLBACK_POLICY,
     ):
         """
         Initialize resolver manager with resolver instances in priority order.
@@ -982,21 +986,24 @@ class SchemaResolverManager:
             use_registered_schema_fallbacks: Use the owning registered typed or
                 applied schema's fallback before importer defaults. Only registered
                 schema definitions supply these fallbacks; unregistered resolver
-                defaults remain after importer defaults. Defaults to False.
+                defaults remain after importer defaults. Omit this argument when
+                ``resolution`` owns the policy. Defaults to False.
         """
+        policy_was_omitted = isinstance(use_registered_schema_fallbacks, _ImporterDefault)
+        if policy_was_omitted:
+            use_registered_schema_fallbacks = use_registered_schema_fallbacks.value
+
         if resolution is not None:
             if resolvers is not None:
                 raise ValueError("resolvers and resolution are mutually exclusive")
-            if use_registered_schema_fallbacks:
-                raise ValueError(
-                    "use_registered_schema_fallbacks must be configured on resolution when that object is provided"
-                )
+            if not policy_was_omitted:
+                raise ValueError("use_registered_schema_fallbacks cannot be supplied when resolution owns the policy")
             self.resolvers = list(resolution._resolvers)
             self._use_registered_schema_fallbacks = resolution._use_registered_schema_fallbacks
             self._resolution = resolution._policy
         elif resolvers is not None:
             self.resolvers = list(resolvers)
-            self._use_registered_schema_fallbacks = use_registered_schema_fallbacks
+            self._use_registered_schema_fallbacks = bool(use_registered_schema_fallbacks)
             self._resolution = _SchemaResolutionPolicy(self.resolvers)
         else:
             raise ValueError("resolvers or resolution is required")
@@ -1007,6 +1014,11 @@ class SchemaResolverManager:
         # Dictionary to accumulate schema attributes as prims are encountered
         # Pre-initialize maps for each configured resolver
         self._schema_attrs: dict[str, dict[str, dict[str, Any]]] = {r.name: {} for r in self.resolvers}
+
+    @property
+    def use_registered_schema_fallbacks(self) -> bool:
+        """Return whether this manager uses registered schema fallbacks."""
+        return self._use_registered_schema_fallbacks
 
     def _collect_on_first_use(self, resolver: SchemaResolver, prim: Usd.Prim) -> None:
         """Collect and store attributes for this resolver/prim on first use."""
