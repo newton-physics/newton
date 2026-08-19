@@ -69,3 +69,26 @@ def _gather_mass_matrix_blocks_kernel(
         return
     model_robot = model_robot_index[robot]
     out[robot, row, col] = model_mass_matrix[model_robot, local_dof_idx[robot, row], local_dof_idx[robot, col]]
+
+
+# wp.copy is not recordable under APIC graph capture when either side is
+# non-contiguous, which every indexed-view port is. These two kernels do the
+# same work in a form that captures and serialises.
+
+
+@wp.kernel
+def _gather_port_kernel(
+    port: wp.indexedarray[wp.float32],  # (total_controlled_dofs,) view of a simulation-sized array
+    out: wp.array[wp.float32],  # (total_controlled_dofs,)
+):
+    dof = wp.tid()
+    out[dof] = port[dof]
+
+
+@wp.kernel
+def _scatter_port_kernel(
+    values: wp.array[wp.float32],  # (total_controlled_dofs,)
+    port: wp.indexedarray[wp.float32],  # (total_controlled_dofs,) view of a simulation-sized array
+):
+    dof = wp.tid()
+    port[dof] = values[dof]
