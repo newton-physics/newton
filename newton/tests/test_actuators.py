@@ -1796,6 +1796,7 @@ class TestActuatorStep(unittest.TestCase):
         check_forces=True,
         expect_integral_saturated=False,
         worlds=1,
+        actuated=None,
     ):
         """Run the actuator pipeline for one controller / clamp / effort-mode combination.
 
@@ -1838,15 +1839,22 @@ class TestActuatorStep(unittest.TestCase):
                 ``integral_max``, proving anti-windup actually bound.
             worlds: Replicate the model into this many identical worlds. The
                 reference is computed once and compared against every world.
+            actuated: Per-world DOF indices the actuator drives; ``None`` drives
+                all of them. Undriven DOFs must end up with exactly zero effort.
         """
-        if clamp is not None and dofs != 1:
-            raise ValueError("the clamped reference bisects a scalar residual, so it needs a single DOF")
-
         model = _build_pendulum(device, worlds=worlds) if dofs == 1 else _build_two_link(device, worlds=worlds)
         n = dofs
         total = n * worlds
         self.assertEqual(model.joint_dof_count, total)
-        clamping, limit = _pipeline_clamping(clamp, device, total)
+
+        # Which DOFs the actuator drives, per world and across the whole model.
+        act = np.arange(n) if actuated is None else np.asarray(sorted(actuated), dtype=int)
+        driven = len(act)
+        act_all = np.concatenate([act + w * n for w in range(worlds)]).astype(np.uint32)
+        if clamp is not None and driven != 1:
+            raise ValueError("the clamped reference bisects a scalar residual, so it needs a single driven DOF")
+
+        clamping, limit = _pipeline_clamping(clamp, device, driven * worlds)
 
         def _vec(value):
             return np.full(n, value, dtype=np.float32) if np.isscalar(value) else np.asarray(value, dtype=np.float32)
@@ -1858,7 +1866,8 @@ class TestActuatorStep(unittest.TestCase):
         integral_max, q0, qd0, target = _vec(integral_max), _vec(q0), _vec(qd0), _vec(target)
 
         def _arr(values):
-            return wp.array(_tiled(values), dtype=float, device=device)
+            """Per-actuator array: select the driven DOFs, then repeat per world."""
+            return wp.array(_tiled(np.asarray(values)[act]), dtype=float, device=device)
 
         if controller == "pd":
             control_law = ControllerPD(kp=_arr(kp), kd=_arr(kd))
@@ -1869,7 +1878,7 @@ class TestActuatorStep(unittest.TestCase):
 
         oracle = ResponseOracle(model)
         actuator = Actuator(
-            indices=wp.array(np.arange(total, dtype=np.uint32), device=device),
+            indices=wp.array(act_all, dtype=wp.uint32, device=device),
             controller=control_law,
             clamping=clamping,
             control_target_pos_attr="joint_target_q",
@@ -1880,30 +1889,41 @@ class TestActuatorStep(unittest.TestCase):
         self.assertTrue(actuator.is_graphable())
 
         def reference(q, qd, integral, kp_now, kd_now):
-            """The effort the actuator should produce from state (q, qd)."""
-            feedforward = ki * integral if controller == "pid" else 0.0
+            """The effort the actuator should produce from state (q, qd).
+
+            Returns one value per model DOF; undriven DOFs are zero, since the
+            actuator never writes them.
+            """
+            feedforward = np.asarray(ki * integral if controller == "pid" else np.zeros(n), dtype=np.float64)
+            out = np.zeros(n, dtype=np.float64)
 
             if not implicit:
-                law = kp_now * (target - q) - kd_now * qd + feedforward
-                return law if clamp is None else np.clip(law, *limit(float(q[0]), float(qd[0])))
+                law = (kp_now * (target - q) - kd_now * qd + feedforward)[act]
+                out[act] = law if clamp is None else np.clip(law, *limit(float(q[act[0]]), float(qd[act[0]])))
+                return out
 
-            response = _response_at(model, _tiled(q), _tiled(qd))
+            # Only the driven DOFs are solved, coupled through their submatrix of
+            # inv(H). Inverting first leaves the undriven DOFs free to move.
+            response = _response_at(model, _tiled(q), _tiled(qd))[np.ix_(act, act)]
             if clamp is None:
-                # Linear law: one dense solve, which also couples the two-link chain.
-                gain = dt * kp_now + kd_now
-                jacobian = np.eye(n) + dt * np.diag(gain) @ response
-                return np.linalg.solve(jacobian, kp_now * (target - q - dt * qd) - kd_now * qd + feedforward)
+                gain = dt * kp_now[act] + kd_now[act]
+                jacobian = np.eye(driven) + dt * np.diag(gain) @ response
+                rhs = kp_now[act] * (target[act] - q[act] - dt * qd[act]) - kd_now[act] * qd[act] + feedforward[act]
+                out[act] = np.linalg.solve(jacobian, rhs)
+                return out
 
             alpha = float(response[0, 0])
+            j = act[0]
 
             def residual(tau):
-                qd_pred = qd[0] + alpha * dt * tau
-                q_pred = q[0] + dt * qd_pred
+                qd_pred = qd[j] + alpha * dt * tau
+                q_pred = q[j] + dt * qd_pred
                 lo, hi = limit(q_pred, qd_pred)
-                law = kp_now[0] * (target[0] - q_pred) - kd_now[0] * qd_pred + np.ravel(feedforward)[0]
+                law = kp_now[j] * (target[j] - q_pred) - kd_now[j] * qd_pred + feedforward[j]
                 return float(np.clip(law, lo, hi)) - tau
 
-            return np.array([_solve_clamped_effort(residual)], dtype=np.float64)
+            out[j] = _solve_clamped_effort(residual)
+            return out
 
         state_in, state_out = model.state(), model.state()
         state_in.joint_q.assign(_tiled(q0))
@@ -1975,7 +1995,7 @@ class TestActuatorStep(unittest.TestCase):
                     # act_b holds the integral this step just advanced to.
                     np.testing.assert_allclose(
                         act_b.controller_state.integral.numpy(),
-                        _tiled(integral),
+                        _tiled(integral[act]),
                         rtol=1.0e-4,
                         atol=1.0e-9,
                         err_msg=f"{step_label}: advanced integral",
@@ -1990,17 +2010,19 @@ class TestActuatorStep(unittest.TestCase):
 
         if retune:
             kp_now, kd_now = (4.0 * kp).astype(np.float32), (4.0 * kd).astype(np.float32)
-            actuator.controller.kp.assign(_tiled(kp_now))
-            actuator.controller.kd.assign(_tiled(kd_now))
-            np.testing.assert_allclose(actuator.controller.kp.numpy(), _tiled(kp_now), rtol=1e-6)
+            actuator.controller.kp.assign(_tiled(kp_now[act]))
+            actuator.controller.kd.assign(_tiled(kd_now[act]))
+            np.testing.assert_allclose(actuator.controller.kp.numpy(), _tiled(kp_now[act]), rtol=1e-6)
             retuned = check_effort("retune", kp_now, kd_now, integral)
 
             if clamp == "max_effort":
                 # Tightening the limit below the solved effort must bind on the next solve.
-                tight = 0.25 * np.abs(retuned)
+                tight = 0.25 * np.abs(retuned[act_all.astype(np.int64)])
                 actuator.clamping[0].max_effort.assign(tight.astype(np.float32))
                 actuate()
-                np.testing.assert_allclose(np.abs(control.joint_f.numpy()), tight, rtol=1.0e-4, atol=1.0e-5)
+                np.testing.assert_allclose(
+                    np.abs(control.joint_f.numpy()[act_all.astype(np.int64)]), tight, rtol=1.0e-4, atol=1.0e-5
+                )
 
         if expect_integral_saturated:
             # Per-step checks already tie the device integral to this one.
@@ -2075,6 +2097,18 @@ class TestActuatorStep(unittest.TestCase):
             q0=[0.3, -0.8],
             target=[0.6, 0.4],
             worlds=2,
+        )
+
+    def test_pipeline_pd_partially_actuated_implicit(self):
+        """Drive only the tip joint of the two-link chain."""
+        self.run_test_actuator_pipeline(
+            controller="pd",
+            dofs=2,
+            actuated=[1],
+            kp=[4000.0, 3000.0],
+            kd=[40.0, 30.0],
+            q0=[0.3, -0.8],
+            target=[0.6, 0.4],
         )
 
     def test_pipeline_pid_coupled_implicit(self):
