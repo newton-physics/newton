@@ -15,6 +15,7 @@ from newton._src.solvers.implicit_mpm.rasterized_collisions import (
     rasterize_collider_kernel,
 )
 from newton._src.solvers.implicit_mpm.solve_rheology import (
+    _ITERATIVE_LINEAR_SOLVERS,
     ArraySquaredNorm,
     _compute_environment_l2_tolerance_scales,
     _linear_solver_result_norms,
@@ -68,6 +69,14 @@ def _make_mpm_config(grid_type="dense", integration_scheme="pic", solver="jacobi
     config.tolerance = 0.0
     config.warmstart_mode = "grid"
     return config
+
+
+def test_expanded_iterative_solver_names(test, device):
+    """Verify expanded iterative solver names resolve to the existing implementations."""
+    del device
+    test.assertIs(_ITERATIVE_LINEAR_SOLVERS["conjugate-gradient"], _ITERATIVE_LINEAR_SOLVERS["cg"])
+    test.assertIs(_ITERATIVE_LINEAR_SOLVERS["conjugate-residual"], _ITERATIVE_LINEAR_SOLVERS["cr"])
+    test.assertIs(_ITERATIVE_LINEAR_SOLVERS["generalized-minimal-residual"], _ITERATIVE_LINEAR_SOLVERS["gmres"])
 
 
 def _make_two_world_particle_model(device, builder=None, local_builder=None):
@@ -1458,6 +1467,14 @@ basic_cuda_devices = get_cuda_test_devices(mode="basic")
 
 class TestImplicitMPM(unittest.TestCase):
     pass
+
+
+add_function_test(
+    TestImplicitMPM,
+    "test_expanded_iterative_solver_names",
+    test_expanded_iterative_solver_names,
+    devices=basic_devices,
+)
 
 
 add_function_test(

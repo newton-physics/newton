@@ -269,7 +269,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |yes|
      - |no|
-   * - CABLE
+   * - ROD
      - |no|
      - |no|
      - |no|

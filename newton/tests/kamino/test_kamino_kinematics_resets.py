@@ -13,8 +13,9 @@ import warp as wp
 
 from newton._src.solvers.kamino._src.core.model import DataKamino, ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
-from newton._src.solvers.kamino._src.kinematics.resets import set_floating_base
+from newton._src.solvers.kamino._src.kinematics.resets import reset_joints_state_from_bodies_state, set_floating_base
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
+from newton._src.solvers.kamino._src.models.builders.testing import build_all_joints_test_model
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers import ForwardKinematicsSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -607,6 +608,55 @@ class TestSetFloatingBase(unittest.TestCase):
         with self.assertLogs(level="WARNING") as logs:
             solver.reset(state=state, config=reset_config)
         self.assertTrue(any("no free-floating base body" in message for message in logs.output))
+
+
+class TestJointBodyStateConversions(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+        self.verbose = test_context.verbose  # Set to True to enable verbose output
+        self.progress = test_context.verbose  # Set to True to show progress bars during long tests
+        self.seed = 42
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            print("\n")  # Add newline before test output for better readability
+            msg.set_log_level(msg.LogLevel.INFO)
+        else:
+            msg.reset_log_level()
+
+    def tearDown(self):
+        self.default_device = None
+        if self.verbose:
+            msg.reset_log_level()
+
+    def test_01_reset_joint_states_from_body_state(self):
+        """
+        Validate reset_joints_state_from_bodies_state() against compute_joints_data()
+        on a model with all joint types.
+        """
+        # Initialize rng
+        rng = np.random.default_rng(self.seed)
+
+        # Setup a model with all joint types
+        builder = build_all_joints_test_model(binary_joints=True, unary_joints=False, actuated=True, floating_base=True)
+        model = builder.finalize(device=self.default_device)
+
+        # Set the model into a non-trivial pose
+        data = set_model_to_random_pose(self, model, rng)
+
+        # Compute joint states from bodies state
+        state = model.state()
+        wp.copy(state.q_i, data.bodies.q_i)
+        wp.copy(state.u_i, data.bodies.u_i)
+        all_worlds_mask = wp.ones(shape=model.size.num_worlds, dtype=wp.bool, device=model.device)
+        reset_joints_state_from_bodies_state(model, state, world_mask=all_worlds_mask)
+
+        # Compare against joint state in joint data
+        # Note: both functions are correcting coords w.r.t. initial coords, so values are directly comparable
+        np.testing.assert_allclose(state.q_j.numpy(), data.joints.q_j.numpy(), rtol=rtol, atol=atol)
+        np.testing.assert_allclose(state.dq_j.numpy(), data.joints.dq_j.numpy(), rtol=rtol, atol=atol)
 
 
 ###

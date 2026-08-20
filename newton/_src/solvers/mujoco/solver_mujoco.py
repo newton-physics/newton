@@ -388,7 +388,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     Joint support:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, D6.
-          DISTANCE and CABLE joints are not supported.
+          DISTANCE and ROD joints are not supported.
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`,
