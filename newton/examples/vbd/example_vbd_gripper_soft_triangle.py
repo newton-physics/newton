@@ -150,6 +150,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.params["solver_iterations"],
+            rigid_compliant_alm=True,
             integrate_with_external_rigid_solver=False,
             rigid_body_contact_buffer_size=self.params["rigid_body_contact_buffer_size"],
         )

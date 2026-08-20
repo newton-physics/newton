@@ -278,7 +278,7 @@ class WorldMaskInitializationForwardKinematics(unittest.TestCase):
             world_mask = wp.array([True, False, True], dtype=wp.bool)
 
         solver._eval_target_actuators_q = lambda base_q, actuators_q, actuators_q_next: None
-        solver._eval_target_relative_transformations = lambda actuators_q_next, target_rel_transforms: None
+        solver._eval_target_relative_transformations = lambda actuators_q_next, target_rel_transforms, world_mask: None
         solver._eval_kinematic_constraints = lambda bodies_q, target_rel_transforms, world_mask, constraints: None
         solver._eval_max_residual = lambda constraints, grad, max_residual: None
         solver._run_newton_iteration = lambda bodies_q: None

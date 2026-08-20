@@ -190,7 +190,7 @@ class Example:
 
         # Set default material properties for cables (cable-to-cable contact)
         builder.default_shape_cfg.ke = 1.0e5  # Contact stiffness
-        builder.default_shape_cfg.kd = 0.0
+        builder.default_shape_cfg.kd = 1.0e1
         builder.default_shape_cfg.mu = 1.0e0  # Friction coefficient
 
         # Bundle layout: align cable center with obstacle center
@@ -210,7 +210,7 @@ class Example:
             off_y, off_z = bundle_positions[i]
             cable_start = wp.vec3(start_x, start_y + off_y, start_z + off_z)
 
-            points, quats = newton.utils.create_straight_cable_points_and_quaternions(
+            points, quats = newton.utils.rod_straight_points_and_quaternions(
                 start=cable_start,
                 direction=wp.vec3(1.0, 0.0, 0.0),
                 length=float(self.cable_length),
@@ -295,6 +295,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
         )
 
         # Initialize states and contacts

@@ -1,0 +1,1 @@
+Honor `--num-frames` when running examples with the headless OpenGL viewer. `newton.viewer.ViewerGL` gained a `num_frames` argument; in headless mode `ViewerGL.is_running()` now returns False once that many frames have been rendered, so headless runs terminate instead of looping forever. Windowed runs still ignore `num_frames` and close with the window.

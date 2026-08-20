@@ -53,6 +53,82 @@ def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndar
     return (flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0
 
 
+_ANALYTIC_PRIMITIVE_PAIRS = frozenset(
+    {
+        (int(GeoType.PLANE), int(GeoType.SPHERE)),
+        (int(GeoType.PLANE), int(GeoType.CAPSULE)),
+        (int(GeoType.PLANE), int(GeoType.ELLIPSOID)),
+        (int(GeoType.PLANE), int(GeoType.BOX)),
+        (int(GeoType.SPHERE), int(GeoType.SPHERE)),
+        (int(GeoType.SPHERE), int(GeoType.CAPSULE)),
+        (int(GeoType.SPHERE), int(GeoType.BOX)),
+        (int(GeoType.CAPSULE), int(GeoType.CAPSULE)),
+    }
+)
+
+
+def _pair_requires_generic_convex_narrow_phase(
+    type_a: int,
+    type_b: int,
+) -> bool:
+    """Return whether a sorted shape-type pair can reach GJK/MPR."""
+    type_a, type_b = min(type_a, type_b), max(type_a, type_b)
+    if type_a in (int(GeoType.HFIELD), int(GeoType.MESH)):
+        return False
+    if type_b in (int(GeoType.HFIELD), int(GeoType.MESH)):
+        return False
+    return (type_a, type_b) not in _ANALYTIC_PRIMITIVE_PAIRS
+
+
+def _generic_convex_pair_requirements(
+    model: Model,
+    *,
+    broad_phase_mode: str,
+    shape_pairs_filtered: wp.array[wp.vec2i] | None,
+) -> list[bool] | None:
+    """Collect generic-convex requirements for possible shape-type pairs."""
+    shape_types_array = getattr(model, "shape_type", None)
+    if shape_types_array is None:
+        return None
+
+    shape_types = shape_types_array.numpy()
+    if broad_phase_mode == "explicit":
+        if shape_pairs_filtered is None:
+            return None
+        pairs = shape_pairs_filtered.numpy()
+        if pairs.size == 0:
+            return []
+        requirements = []
+        for shape_a, shape_b in pairs.reshape(-1, 2):
+            type_a = int(shape_types[shape_a])
+            type_b = int(shape_types[shape_b])
+            requirements.append(_pair_requires_generic_convex_narrow_phase(type_a, type_b))
+        return requirements
+
+    colliding_types = shape_types[_shape_collide_mask(model, len(shape_types))]
+    unique_types = np.unique(colliding_types)
+    return [
+        _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b))
+        for index, type_a in enumerate(unique_types)
+        for type_b in unique_types[index:]
+    ]
+
+
+def _has_generic_convex_pairs(
+    model: Model,
+    *,
+    broad_phase_mode: str,
+    shape_pairs_filtered: wp.array[wp.vec2i] | None,
+) -> bool:
+    """Conservatively prove whether any broad-phase pair can reach GJK/MPR."""
+    requirements = _generic_convex_pair_requirements(
+        model,
+        broad_phase_mode=broad_phase_mode,
+        shape_pairs_filtered=shape_pairs_filtered,
+    )
+    return True if requirements is None else any(requirements)
+
+
 @wp.struct
 class ContactWriterData:
     """Contact writer data for collide write_contact function."""
@@ -300,6 +376,49 @@ def compute_shape_aabbs(
                     lo[i] = wp.max(lo[i], pos[i] - rise - effective_gap)
         aabb_lower[shape_id] = lo
         aabb_upper[shape_id] = hi
+    elif geo_type == GeoType.SPHERE:
+        radius = scale[0]
+        half_extents = wp.vec3(radius, radius, radius)
+        aabb_lower[shape_id] = pos - half_extents - margin_vec
+        aabb_upper[shape_id] = pos + half_extents + margin_vec
+    elif geo_type == GeoType.BOX:
+        # The absolute rotation maps local half-extents to exact world AABB extents.
+        r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
+        r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
+        r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+        half_extents = wp.vec3(
+            wp.abs(r0[0]) * scale[0] + wp.abs(r1[0]) * scale[1] + wp.abs(r2[0]) * scale[2],
+            wp.abs(r0[1]) * scale[0] + wp.abs(r1[1]) * scale[1] + wp.abs(r2[1]) * scale[2],
+            wp.abs(r0[2]) * scale[0] + wp.abs(r1[2]) * scale[1] + wp.abs(r2[2]) * scale[2],
+        )
+        aabb_lower[shape_id] = pos - half_extents - margin_vec
+        aabb_upper[shape_id] = pos + half_extents + margin_vec
+    elif geo_type == GeoType.CAPSULE:
+        radius = scale[0]
+        half_height = scale[1]
+        axis = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+        half_extents = wp.vec3(radius, radius, radius) + wp.abs(axis) * half_height
+        aabb_lower[shape_id] = pos - half_extents - margin_vec
+        aabb_upper[shape_id] = pos + half_extents + margin_vec
+    elif geo_type == GeoType.CYLINDER:
+        radius = scale[0]
+        half_height = scale[1]
+        barrel_radius = scale[2]
+        # Imported MuJoCo site display sizes may use scale[2] without barrel semantics.
+        if barrel_radius >= half_height and barrel_radius > 0.0:
+            radius += (half_height * half_height) / (
+                barrel_radius + wp.sqrt(barrel_radius * barrel_radius - half_height * half_height)
+            )
+        r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
+        r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
+        r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+        half_extents = wp.vec3(
+            radius * wp.sqrt(r0[0] * r0[0] + r1[0] * r1[0]) + half_height * wp.abs(r2[0]),
+            radius * wp.sqrt(r0[1] * r0[1] + r1[1] * r1[1]) + half_height * wp.abs(r2[1]),
+            radius * wp.sqrt(r0[2] * r0[2] + r1[2] * r1[2]) + half_height * wp.abs(r2[2]),
+        )
+        aabb_lower[shape_id] = pos - half_extents - margin_vec
+        aabb_upper[shape_id] = pos + half_extents + margin_vec
     elif has_local_aabb:
         # Pre-computed local AABB transformed to world space.
         # Scale is already baked into shape_collision_aabb by the builder,
@@ -335,6 +454,7 @@ def compute_shape_aabbs(
             geom_scale = wp.vec3(scale[0] * 0.5, scale[1] * 0.5, 0.0)
         shape_data.scale = geom_scale
         shape_data.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+        shape_data.center = wp.vec3(0.0, 0.0, 0.0)
 
         # For CONVEX_MESH, pack the mesh pointer
         if geo_type == GeoType.CONVEX_MESH:
@@ -574,6 +694,38 @@ def _compute_per_world_shape_pairs_max(model: Model) -> int:
     return max(0, total)
 
 
+def _compute_per_world_mask_pair_max(
+    model: Model,
+    first_mask: np.ndarray,
+    second_mask: np.ndarray | None = None,
+) -> int:
+    """Compute a world-compatible pair bound for selected shape sets."""
+    if second_mask is None:
+        second_mask = first_mask
+
+    shape_world = getattr(model, "shape_world", None)
+    if shape_world is None:
+        overlap = int(np.count_nonzero(first_mask & second_mask))
+        return int(np.count_nonzero(first_mask)) * int(np.count_nonzero(second_mask)) - overlap * (overlap + 1) // 2
+
+    sw = shape_world.numpy()
+    colliding = _shape_collide_mask(model, len(sw))
+    global_shapes = sw == -1
+    world_ids = np.unique(sw[(sw >= 0) & colliding])
+
+    def count_pairs(segment: np.ndarray) -> int:
+        first_count = int(np.count_nonzero(segment & first_mask))
+        second_count = int(np.count_nonzero(segment & second_mask))
+        overlap = int(np.count_nonzero(segment & first_mask & second_mask))
+        return first_count * second_count - overlap * (overlap + 1) // 2
+
+    total = 0
+    for world_id in world_ids:
+        total += count_pairs(global_shapes | (sw == world_id))
+    total += count_pairs(global_shapes)
+    return max(0, total)
+
+
 def _resolve_shape_pairs_max(model: Model, override: int | None) -> int:
     """Pick the broad-phase candidate-pair buffer capacity.
 
@@ -596,6 +748,47 @@ def _resolve_shape_pairs_max(model: Model, override: int | None) -> int:
 
 
 BROAD_PHASE_MODES = ("nxn", "sap", "explicit")
+_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD = 27_776
+_SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD = 65_536
+
+
+def _compute_generic_convex_pair_work_estimate(
+    model: Model,
+    *,
+    broad_phase_mode: str,
+    shape_pairs_filtered: wp.array[wp.vec2i] | None,
+    candidate_pair_work_estimate: int,
+) -> int:
+    """Estimate how much of the candidate-pair bound can reach GJK/MPR."""
+    shape_types_array = getattr(model, "shape_type", None)
+    if shape_types_array is None:
+        return candidate_pair_work_estimate
+
+    shape_types = shape_types_array.numpy()
+    if broad_phase_mode == "explicit":
+        requirements = _generic_convex_pair_requirements(
+            model,
+            broad_phase_mode=broad_phase_mode,
+            shape_pairs_filtered=shape_pairs_filtered,
+        )
+        return (
+            candidate_pair_work_estimate
+            if requirements is None
+            else min(candidate_pair_work_estimate, sum(requirements))
+        )
+
+    colliding_mask = _shape_collide_mask(model, len(shape_types))
+    generic_pair_bound = 0
+    unique_types = np.unique(shape_types[colliding_mask])
+    for index, type_a in enumerate(unique_types):
+        first_mask = colliding_mask & (shape_types == type_a)
+        for type_b in unique_types[index:]:
+            if not _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b)):
+                continue
+            second_mask = colliding_mask & (shape_types == type_b)
+            generic_pair_bound += _compute_per_world_mask_pair_max(model, first_mask, second_mask)
+
+    return min(candidate_pair_work_estimate, generic_pair_bound)
 
 
 def _normalize_broad_phase_mode(mode: str) -> str:
@@ -993,7 +1186,9 @@ class CollisionPipeline:
                 provided together with a broad phase instance for expert usage.
             shape_pairs_filtered: Precomputed shape pairs for EXPLICIT mode.
                 When broad_phase is "explicit", uses model.shape_contact_pairs if not provided. For
-                "nxn"/"sap" modes, ignored.
+                "nxn"/"sap" modes, ignored. The pair count and shape-type routing are used to size
+                and specialize internal buffers at construction, so do not modify or resize the
+                array while the pipeline is in use. Rebuild the pipeline after changing the pairs.
             include_static_kinematic_pairs: Whether to generate contacts for
                 pairs where both shapes are immovable. Set to ``False`` to
                 filter static-static, static-kinematic, and
@@ -1257,11 +1452,17 @@ class CollisionPipeline:
             use_lean_gjk_mpr = False
             mesh_sdf_texture_only = False
             mesh_sdf_identity_scale_only = False
+            max_mesh_mesh_pairs = self.shape_pairs_max
+            max_mesh_plane_pairs = self.shape_pairs_max
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
                 colliding_mask = _shape_collide_mask(model, len(shape_types))
                 colliding_shape_types = shape_types[colliding_mask]
-                has_meshes = bool((colliding_shape_types == int(GeoType.MESH)).any())
+                mesh_mask = colliding_mask & (shape_types == int(GeoType.MESH))
+                heightfield_mask = colliding_mask & (shape_types == int(GeoType.HFIELD))
+                plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
+                mesh_sdf_pair_mask = mesh_mask | heightfield_mask
+                has_meshes = bool(np.any(mesh_mask))
                 if (
                     hasattr(model, "_shape_sdf_index")
                     and model._shape_sdf_index is not None
@@ -1270,10 +1471,10 @@ class CollisionPipeline:
                 ):
                     shape_sdf_index = model._shape_sdf_index.numpy()
                     shape_edge_range = model.shape_edge_range.numpy()
-                    has_planar_sdf_shapes = bool(
-                        np.any(colliding_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0))
-                    )
+                    planar_sdf_mask = colliding_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
+                    has_planar_sdf_shapes = bool(np.any(planar_sdf_mask))
                     has_meshes = has_meshes or has_planar_sdf_shapes
+                    mesh_sdf_pair_mask |= planar_sdf_mask
                     mesh_sdf_shapes = colliding_mask & (
                         (shape_types != int(GeoType.HFIELD))
                         & ((shape_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
@@ -1299,6 +1500,20 @@ class CollisionPipeline:
                             bool(scale_baked[shape_sdf_index[shape_idx]]) or identity_shape_scale[shape_idx]
                             for shape_idx in np.flatnonzero(mesh_sdf_shapes)
                         )
+                if self.broad_phase_mode == "explicit":
+                    # Explicit pairs are not constrained by shape_world and may
+                    # intentionally connect shapes from different worlds.
+                    max_mesh_mesh_pairs = self.shape_pairs_max
+                    max_mesh_plane_pairs = self.shape_pairs_max
+                else:
+                    max_mesh_mesh_pairs = min(
+                        self.shape_pairs_max,
+                        _compute_per_world_mask_pair_max(model, mesh_sdf_pair_mask),
+                    )
+                    max_mesh_plane_pairs = min(
+                        self.shape_pairs_max,
+                        _compute_per_world_mask_pair_max(model, mesh_mask, plane_mask),
+                    )
                 # Use lean GJK/MPR kernel when scene has no capsules, ellipsoids,
                 # cylinders, or cones (which need full support function and axial
                 # rolling post-processing)
@@ -1310,6 +1525,30 @@ class CollisionPipeline:
                 }
                 use_lean_gjk_mpr = not bool(lean_unsupported & set(colliding_shape_types.tolist()))
 
+            has_generic_convex_pairs = _has_generic_convex_pairs(
+                model,
+                broad_phase_mode=self.broad_phase_mode,
+                shape_pairs_filtered=self.shape_pairs_filtered,
+            )
+            candidate_pair_work_estimate = min(self.shape_pairs_max, _compute_per_world_shape_pairs_max(model))
+            if self.broad_phase_mode == "explicit":
+                candidate_pair_work_estimate = self.shape_pairs_max
+            generic_convex_pair_work_estimate = _compute_generic_convex_pair_work_estimate(
+                model,
+                broad_phase_mode=self.broad_phase_mode,
+                shape_pairs_filtered=self.shape_pairs_filtered,
+                candidate_pair_work_estimate=candidate_pair_work_estimate,
+            )
+            split_pair_count_threshold = (
+                _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD
+                if use_lean_gjk_mpr
+                else _SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD
+            )
+            split_gjk_mpr = (
+                device.is_cuda
+                and has_generic_convex_pairs
+                and generic_convex_pair_work_estimate >= split_pair_count_threshold
+            )
             # Initialize narrow phase with pre-allocated buffers
             # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
             # Pass write_contact as custom writer to write directly to final Contacts format
@@ -1324,6 +1563,8 @@ class CollisionPipeline:
             self.narrow_phase = NarrowPhase(
                 max_candidate_pairs=self.shape_pairs_max,
                 max_triangle_pairs=max_triangle_pairs,
+                max_mesh_mesh_pairs=max_mesh_mesh_pairs,
+                max_mesh_plane_pairs=max_mesh_plane_pairs,
                 reduce_contacts=self.reduce_contacts,
                 device=device,
                 shape_aabb_lower=shape_aabb_lower,
@@ -1334,8 +1575,12 @@ class CollisionPipeline:
                 has_meshes=has_meshes,
                 has_heightfields=model.heightfield_count > 0,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
+                has_generic_convex_pairs=has_generic_convex_pairs,
+                split_gjk_mpr=split_gjk_mpr,
+                candidate_pair_work_estimate=candidate_pair_work_estimate,
                 mesh_sdf_identity_scale_only=mesh_sdf_identity_scale_only,
                 mesh_sdf_texture_only=mesh_sdf_texture_only,
+                sdf_texture_paired_samples=model._sdf_texture_paired_samples,
                 deterministic=deterministic,
                 contact_max=rigid_contact_max,
                 verify_buffers=verify_buffers,
@@ -1344,6 +1589,11 @@ class CollisionPipeline:
                 contact_writer_supports_speculative=self._speculative_enabled,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
+
+        self._hydro_shape_sdf_data_prepared = self.hydroelastic_sdf is not None
+        if self.hydroelastic_sdf is not None:
+            # Model SDF descriptors are finalized here; only shape transforms change per frame.
+            self.hydroelastic_sdf._prepare_shape_sdf_data(model._texture_sdf_data, model._shape_sdf_index)
 
         # Allocate buffers
         with wp.ScopedDevice(device):
@@ -2020,6 +2270,7 @@ class CollisionPipeline:
             mesh_edge_halves=model.mesh_edge_halves,
             shape_edge_range=model.shape_edge_range,
             writer_data=writer_data,
+            hydroelastic_shape_sdf_data_prepared=self._hydro_shape_sdf_data_prepared,
             shape_linear_velocity=self._shape_linear_velocity,
             shape_angular_velocity=self._shape_angular_velocity,
             collision_update_dt=collision_update_dt,
