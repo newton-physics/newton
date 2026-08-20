@@ -1,1 +1,1 @@
-Enable headless ``ViewerGL`` frame capture on Linux systems without an X display while preserving native hidden-window rendering on other platforms.
+Enable headless `ViewerGL` frame capture on Linux systems without an X display, selecting pyglet's EGL backend only there while preserving native hidden-window rendering on other platforms. Because pyglet binds its backend at import time, creating a headless and a windowed `ViewerGL` in the same process now raises a `RuntimeError` instead of failing unpredictably.

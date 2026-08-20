@@ -188,6 +188,16 @@ Warp array on the viewer device:
     # Returns a wp.array with shape (height, width, 3), dtype wp.uint8
     frame = viewer.get_frame()
 
+On Linux without a display (for example CI runners or SSH sessions without X
+forwarding), headless rendering uses pyglet's EGL backend, which requires an EGL
+runtime such as ``libegl1`` to be installed. On other platforms, and on Linux
+with a display, the headless viewer instead renders into a hidden native window.
+
+Because pyglet selects its rendering backend once, at import time, a single
+process cannot mix headless and windowed :class:`~newton.viewer.ViewerGL`
+instances: constructing one after the other raises a ``RuntimeError``. Create
+each in its own process if you need both.
+
 **Custom UI panels:**
 
 :meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.

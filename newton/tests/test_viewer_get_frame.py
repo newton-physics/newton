@@ -14,49 +14,21 @@ import newton
 import newton.viewer
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
+from newton.tests.unittest_utils import (
+    is_viewer_gl_unavailable_error,
+    viewer_gl_unavailable_error_types,
+)
 
 
-def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
+def _skip_if_pyglet_unavailable(test: unittest.TestCase) -> None:
     try:
         __import__("pyglet")
     except ImportError as exc:
         test.skipTest(f"ViewerGL dependencies not available: {exc}")
 
-    unavailable_errors = []
-    for module_name, exception_names in (
-        ("pyglet.gl", ("ConfigException", "ContextException")),
-        ("pyglet.gl.lib", ("MissingFunctionException",)),
-        ("pyglet.window", ("NoSuchConfigException", "NoSuchDisplayException")),
-    ):
-        module = sys.modules.get(module_name)
-        if module is None:
-            continue
-        unavailable_errors.extend(
-            exception_type
-            for exception_name in exception_names
-            if isinstance(exception_type := getattr(module, exception_name, None), type)
-        )
-
-    return tuple(dict.fromkeys(unavailable_errors))
-
-
-def _is_viewer_gl_unavailable_error(test: unittest.TestCase, exc: Exception) -> bool:
-    if isinstance(exc, _viewer_gl_unavailable_error_types(test)):
-        return True
-
-    # Some pyglet platform backends raise their own NoSuchDisplayException
-    # while importing pyglet.window, before the window-level class exists.
-    return type(exc).__module__.startswith("pyglet.") and type(exc).__name__ in {
-        "ConfigException",
-        "ContextException",
-        "MissingFunctionException",
-        "NoSuchConfigException",
-        "NoSuchDisplayException",
-    }
-
 
 def _reset_pyglet_event_loop_exit(test: unittest.TestCase) -> None:
-    _viewer_gl_unavailable_error_types(test)
+    _skip_if_pyglet_unavailable(test)
     pyglet = sys.modules.get("pyglet")
     if pyglet is not None:
         pyglet.app.event_loop.has_exit = False
@@ -68,7 +40,7 @@ def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64
     try:
         return newton.viewer.ViewerGL(width=width, height=height, headless=True)
     except Exception as exc:
-        if _is_viewer_gl_unavailable_error(test, exc):
+        if is_viewer_gl_unavailable_error(exc):
             test.skipTest(f"ViewerGL display/backend not available: {exc}")
         raise
 
@@ -136,7 +108,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 raise AssertionError("pyglet.window must not be imported")
 
         with mock.patch.object(pyglet, "window", _WindowProxy()):
-            _viewer_gl_unavailable_error_types(self)
+            viewer_gl_unavailable_error_types()
 
     def test_headless_frame_capture_across_devices(self):
         """Verify headless frame capture follows the active model device."""

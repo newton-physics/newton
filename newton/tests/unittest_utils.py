@@ -60,6 +60,59 @@ def patch_sys_module(name: str, module: Any):
             sys.modules[name] = original
 
 
+# pyglet exception names that signal an unusable OpenGL backend (no display, no
+# GL config, missing GL function) rather than a genuine test failure.
+_VIEWER_GL_UNAVAILABLE_EXCEPTION_NAMES = frozenset(
+    {
+        "ConfigException",
+        "ContextException",
+        "MissingFunctionException",
+        "NoSuchConfigException",
+        "NoSuchDisplayException",
+    }
+)
+
+
+def viewer_gl_unavailable_error_types() -> tuple[type[BaseException], ...]:
+    """Return pyglet exception types that indicate an unavailable GL backend.
+
+    Reads only already-imported pyglet submodules from ``sys.modules`` so it
+    never forces ``pyglet.window`` to import. Returns an empty tuple when pyglet
+    (or its relevant submodules) has not been imported.
+    """
+    unavailable_errors = []
+    for module_name, exception_names in (
+        ("pyglet.gl", ("ConfigException", "ContextException")),
+        ("pyglet.gl.lib", ("MissingFunctionException",)),
+        ("pyglet.window", ("NoSuchConfigException", "NoSuchDisplayException")),
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        unavailable_errors.extend(
+            exception_type
+            for exception_name in exception_names
+            if isinstance(exception_type := getattr(module, exception_name, None), type)
+        )
+
+    return tuple(dict.fromkeys(unavailable_errors))
+
+
+def is_viewer_gl_unavailable_error(exc: BaseException) -> bool:
+    """Return whether ``exc`` reflects an unavailable GL backend rather than a bug."""
+    if isinstance(exc, viewer_gl_unavailable_error_types()):
+        return True
+
+    # Some pyglet platform backends raise their own NoSuchDisplayException while
+    # importing pyglet.window, before the window-level class exists.
+    if type(exc).__module__.startswith("pyglet.") and type(exc).__name__ in _VIEWER_GL_UNAVAILABLE_EXCEPTION_NAMES:
+        return True
+
+    # RendererGL reports a missing EGL runtime (headless Linux without a display
+    # and without libEGL) as an ImportError mentioning EGL.
+    return isinstance(exc, ImportError) and "EGL" in str(exc)
+
+
 try:
     if sys.platform == "win32":
         LIBC = ctypes.CDLL("ucrtbase.dll")
