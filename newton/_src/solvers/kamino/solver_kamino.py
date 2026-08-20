@@ -838,69 +838,6 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._control_kamino = self._kamino.ControlKamino()
         self._control_kamino.finalize(self._model_kamino)
 
-        # Velocity linearization must not mutate the user-owned Newton state.
-        self._body_velocity_linearization_q = wp.empty_like(model.body_q)
-
-    def eval_body_velocity_linearization(
-        self,
-        state: State,
-        actuator_velocity: wp.array2d[wp.float32],
-        base_velocity: wp.array2d[wp.spatial_vectorf],
-        body_velocity: wp.array2d[wp.spatial_vectorf],
-        world_mask: wp.array[wp.bool] | None = None,
-    ) -> None:
-        """Evaluate constraint-consistent body twists for several velocity inputs.
-
-        The constraint Jacobian and its normal-matrix factorization are shared
-        by every right-hand side. The first dimension of each input and output
-        array is the right-hand-side dimension. Call this method once for a new
-        right-hand-side count before capturing it in a CUDA graph so its fixed
-        workspace can be allocated.
-
-        Args:
-            state: Newton state providing body poses at the linearization point.
-            actuator_velocity: FK-actuated joint velocity inputs [m/s or rad/s],
-                shape ``(rhs_count, fk_actuated_dof_count)``.
-            base_velocity: Base body spatial velocities [m/s, rad/s], shape
-                ``(rhs_count, world_count)``.
-            body_velocity: Constraint-consistent body spatial velocities
-                [m/s, rad/s], shape ``(rhs_count, body_count)``.
-            world_mask: Optional per-world mask, shape ``(world_count,)``.
-
-        Raises:
-            RuntimeError: If the forward-kinematics solver is disabled.
-            ValueError: If an array has an incompatible device or shape, or if
-                sparse forward kinematics is enabled.
-        """
-        solver_fk = self._solver_kamino.solver_fk
-        if solver_fk is None:
-            raise RuntimeError("Body-velocity linearization requires Config.use_fk_solver=True")
-        if state.body_q is None:
-            raise ValueError("state must contain body poses")
-        if state.body_q.device != self.model.device:
-            raise ValueError("state body poses must use the solver device")
-        if world_mask is not None:
-            if world_mask.device != self.model.device:
-                raise ValueError("world_mask must use the solver device")
-            if world_mask.shape != (self.model.world_count,):
-                raise ValueError(f"world_mask must have shape ({self.model.world_count},)")
-
-        wp.copy(self._body_velocity_linearization_q, state.body_q)
-        self._kamino.convert_body_origin_to_com(
-            body_com=self._model_kamino.bodies.i_r_com_i,
-            body_q=self._body_velocity_linearization_q,
-            body_q_com=self._body_velocity_linearization_q,
-            world_mask=world_mask,
-            body_wid=self._model_kamino.bodies.wid,
-        )
-        solver_fk.solve_for_body_velocities_multi_rhs(
-            actuators_u=actuator_velocity,
-            bodies_q=self._body_velocity_linearization_q,
-            bodies_u=body_velocity,
-            base_u=base_velocity,
-            world_mask=world_mask,
-        )
-
     @override
     def reset(
         self,

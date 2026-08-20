@@ -424,8 +424,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self.L = wp.zeros(
             shape=(num_batches, self.padded_num_equations, self.padded_num_equations), dtype=float, device=self.device
         )
-        # Each RHS size maps to (rhs_swizzled, result_swizzled, forward_substitution).
-        self.temp_buffers: dict[int, tuple[wp.array[float], wp.array[float], wp.array[float]]] = {}
+        self.temp_buffers: dict[int, tuple[wp.array3d[float], wp.array3d[float], wp.array3d[float]]] = {}
         self.request_rhs_size(1)
 
         self.num_tiles = (self.padded_num_equations + self.block_size - 1) // self.block_size
@@ -436,7 +435,11 @@ class SemiSparseBlockCholeskySolverBatched:
         self.enable_reordering = enable_reordering
 
     def request_rhs_size(self, rhs_size: int) -> None:
-        """Preallocate solve buffers for one homogeneous RHS size across all batches."""
+        """Preallocate solve buffers for one homogeneous RHS size across all batches.
+
+        Each entry in :attr:`temp_buffers` stores the reordered RHS, reordered
+        result, and forward-substitution workspace for one RHS size.
+        """
         if rhs_size < 1:
             raise ValueError("rhs_size must be positive")
         if rhs_size not in self.temp_buffers:

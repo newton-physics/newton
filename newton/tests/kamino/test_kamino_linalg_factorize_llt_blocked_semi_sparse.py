@@ -30,24 +30,24 @@ class TestSemiSparseBlockCholeskySolverBatched(unittest.TestCase):
     def test_solve_handles_multiple_rhs(self):
         """Solve every requested RHS using one shared factorization per batch."""
         rng = np.random.default_rng(1234)
-        batch_count = 2
-        rhs_count = 5
+        batch_size = 2
+        rhs_size = 5
         max_equations = 9
         active_equations = np.array([7, 9], dtype=np.int32)
 
-        matrices = np.zeros((batch_count, max_equations, max_equations), dtype=np.float32)
-        right_hand_sides = np.zeros((batch_count, max_equations, rhs_count), dtype=np.float32)
+        matrices = np.zeros((batch_size, max_equations, max_equations), dtype=np.float32)
+        right_hand_sides = np.zeros((batch_size, max_equations, rhs_size), dtype=np.float32)
         expected = np.zeros_like(right_hand_sides)
         for batch_index, size in enumerate(active_equations):
             dense = rng.normal(size=(size, size)).astype(np.float32)
             matrix = dense @ dense.T + np.eye(size, dtype=np.float32)
-            rhs = rng.normal(size=(rhs_count, size)).astype(np.float32)
+            rhs = rng.normal(size=(rhs_size, size)).astype(np.float32)
             matrices[batch_index, :size, :size] = matrix
             right_hand_sides[batch_index, :size, :] = rhs.T
             expected[batch_index, :size, :] = np.linalg.solve(matrix, rhs.T)
 
         solver = SemiSparseBlockCholeskySolverBatched(
-            num_batches=batch_count,
+            num_batches=batch_size,
             max_num_equations=max_equations,
             block_size=4,
             device=self.device,
@@ -57,7 +57,7 @@ class TestSemiSparseBlockCholeskySolverBatched(unittest.TestCase):
 
         matrix_wp = wp.array(matrices, dtype=wp.float32, device=self.device)
         active_wp = wp.array(active_equations, dtype=wp.int32, device=self.device)
-        mask_wp = wp.ones(batch_count, dtype=wp.bool, device=self.device)
+        mask_wp = wp.ones(batch_size, dtype=wp.bool, device=self.device)
         rhs_wp = wp.array(right_hand_sides, dtype=wp.float32, device=self.device)
         result_wp = wp.zeros_like(rhs_wp)
 
@@ -65,7 +65,7 @@ class TestSemiSparseBlockCholeskySolverBatched(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "request_rhs_size"):
             solver.solve(rhs_wp, result_wp, mask_wp)
 
-        solver.request_rhs_size(rhs_count)
+        solver.request_rhs_size(rhs_size)
         solver.solve(rhs_wp, result_wp, mask_wp)
 
         np.testing.assert_allclose(result_wp.numpy(), expected, rtol=2.0e-4, atol=2.0e-4)
