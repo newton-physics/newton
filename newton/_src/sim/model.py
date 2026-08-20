@@ -28,6 +28,7 @@ from .deformable_visual import (
     DeformableVisualMesh,
     DeformableVisuals,
     compute_deformable_visual_mesh_normals,
+    skin_deformable_visual_gaussian,
     skin_deformable_visual_mesh,
 )
 from .state import State
@@ -1833,7 +1834,9 @@ class Model:
             raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
         visuals._validate_model(self)
 
-        needs_particles = any(mesh.kind != DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes)
+        needs_particles = bool(self.deformable_visual_gaussians) or any(
+            mesh.kind != DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes
+        )
         needs_bodies = any(mesh.kind == DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes)
         if needs_particles and state.particle_q is None:
             raise ValueError("State.particle_q is required by this model's deformable visual meshes")
@@ -1858,6 +1861,16 @@ class Model:
                 normal_offset=start,
                 vertex_count=end - start,
                 clear=False,
+            )
+
+        for gaussian, (start, _end) in zip(self.deformable_visual_gaussians, visuals.gaussian_ranges, strict=True):
+            skin_deformable_visual_gaussian(
+                gaussian,
+                state,
+                self,
+                visuals.gaussian_transforms,
+                visuals.gaussian_scales,
+                out_offset=start,
             )
 
         visuals._mark_updated(state)

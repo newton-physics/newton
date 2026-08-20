@@ -31,15 +31,25 @@ def _soft_builder():
     return builder
 
 
+def _quat_matrix(quaternion):
+    x, y, z, w = quaternion
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=np.float32,
+    )
+
+
 class TestDeformableVisualGaussianBuilder(unittest.TestCase):
     """Public builder and finalized model behavior."""
 
     def test_add_tet_bound_gaussian_visual(self):
         """Create a stable model record for a tetrahedron-bound Gaussian field."""
         builder = _soft_builder()
-        positions = np.array(
-            [[0.2, 0.2, 0.2], [0.4, 0.2, 0.2], [0.2, 0.4, 0.2], [0.2, 0.2, 0.4]], dtype=np.float32
-        )
+        positions = np.array([[0.2, 0.2, 0.2], [0.4, 0.2, 0.2], [0.2, 0.4, 0.2], [0.2, 0.2, 0.4]], dtype=np.float32)
         gaussian = newton.Gaussian(positions=positions, scales=np.full((4, 3), 0.05, dtype=np.float32))
         index = builder.add_deformable_visual_gaussian(
             gaussian,
@@ -112,6 +122,104 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
                 kind="particle",
                 tet_range=(0, builder.tet_count),
             )
+
+
+class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
+    """Reusable current Gaussian transforms and scales."""
+
+    def test_update_evaluates_tet_center_and_covariance(self):
+        """Evaluate one Gaussian center and covariance through the shared visual result."""
+        builder = _soft_builder()
+        tet_indices = np.asarray(builder.tet_indices, dtype=np.int32).reshape(-1, 4)
+        corners = np.asarray(builder.particle_q, dtype=np.float32)[tet_indices[0]]
+        center = corners.mean(axis=0, keepdims=True)
+        rest_scale = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
+        gaussian = newton.Gaussian(positions=center, scales=rest_scale)
+        builder.add_deformable_visual_gaussian(
+            gaussian,
+            kind="tet",
+            tet_range=(0, builder.tet_count),
+            parent=[0],
+            weights=np.full((1, 4), 0.25, dtype=np.float32),
+        )
+        model = builder.finalize()
+        state = model.state()
+        visuals = model.deformable_visuals()
+
+        returned = model.update_deformable_visuals(state, visuals)
+
+        self.assertIs(returned, visuals)
+        transforms = visuals.get_gaussian_transforms(0).numpy()
+        scales = visuals.get_gaussian_scales(0).numpy()
+        np.testing.assert_allclose(transforms[0, :3], center[0], atol=1.0e-6)
+        np.testing.assert_allclose(np.sort(scales[0]), np.sort(rest_scale[0]), atol=1.0e-6)
+        self.assertIs(visuals.state, state)
+
+    def test_shear_updates_full_covariance(self):
+        """Preserve the independently computed Gaussian covariance under affine shear."""
+        builder = _soft_builder()
+        tet_indices = np.asarray(builder.tet_indices, dtype=np.int32).reshape(-1, 4)
+        rest_particles = np.asarray(builder.particle_q, dtype=np.float32)
+        center = rest_particles[tet_indices[0]].mean(axis=0, keepdims=True)
+        rest_scale = np.array([[0.08, 0.13, 0.21]], dtype=np.float32)
+        gaussian = newton.Gaussian(positions=center, scales=rest_scale)
+        builder.add_deformable_visual_gaussian(
+            gaussian,
+            kind="tet",
+            tet_range=(0, builder.tet_count),
+            parent=[0],
+            weights=np.full((1, 4), 0.25, dtype=np.float32),
+        )
+        model = builder.finalize()
+        state = model.state()
+        shear = np.array([[1.0, 0.35, 0.0], [0.0, 1.0, 0.2], [0.0, 0.0, 0.7]], dtype=np.float32)
+        state.particle_q.assign(rest_particles @ shear.T)
+        visuals = model.deformable_visuals()
+
+        model.update_deformable_visuals(state, visuals)
+
+        transform = visuals.get_gaussian_transforms(0).numpy()[0]
+        scales = visuals.get_gaussian_scales(0).numpy()[0]
+        rotation = _quat_matrix(transform[3:7])
+        actual_covariance = rotation @ np.diag(scales**2) @ rotation.T
+        expected_covariance = shear @ np.diag(rest_scale[0] ** 2) @ shear.T
+        np.testing.assert_allclose(actual_covariance, expected_covariance, atol=2.0e-6)
+        np.testing.assert_allclose(transform[:3], (center @ shear.T)[0], atol=1.0e-6)
+
+    def test_update_is_cuda_graph_capturable(self):
+        """Replay Gaussian evaluation into the same output buffers during CUDA capture."""
+        builder = _soft_builder()
+        tet_indices = np.asarray(builder.tet_indices, dtype=np.int32).reshape(-1, 4)
+        rest_particles = np.asarray(builder.particle_q, dtype=np.float32)
+        center = rest_particles[tet_indices[0]].mean(axis=0, keepdims=True)
+        builder.add_deformable_visual_gaussian(
+            newton.Gaussian(positions=center, scales=np.full((1, 3), 0.1, dtype=np.float32)),
+            kind="tet",
+            tet_range=(0, builder.tet_count),
+            parent=[0],
+            weights=np.full((1, 4), 0.25, dtype=np.float32),
+        )
+        model = builder.finalize()
+        if not model.device.is_cuda:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+        state = model.state()
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(state, visuals)
+        transforms_ptr = visuals.gaussian_transforms.ptr
+        scales_ptr = visuals.gaussian_scales.ptr
+
+        with wp.ScopedCapture(model.device) as capture:
+            model.update_deformable_visuals(state, visuals)
+
+        moved = rest_particles.copy()
+        moved[:, 2] += 0.4
+        state.particle_q.assign(moved)
+        wp.capture_launch(capture.graph)
+        visuals.wait()
+
+        self.assertEqual(visuals.gaussian_transforms.ptr, transforms_ptr)
+        self.assertEqual(visuals.gaussian_scales.ptr, scales_ptr)
+        np.testing.assert_allclose(visuals.get_gaussian_transforms(0).numpy()[0, :3], center[0] + [0, 0, 0.4])
 
 
 if __name__ == "__main__":

@@ -194,6 +194,8 @@ class DeformableVisualGaussian:
         self,
         gaussian: Gaussian,
         binding: DeformableVisualBinding,
+        rest_rotations: wp.array[wp.quat],
+        rest_scales: wp.array[wp.vec3],
         world: int = -1,
         label: str = "",
         index: int = -1,
@@ -206,6 +208,8 @@ class DeformableVisualGaussian:
         Args:
             gaussian: Immutable rest Gaussian appearance.
             binding: Binding from Gaussian centers to simulation drivers.
+            rest_rotations: Rest Gaussian orientations, shape [count].
+            rest_scales: Rest Gaussian axis scales [m], shape [count, 3].
             world: Owning model world, or ``-1`` for global visuals.
             label: Display label.
             index: Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
@@ -225,6 +229,10 @@ class DeformableVisualGaussian:
         """Barycentric weights, or ``None`` for non-barycentric bindings."""
         self.local_offsets = binding.local_offsets
         """Body-local offsets [m], or ``None`` for non-body bindings."""
+        self.rest_rotations = rest_rotations
+        """Rest Gaussian orientations, shape [count]."""
+        self.rest_scales = rest_scales
+        """Rest Gaussian axis scales [m], shape [count, 3]."""
         self.world = world
         """Owning model world, or ``-1`` for a global visual."""
         self.label = label
@@ -279,6 +287,21 @@ class DeformableVisuals:
         self.normals = wp.zeros(vertex_start, dtype=wp.vec3, device=self.device)
         """Current visual unit normals, shape [vertex_count, 3]."""
 
+        ranges = []
+        gaussian_start = 0
+        for gaussian in model.deformable_visual_gaussians:
+            gaussian_end = gaussian_start + gaussian.count
+            ranges.append((gaussian_start, gaussian_end))
+            gaussian_start = gaussian_end
+        self.gaussian_ranges = tuple(ranges)
+        """Stable ``[start, end)`` sample range for each Gaussian visual."""
+        self.gaussian_count = gaussian_start
+        """Total number of current Gaussian samples."""
+        self.gaussian_transforms = wp.empty(gaussian_start, dtype=wp.transform, device=self.device)
+        """Current Gaussian centers [m] and orientations, shape [gaussian_count]."""
+        self.gaussian_scales = wp.empty(gaussian_start, dtype=wp.vec3, device=self.device)
+        """Current positive Gaussian axis scales [m], shape [gaussian_count, 3]."""
+
         self._state: State | None = None
         self._completion_event = wp.Event(self.device) if self.device.is_cuda else None
 
@@ -319,6 +342,24 @@ class DeformableVisuals:
             )
         if state is not None and self._state is not state:
             raise ValueError("DeformableVisuals was last updated from another state.")
+
+    def _gaussian_index(self, gaussian: DeformableVisualGaussian | SupportsIndex) -> int:
+        if isinstance(gaussian, DeformableVisualGaussian):
+            index = gaussian.index
+            if (
+                index < 0
+                or index >= len(self.gaussian_ranges)
+                or self._model.deformable_visual_gaussians[index] is not gaussian
+            ):
+                raise ValueError("The deformable Gaussian visual does not belong to this DeformableVisuals model.")
+            return index
+        try:
+            index = operator.index(gaussian)
+        except TypeError as exc:
+            raise TypeError("gaussian must be a DeformableVisualGaussian or an integer index") from exc
+        if index < 0 or index >= len(self.gaussian_ranges):
+            raise IndexError(f"Deformable Gaussian visual index {index} is out of range")
+        return index
 
     def _validate_model(self, model: Model) -> None:
         if self._model is not model:
@@ -370,6 +411,109 @@ class DeformableVisuals:
         self._require_updated()
         start, end = self.mesh_ranges[self._mesh_index(mesh)]
         return self.normals[start:end]
+
+    def get_gaussian_transforms(self, gaussian: DeformableVisualGaussian | SupportsIndex) -> wp.array[wp.transform]:
+        """Return the current transform view for one Gaussian visual.
+
+        Args:
+            gaussian: Gaussian visual or stable model index.
+
+        Returns:
+            Zero-copy current center/orientation transforms, shape [count].
+        """
+        self._require_updated()
+        start, end = self.gaussian_ranges[self._gaussian_index(gaussian)]
+        return self.gaussian_transforms[start:end]
+
+    def get_gaussian_scales(self, gaussian: DeformableVisualGaussian | SupportsIndex) -> wp.array[wp.vec3]:
+        """Return the current scale view for one Gaussian visual.
+
+        Args:
+            gaussian: Gaussian visual or stable model index.
+
+        Returns:
+            Zero-copy positive axis scales [m], shape [count, 3].
+        """
+        self._require_updated()
+        start, end = self.gaussian_ranges[self._gaussian_index(gaussian)]
+        return self.gaussian_scales[start:end]
+
+
+@wp.kernel(enable_backward=False)
+def _skin_deformable_visual_gaussian_tet(
+    particle_q: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    parent: wp.array[wp.int32],
+    weights: wp.array[wp.vec4],
+    rest_rotations: wp.array[wp.quat],
+    rest_scales: wp.array[wp.vec3],
+    out_offset: int,
+    out_transforms: wp.array[wp.transform],
+    out_scales: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    tet = parent[i]
+    i0 = tet_indices[tet, 0]
+    i1 = tet_indices[tet, 1]
+    i2 = tet_indices[tet, 2]
+    i3 = tet_indices[tet, 3]
+    q0 = particle_q[i0]
+    q1 = particle_q[i1]
+    q2 = particle_q[i2]
+    q3 = particle_q[i3]
+    w = weights[i]
+    center = w[0] * q0 + w[1] * q1 + w[2] * q2 + w[3] * q3
+
+    current_basis = wp.matrix_from_cols(q1 - q0, q2 - q0, q3 - q0)
+    deformation_gradient = current_basis * tet_poses[tet]
+    rest_scale = rest_scales[i]
+    scale_matrix = wp.mat33(rest_scale[0], 0.0, 0.0, 0.0, rest_scale[1], 0.0, 0.0, 0.0, rest_scale[2])
+    axes = deformation_gradient * wp.quat_to_matrix(rest_rotations[i]) * scale_matrix
+    rotation, singular_values, _ = wp.svd3(axes)
+    if wp.determinant(rotation) < 0.0:
+        rotation = wp.matrix_from_cols(
+            wp.vec3(rotation[0, 0], rotation[1, 0], rotation[2, 0]),
+            wp.vec3(rotation[0, 1], rotation[1, 1], rotation[2, 1]),
+            -wp.vec3(rotation[0, 2], rotation[1, 2], rotation[2, 2]),
+        )
+    minimum_scale = 1.0e-6
+    out_transforms[out_offset + i] = wp.transform(center, wp.quat_from_matrix(rotation))
+    out_scales[out_offset + i] = wp.vec3(
+        wp.max(wp.abs(singular_values[0]), minimum_scale),
+        wp.max(wp.abs(singular_values[1]), minimum_scale),
+        wp.max(wp.abs(singular_values[2]), minimum_scale),
+    )
+
+
+def skin_deformable_visual_gaussian(
+    visual: DeformableVisualGaussian,
+    state: State,
+    model: Model,
+    out_transforms: wp.array[wp.transform],
+    out_scales: wp.array[wp.vec3],
+    out_offset: int = 0,
+) -> None:
+    """Evaluate current transforms and scales for one Gaussian visual."""
+    if visual.kind != DeformableVisualBinding.Kind.TET:
+        raise ValueError(f"Unsupported deformable Gaussian binding kind {visual.kind}")
+    wp.launch(
+        _skin_deformable_visual_gaussian_tet,
+        dim=visual.count,
+        inputs=[
+            state.particle_q,
+            model.tet_indices,
+            model.tet_poses,
+            visual.parent,
+            visual.weights,
+            visual.rest_rotations,
+            visual.rest_scales,
+            out_offset,
+            out_transforms,
+            out_scales,
+        ],
+        device=model.device,
+    )
 
 
 @wp.kernel

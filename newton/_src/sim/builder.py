@@ -11790,6 +11790,8 @@ class ModelBuilder:
                 DeformableVisualGaussian(
                     gaussian=spec["gaussian"],
                     binding=binding,
+                    rest_rotations=wp.array(spec["gaussian"].rotations, dtype=wp.quat),
+                    rest_scales=wp.array(spec["gaussian"].scales, dtype=wp.vec3),
                     world=int(worlds[0]) if len(worlds) else -1,
                     label=spec.get("label", ""),
                     index=index,
