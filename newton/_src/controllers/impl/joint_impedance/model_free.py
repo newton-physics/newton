@@ -279,14 +279,17 @@ class ControllerJointImpedanceModelFree(ControllerBase):
 
     @property
     def controlled_robot_count(self) -> int:
+        """Number of robots, i.e. the length of ``controlled_dofs_per_robot``."""
         return self._controlled_robot_count
 
     @property
     def max_controlled_dofs(self) -> int:
+        """Largest controlled-DOF count over the robots, the padded width of ``inputs.mass_matrix``."""
         return self._max_controlled_dofs
 
     @property
     def total_controlled_dofs(self) -> int:
+        """Total controlled-DOF count across all robots, the length of every compact port."""
         return self._total_controlled_dofs
 
     @property
