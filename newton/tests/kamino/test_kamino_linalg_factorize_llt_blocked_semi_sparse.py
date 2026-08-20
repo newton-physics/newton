@@ -27,8 +27,8 @@ class TestSemiSparseBlockCholeskySolverBatched(unittest.TestCase):
         """Release the test device reference."""
         self.device = None
 
-    def test_solve_multi_rhs_matches_numpy(self):
-        """Solve every RHS using one shared factorization per batch."""
+    def test_solve_handles_multiple_rhs(self):
+        """Solve every requested RHS using one shared factorization per batch."""
         rng = np.random.default_rng(1234)
         batch_count = 2
         rhs_count = 5
@@ -62,11 +62,15 @@ class TestSemiSparseBlockCholeskySolverBatched(unittest.TestCase):
         result_wp = wp.zeros_like(rhs_wp)
 
         solver.factorize(matrix_wp, active_wp, mask_wp)
-        solver.solve_multi_rhs(rhs_wp, result_wp, mask_wp)
+        with self.assertRaisesRegex(ValueError, "request_rhs_size"):
+            solver.solve(rhs_wp, result_wp, mask_wp)
+
+        solver.request_rhs_size(rhs_count)
+        solver.solve(rhs_wp, result_wp, mask_wp)
 
         np.testing.assert_allclose(result_wp.numpy(), expected, rtol=2.0e-4, atol=2.0e-4)
 
-    def test_solve_multi_rhs_rejects_insufficient_rows(self):
+    def test_solve_rejects_insufficient_rows(self):
         """Reject right-hand sides that cannot hold every matrix row."""
         solver = SemiSparseBlockCholeskySolverBatched(
             num_batches=2,
@@ -78,9 +82,10 @@ class TestSemiSparseBlockCholeskySolverBatched(unittest.TestCase):
         rhs = wp.zeros((2, 8, 3), dtype=wp.float32, device=self.device)
         result = wp.zeros_like(rhs)
         mask = wp.ones(2, dtype=wp.bool, device=self.device)
+        solver.request_rhs_size(3)
 
         with self.assertRaisesRegex(ValueError, "at least 9 rows"):
-            solver.solve_multi_rhs(rhs, result, mask)
+            solver.solve(rhs, result, mask)
 
 
 if __name__ == "__main__":
