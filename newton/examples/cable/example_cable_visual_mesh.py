@@ -80,7 +80,11 @@ class Example:
 
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.iterations)
+        self.solver = newton.solvers.SolverVBD(
+            self.model,
+            iterations=self.iterations,
+            rigid_compliant_alm=False,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
