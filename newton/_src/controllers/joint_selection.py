@@ -20,7 +20,7 @@ import warp as wp
 
 from newton._src.sim.model import Model
 
-from ..utils.selection import match_labels
+from ..utils.selection import get_name_from_label, match_labels
 
 
 @dataclass(frozen=True)
@@ -50,19 +50,42 @@ class JointSelection:
     """Model DOF index of each controlled DOF, shape [controlled_dof_count]."""
 
 
+def _resolve_joint_entry(
+    entry: int | str | re.Pattern[str],
+    joint_names: list[str],
+    joint_to_art: np.ndarray,
+    selected_arts_set: set[int],
+) -> list[tuple[int, int]]:
+    """Resolve one ``joints`` entry to its ``(articulation, joint)`` contributions."""
+    if isinstance(entry, int):
+        owning_art = joint_to_art[entry] if 0 <= entry < len(joint_to_art) else None
+        if owning_art is None or owning_art not in selected_arts_set:
+            raise ValueError(f"joint index {entry} is not a joint of any selected articulation.")
+        return [(owning_art, entry)]
+
+    matched = match_labels(joint_names, entry)
+    contributions = [(joint_to_art[j], j) for j in matched if joint_to_art[j] in selected_arts_set]
+    if not contributions:
+        raise ValueError(f"joint pattern {entry!r} matches no joint in the selected articulations.")
+    return contributions
+
+
 def select_joints(
     model: Model,
     *,
-    articulations: list[int] | list[str] | str | re.Pattern[str] | None = None,
-    joints: list[int] | list[str] | str | re.Pattern[str] | None = None,
+    articulations: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
+    joints: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
 ) -> JointSelection:
     """Resolve a set of joints to control into the index arrays a controller needs.
 
-    Integers match exactly. Patterns are matched against
-    :attr:`~newton.Model.articulation_label` and
-    :attr:`~newton.Model.joint_label` following :ref:`label-matching`, and
-    select every match, so a pattern shared by several robots selects one joint
-    on each of them.
+    Integers match exactly. ``articulations`` patterns are matched against the
+    full :attr:`~newton.Model.articulation_label` following
+    :ref:`label-matching`. ``joints`` patterns are matched against the leaf
+    component of :attr:`~newton.Model.joint_label` (the part after the last
+    ``/``), so a prefix added by :meth:`~newton.ModelBuilder.add_builder`
+    (e.g. ``"panda_0/shoulder"``) does not need to be repeated in the
+    pattern — a pattern shared by several robots selects one joint on each of
+    them.
 
     An entry that matches nothing at all raises. For ``joints``, matching
     anywhere in the selection is enough, so one joint list can serve a
@@ -159,22 +182,16 @@ def select_joints(
             art_joints = np.arange(art_start[art], art_end[art])
             robot_joints_by_art[art] = art_joints[is_scalar[art_joints]].tolist()
     else:
+        # Maps a joint index to its owning articulation, so a joint's art can be
+        # looked up directly instead of scanning ``selected_arts`` per joint.
+        joint_to_art = np.searchsorted(art_end, np.arange(model.joint_count), side="right")
+        selected_arts_set = set(selected_arts)
+        # Match against leaf names, not full labels, so a pattern like "shoulder"
+        # selects that joint on every robot regardless of its add_builder prefix.
+        joint_names = [get_name_from_label(label) for label in joint_label]
         for entry in joints:
-            if not isinstance(entry, int):
-                matched = match_labels(joint_label, entry)
-                matched_any = False
-                for art in selected_arts:
-                    in_art = [j for j in matched if art_start[art] <= j < art_end[art]]
-                    if in_art:
-                        matched_any = True
-                        robot_joints_by_art[art].extend(in_art)
-                if not matched_any:
-                    raise ValueError(f"joint pattern {entry!r} matches no joint in the selected articulations.")
-            else:
-                owning_art = next((art for art in selected_arts if art_start[art] <= entry < art_end[art]), None)
-                if owning_art is None:
-                    raise ValueError(f"joint index {entry} is not a joint of any selected articulation.")
-                robot_joints_by_art[owning_art].append(entry)
+            for art, j in _resolve_joint_entry(entry, joint_names, joint_to_art, selected_arts_set):
+                robot_joints_by_art[art].append(j)
 
     q_idx_chunks: list[np.ndarray] = []
     qd_idx_chunks: list[np.ndarray] = []
