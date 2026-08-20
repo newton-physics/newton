@@ -155,8 +155,7 @@ class Example:
 
         self.controller = ControllerJointImpedance(
             ctrl_model,
-            joint_q_idx=selection.q_idx,
-            joint_qd_idx=selection.qd_idx,
+            joint_selection=selection,
             stiffness=wp.array(KP, dtype=wp.float32, device=self.device),
             damping=wp.array(KD, dtype=wp.float32, device=self.device),
             use_gravity_compensation=True,

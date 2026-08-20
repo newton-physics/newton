@@ -10,7 +10,12 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.controllers import ControllerJointImpedance, ControllerJointImpedanceModelFree, select_joints
+from newton.controllers import (
+    ControllerJointImpedance,
+    ControllerJointImpedanceModelFree,
+    JointSelection,
+    select_joints,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -708,8 +713,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         selection = select_joints(model)
         return ControllerJointImpedance(
             model,
-            joint_q_idx=selection.q_idx,
-            joint_qd_idx=selection.qd_idx,
+            joint_selection=selection,
             stiffness=_gains(1, kp, device),
             damping=_gains(1, kd, device),
             use_gravity_compensation=False,
@@ -764,8 +768,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with wp.ScopedDevice(device):
             ctrl = ControllerJointImpedance(
                 model,
-                joint_q_idx=selection.q_idx,
-                joint_qd_idx=selection.qd_idx,
+                joint_selection=selection,
                 stiffness=_gains(1, 1.0, device),
                 damping=_gains(1, 0.0, device),
                 use_gravity_compensation=False,
@@ -783,8 +786,10 @@ class TestControllerJointImpedance(unittest.TestCase):
         # arrays, so the ball joint is read for FK/dynamics but never controlled.
         ctrl = ControllerJointImpedance(
             model,
-            joint_q_idx=_idx([model.joint_q_start.numpy()[j_rev]], device),
-            joint_qd_idx=_idx([model.joint_qd_start.numpy()[j_rev]], device),
+            joint_selection=JointSelection(
+                q_idx=_idx([model.joint_q_start.numpy()[j_rev]], device),
+                qd_idx=_idx([model.joint_qd_start.numpy()[j_rev]], device),
+            ),
             stiffness=_gains(1, 1.0, device),
             damping=_gains(1, 0.0, device),
             use_gravity_compensation=False,
@@ -809,8 +814,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_q_idx=_idx([0, 1, 2], device),
-                joint_qd_idx=_idx([0, 1, 2], device),
+                joint_selection=JointSelection(q_idx=_idx([0, 1, 2], device), qd_idx=_idx([0, 1, 2], device)),
                 stiffness=_gains(3, 1.0, device),
                 damping=_gains(3, 0.0, device),
                 use_gravity_compensation=False,
@@ -843,8 +847,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         # Should not raise — fixed joint is zero-DOF and irrelevant to the PD term.
         ctrl = ControllerJointImpedance(
             model,
-            joint_q_idx=selection.q_idx,
-            joint_qd_idx=selection.qd_idx,
+            joint_selection=selection,
             stiffness=_gains(1, 10.0, device),
             damping=_gains(1, 1.0, device),
             use_gravity_compensation=False,
@@ -860,8 +863,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_q_idx=_idx([0, 1, 2], device),
-                joint_qd_idx=_idx([0, 1], device),
+                joint_selection=JointSelection(q_idx=_idx([0, 1, 2], device), qd_idx=_idx([0, 1], device)),
                 stiffness=_gains(3, 1.0, device),
                 damping=_gains(3, 0.0, device),
                 use_gravity_compensation=False,
@@ -888,8 +890,9 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_q_idx=_idx([q_start[j_rev]], device),
-                joint_qd_idx=_idx([qd_start[j_rev] - 1], device),
+                joint_selection=JointSelection(
+                    q_idx=_idx([q_start[j_rev]], device), qd_idx=_idx([qd_start[j_rev] - 1], device)
+                ),
                 stiffness=_gains(1, 1.0, device),
                 damping=_gains(1, 0.0, device),
                 use_gravity_compensation=False,
@@ -905,8 +908,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_q_idx=_idx([99], device),
-                joint_qd_idx=_idx([0], device),
+                joint_selection=JointSelection(q_idx=_idx([99], device), qd_idx=_idx([0], device)),
                 stiffness=_gains(1, 1.0, device),
                 damping=_gains(1, 0.0, device),
                 use_gravity_compensation=False,
@@ -931,8 +933,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_q_idx=_idx([0], device),
-                joint_qd_idx=_idx([0], device),
+                joint_selection=JointSelection(q_idx=_idx([0], device), qd_idx=_idx([0], device)),
                 stiffness=_gains(1, 1.0, device),
                 damping=_gains(1, 0.0, device),
                 use_gravity_compensation=False,
@@ -948,8 +949,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_q_idx=_idx([0, 0], device),
-                joint_qd_idx=_idx([0, 0], device),
+                joint_selection=JointSelection(q_idx=_idx([0, 0], device), qd_idx=_idx([0, 0], device)),
                 stiffness=_gains(2, 1.0, device),
                 damping=_gains(2, 0.0, device),
                 use_gravity_compensation=False,
@@ -972,8 +972,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         model = builder.finalize(device=device)
         controller = ControllerJointImpedance(
             model,
-            joint_q_idx=_idx([0], device),
-            joint_qd_idx=_idx([0], device),
+            joint_selection=JointSelection(q_idx=_idx([0], device), qd_idx=_idx([0], device)),
             stiffness=_gains(1, 5.0, device),
             damping=_gains(1, 0.0, device),
             use_gravity_compensation=False,
@@ -1007,8 +1006,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_q_idx=interleaved,
-                joint_qd_idx=interleaved,
+                joint_selection=JointSelection(q_idx=interleaved, qd_idx=interleaved),
                 stiffness=_gains(4, 1.0, device),
                 damping=_gains(4, 0.0, device),
                 use_gravity_compensation=False,
@@ -1024,8 +1022,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         selection = select_joints(model)
         ctrl = ControllerJointImpedance(
             model,
-            joint_q_idx=selection.q_idx,
-            joint_qd_idx=selection.qd_idx,
+            joint_selection=selection,
             stiffness=_gains(3, 4.0, device),
             damping=_gains(3, 0.0, device),
             use_gravity_compensation=False,
@@ -1055,8 +1052,7 @@ class TestControllerJointImpedance(unittest.TestCase):
 
         ctrl = ControllerJointImpedance(
             model,
-            joint_q_idx=selection.q_idx,
-            joint_qd_idx=selection.qd_idx,
+            joint_selection=selection,
             stiffness=_gains(3, 5.0, device),
             damping=_gains(3, 0.0, device),
             use_gravity_compensation=False,
@@ -1103,8 +1099,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         selection = select_joints(model, articulations=["controlled"])
         ctrl = ControllerJointImpedance(
             model,
-            joint_q_idx=selection.q_idx,
-            joint_qd_idx=selection.qd_idx,
+            joint_selection=selection,
             stiffness=_gains(1, 10.0, device),
             damping=_gains(1, 0.0, device),
             use_gravity_compensation=False,
@@ -1126,8 +1121,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         selection = select_joints(model, articulations=["robot1"])
         ctrl = ControllerJointImpedance(
             model,
-            joint_q_idx=selection.q_idx,
-            joint_qd_idx=selection.qd_idx,
+            joint_selection=selection,
             stiffness=_gains(1, 2.0, device),
             damping=_gains(1, 0.0, device),
             use_gravity_compensation=False,
@@ -1157,8 +1151,9 @@ class TestControllerJointImpedance(unittest.TestCase):
         qd_start = model.joint_qd_start.numpy()
         ctrl = ControllerJointImpedance(
             model,
-            joint_q_idx=_idx([q_start[j_arm]], device),
-            joint_qd_idx=_idx([qd_start[j_arm]], device),
+            joint_selection=JointSelection(
+                q_idx=_idx([q_start[j_arm]], device), qd_idx=_idx([qd_start[j_arm]], device)
+            ),
             stiffness=_gains(1, 0.0, device),
             damping=_gains(1, 0.0, device),
             use_gravity_compensation=False,
@@ -1194,8 +1189,10 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(TypeError):
             ControllerJointImpedance(
                 model,
-                joint_q_idx=wp.zeros(1, dtype=wp.uint32, device=device),
-                joint_qd_idx=wp.zeros(1, dtype=wp.uint32, device=device),
+                joint_selection=JointSelection(
+                    q_idx=wp.zeros(1, dtype=wp.uint32, device=device),
+                    qd_idx=wp.zeros(1, dtype=wp.uint32, device=device),
+                ),
                 stiffness=_gains(1, 1.0, device),
                 damping=_gains(1, 0.0, device),
                 use_gravity_compensation=False,
@@ -1241,8 +1238,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         joint_qd_idx = wp.array([0], dtype=wp.int32, device=device)
         ctrl = ControllerJointImpedance(
             model,
-            joint_q_idx=joint_q_idx,
-            joint_qd_idx=joint_qd_idx,
+            joint_selection=JointSelection(q_idx=joint_q_idx, qd_idx=joint_qd_idx),
             stiffness=wp.array([5.0], dtype=wp.float32, device=device),
             damping=wp.array([0.0], dtype=wp.float32, device=device),
             use_gravity_compensation=False,

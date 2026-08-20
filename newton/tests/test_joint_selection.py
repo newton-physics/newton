@@ -351,8 +351,7 @@ class TestSelectJoints(unittest.TestCase):
 
         ctrl = ControllerJointImpedance(
             model,
-            joint_q_idx=selection.q_idx,
-            joint_qd_idx=selection.qd_idx,
+            joint_selection=selection,
             stiffness=_gains(3, 1.0, device),
             damping=_gains(3, 0.0, device),
             use_gravity_compensation=False,
