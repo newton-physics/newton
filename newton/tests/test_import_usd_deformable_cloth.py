@@ -26,6 +26,7 @@ from newton.tests._usd_deformable_test_utils import (
     group_range,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.usd import SchemaResolverPhysx
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -99,12 +100,190 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 self.assertEqual(builder.particle_count, 0)
                 self.assertEqual(builder.tri_count, 0)
 
+    def test_current_surface_structural_stiffness_is_thickness_independent(self):
+        """Preserve current surface stiffnesses when the authored thickness changes."""
+        stage = _deformable_stage(up_axis="y")
+        stretch, shear, bend = 1234.0, 456.0, 37.0
+        for name, thickness in (("Thin", 0.001), ("Thick", 0.01)):
+            cloth = _add_cloth_mesh(stage, f"/World/{name}")
+            _bind_deformable_material(
+                stage,
+                cloth.GetPrim(),
+                f"/World/{name}Mat",
+                surfaceThickness=thickness,
+                surfaceStretchStiffness=stretch,
+                surfaceShearStiffness=shear,
+                surfaceBendStiffness=bend,
+                density=900.0,
+            )
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage, return_deformable_results=True)
+        messages = [str(w.message) for w in caught]
+
+        for name in ("Thin", "Thick"):
+            path = f"/World/{name}"
+            tri_start, _ = group_range(builder, "cloth", path, "tri")
+            edge_start, _ = group_range(builder, "cloth", path, "edge")
+            self.assertAlmostEqual(builder.tri_materials[tri_start][0], stretch)
+            self.assertEqual(builder.tri_materials[tri_start][1], 0.0)
+            self.assertAlmostEqual(builder.edge_bending_properties[edge_start][0], bend)
+            self.assertEqual(
+                result["path_cloth_attrs"][path]["material"]["surfaceShearStiffness"],
+                shear,
+            )
+            self.assertTrue(
+                any(path in message and "surfaceShearStiffness is not applied" in message for message in messages)
+            )
+
+    def test_surface_missing_structural_modes_use_isotropic_fallback(self):
+        """Derive each missing surface mode from the isotropic material independently."""
+        stage = _deformable_stage(up_axis="y")
+        youngs, poissons, thickness = 2.0e6, 0.25, 0.02
+        derived = _add_cloth_mesh(stage, "/World/Derived")
+        _bind_deformable_material(
+            stage,
+            derived.GetPrim(),
+            "/World/DerivedMat",
+            surfaceThickness=thickness,
+            youngsModulus=youngs,
+            poissonsRatio=poissons,
+        )
+        overridden = _add_cloth_mesh(stage, "/World/Overridden")
+        _bind_deformable_material(
+            stage,
+            overridden.GetPrim(),
+            "/World/OverriddenMat",
+            surfaceThickness=thickness,
+            youngsModulus=youngs,
+            poissonsRatio=poissons,
+            surfaceStretchStiffness=77.0,
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        derived_tri, _ = group_range(builder, "cloth", "/World/Derived", "tri")
+        derived_edge, _ = group_range(builder, "cloth", "/World/Derived", "edge")
+        self.assertAlmostEqual(builder.tri_materials[derived_tri][0], 42666.666666666664, delta=0.05)
+        self.assertAlmostEqual(builder.edge_bending_properties[derived_edge][0], 1.4222222222222223, delta=2.0e-6)
+
+        overridden_tri, _ = group_range(builder, "cloth", "/World/Overridden", "tri")
+        overridden_edge, _ = group_range(builder, "cloth", "/World/Overridden", "edge")
+        self.assertEqual(builder.tri_materials[overridden_tri][0], 77.0)
+        self.assertAlmostEqual(builder.edge_bending_properties[overridden_edge][0], 1.4222222222222223, delta=2.0e-6)
+
+    def test_current_surface_material_uses_proposal_fallbacks(self):
+        """Use the proposal thickness and isotropic fallbacks for a current surface material."""
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", density=1000.0)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+
+        messages = [str(w.message) for w in caught]
+        self.assertFalse(any("compatibility default thickness" in message for message in messages))
+        particle_start, particle_end = group_range(builder, "cloth", "/World/Cloth", "particle")
+        tri_start, _ = group_range(builder, "cloth", "/World/Cloth", "tri")
+        edge_start, _ = group_range(builder, "cloth", "/World/Cloth", "edge")
+        self.assertAlmostEqual(sum(builder.particle_mass[particle_start:particle_end]), 1.0, places=5)
+        self.assertAlmostEqual(builder.particle_radius[particle_start], 0.0005, places=7)
+        self.assertAlmostEqual(builder.tri_materials[tri_start][0], 1098.901098901099, delta=2.0e-4)
+        self.assertAlmostEqual(builder.edge_bending_properties[edge_start][0], 9.15750915750916e-5, delta=2.0e-10)
+
+    def test_surface_material_validation_uses_independent_fallbacks(self):
+        """Drop malformed surface values and derive their modes from valid fallbacks."""
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(
+            stage,
+            cloth.GetPrim(),
+            "/World/Mat",
+            surfaceThickness=float("-inf"),
+            youngsModulus=float("-inf"),
+            poissonsRatio=0.75,
+            surfaceStretchStiffness=-1.0,
+        )
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        messages = [str(w.message) for w in caught]
+
+        self.assertEqual(sum("invalid physics:poissonsRatio" in message for message in messages), 1)
+        self.assertEqual(sum("invalid physics:surfaceStretchStiffness" in message for message in messages), 1)
+        self.assertFalse(any("surfaceThickness -inf" in message for message in messages))
+        tri_start, _ = group_range(builder, "cloth", "/World/Cloth", "tri")
+        self.assertAlmostEqual(builder.tri_materials[tri_start][0], 1098.901098901099, delta=2.0e-4)
+
+    def test_surface_vendor_namespace_material_needs_resolver(self):
+        """Read vendor-namespaced surface attributes only through a compatibility resolver."""
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(
+            stage,
+            cloth.GetPrim(),
+            "/World/Mat",
+            namespace="omniphysics",
+            surfaceThickness=0.02,
+            surfaceStretchStiffness=77.0,
+        )
+
+        builder_default = newton.ModelBuilder()
+        builder_default.add_usd(stage)
+        default_tri, _ = group_range(builder_default, "cloth", "/World/Cloth", "tri")
+        self.assertNotAlmostEqual(builder_default.tri_materials[default_tri][0], 77.0)
+        self.assertAlmostEqual(builder_default.particle_radius[0], 0.0005, places=7)
+
+        builder_compat = newton.ModelBuilder()
+        builder_compat.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
+        compat_tri, _ = group_range(builder_compat, "cloth", "/World/Cloth", "tri")
+        self.assertAlmostEqual(builder_compat.tri_materials[compat_tri][0], 77.0)
+        self.assertAlmostEqual(builder_compat.particle_radius[0], 0.01, places=7)
+
+    def test_surface_material_attr_authored_on_geometry_warns(self):
+        """Warn when a current surface material property is authored on geometry."""
+        from pxr import Sdf
+
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        cloth.GetPrim().CreateAttribute("physics:surfaceStretchStiffness", Sdf.ValueTypeNames.Float).Set(77.0)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "surfaceStretchStiffness.*authored on the geometry"):
+            builder.add_usd(stage)
+
+    def test_legacy_surface_material_retains_old_units_during_deprecation(self):
+        """Preserve the old surface modulus conversion while warning users to migrate."""
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(
+            stage,
+            cloth.GetPrim(),
+            "/World/Mat",
+            thickness=0.02,
+            stretchStiffness=2000.0,
+            bendStiffness=300.0,
+            density=1000.0,
+        )
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(DeprecationWarning, "unprefixed surface material attributes"):
+            builder.add_usd(stage)
+
+        tri_start, _ = group_range(builder, "cloth", "/World/Cloth", "tri")
+        edge_start, _ = group_range(builder, "cloth", "/World/Cloth", "edge")
+        self.assertAlmostEqual(builder.tri_materials[tri_start][0], 40.0, delta=1.0e-5)
+        self.assertAlmostEqual(builder.edge_bending_properties[edge_start][0], 0.0024, delta=1.0e-9)
+
     def test_cloth_material_maps_to_isotropic_membrane(self):
-        """Surface material -> isotropic membrane: stretchStiffness -> tri_ke (authored zero
-        included -- the range is [0, inf)), bendStiffness -> edge bending. tri_ka
-        (area-preservation/Poisson) is 0 since the proposal has no such attribute (the builder
-        default would fabricate an unauthored area response). shearStiffness can't be
-        represented independently: it warns but is preserved in path_cloth_attrs."""
+        """Map deprecated surface moduli to Newton's isotropic membrane during migration."""
         stage = _deformable_stage(up_axis="y")
         mesh = _add_cloth_mesh(stage, "/World/ClothA")
         stretch, shear, bend = 1.0e3, 5.0e2, 2.0e1  # distinct stretch != shear
@@ -154,22 +333,19 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertEqual(result["path_cloth_attrs"]["/World/ClothZero"]["material"]["stretchStiffness"], 0.0)
 
     def test_cloth_default_thickness_converts_authored_density(self):
-        """A surface material that authors a volumetric density but no thickness gets the
-        importer's default thickness for the areal conversion, and the assumed default is
-        warned."""
+        """Convert volumetric density with the proposal's 1 mm thickness fallback."""
         stage = _deformable_stage()
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
         _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", density=1000.0)
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "assuming the default thickness"):
-            builder.add_usd(stage)
+        builder.add_usd(stage)
 
         p0, p1 = group_range(builder, "cloth", "/World/Cloth", "particle")
-        # Unit quad (area 1): mass = density * default thickness * area = 1000 * 0.002 = 2 kg.
-        self.assertAlmostEqual(sum(builder.particle_mass[p0:p1]), 2.0, places=5)
+        # Unit quad (area 1): mass = density * default thickness * area = 1000 * 0.001 = 1 kg.
+        self.assertAlmostEqual(sum(builder.particle_mass[p0:p1]), 1.0, places=5)
         # The collision radius describes the same assumed shell: half the default thickness.
-        self.assertAlmostEqual(builder.particle_radius[p0], 0.001, places=6)
+        self.assertAlmostEqual(builder.particle_radius[p0], 0.0005, places=7)
 
     def test_cloth_default_thickness_converts_body_and_base_material_density(self):
         """A volumetric density resolved from the deformable body API or a base physics
@@ -197,7 +373,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
         for path in ("/World/ClothBodyDensity", "/World/ClothBaseMat"):
             self.assertTrue(
-                any(path in m and "assuming the default thickness" in m for m in messages),
+                any(path in m and "compatibility default thickness" in m for m in messages),
                 f"{path}: expected a default-thickness warning",
             )
             p0, p1 = group_range(builder, "cloth", path, "particle")
@@ -227,22 +403,20 @@ class TestUSDDeformableCloth(unittest.TestCase):
         _bind_deformable_material(stage, bare.GetPrim(), "/World/MatBare", density=1000.0)
 
         builder = newton.ModelBuilder()
-        # The bare cloth resolves no thickness, so the importer assumes its default (2 mm)
-        # for the surface conversion and must say so instead of assuming silently.
-        with self.assertWarnsRegex(UserWarning, "/World/ClothBare.*assuming the default thickness"):
-            result = builder.add_usd(stage, return_deformable_results=True)
+        # The current surface material on the bare cloth uses AOUSD's 1 mm fallback.
+        result = builder.add_usd(stage, return_deformable_results=True)
 
         def total_mass(path):
             p0, p1 = group_range(builder, "cloth", path, "particle")
             return sum(builder.particle_mass[p0:p1])
 
-        # Mass scales with the resolved thickness: the bare cloth uses the 0.002 default,
-        # so the authored 0.01 comes out exactly 5x heavier.
+        # Mass scales with the resolved thickness: the bare cloth uses the 0.001 default,
+        # so the authored 0.01 comes out exactly 10x heavier.
         m_bare = total_mass("/World/ClothBare")
         self.assertGreater(m_bare, 0.0)
-        self.assertAlmostEqual(total_mass("/World/ClothThick") / m_bare, thickness / 0.002, places=4)
+        self.assertAlmostEqual(total_mass("/World/ClothThick") / m_bare, thickness / 0.001, places=4)
         # The NewtonMassAPI shell thickness areal-scales exactly like the material attribute.
-        self.assertAlmostEqual(total_mass("/World/ClothShell") / m_bare, thickness / 0.002, places=4)
+        self.assertAlmostEqual(total_mass("/World/ClothShell") / m_bare, thickness / 0.001, places=4)
 
         # Volumetric density (1000), not the areal 1000 * thickness passed to add_cloth_mesh.
         self.assertEqual(result["path_cloth_attrs"]["/World/ClothThick"]["resolved_density"], 1000.0)

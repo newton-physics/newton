@@ -537,8 +537,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "authored on the geometry"):
             builder.add_usd(stage)
 
-    def test_cable_resolved_density_reports_default_when_unauthored(self):
-        """resolved_density reports the density actually used (the builder default), not None."""
+    def test_cable_resolved_density_reports_proposal_fallback(self):
+        """Report the proposal's final density fallback when density is unauthored."""
         stage = _deformable_stage(up_axis="y")
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         curves = _add_cable_curve(stage, "/World/Cable", pts)
@@ -547,7 +547,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, return_deformable_results=True)
         attrs = result["path_cable_attrs"]["/World/Cable"]
-        self.assertEqual(attrs["resolved_density"], builder.default_shape_cfg.density)
+        self.assertEqual(attrs["resolved_density"], 1000.0)
 
     @staticmethod
     def _author_two_curve_prim_with_masses(vertex_counts, masses):
@@ -657,11 +657,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         self.assertAlmostEqual(sum(builder.body_mass[b] for b in range(b0, b1)), 2.5, places=4)
 
-    def test_per_point_masses_with_zero_density_keep_finite_inertia(self):
-        """Per-point physics:masses on a cable whose density-derived mass is zero (the
-        caller sets default_shape_cfg.density = 0) rebuild the segment inertia from the
-        capsule geometry at the new mass. Scaling the zero tensor by m/orig instead would
-        zero it and its inverse would poison body_inv_inertia with non-finite values."""
+    def test_per_point_masses_override_proposal_density_with_finite_inertia(self):
+        """Apply per-point masses ahead of the proposal density and keep inertia finite."""
         from pxr import Sdf
 
         stage = _deformable_stage()

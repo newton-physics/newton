@@ -102,9 +102,9 @@ def Xform "World"
             prepend apiSchemas = ["PhysicsSurfaceDeformableMaterialAPI"]
         )
         {
-            float physics:thickness = 0.001
-            float physics:stretchStiffness = 100000
-            float physics:bendStiffness = 10
+            float physics:surfaceThickness = 0.001
+            float physics:surfaceStretchStiffness = 100
+            float physics:surfaceBendStiffness = 0.00000001
             float physics:density = 400
         }
 

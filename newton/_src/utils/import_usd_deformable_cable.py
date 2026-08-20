@@ -23,6 +23,9 @@ if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
 
 from .import_usd_deformable_utils import (
+    _AOUSD_DEFAULT_POISSONS_RATIO,
+    _AOUSD_DEFAULT_THICKNESS,
+    _AOUSD_DEFAULT_YOUNGS_MODULUS,
     _CABLE_RADIUS_COMPATIBILITY_FALLBACK,
     _apply_cable_masses,
     _bake_world_points,
@@ -32,7 +35,6 @@ from .import_usd_deformable_utils import (
     _deformable_collision_enabled,
     _DeformableImportContext,
     _is_ignored_path,
-    _mass_weight_density,
     _resolve_deformable_density,
     _skip_for_deformable_body_owner,
     _UnionFind,
@@ -44,10 +46,6 @@ from .import_usd_deformable_utils import (
     _warn_unsupported_rest_fields,
 )
 
-# AOUSD effective fallback values (SI before conversion to stage units).
-_AOUSD_DEFAULT_CURVES_THICKNESS = 1.0e-3
-_AOUSD_DEFAULT_YOUNGS_MODULUS = 1.0e6
-_AOUSD_DEFAULT_POISSONS_RATIO = 0.3
 _AOUSD_CIRCULAR_SECTION_SHEAR_CORRECTION = 0.9
 # Attributes that distinguish proposal revisions; density is shared and intentionally omitted.
 _CURRENT_CURVE_MATERIAL_ATTRS = (
@@ -180,7 +178,7 @@ def _warn_legacy_curve_material(path: str, material: dict[str, float] | None) ->
 def _warn_default_cable_radius(path: str, radius: float, linear_unit: float) -> None:
     """Report the radius assumed when no cable thickness resolves from authored material."""
     inertia_note = ""
-    if radius * linear_unit <= 0.5 * _AOUSD_DEFAULT_CURVES_THICKNESS:
+    if radius * linear_unit <= 0.5 * _AOUSD_DEFAULT_THICKNESS:
         inertia_note = (
             " At this radius, the smallest principal moment of short cable segments may fall below "
             "ModelBuilder's inertia-validation floor, causing their inertia to be corrected during finalization."
@@ -210,7 +208,7 @@ def _cable_radius_from_material(material: dict[str, float] | None, linear_unit: 
             if name in material:
                 return 0.5 * material[name]
         if not _is_legacy_only_curve_material(material):
-            return 0.5 * _AOUSD_DEFAULT_CURVES_THICKNESS / linear_unit
+            return 0.5 * _AOUSD_DEFAULT_THICKNESS / linear_unit
     return _CABLE_RADIUS_COMPATIBILITY_FALLBACK / linear_unit
 
 
@@ -371,14 +369,20 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         positions = _bake_world_points(pts, wmat)
         mat = usd._get_curve_deformable_material(prim, deformable_read)
         radius = _cable_radius_from_material(mat, linear_unit)
-        density = _resolve_deformable_density(prim, None if mat is None else mat.get("density"), deformable_read)
+        density = _resolve_deformable_density(
+            prim,
+            None if mat is None else mat.get("density"),
+            deformable_read,
+            linear_unit,
+            read_base_material=mat is None,
+        )
         curve_recs[path] = _CurveDeformableRecord(
             prim=prim,
             positions=positions,
             closed=curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic,
             material=mat,
             radius=radius,
-            density=density if density is not None else builder.default_shape_cfg.density,
+            density=density,
         )
 
     if not curve_recs:
@@ -803,14 +807,18 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             _warn_default_cable_radius(path, radius, linear_unit)
         # Density precedence resolved here; total-mass/per-point overrides applied after add_rod.
         cable_density = _resolve_deformable_density(
-            prim, None if cable_mat is None else cable_mat.get("density"), deformable_read
+            prim,
+            None if cable_mat is None else cable_mat.get("density"),
+            deformable_read,
+            linear_unit,
+            read_base_material=cable_mat is None,
         )
-        resolved_cable_density = cable_density if cable_density is not None else builder.default_shape_cfg.density
+        resolved_cable_density = cable_density
         collision_enabled, approximated_from = _deformable_collision_enabled(prim, ctx.ignore_paths)
         _warn_collision_approximated(path, approximated_from)
         cable_cfg = replace(
             builder.default_shape_cfg,
-            density=_mass_weight_density(prim, resolved_cable_density, deformable_read),
+            density=resolved_cable_density,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )

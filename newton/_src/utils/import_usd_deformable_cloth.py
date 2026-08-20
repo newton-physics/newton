@@ -17,6 +17,9 @@ import numpy as np
 import warp as wp
 
 from .import_usd_deformable_utils import (
+    _AOUSD_DEFAULT_POISSONS_RATIO,
+    _AOUSD_DEFAULT_THICKNESS,
+    _AOUSD_DEFAULT_YOUNGS_MODULUS,
     _DEFAULT_CLOTH_THICKNESS,
     _apply_particle_masses,
     _bake_world_points,
@@ -24,7 +27,6 @@ from .import_usd_deformable_utils import (
     _deformable_collision_enabled,
     _DeformableImportContext,
     _is_ignored_path,
-    _mass_weight_density,
     _resolve_deformable_density,
     _skip_for_deformable_body_owner,
     _warn_collision_approximated,
@@ -35,6 +37,81 @@ from .import_usd_deformable_utils import (
     _warn_unsupported_rest_fields,
     _world_matrix_reflects,
 )
+
+_CURRENT_SURFACE_MATERIAL_ATTRS = (
+    "surfaceThickness",
+    "youngsModulus",
+    "poissonsRatio",
+    "surfaceStretchStiffness",
+    "surfaceShearStiffness",
+    "surfaceBendStiffness",
+)
+_LEGACY_SURFACE_MATERIAL_ATTRS = ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness")
+
+
+def _has_legacy_surface_material(material: dict[str, float]) -> bool:
+    """Whether attributes from the earlier surface-material revision are authored."""
+    return any(name in material for name in _LEGACY_SURFACE_MATERIAL_ATTRS)
+
+
+def _is_legacy_only_surface_material(material: dict[str, float]) -> bool:
+    """Whether only attributes from the earlier surface-material revision are authored."""
+    return _has_legacy_surface_material(material) and not any(
+        name in material for name in _CURRENT_SURFACE_MATERIAL_ATTRS
+    )
+
+
+def _warn_legacy_surface_material(path: str, material: dict[str, float] | None) -> None:
+    """Warn when an earlier surface-material attribute is authored."""
+    if material is not None and _has_legacy_surface_material(material):
+        warnings.warn(
+            f"{path}: unprefixed surface material attributes follow an earlier AOUSD proposal revision "
+            f"and are deprecated; migrate physics:thickness to physics:surfaceThickness and convert "
+            f"the old moduli to structural physics:surface*Stiffness values.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+
+def _resolve_surface_structural_stiffnesses(
+    material: dict[str, float] | None, thickness: float | None, linear_unit: float
+) -> tuple[float | None, float | None, float | None] | None:
+    """Resolve surface stretch, shear, and bend structural stiffnesses."""
+    if material is None or thickness is None:
+        return None
+
+    if _is_legacy_only_surface_material(material):
+        stretch = material.get("stretchStiffness")
+        shear = material.get("shearStiffness")
+        bend = material.get("bendStiffness")
+        return (
+            None if stretch is None else stretch * thickness,
+            None if shear is None else shear * thickness,
+            None if bend is None else bend * thickness**3,
+        )
+
+    youngs = material.get("youngsModulus", _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit)
+    poissons = material.get("poissonsRatio", _AOUSD_DEFAULT_POISSONS_RATIO)
+    shear_modulus = youngs / (2.0 * (1.0 + poissons))
+
+    def resolve(current_name: str, legacy_name: str, derived: float) -> float:
+        if current_name in material:
+            return material[current_name]
+        if legacy_name in material:
+            legacy = material[legacy_name]
+            return legacy * (thickness**3 if current_name == "surfaceBendStiffness" else thickness)
+        return derived
+
+    plane_stress = 1.0 - poissons**2
+    return (
+        resolve("surfaceStretchStiffness", "stretchStiffness", youngs * thickness / plane_stress),
+        resolve("surfaceShearStiffness", "shearStiffness", shear_modulus * thickness),
+        resolve(
+            "surfaceBendStiffness",
+            "bendStiffness",
+            youngs * thickness**3 / (12.0 * plane_stress),
+        ),
+    )
 
 
 def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
@@ -139,11 +216,13 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             )
             continue
 
-        cloth_mat = usd._get_surface_deformable_material(prim, deformable_read) or {}
+        surface_material = usd._get_surface_deformable_material(prim, deformable_read)
+        cloth_mat = surface_material or {}
+        _warn_legacy_surface_material(path, surface_material)
         # Surface thickness: prefer the material's authored value; otherwise fall back to a
         # shell mass model's thickness (NewtonMassAPI massModel="shell" / shellThickness,
         # resolved across Newton / MuJoCo like the rigid shape path above).
-        thickness = cloth_mat.get("thickness")
+        thickness = cloth_mat.get("surfaceThickness", cloth_mat.get("thickness"))
         if thickness is None and resolver.get_value(prim, PrimType.SHAPE, "mass_model", default="solid") == "shell":
             shell_thickness_val = resolver.get_value(prim, PrimType.SHAPE, "shell_thickness")
             if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
@@ -152,63 +231,56 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # Resolve the volumetric density before the thickness fallback: a density authored on
         # the deformable body or a base physics material carries no thickness by construction
         # (only the surface material can author one), yet still needs the areal conversion.
-        vol_density = _resolve_deformable_density(prim, cloth_mat.get("density"), deformable_read)
-        if thickness is None and (
-            vol_density is not None
-            or any(key in cloth_mat for key in ("stretchStiffness", "bendStiffness", "shearStiffness"))
-        ):
-            # The proposal authors volumetric quantities and its unauthored-thickness
-            # sentinel delegates to a simulator default; assume a fabric-like shell so the
-            # values get a physical surface conversion.
+        vol_density = _resolve_deformable_density(
+            prim,
+            cloth_mat.get("density"),
+            deformable_read,
+            ctx.linear_unit,
+            read_base_material=surface_material is None,
+        )
+        if thickness is None and surface_material is not None and not _is_legacy_only_surface_material(cloth_mat):
+            thickness = _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
+        if thickness is None:
+            # Preserve Newton's released behavior for assets that have no current surface
+            # material contract. Current materials use the proposal's 1 mm fallback above.
             thickness = _DEFAULT_CLOTH_THICKNESS / ctx.linear_unit
             warnings.warn(
-                f"{path}: volumetric physics values are authored but no thickness is "
-                f"resolvable; assuming the default thickness of {thickness:g} stage units "
+                f"{path}: no current surface material thickness is resolvable; preserving "
+                f"the compatibility default thickness of {thickness:g} stage units "
                 f"(~{_DEFAULT_CLOTH_THICKNESS:g} m) for the mass, stiffness, and collision-radius "
-                f"conversions. Author physics:thickness on the surface material (or a shell mass "
-                f"model) to override.",
+                f"conversions. Author physics:surfaceThickness on the surface material (or a "
+                f"shell mass model) to override.",
                 stacklevel=2,
             )
 
-        # Map the surface material onto Newton's isotropic triangle membrane (used by
-        # SolverVBD and SolverSemiImplicit), whose triangle has three parameters:
-        #   tri_ke  = mu     -> in-plane elastic stiffness  <- stretchStiffness
-        #   edge_ke          -> dihedral bending stiffness  <- bendStiffness
-        #   tri_ka  = lambda -> area preservation (Poisson) <- (no proposal attribute)
-        # An isotropic membrane cannot separate stretch from shear: both live in mu. We
-        # therefore drive mu from stretchStiffness and drop shearStiffness (an anisotropic
-        # membrane such as SolverStyle3D's tri_aniso_ke is needed to honor it). tri_ka encodes
-        # the Poisson ratio nu = tri_ka / (tri_ka + 2*tri_ke); the surface material authors no
-        # Poisson term, so tri_ka is set to 0 (nu = 0). Passing None instead would inject the
-        # builder's default area stiffness, giving even a zero-stiffness material an unauthored
-        # area-preservation response.
-        #
-        # The proposal authors moduli in force/area; Newton integrates the triangle energy over
-        # area, so a modulus is scaled by the shell thickness when one is authored (membrane
-        # stiffness ~ E*h, bending ~ E*h^3) -- the surface analog of the cable path's E*A/L.
-        #
-        # Either way the raw, as-authored moduli (including the dropped shearStiffness) survive
-        # in path_cloth_attrs, so another solver can rebuild from them.
-        tri_ke = cloth_mat.get("stretchStiffness")
-        edge_ke = cloth_mat.get("bendStiffness")
-        if thickness is not None:
-            tri_ke = tri_ke * thickness if tri_ke is not None else None
-            edge_ke = edge_ke * thickness**3 if edge_ke is not None else None
-        tri_ka = 0.0  # No proposal Poisson term; None would inject the builder's area default.
-        if "shearStiffness" in cloth_mat:
+        # Newton's isotropic membrane cannot apply stretch and shear independently, so
+        # stretch drives its in-plane mode and shear remains metadata. Keep the area mode
+        # at zero: None would inject an unauthored builder default. Missing current modes
+        # derive from E, nu, and h; deprecated moduli retain their former conversion.
+        structural_stiffnesses = _resolve_surface_structural_stiffnesses(surface_material, thickness, ctx.linear_unit)
+        if structural_stiffnesses is None:
+            tri_ke = None
+            edge_ke = None
+        else:
+            tri_ke, _surface_shear_ke, edge_ke = structural_stiffnesses
+        tri_ka = 0.0  # No independently representable area mode; None would inject a builder default.
+        shear_name = None
+        if "surfaceShearStiffness" in cloth_mat:
+            shear_name = "surfaceShearStiffness"
+        elif "shearStiffness" in cloth_mat:
+            shear_name = "shearStiffness"
+        if shear_name is not None:
             warnings.warn(
-                f"{path}: shearStiffness is not applied -- Newton's isotropic cloth membrane makes "
+                f"{path}: {shear_name} is not applied -- Newton's isotropic cloth membrane makes "
                 f"stretch and shear share one modulus. An anisotropic membrane (e.g. SolverStyle3D's "
                 f"tri_aniso_ke) can honor it; the value is preserved in path_cloth_attrs.",
                 stacklevel=2,
             )
         # Newton cloth density is areal; convert the volumetric density (resolved above) with
         # the surface thickness (required for surface mass per the proposal).
-        resolved_cloth_density = vol_density if vol_density is not None else builder.default_shape_cfg.density
-        # The areal value is builder-specific; keep it local to add_cloth_mesh. The weight
-        # density stays neutral-positive when a body mass must be distributed over it.
-        weight_density = _mass_weight_density(prim, resolved_cloth_density, deformable_read)
-        density = weight_density * thickness if thickness is not None else weight_density
+        resolved_cloth_density = vol_density
+        # The areal value is builder-specific; keep it local to add_cloth_mesh.
+        density = resolved_cloth_density * thickness if thickness is not None else resolved_cloth_density
         # Collision radius from the shell's physical half-thickness rather than the generic default.
         particle_radius = 0.5 * thickness if thickness is not None else None
 

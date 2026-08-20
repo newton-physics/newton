@@ -1319,6 +1319,10 @@ def parse_usd(
                 prim,
                 compat_namespaces=compat_ns,
                 _load_custom_attributes=False,
+                # The marked-volume pass owns current proposal material lowering. Avoid
+                # reading it here too, which would duplicate validation warnings. Keep
+                # get_tetmesh's material path for bare TetMeshes and legacy API-less assets.
+                _load_material=usd._should_load_tetmesh_material_for_import(prim),
             )
         return tetmesh_cache[prim_path]
 

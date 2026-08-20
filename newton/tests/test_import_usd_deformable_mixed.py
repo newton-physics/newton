@@ -22,6 +22,7 @@ import newton
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
+    _bind_deformable_material,
     _deformable_stage,
     group_labels,
     group_range,
@@ -96,6 +97,57 @@ class TestUSDDeformableMixed(unittest.TestCase):
                 result = builder.add_usd(stage, return_deformable_results=True)
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["resolved_density"], 600.0)
 
+    def test_proposal_deformables_use_final_density_fallback(self):
+        """Use 1000 kg/m^3 only for proposal-marked deformables without a density."""
+        stage = _deformable_stage()
+        cable = _add_cable_curve(stage, "/World/Cable", _CABLE_PTS, thickness=None)
+        _bind_deformable_material(stage, cable.GetPrim(), "/World/CableMat", curvesThickness=0.02)
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat", surfaceThickness=0.01)
+        volume = _author_unit_tet(stage, "/World/Volume", sim_api=True)
+        _bind_deformable_material(stage, volume.GetPrim(), "/World/VolumeMat")
+        _author_unit_tet(stage, "/World/BareTet", sim_api=False)
+
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.density = 7.0
+        builder.default_tet_density = 11.0
+        result = builder.add_usd(stage, return_deformable_results=True)
+
+        self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["resolved_density"], 1000.0)
+        self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["resolved_density"], 1000.0)
+        self.assertEqual(result["path_soft_attrs"]["/World/Volume"]["resolved_density"], 1000.0)
+        self.assertEqual(result["path_soft_attrs"]["/World/BareTet"]["resolved_density"], 11.0)
+
+    def test_proposal_fallbacks_follow_stage_length_units(self):
+        """Express physical proposal fallbacks consistently in centimeter stage units."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+        cable = _add_cable_curve(stage, "/World/Cable", _CABLE_PTS, thickness=None)
+        _bind_deformable_material(stage, cable.GetPrim(), "/World/CableMat")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat")
+        volume = _author_unit_tet(stage, "/World/Volume", sim_api=True)
+        volume.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _bind_deformable_material(stage, volume.GetPrim(), "/World/VolumeMat")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "non-unit linear units are not supported"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+
+        self.assertAlmostEqual(float(builder.shape_scale[0][0]), 0.05, places=6)
+        self.assertAlmostEqual(builder.particle_radius[0], 0.05, places=6)
+        for family, path in (
+            ("path_cable_attrs", "/World/Cable"),
+            ("path_cloth_attrs", "/World/Cloth"),
+            ("path_soft_attrs", "/World/Volume"),
+        ):
+            self.assertAlmostEqual(result[family][path]["resolved_density"], 0.001, places=9)
+
+        volume_tet, _ = group_range(builder, "soft", "/World/Volume", "tet")
+        self.assertAlmostEqual(builder.tet_materials[volume_tet][0], 3846.153846153846, delta=0.02)
+
     def test_mixed_scene_imports_and_finalizes(self):
         """The mixed scene builds every family with correct counts, labels, disjoint
         ranges, materials, and per-cable articulations, and finalizes in one pass."""
@@ -120,12 +172,12 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertEqual(builder.body_count, 6)
         self.assertEqual(len(builder.articulation_label), 2)
 
-        # Cloth: 4 particles / 2 triangles with the material's stretch modulus scaled by
-        # thickness (tri_ke = stretchStiffness * thickness) and no fabricated area term.
+        # Cloth: 4 particles / 2 triangles with the material's structural stretch
+        # stiffness mapped directly and no fabricated area term.
         p0, p1 = group_range(builder, "cloth", "/World/Cloth/sim", "particle")
         t0, t1 = group_range(builder, "cloth", "/World/Cloth/sim", "tri")
         self.assertEqual((p1 - p0, t1 - t0), (4, 2))
-        self.assertAlmostEqual(builder.tri_materials[t0][0], 1.0e5 * 0.001, delta=1.0)  # tri_ke
+        self.assertAlmostEqual(builder.tri_materials[t0][0], 100.0, delta=1.0)  # tri_ke
         self.assertEqual(builder.tri_materials[t0][1], 0.0)  # tri_ka
 
         # Volumes: one tet of 4 particles each, disjoint back-to-back particle ranges.
@@ -171,12 +223,8 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertTrue(any("/World/ClothKin" in m and "kinematic deformables" in m for m in messages))
         self.assertTrue(any("/World/SoftOff/sim" in m and "bodyEnabled is false" in m for m in messages))
 
-    def test_body_mass_applies_with_zero_fallback_density(self):
-        """An authored PhysicsDeformableBodyAPI mass must not depend on the lower-precedence
-        builder fallback density: with zero builder fallbacks (default_shape_cfg.density,
-        default_tet_density) the geometric weights are built at a neutral density and the
-        body total distributes over them (measure-proportional, not uniform), in all three
-        families."""
+    def test_body_mass_overrides_proposal_density(self):
+        """Distribute body mass by geometric measure ahead of the final density fallback."""
         from pxr import Sdf, UsdGeom
 
         def _with_body_mass(prim, mass):
@@ -254,9 +302,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
             self.assertAlmostEqual(masses[4] / masses[0], 2.0, places=5)
             model = builder.finalize()
             self.assertTrue(all(im > 0.0 for im in model.particle_inv_mass.numpy()))
-            # The neutral build weight is not a physical density; the metadata reports the
-            # unmodified resolution (the zero builder fallback here).
-            self.assertEqual(result["path_soft_attrs"]["/World/Soft/Sim"]["resolved_density"], 0.0)
+            self.assertEqual(result["path_soft_attrs"]["/World/Soft/Sim"]["resolved_density"], 1000.0)
 
     def test_disabled_body_collision_geometry_stays_static(self):
         """A physics:bodyEnabled=false deformable is not simulated, but by rigid-body

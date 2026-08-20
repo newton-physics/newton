@@ -33,6 +33,10 @@ if TYPE_CHECKING:
 # default_particle_radius) when deformable import leaves its experimental phase.
 _DEFAULT_CLOTH_THICKNESS = 0.002
 _CABLE_RADIUS_COMPATIBILITY_FALLBACK = 0.0025
+_AOUSD_DEFAULT_DENSITY = 1000.0
+_AOUSD_DEFAULT_THICKNESS = 1.0e-3
+_AOUSD_DEFAULT_YOUNGS_MODULUS = 1.0e6
+_AOUSD_DEFAULT_POISSONS_RATIO = 0.3
 
 
 def _bake_world_points(points, world_mat) -> list[wp.vec3]:
@@ -477,6 +481,10 @@ def _warn_geometry_authored_material_attrs(prim: Usd.Prim, path: str, material_a
     for name in (
         "youngsModulus",
         "poissonsRatio",
+        "surfaceStretchStiffness",
+        "surfaceShearStiffness",
+        "surfaceBendStiffness",
+        "surfaceThickness",
         "curvesStretchStiffness",
         "curvesShearStiffness",
         "curvesBendStiffness",
@@ -528,13 +536,23 @@ def _builder_body_xform(builder: ModelBuilder, body_id: int) -> wp.transform:
     )
 
 
-def _resolve_deformable_density(prim: Usd.Prim, material_density: float | None, read_attr: Callable) -> float | None:
+def _resolve_deformable_density(
+    prim: Usd.Prim,
+    material_density: float | None,
+    read_attr: Callable,
+    linear_unit: float,
+    *,
+    read_base_material: bool = True,
+) -> float:
     """Resolve the density used for a deformable.
 
     Mass precedence (proposal): a ``PhysicsDeformableBodyAPI`` body-density override,
     then the bound material's family density, then the material's base
     ``UsdPhysicsMaterialAPI`` density (the family material APIs extend the base API,
-    so a plain rigid-style physics material is a valid density source).
+    so a plain rigid-style physics material is a valid density source), and finally
+    1000 kg/m^3 expressed in the stage's distance units. Non-unit mass metadata is
+    rejected by :func:`parse_usd`'s existing warning contract. ``read_base_material``
+    is false when a family reader has already checked the same inherited density.
     """
     from ..usd import utils as usd  # noqa: PLC0415
 
@@ -543,25 +561,11 @@ def _resolve_deformable_density(prim: Usd.Prim, material_density: float | None, 
         return body_density
     if material_density is not None:
         return material_density
-    return usd._get_physics_material_density(usd._find_physics_material_prim(prim))
-
-
-def _mass_weight_density(prim, density: float, read_attr: Callable) -> float:
-    """Density used to build a deformable's mass weights.
-
-    When the resolved density is zero (nothing authored and a zero builder default) but
-    the body authors a total ``physics:mass``, the geometric weights (segment length,
-    triangle area, tet volume) must still exist for the body-total rescale to distribute
-    the authored mass per the proposal's precedence. A neutral density of 1.0 provides
-    them; the rescale replaces its magnitude, and the reported ``resolved_density``
-    values are taken from the unmodified resolution.
-    """
-    from ..usd import utils as usd  # noqa: PLC0415
-
-    if density > 0.0:
-        return density
-    body_mass, _ = usd._get_deformable_body_overrides(prim, read_attr)
-    return 1.0 if body_mass is not None else density
+    if read_base_material:
+        base_density = usd._get_physics_material_density(usd._find_physics_material_prim(prim))
+        if base_density is not None:
+            return base_density
+    return _AOUSD_DEFAULT_DENSITY * linear_unit**3
 
 
 def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
@@ -570,7 +574,7 @@ def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
     if orig > 0.0:
         builder.body_inertia[b] = builder.body_inertia[b] * (m / orig)
     elif m > 0.0:
-        # No original mass to scale from (e.g. a zero default density): rebuild the inertia
+        # No original mass to scale from (e.g. a zero preexisting mass): rebuild the inertia
         # from the segment's capsule geometry at the new mass. Scaling by m/orig would zero
         # the tensor and poison its inverse below.
         from ..geometry.inertia import compute_inertia_capsule  # noqa: PLC0415
