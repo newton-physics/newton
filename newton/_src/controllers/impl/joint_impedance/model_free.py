@@ -109,31 +109,31 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         construction.
         """
 
-        joint_q: wp.array[wp.float32]
+        joint_q: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Current joint positions [m or rad], shape [total_controlled_dofs]."""
-        joint_qd: wp.array[wp.float32]
+        joint_qd: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Current joint velocities [m/s or rad/s], shape [total_controlled_dofs]."""
-        joint_q_des: wp.array[wp.float32]
+        joint_q_des: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Desired joint positions [m or rad], shape [total_controlled_dofs]."""
-        joint_qd_des: wp.array[wp.float32]
+        joint_qd_des: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Desired joint velocities [m/s or rad/s], shape [total_controlled_dofs]."""
-        joint_qdd: wp.array[wp.float32] | None
+        joint_qdd: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Desired acceleration feedforward [m/s² or rad/s²], shape [total_controlled_dofs]. ``None`` unless ``has_qdd_feedforward=True``."""
-        gravity_force: wp.array[wp.float32] | None
+        gravity_force: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Gravity generalized forces [N or N·m], shape [total_controlled_dofs]. ``None`` unless ``use_gravity_compensation=True``."""
-        coriolis_force: wp.array[wp.float32] | None
+        coriolis_force: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Coriolis generalized forces [N or N·m], shape [total_controlled_dofs]. ``None`` unless ``use_coriolis_compensation=True``."""
-        mass_matrix: wp.array3d[wp.float32] | None
+        mass_matrix: wp.array3d[wp.float32] | wp.indexedarray(dtype=wp.float32, ndim=3) | None
         """Per-robot mass matrices over the controlled DOFs, shape [controlled_robot_count, max_controlled_dofs, max_controlled_dofs]; a robot with fewer than ``max_controlled_dofs`` DOFs leaves the trailing rows and columns unread. May be bound to a view selecting those robots' blocks out of a larger set. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
-        stiffness: wp.array[wp.float32] | None
+        stiffness: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Position-error gain Kp, shape [total_controlled_dofs]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
-        damping: wp.array[wp.float32] | None
+        damping: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Velocity-error gain Kd, shape [total_controlled_dofs]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerJointImpedanceModelFree.output`."""
 
-        joint_f: wp.array[wp.float32]
+        joint_f: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Joint torque command [N or N·m], shape [total_controlled_dofs]."""
 
     def __init__(

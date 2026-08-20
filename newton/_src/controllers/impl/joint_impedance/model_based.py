@@ -115,25 +115,25 @@ class ControllerJointImpedance(ControllerBase):
         internally and do not appear here.
         """
 
-        joint_q: wp.array[wp.float32]
+        joint_q: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Current joint positions [m or rad], shape [model.joint_coord_count]."""
-        joint_qd: wp.array[wp.float32]
+        joint_qd: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Current joint velocities [m/s or rad/s], shape [model.joint_dof_count]."""
-        joint_q_des: wp.array[wp.float32]
+        joint_q_des: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Desired joint positions [m or rad], shape [total_controlled_dofs]."""
-        joint_qd_des: wp.array[wp.float32]
+        joint_qd_des: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Desired joint velocities [m/s or rad/s], shape [total_controlled_dofs]."""
-        joint_qdd: wp.array[wp.float32] | None
+        joint_qdd: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Desired acceleration feedforward [m/s² or rad/s²], shape [total_controlled_dofs]. ``None`` unless ``has_qdd_feedforward=True``."""
-        stiffness: wp.array[wp.float32] | None
+        stiffness: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Position-error gain Kp, shape [total_controlled_dofs]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
-        damping: wp.array[wp.float32] | None
+        damping: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Velocity-error gain Kd, shape [total_controlled_dofs]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerJointImpedance.output`."""
 
-        joint_f: wp.array[wp.float32]
+        joint_f: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Joint torque command [N or N·m], shape [total_controlled_dofs]."""
 
     def __init__(
