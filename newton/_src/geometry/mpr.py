@@ -546,6 +546,34 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                     point_a = alpha * vert_a(v1) + beta * vert_a(v2) + gamma * vert_a(v3)
                     point_b = alpha * v1.B + beta * v2.B + gamma * v3.B
 
+                    # A heightfield triangle is extruded 1 m along -Z into a solid prism
+                    # (see support_map) so GJK/MPR can resolve shapes reaching its back side.
+                    # Only the top face is a real surface; the skirt and bottom cap are inside
+                    # the terrain. Once B's center passes below the face the portal can settle
+                    # on the skirt, reporting about a metre of penetration along -Z, which
+                    # pushes B further in instead of separating it. Penetration depth is the
+                    # minimum support width over all directions, so the width along the face
+                    # normal bounds the true depth from above; taking it when it is smaller
+                    # discards the skirt solution without changing which pairs collide.
+                    if geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
+                        prism_n = wp.cross(geom_a.scale, geom_a.auxiliary)
+                        prism_n_sq = wp.length_sq(prism_n)
+                        if prism_n_sq >= 1.0e-24:
+                            prism_n = prism_n / wp.sqrt(prism_n_sq)
+                            # The extrusion is along -Z in this frame, so the outward face
+                            # normal is +Z whatever the triangle's winding.
+                            if prism_n[2] < 0.0:
+                                prism_n = -prism_n
+                            prism_sv = mpr_support(
+                                geom_a, geom_b, prism_n, orientation_b, position_b, extend, data_provider
+                            )
+                            prism_pen = wp.dot(prism_sv.BtoA, prism_n)
+                            if prism_pen < penetration:
+                                normal = prism_n
+                                penetration = prism_pen
+                                point_b = prism_sv.B
+                                point_a = prism_sv.B + prism_pen * prism_n
+
                 return hit, point_a, point_b, normal, penetration
 
             # Determine what region of the wedge the origin is in
