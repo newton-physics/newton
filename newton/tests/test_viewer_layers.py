@@ -475,6 +475,10 @@ class TestViewerLayerBackends(unittest.TestCase):
         self.assertEqual(viewer._camera_pitch, -15.0)
         self.assertEqual(viewer._camera_yaw, 90.0)
 
+        viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), yaw=45.0)
+        self.assertEqual(viewer._camera_pitch, -15.0)
+        self.assertEqual(viewer._camera_yaw, 45.0)
+
         viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), pitch=0.0, yaw=0.0)
         self.assertEqual(viewer._camera_pitch, 0.0)
         self.assertEqual(viewer._camera_yaw, 0.0)
