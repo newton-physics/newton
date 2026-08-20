@@ -5468,8 +5468,9 @@ class ModelBuilder:
         is ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
         ``reference_joint`` clears the mimic relationship.
 
-        Mimic relationships may form chains. The chains are flattened when the
-        model is finalized, and cycles are rejected.
+        If the reference joint is itself a mimic joint, its coefficients are
+        combined immediately so that the builder always stores a direct
+        relationship to an independent joint. Cycles are rejected.
 
         Args:
             joint: Index of the follower joint.
@@ -5531,14 +5532,44 @@ class ModelBuilder:
         if not math.isfinite(offset) or not math.isfinite(multiplier):
             raise ValueError(f"Mimic coefficients must be finite, got ({offset}, {multiplier})")
 
-        ancestor = reference_joint
-        while ancestor != -1:
-            if ancestor == joint:
+        resolved_reference_joint = reference_joint
+        resolved_offset = offset
+        resolved_multiplier = multiplier
+        visited = {joint}
+        while True:
+            if resolved_reference_joint in visited:
                 raise ValueError(f"Mimic relationship from joint {joint} to {reference_joint} creates a cycle")
-            ancestor = self.joint_mimic_joint[ancestor]
+            visited.add(resolved_reference_joint)
 
-        self.joint_mimic_joint[joint] = reference_joint
-        self.joint_mimic_coeffs[joint] = (offset, multiplier)
+            next_reference_joint = self.joint_mimic_joint[resolved_reference_joint]
+            if next_reference_joint == -1:
+                break
+
+            reference_offset, reference_multiplier = self.joint_mimic_coeffs[resolved_reference_joint]
+            resolved_offset += resolved_multiplier * float(reference_offset)
+            resolved_multiplier *= float(reference_multiplier)
+            resolved_reference_joint = next_reference_joint
+
+        if not math.isfinite(resolved_offset) or not math.isfinite(resolved_multiplier):
+            raise ValueError("Combined mimic coefficients must be finite")
+
+        follower_updates = []
+        for follower, follower_reference_joint in enumerate(self.joint_mimic_joint):
+            if follower_reference_joint != joint:
+                continue
+            follower_offset, follower_multiplier = self.joint_mimic_coeffs[follower]
+            updated_offset = float(follower_offset) + float(follower_multiplier) * resolved_offset
+            updated_multiplier = float(follower_multiplier) * resolved_multiplier
+            if not math.isfinite(updated_offset) or not math.isfinite(updated_multiplier):
+                raise ValueError(f"Combined mimic coefficients for follower joint {follower} must be finite")
+            follower_updates.append((follower, updated_offset, updated_multiplier))
+
+        for follower, updated_offset, updated_multiplier in follower_updates:
+            self.joint_mimic_joint[follower] = resolved_reference_joint
+            self.joint_mimic_coeffs[follower] = (updated_offset, updated_multiplier)
+
+        self.joint_mimic_joint[joint] = resolved_reference_joint
+        self.joint_mimic_coeffs[joint] = (resolved_offset, resolved_multiplier)
 
     def add_constraint_mimic(
         self,
@@ -11304,56 +11335,6 @@ class ModelBuilder:
                     f"expected final index {total_count}, found {world_start_array[-1]}."
                 )
 
-    def _flatten_joint_mimics(self) -> tuple[list[int], list[tuple[float, float]]]:
-        """Resolve every mimic chain to its independent reference joint."""
-        flattened_joints = list(self.joint_mimic_joint)
-        flattened_coeffs = [(float(coeffs[0]), float(coeffs[1])) for coeffs in self.joint_mimic_coeffs]
-
-        for joint, reference_joint in enumerate(self.joint_mimic_joint):
-            if reference_joint < -1 or reference_joint >= self.joint_count:
-                raise ValueError(
-                    f"Invalid reference in joint_mimic_joint[{joint}]: got {reference_joint}, "
-                    f"expected -1 or an index in [0, {self.joint_count - 1}]"
-                )
-
-        for joint, authored_reference_joint in enumerate(self.joint_mimic_joint):
-            if authored_reference_joint == -1:
-                flattened_coeffs[joint] = (0.0, 1.0)
-                continue
-            if self.joint_type[joint] not in (JointType.PRISMATIC, JointType.REVOLUTE) or self.joint_type[
-                authored_reference_joint
-            ] not in (JointType.PRISMATIC, JointType.REVOLUTE):
-                raise ValueError(
-                    f"Mimic relationship for joint {joint} must connect scalar PRISMATIC or REVOLUTE joints"
-                )
-            if self.joint_world[joint] != self.joint_world[authored_reference_joint]:
-                raise ValueError(f"Mimic relationship for joint {joint} crosses world boundaries")
-            articulation = self.joint_articulation[joint]
-            reference_articulation = self.joint_articulation[authored_reference_joint]
-            if articulation >= 0 and reference_articulation >= 0 and articulation != reference_articulation:
-                raise ValueError(f"Mimic relationship for joint {joint} crosses articulation boundaries")
-
-            offset, multiplier = flattened_coeffs[joint]
-            if not math.isfinite(offset) or not math.isfinite(multiplier):
-                raise ValueError(f"Mimic coefficients for joint {joint} must be finite")
-            visited = {joint}
-            reference_joint = authored_reference_joint
-            while reference_joint != -1 and self.joint_mimic_joint[reference_joint] != -1:
-                if reference_joint in visited:
-                    raise ValueError(f"Mimic relationship for joint {joint} contains a cycle")
-                visited.add(reference_joint)
-                reference_offset, reference_multiplier = self.joint_mimic_coeffs[reference_joint]
-                offset += multiplier * float(reference_offset)
-                multiplier *= float(reference_multiplier)
-                reference_joint = self.joint_mimic_joint[reference_joint]
-
-            if reference_joint in visited:
-                raise ValueError(f"Mimic relationship for joint {joint} contains a cycle")
-            flattened_joints[joint] = reference_joint
-            flattened_coeffs[joint] = (offset, multiplier)
-
-        return flattened_joints, flattened_coeffs
-
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -11431,8 +11412,6 @@ class ModelBuilder:
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
 
         shape_collision_filter_packed = self._build_shape_collision_filter_packed()
-        joint_mimic_joint, joint_mimic_coeffs = self._flatten_joint_mimics()
-
         with wp.ScopedDevice(device):
             # -------------------------------------
             # construct Model (non-time varying) data
@@ -12471,8 +12450,8 @@ class ModelBuilder:
                 parent_joint.append(child_to_joint.get(parent, -1))
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
             m.joint_articulation = wp.array(self.joint_articulation, dtype=wp.int32)
-            m.joint_mimic_joint = wp.array(joint_mimic_joint, dtype=wp.int32)
-            m.joint_mimic_coeffs = wp.array(joint_mimic_coeffs, dtype=wp.vec2)
+            m.joint_mimic_joint = wp.array(self.joint_mimic_joint, dtype=wp.int32)
+            m.joint_mimic_coeffs = wp.array(self.joint_mimic_coeffs, dtype=wp.vec2)
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)

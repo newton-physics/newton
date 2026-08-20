@@ -594,20 +594,21 @@ def eval_mimic_joints(
 
 
 def eval_mimic(model: Model, state_in: State, state_out: State | None = None) -> None:
-    """Evaluate the model's joint mimic relationships.
+    """Update follower joint coordinates from their reference joints.
 
-    Copies generalized joint coordinates from ``state_in`` to ``state_out`` and
-    projects every mimic joint from its reference joint. If ``state_out`` is
-    omitted, the projection is performed in place. Only :attr:`State.joint_q`
-    and :attr:`State.joint_qd` are written.
+    For each follower, this function reads the reference joint's position and
+    velocity, then writes the follower's position and velocity according to
+    :attr:`Model.joint_mimic_coeffs`. Independent joints are left unchanged.
+    Only :attr:`State.joint_q` and :attr:`State.joint_qd` are written.
 
-    Mimic chains are flattened when the model is finalized, so all followers
-    can be evaluated in a single parallel launch.
+    If ``state_out`` is omitted, ``state_in`` is updated in place. Otherwise,
+    all joint coordinates are first copied from ``state_in`` to ``state_out``
+    and the followers are updated in ``state_out``.
 
     Args:
         model: Model containing the joint mimic metadata.
         state_in: State providing the input joint coordinates.
-        state_out: State receiving the projected joint coordinates. If ``None``,
+        state_out: State receiving the updated joint coordinates. If ``None``,
             update ``state_in`` in place.
 
     Raises:

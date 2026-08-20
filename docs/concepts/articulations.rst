@@ -110,7 +110,9 @@ Mimic joints
 ------------
 
 Scalar revolute and prismatic joints can derive their coordinate from another
-joint. Configure the follower with :meth:`newton.ModelBuilder.set_joint_mimic`:
+joint. The joint being derived is the *follower*. Newton calls the other joint
+the *reference joint*: it is the leader whose motion the follower mimics.
+Configure this relationship with :meth:`newton.ModelBuilder.set_joint_mimic`:
 
 .. testcode::
 
@@ -134,14 +136,25 @@ joint. Configure the follower with :meth:`newton.ModelBuilder.set_joint_mimic`:
 Every joint has a :attr:`newton.Model.joint_mimic_joint` entry. ``-1`` means
 that the joint is independent; otherwise it stores the reference joint index.
 :attr:`newton.Model.joint_mimic_coeffs` stores ``(offset, multiplier)`` so that
-``q_follower = offset + multiplier * q_reference``. Mimic chains are flattened
-when the model is finalized.
+``q_follower = offset + multiplier * q_reference``.
 
-:func:`newton.eval_mimic` projects ``joint_q`` and ``joint_qd`` explicitly and
-can operate in place or copy from one state to another. Call it before
-:func:`newton.eval_fk` when maximal-coordinate body poses should reflect the
-mimic relationship. :class:`newton.solvers.SolverMuJoCo` lowers joint-owned
-mimic metadata directly to its joint equality constraints.
+:func:`newton.eval_mimic` updates the follower coordinates in a state. For each
+follower, it reads the position and velocity of the reference joint and writes
+the corresponding follower position and velocity. Independent joints are left
+unchanged. By default the function updates the input state in place; pass a
+different output state to copy the input coordinates and update the followers
+in that state instead.
+
+If a reference joint is itself a follower, :meth:`newton.ModelBuilder.set_joint_mimic`
+immediately combines the two relationships. For example, if C follows B and B
+follows A, C is stored as following A with combined coefficients. This gives
+each follower a direct reference to an independent joint, so
+:func:`newton.eval_mimic` can update all followers at once.
+
+Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
+maximal-coordinate body poses should reflect the mimic relationship.
+:class:`newton.solvers.SolverMuJoCo` applies the joint-owned mimic metadata
+directly through its joint equality constraints.
 
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 

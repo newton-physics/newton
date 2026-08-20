@@ -3472,7 +3472,7 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(model.constraint_mimic_label[1], "mimic2")
 
     def test_joint_mimic_metadata_and_evaluation(self):
-        """Verify joint-owned mimic chains are flattened and evaluated."""
+        """Verify joint-owned mimic relationships stay direct and are evaluated."""
         builder = newton.ModelBuilder()
         bodies = [builder.add_link() for _ in range(3)]
         reference = builder.add_joint_revolute(parent=-1, child=bodies[0], axis=newton.Axis.Z)
@@ -3482,6 +3482,13 @@ class TestModelJoints(unittest.TestCase):
 
         builder.set_joint_mimic(follower, reference, (0.5, 2.0))
         builder.set_joint_mimic(chained_follower, follower, (-1.0, -3.0))
+
+        self.assertEqual(builder.joint_mimic_joint, [-1, reference, reference])
+        np.testing.assert_allclose(
+            builder.joint_mimic_coeffs,
+            [(0.0, 1.0), (0.5, 2.0), (-2.5, -6.0)],
+        )
+
         model = builder.finalize()
 
         np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, reference, reference])
@@ -3506,6 +3513,24 @@ class TestModelJoints(unittest.TestCase):
         newton.eval_mimic(model, state_in)
         np.testing.assert_allclose(state_in.joint_q.numpy(), [1.25, 3.0, -10.0])
         np.testing.assert_allclose(state_in.joint_qd.numpy(), [2.0, 4.0, -12.0])
+
+    def test_joint_mimic_updates_existing_followers(self):
+        """Verify setting a leader relationship keeps existing followers direct."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link() for _ in range(3)]
+        reference = builder.add_joint_revolute(parent=-1, child=bodies[0])
+        follower = builder.add_joint_revolute(parent=bodies[0], child=bodies[1])
+        chained_follower = builder.add_joint_revolute(parent=bodies[1], child=bodies[2])
+        builder.add_articulation([reference, follower, chained_follower])
+
+        builder.set_joint_mimic(chained_follower, follower, (-1.0, -3.0))
+        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+
+        self.assertEqual(builder.joint_mimic_joint, [-1, reference, reference])
+        np.testing.assert_allclose(
+            builder.joint_mimic_coeffs,
+            [(0.0, 1.0), (0.5, 2.0), (-2.5, -6.0)],
+        )
 
     def test_joint_mimic_validation(self):
         """Verify joint mimic metadata rejects cycles and non-scalar joints."""
