@@ -102,13 +102,6 @@ _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
-_AUTO_DISCOVERED_ALLOW_DEPRECATION_WARNINGS = {
-    "basic.example_basic_heightfield",
-    "contacts.example_contacts_rj45_plug",
-    "vbd.example_vbd_rigid_rigid_contact",
-    "vbd.example_vbd_soft_rigid_contact",
-    "vbd.example_vbd_soft_rigid_mix_contact",
-}
 _registered_examples: set[str] = set()
 
 
@@ -1343,10 +1336,6 @@ for example_module in newton.examples.get_examples().values():
             TestAutoDiscoveredExamples,
             name=example_name,
             devices=cuda_test_devices,
-            # Keep newly covered examples in CI while their existing deprecations are migrated.
-            test_options={"allow_deprecation_warnings": True}
-            if example_name in _AUTO_DISCOVERED_ALLOW_DEPRECATION_WARNINGS
-            else None,
             use_viewer=True,
         )
 
