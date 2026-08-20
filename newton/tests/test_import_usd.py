@@ -12474,8 +12474,8 @@ def Xform "Body" (
         render_mesh = newton.Mesh(base_vertices * 4.0, indices)
         render_mesh._uvs = np.zeros((render_mesh.vertices.shape[0], 2), dtype=np.float32)
 
-        def _mock_get_mesh(_prim, *, load_uvs=False, load_normals=False):
-            del load_normals
+        def _mock_get_mesh(_prim, *, load_uvs=False, load_normals=False, load_visual_materials=True):
+            del load_normals, load_visual_materials
             return render_mesh if load_uvs else physics_mesh
 
         with (
@@ -13932,6 +13932,7 @@ def Mesh "cube"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_converts_linear_texture_to_display_space(self):
+        """Decode a ``raw``-color-space texture and convert its RGB to sRGB, leaving alpha unchanged."""
         from PIL import Image
 
         source_rgba = np.array([[[64, 128, 255, 200]]], dtype=np.uint8)
@@ -13956,6 +13957,7 @@ def Mesh "cube"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_leaves_display_texture_paths_lazy(self):
+        """Keep an ``sRGB``-color-space texture as an unresolved path instead of decoding it."""
         _stage, prim = self._create_stage_with_texture("display.png", source_color_space="sRGB")
 
         mesh = usd.get_mesh(prim)
