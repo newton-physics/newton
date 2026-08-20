@@ -1149,8 +1149,15 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverDampingAlias(SchemaResolver):
             name = "damping_alias"
+            schema_names: ClassVar = {
+                PrimType.JOINT: {
+                    "damping": "PrimaryDampingAPI",
+                    "damping_per_rad": "DampingAliasAPI",
+                }
+            }
             mapping: ClassVar = {
                 PrimType.JOINT: {
+                    "damping": SchemaResolver.SchemaAttribute("primary:damping"),
                     "damping_per_rad": SchemaResolver.SchemaAttribute("compatibility:dampingPerRad"),
                 }
             }
@@ -1172,11 +1179,23 @@ class TestSchemaResolver(unittest.TestCase):
             _ResolvedValue(3.0, None, _ValueSource.IMPORTER_DEFAULT),
         )
 
+        result = _composed_resolution([alias])._public_result(
+            _ResolvedValue(
+                2.0,
+                alias,
+                _ValueSource.AUTHORED,
+                mapping_key="damping_per_rad",
+            ),
+            PrimType.JOINT,
+            "damping",
+        )
         message = resolver._fallback_migration_warning()
 
+        self.assertEqual(result.schema_name, "DampingAliasAPI")
+        self.assertEqual(result.attribute_names, ("compatibility:dampingPerRad",))
         self.assertIsNotNone(message)
         self.assertIn(
-            "damping: damping_alias (compatibility:dampingPerRad; authored value) -> importer default",
+            "damping: DampingAliasAPI (compatibility:dampingPerRad; authored value) -> importer default",
             message,
         )
 

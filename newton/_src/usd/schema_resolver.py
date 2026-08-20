@@ -841,8 +841,9 @@ class SchemaResolution:
         resolver = resolved.winning_resolver
         if resolver is None:
             return key
-        spec = resolver.mapping[prim_type][resolved.mapping_key or key]
-        schema_name = resolver._schema_name(prim_type, key)
+        mapping_key = resolved.mapping_key or key
+        spec = resolver.mapping[prim_type][mapping_key]
+        schema_name = resolver._schema_name(prim_type, mapping_key)
         names = ", ".join(spec.attribute_names or (spec.name,))
         return f"{schema_name or resolver.name} ({names})"
 
@@ -854,7 +855,7 @@ class SchemaResolution:
         else:
             mapping_key = resolved.mapping_key or key
             spec = resolver.mapping.get(prim_type, {}).get(mapping_key)
-            schema_name = resolver._schema_name(prim_type, key)
+            schema_name = resolver._schema_name(prim_type, mapping_key)
             attribute_names = () if spec is None else tuple(spec.attribute_names or (spec.name,))
         return self.Result(
             value=resolved.value,
