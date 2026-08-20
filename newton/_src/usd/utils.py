@@ -1853,8 +1853,14 @@ def _should_load_tetmesh_material_for_import(prim: Usd.Prim) -> bool:
     )
 
 
-def _deformable_lame_parameters(youngs: float, poissons: float, path: str) -> tuple[float, float]:
-    """Convert isotropic deformable properties to finite Lamé parameters."""
+def _deformable_lame_parameters(
+    youngs: float,
+    poissons: float,
+    path: str,
+    *,
+    fallback_youngs: float | None = None,
+) -> tuple[float, float] | None:
+    """Convert isotropic deformable properties to float32-representable Lamé parameters."""
     if poissons == 0.5:
         incompressible_approximation = 0.499
         warnings.warn(
@@ -1863,9 +1869,33 @@ def _deformable_lame_parameters(youngs: float, poissons: float, path: str) -> tu
             stacklevel=2,
         )
         poissons = incompressible_approximation
-    k_mu = youngs / (2.0 * (1.0 + poissons))
-    k_lambda = youngs * poissons / ((1.0 + poissons) * (1.0 - 2.0 * poissons))
-    return k_mu, k_lambda
+
+    def convert(value: float) -> tuple[float, float]:
+        k_mu = value / (2.0 * (1.0 + poissons))
+        k_lambda = value * poissons / ((1.0 + poissons) * (1.0 - 2.0 * poissons))
+        return k_mu, k_lambda
+
+    def is_representable(values: tuple[float, float]) -> bool:
+        max_float32 = float(np.finfo(np.float32).max)
+        return all(math.isfinite(value) and abs(value) <= max_float32 for value in values)
+
+    lame = convert(youngs)
+    if is_representable(lame):
+        return lame
+
+    fallback_message = "ignoring the authored elastic moduli."
+    if fallback_youngs is not None and fallback_youngs != youngs:
+        fallback_message = f"using the Young's modulus fallback {fallback_youngs:g}."
+    warnings.warn(
+        f"{path}: physics:youngsModulus={youngs:g} with physics:poissonsRatio={poissons:g} "
+        f"produces Lamé parameters outside Newton's finite float32 range; {fallback_message}",
+        stacklevel=2,
+    )
+
+    if fallback_youngs is None or fallback_youngs == youngs:
+        return None
+    fallback_lame = convert(fallback_youngs)
+    return fallback_lame if is_representable(fallback_lame) else None
 
 
 def get_tetmesh(
@@ -1882,8 +1912,10 @@ def get_tetmesh(
     to the prim (via ``material:binding:physics``) and contains
     ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
     ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
-    those values are read and converted to Lame parameters (``k_mu``,
-    ``k_lambda``) and density on the returned TetMesh. A material applying
+    those values are read and converted to Lamé parameters (``k_mu``,
+    ``k_lambda``) and density on the returned TetMesh, expressed in the stage's
+    configured units. Their SI-equivalent units are [Pa] for the Lamé parameters
+    and [kg/m^3] for density. A material applying
     ``PhysicsVolumeDeformableMaterialAPI`` receives the proposal's elasticity
     fallbacks; API-less compatibility materials leave missing properties unset.
 
@@ -2029,7 +2061,16 @@ def get_tetmesh(
                 if is_current_volume_material:
                     E = _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit
             if E is not None:
-                k_mu, k_lambda = _deformable_lame_parameters(E, nu, str(material_prim.GetPath()))
+                lame = _deformable_lame_parameters(
+                    E,
+                    nu,
+                    str(material_prim.GetPath()),
+                    fallback_youngs=(
+                        _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit if is_current_volume_material else None
+                    ),
+                )
+                if lame is not None:
+                    k_mu, k_lambda = lame
 
         if density_val is not None:
             authored_density = float(density_val)

@@ -105,6 +105,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
         _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat", surfaceThickness=0.01)
         volume = _author_unit_tet(stage, "/World/Volume", sim_api=True)
+        volume.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
         _bind_deformable_material(stage, volume.GetPrim(), "/World/VolumeMat")
         _author_unit_tet(stage, "/World/BareTet", sim_api=False)
 
@@ -241,6 +242,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
             mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 1, 3, 2])
             mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
             mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", surfaceThickness=0.001)
             _with_body_mass(mesh.GetPrim(), 8.0)
 
             builder = newton.ModelBuilder()

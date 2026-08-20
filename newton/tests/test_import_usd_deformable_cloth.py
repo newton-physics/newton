@@ -44,6 +44,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
         mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
         mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", surfaceThickness=0.001)
 
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
@@ -65,6 +66,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         mesh.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
         mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
         mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", surfaceThickness=0.001)
 
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
@@ -392,7 +394,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         thickness = 0.01
         stage = _deformable_stage(up_axis="y")
         thick = _add_cloth_mesh(stage, "/World/ClothThick")
-        _bind_deformable_material(stage, thick.GetPrim(), "/World/MatThick", density=1000.0, thickness=thickness)
+        _bind_deformable_material(stage, thick.GetPrim(), "/World/MatThick", density=1000.0, surfaceThickness=thickness)
         shell = _add_cloth_mesh(stage, "/World/ClothShell")
         # Material density only -- thickness is left to the shell mass model.
         _bind_deformable_material(stage, shell.GetPrim(), "/World/MatShell", density=1000.0)
@@ -595,7 +597,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
         stage = _deformable_stage()
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
-        _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", density=1000.0, thickness=0.01)
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", density=1000.0, surfaceThickness=0.01)
         subset = UsdGeom.Subset.Define(stage, "/World/Cloth/Patch")
         subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
         subset.CreateIndicesAttr().Set([0])
@@ -722,9 +724,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
         def import_cloth(masses):
             stage = _deformable_stage(up_axis="y")
             mesh = _add_cloth_mesh(stage, "/World/Cloth")
-            # thickness keeps the volumetric density convertible (no unrelated warning under
+            # Surface thickness keeps the volumetric density convertible (no unrelated warning under
             # --strict-warnings); per-point masses take precedence over it either way.
-            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0, thickness=0.1)
+            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0, surfaceThickness=0.1)
             mesh.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(masses)
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
@@ -758,6 +760,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         def import_cloth(scale):
             stage = _deformable_stage()  # Z up: avoid Y->Z axis conversion
             mesh = _add_cloth_mesh(stage, "/World/Cloth")  # points (0,0,1)(1,0,1)(1,1,1)(0,1,1)
+            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", surfaceThickness=0.001)
             UsdGeom.Xformable(mesh).AddScaleOp().Set(Gf.Vec3d(*scale))
             builder = newton.ModelBuilder()
             builder.add_usd(stage)

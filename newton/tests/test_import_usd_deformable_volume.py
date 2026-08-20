@@ -315,6 +315,27 @@ class TestUSDDeformableVolume(unittest.TestCase):
                 self.assertAlmostEqual(k_mu, expected_mu, delta=1.0)
                 self.assertAlmostEqual(k_lambda, expected_lambda, delta=1.0)
 
+    def test_volume_material_falls_back_from_unrepresentable_lame_parameters(self):
+        """Fall back before volume material values overflow Newton's float32 storage."""
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _bind_deformable_material(
+            stage,
+            tet.GetPrim(),
+            "/World/Mat",
+            youngsModulus=1.0e38,
+            poissonsRatio=0.499,
+        )
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "Lamé parameters outside Newton's finite float32 range"):
+            builder.add_usd(stage)
+
+        k_mu, k_lambda, _k_damp = builder.tet_materials[0]
+        self.assertAlmostEqual(k_mu, 333555.703802535, delta=1.0)
+        self.assertAlmostEqual(k_lambda, 166444296.1974648, delta=4096.0)
+
     def test_unbound_volume_material_uses_builder_elasticity_defaults(self):
         """Preserve builder elasticity defaults when no volume material is bound."""
         stage = _deformable_stage()
@@ -346,6 +367,24 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
         self.assertAlmostEqual(tetmesh.k_mu[0], 115384.61538461538, delta=1.0)
         self.assertAlmostEqual(tetmesh.k_lambda[0], 173076.92307692306, delta=1.0)
+
+    def test_get_tetmesh_falls_back_from_unrepresentable_lame_parameters(self):
+        """Fall back when valid AOUSD inputs exceed Newton's material precision."""
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        _bind_deformable_material(
+            stage,
+            tet.GetPrim(),
+            "/World/Mat",
+            youngsModulus=1.0e38,
+            poissonsRatio=0.499,
+        )
+
+        with self.assertWarnsRegex(UserWarning, "Lamé parameters outside Newton's finite float32 range"):
+            tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+        self.assertAlmostEqual(tetmesh.k_mu[0], 333555.703802535, delta=1.0)
+        self.assertAlmostEqual(tetmesh.k_lambda[0], 166444296.1974648, delta=4096.0)
 
     def test_get_tetmesh_uses_current_volume_elasticity_fallbacks(self):
         """Resolve missing current volume elasticity fields from proposal defaults."""

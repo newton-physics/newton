@@ -551,7 +551,7 @@ def _resolve_deformable_density(
     ``UsdPhysicsMaterialAPI`` density (the family material APIs extend the base API,
     so a plain rigid-style physics material is a valid density source), and finally
     1000 kg/m^3 expressed in the stage's distance units. Non-unit mass metadata is
-    rejected by :func:`parse_usd`'s existing warning contract. ``read_base_material``
+    rejected by :meth:`ModelBuilder.add_usd`'s existing warning contract. ``read_base_material``
     is false when a family reader has already checked the same inherited density.
     """
     from ..usd import utils as usd  # noqa: PLC0415
