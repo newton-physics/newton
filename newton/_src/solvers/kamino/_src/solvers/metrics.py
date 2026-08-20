@@ -802,6 +802,8 @@ def _compute_joint_kinematics_residual_dense(
 
     # Retrieve the size and index offset of the joint constraint
     num_cts_j = model_joint_num_kinematic_cts[jid]
+    if num_cts_j == 0:
+        return
     cts_offset_j = model_joint_kinematic_cts_offset_total_cts[jid] - model_info_total_cts_offset[wid]
 
     # Retrieve the world-specific info
@@ -865,6 +867,8 @@ def _compute_joint_kinematics_residual_sparse(
     # Retrieve the size and index offset of the joint constraint
     num_dyn_cts_j = model_joint_num_dynamic_cts[jid]
     num_kin_cts_j = model_joint_num_kinematic_cts[jid]
+    if num_kin_cts_j == 0:
+        return
     kin_cts_offset_j = model_joint_kinematic_cts_offset[jid] - model_info_joint_kinematic_cts_offset[wid]
 
     # Retrieve the starting index for the non-zero blocks for the current joint
@@ -1082,11 +1086,8 @@ def _compute_dual_problem_metrics(
         njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
     )
 
-    if (
-        _vector_has_nan(ncts, vio, solution_lambdas)
-        or _vector_has_nan(ncts, vio, buffer_v)
-        or _vector_has_nan(nc, cio, problem_mu)
-    ):
+    lambdas_has_nan = _vector_has_nan(ncts, vio, solution_lambdas)
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, buffer_v) or _vector_has_nan(nc, cio, problem_mu):
         r_ncp_p = wp.nan
         r_ncp_p_argmax = wp.int32(-1)
         r_ncp_d = wp.nan
@@ -1096,7 +1097,7 @@ def _compute_dual_problem_metrics(
         r_ncp_natmap = wp.nan
         r_ncp_natmap_argmax = wp.int32(-1)
 
-    if _vector_has_nan(ncts, vio, solution_lambdas) or _vector_has_nan(ncts, vio, problem_v_f):
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, problem_v_f):
         f_ncp = wp.nan
         f_ccp = wp.nan
 
@@ -1197,11 +1198,8 @@ def _compute_dual_problem_metrics_sparse(
         njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
     )
 
-    if (
-        _vector_has_nan(ncts, vio, solution_lambdas)
-        or _vector_has_nan(ncts, vio, buffer_v)
-        or _vector_has_nan(nc, cio, problem_mu)
-    ):
+    lambdas_has_nan = _vector_has_nan(ncts, vio, solution_lambdas)
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, buffer_v) or _vector_has_nan(nc, cio, problem_mu):
         r_ncp_p = wp.nan
         r_ncp_p_argmax = wp.int32(-1)
         r_ncp_d = wp.nan
@@ -1211,7 +1209,7 @@ def _compute_dual_problem_metrics_sparse(
         r_ncp_natmap = wp.nan
         r_ncp_natmap_argmax = wp.int32(-1)
 
-    if _vector_has_nan(ncts, vio, solution_lambdas) or _vector_has_nan(ncts, vio, problem_v_f):
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, problem_v_f):
         f_ncp = wp.nan
         f_ccp = wp.nan
 

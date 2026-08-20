@@ -12,7 +12,10 @@ from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
 from newton._src.solvers.kamino._src.models.builders.basics import build_box_on_plane, build_boxes_hinged
-from newton._src.solvers.kamino._src.models.builders.testing import build_unary_revolute_joint_test
+from newton._src.solvers.kamino._src.models.builders.testing import (
+    build_free_joint_test,
+    build_unary_revolute_joint_test,
+)
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.padmm.types import PADMMData
@@ -970,7 +973,28 @@ class TestSolverMetrics(unittest.TestCase):
                 self.assertTrue(np.isnan(metrics.data.r_eom.numpy()[0]))
                 self.assertTrue(np.isnan(metrics.data.r_kinematics.numpy()[0]))
 
-    def test_13_dual_residual_nan_dense_and_sparse(self):
+    def test_13_free_joint_kinematics_residual_dense_and_sparse(self):
+        """Leave kinematics metrics unset for a FREE joint."""
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                test = TestSetup(
+                    builder_fn=build_free_joint_test,
+                    max_world_contacts=1,
+                    gravity=False,
+                    perturb=False,
+                    device=self.default_device,
+                    sparse=sparse,
+                )
+                test.build()
+                metrics = SolutionMetrics(model=test.model)
+
+                metrics.reset()
+                metrics._evaluate_primal_problem_perf(test.model, test.data, test.state_p, test.jacobians)
+
+                np.testing.assert_array_equal(metrics.data.r_kinematics.numpy(), [0.0])
+                np.testing.assert_array_equal(metrics.data.r_kinematics_argmax.numpy(), [-1])
+
+    def test_14_dual_residual_nan_dense_and_sparse(self):
         """Propagate a NaN solution multiplier into dual analysis metrics."""
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
@@ -1010,7 +1034,7 @@ class TestSolverMetrics(unittest.TestCase):
                         msg=f"{metric_name} did not propagate NaN",
                     )
 
-    def test_14_dual_metric_input_nan(self):
+    def test_15_dual_metric_input_nan(self):
         """Propagate NaN dual inputs through their affected analysis metrics."""
         for input_name in ("v_plus", "v_f", "mu"):
             with self.subTest(input_name=input_name):
@@ -1057,7 +1081,7 @@ class TestSolverMetrics(unittest.TestCase):
                             msg=f"{metric_name} did not propagate {input_name} NaN",
                         )
 
-    def test_15_metrics_reset_clears_nan(self):
+    def test_16_metrics_reset_clears_nan(self):
         """Clear a reported NaN before evaluating a finite joint residual."""
         test = TestSetup(
             builder_fn=build_boxes_hinged,
