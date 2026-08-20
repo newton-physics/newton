@@ -245,6 +245,8 @@ class SolutionMetricsData:
     margin-shifted signed distance stored in the ``w`` component of the contact
     `gapfunc`. Negative `d_k` denotes penetration.
 
+    A NaN contact gap produces a NaN metric and an argmax of `-1`.
+
     Shape of ``(num_worlds,)``.
     """
 
@@ -697,21 +699,21 @@ def compute_vector_difference_infnorm(
         Maximum absolute difference and index of the largest component. If either
         input segment contains NaN, returns ``(nan, -1)``.
     """
-    max = float(0.0)
+    max_val = float(0.0)
     argmax = wp.int32(-1)
-    has_nan = wp.isnan(x[vio]) or wp.isnan(y[vio])
+    has_nan = wp.bool(False)
     for i in range(dim):
         v_i = vio + i
         if wp.isnan(x[v_i]) or wp.isnan(y[v_i]):
             has_nan = True
         else:
             err = wp.abs(x[v_i] - y[v_i])
-            max = wp.max(max, err)
-            if err == max:
+            max_val = wp.max(max_val, err)
+            if err == max_val:
                 argmax = i
     if has_nan:
         return wp.nan, wp.int32(-1)
-    return max, argmax
+    return max_val, argmax
 
 
 ###

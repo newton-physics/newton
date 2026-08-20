@@ -897,10 +897,11 @@ class TestSolverMetrics(unittest.TestCase):
 
     def test_09_contact_residual_nan(self):
         """Propagate a NaN contact gap into the contact metric."""
-        residual, _ = self._evaluate_contact_residuals([(0, 0, np.nan), (1, 0, -0.2)])
+        residual, argmax = self._evaluate_contact_residuals([(0, 0, np.nan), (1, 0, -0.2)])
 
         self.assertTrue(np.isnan(residual[0]))
         self.assertAlmostEqual(residual[1], 0.2)
+        np.testing.assert_array_equal(argmax, [-1, 0])
 
     def test_10_joint_residual_nan(self):
         """Propagate a NaN joint residual into the joint constraint metric."""
@@ -1036,50 +1037,59 @@ class TestSolverMetrics(unittest.TestCase):
 
     def test_15_dual_metric_input_nan(self):
         """Propagate NaN dual inputs through their affected analysis metrics."""
-        for input_name in ("v_plus", "v_f", "mu"):
-            with self.subTest(input_name=input_name):
-                test = TestSetup(
-                    builder_fn=build_box_on_plane,
-                    max_world_contacts=4,
-                    gravity=False,
-                    perturb=False,
-                    device=self.default_device,
-                )
-                test.build()
-                metrics = SolutionMetrics(model=test.model)
-                with wp.ScopedDevice(test.model.device):
-                    sigma = wp.zeros(test.model.size.num_worlds, dtype=wp.vec2f)
-                    lambdas = wp.zeros(test.model.size.sum_of_max_total_cts, dtype=wp.float32)
-                    v_plus = wp.zeros(test.model.size.sum_of_max_total_cts, dtype=wp.float32)
-                vio = test.problem.data.vio.numpy()[0]
-                contact_offset = test.problem.data.ccgo.numpy()[0]
+        for sparse in (False, True):
+            for input_name in ("v_plus", "v_f", "mu"):
+                with self.subTest(sparse=sparse, input_name=input_name):
+                    test = TestSetup(
+                        builder_fn=build_box_on_plane,
+                        max_world_contacts=4,
+                        gravity=False,
+                        perturb=False,
+                        device=self.default_device,
+                        sparse=sparse,
+                    )
+                    test.build()
+                    metrics = SolutionMetrics(model=test.model)
+                    with wp.ScopedDevice(test.model.device):
+                        sigma = wp.zeros(test.model.size.num_worlds, dtype=wp.vec2f)
+                        lambdas = wp.zeros(test.model.size.sum_of_max_total_cts, dtype=wp.float32)
+                        v_plus = wp.zeros(test.model.size.sum_of_max_total_cts, dtype=wp.float32)
+                    vio = test.problem.data.vio.numpy()[0]
+                    contact_offset = test.problem.data.ccgo.numpy()[0]
 
-                if input_name == "v_plus":
-                    values = v_plus.numpy()
-                    values[vio + contact_offset] = np.nan
-                    v_plus.assign(values)
-                elif input_name == "v_f":
-                    values = test.problem.data.v_f.numpy()
-                    values[vio + contact_offset] = np.nan
-                    test.problem.data.v_f.assign(values)
-                else:
-                    values = test.problem.data.mu.numpy()
-                    values[test.problem.data.cio.numpy()[0]] = np.nan
-                    test.problem.data.mu.assign(values)
+                    if input_name == "v_plus":
+                        values = v_plus.numpy()
+                        values[vio + contact_offset] = np.nan
+                        v_plus.assign(values)
+                    elif input_name == "v_f":
+                        values = test.problem.data.v_f.numpy()
+                        values[vio + contact_offset] = np.nan
+                        test.problem.data.v_f.assign(values)
+                    else:
+                        values = test.problem.data.mu.numpy()
+                        values[test.problem.data.cio.numpy()[0]] = np.nan
+                        test.problem.data.mu.assign(values)
 
-                metrics.reset()
-                metrics._evaluate_dual_problem_perf(sigma, lambdas, v_plus, test.problem)
-                if input_name == "mu":
-                    self.assertTrue(np.isfinite(metrics.data.r_v_plus.numpy()[0]))
-                else:
-                    self.assertTrue(np.isnan(metrics.data.r_v_plus.numpy()[0]))
+                    metrics.reset()
+                    metrics._evaluate_dual_problem_perf(sigma, lambdas, v_plus, test.problem)
+                    if input_name == "mu":
+                        self.assertTrue(np.isfinite(metrics.data.r_v_plus.numpy()[0]))
+                    else:
+                        self.assertTrue(np.isnan(metrics.data.r_v_plus.numpy()[0]))
 
-                if input_name != "v_plus":
-                    for metric_name in ("r_ncp_primal", "r_ncp_dual", "r_ncp_compl", "r_vi_natmap"):
-                        self.assertTrue(
-                            np.isnan(getattr(metrics.data, metric_name).numpy()[0]),
-                            msg=f"{metric_name} did not propagate {input_name} NaN",
-                        )
+                    if input_name != "v_plus":
+                        for metric_name in ("r_ncp_primal", "r_ncp_dual", "r_ncp_compl", "r_vi_natmap"):
+                            self.assertTrue(
+                                np.isnan(getattr(metrics.data, metric_name).numpy()[0]),
+                                msg=f"{metric_name} did not propagate {input_name} NaN",
+                            )
+
+                    if input_name == "v_f":
+                        for metric_name in ("f_ncp", "f_ccp"):
+                            self.assertTrue(
+                                np.isnan(getattr(metrics.data, metric_name).numpy()[0]),
+                                msg=f"{metric_name} did not propagate v_f NaN",
+                            )
 
     def test_16_metrics_reset_clears_nan(self):
         """Clear a reported NaN before evaluating a finite joint residual."""
