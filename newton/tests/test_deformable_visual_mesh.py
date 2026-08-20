@@ -112,6 +112,19 @@ def _skin(model, mesh, state):
 class TestDeformableVisualMeshBindings(unittest.TestCase):
     """Core binding correctness for every kind."""
 
+    def test_binding_kind_is_payload_neutral(self):
+        """Expose one binding-kind enum while preserving the mesh compatibility path."""
+        self.assertIs(newton.DeformableVisualMesh.Kind, newton.DeformableVisualBinding.Kind)
+        self.assertEqual(
+            tuple(newton.DeformableVisualBinding.Kind),
+            (
+                newton.DeformableVisualBinding.Kind.PARTICLE,
+                newton.DeformableVisualBinding.Kind.TRIANGLE,
+                newton.DeformableVisualBinding.Kind.TET,
+                newton.DeformableVisualBinding.Kind.BODY,
+            ),
+        )
+
     def test_particle_kind_follows_particles(self):
         """A particle-bound visual mesh with a 1:1 map equals particle_q, and the
         model output carries the invariant index, kind, world, and UVs."""

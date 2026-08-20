@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Visual-mesh embedding data for deformable bodies.
+"""Visual payloads embedded in deformable bodies.
 
-A visual mesh is a high-resolution, textured display surface that is embedded in
-a coarse simulation deformable (cloth, volumetric soft body, or a cable's rigid
-segment chain) and skinned from the simulation state each frame. The simulation
-continues to run on the coarse mesh; the visual mesh is visualization and sensor
-geometry only and never participates in the solve or in collision.
+Visual samples can be embedded in a coarse simulation deformable and evaluated
+from simulation state each frame. The simulation continues to run on the coarse
+representation; these payloads are visualization and sensor geometry only and
+never participate in the solve or in collision. Triangle meshes are currently
+the supported visual payload.
 
 See :meth:`newton.ModelBuilder.add_deformable_visual_mesh`.
 """
@@ -35,9 +35,33 @@ class DeformableVisualBinding:
     selects simulation drivers.
     """
 
+    class Kind(IntEnum):
+        """How visual samples are bound to simulation elements."""
+
+        PARTICLE = 0
+        """Each visual sample is bound to one simulation particle. This is a
+        shared or one-to-one map, not a general high-resolution surface
+        embedding; use :attr:`TRIANGLE` for an independently discretized
+        surface."""
+
+        TRIANGLE = 1
+        """Each visual sample is embedded in a simulation triangle with three
+        barycentric weights. Its current position is the weighted sum of the
+        triangle's particle positions; normal offsets are not retained."""
+
+        TET = 2
+        """Each visual sample is embedded in a simulation tetrahedron with four
+        barycentric weights. Its current position is the weighted sum of the
+        tetrahedron's particle positions."""
+
+        BODY = 3
+        """Each visual sample is rigidly bound to one body by a body-local
+        offset. A visual surface bound to separate bodies can show seams at
+        body boundaries."""
+
     def __init__(
         self,
-        kind: DeformableVisualMesh.Kind,
+        kind: Kind,
         parent: wp.array[wp.int32],
         weights: wp.array[wp.vec4] | wp.array[wp.vec3] | None = None,
         local_offsets: wp.array[wp.vec3] | None = None,
@@ -77,30 +101,8 @@ class DeformableVisualMesh:
     Attributes are device :class:`warp.array` objects unless noted otherwise.
     """
 
-    class Kind(IntEnum):
-        """How a visual mesh is embedded into its driving deformable."""
-
-        PARTICLE = 0
-        """Each visual vertex is bound to one simulation particle (shared or
-        1:1-remapped topology). The deformed position is the particle position
-        directly. This is not a general high-resolution surface embedding; use
-        :attr:`TRIANGLE` for independently discretized surface meshes."""
-
-        TRIANGLE = 1
-        """Each visual vertex is embedded in a simulation triangle of a surface
-        deformable via three barycentric weights. The deformed position is the
-        weighted sum of the triangle's particle positions (no normal offset)."""
-
-        TET = 2
-        """Each visual vertex is embedded in a tetrahedron of a volumetric soft
-        body via four barycentric weights. The deformed position is the
-        weighted sum of the tet's particle positions."""
-
-        BODY = 3
-        """Each visual vertex is rigidly bound to one rigid body (e.g. a cable
-        or rod capsule segment) by a body-local offset. The deformed position
-        is that offset transformed by the body's current pose. Single-segment
-        binding: seams can show at segment boundaries."""
+    Kind = DeformableVisualBinding.Kind
+    """Compatibility alias for :class:`DeformableVisualBinding.Kind`."""
 
     def __init__(
         self,
@@ -119,8 +121,8 @@ class DeformableVisualMesh:
         sim_path: str | None = None,
         graphics_path: str | None = None,
     ) -> None:
-        self.kind = DeformableVisualMesh.Kind(kind)
-        """Embedding kind (see :class:`DeformableVisualMesh.Kind`)."""
+        self.kind = DeformableVisualBinding.Kind(kind)
+        """Embedding kind (see :class:`DeformableVisualBinding.Kind`)."""
         self.rest_vertices = rest_vertices
         """Bind-pose visual vertices [m], shape [vertex_count, 3]."""
         self.indices = indices

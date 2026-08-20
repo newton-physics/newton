@@ -32,6 +32,7 @@ newton
    CollisionPipeline
    Contacts
    Control
+   DeformableVisualBinding
    DeformableVisualMesh
    DeformableVisuals
    EqType
