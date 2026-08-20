@@ -29,6 +29,56 @@ ENABLE_GL_CHECKS = False
 wp.set_module_options({"enable_backward": False})
 
 
+def _requests_pyglet_egl(headless: bool) -> bool:
+    """Return whether headless rendering requires pyglet's EGL backend."""
+    # Pyglet's Linux window backend is Xlib, so WAYLAND_DISPLAY alone does
+    # not provide the X display needed by its hidden native window.
+    return headless and sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
+
+
+def _get_pyglet_backend() -> str | None:
+    """Return the backend locked by an imported pyglet subpackage."""
+    for module_name, attribute_name in (
+        ("pyglet.window", "Window"),
+        ("pyglet.gl", "Config"),
+        ("pyglet.display", "Display"),
+    ):
+        module = sys.modules.get(module_name)
+        backend_class = getattr(module, attribute_name, None) if module is not None else None
+        backend_module = getattr(backend_class, "__module__", "")
+        if backend_module:
+            return "egl" if ".headless" in backend_module else "native"
+    return None
+
+
+def _configure_pyglet_backend(headless: bool | None):
+    """Configure pyglet before importing modules that select its backend."""
+    try:
+        import pyglet
+    except ImportError as e:
+        raise Exception("OpenGLRenderer requires pyglet (version >= 2.0) to be installed.") from e
+
+    effective_headless = bool(pyglet.options["headless"]) if headless is None else headless
+    requested_backend = "egl" if _requests_pyglet_egl(effective_headless) else "native"
+    configured_backend = _get_pyglet_backend()
+
+    if configured_backend is not None and configured_backend != requested_backend:
+        # pyglet binds its GL, window, and display classes during import. The
+        # backend is process-global, so changing options afterward is unsafe.
+        raise RuntimeError(
+            f"RendererGL cannot switch pyglet from its {configured_backend} backend to {requested_backend}; "
+            "create the renderer in a separate process."
+        )
+
+    if configured_backend is None:
+        # Set this before pyglet.graphics imports pyglet.gl. EGL is needed only
+        # for Linux without X; other platforms retain their native hidden window.
+        pyglet.options["headless"] = requested_backend == "egl"
+
+    pyglet.options["debug_gl"] = False
+    return effective_headless, pyglet
+
+
 def check_gl_error():
     if not ENABLE_GL_CHECKS:
         return
@@ -1015,25 +1065,14 @@ class RendererGL:
             if is_wayland:
                 os.environ["PYOPENGL_PLATFORM"] = "glx"
 
-        try:
-            import pyglet
+        effective_headless, pyglet = _configure_pyglet_backend(headless)
 
-            if headless:
-                # Pyglet must select its headless backend before importing
-                # pyglet.graphics, which otherwise creates a display connection.
-                pyglet.options["headless"] = True
+        # try imports
+        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: F401
+        from pyglet.math import Vec3 as PyVec3  # noqa: F401
 
-            # disable error checking for performance
-            pyglet.options["debug_gl"] = False
-
-            # try imports
-            from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: F401
-            from pyglet.math import Vec3 as PyVec3  # noqa: F401
-
-            RendererGL.initialize_gl()
-            gl = RendererGL.gl
-        except ImportError as e:
-            raise Exception("OpenGLRenderer requires pyglet (version >= 2.0) to be installed.") from e
+        RendererGL.initialize_gl()
+        gl = RendererGL.gl
 
         self._title = title
 
@@ -1046,7 +1085,7 @@ class RendererGL:
                 caption=title,
                 resizable=True,
                 vsync=vsync,
-                visible=not headless,
+                visible=not effective_headless,
                 config=config,
             )
             gl.glEnable(gl.GL_MULTISAMPLE)
@@ -1060,7 +1099,7 @@ class RendererGL:
                 caption=title,
                 resizable=True,
                 vsync=vsync,
-                visible=not headless,
+                visible=not effective_headless,
             )
             self.msaa_samples = 0
 
@@ -1077,10 +1116,7 @@ class RendererGL:
             except (AttributeError, OSError):
                 pass
 
-        if headless is None:
-            self.headless = pyglet.options.get("headless", False)
-        else:
-            self.headless = headless
+        self.headless = effective_headless
         self.app = pyglet.app
 
         # making window current opengl rendering context
@@ -1130,7 +1166,7 @@ class RendererGL:
 
         check_gl_error()
 
-        if not headless:
+        if not effective_headless:
             # set up our own event handling so we can synchronously render frames
             # by calling update() in a loop
             from pyglet.window import Window
@@ -1159,7 +1195,7 @@ class RendererGL:
         self._wireframe_shader = ShaderLine(gl)
         self._arrow_shader = ShaderArrow(gl)
 
-        if not headless:
+        if not effective_headless:
             self._setup_window_callbacks()
 
     @property
