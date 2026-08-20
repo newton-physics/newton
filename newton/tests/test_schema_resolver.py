@@ -563,13 +563,17 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
         """Preserve warnings emitted by source-neutral value getters."""
         resolution = _composed_resolution([SchemaResolverNewton()])
 
-        with self.assertWarns(DeprecationWarning):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
             resolved = resolution.resolve(
                 PrimType.JOINT,
                 {"newton:angular:limitStiffness": 10.0},
             )
 
+        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
         self.assertEqual(resolved["limit_angular_ke"].value, 10.0)
+        self.assertEqual(len(deprecations), 1)
+        self.assertEqual(Path(deprecations[0].filename).resolve(), Path(__file__).resolve())
 
     def test_legacy_pxr_getter_remains_available(self):
         """Keep legacy PXR-only getters available on the PXR adapter."""
@@ -4953,11 +4957,15 @@ class TestSchemaResolver(unittest.TestCase):
 
         resolver = SchemaResolverManager([SchemaResolverNewton()])
 
-        with self.assertWarns(DeprecationWarning) as cm:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
             val = resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke")
+        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
         self.assertAlmostEqual(val, 5000.0)
-        self.assertIn("newton:angular:limitStiffness", str(cm.warning))
-        self.assertIn("newton:limitStiffness", str(cm.warning))
+        self.assertEqual(len(deprecations), 1)
+        self.assertEqual(Path(deprecations[0].filename).resolve(), Path(__file__).resolve())
+        self.assertIn("newton:angular:limitStiffness", str(deprecations[0].message))
+        self.assertIn("newton:limitStiffness", str(deprecations[0].message))
 
         with self.assertWarns(DeprecationWarning) as cm:
             val = resolver.get_value(joint, PrimType.JOINT, "limit_linear_kd")

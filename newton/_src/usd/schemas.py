@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import inspect
 import math
+import os
 import warnings
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -19,6 +21,23 @@ if TYPE_CHECKING:
 
 SchemaAttribute = SchemaResolver.SchemaAttribute
 _AttributeReader = Callable[[str], Any | None]
+_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
+
+
+def _external_stacklevel() -> int:
+    """Return a warning stack level past internal Newton frames."""
+    frame = inspect.currentframe()
+    if frame is None:
+        return 2
+    frame = frame.f_back
+    stacklevel = 1
+    try:
+        while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
+            frame = frame.f_back
+            stacklevel += 1
+        return stacklevel
+    finally:
+        del frame
 
 
 def _fallback_is_negative_infinity(value: Any) -> bool:
@@ -59,7 +78,7 @@ def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
                 f"'{legacy_name}' on shape prim is deprecated; "
                 f"author '{material_attr}' on the bound NewtonMaterialAPI material instead.",
                 DeprecationWarning,
-                stacklevel=4,
+                stacklevel=_external_stacklevel(),
             )
             return float(value)
         return None
@@ -78,7 +97,7 @@ def _newton_non_schema_joint_state_attr(attr_name: str):
                 f"Please file an issue at https://github.com/newton-physics/newton/issues "
                 f"describing your use case so we can provide a supported alternative.",
                 UserWarning,
-                stacklevel=4,
+                stacklevel=_external_stacklevel(),
             )
             return float(value)
         return None
@@ -95,7 +114,7 @@ def _newton_legacy_joint_limit_attr(legacy_name: str, schema_attr: str):
             warnings.warn(
                 f"'{legacy_name}' on joint prim is deprecated; use '{schema_attr}' instead.",
                 DeprecationWarning,
-                stacklevel=4,
+                stacklevel=_external_stacklevel(),
             )
             return float(value)
         return None
@@ -114,7 +133,7 @@ def _mjc_legacy_material_solref(converter, material_attr: str):
                 f"bound NewtonMaterialAPI material, or use per-shape 'mjc:solref' (MjcGeomAPI) "
                 f"instead.",
                 DeprecationWarning,
-                stacklevel=4,
+                stacklevel=_external_stacklevel(),
             )
             return converter(value)
         return None
