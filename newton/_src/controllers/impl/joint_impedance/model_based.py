@@ -419,7 +419,7 @@ class ControllerJointImpedance(ControllerBase):
 
     @property
     def max_controlled_dofs(self) -> int:
-        """Largest controlled-DOF count over the controlled robots, the padded width of the per-robot mass matrix."""
+        """Largest controlled-DOF count over the controlled robots."""
         return self._max_controlled_dofs
 
     @property
