@@ -357,9 +357,21 @@ class SchemaResolverNewton(SchemaResolver):
             ),
             # SDF configuration — from NewtonSDFCollisionAPI. `-inf` is the
             # "unset" sentinel (same convention as gap / shell_thickness above).
-            "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", float("-inf")),
-            "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", float("-inf")),
-            "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", float("-inf")),
+            "sdf_max_resolution": SchemaAttribute(
+                "newton:sdfMaxResolution",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "sdf_narrow_band_inner": SchemaAttribute(
+                "newton:sdfNarrowBandInner",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "sdf_narrow_band_outer": SchemaAttribute(
+                "newton:sdfNarrowBandOuter",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
             "sdf_target_voxel_size": SchemaAttribute(
                 "newton:sdfTargetVoxelSize",
                 float("-inf"),
@@ -373,7 +385,11 @@ class SchemaResolverNewton(SchemaResolver):
             ),
             # Hydroelastic contacts — folded into NewtonSDFCollisionAPI
             "hydroelastic_enabled": SchemaAttribute("newton:hydroelasticEnabled", None),
-            "kh": SchemaAttribute("newton:hydroelasticStiffness", float("-inf")),
+            "kh": SchemaAttribute(
+                "newton:hydroelasticStiffness",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
             # Mass model
             "mass_model": SchemaAttribute("newton:massModel", "solid"),
             "shell_thickness": SchemaAttribute(

@@ -250,6 +250,44 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertIs(authored.resolver, sentinel)
         self.assertTrue(authored.authored)
 
+    def test_newton_sdf_unset_fallbacks_continue_resolution(self):
+        """Continue past unset Newton SDF fallbacks to a lower resolver."""
+
+        class SchemaResolverBackup(SchemaResolver):
+            name = "backup"
+            mapping: ClassVar = {
+                PrimType.SHAPE: {
+                    "sdf_max_resolution": SchemaResolver.SchemaAttribute("backup:sdfMaxResolution"),
+                    "sdf_narrow_band_inner": SchemaResolver.SchemaAttribute("backup:sdfNarrowBandInner"),
+                    "sdf_narrow_band_outer": SchemaResolver.SchemaAttribute("backup:sdfNarrowBandOuter"),
+                    "kh": SchemaResolver.SchemaAttribute("backup:hydroelasticStiffness"),
+                }
+            }
+
+        newton_resolver = SchemaResolverNewton()
+        backup = SchemaResolverBackup()
+        resolution = _SchemaResolutionPolicy([newton_resolver, backup])
+        expected_values = {
+            "sdf_max_resolution": 64,
+            "sdf_narrow_band_inner": -0.1,
+            "sdf_narrow_band_outer": 0.1,
+            "kh": 1.0e5,
+        }
+
+        for key, expected in expected_values.items():
+            with self.subTest(key=key):
+                resolved = resolution._resolve_value(
+                    lambda resolver, _key, expected=expected: expected if resolver is backup else None,
+                    lambda resolver, _key: resolver is newton_resolver,
+                    lambda _resolver, _key: float("-inf"),
+                    PrimType.SHAPE,
+                    key,
+                )
+
+                self.assertEqual(resolved.value, expected)
+                self.assertIs(resolved.resolver, backup)
+                self.assertTrue(resolved.authored)
+
     def test_resolution_skips_unusable_compatibility_defaults(self):
         """Continue past compatibility defaults transformed to unusable values."""
 
