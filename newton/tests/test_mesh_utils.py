@@ -62,6 +62,24 @@ class TestComputeVertexNormals(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "indices must be flat or \\(N, 3\\) for Warp inputs"):
                     compute_vertex_normals(points, indices)
 
+    def test_invalid_warp_index_dtypes(self):
+        """Reject non-scalar-integer Warp index dtypes."""
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+            device="cpu",
+        )
+        invalid_indices = {
+            "floating-point": wp.array([0.0, 1.0, 2.0], dtype=wp.float32, device="cpu"),
+            "boolean": wp.array([False, True, True], dtype=wp.bool, device="cpu"),
+            "composite": wp.array([wp.vec3i(0, 1, 2)], dtype=wp.vec3i, device="cpu"),
+        }
+
+        for name, indices in invalid_indices.items():
+            with self.subTest(dtype=name):
+                with self.assertRaisesRegex(TypeError, "Warp indices must use an integer scalar dtype"):
+                    compute_vertex_normals(points, indices)
+
     def test_invalid_numpy_index_layouts(self):
         """Reject NumPy indices that are neither flat nor triangle-shaped."""
         points_np = np.array(

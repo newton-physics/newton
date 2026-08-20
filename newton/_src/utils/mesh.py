@@ -103,6 +103,8 @@ def compute_vertex_normals(
                 raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
             indices_wp = wp.array(indices_np, dtype=wp.int32, device=device_obj)
         indices_wp = cast(wp.array, indices_wp)
+        if not wp.types.type_is_int(indices_wp.dtype):
+            raise TypeError(f"Warp indices must use an integer scalar dtype, got {indices_wp.dtype}.")
         if indices_wp.ndim == 2:
             if indices_wp.shape[1] != 3:
                 raise ValueError("indices must be flat or (N, 3) for Warp inputs.")
