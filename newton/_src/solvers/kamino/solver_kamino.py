@@ -1077,6 +1077,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                     convert_forces=False,
                     friction_mix_mode=self._config.materials.friction_mix_mode,
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
+                    cull_speculative_contacts=self._config.dynamics.cull_speculative_contacts,
                 )
         else:
             self._detector = None
@@ -1311,7 +1312,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - springs
         - triangles, edges, tetrahedra
         - muscles
-        - distance or cable joints
+        - distance or rod joints
         - bodies with singular inertial properties that are attached to movable bodies
 
         Args:
@@ -1347,8 +1348,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 # Check for explicitly unsupported joint types
                 if joint_type == JointType.DISTANCE:
                     unsupported_joint_types["DISTANCE"] = unsupported_joint_types.get("DISTANCE", 0) + 1
-                elif joint_type == JointType.CABLE:
-                    unsupported_joint_types["CABLE"] = unsupported_joint_types.get("CABLE", 0) + 1
+                elif joint_type == JointType.ROD:
+                    unsupported_joint_types["ROD"] = unsupported_joint_types.get("ROD", 0) + 1
             if len(unsupported_joint_types) > 0:
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))

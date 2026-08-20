@@ -643,6 +643,47 @@ class TestHeightfield(unittest.TestCase):
         expected = np.tile([0.0, 0.0, 1.0, 1.0, 1.0], (heights.shape[0], 1)).astype(np.float32)
         assert_np_equal(heights, expected, tol=1e-4)
 
+    def test_heightfield_uniform_data_normalization_contract(self):
+        """Rest spheres on uniform heightfields and verify the normalization contract.
+
+        Uniform data has no range of its own and normalizes to zeros, so with
+        an explicit ``min_z``/``max_z`` the surface sits at ``min_z`` — the
+        same convention MuJoCo compiles for constant elevation, keeping
+        ``SolverMuJoCo`` and the native pipeline in agreement. With the range
+        auto-derived, ``min_z == max_z == value`` places the flat field at its
+        value. Also guards the regression from issue #3897, where heightfield
+        contact generation ignored elevation entirely.
+        """
+
+        def rest_z(hfield):
+            builder = newton.ModelBuilder()
+            builder.add_shape_heightfield(heightfield=hfield)
+            sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0)
+            builder.add_shape_sphere(body=sphere_body, radius=0.1)
+            builder.gravity = wp.vec3(0.0, 0.0, -9.81)
+
+            model = builder.finalize()
+            solver = newton.solvers.SolverXPBD(model, iterations=10)
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            state_0, state_1 = model.state(), model.state()
+            control = model.control()
+            dt = 0.002
+            for _ in range(int(2.0 / dt)):
+                state_0.clear_forces()
+                pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+            return float(state_0.body_q.numpy()[sphere_body, 2])
+
+        data = np.full((9, 9), 0.5, dtype=np.float32)
+        # Explicit range: uniform data normalizes to zeros -> surface at min_z.
+        z_explicit = rest_z(Heightfield(data=data, nrow=9, ncol=9, hx=4.0, hy=4.0, min_z=0.0, max_z=0.8))
+        self.assertAlmostEqual(z_explicit, 0.1, delta=0.02)
+        # Auto-derived range: min_z == max_z == 0.5 -> flat field at its value.
+        z_auto = rest_z(Heightfield(data=data, nrow=9, ncol=9, hx=4.0, hy=4.0))
+        self.assertAlmostEqual(z_auto, 0.6, delta=0.02)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

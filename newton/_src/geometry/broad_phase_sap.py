@@ -314,6 +314,101 @@ def _process_single_sap_pair(
         )
 
 
+@wp.func
+def _process_sap_work_package(
+    flat_id: int,
+    workid: int,
+    shape_bounding_box_lower: wp.array[wp.vec3],
+    shape_bounding_box_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],
+    shape_displacement: wp.array[wp.vec3],
+    collision_group: wp.array[int],
+    shape_world: wp.array[int],
+    world_index_map: wp.array[int],
+    world_slice_ends: wp.array[int],
+    sap_sort_index_in: wp.array[int],
+    sap_cumulative_sum_in: wp.array[int],
+    max_shapes_per_world: int,
+    num_regular_worlds: int,
+    filter_pairs: wp.array[wp.vec2i],
+    num_filter_pairs: int,
+    shape_body: wp.array[int],
+    body_flags: wp.array[int],
+    include_static_kinematic_pairs: bool,
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],
+    max_candidate_pair: int,
+):
+    """Process one mapped SAP work package."""
+    j = flat_id + workid + 1
+    if flat_id > 0:
+        j -= sap_cumulative_sum_in[flat_id - 1]
+
+    world_id = flat_id // max_shapes_per_world
+    i = flat_id % max_shapes_per_world
+    j = j % max_shapes_per_world
+
+    world_slice_start = 0
+    if world_id > 0:
+        world_slice_start = world_slice_ends[world_id - 1]
+    world_slice_end = world_slice_ends[world_id]
+    num_shapes_in_world = world_slice_end - world_slice_start
+
+    if i >= num_shapes_in_world or j >= num_shapes_in_world:
+        return
+    if i >= j:
+        return
+
+    idx_i = world_id * max_shapes_per_world + i
+    idx_j = world_id * max_shapes_per_world + j
+    local_shape1 = sap_sort_index_in[idx_i]
+    local_shape2 = sap_sort_index_in[idx_j]
+    if local_shape1 < 0 or local_shape2 < 0:
+        return
+
+    shape1_tmp = world_index_map[world_slice_start + local_shape1]
+    shape2_tmp = world_index_map[world_slice_start + local_shape2]
+    if shape1_tmp == shape2_tmp:
+        return
+
+    shape1 = wp.min(shape1_tmp, shape2_tmp)
+    shape2 = wp.max(shape1_tmp, shape2_tmp)
+
+    col_group1 = collision_group[shape1]
+    col_group2 = collision_group[shape2]
+    world1 = shape_world[shape1]
+    world2 = shape_world[shape2]
+
+    is_dedicated_minus_one_segment = world_id >= num_regular_worlds
+    if world1 == -1 and world2 == -1 and not is_dedicated_minus_one_segment:
+        return
+
+    if test_world_and_group_pair(world1, world2, col_group1, col_group2):
+        _process_single_sap_pair(
+            wp.vec2i(shape1, shape2),
+            shape_bounding_box_lower,
+            shape_bounding_box_upper,
+            shape_gap,
+            shape_displacement,
+            candidate_pair,
+            candidate_pair_count,
+            max_candidate_pair,
+            filter_pairs,
+            num_filter_pairs,
+            shape_body,
+            body_flags,
+            include_static_kinematic_pairs,
+        )
+
+
+@wp.func
+def _advance_sap_chunk_base(chunk_base: int, chunk_stride: int, total_work_packages: int) -> int:
+    """Advance a dense SAP chunk without overflowing signed int32 arithmetic."""
+    if total_work_packages - chunk_base <= chunk_stride:
+        return total_work_packages
+    return chunk_base + chunk_stride
+
+
 @wp.kernel(enable_backward=False)
 def _sap_broadphase_kernel(
     # Input arrays
@@ -345,94 +440,79 @@ def _sap_broadphase_kernel(
 
     total_work_packages = sap_cumulative_sum_in[world_count * max_shapes_per_world - 1]
 
-    workid = tid
-    while workid < total_work_packages:
-        # Binary search to find which (world, local_shape) this work package belongs to
-        flat_id = binary_search(sap_cumulative_sum_in, workid, 0, world_count * max_shapes_per_world)
+    total_intervals = world_count * max_shapes_per_world
 
-        # Calculate j from flat_id and workid
-        j = flat_id + workid + 1
-        if flat_id > 0:
-            j -= sap_cumulative_sum_in[flat_id - 1]
-
-        # Convert flat_id to world and local indices
-        world_id = flat_id // max_shapes_per_world
-        i = flat_id % max_shapes_per_world
-        j = j % max_shapes_per_world
-
-        # Get slice boundaries for this world
-        world_slice_start = 0
-        if world_id > 0:
-            world_slice_start = world_slice_ends[world_id - 1]
-        world_slice_end = world_slice_ends[world_id]
-        num_shapes_in_world = world_slice_end - world_slice_start
-
-        # Check validity: ensure indices are within bounds
-        if i >= num_shapes_in_world or j >= num_shapes_in_world:
-            workid += nsweep_in
-            continue
-
-        # Skip self-pairs (i == j) and invalid pairs (i > j) - pairs must have distinct geometries with i < j
-        if i >= j:
-            workid += nsweep_in
-            continue
-
-        # Get sorted local indices using manual indexing
-        idx_i = world_id * max_shapes_per_world + i
-        idx_j = world_id * max_shapes_per_world + j
-        local_shape1 = sap_sort_index_in[idx_i]
-        local_shape2 = sap_sort_index_in[idx_j]
-
-        # Check for invalid indices (padding)
-        if local_shape1 < 0 or local_shape2 < 0:
-            workid += nsweep_in
-            continue
-
-        # Map to actual geometry indices
-        shape1_tmp = world_index_map[world_slice_start + local_shape1]
-        shape2_tmp = world_index_map[world_slice_start + local_shape2]
-
-        # Skip if mapped to the same geometry (shouldn't happen, but defensive check)
-        if shape1_tmp == shape2_tmp:
-            workid += nsweep_in
-            continue
-
-        # Ensure canonical ordering
-        shape1 = wp.min(shape1_tmp, shape2_tmp)
-        shape2 = wp.max(shape1_tmp, shape2_tmp)
-
-        # Get collision and world groups
-        col_group1 = collision_group[shape1]
-        col_group2 = collision_group[shape2]
-        world1 = shape_world[shape1]
-        world2 = shape_world[shape2]
-
-        # Skip pairs where both geometries are global (world -1), unless we're in the dedicated -1 segment
-        # The dedicated -1 segment is the last segment (world_id >= num_regular_worlds)
-        is_dedicated_minus_one_segment = world_id >= num_regular_worlds
-        if world1 == -1 and world2 == -1 and not is_dedicated_minus_one_segment:
-            workid += nsweep_in
-            continue
-
-        # Check both world and collision groups
-        if test_world_and_group_pair(world1, world2, col_group1, col_group2):
-            _process_single_sap_pair(
-                wp.vec2i(shape1, shape2),
+    # Keep chunk multiplications within signed int32 range.
+    if total_work_packages <= nsweep_in or nsweep_in > 2147483647 // 4:
+        workid = tid
+        while workid < total_work_packages:
+            flat_id = binary_search(sap_cumulative_sum_in, workid, 0, total_intervals)
+            _process_sap_work_package(
+                flat_id,
+                workid,
                 shape_bounding_box_lower,
                 shape_bounding_box_upper,
                 shape_gap,
                 shape_displacement,
-                candidate_pair,
-                candidate_pair_count,
-                max_candidate_pair,
+                collision_group,
+                shape_world,
+                world_index_map,
+                world_slice_ends,
+                sap_sort_index_in,
+                sap_cumulative_sum_in,
+                max_shapes_per_world,
+                num_regular_worlds,
                 filter_pairs,
                 num_filter_pairs,
                 shape_body,
                 body_flags,
                 include_static_kinematic_pairs,
+                candidate_pair,
+                candidate_pair_count,
+                max_candidate_pair,
             )
+            workid += nsweep_in
+        return
 
-        workid += nsweep_in
+    # Reuse interval lookups only when the original threads would loop.
+    chunk_size = 4
+    chunk_base = tid * chunk_size
+    chunk_stride = nsweep_in * chunk_size
+    while chunk_base < total_work_packages:
+        flat_id = binary_search(sap_cumulative_sum_in, chunk_base, 0, total_intervals)
+        chunk_offset = int(0)  # noqa: RUF046, RUF100 - explicit cast required by Warp codegen
+        while chunk_offset < chunk_size:
+            workid = chunk_base + chunk_offset
+            chunk_offset += 1
+            if workid >= total_work_packages:
+                continue
+            if sap_cumulative_sum_in[flat_id] <= workid:
+                flat_id = binary_search(sap_cumulative_sum_in, workid, flat_id + 1, total_intervals)
+            _process_sap_work_package(
+                flat_id,
+                workid,
+                shape_bounding_box_lower,
+                shape_bounding_box_upper,
+                shape_gap,
+                shape_displacement,
+                collision_group,
+                shape_world,
+                world_index_map,
+                world_slice_ends,
+                sap_sort_index_in,
+                sap_cumulative_sum_in,
+                max_shapes_per_world,
+                num_regular_worlds,
+                filter_pairs,
+                num_filter_pairs,
+                shape_body,
+                body_flags,
+                include_static_kinematic_pairs,
+                candidate_pair,
+                candidate_pair_count,
+                max_candidate_pair,
+            )
+        chunk_base = _advance_sap_chunk_base(chunk_base, chunk_stride, total_work_packages)
 
 
 class BroadPhaseSAP:

@@ -358,6 +358,7 @@ def get_triangle_shape_from_heightfield(
     shape_data.shape_type = int(GeoTypeEx.TRIANGLE_PRISM)
     shape_data.scale = v1_local - v0_local  # B - A in local space
     shape_data.auxiliary = v2_local - v0_local  # C - A in local space
+    shape_data.center = wp.vec3(0.0, 0.0, 0.0)
 
     return shape_data, v0_world
 
