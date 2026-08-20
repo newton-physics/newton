@@ -103,6 +103,14 @@ def _select_pyglet_backend(headless: bool) -> None:
             "create the renderer in a separate process."
         )
 
+    if required_backend == "egl" and not headless:
+        # Reached only when pyglet is already configured for headless EGL, which
+        # cannot present a visible window, so a windowed renderer cannot run.
+        raise RuntimeError(
+            "RendererGL cannot create a windowed renderer while pyglet is configured for its "
+            "headless EGL backend; create the windowed renderer in a separate process."
+        )
+
     if required_backend == "egl":
         # Set before pyglet.graphics imports pyglet.gl. EGL is only needed on
         # Linux without X; other platforms keep their native hidden window.

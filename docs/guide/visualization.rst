@@ -194,9 +194,11 @@ runtime such as ``libegl1`` to be installed. On other platforms, and on Linux
 with a display, the headless viewer instead renders into a hidden native window.
 
 Because pyglet selects its rendering backend once, at import time, a single
-process cannot mix headless and windowed :class:`~newton.viewer.ViewerGL`
-instances: constructing one after the other raises a ``RuntimeError``. Create
-each in its own process if you need both.
+process cannot switch between pyglet's native and EGL backends. This only
+affects mixing a displayless-Linux headless viewer (which uses EGL) with any
+native-backend viewer (windowed, or a hidden native window) in the same
+process; constructing the second one raises a ``RuntimeError``. Create each in
+its own process if you need both.
 
 **Custom UI panels:**
 

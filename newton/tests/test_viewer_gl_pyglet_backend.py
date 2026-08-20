@@ -164,6 +164,18 @@ class TestPygletBackendSelection(unittest.TestCase):
         ):
             opengl._select_pyglet_backend(False)
 
+    def test_rejects_windowed_request_when_egl_configured(self):
+        """Verify a windowed request is rejected when pyglet is configured for EGL."""
+        pyglet = _pyglet_module(headless=True)
+        with (
+            mock.patch.object(sys, "platform", "linux"),
+            mock.patch.dict(os.environ, {"DISPLAY": ":0"}, clear=True),
+            mock.patch.dict(sys.modules, {"pyglet": pyglet}, clear=False),
+            mock.patch.object(opengl, "_get_pyglet_backend", return_value=None),
+            self.assertRaisesRegex(RuntimeError, "cannot create a windowed renderer"),
+        ):
+            opengl._select_pyglet_backend(False)
+
     def test_rejects_egl_backend_after_native_import(self):
         """Verify an EGL request cannot follow a native pyglet import."""
         pyglet = _pyglet_module()

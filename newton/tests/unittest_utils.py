@@ -109,8 +109,8 @@ def is_viewer_gl_unavailable_error(exc: BaseException) -> bool:
         return True
 
     # RendererGL reports a missing EGL runtime (headless Linux without a display
-    # and without libEGL) as an ImportError mentioning EGL.
-    return isinstance(exc, ImportError) and "EGL" in str(exc)
+    # and without libEGL) with this controlled ImportError message.
+    return isinstance(exc, ImportError) and "no EGL runtime is available" in str(exc)
 
 
 try:
