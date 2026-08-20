@@ -54,8 +54,7 @@ class TestExportGraph(unittest.TestCase):
         selection = select_joints(model)
         return ControllerJointImpedance(
             model,
-            joint_q_idx=selection.q_idx,
-            joint_qd_idx=selection.qd_idx,
+            joint_selection=selection,
             stiffness=wp.array([50.0, 30.0], dtype=wp.float32, device=device),
             damping=wp.array([5.0, 3.0], dtype=wp.float32, device=device),
             device=device,
