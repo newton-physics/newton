@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """:func:`select_joints` and its result type — a helper for computing the
-``joint_q_idx`` / ``joint_qd_idx`` pair that
-:class:`~newton.controllers.ControllerJointImpedance` requires.
+:class:`JointSelection` that :class:`~newton.controllers.ControllerJointImpedance`
+requires.
 
-:func:`select_joints` is a pure helper: it does not construct a controller and
-is never passed to one. It only resolves a set of joints against a
-:class:`~newton.Model` into the flat index arrays that controller expects.
+:func:`select_joints` is a pure helper: it does not construct a controller
+itself. It only resolves a set of joints against a :class:`~newton.Model` into
+the :class:`JointSelection` the controller's ``joint_selection`` argument
+expects.
 """
 
 from __future__ import annotations
@@ -112,8 +113,8 @@ def select_joints(
     Returns:
         The matched coordinate/DOF index pair addressing the selected DOFs, in
         the grouped-by-robot layout
-        :class:`~newton.controllers.ControllerJointImpedance` expects for
-        ``joint_q_idx`` and ``joint_qd_idx``.
+        :class:`~newton.controllers.ControllerJointImpedance` expects for its
+        ``joint_selection`` argument.
 
     Raises:
         ValueError: If the model has no articulations, an entry of
@@ -126,8 +127,7 @@ def select_joints(
             selection = select_joints(model, joints=["shoulder", "elbow", "wrist"])
             controller = ControllerJointImpedance(
                 model,
-                joint_q_idx=selection.q_idx,
-                joint_qd_idx=selection.qd_idx,
+                joint_selection=selection,
                 stiffness=kp,
                 damping=kd,
             )
