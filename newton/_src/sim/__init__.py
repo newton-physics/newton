@@ -7,7 +7,12 @@ from .collide import CollisionPipeline
 from .contact_kinematics import eval_rigid_contact_kinematics
 from .contacts import Contacts
 from .control import Control
-from .deformable_visual import DeformableVisualBinding, DeformableVisualMesh, DeformableVisuals
+from .deformable_visual import (
+    DeformableVisualBinding,
+    DeformableVisualGaussian,
+    DeformableVisualMesh,
+    DeformableVisuals,
+)
 from .enums import (
     BodyFlags,
     EqType,
@@ -26,6 +31,7 @@ __all__ = [
     "Contacts",
     "Control",
     "DeformableVisualBinding",
+    "DeformableVisualGaussian",
     "DeformableVisualMesh",
     "DeformableVisuals",
     "EqType",

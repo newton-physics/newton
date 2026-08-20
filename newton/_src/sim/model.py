@@ -24,6 +24,7 @@ from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
 from .deformable_visual import (
+    DeformableVisualGaussian,
     DeformableVisualMesh,
     DeformableVisuals,
     compute_deformable_visual_mesh_normals,
@@ -1055,6 +1056,8 @@ class Model:
         simulation state for visualization and sensors only (see
         :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`). Empty when no
         visual meshes were attached."""
+        self.deformable_visual_gaussians: list[DeformableVisualGaussian] = []
+        """Gaussian fields embedded in deformables for visualization and sensors."""
 
         self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
@@ -1353,6 +1356,8 @@ class Model:
         """Total number of muscles in the system."""
         self.deformable_visual_mesh_count: int = 0
         """Total number of deformable visual meshes in the system."""
+        self.deformable_visual_gaussian_count: int = 0
+        """Total number of deformable Gaussian visuals in the system."""
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
         self.joint_dof_count: int = 0

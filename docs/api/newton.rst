@@ -33,6 +33,7 @@ newton
    Contacts
    Control
    DeformableVisualBinding
+   DeformableVisualGaussian
    DeformableVisualMesh
    DeformableVisuals
    EqType

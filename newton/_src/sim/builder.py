@@ -56,7 +56,7 @@ from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency, split_mesh_components
-from .deformable_visual import DeformableVisualBinding, DeformableVisualMesh
+from .deformable_visual import DeformableVisualBinding, DeformableVisualGaussian, DeformableVisualMesh
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -329,6 +329,10 @@ class ModelBuilder:
             compaction_policy="passthrough",
         ),
         "_deformable_visual_meshes": Model.AttributeSpec(
+            Model.AttributeFrequency.ONCE,
+            compaction_policy="passthrough",
+        ),
+        "_deformable_visual_gaussians": Model.AttributeSpec(
             Model.AttributeFrequency.ONCE,
             compaction_policy="passthrough",
         ),
@@ -1368,6 +1372,8 @@ class ModelBuilder:
         """Raw visual-mesh specs accumulated for :attr:`Model.deformable_visual_meshes`.
         Each entry stores numpy asset data and per-vertex embedding; converted to
         :class:`~newton.DeformableVisualMesh` objects in :meth:`finalize`."""
+        self._deformable_visual_gaussians: list[dict] = []
+        """Gaussian visual specs converted to :class:`~newton.DeformableVisualGaussian`."""
 
         # muscles
         self.muscle_start: list[int] = []
@@ -2741,22 +2747,31 @@ class ModelBuilder:
             leading_slash = "/" if destination.startswith("/") else ""
             return leading_slash + "/".join(part for part in rebased_parts if part)
 
+        deformable_visual_specs = (
+            builder._deformable_visual_meshes,
+            builder._deformable_visual_gaussians,
+        )
         for prefixes in path_prefixes:
             if prefixes is None:
                 continue
-            for spec in builder._deformable_visual_meshes:
-                for name in ("body_path", "sim_path", "graphics_path"):
-                    rebase_path(spec.get(name), prefixes, required=True)
+            for specs in deformable_visual_specs:
+                for spec in specs:
+                    for name in ("body_path", "sim_path", "graphics_path"):
+                        rebase_path(spec.get(name), prefixes, required=True)
 
         for world_index in range(world_count):
-            for spec in builder._deformable_visual_meshes:
-                merged = dict(spec)
-                parent_start = int(starts(visual_parent_kinds[spec["kind"]])[world_index])
-                merged["parent"] = np.asarray(spec["parent"], dtype=np.int32) + parent_start
-                merged["label"] = rebase_path(spec.get("label"), path_prefixes[world_index])
-                for name in ("body_path", "sim_path", "graphics_path"):
-                    merged[name] = rebase_path(spec.get(name), path_prefixes[world_index], required=True)
-                self._deformable_visual_meshes.append(merged)
+            for source_specs, destination_specs in (
+                (builder._deformable_visual_meshes, self._deformable_visual_meshes),
+                (builder._deformable_visual_gaussians, self._deformable_visual_gaussians),
+            ):
+                for spec in source_specs:
+                    merged = dict(spec)
+                    parent_start = int(starts(visual_parent_kinds[spec["kind"]])[world_index])
+                    merged["parent"] = np.asarray(spec["parent"], dtype=np.int32) + parent_start
+                    merged["label"] = rebase_path(spec.get("label"), path_prefixes[world_index])
+                    for name in ("body_path", "sim_path", "graphics_path"):
+                        merged[name] = rebase_path(spec.get(name), path_prefixes[world_index], required=True)
+                    destination_specs.append(merged)
 
         def extend_referenced(dst: list, values: Sequence[Any], kind: str) -> None:
             if not values:
@@ -10041,6 +10056,79 @@ class ModelBuilder:
         self._deformable_visual_meshes.append(spec)
         return len(self._deformable_visual_meshes) - 1
 
+    def add_deformable_visual_gaussian(
+        self,
+        gaussian: Gaussian,
+        *,
+        kind: DeformableVisualBinding.Kind | str,
+        tet_range: tuple[int, int],
+        parent: list[int] | np.ndarray | None = None,
+        weights: np.ndarray | None = None,
+        label: str = "",
+    ) -> int:
+        """Attach a Gaussian field to a volumetric deformable for rendering.
+
+        Gaussian centers are embedded in the owning tetrahedra. The visual is
+        render-only and does not add collision geometry, mass, or constraints.
+
+        Args:
+            gaussian: Rest Gaussian appearance and center positions [m].
+            kind: Binding kind. The initial implementation supports only
+                :attr:`~newton.DeformableVisualBinding.Kind.TET`.
+            tet_range: Owning ``[start, end)`` tetrahedron range.
+            parent: Optional precomputed parent tetrahedron per Gaussian.
+            weights: Optional four barycentric weights per Gaussian.
+            label: Display label.
+
+        Returns:
+            Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
+
+        .. experimental::
+
+            This API may change without a formal deprecation cycle while
+            deformable visual support is experimental.
+        """
+        if not isinstance(gaussian, Gaussian):
+            raise TypeError(f"gaussian must be Gaussian, got {type(gaussian).__name__}")
+        if gaussian.count == 0:
+            raise ValueError("add_deformable_visual_gaussian: gaussian must contain at least one sample")
+        if not all(
+            np.all(np.isfinite(values))
+            for values in (
+                gaussian.positions,
+                gaussian.rotations,
+                gaussian.scales,
+                gaussian.opacities,
+                gaussian.sh_coeffs,
+            )
+        ):
+            raise ValueError("add_deformable_visual_gaussian: Gaussian data must be finite")
+        if np.any(gaussian.scales <= 0.0):
+            raise ValueError("add_deformable_visual_gaussian: Gaussian scales must be positive")
+
+        kind = self._resolve_deformable_visual_kind(kind, "add_deformable_visual_gaussian")
+        if kind != DeformableVisualBinding.Kind.TET:
+            raise ValueError("add_deformable_visual_gaussian currently supports only kind='tet'")
+        binding = self._prepare_deformable_visual_binding(
+            gaussian.positions,
+            kind=kind,
+            tet_range=tet_range,
+            parent=parent,
+            weights=weights,
+            operation="add_deformable_visual_gaussian",
+        )
+        self._deformable_visual_gaussians.append(
+            {
+                **binding,
+                "gaussian": gaussian,
+                "label": label,
+                "body_path": None,
+                "sim_path": None,
+                "graphics_path": None,
+            }
+        )
+        return len(self._deformable_visual_gaussians) - 1
+
     def _prepare_deformable_visual_binding(
         self,
         points: np.ndarray,
@@ -10055,13 +10143,7 @@ class ModelBuilder:
         operation: str,
     ) -> dict:
         """Build one validated binding shared by deformable visual payloads."""
-        if isinstance(kind, str):
-            try:
-                kind = DeformableVisualBinding.Kind[kind.upper()]
-            except KeyError:
-                names = ", ".join(item.name.lower() for item in DeformableVisualBinding.Kind)
-                raise ValueError(f"{operation}: unknown kind {kind!r}; expected one of {names}") from None
-        kind = DeformableVisualBinding.Kind(kind)
+        kind = self._resolve_deformable_visual_kind(kind, operation)
 
         mode_args = {
             DeformableVisualBinding.Kind.PARTICLE: ("particles",),
@@ -10122,6 +10204,19 @@ class ModelBuilder:
                 raise ValueError(f"{operation}(kind='body'): requires bodies")
             binding["parent"], binding["local_offsets"] = self._bind_visual_vertices_to_bodies(points, bodies)
         return binding
+
+    @staticmethod
+    def _resolve_deformable_visual_kind(
+        kind: DeformableVisualBinding.Kind | str, operation: str
+    ) -> DeformableVisualBinding.Kind:
+        """Resolve a public binding kind with an operation-specific error."""
+        if isinstance(kind, str):
+            try:
+                kind = DeformableVisualBinding.Kind[kind.upper()]
+            except KeyError:
+                names = ", ".join(item.name.lower() for item in DeformableVisualBinding.Kind)
+                raise ValueError(f"{operation}: unknown kind {kind!r}; expected one of {names}") from None
+        return DeformableVisualBinding.Kind(kind)
 
     def _validate_visual_range(
         self, rng: tuple[int, int], count: int, name: str, operation: str = "add_deformable_visual_mesh"
@@ -11669,6 +11764,42 @@ class ModelBuilder:
             )
         return meshes
 
+    def _finalize_deformable_visual_gaussians(self) -> list[DeformableVisualGaussian]:
+        """Convert Gaussian visual specs to device-resident model records."""
+        if not self._deformable_visual_gaussians:
+            return []
+
+        particle_world = np.asarray(self.particle_world, dtype=np.int32)
+        tet_indices = np.asarray(self.tet_indices, dtype=np.int32).reshape(-1, 4)
+        visuals = []
+        for index, spec in enumerate(self._deformable_visual_gaussians):
+            parent = np.asarray(spec["parent"], dtype=np.int32)
+            drivers = tet_indices[parent].reshape(-1)
+            worlds = np.unique(particle_world[drivers]) if len(drivers) else np.empty(0, dtype=np.int32)
+            if len(worlds) > 1:
+                raise ValueError(
+                    f"deformable Gaussian visual {spec.get('label') or ''!r}: drivers span worlds "
+                    f"{worlds.tolist()}; a visual must be driven by a single world"
+                )
+            binding = DeformableVisualBinding(
+                kind=spec["kind"],
+                parent=wp.array(parent, dtype=wp.int32),
+                weights=wp.array(np.asarray(spec["weights"], dtype=np.float32), dtype=wp.vec4),
+            )
+            visuals.append(
+                DeformableVisualGaussian(
+                    gaussian=spec["gaussian"],
+                    binding=binding,
+                    world=int(worlds[0]) if len(worlds) else -1,
+                    label=spec.get("label", ""),
+                    index=index,
+                    body_path=spec.get("body_path"),
+                    sim_path=spec.get("sim_path"),
+                    graphics_path=spec.get("graphics_path"),
+                )
+            )
+        return visuals
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -12627,6 +12758,8 @@ class ModelBuilder:
             # deformable visual meshes
             m.deformable_visual_meshes = self._finalize_deformable_visual_meshes()
             m.deformable_visual_mesh_count = len(m.deformable_visual_meshes)
+            m.deformable_visual_gaussians = self._finalize_deformable_visual_gaussians()
+            m.deformable_visual_gaussian_count = len(m.deformable_visual_gaussians)
 
             # -----------------------
             # muscles

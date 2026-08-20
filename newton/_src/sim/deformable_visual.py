@@ -22,6 +22,7 @@ import numpy as np
 import warp as wp
 
 if TYPE_CHECKING:
+    from ..geometry import Gaussian
     from .model import Model
     from .state import State
 
@@ -174,6 +175,73 @@ class DeformableVisualMesh:
     @property
     def vertex_count(self) -> int:
         return 0 if self.rest_vertices is None else len(self.rest_vertices)
+
+
+class DeformableVisualGaussian:
+    """A Gaussian field whose samples are bound to a deformable body.
+
+    Instances are immutable model output created by
+    :meth:`newton.ModelBuilder.add_deformable_visual_gaussian`. Current sample
+    transforms and scales will be stored separately in :class:`DeformableVisuals`.
+
+    .. experimental::
+
+        This API may change without a formal deprecation cycle while deformable
+        visual support is experimental.
+    """
+
+    def __init__(
+        self,
+        gaussian: Gaussian,
+        binding: DeformableVisualBinding,
+        world: int = -1,
+        label: str = "",
+        index: int = -1,
+        body_path: str | None = None,
+        sim_path: str | None = None,
+        graphics_path: str | None = None,
+    ) -> None:
+        """Store a Gaussian visual and its simulation binding.
+
+        Args:
+            gaussian: Immutable rest Gaussian appearance.
+            binding: Binding from Gaussian centers to simulation drivers.
+            world: Owning model world, or ``-1`` for global visuals.
+            label: Display label.
+            index: Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
+            body_path: Owning deformable body USD path, when imported.
+            sim_path: Driving simulation geometry USD path, when imported.
+            graphics_path: Gaussian graphics USD path, when imported.
+        """
+        self.gaussian = gaussian
+        """Immutable rest Gaussian appearance."""
+        self.binding = binding
+        """Binding from Gaussian centers to simulation drivers."""
+        self.kind = binding.kind
+        """Embedding kind (see :class:`DeformableVisualBinding.Kind`)."""
+        self.parent = binding.parent
+        """Per-Gaussian simulation driver indices, shape [count]."""
+        self.weights = binding.weights
+        """Barycentric weights, or ``None`` for non-barycentric bindings."""
+        self.local_offsets = binding.local_offsets
+        """Body-local offsets [m], or ``None`` for non-body bindings."""
+        self.world = world
+        """Owning model world, or ``-1`` for a global visual."""
+        self.label = label
+        """Display label."""
+        self.index = index
+        """Stable index in :attr:`newton.Model.deformable_visual_gaussians`."""
+        self.body_path = body_path
+        """Owning deformable body USD path, or ``None``."""
+        self.sim_path = sim_path
+        """Driving simulation geometry USD path, or ``None``."""
+        self.graphics_path = graphics_path
+        """Gaussian graphics USD path, or ``None``."""
+
+    @property
+    def count(self) -> int:
+        """Number of Gaussian samples."""
+        return self.gaussian.count
 
 
 class DeformableVisuals:
