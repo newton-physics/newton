@@ -1204,6 +1204,59 @@ class TestControllerJointImpedance(unittest.TestCase):
                 device=device,
             )
 
+    def test_mutating_caller_index_arrays_after_construction_has_no_effect(self):
+        """Verify mutating joint_q_idx/joint_qd_idx after construction does not redirect the controller.
+
+        The robot packing, local-DOF tables, and masks are derived once from
+        the arrays' contents at construction time. If the controller kept a
+        live reference instead of a private copy, overwriting the caller's
+        arrays afterward would silently combine state read through the
+        (now-redirected) view with topology and dynamics still derived from
+        the original selection.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        j0 = builder.add_joint_prismatic(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(1.0, 0.0, 0.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0], label="robot0")
+        link1 = builder.add_link()
+        j1 = builder.add_joint_prismatic(
+            parent=-1,
+            child=link1,
+            axis=wp.vec3(1.0, 0.0, 0.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j1], label="robot1")
+        model = builder.finalize(device=device)
+
+        joint_q_idx = _idx([0], device)
+        joint_qd_idx = _idx([0], device)
+        ctrl = ControllerJointImpedance(
+            model,
+            joint_q_idx=joint_q_idx,
+            joint_qd_idx=joint_qd_idx,
+            stiffness=_gains(1, 5.0, device),
+            damping=_gains(1, 0.0, device),
+            use_gravity_compensation=False,
+            use_coriolis_compensation=False,
+            use_inertia_decoupling=False,
+            device=device,
+        )
+
+        # Redirect the caller's own arrays at robot 1's DOF after construction.
+        joint_q_idx.assign([1])
+        joint_qd_idx.assign([1])
+
+        tau = self._run(ctrl, q_sim=[0.0, 10.0], qd_sim=[0.0, 0.0], q_des=[1.0], qd_des=[0.0], device=device)
+        np.testing.assert_allclose(tau, [5.0], atol=1e-4)
+
 
 if __name__ == "__main__":
     unittest.main()
