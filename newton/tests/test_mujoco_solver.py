@@ -9013,6 +9013,30 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
 
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [1.0, -3.0, 0.0, 0.0, 0.0])
 
+    def test_joint_mimic_d6_conversion(self):
+        """Verify MuJoCo lowers multi-axis D6 mimic metadata componentwise."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+        axes = [axis(newton.Axis.X), axis(newton.Axis.Y)]
+        reference = builder.add_joint_d6(-1, body0, linear_axes=axes)
+        follower = builder.add_joint_d6(body0, body1, linear_axes=axes)
+        builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.neq, 2)
+        np.testing.assert_allclose(
+            solver.mjw_model.eq_data.numpy()[0, :, :5],
+            [[0.5, 2.0, 0.0, 0.0, 0.0], [0.5, 2.0, 0.0, 0.0, 0.0]],
+        )
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_joint_mimic.numpy()[0], [follower, follower])
+
     def test_joint_mimic_multi_world_mapping(self):
         """Verify dense mimic mappings and coefficients remain per world."""
         template = newton.ModelBuilder()

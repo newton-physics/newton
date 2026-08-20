@@ -589,17 +589,25 @@ def eval_mimic_joints(
         return
 
     coeffs = joint_mimic_coeffs[joint]
-    joint_q[joint_q_start[joint]] = coeffs[0] + coeffs[1] * joint_q[joint_q_start[reference_joint]]
-    joint_qd[joint_qd_start[joint]] = coeffs[1] * joint_qd[joint_qd_start[reference_joint]]
+    q_start = joint_q_start[joint]
+    reference_q_start = joint_q_start[reference_joint]
+    for coordinate in range(joint_q_start[joint + 1] - q_start):
+        joint_q[q_start + coordinate] = coeffs[0] + coeffs[1] * joint_q[reference_q_start + coordinate]
+
+    qd_start = joint_qd_start[joint]
+    reference_qd_start = joint_qd_start[reference_joint]
+    for dof in range(joint_qd_start[joint + 1] - qd_start):
+        joint_qd[qd_start + dof] = coeffs[1] * joint_qd[reference_qd_start + dof]
 
 
 def eval_mimic(model: Model, state_in: State, state_out: State | None = None) -> None:
     """Update follower joint coordinates from their reference joints.
 
-    For each follower, this function reads the reference joint's position and
-    velocity, then writes the follower's position and velocity according to
-    :attr:`Model.joint_mimic_coeffs`. Independent joints are left unchanged.
-    Only :attr:`State.joint_q` and :attr:`State.joint_qd` are written.
+    For each follower, this function reads every position and velocity
+    coordinate of the reference joint, then writes the matching follower
+    coordinates according to :attr:`Model.joint_mimic_coeffs`. Independent
+    joints are left unchanged. Only :attr:`State.joint_q` and
+    :attr:`State.joint_qd` are written.
 
     If ``state_out`` is omitted, ``state_in`` is updated in place. Otherwise,
     all joint coordinates are first copied from ``state_in`` to ``state_out``

@@ -1,1 +1,1 @@
-Add joint-owned mimic metadata, `ModelBuilder.set_joint_mimic()`, explicit follower-coordinate updates through `eval_mimic()`, and MuJoCo lowering for scalar mimic joints.
+Add joint-owned mimic metadata for joints with matching dimensions, `ModelBuilder.set_joint_mimic()`, componentwise follower-coordinate updates through `eval_mimic()`, and MuJoCo lowering for revolute, prismatic, and D6 mimic joints.

@@ -5461,28 +5461,29 @@ class ModelBuilder:
         reference_joint: int | None,
         coeffs: Vec2 = (0.0, 1.0),
     ) -> None:
-        """Configure a scalar joint to mimic another scalar joint.
+        """Configure a joint to mimic another joint with matching dimensions.
 
-        The follower coordinate is defined by
-        ``q[joint] = coeffs[0] + coeffs[1] * q[reference_joint]``. Its velocity
-        is ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
-        ``reference_joint`` clears the mimic relationship.
+        The relationship is applied componentwise to every position and
+        velocity coordinate. The follower coordinates are defined by
+        ``q[joint] = coeffs[0] + coeffs[1] * q[reference_joint]`` and
+        ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
+        ``reference_joint`` clears the relationship.
 
-        If the reference joint is itself a mimic joint, its coefficients are
-        combined immediately so that the builder always stores a direct
-        relationship to an independent joint. Cycles are rejected.
+        Mimic chains are not supported: the reference joint must be independent,
+        and a joint referenced by another mimic joint cannot become a follower.
 
         Args:
             joint: Index of the follower joint.
             reference_joint: Index of the reference joint, or ``None`` to make
                 ``joint`` independent.
-            coeffs: Offset and multiplier applied to the reference coordinate
-                [m or rad, dimensionless].
+            coeffs: Offset and multiplier applied componentwise to the reference
+                coordinates [m or rad, dimensionless].
 
         Raises:
-            ValueError: If an index is invalid, either joint is not scalar, the
+            ValueError: If an index is invalid, the joint dimensions differ, the
                 joints belong to different worlds or articulations, the
-                coefficients are not finite, or the relationship creates a cycle.
+                coefficients are not finite, or the relationship creates a mimic
+                chain.
         """
         joint_count = self.joint_count
         if joint < 0 or joint >= joint_count:
@@ -5498,13 +5499,16 @@ class ModelBuilder:
         if joint == reference_joint:
             raise ValueError(f"Joint {joint} cannot mimic itself")
 
-        for joint_index, role in ((joint, "follower"), (reference_joint, "reference")):
-            joint_type = self.joint_type[joint_index]
-            if joint_type not in (JointType.PRISMATIC, JointType.REVOLUTE):
-                raise ValueError(
-                    f"Mimic {role} joint {joint_index} has type {JointType(joint_type).name}; "
-                    "only scalar PRISMATIC and REVOLUTE joints are supported"
-                )
+        follower_dimensions = self.joint_type[joint].dof_count(sum(self.joint_dof_dim[joint]))
+        reference_dimensions = self.joint_type[reference_joint].dof_count(sum(self.joint_dof_dim[reference_joint]))
+        if follower_dimensions != reference_dimensions:
+            follower_qd_dim, follower_q_dim = follower_dimensions
+            reference_qd_dim, reference_q_dim = reference_dimensions
+            raise ValueError(
+                "Mimic joints must have matching position and velocity dimensions. "
+                f"Follower joint {joint} has (q={follower_q_dim}, qd={follower_qd_dim}); "
+                f"reference joint {reference_joint} has (q={reference_q_dim}, qd={reference_qd_dim})."
+            )
 
         follower_world = self.joint_world[joint]
         reference_world = self.joint_world[reference_joint]
@@ -5532,44 +5536,13 @@ class ModelBuilder:
         if not math.isfinite(offset) or not math.isfinite(multiplier):
             raise ValueError(f"Mimic coefficients must be finite, got ({offset}, {multiplier})")
 
-        resolved_reference_joint = reference_joint
-        resolved_offset = offset
-        resolved_multiplier = multiplier
-        visited = {joint}
-        while True:
-            if resolved_reference_joint in visited:
-                raise ValueError(f"Mimic relationship from joint {joint} to {reference_joint} creates a cycle")
-            visited.add(resolved_reference_joint)
+        if self.joint_mimic_joint[reference_joint] != -1:
+            raise ValueError(f"Reference joint {reference_joint} is already a mimic joint")
+        if joint in self.joint_mimic_joint:
+            raise ValueError(f"Follower joint {joint} is already referenced by another mimic joint")
 
-            next_reference_joint = self.joint_mimic_joint[resolved_reference_joint]
-            if next_reference_joint == -1:
-                break
-
-            reference_offset, reference_multiplier = self.joint_mimic_coeffs[resolved_reference_joint]
-            resolved_offset += resolved_multiplier * float(reference_offset)
-            resolved_multiplier *= float(reference_multiplier)
-            resolved_reference_joint = next_reference_joint
-
-        if not math.isfinite(resolved_offset) or not math.isfinite(resolved_multiplier):
-            raise ValueError("Combined mimic coefficients must be finite")
-
-        follower_updates = []
-        for follower, follower_reference_joint in enumerate(self.joint_mimic_joint):
-            if follower_reference_joint != joint:
-                continue
-            follower_offset, follower_multiplier = self.joint_mimic_coeffs[follower]
-            updated_offset = float(follower_offset) + float(follower_multiplier) * resolved_offset
-            updated_multiplier = float(follower_multiplier) * resolved_multiplier
-            if not math.isfinite(updated_offset) or not math.isfinite(updated_multiplier):
-                raise ValueError(f"Combined mimic coefficients for follower joint {follower} must be finite")
-            follower_updates.append((follower, updated_offset, updated_multiplier))
-
-        for follower, updated_offset, updated_multiplier in follower_updates:
-            self.joint_mimic_joint[follower] = resolved_reference_joint
-            self.joint_mimic_coeffs[follower] = (updated_offset, updated_multiplier)
-
-        self.joint_mimic_joint[joint] = resolved_reference_joint
-        self.joint_mimic_coeffs[joint] = (resolved_offset, resolved_multiplier)
+        self.joint_mimic_joint[joint] = reference_joint
+        self.joint_mimic_coeffs[joint] = (offset, multiplier)
 
     def add_constraint_mimic(
         self,
@@ -5584,8 +5557,9 @@ class ModelBuilder:
         """Adds a mimic constraint to the model.
 
         .. deprecated:: 1.6
-            Use :meth:`set_joint_mimic` for scalar joints. Mimic metadata is now
-            stored per joint rather than as a separate constraint.
+            Use :meth:`set_joint_mimic` for joints with matching dimensions.
+            Mimic metadata is now stored per joint rather than as a separate
+            constraint.
 
         A mimic constraint enforces that ``joint0 = coef0 + coef1 * joint1``,
         following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
@@ -5606,7 +5580,7 @@ class ModelBuilder:
         """
         warnings.warn(
             "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.6; "
-            "use set_joint_mimic() for scalar joints instead.",
+            "use set_joint_mimic() for joints with matching dimensions instead.",
             DeprecationWarning,
             stacklevel=self._external_warning_stacklevel(),
         )

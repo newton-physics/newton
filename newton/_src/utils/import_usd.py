@@ -5087,19 +5087,7 @@ def parse_usd(
             offset_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:offset")
             offset = float(offset_attr.Get()) if offset_attr and offset_attr.HasValue() else 0.0
 
-            if builder.joint_type[joint_idx] in (JointType.PRISMATIC, JointType.REVOLUTE) and builder.joint_type[
-                leader_idx
-            ] in (JointType.PRISMATIC, JointType.REVOLUTE):
-                builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(-offset, -gearing))
-            else:
-                builder.add_constraint_mimic(
-                    joint0=joint_idx,
-                    joint1=leader_idx,
-                    coef0=-offset,
-                    coef1=-gearing,
-                    enabled=True,
-                    label=joint_path,
-                )
+            builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(-offset, -gearing))
 
             if verbose:
                 print(
@@ -5135,14 +5123,14 @@ def parse_usd(
         follower_is_revolute = joint_prim.IsA(UsdPhysics.RevoluteJoint)
         follower_is_prismatic = joint_prim.IsA(UsdPhysics.PrismaticJoint)
         if not follower_is_revolute and not follower_is_prismatic:
-            # Spherical and D6 followers hold more than one DOF, and a ball joint's
-            # coordinates are a quaternion rather than a scalar angle, so a single offset
-            # has no defined unit. NewtonMimicAPI says as much: multi-DOF behavior is
-            # undefined. _resolve_newton_mimic passes the value through; say so here.
+            # Spherical and D6 followers hold more than one coordinate, and a ball
+            # joint's coordinates are a quaternion rather than a scalar angle, so a
+            # single offset has no defined unit. _resolve_newton_mimic passes the
+            # value through; say so here.
             warnings.warn(
                 f"NewtonMimicAPI on {joint_path}: newton:mimicCoef0 has no defined unit for a "
                 f"{joint_prim.GetTypeName()} follower, which is not a single-DOF joint. Using the "
-                f"authored value unconverted; the offset is applied to every DOF.",
+                f"authored value unconverted; the offset is applied to every coordinate.",
                 stacklevel=2,
             )
         # Independent of units: a single-DOF prim merged into a D6 is constrained on every
@@ -5150,23 +5138,11 @@ def parse_usd(
         if (follower_is_revolute or follower_is_prismatic) and builder.joint_type[joint_idx] == JointType.D6:
             warnings.warn(
                 f"NewtonMimicAPI on {joint_path}: follower was merged into a multi-DOF joint, so the "
-                f"mimic constraint applies to every DOF of that joint, not only the authored axis.",
+                f"mimic relationship applies to every coordinate of that joint, not only the authored axis.",
                 stacklevel=2,
             )
         leader_idx = path_joint_map[leader_path_str]
-        if builder.joint_type[joint_idx] in (JointType.PRISMATIC, JointType.REVOLUTE) and builder.joint_type[
-            leader_idx
-        ] in (JointType.PRISMATIC, JointType.REVOLUTE):
-            builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
-        else:
-            builder.add_constraint_mimic(
-                joint0=joint_idx,
-                joint1=leader_idx,
-                coef0=coef0,
-                coef1=coef1,
-                enabled=True,
-                label=joint_path,
-            )
+        builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.delay import Delay  # noqa: PLC0415

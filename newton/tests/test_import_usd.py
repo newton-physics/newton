@@ -9727,12 +9727,11 @@ def Xform "Articulation" (
                 self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[followers[0], 0], expected, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_mimic_coef0_units_survive_joint_merging(self):
-        """An angular follower merged into a D6 is still converted from degrees.
+    def test_mimic_rejects_dimension_change_from_joint_merging(self):
+        """Reject a scalar leader when joint merging makes the follower multi-DOF.
 
         Single-DOF prims sharing a body pair are merged into one D6 joint, so the
-        follower's builder joint type is D6 rather than REVOLUTE. The authored USD prim
-        is what carries the unit, and a warning notes the widened constraint.
+        follower has two coordinates while the leader has one.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -9772,19 +9771,9 @@ def Xform "Articulation" (
         prim.GetAttribute("newton:mimicCoef0").Set(0.5)
 
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            result = builder.add_usd(stage)
-        model = builder.finalize()
-
-        follower_idx = result["path_joint_map"]["/World/Root/Follower"]
-        self.assertEqual(builder.joint_type[follower_idx], newton.JointType.D6)
-        self.assertEqual(model.constraint_mimic_count, 1)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], math.radians(0.5), places=6)
-        self.assertTrue(
-            any("merged into a multi-DOF joint" in str(w.message) for w in caught),
-            "expected a warning that the mimic constraint was widened to the merged joint",
-        )
+        with self.assertWarnsRegex(UserWarning, "merged into a multi-DOF joint"):
+            with self.assertRaisesRegex(ValueError, "matching position and velocity dimensions"):
+                builder.add_usd(stage)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_coef0_warns_for_multi_dof_follower(self):
@@ -9826,11 +9815,15 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            builder.add_usd(stage)
+            result = builder.add_usd(stage)
         model = builder.finalize()
 
         # A ball joint's coordinates are a quaternion, so no scalar conversion applies.
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], 0.5, places=6)
+        leader_idx = result["path_joint_map"]["/World/Root/Leader"]
+        follower_idx = result["path_joint_map"]["/World/Root/Follower"]
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
+        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.5, places=6)
         self.assertTrue(
             any("no defined unit" in str(w.message) for w in caught),
             "expected a warning that the offset has no defined unit for a multi-DOF follower",

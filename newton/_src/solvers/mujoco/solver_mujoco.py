@@ -394,8 +394,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`,
           :attr:`~newton.Model.joint_target_mode`, and :attr:`~newton.Control.joint_f` are supported.
-        - Equality constraints (CONNECT, WELD, JOINT) and scalar mimic joints
-          (REVOLUTE and PRISMATIC only) are supported.
+        - Equality constraints (CONNECT, WELD, JOINT) and mimic relationships
+          between REVOLUTE, PRISMATIC, or D6 joints are supported.
         - :attr:`~newton.Model.joint_velocity_limit` and :attr:`~newton.Model.joint_enabled`
           are not supported.
 
@@ -5650,6 +5650,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         site_mapping = {}
         # Store mapping from Newton joint index to MuJoCo joint name
         joint_mapping = {}
+        # Store the scalar MuJoCo joint names for each Newton joint coordinate.
+        joint_axis_mapping = {}
         # Store mapping from Newton body index to MuJoCo body name
         body_name_mapping = {}
 
@@ -6493,6 +6495,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             elif j_type in supported_joint_types:
                 lin_axis_count, ang_axis_count = joint_dof_dim[j]
                 multi_axis_joint = lin_axis_count + ang_axis_count > 1
+                joint_axis_mapping[j] = []
                 num_dofs += lin_axis_count + ang_axis_count
                 num_qpos += lin_axis_count + ang_axis_count
 
@@ -6569,6 +6572,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         **joint_params,
                     )
                     mjc_joint_names.append(axname)
+                    joint_axis_mapping[j].append(axname)
                     # Map this DOF to the current MuJoCo joint index
                     dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
@@ -6681,6 +6685,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         **joint_params,
                     )
                     mjc_joint_names.append(axname)
+                    joint_axis_mapping[j].append(axname)
                     # Map this DOF to the current MuJoCo joint index
                     dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
@@ -6979,28 +6984,29 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # compatible without creating duplicate MuJoCo equalities.
         mjc_eq_to_newton_joint_mimic_dict = {}
         for follower_joint in selected_joint_mimics:
-            reference_joint = joint_mimic_joint[follower_joint]
-            follower_name = joint_mapping.get(follower_joint)
-            reference_name = joint_mapping.get(reference_joint)
-            if follower_name is None or reference_name is None:
+            reference_joint = int(joint_mimic_joint[follower_joint])
+            follower_names = joint_axis_mapping.get(follower_joint)
+            reference_names = joint_axis_mapping.get(reference_joint)
+            if follower_names is None or reference_names is None:
                 warnings.warn(
-                    f"Skipping mimic joint {follower_joint}: follower or reference joint "
-                    "was not found in the MuJoCo joint mapping.",
+                    f"Skipping mimic joint {follower_joint}: MuJoCo joint equalities only support "
+                    "joints represented by scalar slide or hinge coordinates.",
                     stacklevel=2,
                 )
                 continue
 
-            eq = spec.add_equality()
-            eq.type = mujoco.mjtEq.mjEQ_JOINT
-            eq.active = True
-            eq.name1 = follower_name
-            eq.name2 = reference_name
-            eq.data[0] = float(joint_mimic_coeffs[follower_joint, 0])
-            eq.data[1] = float(joint_mimic_coeffs[follower_joint, 1])
-            mjc_eq_to_newton_joint_mimic_dict[eq.id] = int(follower_joint)
-            eq.data[2] = 0.0
-            eq.data[3] = 0.0
-            eq.data[4] = 0.0
+            for follower_name, reference_name in zip(follower_names, reference_names, strict=True):
+                eq = spec.add_equality()
+                eq.type = mujoco.mjtEq.mjEQ_JOINT
+                eq.active = True
+                eq.name1 = follower_name
+                eq.name2 = reference_name
+                eq.data[0] = float(joint_mimic_coeffs[follower_joint, 0])
+                eq.data[1] = float(joint_mimic_coeffs[follower_joint, 1])
+                mjc_eq_to_newton_joint_mimic_dict[eq.id] = int(follower_joint)
+                eq.data[2] = 0.0
+                eq.data[3] = 0.0
+                eq.data[4] = 0.0
 
         # Count non-colliding geoms that were kept because they are required by spatial tendons
         tendon_extra_geoms = sum(

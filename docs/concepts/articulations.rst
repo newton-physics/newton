@@ -109,10 +109,11 @@ As mentioned above, this call is not needed for generalized-coordinate solvers.
 Mimic joints
 ------------
 
-Scalar revolute and prismatic joints can derive their coordinate from another
-joint. The joint being derived is the *follower*. Newton calls the other joint
-the *reference joint*: it is the leader whose motion the follower mimics.
-Configure this relationship with :meth:`newton.ModelBuilder.set_joint_mimic`:
+A joint can derive its coordinates from another joint with the same position
+and velocity dimensions. The joint being derived is the *follower*. Newton
+calls the other joint the *reference joint*: it is the leader whose motion the
+follower mimics. Configure this relationship with
+:meth:`newton.ModelBuilder.set_joint_mimic`:
 
 .. testcode::
 
@@ -135,21 +136,24 @@ Configure this relationship with :meth:`newton.ModelBuilder.set_joint_mimic`:
 
 Every joint has a :attr:`newton.Model.joint_mimic_joint` entry. ``-1`` means
 that the joint is independent; otherwise it stores the reference joint index.
-:attr:`newton.Model.joint_mimic_coeffs` stores ``(offset, multiplier)`` so that
-``q_follower = offset + multiplier * q_reference``.
+:attr:`newton.Model.joint_mimic_coeffs` stores ``(offset, multiplier)``. The
+same relationship, ``q_follower = offset + multiplier * q_reference``, is
+applied componentwise when the joints have more than one coordinate.
+The joint types do not need to match; only their position and velocity
+dimensions must match. For example, a one-axis D6 joint can mimic another
+one-dimensional joint.
 
 :func:`newton.eval_mimic` updates the follower coordinates in a state. For each
-follower, it reads the position and velocity of the reference joint and writes
-the corresponding follower position and velocity. Independent joints are left
-unchanged. By default the function updates the input state in place; pass a
-different output state to copy the input coordinates and update the followers
-in that state instead.
+follower, it reads all position and velocity coordinates of the reference joint
+and writes the corresponding follower coordinates. Independent joints are
+left unchanged. By default the function updates the input state in place; pass
+a different output state to copy the input coordinates and update the
+followers in that state instead.
 
-If a reference joint is itself a follower, :meth:`newton.ModelBuilder.set_joint_mimic`
-immediately combines the two relationships. For example, if C follows B and B
-follows A, C is stored as following A with combined coefficients. This gives
-each follower a direct reference to an independent joint, so
-:func:`newton.eval_mimic` can update all followers at once.
+Mimic chains are not supported. The reference joint must be independent, and a
+joint that is already the reference for a follower cannot itself become a
+follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises an error if either
+case would create a chain.
 
 Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
 maximal-coordinate body poses should reflect the mimic relationship.

@@ -3472,83 +3472,106 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(model.constraint_mimic_label[1], "mimic2")
 
     def test_joint_mimic_metadata_and_evaluation(self):
-        """Verify joint-owned mimic relationships stay direct and are evaluated."""
+        """Verify joint-owned mimic metadata evaluates scalar coordinates."""
         builder = newton.ModelBuilder()
-        bodies = [builder.add_link() for _ in range(3)]
+        bodies = [builder.add_link() for _ in range(2)]
         reference = builder.add_joint_revolute(parent=-1, child=bodies[0], axis=newton.Axis.Z)
         follower = builder.add_joint_revolute(parent=bodies[0], child=bodies[1], axis=newton.Axis.Z)
-        chained_follower = builder.add_joint_revolute(parent=bodies[1], child=bodies[2], axis=newton.Axis.Z)
-        builder.add_articulation([reference, follower, chained_follower])
+        builder.add_articulation([reference, follower])
 
         builder.set_joint_mimic(follower, reference, (0.5, 2.0))
-        builder.set_joint_mimic(chained_follower, follower, (-1.0, -3.0))
 
-        self.assertEqual(builder.joint_mimic_joint, [-1, reference, reference])
+        self.assertEqual(builder.joint_mimic_joint, [-1, reference])
         np.testing.assert_allclose(
             builder.joint_mimic_coeffs,
-            [(0.0, 1.0), (0.5, 2.0), (-2.5, -6.0)],
+            [(0.0, 1.0), (0.5, 2.0)],
         )
 
         model = builder.finalize()
 
-        np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, reference, reference])
+        np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, reference])
         np.testing.assert_allclose(
             model.joint_mimic_coeffs.numpy(),
-            [(0.0, 1.0), (0.5, 2.0), (-2.5, -6.0)],
+            [(0.0, 1.0), (0.5, 2.0)],
         )
         self.assertEqual(model.constraint_mimic_count, 0)
 
         state_in = model.state()
         state_out = model.state()
-        state_in.joint_q.assign([1.25, 99.0, 99.0])
-        state_in.joint_qd.assign([2.0, 99.0, 99.0])
+        state_in.joint_q.assign([1.25, 99.0])
+        state_in.joint_qd.assign([2.0, 99.0])
 
         newton.eval_mimic(model, state_in, state_out)
 
-        np.testing.assert_allclose(state_in.joint_q.numpy(), [1.25, 99.0, 99.0])
-        np.testing.assert_allclose(state_in.joint_qd.numpy(), [2.0, 99.0, 99.0])
-        np.testing.assert_allclose(state_out.joint_q.numpy(), [1.25, 3.0, -10.0])
-        np.testing.assert_allclose(state_out.joint_qd.numpy(), [2.0, 4.0, -12.0])
+        np.testing.assert_allclose(state_in.joint_q.numpy(), [1.25, 99.0])
+        np.testing.assert_allclose(state_in.joint_qd.numpy(), [2.0, 99.0])
+        np.testing.assert_allclose(state_out.joint_q.numpy(), [1.25, 3.0])
+        np.testing.assert_allclose(state_out.joint_qd.numpy(), [2.0, 4.0])
 
         newton.eval_mimic(model, state_in)
-        np.testing.assert_allclose(state_in.joint_q.numpy(), [1.25, 3.0, -10.0])
-        np.testing.assert_allclose(state_in.joint_qd.numpy(), [2.0, 4.0, -12.0])
+        np.testing.assert_allclose(state_in.joint_q.numpy(), [1.25, 3.0])
+        np.testing.assert_allclose(state_in.joint_qd.numpy(), [2.0, 4.0])
 
-    def test_joint_mimic_updates_existing_followers(self):
-        """Verify setting a leader relationship keeps existing followers direct."""
+    def test_joint_mimic_vectorized_evaluation(self):
+        """Verify mimic coefficients apply componentwise to multi-DOF joints."""
         builder = newton.ModelBuilder()
-        bodies = [builder.add_link() for _ in range(3)]
-        reference = builder.add_joint_revolute(parent=-1, child=bodies[0])
-        follower = builder.add_joint_revolute(parent=bodies[0], child=bodies[1])
-        chained_follower = builder.add_joint_revolute(parent=bodies[1], child=bodies[2])
-        builder.add_articulation([reference, follower, chained_follower])
+        bodies = [builder.add_link() for _ in range(2)]
+        axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+        axes = [axis(newton.Axis.X), axis(newton.Axis.Y), axis(newton.Axis.Z)]
+        reference = builder.add_joint_d6(parent=-1, child=bodies[0], linear_axes=axes)
+        follower = builder.add_joint_d6(parent=bodies[0], child=bodies[1], linear_axes=axes)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, (-0.5, 2.0))
 
-        builder.set_joint_mimic(chained_follower, follower, (-1.0, -3.0))
-        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        model = builder.finalize()
+        state = model.state()
+        state.joint_q.assign([1.0, 2.0, 3.0, 99.0, 99.0, 99.0])
+        state.joint_qd.assign([4.0, 5.0, 6.0, 99.0, 99.0, 99.0])
 
-        self.assertEqual(builder.joint_mimic_joint, [-1, reference, reference])
-        np.testing.assert_allclose(
-            builder.joint_mimic_coeffs,
-            [(0.0, 1.0), (0.5, 2.0), (-2.5, -6.0)],
-        )
+        newton.eval_mimic(model, state)
 
-    def test_joint_mimic_validation(self):
-        """Verify joint mimic metadata rejects cycles and non-scalar joints."""
+        np.testing.assert_allclose(state.joint_q.numpy(), [1.0, 2.0, 3.0, 1.5, 3.5, 5.5])
+        np.testing.assert_allclose(state.joint_qd.numpy(), [4.0, 5.0, 6.0, 8.0, 10.0, 12.0])
+
+    def test_joint_mimic_rejects_chains(self):
+        """Verify mimic relationships cannot form chains in either authoring order."""
         builder = newton.ModelBuilder()
         bodies = [builder.add_link() for _ in range(3)]
         joint0 = builder.add_joint_revolute(parent=-1, child=bodies[0])
-        joint1 = builder.add_joint_prismatic(parent=bodies[0], child=bodies[1])
-        ball_joint = builder.add_joint_ball(parent=bodies[1], child=bodies[2])
+        joint1 = builder.add_joint_revolute(parent=bodies[0], child=bodies[1])
+        joint2 = builder.add_joint_revolute(parent=bodies[1], child=bodies[2])
 
         builder.set_joint_mimic(joint1, joint0)
-        with self.assertRaisesRegex(ValueError, "creates a cycle"):
-            builder.set_joint_mimic(joint0, joint1)
-        with self.assertRaisesRegex(ValueError, "only scalar"):
-            builder.set_joint_mimic(ball_joint, joint0)
+        with self.assertRaisesRegex(ValueError, "Reference joint 1 is already a mimic joint"):
+            builder.set_joint_mimic(joint2, joint1)
+        with self.assertRaisesRegex(ValueError, "Follower joint 0 is already referenced"):
+            builder.set_joint_mimic(joint0, joint2)
 
         builder.set_joint_mimic(joint1, None)
         self.assertEqual(builder.joint_mimic_joint[joint1], -1)
         self.assertEqual(builder.joint_mimic_coeffs[joint1], (0.0, 1.0))
+
+    def test_joint_mimic_validates_dimensions(self):
+        """Verify mimic relationships accept joint types only when their dimensions match."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link() for _ in range(3)]
+        axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+        reference = builder.add_joint_revolute(parent=-1, child=bodies[0])
+        d6_scalar = builder.add_joint_d6(
+            parent=bodies[0],
+            child=bodies[1],
+            angular_axes=[axis(newton.Axis.Z)],
+        )
+        d6_vector = builder.add_joint_d6(
+            parent=bodies[1],
+            child=bodies[2],
+            linear_axes=[axis(newton.Axis.X), axis(newton.Axis.Y)],
+        )
+
+        builder.set_joint_mimic(d6_scalar, reference)
+        self.assertEqual(builder.joint_mimic_joint[d6_scalar], reference)
+        with self.assertRaisesRegex(ValueError, "matching position and velocity dimensions"):
+            builder.set_joint_mimic(d6_vector, reference)
 
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""

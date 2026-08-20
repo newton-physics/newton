@@ -1133,7 +1133,7 @@ class Model:
         self.joint_mimic_joint: wp.array[wp.int32] | None = None
         """Independent reference joint index for each mimic joint, or -1 for an independent joint, shape [joint_count], int."""
         self.joint_mimic_coeffs: wp.array[wp.vec2] | None = None
-        """Mimic offset and multiplier [m or rad, dimensionless], shape [joint_count, 2], float."""
+        """Mimic offset and multiplier applied componentwise [m or rad, dimensionless], shape [joint_count, 2], float."""
         self.joint_parent: wp.array[wp.int32] | None = None
         """Joint parent body indices, shape [joint_count], int."""
         self.joint_child: wp.array[wp.int32] | None = None
