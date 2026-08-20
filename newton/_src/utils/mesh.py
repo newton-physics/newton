@@ -116,7 +116,11 @@ def compute_vertex_normals(
             normals_wp.zero_()
         if len(indices_wp) == 0 or len(points) == 0:
             return normals_wp
-        indices_i32 = indices_wp if indices_wp.dtype == wp.int32 else indices_wp.view(dtype=wp.int32)
+        if indices_wp.dtype == wp.int32:
+            indices_i32 = indices_wp
+        else:
+            indices_i32 = wp.empty(indices_wp.shape, dtype=wp.int32, device=indices_wp.device)
+            wp.utils.array_cast(in_array=indices_wp, out_array=indices_i32)
         wp.launch(
             accumulate_vertex_normals,
             dim=len(indices_i32) // 3,

@@ -28,6 +28,8 @@ class TestComputeVertexNormals(unittest.TestCase):
             warp_index_cases = {
                 "flat Warp": wp.array([0, 1, 2], dtype=wp.int32, device=device),
                 "triangle-shaped Warp": wp.array([[0, 1, 2]], dtype=wp.int32, device=device),
+                "flat int64 Warp": wp.array([0, 1, 2], dtype=wp.int64, device=device),
+                "triangle-shaped int64 Warp": wp.array([[0, 1, 2]], dtype=wp.int64, device=device),
                 "flat NumPy": np.array([0, 1, 2], dtype=np.int32),
                 "triangle-shaped NumPy": np.array([[0, 1, 2]], dtype=np.int32),
             }
