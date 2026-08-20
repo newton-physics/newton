@@ -410,7 +410,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
 
-| :sup:`3` Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.
+| :sup:`3` MuJoCo supports mimic relationships between REVOLUTE, PRISMATIC, and D6 joints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 
 
