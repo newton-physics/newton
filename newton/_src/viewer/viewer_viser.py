@@ -156,6 +156,8 @@ class ViewerViser(ViewerBase):
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._camera_pitch = 0.0
+        self._camera_yaw = 0.0
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
@@ -555,11 +557,15 @@ class ViewerViser(ViewerBase):
 
         Args:
             pos: Requested camera position [m].
-            pitch: Requested camera pitch angle [deg]. Defaults to 0 if None.
-            yaw: Requested camera yaw angle [deg]. Defaults to 0 if None.
+            pitch: Requested camera pitch angle [deg]. If None, the current pitch is kept.
+            yaw: Requested camera yaw angle [deg]. If None, the current yaw is kept.
         """
+        pitch = self._camera_pitch if pitch is None else float(pitch)
+        yaw = self._camera_yaw if yaw is None else float(yaw)
+        self._camera_pitch = pitch
+        self._camera_yaw = yaw
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
-        front, up_direction = self._compute_camera_front_up(pitch or 0.0, yaw or 0.0)
+        front, up_direction = self._compute_camera_front_up(pitch, yaw)
         look_at = position + front
         self._camera_request = (position, look_at, up_direction)
 
