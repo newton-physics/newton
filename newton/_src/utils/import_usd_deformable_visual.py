@@ -109,7 +109,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
             world_verts = _transform_points_np(world_mat, points).astype(np.float32)
             uvs = mesh._uvs if mesh._uvs is not None and len(mesh._uvs) == len(world_verts) else None
-            texture = getattr(mesh, "texture", None)
+            texture = usd.resolve_material_properties_for_prim(prim).get("texture")
             indices = np.asarray(mesh.indices, dtype=np.int32)
 
             try:
