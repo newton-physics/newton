@@ -1236,26 +1236,38 @@ class TestControllerJointImpedance(unittest.TestCase):
         builder.add_articulation([j1], label="robot1")
         model = builder.finalize(device=device)
 
-        joint_q_idx = _idx([0], device)
-        joint_qd_idx = _idx([0], device)
+        # Controller is built to control robot 0's coordinate/DOF (index 0).
+        joint_q_idx = wp.array([0], dtype=wp.int32, device=device)
+        joint_qd_idx = wp.array([0], dtype=wp.int32, device=device)
         ctrl = ControllerJointImpedance(
             model,
             joint_q_idx=joint_q_idx,
             joint_qd_idx=joint_qd_idx,
-            stiffness=_gains(1, 5.0, device),
-            damping=_gains(1, 0.0, device),
+            stiffness=wp.array([5.0], dtype=wp.float32, device=device),
+            damping=wp.array([0.0], dtype=wp.float32, device=device),
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
             use_inertia_decoupling=False,
             device=device,
         )
 
-        # Redirect the caller's own arrays at robot 1's DOF after construction.
+        # Redirect the caller's own arrays at robot 1's coordinate/DOF (index 1)
+        # after construction. If the controller kept a live reference instead
+        # of a private copy, this would change which robot it reads from.
         joint_q_idx.assign([1])
         joint_qd_idx.assign([1])
 
-        tau = self._run(ctrl, q_sim=[0.0, 10.0], qd_sim=[0.0, 0.0], q_des=[1.0], qd_des=[0.0], device=device)
-        np.testing.assert_allclose(tau, [5.0], atol=1e-4)
+        inputs = ctrl.input()
+        inputs.joint_q = wp.array([0.0, 10.0], dtype=wp.float32, device=device)  # robot 0 at 0.0, robot 1 at 10.0
+        inputs.joint_qd = wp.array([0.0, 0.0], dtype=wp.float32, device=device)
+        inputs.joint_q_des = wp.array([1.0], dtype=wp.float32, device=device)
+        inputs.joint_qd_des = wp.array([0.0], dtype=wp.float32, device=device)
+        outputs = ctrl.output()
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        # tau = Kp * (q_des - q) = 5.0 * (1.0 - 0.0), using robot 0's state —
+        # proof the controller is still reading robot 0, not the redirected robot 1.
+        np.testing.assert_allclose(outputs.joint_f.numpy(), [5.0], atol=1e-4)
 
 
 if __name__ == "__main__":
