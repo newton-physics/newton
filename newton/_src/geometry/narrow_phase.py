@@ -81,7 +81,6 @@ from ..utils.heightfield import (
 )
 
 _SPARSE_GJK_PAIR_CAPACITY_THRESHOLD = 1_000_000
-_SPLIT_GJK_MPR_PAIR_CAPACITY_THRESHOLD = 4096
 
 
 @wp.func
@@ -1672,70 +1671,73 @@ def compute_mesh_plane_vert_counts(
     shape_pairs_mesh_plane_count: wp.array[int],
     shape_source: wp.array[wp.uint64],
     vert_counts: wp.array[wp.int32],
+    total_vert_count: wp.array[wp.int32],
+    total_num_threads: int,
 ):
     """Compute per-pair vertex counts in parallel for mesh-plane pairs.
 
-    Slots beyond ``pair_count`` are zeroed for correct ``array_scan`` results.
+    Threads stride over the active pair prefix. Values beyond ``pair_count``
+    cannot affect the consumed prefix of the subsequent exclusive scan.
     """
-    i = wp.tid()
     pair_count = wp.min(shape_pairs_mesh_plane_count[0], shape_pairs_mesh_plane.shape[0])
-    if i >= pair_count:
-        vert_counts[i] = 0
-        return
-
-    pair = shape_pairs_mesh_plane[i]
-    mesh_shape = pair[0]
-    mesh_id = shape_source[mesh_shape]
-    pair_verts = int(0)  # noqa: RUF046, RUF100 - explicit cast required by Warp codegen
-    if mesh_id != wp.uint64(0):
-        pair_verts = wp.mesh_get(mesh_id).points.shape[0]
-    vert_counts[i] = wp.int32(pair_verts)
+    for i in range(wp.tid(), pair_count, total_num_threads):
+        pair = shape_pairs_mesh_plane[i]
+        mesh_shape = pair[0]
+        mesh_id = shape_source[mesh_shape]
+        pair_verts = int(0)  # noqa: RUF046, RUF100 - explicit cast required by Warp codegen
+        if mesh_id != wp.uint64(0):
+            pair_verts = wp.mesh_get(mesh_id).points.shape[0]
+        vert_counts[i] = wp.int32(pair_verts)
+        wp.atomic_add(total_vert_count, 0, pair_verts)
 
 
 def compute_mesh_plane_block_offsets_scan(
-    shape_pairs_mesh_plane: wp.array,
-    shape_pairs_mesh_plane_count: wp.array,
-    shape_source: wp.array,
+    shape_pairs_mesh_plane: wp.array[wp.vec2i],
+    shape_pairs_mesh_plane_count: wp.array[int],
+    shape_source: wp.array[wp.uint64],
     target_blocks: int,
-    block_offsets: wp.array,
-    block_counts: wp.array,
-    weight_prefix_sums: wp.array,
+    block_offsets: wp.array[wp.int32],
+    block_counts: wp.array[wp.int32],
+    total_vert_count: wp.array[wp.int32],
+    total_num_threads: int,
     device: str | None = None,
     record_tape: bool = True,
 ):
     """Compute mesh-plane block offsets using parallel kernels and array_scan."""
     n = block_counts.shape[0]
+    launch_threads = min(n, total_num_threads)
     # Step 1: compute per-pair vertex counts in parallel
     wp.launch(
         kernel=compute_mesh_plane_vert_counts,
-        dim=n,
+        dim=launch_threads,
         inputs=[
             shape_pairs_mesh_plane,
             shape_pairs_mesh_plane_count,
             shape_source,
             block_counts,  # reuse as temp storage for vert counts
+            total_vert_count,
+            launch_threads,
         ],
         device=device,
         record_tape=record_tape,
     )
-    # Step 2: inclusive scan to get total
-    wp.utils.array_scan(block_counts, weight_prefix_sums, inclusive=True)
-    # Step 3: compute per-pair block counts using adaptive threshold
+    # Step 2: compute per-pair block counts using the scalar total.
     wp.launch(
         kernel=compute_block_counts_from_weights,
-        dim=n,
+        dim=launch_threads,
         inputs=[
-            weight_prefix_sums,
+            total_vert_count,
             block_counts,  # still holds vert counts
             shape_pairs_mesh_plane_count,
             shape_pairs_mesh_plane.shape[0],
             target_blocks,
             block_offsets,  # reuse as temp for block counts
+            launch_threads,
         ],
         device=device,
         record_tape=record_tape,
     )
-    # Step 4: exclusive scan of block counts → block_offsets
+    # Step 3: exclusive scan of block counts → block_offsets
     wp.utils.array_scan(block_offsets, block_offsets, inclusive=False)
 
 
@@ -2143,6 +2145,7 @@ class NarrowPhase:
         use_lean_gjk_mpr: bool = False,
         has_generic_convex_pairs: bool = True,
         sparse_gjk_pairs: bool | None = None,
+        split_gjk_mpr: bool = False,
         candidate_pair_work_estimate: int | None = None,
         mesh_sdf_texture_only: bool = False,
         mesh_sdf_identity_scale_only: bool = False,
@@ -2186,6 +2189,9 @@ class NarrowPhase:
             sparse_gjk_pairs: Whether GJK routing preserves broad-phase pair
                 indices instead of compacting its work buffer. Defaults to
                 automatic enablement for large CUDA candidate buffers.
+            split_gjk_mpr: Whether to split generic convex collision into MPR,
+                GJK, and manifold kernels. Ignored on CPU and when generic
+                convex processing is unnecessary.
             candidate_pair_work_estimate: Static upper bound on pairs that the
                 broad phase can emit. Defaults to ``max_candidate_pairs``.
             mesh_sdf_texture_only: Whether every participating mesh SDF has a texture representation,
@@ -2318,11 +2324,7 @@ class NarrowPhase:
             candidate_pair_work_estimate = max_candidate_pairs
         if candidate_pair_work_estimate < 0:
             raise ValueError("candidate_pair_work_estimate must be non-negative or None")
-        self.split_gjk_mpr = (
-            device_obj.is_cuda
-            and has_generic_convex_pairs
-            and candidate_pair_work_estimate >= _SPLIT_GJK_MPR_PAIR_CAPACITY_THRESHOLD
-        )
+        self.split_gjk_mpr = device_obj.is_cuda and has_generic_convex_pairs and split_gjk_mpr
         # Create the appropriate kernel variants
         # Primitive kernel handles lightweight primitives and routes remaining pairs
         self.primitive_kernel = create_narrow_phase_primitive_kernel(
@@ -2462,6 +2464,8 @@ class NarrowPhase:
             n += 2 if has_mesh_like else 0  # mesh_like pairs, triangle pairs
             mesh_only_idx = n if has_meshes else None
             n += 3 if has_meshes else 0  # mesh_plane, mesh_plane_vtx, mesh_mesh
+            mesh_weight_idx = n if has_meshes and self.reduce_contacts else None
+            n += 2 if mesh_weight_idx is not None else 0  # mesh-plane vertices, mesh-mesh edges
             c = wp.zeros(n, dtype=wp.int32, device=device)
             self._counter_array = c
 
@@ -2473,6 +2477,12 @@ class NarrowPhase:
             self.triangle_pairs_count = c[mesh_like_idx + 1 : mesh_like_idx + 2] if has_mesh_like else None
             self.shape_pairs_mesh_plane_count = c[mesh_only_idx : mesh_only_idx + 1] if has_meshes else None
             self.mesh_plane_vertex_total_count = c[mesh_only_idx + 1 : mesh_only_idx + 2] if has_meshes else None
+            self.mesh_plane_total_weight = (
+                c[mesh_weight_idx : mesh_weight_idx + 1] if mesh_weight_idx is not None else None
+            )
+            self.mesh_mesh_total_weight = (
+                c[mesh_weight_idx + 1 : mesh_weight_idx + 2] if mesh_weight_idx is not None else None
+            )
             self.shape_pairs_mesh_mesh_count = c[mesh_only_idx + 2 : mesh_only_idx + 3] if has_meshes else None
 
             # Pair and work buffers
@@ -2569,25 +2579,21 @@ class NarrowPhase:
             mesh_mesh_scan_size = self.max_mesh_mesh_pairs + 1
             self.mesh_mesh_block_offsets = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
             self.mesh_mesh_block_counts = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
-            self.mesh_mesh_weight_prefix_sums = wp.zeros(mesh_mesh_scan_size, dtype=wp.int32, device=device)
             # Mesh-plane
             self.num_mesh_plane_blocks = target_blocks
             self.mesh_plane_target_blocks = target_blocks
             mesh_plane_scan_size = self.max_mesh_plane_pairs + 1
             self.mesh_plane_block_offsets = wp.zeros(mesh_plane_scan_size, dtype=wp.int32, device=device)
             self.mesh_plane_block_counts = wp.zeros(mesh_plane_scan_size, dtype=wp.int32, device=device)
-            self.mesh_plane_weight_prefix_sums = wp.zeros(mesh_plane_scan_size, dtype=wp.int32, device=device)
         else:
             self.num_mesh_mesh_blocks = self.num_tile_blocks
             self.mesh_mesh_target_blocks = self.num_tile_blocks
             self.mesh_mesh_block_offsets = None
             self.mesh_mesh_block_counts = None
-            self.mesh_mesh_weight_prefix_sums = None
             self.num_mesh_plane_blocks = self.num_tile_blocks
             self.mesh_plane_target_blocks = self.num_tile_blocks
             self.mesh_plane_block_offsets = None
             self.mesh_plane_block_counts = None
-            self.mesh_plane_weight_prefix_sums = None
 
     def launch_custom_write(
         self,
@@ -2898,7 +2904,8 @@ class NarrowPhase:
                         target_blocks=self.mesh_plane_target_blocks,
                         block_offsets=self.mesh_plane_block_offsets,
                         block_counts=self.mesh_plane_block_counts,
-                        weight_prefix_sums=self.mesh_plane_weight_prefix_sums,
+                        total_vert_count=self.mesh_plane_total_weight,
+                        total_num_threads=self.total_num_threads,
                         device=device,
                         record_tape=False,
                     )
@@ -3045,7 +3052,8 @@ class NarrowPhase:
                         target_blocks=self.num_mesh_mesh_blocks,
                         block_offsets=self.mesh_mesh_block_offsets,
                         block_counts=self.mesh_mesh_block_counts,
-                        weight_prefix_sums=self.mesh_mesh_weight_prefix_sums,
+                        total_edge_count=self.mesh_mesh_total_weight,
+                        total_num_threads=self.total_num_threads,
                         device=device,
                         record_tape=False,
                     )

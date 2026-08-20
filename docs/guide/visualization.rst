@@ -200,6 +200,12 @@ native-backend viewer (windowed, or a hidden native window) in the same
 process; constructing the second one raises a ``RuntimeError``. Create each in
 its own process if you need both.
 
+.. note::
+
+    On a machine with several GPUs, ``PYGLET_HEADLESS_DEVICE`` (or
+    ``pyglet.options["headless_device"]``) selects which one renders; it defaults to ``0``,
+    which is not necessarily the device the rest of the simulation runs on.
+
 **Custom UI panels:**
 
 :meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
