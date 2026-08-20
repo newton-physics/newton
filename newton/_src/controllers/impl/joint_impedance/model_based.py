@@ -294,8 +294,12 @@ class ControllerJointImpedance(ControllerBase):
         self._max_controlled_dofs = max_controlled_dofs
         self._total_controlled_dofs = total_controlled_dofs
         self._controlled_dofs_per_robot = controlled_dofs_per_robot
-        self._q_idx = joint_q_idx
-        self._qd_idx = joint_qd_idx
+        # Copied rather than aliased: the robot packing, local-DOF tables, and
+        # masks above are derived once from a host snapshot of these arrays, so
+        # a caller mutating joint_q_idx/joint_qd_idx after construction must not
+        # change what the live indexed views below read from.
+        self._q_idx = wp.clone(joint_q_idx)
+        self._qd_idx = wp.clone(joint_qd_idx)
 
         self._model_mass_matrix: wp.array3d[wp.float32] | None = None
         self._controlled_mass_matrix: wp.array3d[wp.float32] | None = None
