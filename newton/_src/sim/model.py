@@ -570,6 +570,11 @@ class Model:
             AttributeFrequency.JOINT,
             references=AttributeFrequency.ARTICULATION,
         ),
+        "joint_mimic_joint": AttributeSpec(
+            AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT,
+        ),
+        "joint_mimic_coeffs": AttributeSpec(AttributeFrequency.JOINT),
         "joint_X_p": AttributeSpec(AttributeFrequency.JOINT),
         "joint_X_c": AttributeSpec(AttributeFrequency.JOINT),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
@@ -622,7 +627,7 @@ class Model:
         "joint_effort_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_friction": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_velocity_limit": AttributeSpec(AttributeFrequency.JOINT_DOF),
-        # articulations and mimic constraints
+        # articulations and deprecated mimic constraints
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
             references=AttributeFrequency.JOINT,
@@ -1125,6 +1130,10 @@ class Model:
         self._has_rod_joints: bool = False
         self.joint_articulation: wp.array[wp.int32] | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
+        self.joint_mimic_joint: wp.array[wp.int32] | None = None
+        """Independent reference joint index for each mimic joint after chain flattening, or -1 for an independent joint, shape [joint_count], int."""
+        self.joint_mimic_coeffs: wp.array[wp.vec2] | None = None
+        """Mimic offset and multiplier [m or rad, dimensionless], shape [joint_count, 2], float."""
         self.joint_parent: wp.array[wp.int32] | None = None
         """Joint parent body indices, shape [joint_count], int."""
         self.joint_child: wp.array[wp.int32] | None = None
@@ -1307,19 +1316,19 @@ class Model:
         """
 
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
-        """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
+        """Deprecated follower indices for constraints added with :meth:`ModelBuilder.add_constraint_mimic`."""
         self.constraint_mimic_joint1: wp.array[wp.int32] | None = None
-        """Leader joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
+        """Deprecated reference indices for constraints added with :meth:`ModelBuilder.add_constraint_mimic`."""
         self.constraint_mimic_coef0: wp.array[wp.float32] | None = None
-        """Offset coefficient (coef0) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        """Deprecated offset coefficients, shape [constraint_mimic_count], float."""
         self.constraint_mimic_coef1: wp.array[wp.float32] | None = None
-        """Scale coefficient (coef1) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        """Deprecated multiplier coefficients, shape [constraint_mimic_count], float."""
         self.constraint_mimic_enabled: wp.array[wp.bool] | None = None
-        """Whether constraint is active, shape [constraint_mimic_count], bool."""
+        """Deprecated active flags, shape [constraint_mimic_count], bool."""
         self.constraint_mimic_label: list[str] = []
-        """Constraint name/label, shape [constraint_mimic_count], str."""
+        """Deprecated mimic constraint labels, shape [constraint_mimic_count], str."""
         self.constraint_mimic_world: wp.array[wp.int32] | None = None
-        """World index for each constraint, shape [constraint_mimic_count], int."""
+        """Deprecated mimic constraint world indices, shape [constraint_mimic_count], int."""
 
         self.particle_count: int = 0
         """Total number of particles in the system."""
@@ -1348,7 +1357,7 @@ class Model:
         self.joint_constraint_count: int = 0
         """Total number of joint constraints of all joints."""
         self.constraint_mimic_count: int = 0
-        """Total number of mimic constraints in the system."""
+        """Total number of deprecated sparse mimic constraints in the system."""
 
         # indices of particles sharing the same color
         self.particle_color_groups: list[wp.array[wp.int32]] = []

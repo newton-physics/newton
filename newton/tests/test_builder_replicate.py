@@ -187,6 +187,26 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
         self.assert_builder_merge_state_equal(expected, actual)
 
+    def test_replicate_remaps_joint_mimic_references(self):
+        """Verify replication remaps dense mimic references per world."""
+        source = ModelBuilder()
+        body0 = source.add_link()
+        body1 = source.add_link()
+        reference = source.add_joint_revolute(-1, body0)
+        follower = source.add_joint_revolute(body0, body1)
+        source.add_articulation([reference, follower])
+        source.set_joint_mimic(follower, reference, (0.25, -2.0))
+
+        builder = ModelBuilder()
+        builder.replicate(source, 3)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, 0, -1, 2, -1, 4])
+        np.testing.assert_allclose(
+            model.joint_mimic_coeffs.numpy(),
+            [(0.0, 1.0), (0.25, -2.0)] * 3,
+        )
+
     def test_replicate_rejects_mismatched_explicit_transforms(self):
         with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):
             ModelBuilder().replicate(self._make_source(), 2, xforms=[wp.transform_identity()])

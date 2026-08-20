@@ -9599,7 +9599,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):
-        """Test that NewtonMimicAPI on a joint is parsed into a mimic constraint."""
+        """Verify NewtonMimicAPI is parsed into joint-owned mimic metadata."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -9651,17 +9651,16 @@ def Xform "Articulation" (
         result = builder.add_usd(stage)
         model = builder.finalize()
 
-        self.assertEqual(model.constraint_mimic_count, 1)
         path_joint_map = result["path_joint_map"]
         joint1_idx = path_joint_map["/World/Articulation/Joint1"]
         joint2_idx = path_joint_map["/World/Articulation/Joint2"]
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], joint2_idx)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], joint1_idx)
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(model.joint_mimic_joint.numpy()[joint2_idx], joint1_idx)
         # newton:mimicCoef0 is authored in degrees for an angular follower; Newton
-        # mimic constraints use joint coordinates, so it arrives in radians.
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], math.radians(0.5), places=6)
+        # mimic metadata uses joint coordinates, so it arrives in radians.
+        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[joint2_idx, 0], math.radians(0.5), places=6)
         # coef1 is dimensionless and is passed through unscaled.
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 2.0, places=5)
+        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[joint2_idx, 1], 2.0, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_coef0_units_follow_the_follower_joint(self):
@@ -9723,8 +9722,9 @@ def Xform "Articulation" (
         ):
             with self.subTest(leader=leader_cls.__name__, follower=follower_cls.__name__):
                 model = build(leader_cls, follower_cls)
-                self.assertEqual(model.constraint_mimic_count, 1)
-                self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], expected, places=6)
+                followers = np.flatnonzero(model.joint_mimic_joint.numpy() >= 0)
+                self.assertEqual(len(followers), 1)
+                self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[followers[0], 0], expected, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_coef0_units_survive_joint_merging(self):
@@ -13001,7 +13001,7 @@ class TestImportUsdMimicJoint(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_mimic_joint_basic(self):
-        """PhysxMimicJointAPI on a revolute joint creates a mimic constraint."""
+        """Verify PhysxMimicJointAPI creates joint-owned mimic metadata."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -13064,26 +13064,20 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
 
-        self.assertEqual(len(builder.constraint_mimic_joint0), 1)
+        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
 
         model = builder.finalize()
-        self.assertEqual(model.constraint_mimic_count, 1)
-
-        joint0 = model.constraint_mimic_joint0.numpy()[0]
-        joint1 = model.constraint_mimic_joint1.numpy()[0]
-        coef0 = model.constraint_mimic_coef0.numpy()[0]
-        coef1 = model.constraint_mimic_coef1.numpy()[0]
+        self.assertEqual(model.constraint_mimic_count, 0)
 
         follower_idx = model.joint_label.index("/Root/Robot/Joints/follower")
         leader_idx = model.joint_label.index("/Root/Robot/Joints/leader")
 
-        self.assertEqual(joint0, follower_idx)
-        self.assertEqual(joint1, leader_idx)
+        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
         # PhysX: jointPos + gearing * refPos + offset = 0
-        # Newton: joint0 = coef0 + coef1 * joint1
+        # Newton: follower = offset + multiplier * reference
         # So coef1 = -gearing = -(-2.0) = 2.0, coef0 = -offset = 0.0
-        self.assertAlmostEqual(coef0, 0.0, places=5)
-        self.assertAlmostEqual(coef1, 2.0, places=5)
+        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.0, places=5)
+        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 1], 2.0, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_mimic_joint_no_api_no_constraint(self):
@@ -13122,6 +13116,7 @@ class TestImportUsdMimicJoint(unittest.TestCase):
         builder.add_usd(stage)
 
         self.assertEqual(len(builder.constraint_mimic_joint0), 0)
+        self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
 
 class TestHasAppliedApiSchema(unittest.TestCase):

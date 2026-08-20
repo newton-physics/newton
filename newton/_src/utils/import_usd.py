@@ -5087,14 +5087,19 @@ def parse_usd(
             offset_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:offset")
             offset = float(offset_attr.Get()) if offset_attr and offset_attr.HasValue() else 0.0
 
-            builder.add_constraint_mimic(
-                joint0=joint_idx,
-                joint1=leader_idx,
-                coef0=-offset,
-                coef1=-gearing,
-                enabled=True,
-                label=joint_path,
-            )
+            if builder.joint_type[joint_idx] in (JointType.PRISMATIC, JointType.REVOLUTE) and builder.joint_type[
+                leader_idx
+            ] in (JointType.PRISMATIC, JointType.REVOLUTE):
+                builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(-offset, -gearing))
+            else:
+                builder.add_constraint_mimic(
+                    joint0=joint_idx,
+                    joint1=leader_idx,
+                    coef0=-offset,
+                    coef1=-gearing,
+                    enabled=True,
+                    label=joint_path,
+                )
 
             if verbose:
                 print(
@@ -5149,14 +5154,19 @@ def parse_usd(
                 stacklevel=2,
             )
         leader_idx = path_joint_map[leader_path_str]
-        builder.add_constraint_mimic(
-            joint0=joint_idx,
-            joint1=leader_idx,
-            coef0=coef0,
-            coef1=coef1,
-            enabled=True,
-            label=joint_path,
-        )
+        if builder.joint_type[joint_idx] in (JointType.PRISMATIC, JointType.REVOLUTE) and builder.joint_type[
+            leader_idx
+        ] in (JointType.PRISMATIC, JointType.REVOLUTE):
+            builder.set_joint_mimic(joint=joint_idx, reference_joint=leader_idx, coeffs=(coef0, coef1))
+        else:
+            builder.add_constraint_mimic(
+                joint0=joint_idx,
+                joint1=leader_idx,
+                coef0=coef0,
+                coef1=coef1,
+                enabled=True,
+                label=joint_path,
+            )
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.delay import Delay  # noqa: PLC0415

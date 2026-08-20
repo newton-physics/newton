@@ -574,6 +574,74 @@ def eval_fk(
 
 
 @wp.kernel
+def eval_mimic_joints(
+    joint_mimic_joint: wp.array[int],
+    joint_mimic_coeffs: wp.array[wp.vec2],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    # outputs
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+):
+    joint = wp.tid()
+    reference_joint = joint_mimic_joint[joint]
+    if reference_joint < 0:
+        return
+
+    coeffs = joint_mimic_coeffs[joint]
+    joint_q[joint_q_start[joint]] = coeffs[0] + coeffs[1] * joint_q[joint_q_start[reference_joint]]
+    joint_qd[joint_qd_start[joint]] = coeffs[1] * joint_qd[joint_qd_start[reference_joint]]
+
+
+def eval_mimic(model: Model, state_in: State, state_out: State | None = None) -> None:
+    """Evaluate the model's joint mimic relationships.
+
+    Copies generalized joint coordinates from ``state_in`` to ``state_out`` and
+    projects every mimic joint from its reference joint. If ``state_out`` is
+    omitted, the projection is performed in place. Only :attr:`State.joint_q`
+    and :attr:`State.joint_qd` are written.
+
+    Mimic chains are flattened when the model is finalized, so all followers
+    can be evaluated in a single parallel launch.
+
+    Args:
+        model: Model containing the joint mimic metadata.
+        state_in: State providing the input joint coordinates.
+        state_out: State receiving the projected joint coordinates. If ``None``,
+            update ``state_in`` in place.
+
+    Raises:
+        ValueError: If either state does not contain joint coordinate arrays.
+    """
+    if state_in.joint_q is None or state_in.joint_qd is None:
+        raise ValueError("state_in must contain joint_q and joint_qd arrays")
+
+    if state_out is None:
+        state_out = state_in
+    elif state_out.joint_q is None or state_out.joint_qd is None:
+        raise ValueError("state_out must contain joint_q and joint_qd arrays")
+    elif state_out is not state_in:
+        state_out.joint_q.assign(state_in.joint_q)
+        state_out.joint_qd.assign(state_in.joint_qd)
+
+    if model.joint_count == 0:
+        return
+
+    wp.launch(
+        kernel=eval_mimic_joints,
+        dim=model.joint_count,
+        inputs=[
+            model.joint_mimic_joint,
+            model.joint_mimic_coeffs,
+            model.joint_q_start,
+            model.joint_qd_start,
+        ],
+        outputs=[state_out.joint_q, state_out.joint_qd],
+        device=model.device,
+    )
+
+
+@wp.kernel
 def compute_shape_world_transforms(
     shape_transform: wp.array[wp.transform],
     shape_body: wp.array[int],

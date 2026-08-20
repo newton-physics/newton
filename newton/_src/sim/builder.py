@@ -30,6 +30,7 @@ from ..core.types import (
     Mat33,
     Quat,
     Transform,
+    Vec2,
     Vec3,
     Vec4,
     Vec6,
@@ -1515,6 +1516,10 @@ class ModelBuilder:
         """World indices accumulated for :attr:`Model.joint_world`."""
         self.joint_articulation: list[int] = []
         """Articulation indices accumulated for :attr:`Model.joint_articulation`."""
+        self.joint_mimic_joint: list[int] = []
+        """Reference joint indices accumulated for :attr:`Model.joint_mimic_joint`."""
+        self.joint_mimic_coeffs: list[Vec2] = []
+        """Mimic offset and multiplier pairs accumulated for :attr:`Model.joint_mimic_coeffs`."""
 
         self.articulation_start: list[int] = []
         """Articulation start indices accumulated for :attr:`Model.articulation_start`."""
@@ -1601,7 +1606,7 @@ class ModelBuilder:
         self.num_rigid_contacts_per_world: int | None = None
         """Optional per-world rigid-contact allocation budget used to set :attr:`Model.rigid_contact_max`."""
 
-        # mimic constraints
+        # deprecated sparse mimic constraints
         self.constraint_mimic_joint0: list[int] = []
         """Follower joint indices accumulated for :attr:`Model.constraint_mimic_joint0`."""
         self.constraint_mimic_joint1: list[int] = []
@@ -4621,6 +4626,8 @@ class ModelBuilder:
         self.joint_collision_filter_parent.append(collision_filter_parent)
         self.joint_world.append(self.current_world)
         self.joint_articulation.append(-1)
+        self.joint_mimic_joint.append(-1)
+        self.joint_mimic_coeffs.append((0.0, 1.0))
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -5448,6 +5455,91 @@ class ModelBuilder:
                     JointTargetMode.from_gains(stiffness, damping, has_drive=stiffness != 0.0 or damping != 0.0)
                 )
 
+    def set_joint_mimic(
+        self,
+        joint: int,
+        reference_joint: int | None,
+        coeffs: Vec2 = (0.0, 1.0),
+    ) -> None:
+        """Configure a scalar joint to mimic another scalar joint.
+
+        The follower coordinate is defined by
+        ``q[joint] = coeffs[0] + coeffs[1] * q[reference_joint]``. Its velocity
+        is ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
+        ``reference_joint`` clears the mimic relationship.
+
+        Mimic relationships may form chains. The chains are flattened when the
+        model is finalized, and cycles are rejected.
+
+        Args:
+            joint: Index of the follower joint.
+            reference_joint: Index of the reference joint, or ``None`` to make
+                ``joint`` independent.
+            coeffs: Offset and multiplier applied to the reference coordinate
+                [m or rad, dimensionless].
+
+        Raises:
+            ValueError: If an index is invalid, either joint is not scalar, the
+                joints belong to different worlds or articulations, the
+                coefficients are not finite, or the relationship creates a cycle.
+        """
+        joint_count = self.joint_count
+        if joint < 0 or joint >= joint_count:
+            raise ValueError(f"Invalid follower joint index {joint}; expected 0..{joint_count - 1}")
+
+        if reference_joint is None:
+            self.joint_mimic_joint[joint] = -1
+            self.joint_mimic_coeffs[joint] = (0.0, 1.0)
+            return
+
+        if reference_joint < 0 or reference_joint >= joint_count:
+            raise ValueError(f"Invalid reference joint index {reference_joint}; expected 0..{joint_count - 1}")
+        if joint == reference_joint:
+            raise ValueError(f"Joint {joint} cannot mimic itself")
+
+        for joint_index, role in ((joint, "follower"), (reference_joint, "reference")):
+            joint_type = self.joint_type[joint_index]
+            if joint_type not in (JointType.PRISMATIC, JointType.REVOLUTE):
+                raise ValueError(
+                    f"Mimic {role} joint {joint_index} has type {JointType(joint_type).name}; "
+                    "only scalar PRISMATIC and REVOLUTE joints are supported"
+                )
+
+        follower_world = self.joint_world[joint]
+        reference_world = self.joint_world[reference_joint]
+        if follower_world != reference_world:
+            raise ValueError(
+                "Mimic joints must belong to the same world. "
+                f"follower_world={follower_world}, reference_world={reference_world}."
+            )
+
+        follower_articulation = self.joint_articulation[joint]
+        reference_articulation = self.joint_articulation[reference_joint]
+        if (
+            follower_articulation >= 0
+            and reference_articulation >= 0
+            and follower_articulation != reference_articulation
+        ):
+            raise ValueError(
+                "Mimic joints must belong to the same articulation. "
+                f"follower_articulation={follower_articulation}, "
+                f"reference_articulation={reference_articulation}."
+            )
+
+        offset = float(coeffs[0])
+        multiplier = float(coeffs[1])
+        if not math.isfinite(offset) or not math.isfinite(multiplier):
+            raise ValueError(f"Mimic coefficients must be finite, got ({offset}, {multiplier})")
+
+        ancestor = reference_joint
+        while ancestor != -1:
+            if ancestor == joint:
+                raise ValueError(f"Mimic relationship from joint {joint} to {reference_joint} creates a cycle")
+            ancestor = self.joint_mimic_joint[ancestor]
+
+        self.joint_mimic_joint[joint] = reference_joint
+        self.joint_mimic_coeffs[joint] = (offset, multiplier)
+
     def add_constraint_mimic(
         self,
         joint0: int,
@@ -5459,6 +5551,10 @@ class ModelBuilder:
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a mimic constraint to the model.
+
+        .. deprecated:: 1.6
+            Use :meth:`set_joint_mimic` for scalar joints. Mimic metadata is now
+            stored per joint rather than as a separate constraint.
 
         A mimic constraint enforces that ``joint0 = coef0 + coef1 * joint1``,
         following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
@@ -5477,6 +5573,12 @@ class ModelBuilder:
         Returns:
             Constraint index
         """
+        warnings.warn(
+            "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.6; "
+            "use set_joint_mimic() for scalar joints instead.",
+            DeprecationWarning,
+            stacklevel=self._external_warning_stacklevel(),
+        )
         joint_count = self.joint_count
         if joint0 < 0 or joint0 >= joint_count:
             raise ValueError(f"Invalid follower joint index {joint0}; expected 0..{joint_count - 1}")
@@ -5724,6 +5826,8 @@ class ModelBuilder:
                 "collision_filter_parent": self.joint_collision_filter_parent[i],
                 "axes": [],
                 "axis_dim": self.joint_dof_dim[i],
+                "mimic_joint": self.joint_mimic_joint[i],
+                "mimic_coeffs": self.joint_mimic_coeffs[i],
                 "parent": parent,
                 "child": child,
                 "original_id": i,
@@ -6196,6 +6300,8 @@ class ModelBuilder:
         self.joint_target_qd.clear()
         self.joint_world.clear()
         self.joint_articulation.clear()
+        self.joint_mimic_joint.clear()
+        self.joint_mimic_coeffs.clear()
         for joint in retained_joints:
             self.joint_label.append(joint["label"])
             self.joint_type.append(joint["type"])
@@ -6227,6 +6333,9 @@ class ModelBuilder:
                 self.joint_articulation.append(articulation_remap.get(old_articulation, -1))
             else:
                 self.joint_articulation.append(-1)
+            mimic_joint = joint["mimic_joint"]
+            self.joint_mimic_joint.append(joint_remap.get(mimic_joint, -1))
+            self.joint_mimic_coeffs.append(joint["mimic_coeffs"])
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_target_mode.append(axis["actuator_mode"])
@@ -10863,6 +10972,17 @@ class ModelBuilder:
             _validate_particle_topology("edge_indices", edge_indices[:, 2:])
 
         if joint_count > 0:
+            joint_arrays = [
+                ("joint_mimic_joint", self.joint_mimic_joint),
+                ("joint_mimic_coeffs", self.joint_mimic_coeffs),
+            ]
+            for name, arr in joint_arrays:
+                if len(arr) != joint_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {joint_count} (joint_count)."
+                    )
+
             # Per-DOF arrays should have length == joint_dof_count
             dof_arrays = [
                 ("joint_axis", self.joint_axis),
@@ -11184,6 +11304,56 @@ class ModelBuilder:
                     f"expected final index {total_count}, found {world_start_array[-1]}."
                 )
 
+    def _flatten_joint_mimics(self) -> tuple[list[int], list[tuple[float, float]]]:
+        """Resolve every mimic chain to its independent reference joint."""
+        flattened_joints = list(self.joint_mimic_joint)
+        flattened_coeffs = [(float(coeffs[0]), float(coeffs[1])) for coeffs in self.joint_mimic_coeffs]
+
+        for joint, reference_joint in enumerate(self.joint_mimic_joint):
+            if reference_joint < -1 or reference_joint >= self.joint_count:
+                raise ValueError(
+                    f"Invalid reference in joint_mimic_joint[{joint}]: got {reference_joint}, "
+                    f"expected -1 or an index in [0, {self.joint_count - 1}]"
+                )
+
+        for joint, authored_reference_joint in enumerate(self.joint_mimic_joint):
+            if authored_reference_joint == -1:
+                flattened_coeffs[joint] = (0.0, 1.0)
+                continue
+            if self.joint_type[joint] not in (JointType.PRISMATIC, JointType.REVOLUTE) or self.joint_type[
+                authored_reference_joint
+            ] not in (JointType.PRISMATIC, JointType.REVOLUTE):
+                raise ValueError(
+                    f"Mimic relationship for joint {joint} must connect scalar PRISMATIC or REVOLUTE joints"
+                )
+            if self.joint_world[joint] != self.joint_world[authored_reference_joint]:
+                raise ValueError(f"Mimic relationship for joint {joint} crosses world boundaries")
+            articulation = self.joint_articulation[joint]
+            reference_articulation = self.joint_articulation[authored_reference_joint]
+            if articulation >= 0 and reference_articulation >= 0 and articulation != reference_articulation:
+                raise ValueError(f"Mimic relationship for joint {joint} crosses articulation boundaries")
+
+            offset, multiplier = flattened_coeffs[joint]
+            if not math.isfinite(offset) or not math.isfinite(multiplier):
+                raise ValueError(f"Mimic coefficients for joint {joint} must be finite")
+            visited = {joint}
+            reference_joint = authored_reference_joint
+            while reference_joint != -1 and self.joint_mimic_joint[reference_joint] != -1:
+                if reference_joint in visited:
+                    raise ValueError(f"Mimic relationship for joint {joint} contains a cycle")
+                visited.add(reference_joint)
+                reference_offset, reference_multiplier = self.joint_mimic_coeffs[reference_joint]
+                offset += multiplier * float(reference_offset)
+                multiplier *= float(reference_multiplier)
+                reference_joint = self.joint_mimic_joint[reference_joint]
+
+            if reference_joint in visited:
+                raise ValueError(f"Mimic relationship for joint {joint} contains a cycle")
+            flattened_joints[joint] = reference_joint
+            flattened_coeffs[joint] = (offset, multiplier)
+
+        return flattened_joints, flattened_coeffs
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -11261,6 +11431,7 @@ class ModelBuilder:
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
 
         shape_collision_filter_packed = self._build_shape_collision_filter_packed()
+        joint_mimic_joint, joint_mimic_coeffs = self._flatten_joint_mimics()
 
         with wp.ScopedDevice(device):
             # -------------------------------------
@@ -12300,6 +12471,8 @@ class ModelBuilder:
                 parent_joint.append(child_to_joint.get(parent, -1))
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
             m.joint_articulation = wp.array(self.joint_articulation, dtype=wp.int32)
+            m.joint_mimic_joint = wp.array(joint_mimic_joint, dtype=wp.int32)
+            m.joint_mimic_coeffs = wp.array(joint_mimic_coeffs, dtype=wp.vec2)
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
@@ -12378,7 +12551,7 @@ class ModelBuilder:
             if not hasattr(m, "mujoco"):
                 m.mujoco = Model.AttributeNamespace("mujoco")
 
-            # mimic constraints
+            # deprecated sparse mimic constraints
             m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
             m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
             m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)

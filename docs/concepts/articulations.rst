@@ -106,6 +106,43 @@ In order to update the body poses (maximal coordinates), we need to use the forw
 Now, the body poses (maximal coordinates) have been updated by the forward kinematics and a maximal-coordinate solver can simulate the scene starting from these initial conditions.
 As mentioned above, this call is not needed for generalized-coordinate solvers.
 
+Mimic joints
+------------
+
+Scalar revolute and prismatic joints can derive their coordinate from another
+joint. Configure the follower with :meth:`newton.ModelBuilder.set_joint_mimic`:
+
+.. testcode::
+
+  builder = newton.ModelBuilder()
+  link_0 = builder.add_link()
+  link_1 = builder.add_link()
+  reference = builder.add_joint_revolute(parent=-1, child=link_0, axis=wp.vec3(0.0, 0.0, 1.0))
+  follower = builder.add_joint_revolute(parent=link_0, child=link_1, axis=wp.vec3(0.0, 0.0, 1.0))
+  builder.add_articulation([reference, follower])
+  builder.set_joint_mimic(follower, reference, coeffs=(0.25, -2.0))
+
+  model = builder.finalize()
+  state = model.state()
+  state.joint_q.assign([0.5, 0.0])
+  state.joint_qd.assign([1.0, 0.0])
+  newton.eval_mimic(model, state)
+
+  assert np.allclose(state.joint_q.numpy(), [0.5, -0.75])
+  assert np.allclose(state.joint_qd.numpy(), [1.0, -2.0])
+
+Every joint has a :attr:`newton.Model.joint_mimic_joint` entry. ``-1`` means
+that the joint is independent; otherwise it stores the reference joint index.
+:attr:`newton.Model.joint_mimic_coeffs` stores ``(offset, multiplier)`` so that
+``q_follower = offset + multiplier * q_reference``. Mimic chains are flattened
+when the model is finalized.
+
+:func:`newton.eval_mimic` projects ``joint_q`` and ``joint_qd`` explicitly and
+can operate in place or copy from one state to another. Call it before
+:func:`newton.eval_fk` when maximal-coordinate body poses should reflect the
+mimic relationship. :class:`newton.solvers.SolverMuJoCo` lowers joint-owned
+mimic metadata directly to its joint equality constraints.
+
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 
 .. testcode::

@@ -8985,6 +8985,61 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         mimic_map = solver.mjc_eq_to_newton_mimic.numpy()
         self.assertEqual(mimic_map[0, 0], 0)
 
+    def test_joint_mimic_conversion_and_runtime_update(self):
+        """Verify MuJoCo lowers and updates joint-owned mimic metadata."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        reference = builder.add_joint_revolute(-1, body0, axis=newton.Axis.Z)
+        follower = builder.add_joint_revolute(body0, body1, axis=newton.Axis.Z)
+        builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(solver.mj_model.neq, 1)
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [0.5, 2.0, 0.0, 0.0, 0.0])
+        self.assertEqual(solver.mjc_eq_to_newton_joint_mimic.numpy()[0, 0], follower)
+        self.assertEqual(solver.mjc_eq_to_newton_mimic.numpy()[0, 0], -1)
+
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[follower] = (1.0, -3.0)
+        model.joint_mimic_coeffs.assign(coeffs)
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [1.0, -3.0, 0.0, 0.0, 0.0])
+
+    def test_joint_mimic_multi_world_mapping(self):
+        """Verify dense mimic mappings and coefficients remain per world."""
+        template = newton.ModelBuilder()
+        body0 = template.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        body1 = template.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+        reference = template.add_joint_revolute(-1, body0, axis=newton.Axis.Z)
+        follower = template.add_joint_revolute(body0, body1, axis=newton.Axis.Z)
+        template.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        template.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        template.add_articulation([reference, follower])
+        template.set_joint_mimic(follower, reference, (0.5, 2.0))
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_joint_mimic.numpy()[:, 0], [1, 3])
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :2], [[0.5, 2.0], [0.5, 2.0]])
+
+        coeffs = model.joint_mimic_coeffs.numpy()
+        coeffs[3] = (-0.25, -4.0)
+        model.joint_mimic_coeffs.assign(coeffs)
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :2], [[0.5, 2.0], [-0.25, -4.0]])
+
     def test_mimic_constraint_runtime_update(self):
         """Test that mimic constraint properties can be updated at runtime."""
         model = self._make_two_revolute_model(coef0=0.5, coef1=2.0)

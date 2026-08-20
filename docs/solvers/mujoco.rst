@@ -375,8 +375,9 @@ array; slot layout depends on the constraint type.
      - Polynomial coefficients forwarded in ``data[0:5]``.
    * - Mimic
      - ``mjEQ_JOINT``
-     - Added via :meth:`~newton.ModelBuilder.add_constraint_mimic`. Maps
-       ``coef0`` / ``coef1`` to polynomial coefficients. Only
+     - Added via :meth:`~newton.ModelBuilder.set_joint_mimic`. Maps the
+       offset / multiplier in :attr:`~newton.Model.joint_mimic_coeffs` to
+       polynomial coefficients. Only
        :attr:`~newton.JointType.REVOLUTE` and
        :attr:`~newton.JointType.PRISMATIC` joints are supported.
 
@@ -604,7 +605,7 @@ all Newton worlds to be structurally identical (same bodies, joints,
 and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
 construction and raises ``ValueError`` on a mismatch.
 
-Bodies, joints, equality constraints, and mimic constraints cannot have
+Bodies, joints, equality constraints, and mimic relationships cannot have
 a negative world index — assigning any of them to the global world
 raises ``ValueError``. Only shapes may live in the global world (-1);
 they are shared across all worlds without replication.

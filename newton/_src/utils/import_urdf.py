@@ -854,7 +854,7 @@ def parse_urdf(
         joint_indices.append(created_joint_idx)
         joint_name_to_idx[joint["name"]] = created_joint_idx
 
-    # Create mimic constraints
+    # Configure mimic relationships
     for joint in sorted_joints:
         if "mimic_joint" in joint:
             mimic_target_name = joint["mimic_joint"]
@@ -875,12 +875,10 @@ def parse_urdf(
                 )
                 continue
 
-            builder.add_constraint_mimic(
-                joint0=follower_idx,
-                joint1=leader_idx,
-                coef0=joint.get("mimic_coef0", 0.0),
-                coef1=joint.get("mimic_coef1", 1.0),
-                label=make_label(f"mimic_{joint['name']}"),
+            builder.set_joint_mimic(
+                joint=follower_idx,
+                reference_joint=leader_idx,
+                coeffs=(joint.get("mimic_coef0", 0.0), joint.get("mimic_coef1", 1.0)),
             )
 
     # Create articulation from all collected joints
