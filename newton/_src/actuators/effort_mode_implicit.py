@@ -388,8 +388,8 @@ class _EffortModeImplicit:
             )
         self._response = response
         self._controller = controller
-        # Only controllers with their own prepare_implicit (the neural linearizers)
-        # read the per-slot response, so PD/PID skip both launches.
+        # Set for controllers that require per-step preparation ahead of the implicit
+        # solve, such as advancing an integral term or relinearizing a network.
         self._needs_prepare = type(controller).prepare_implicit is not Controller.prepare_implicit
         self._init_solver(controller, clamping)
         # Up front: this reads to host and allocates, both illegal during graph capture.
