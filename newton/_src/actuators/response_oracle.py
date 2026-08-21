@@ -18,11 +18,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import numpy as np
 import warp as wp
 
 from ..sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 
 __all__ = ["ResponseOracle"]
+
+_FLOAT32_EPS = wp.constant(wp.float32(np.finfo(np.float32).eps))
 
 
 @wp.kernel(enable_backward=False)
@@ -44,7 +47,8 @@ def _inverse_block_from_mass_matrix_kernel(
         s = H[a, j, j]
         for k in range(j):
             s -= L[a, j, k] * L[a, j, k]
-        s = wp.max(s, 1.0e-9 * wp.max(H[a, j, j], 1.0e-9))
+        # Keep the pivot above float32 cancellation noise and bound singular inverses.
+        s = wp.max(s, _FLOAT32_EPS * wp.max(wp.abs(H[a, j, j]), 1.0))
         d = wp.sqrt(s)
         L[a, j, j] = d
         for i in range(j + 1, n):

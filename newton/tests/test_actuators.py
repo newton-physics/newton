@@ -2979,6 +2979,17 @@ class TestActuatorImplicit(unittest.TestCase):
 class TestResponseOracle(unittest.TestCase):
     """ResponseOracle: the per-articulation inv(H) the implicit solve reads."""
 
+    def test_singular_one_dof_mass_matrix_uses_float32_floor(self):
+        """Bound the inverse of a singular one-DOF mass matrix by float32 epsilon."""
+        model = _build_pendulum(wp.get_device())
+        oracle = ResponseOracle(model)
+        oracle._H.zero_()
+
+        oracle._invert_blocks()
+
+        expected = 1.0 / np.finfo(np.float32).eps
+        self.assertAlmostEqual(float(oracle.inverse_blocks.numpy()[0, 0, 0]), expected)
+
     def test_inverse_blocks_match_dense_inverse(self):
         """refresh() fills the full per-articulation inverse mass block.
 
