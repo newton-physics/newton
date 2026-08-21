@@ -1090,6 +1090,9 @@ class MultiRhsVelocityForwardKinematics(unittest.TestCase):
         actuator_u_np = np.array([[0.3, -0.4, 0.5], [-0.2, 0.1, 0.35]], dtype=np.float32)
         actuator_u = wp.array(actuator_u_np, dtype=wp.float32, device=self.default_device)
         base_u = wp.zeros(1, dtype=wp.spatial_vectorf, device=self.default_device)
+
+        # Use independent single-RHS solves as the reference for both velocity
+        # vectors at the same converged gimbal pose.
         expected = []
         for rhs_index in range(actuator_u_np.shape[0]):
             actuator_u_single = wp.array(actuator_u_np[rhs_index], dtype=wp.float32, device=self.default_device)
@@ -1103,6 +1106,9 @@ class MultiRhsVelocityForwardKinematics(unittest.TestCase):
             )
             expected.append(body_u.numpy())
 
+        # Poison the coordinate scratch buffer with a different gimbal pose. The
+        # batched solve must refresh it from bodies_q so its velocity axes do not
+        # depend on state left behind by an earlier operation.
         solver.actuators_q_next.assign([1.1, 0.7, -0.8])
         rhs_size = actuator_u_np.shape[0]
         solver.request_velocity_solve_batch_size(rhs_size)
@@ -1113,7 +1119,7 @@ class MultiRhsVelocityForwardKinematics(unittest.TestCase):
             actuator_u,
             bodies_q,
             actual,
-            base_u=wp.zeros((rhs_size, 1), dtype=wp.spatial_vectorf, device=self.default_device),
+            base_u=wp.zeros((1, 1), dtype=wp.spatial_vectorf, device=self.default_device),
             target_rel_transforms=target_transforms,
         )
 

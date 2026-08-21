@@ -1836,7 +1836,7 @@ class ForwardKinematicsSolver:
     def _solve_for_body_velocities(
         self,
         target_rel_transforms: wp.array[wp.transformf],
-        base_u: wp.array2d[wp.transformf],
+        base_u: wp.array2d[wp.spatial_vectorf],
         actuators_u: wp.array2d[wp.float32],
         bodies_q: wp.array[wp.transformf],
         bodies_u: wp.array2d[wp.spatial_vectorf],
@@ -1850,7 +1850,7 @@ class ForwardKinematicsSolver:
         """
         # Retrieve temporary buffers
         batch_size = actuators_u.shape[0]
-        temp_buffers = self._velocity_temp_buffers.get(batch_size if batch_size is not None else 1)
+        temp_buffers = self._velocity_temp_buffers.get(batch_size)
         if temp_buffers is None:
             raise ValueError(
                 f"Velocity buffers for batch_size={batch_size} are not allocated; "
@@ -2101,6 +2101,7 @@ class ForwardKinematicsSolver:
             base_u: Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
                 absolute otherwise.
                 If not provided, will default to zero. Ignored if no base body or joint was set for this model.
+                A single row is broadcast across the batch.
                 If this function is captured in a graph, must be either always or never provided.
                 Expects shape of ``(batch_size, num_worlds,)``, or a 1D array if batch_size = 1.
             target_rel_transforms: Array of position-control transforms, encoding actuated coordinates and base pose.
@@ -2127,7 +2128,7 @@ class ForwardKinematicsSolver:
         if len(actuators_u.shape) > 1:
             batch_size = actuators_u.shape[0]
             assert len(bodies_u.shape) > 1 and bodies_u.shape[0] == batch_size
-            assert base_u is None or (len(base_u.shape) > 1 and base_u.shape[0] == batch_size)
+            assert base_u is None or (len(base_u.shape) > 1 and base_u.shape[0] in (1, batch_size))
             if self.config.use_sparsity:
                 raise ValueError("Multi-RHS velocity FK currently requires the dense FK solver")
         else:
