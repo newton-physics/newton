@@ -92,7 +92,7 @@ def warmstart_joint_constraints(
     y_0: wp.array[wp.float32],
     z_0: wp.array[wp.float32],
 ):
-    """Initialize bilateral constraint iterates from cached joint reactions."""
+    """Initialize bilateral and Coulomb joint friction iterates from cached reactions."""
     jid = wp.tid()
     wid_j = joint_wid[jid]
     num_dynamic_cts_j = joint_num_dynamic_cts[jid]
@@ -107,7 +107,7 @@ def warmstart_joint_constraints(
     kin_cts_row_start_j = joint_kinematic_cts_offset_total_cts[jid]
     friction_cts_row_start_j = joint_friction_cts_offset_total_cts[jid]
 
-    # Dynamic and kinematic joint constraints do not cache a post-event velocity.
+    # These constraints do not cache a post-event velocity.
     for j in range(num_dynamic_cts_j):
         P_j = problem_P[dyn_cts_row_start_j + j]
         lambda_j = (dt / P_j) * joint_lambda_dyn_j[joint_dyn_cts_start + j]

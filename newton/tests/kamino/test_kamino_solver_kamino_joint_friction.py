@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Focused tests for PADMM Coulomb joint friction."""
+"""Focused tests for Coulomb joint friction in SolverKamino."""
 
 import unittest
 
@@ -11,9 +11,7 @@ import warp as wp
 import newton
 import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-
-newton.use_coord_layout_targets = True
-
+from newton.tests.kamino import setup_tests, test_context
 
 _BODY_MASS = 1.0
 _BODY_PRINCIPAL_INERTIA = 1.0
@@ -258,6 +256,11 @@ def _run_hold_and_breakaway_test(
 
 
 class TestSolverKaminoJointFriction(unittest.TestCase):
+    def setUp(self):
+        """Initialize the shared public Kamino test context."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+
     def test_convert_newton_joint_friction(self):
         """Map positive friction to a bounded row and no friction to none."""
         for friction, num_friction_cts in ((2.0, 1), (0.0, 0), (None, 0)):
@@ -461,4 +464,5 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    setup_tests()
     unittest.main(verbosity=2)

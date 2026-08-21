@@ -175,7 +175,7 @@ class WorldDescriptor(Descriptor):
     """The number of bounded-multiplier joint constraint rows."""
 
     num_friction_joint_cts: int = 0
-    """The number of Coulomb-friction joint constraint rows."""
+    """The number of Coulomb joint friction constraint rows."""
 
     joint_coords: list[int] = field(default_factory=list)
     """
@@ -284,7 +284,7 @@ class WorldDescriptor(Descriptor):
     """Index offset of the world's bounded constraints w.r.t the entire model."""
 
     joint_friction_cts_idx_offset: int = 0
-    """Index offset of the world's Coulomb-friction constraints w.r.t the entire model."""
+    """Index offset of the world's Coulomb joint friction constraints w.r.t the entire model."""
 
     ###
     # Entity Identifiers

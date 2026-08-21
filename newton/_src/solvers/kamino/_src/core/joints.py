@@ -1371,7 +1371,7 @@ class JointDescriptor(Descriptor):
     friction_cts_offset: int = -1
     """
     Index offset of this joint's friction rows among all
-    Coulomb-friction constraints in its world.
+    Coulomb joint friction constraints in its world.
     """
 
     ###
@@ -1448,7 +1448,7 @@ class JointDescriptor(Descriptor):
 
     @property
     def num_friction_cts(self) -> int:
-        """Returns the number of Coulomb-friction rows introduced by this joint."""
+        """Returns the number of Coulomb joint friction rows introduced by this joint."""
         return self.num_dofs if self.dof_type != JointDoFType.FREE and np.any(self.f_j) else 0
 
     @property
@@ -1994,7 +1994,7 @@ class JointsModel:
     """Number of bounded-multiplier rows of each joint."""
 
     num_friction_cts: wp.array[wp.int32] | None = None
-    """Number of Coulomb-friction rows of each joint."""
+    """Number of Coulomb joint friction rows of each joint."""
 
     coords_offset: wp.array[wp.int32] | None = None
     """
@@ -2129,7 +2129,7 @@ class JointsModel:
     friction_cts_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's friction constraints block, in model-wide
-    flattened joint Coulomb-friction constraints arrays.
+    flattened Coulomb joint friction constraints arrays.
 
     Shape of ``(num_joints + 1,)``.
 
@@ -2263,7 +2263,7 @@ class JointsData:
 
     lambda_f_j: wp.array[wp.float32] | None = None
     """
-    Flat array of joint Coulomb-friction Lagrange multipliers.
+    Flat array of Coulomb joint friction Lagrange multipliers.
 
     To access the multipliers of a specific joint ``j`` use ``model.joints.friction_cts_offset[j]``
     as the start index. The per-joint row count is

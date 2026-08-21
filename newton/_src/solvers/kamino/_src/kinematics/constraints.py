@@ -206,8 +206,8 @@ def make_unilateral_constraints_info(
     model.size.sum_of_max_total_cts = sum(world_maxncts)
     model.size.max_of_max_total_cts = max(world_maxncts)
 
-    # Compute the entity index offsets for limits, contacts, and inequalities
-    # NOTE: inequalities concatenate bounded-multiplier, limit, and contact entities
+    # Compute inequality entity offsets. Inequalities concatenate bounded-multiplier,
+    # joint-position-limit, and contact entities.
     world_lio = [0] + [sum(world_maxnl[:i]) for i in range(1, num_worlds + 1)]
     world_cio = [0] + [sum(world_maxnc[:i]) for i in range(1, num_worlds + 1)]
     world_iio = [0] + [

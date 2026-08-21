@@ -295,9 +295,9 @@ class PADMMStatus:
             Computed using the L-inf norm as `r_primal := || x - y ||_inf`.
         r_d: The total dual residual.
             Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`.
-        r_c: The generalized inequality optimality residual used by the convergence test.
+        r_c: The complementarity residual used by the convergence test.
             For each bounded-multiplier row `b`, the residual is the directional
-            box complementarity
+            box complementarity between its velocity and lower/upper box faces,
             `(x_b - lower_b) * max(z_b, 0) + (upper_b - x_b) * max(-z_b, 0)`.
             For each limit or contact entity `k`, it is the complementarity inner
             product `x_k.T @ z_k`. `r_c` is the maximum absolute value over these

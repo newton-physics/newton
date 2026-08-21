@@ -199,7 +199,7 @@ class ModelKaminoInfo:
 
     num_joint_friction_cts: wp.array[wp.int32] | None = None
     """
-    The number of Coulomb-friction constraint rows of each world.
+    The number of Coulomb joint friction constraint rows of each world.
     Shape of ``(num_worlds,)``.
     """
 
@@ -350,7 +350,7 @@ class ModelKaminoInfo:
 
     joint_friction_cts_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the Coulomb-friction constraint block of each world.
+    The index offset of the Coulomb joint friction constraint block of each world.
     Used to index into arrays that contain flattened friction constraint data.
     Shape of ``(num_worlds,)``.
     """
@@ -419,7 +419,7 @@ class ModelKaminoInfo:
 
     joint_friction_cts_group_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the Coulomb-friction constraint group within each world's total constraint block.
+    The index offset of the Coulomb joint friction constraint group within each world's total constraint block.
     Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
     Shape of ``(num_worlds,)``.
     """

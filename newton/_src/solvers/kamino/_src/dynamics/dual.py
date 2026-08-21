@@ -622,7 +622,7 @@ def _build_joint_friction_bounds(
     problem_bound_lower: wp.array[wp.float32],
     problem_bound_upper: wp.array[wp.float32],
 ):
-    """Build per-row Coulomb-friction impulse bounds."""
+    """Build per-row Coulomb joint friction impulse bounds."""
     jid = wp.tid()
     num_rows = model_joints_num_friction_cts[jid]
     dof_start = model_joints_dofs_offset[jid]
@@ -875,9 +875,8 @@ def _build_free_velocity_sparse(
     # Compute the thread-specific index offset
     thread_offset = vio + jac_block_coord[0]
 
-    # Extract the cached impact bias scaling (i.e. restitution coefficient)
-    # NOTE: This is a quick hack to avoid multiple kernels. The
-    # proper way would be to perform this op only for contacts
+    # Restitution is nonzero only for contact rows. Reading it for every row
+    # keeps this shared kernel single-pass; non-contact rows have epsilon_j = 0.0.
     epsilon_j = problem_v_i[thread_offset]
 
     # Buffers
@@ -933,7 +932,7 @@ def _build_dual_preconditioner_all_constraints(
     # Retrieve the vector index offset of the world
     vio = problem_vio[wid]
 
-    # Bounded rows are scalar constraints between joint and limit rows.
+    # Infer the start of the contact constraints for this world
     njc = problem_njc[wid]
     nbc = problem_nbc[wid]
     nl = problem_nl[wid]
@@ -978,7 +977,7 @@ def _build_dual_preconditioner_all_constraints_sparse(
     # Retrieve the vector index offset of the world
     vio = problem_vio[wid]
 
-    # Bounded rows are scalar constraints between joint and limit rows.
+    # Infer the start of the contact constraints for this world
     njc = problem_njc[wid]
     nbc = problem_nbc[wid]
     nl = problem_nl[wid]
@@ -1667,7 +1666,7 @@ class DualProblem:
 
         Primarily builds the free-velocity bias vector ``v_b`` (joint dynamics and
         kinematics, limits, contacts). Also fills auxiliary inequality data that is
-        zeroed in :meth:`zero` and consumed later by the solver: joint-friction
+        zeroed in :meth:`zero` and consumed later by the solver: joint friction
         impulse bounds (``bound_lower``, ``bound_upper``) and contact friction
         coefficients (``mu``).
         """

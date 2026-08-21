@@ -202,7 +202,7 @@ class ModelBuilderKamino:
 
     @property
     def num_friction_joint_cts(self) -> int:
-        """Returns the number of Coulomb-friction joint constraint rows contained in the model."""
+        """Returns the number of Coulomb joint friction constraint rows contained in the model."""
         return self._num_joint_friction_cts
 
     @property
