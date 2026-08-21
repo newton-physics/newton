@@ -187,6 +187,8 @@ class Actuator:
 
         self._effort_mode = _EffortModeExplicit(controller, self.clamping, self.device)
 
+    # To achieve public API Actuator.ImplicitOptions. 
+    # Defining ImplicitOptions inside Actuator would create a circular import issue.
     ImplicitOptions = ImplicitOptions
 
     def set_effort_mode_implicit(
