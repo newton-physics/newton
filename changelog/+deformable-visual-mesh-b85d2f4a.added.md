@@ -1,7 +1,1 @@
-Add experimental payload-neutral deformable visual bindings, procedural model
-records for tetrahedron-bound Gaussian fields, and deformable visual meshes
-with procedural builder and USD import support. Share `DeformableVisuals`
-points and normals across viewers and `SensorTiledCamera` RGB/depth output,
-support independent coarse-surface visibility and destination-aware ownership
-paths for replicated USD visuals, and provide textured cable, cloth, and volume
-examples with procedural and USD setup modes.
+Add experimental payload-neutral deformable visual bindings, deformable visual meshes with procedural builder and USD import support, and tetrahedron-bound Gaussian fields with procedural builder and USD import support. Share `DeformableVisuals` data across render consumers, render skinned meshes and Gaussian fields through `SensorTiledCamera` RGB/depth output, support independent coarse-surface visibility and destination-aware ownership paths for replicated USD visuals, and provide textured cable, cloth, volume, and Gaussian bear examples.
