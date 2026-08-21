@@ -482,7 +482,7 @@ def test_coloring_rigid_body_no_joints(test, device):
 
 
 def count_unseparated_elements(builder, element_indices, vertices_per_element):
-    """Count elements whose vertices were all placed in the same color group."""
+    """Count elements with two or more vertices sharing a color group."""
     element_colors = np.full(builder.particle_count, -1, dtype=np.int64)
     for color, group in enumerate(builder.particle_color_groups):
         element_colors[np.asarray(group)] = color
@@ -494,9 +494,10 @@ def count_unseparated_elements(builder, element_indices, vertices_per_element):
 def test_coloring_membrane_with_one_zero_lame_parameter(test, device):
     """Color every membrane triangle SolverVBD evaluates, including those with one zero Lame parameter."""
     with wp.ScopedDevice(device):
-        # SolverVBD evaluates a triangle when either k_mu or k_lambda is non-zero, so both of these
-        # meshes are simulated. The USD cloth importer always sets tri_ka to 0, so the first case is
-        # what every cloth imported from USD gets.
+        # SolverVBD evaluates a triangle when either Lame parameter is non-zero -- tri_ke and tri_ka
+        # here, columns 0 and 1 of Model.tri_materials -- so both of these meshes are simulated. The
+        # USD cloth importer always sets tri_ka to 0, so the first case is what every cloth imported
+        # from USD gets.
         for tri_ke, tri_ka in ((1.0e3, 0.0), (0.0, 1.0e3)):
             builder = ModelBuilder()
             builder.add_cloth_grid(
@@ -520,7 +521,7 @@ def test_coloring_membrane_with_one_zero_lame_parameter(test, device):
             test.assertEqual(
                 unseparated,
                 0,
-                f"tri_ke={tri_ke}, tri_ka={tri_ka}: {unseparated} triangles have all three vertices in one color group",
+                f"tri_ke={tri_ke}, tri_ka={tri_ka}: {unseparated} triangles have two vertices sharing a color group",
             )
 
 
@@ -550,7 +551,7 @@ def test_coloring_tets_with_one_zero_lame_parameter(test, device):
             test.assertEqual(
                 unseparated,
                 0,
-                f"k_mu={k_mu}, k_lambda={k_lambda}: {unseparated} tets have all four vertices in one color group",
+                f"k_mu={k_mu}, k_lambda={k_lambda}: {unseparated} tets have two vertices sharing a color group",
             )
 
 
