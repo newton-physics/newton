@@ -177,6 +177,7 @@ class Example:
         self.cable_length = 4.0
         self.cable_radius = 0.02
         self.cable_gap_multiplier = 1.1
+        stretch_stiffness = 1.0e6
         bend_stiffness = 1.0e2
         bend_damping = 5.0e0
 
@@ -222,6 +223,7 @@ class Example:
                 positions=points,
                 quaternions=quats,
                 radius=self.cable_radius,
+                stretch_stiffness=stretch_stiffness,
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
                 label=f"bundle_cable_{i}",
