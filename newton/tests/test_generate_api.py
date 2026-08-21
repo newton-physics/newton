@@ -29,6 +29,17 @@ class TestGenerateApiPublicSymbols(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"newton\.missing_all must define __all__"):
             generate_api.public_symbols(module)
 
+    def test_public_symbols_rejects_non_string_entry(self):
+        """Reject a public API declaration containing a non-string entry."""
+        module = ModuleType("newton.invalid_all_entry")
+        module.__all__ = ["declared_symbol", 1]
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"newton\.invalid_all_entry\.__all__ must contain only strings; got 1",
+        ):
+            generate_api.public_symbols(module)
+
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
 class TestGenerateApiCopyright(unittest.TestCase):
