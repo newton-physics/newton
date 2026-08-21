@@ -128,10 +128,10 @@ class TestSelectJoints(unittest.TestCase):
     def test_single_robot_all_joints(self):
         """Verify select_joints defaults to every joint of the model."""
         device = wp.get_device()
-        model = _build_single_prismatic().finalize(device=device)
+        model = _build_ball_then_revolute()[0].finalize(device=device)
         selection = select_joints(model)
-        np.testing.assert_array_equal(selection.q_idx.numpy(), [0])
-        np.testing.assert_array_equal(selection.qd_idx.numpy(), [0])
+        np.testing.assert_array_equal(selection.q_idx.numpy(), [0, 4])
+        np.testing.assert_array_equal(selection.qd_idx.numpy(), [0, 3])
 
     def test_returns_int32_arrays(self):
         """Verify both index arrays are int32 so they work as Warp indexed-view subscripts."""
@@ -160,19 +160,6 @@ class TestSelectJoints(unittest.TestCase):
         selection = select_joints(model)
         self.assertEqual(selection.q_idx.numpy().size, 3)
         self.assertEqual(selection.qd_idx.numpy().size, 3)
-
-    def test_non_scalar_joint_included_by_default(self):
-        """Verify select_joints includes a non-scalar joint by default rather than skipping it.
-
-        Whether a joint is controllable is checked by the controller, not
-        here, so the default selection is every joint of each selected
-        articulation regardless of its coordinate/DOF count.
-        """
-        device = wp.get_device()
-        builder, _j_ball, _j_rev = _build_ball_then_revolute()
-        model = builder.finalize(device=device)
-        selection = select_joints(model)
-        self.assertEqual(selection.q_idx.numpy().size, 2)
 
     def test_explicit_non_scalar_joint_passed_through(self):
         """Verify select_joints does not itself validate joint type, deferring to the controller."""
