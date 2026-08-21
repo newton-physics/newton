@@ -6,8 +6,8 @@
 Visual samples can be embedded in a coarse simulation deformable and evaluated
 from simulation state each frame. The simulation continues to run on the coarse
 representation; these payloads are visualization and sensor geometry only and
-never participate in the solve or in collision. Triangle meshes are currently
-the supported visual payload.
+never participate in the solve or in collision. Triangle meshes and Gaussian
+fields are currently supported.
 
 See :meth:`newton.ModelBuilder.add_deformable_visual_mesh`.
 """
@@ -196,6 +196,7 @@ class DeformableVisualGaussian:
         binding: DeformableVisualBinding,
         rest_rotations: wp.array[wp.quat],
         rest_scales: wp.array[wp.vec3],
+        shape: int,
         world: int = -1,
         label: str = "",
         index: int = -1,
@@ -210,6 +211,7 @@ class DeformableVisualGaussian:
             binding: Binding from Gaussian centers to simulation drivers.
             rest_rotations: Rest Gaussian orientations, shape [count].
             rest_scales: Rest Gaussian axis scales [m], shape [count, 3].
+            shape: Render-only Gaussian shape index.
             world: Owning model world, or ``-1`` for global visuals.
             label: Display label.
             index: Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
@@ -233,6 +235,8 @@ class DeformableVisualGaussian:
         """Rest Gaussian orientations, shape [count]."""
         self.rest_scales = rest_scales
         """Rest Gaussian axis scales [m], shape [count, 3]."""
+        self.shape = shape
+        """Render-only Gaussian shape index."""
         self.world = world
         """Owning model world, or ``-1`` for a global visual."""
         self.label = label
@@ -253,7 +257,7 @@ class DeformableVisualGaussian:
 
 
 class DeformableVisuals:
-    """Current skinned points and normals for a model's deformable visuals.
+    """Current evaluated geometry for a model's deformable visuals.
 
     Allocate this result with :meth:`newton.Model.deformable_visuals` and
     populate it with :meth:`newton.Model.update_deformable_visuals`. One result

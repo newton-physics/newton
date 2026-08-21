@@ -10,9 +10,11 @@ import warp as wp
 
 from ...core import Axis
 from ...geometry import Gaussian, GeoType, Mesh
-from ...sim import DeformableVisuals, Model, State
+from ...geometry.bvh import compute_shape_local_bounds
+from ...sim import DeformableVisualGaussian, DeformableVisuals, Model, State
 from ...utils import load_texture, normalize_texture
 from ...utils.texture import compute_texture_hash
+from .gaussians import compute_gaussian_bvh_bounds
 from .render import create_kernel
 from .types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData
 
@@ -26,6 +28,22 @@ def _copy_points_to_offset(
     i = wp.tid()
     p = src[i]
     dst[dst_offset + i] = wp.vec3f(p[0], p[1], p[2])
+
+
+@wp.kernel
+def _copy_deformable_gaussians(
+    src_transforms: wp.array[wp.transformf],
+    src_scales: wp.array[wp.vec3f],
+    src_offset: int,
+    shape_world_transforms: wp.array[wp.transformf],
+    shape_index: int,
+    dst_transforms: wp.array[wp.transformf],
+    dst_scales: wp.array[wp.vec3f],
+):
+    i = wp.tid()
+    world_to_shape = wp.transform_inverse(shape_world_transforms[shape_index])
+    dst_transforms[i] = wp.transform_multiply(world_to_shape, src_transforms[src_offset + i])
+    dst_scales[i] = src_scales[src_offset + i]
 
 
 class RenderContext:
@@ -79,6 +97,7 @@ class RenderContext:
         self.__topology_particle_mask: wp.array[wp.bool] | None = None
 
         self.__gaussians_data: wp.array[Gaussian.Data] | None = None
+        self.__deformable_gaussian_entries: list[tuple[DeformableVisualGaussian, Gaussian.Data, wp.Bvh]] = []
         self.__has_particles: bool = False
 
         self.shape_count_total: int = 0
@@ -137,6 +156,7 @@ class RenderContext:
         self.__deformable_visual_entries = []
         self.__deformable_visual_texture_ids = []
         self.__topology_particle_mask = None
+        self.__deformable_gaussian_entries = []
         self.__has_particles = False
         self.state.has_particles = False
         self.triangle_mesh_uvs = wp.empty(0, dtype=wp.vec2f, device=self.device)
@@ -197,6 +217,16 @@ class RenderContext:
         self.shape_colors = model.shape_color
         self.gaussians_data = model.gaussians_data
 
+        if model.deformable_visual_gaussians:
+            shape_sources = model.shape_source_ptr.numpy()
+            gaussian_data = model._gaussians
+            gaussian_bvhs = model._gaussian_bvhs
+            for visual in model.deformable_visual_gaussians:
+                source_index = int(shape_sources[visual.shape])
+                self.__deformable_gaussian_entries.append(
+                    (visual, gaussian_data[source_index], gaussian_bvhs[source_index])
+                )
+
         self.__load_texture_and_mesh_data(model, load_textures, deformable_visual_meshes)
 
         if deformable_visual_meshes:
@@ -216,8 +246,8 @@ class RenderContext:
         Args:
             model: Newton simulation model (for shape metadata).
             state: Current simulation state with particle positions.
-            deformable_visuals: Updated points for the model's deformable
-                visual meshes, or ``None`` when the model has none.
+            deformable_visuals: Updated geometry for the model's deformable
+                visual payloads, or ``None`` when the model has none.
         """
 
         if self.__dynamic_triangle_points is not None:
@@ -241,6 +271,41 @@ class RenderContext:
         elif self.has_triangle_mesh:
             self.triangle_points = state.particle_q
             self._sync_triangle_mesh()
+
+        if self.__deformable_gaussian_entries:
+            if deformable_visuals is None:
+                raise ValueError("deformable_visuals is required by this render context")
+            for visual, gaussian_data, gaussian_bvh in self.__deformable_gaussian_entries:
+                start, _ = deformable_visuals.gaussian_ranges[visual.index]
+                wp.launch(
+                    _copy_deformable_gaussians,
+                    dim=visual.count,
+                    inputs=[
+                        deformable_visuals.gaussian_transforms,
+                        deformable_visuals.gaussian_scales,
+                        start,
+                        model.bvh_shape_world_transforms,
+                        visual.shape,
+                        gaussian_data.transforms,
+                        gaussian_data.scales,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
+                    compute_gaussian_bvh_bounds,
+                    dim=visual.count,
+                    inputs=[gaussian_data, gaussian_bvh.lowers, gaussian_bvh.uppers],
+                    device=self.device,
+                )
+                gaussian_bvh.refit()
+
+            wp.launch(
+                compute_shape_local_bounds,
+                dim=model.shape_count,
+                inputs=[model.shape_type, model.shape_source_ptr, model.gaussians_data, model.bvh_shape_bounds],
+                device=self.device,
+            )
+            model.bvh_refit_shapes(state)
 
     def render(
         self,

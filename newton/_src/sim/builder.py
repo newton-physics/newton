@@ -2804,6 +2804,8 @@ class ModelBuilder:
                     merged = dict(spec)
                     parent_start = int(starts(visual_parent_kinds[spec["kind"]])[world_index])
                     merged["parent"] = np.asarray(spec["parent"], dtype=np.int32) + parent_start
+                    if "shape" in spec:
+                        merged["shape"] = spec["shape"] + int(starts("shape")[world_index])
                     merged["label"] = rebase_path(spec.get("label"), path_prefixes[world_index])
                     for name in ("body_path", "sim_path", "graphics_path"):
                         merged[name] = rebase_path(spec.get(name), path_prefixes[world_index], required=True)
@@ -10104,8 +10106,9 @@ class ModelBuilder:
     ) -> int:
         """Attach a Gaussian field to a volumetric deformable for rendering.
 
-        Gaussian centers are embedded in the owning tetrahedra. The visual is
-        render-only and does not add collision geometry, mass, or constraints.
+        Gaussian centers are embedded in the owning tetrahedra. A render-only
+        Gaussian shape is created automatically; it adds no collision geometry,
+        mass, or constraints.
 
         Args:
             gaussian: Rest Gaussian appearance and center positions [m].
@@ -10153,10 +10156,12 @@ class ModelBuilder:
             weights=weights,
             operation="add_deformable_visual_gaussian",
         )
+        shape = self.add_shape_gaussian(-1, gaussian=gaussian, label=label or None)
         self._deformable_visual_gaussians.append(
             {
                 **binding,
                 "gaussian": gaussian,
+                "shape": shape,
                 "label": label,
                 "body_path": None,
                 "sim_path": None,
@@ -11828,6 +11833,7 @@ class ModelBuilder:
                     binding=binding,
                     rest_rotations=wp.array(spec["gaussian"].rotations, dtype=wp.quat),
                     rest_scales=wp.array(spec["gaussian"].scales, dtype=wp.vec3),
+                    shape=spec["shape"],
                     world=int(worlds[0]) if len(worlds) else -1,
                     label=spec.get("label", ""),
                     index=index,
@@ -12026,11 +12032,26 @@ class ModelBuilder:
             finalized_geos = {}  # content hash -> finalized geometry
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
+            gaussian_bvhs = []
+            deformable_gaussian_shapes = {spec["shape"] for spec in self._deformable_visual_gaussians}
             heightfield_meshes = []
             mesh_keep_alive = []
-            for geo in generated_shape_sources:
+            for shape_index, geo in enumerate(generated_shape_sources):
                 if not geo:
                     geo_sources.append(0)
+                    continue
+
+                # Deformable Gaussian shapes need independent runtime buffers;
+                # replicated fields may share identical rest appearance but
+                # evaluate to different transforms in each world.
+                if shape_index in deformable_gaussian_shapes:
+                    gaussian_data = geo.finalize(
+                        device=device,
+                        bvh_constructor=self.default_bvh_cfg.gaussian_constructor,
+                    )
+                    geo_sources.append(len(gaussians))
+                    gaussians.append(gaussian_data)
+                    gaussian_bvhs.append(geo.warp_bvh)
                     continue
 
                 # Replicated builders reuse geometry objects across worlds. Use
@@ -12075,6 +12096,7 @@ class ModelBuilder:
                         gaussians.append(
                             geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
                         )
+                        gaussian_bvhs.append(geo.warp_bvh)
                     else:
                         finalized_geos[geo_hash] = geo.finalize()
 
@@ -12107,6 +12129,8 @@ class ModelBuilder:
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
+            m._gaussians = gaussians
+            m._gaussian_bvhs = gaussian_bvhs
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
             m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
             m.shape_margin = wp.array(self.shape_margin, dtype=wp.float32, requires_grad=requires_grad)

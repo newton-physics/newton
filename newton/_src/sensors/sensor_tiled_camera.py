@@ -141,7 +141,11 @@ class SensorTiledCamera:
             load_textures,
             enable_simulation_triangles=self.default_render_config.enable_simulation_triangles,
         )
-        self.__deformable_visuals = self.model.deformable_visuals() if self.model.deformable_visual_mesh_count else None
+        self.__deformable_visuals = (
+            self.model.deformable_visuals()
+            if self.model.deformable_visual_mesh_count or self.model.deformable_visual_gaussian_count
+            else None
+        )
 
     @property
     def default_render_config(self) -> RenderConfig:
@@ -162,7 +166,7 @@ class SensorTiledCamera:
         return self.__default_clear_data
 
     def sync_transforms(self, state: State, deformable_visuals: DeformableVisuals | None = None):
-        """Synchronize triangle-mesh points from the simulation state.
+        """Synchronize deformable visual geometry from the simulation state.
 
         :meth:`update` calls this automatically when *state* is not None.
 
@@ -175,9 +179,9 @@ class SensorTiledCamera:
 
         Args:
             state: The current simulation state containing particle positions.
-            deformable_visuals: Precomputed visual data to share with other
-                render consumers. When omitted, the sensor updates its own
-                reusable visual data.
+            deformable_visuals: Precomputed visual mesh and Gaussian data to
+                share with other render consumers. When omitted, the sensor
+                updates its own reusable visual data.
         """
         if deformable_visuals is None:
             deformable_visuals = self.__deformable_visuals

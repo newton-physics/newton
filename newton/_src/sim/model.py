@@ -911,6 +911,8 @@ class Model:
         """Number of gaussians."""
         self.gaussians_data = None
         """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
+        self._gaussians = []
+        self._gaussian_bvhs = []
 
         # Shape and particle BVH structures and related fields
         self.bvh_shapes: wp.Bvh | None = None
