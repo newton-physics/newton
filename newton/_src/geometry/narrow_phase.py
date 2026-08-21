@@ -22,6 +22,7 @@ from ..geometry.collision_core import (
     mesh_vs_convex_midphase,
     post_process_axial_on_discrete_contact,
     post_process_minkowski_only,
+    post_process_triangle_contact,
 )
 from ..geometry.collision_primitive import (
     _collide_plane_capsule_contacts,
@@ -1645,8 +1646,7 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
             gap_b = shape_gap[shape_b]
             gap_sum = gap_a + gap_b
 
-            # Compute and write contacts using GJK/MPR with standard post-processing
-            wp.static(create_compute_gjk_mpr_contacts(writer_func))(
+            wp.static(create_compute_gjk_mpr_contacts(writer_func, post_process_contact=post_process_triangle_contact))(
                 shape_data_a,
                 shape_data_b,
                 quat_a,

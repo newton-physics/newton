@@ -9,8 +9,9 @@ import numpy as np
 import warp as wp
 
 from newton import GeoType
-from newton._src.geometry.mpr import MPR_BOX_SUPPORT_TIE_EPSILON, create_solve_mpr
+from newton._src.geometry.mpr import create_solve_mpr
 from newton._src.geometry.support_function import (
+    _CENTERED_BOX_SUPPORT_TIE_EPSILON,
     GenericShapeData,
     GeoTypeEx,
     SupportMapDataProvider,
@@ -171,7 +172,7 @@ class TestMPRBoxSupportTie(unittest.TestCase):
 
     def test_support_tie_boundary_preserves_contact_witnesses(self):
         """Keep valid witnesses immediately below and above the box support tie threshold."""
-        angles = MPR_BOX_SUPPORT_TIE_EPSILON * np.array([0.5, 2.0], dtype=np.float32)
+        angles = _CENTERED_BOX_SUPPORT_TIE_EPSILON * np.array([0.5, 2.0], dtype=np.float32)
         orientations = np.zeros((len(angles), 4), dtype=np.float32)
         orientations[:, 0] = np.sin(0.5 * angles)
         orientations[:, 3] = np.cos(0.5 * angles)
