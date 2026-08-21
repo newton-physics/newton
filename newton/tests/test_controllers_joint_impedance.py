@@ -122,6 +122,8 @@ def _build_floating_base_fleet():
 
     The free joint spans seven coordinates but six DOFs, so coordinate and DOF
     indices diverge and the two robots have different controlled-DOF counts.
+    Returns the builder and the three revolute joints, i.e. every joint but
+    the (uncontrollable) free base.
     """
     builder = newton.ModelBuilder()
     base = builder.add_link(mass=1.0)
@@ -134,7 +136,7 @@ def _build_floating_base_fleet():
     link = builder.add_link(mass=1.0)
     j3 = builder.add_joint_revolute(parent=-1, child=link, axis=wp.vec3(0.0, 0.0, 1.0))
     builder.add_articulation([j3], label="robot1")
-    return builder
+    return builder, [j1, j2, j3]
 
 
 def _make_mf(
@@ -843,7 +845,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         )
         builder.add_articulation([j_fixed, j_rev], label="robot")
         model = builder.finalize(device=device)
-        selection = select_joints(model)
+        selection = select_joints(model, joints=[j_rev])
         # Should not raise — fixed joint is zero-DOF and irrelevant to the PD term.
         ctrl = ControllerJointImpedance(
             model,
@@ -1045,8 +1047,9 @@ class TestControllerJointImpedance(unittest.TestCase):
         is the whole reason the two arrays are separate.
         """
         device = wp.get_device()
-        model = _build_floating_base_fleet().finalize(device=device)
-        selection = select_joints(model)
+        builder, revolute_joints = _build_floating_base_fleet()
+        model = builder.finalize(device=device)
+        selection = select_joints(model, joints=revolute_joints)
         # Coordinate and DOF indices must genuinely differ, or this proves nothing.
         self.assertFalse(np.array_equal(selection.q_idx.numpy(), selection.qd_idx.numpy()))
 

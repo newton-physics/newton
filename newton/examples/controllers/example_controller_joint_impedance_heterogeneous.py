@@ -147,10 +147,9 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
 
         # ---- Impedance controller --------------------------------------------
-        # select_joints resolves every revolute joint of both articulations into
-        # the matched coordinate/DOF index pair the controller needs. Here the
-        # two spaces coincide (all joints are 1-DOF), but binding both keeps the
-        # example correct if a free or ball joint is ever added.
+        # select_joints resolves every joint of both articulations into the
+        # matched coordinate/DOF index pair the controller needs. Here the two
+        # spaces coincide since all joints are 1-DOF.
         selection = select_joints(ctrl_model)
 
         self.controller = ControllerJointImpedance(
