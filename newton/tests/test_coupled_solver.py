@@ -1257,7 +1257,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
     def _seeded_full_surface_contacts(model, corners, particle=None):
         """Build contacts with a face record and an optional particle record."""
         pipeline = newton.CollisionPipeline(
-            model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+            model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
         )
         contacts = pipeline.contacts()
 
