@@ -103,12 +103,9 @@ def select_joints(
             twice.
         joints: Model joint indices or label patterns to control within the
             selected articulations, as a list or as a single pattern. ``None``
-            selects every single-coordinate, single-DOF joint of each selected
-            articulation; every other joint (Fixed, or any multi-DOF type) is
-            skipped rather than controlled. Passed explicitly, joints are taken
-            as-is; whether each one is controllable is checked by the
-            controller, not here. Duplicates are collapsed, as they are for
-            ``articulations``.
+            selects every joint of each selected articulation. Whether each
+            selected joint is controllable is checked by the controller, not
+            here. Duplicates are collapsed, as they are for ``articulations``.
 
     Returns:
         The matched coordinate/DOF index pair addressing the selected DOFs, in
@@ -172,15 +169,10 @@ def select_joints(
         # twice would duplicate every one of its joints in the output.
         selected_arts = sorted(dict.fromkeys(matched_arts))
 
-    # A joint is controllable when its position error is a scalar subtraction,
-    # i.e. it spans exactly one coordinate and one DOF.
-    is_scalar = (np.diff(q_start) == 1) & (np.diff(qd_start) == 1)
-
     robot_joints_by_art: dict[int, list[int]] = {art: [] for art in selected_arts}
     if joints is None:
         for art in selected_arts:
-            art_joints = np.arange(art_start[art], art_end[art])
-            robot_joints_by_art[art] = art_joints[is_scalar[art_joints]].tolist()
+            robot_joints_by_art[art] = np.arange(art_start[art], art_end[art]).tolist()
     else:
         # Maps a joint index to its owning articulation, so a joint's art can be
         # looked up directly instead of scanning ``selected_arts`` per joint.

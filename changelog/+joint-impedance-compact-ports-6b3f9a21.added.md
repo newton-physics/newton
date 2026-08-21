@@ -4,5 +4,6 @@ which resolve articulations and joints into the `JointSelection`
 `articulations` and `joints` accept indices or label patterns — a glob, a
 compiled regular expression, or a list of either — following the same
 label-matching rules as the rest of Newton. Duplicate articulations and
-duplicate joints are collapsed, and passing no `joints` selects every
-single-coordinate, single-DOF joint of each selected articulation.
+duplicate joints are collapsed, and passing no `joints` selects every joint of
+each selected articulation; the controller, not `select_joints`, checks
+whether each one is controllable.
