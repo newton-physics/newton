@@ -12,6 +12,8 @@ import tempfile
 import types
 import unittest
 import warnings
+from collections.abc import Callable, Sequence
+from typing import Any
 from unittest.mock import patch
 
 import numpy as np
@@ -23,6 +25,7 @@ from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
     ActuatorParsed,
+    Clamping,
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
@@ -198,7 +201,12 @@ def _build_lstm_onnx(
 # ---------------------------------------------------------------------------
 
 
-def _write_dof_values(model, array, dof_indices, values):
+def _write_dof_values(
+    model: newton.Model,
+    array: wp.array[float],
+    dof_indices: Sequence[int] | np.ndarray,
+    values: Sequence[float] | np.ndarray,
+) -> None:
     """Write scalar values into specific DOF positions of a Warp array."""
     arr_np = array.numpy()
     for dof, val in zip(dof_indices, values, strict=True):
@@ -206,7 +214,7 @@ def _write_dof_values(model, array, dof_indices, values):
     wp.copy(array, wp.array(arr_np, dtype=float, device=model.device))
 
 
-def _build_pendulum(device, worlds: int = 1):
+def _build_pendulum(device: wp.Device, worlds: int = 1) -> newton.Model:
     """Single revolute joint with an offset COM and no gravity — one scalar DOF.
 
     Args:
@@ -225,7 +233,7 @@ def _build_pendulum(device, worlds: int = 1):
     return builder.finalize(device=device)
 
 
-def _two_link_builder(armature: float = 0.0, dummy_body: bool = False):
+def _two_link_builder(armature: float = 0.0, dummy_body: bool = False) -> newton.ModelBuilder:
     """Builder for a two-link revolute chain — one articulation, two coupled DOFs.
 
     Args:
@@ -253,7 +261,7 @@ def _two_link_builder(armature: float = 0.0, dummy_body: bool = False):
     return builder
 
 
-def _build_two_link(device, dummy_body: bool = False, worlds: int = 1):
+def _build_two_link(device: wp.Device, dummy_body: bool = False, worlds: int = 1) -> newton.Model:
     """Two-link revolute chain — one articulation, two inertially coupled DOFs.
 
     Args:
@@ -269,14 +277,20 @@ def _build_two_link(device, dummy_body: bool = False, worlds: int = 1):
     return builder.finalize(device=device)
 
 
-def _assert_worlds_match(test_case, model, array, rtol: float = 1e-5, atol: float = 1e-6) -> None:
+def _assert_worlds_match(
+    test_case: unittest.TestCase,
+    model: newton.Model,
+    array: wp.array[float],
+    rtol: float = 1e-5,
+    atol: float = 1e-6,
+) -> None:
     """Assert every world's slice of a per-DOF array equals world 0's."""
     per_world = _arm_values(model, array).reshape(model.world_count, -1)
     for world in range(1, model.world_count):
         np.testing.assert_allclose(per_world[world], per_world[0], rtol=rtol, atol=atol)
 
 
-def _response_at(model, q, qd):
+def _response_at(model: newton.Model, q: np.ndarray, qd: np.ndarray) -> np.ndarray:
     """Coupled response A = inv(H) at pose *q*, evaluated on a scratch state."""
     scratch = model.state()
     scratch.joint_q.assign(np.asarray(q, dtype=np.float32))
@@ -286,7 +300,7 @@ def _response_at(model, q, qd):
     return np.linalg.inv(newton.eval_mass_matrix(model, scratch).numpy()[0, :n, :n])
 
 
-def _arm_dofs(model) -> np.ndarray:
+def _arm_dofs(model: newton.Model) -> np.ndarray:
     """DOF indices belonging to an articulation, in order.
 
     Equal to ``arange(joint_dof_count)`` unless the model was built with
@@ -300,19 +314,19 @@ def _arm_dofs(model) -> np.ndarray:
     return np.concatenate(spans).astype(np.uint32) if spans else np.empty(0, dtype=np.uint32)
 
 
-def _set_arm(model, array, values) -> None:
+def _set_arm(model: newton.Model, array: wp.array[float], values: Sequence[float] | np.ndarray) -> None:
     """Write *values* into the articulation's slice of a per-DOF array."""
     buf = array.numpy()
     buf[_arm_dofs(model).astype(np.int64)] = np.asarray(values, dtype=np.float32)
     array.assign(buf)
 
 
-def _arm_values(model, array) -> np.ndarray:
+def _arm_values(model: newton.Model, array: wp.array[float]) -> np.ndarray:
     """Read the articulation's slice out of a per-DOF array."""
     return array.numpy()[_arm_dofs(model).astype(np.int64)]
 
 
-def _mujoco_solver(test_case, model):
+def _mujoco_solver(test_case: unittest.TestCase, model: newton.Model) -> newton.solvers.SolverMuJoCo:
     """Build :class:`SolverMuJoCo`, tolerating the standalone-root advisory.
 
     Models built with ``dummy_body=True`` carry a joint outside any articulation.
@@ -325,22 +339,31 @@ def _mujoco_solver(test_case, model):
     return newton.solvers.SolverMuJoCo(model, disable_contacts=True)
 
 
-def _mujoco_solve(solver):
+def _mujoco_solve(
+    solver: newton.solvers.SolverMuJoCo,
+) -> Callable[[wp.array2d[float], wp.array2d[float]], None]:
     """``(x, y) -> x = M^-1 y`` backed by MuJoCo's per-step factorization."""
     import mujoco_warp
 
-    def solve_inverse(x, y):
+    def solve_inverse(x: wp.array2d[float], y: wp.array2d[float]) -> None:
         mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
     return solve_inverse
 
 
-def _response_at_state(model, state):
+def _response_at_state(model: newton.Model, state: newton.State) -> np.ndarray:
     """Coupled response A = inv(H) at the pose held by *state*."""
     return _response_at(model, state.joint_q.numpy(), state.joint_qd.numpy())
 
 
-def _expected_implicit_pd(model, state, kp, kd, target, dt):
+def _expected_implicit_pd(
+    model: newton.Model,
+    state: newton.State,
+    kp: float,
+    kd: float,
+    target: float,
+    dt: float,
+) -> float:
     """Closed-form single-DOF implicit PD effort from the pose held by *state*."""
     alpha = _response_at_state(model, state)[0, 0]
     q = float(state.joint_q.numpy()[0])
@@ -348,7 +371,14 @@ def _expected_implicit_pd(model, state, kp, kd, target, dt):
     return (kp * (target - q - dt * qd) - kd * qd) / (1.0 + alpha * dt * kd + alpha * dt * dt * kp)
 
 
-def _make_implicit_actuator(model, device, kp, kd, max_effort=None, **kwargs):
+def _make_implicit_actuator(
+    model: newton.Model,
+    device: wp.Device,
+    kp: wp.array[float],
+    kd: wp.array[float],
+    max_effort: Sequence[float] | np.ndarray | None = None,
+    **kwargs: Any,
+) -> tuple[Actuator, ResponseOracle]:
     """Build an implicit PD Actuator over all DOFs, with an optional max-effort clamp.
 
     Returns the actuator together with the response oracle driving its solve.
@@ -368,13 +398,19 @@ def _make_implicit_actuator(model, device, kp, kd, max_effort=None, **kwargs):
     return actuator, oracle
 
 
-def _refresh_and_step(actuator, oracle, state, control, dt):
+def _refresh_and_step(
+    actuator: Actuator,
+    oracle: ResponseOracle,
+    state: newton.State,
+    control: newton.Control,
+    dt: float,
+) -> None:
     """Refresh the response oracle at *state*, then step the actuator — the simulation order."""
     oracle.refresh(state)
     actuator.step(state, control, dt=dt)
 
 
-def _ignore_torchscript_deprecation(test_case):
+def _ignore_torchscript_deprecation(test_case: unittest.TestCase) -> None:
     """Tolerate torch's TorchScript-family deprecation notices for one test.
 
     The neural-controller tests deliberately exercise the TorchScript checkpoint
@@ -417,7 +453,7 @@ class TestControllerPD(unittest.TestCase):
         tgt_vel = [0.0, 1.0]
         ff = [3.0, -1.0]
 
-        def _f(vals):
+        def _f(vals: Sequence[float]) -> wp.array[float]:
             return wp.array(vals, dtype=wp.float32)
 
         indices = wp.array(list(range(n)), dtype=wp.uint32)
@@ -458,7 +494,7 @@ class TestControllerPID(unittest.TestCase):
         vel_error = tgt_vel[0] - qd[0]
         device = wp.get_device()
 
-        def _f(vals):
+        def _f(vals: Sequence[float]) -> wp.array[float]:
             return wp.array(vals, dtype=wp.float32, device=device)
 
         indices = wp.array([0], dtype=wp.uint32, device=device)
@@ -512,7 +548,14 @@ class TestControllerNeuralMLP(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
-    def _save_mlp(self, weights, bias, filename="mlp.onnx", metadata=None, batch_dim=None):
+    def _save_mlp(
+        self,
+        weights: np.ndarray,
+        bias: np.ndarray,
+        filename: str = "mlp.onnx",
+        metadata: dict | None = None,
+        batch_dim: int | None = None,
+    ) -> str:
         path = os.path.join(self._tmp_dir, filename)
         _build_mlp_onnx(path, weights, bias, metadata, batch_dim=batch_dim)
         return path
@@ -840,13 +883,13 @@ class TestControllerNeuralMLP(unittest.TestCase):
         w2 = (rng.standard_normal((1, 4)) * 4.0).astype(np.float32)
         b2 = np.array([3.0], dtype=np.float32)
 
-        def net_np(e_q, e_qd):
+        def net_np(e_q: float, e_qd: float) -> float:
             x = np.array([e_q, e_qd], dtype=np.float32)
             hl = w1 @ x + b1
             a = np.where(hl >= 0.0, hl, np.exp(hl) - 1.0)  # ELU, alpha=1
             return float((w2 @ a + b2)[0])
 
-        def dnet_np(e_q, e_qd):
+        def dnet_np(e_q: float, e_qd: float) -> tuple[float, float]:
             # d(net)/d(e_q), d(net)/d(e_qd); ELU'(x) = 1 (x>=0) else exp(x)
             hl = w1 @ np.array([e_q, e_qd], dtype=np.float32) + b1
             elu_p = np.where(hl >= 0.0, 1.0, np.exp(hl))
@@ -901,12 +944,12 @@ class TestControllerNeuralLSTM(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
-    def _save_lstm(self, filename="lstm.onnx", hidden=8, metadata=None):
+    def _save_lstm(self, filename: str = "lstm.onnx", hidden: int = 8, metadata: dict | None = None) -> str:
         path = os.path.join(self._tmp_dir, filename)
         _build_lstm_onnx(path, hidden_size=hidden, num_layers=1, metadata=metadata)
         return path
 
-    def _run_lstm_compute(self, ctrl):
+    def _run_lstm_compute(self, ctrl: ControllerNeuralLSTM) -> None:
         n = 1
         ctrl.finalize(self.device, n)
 
@@ -1019,7 +1062,7 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         # the packed ones, which may be scaled down to bound the Jacobian.
         actuator.set_effort_mode_explicit()
 
-        def explicit_tau(q_val, qd_val):
+        def explicit_tau(q_val: float, qd_val: float) -> float:
             state.joint_q.assign(np.array([q_val], dtype=np.float32))
             state.joint_qd.assign(np.array([qd_val], dtype=np.float32))
             control.joint_f.zero_()
@@ -1050,19 +1093,26 @@ class _TorchCheckpointTestMixin:
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
-    def _save_torchscript(self, net, filename="model.pt", metadata=None):
+    def _save_torchscript(self, net: Any, filename: str = "model.pt", metadata: dict | None = None) -> str:
         path = os.path.join(self._tmp_dir, filename)
         scripted = self.torch.jit.script(net)
         extra = {"metadata.json": json.dumps(metadata)} if metadata else {}
         self.torch.jit.save(scripted, path, _extra_files=extra)
         return path
 
-    def _save_dict(self, net, filename="model_dict.pt", metadata=None):
+    def _save_dict(self, net: Any, filename: str = "model_dict.pt", metadata: dict | None = None) -> str:
         path = os.path.join(self._tmp_dir, filename)
         self.torch.save({"model": net, "metadata": metadata or {}}, path)
         return path
 
-    def _export_pt2(self, net, example_inputs, dynamic_shapes, filename, metadata=None):
+    def _export_pt2(
+        self,
+        net: Any,
+        example_inputs: tuple[Any, ...],
+        dynamic_shapes: tuple[Any, ...] | None,
+        filename: str,
+        metadata: dict | None = None,
+    ) -> str:
         path = os.path.join(self._tmp_dir, filename)
         net.eval()
         exported = self.torch.export.export(net, example_inputs, dynamic_shapes=dynamic_shapes)
@@ -1075,14 +1125,14 @@ class _TorchCheckpointTestMixin:
 class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
     """ControllerNeuralMLP loading from pt2, TorchScript, and dict checkpoints."""
 
-    def _make_mlp(self, bias=0.0):
+    def _make_mlp(self, bias: float = 0.0) -> Any:
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
         with self.torch.no_grad():
             net[0].weight.fill_(0.0)
             net[0].bias.fill_(bias)
         return net
 
-    def _save_pt2(self, net, filename="mlp.pt2", metadata=None):
+    def _save_pt2(self, net: Any, filename: str = "mlp.pt2", metadata: dict | None = None) -> str:
         example = (self.torch.randn(2, 2, device=self._torch_dev),)
         batch = self.torch.export.Dim("batch", min=1)
         return self._export_pt2(net, example, ({0: batch},), filename, metadata=metadata)
@@ -1155,10 +1205,10 @@ class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.Te
 class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
     """ControllerNeuralLSTM loading from pt2, TorchScript, and dict checkpoints."""
 
-    def _make_lstm(self, hidden=8, layers=1, bidirectional=False):
+    def _make_lstm(self, hidden: int = 8, layers: int = 1, bidirectional: bool = False) -> Any:
         return _LSTMNet(hidden=hidden, layers=layers, bidirectional=bidirectional).to(self._torch_dev)
 
-    def _save_pt2(self, net, filename="lstm.pt2", metadata=None):
+    def _save_pt2(self, net: Any, filename: str = "lstm.pt2", metadata: dict | None = None) -> str:
         layers, hidden = net.lstm.num_layers, net.lstm.hidden_size
         n = 2
         x = self.torch.randn(n, 1, 2, device=self._torch_dev)
@@ -1168,7 +1218,7 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
         dynamic_shapes = ({0: batch}, ({1: batch}, {1: batch}))
         return self._export_pt2(net, (x, (h, c)), dynamic_shapes, filename, metadata=metadata)
 
-    def _run_lstm_compute(self, ctrl):
+    def _run_lstm_compute(self, ctrl: ControllerNeuralLSTM) -> None:
         n = 1
         ctrl.finalize(self.device, n)
 
@@ -1288,7 +1338,7 @@ class TestControllerNeuralMLPLegacyTorchScript(unittest.TestCase):
                     self.fc.weight.zero_()
                     self.fc.bias.fill_(7.0)
 
-            def forward(self, x):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
                 return self.fc(x)
 
         model = _BiasOnlyMLP().eval()
@@ -1600,7 +1650,7 @@ class TestClampingDCMotor(unittest.TestCase):
         qd0 = 10.0
         sat, vel_lim = 10.0, 5.0
 
-        def run(max_e, implicit):
+        def run(max_e: float, implicit: bool) -> tuple[float, float]:
             model = _build_pendulum(device)
             state = model.state()
             state.joint_q.assign(np.array([0.0], dtype=np.float32))
@@ -1698,12 +1748,16 @@ _POSITION_LOOKUP_POSITIONS = (0.0, 1.0)
 _POSITION_LOOKUP_EFFORTS = (200.0, 0.0)
 
 
-def _pipeline_clamping(clamp, device, n):
+def _pipeline_clamping(
+    clamp: str | None,
+    device: wp.Device,
+    n: int,
+) -> tuple[list[Clamping] | None, Callable[[float, float], tuple[float, float]]]:
     """Return the clamping list for *clamp* and its NumPy ``(q, qd) -> (lo, hi)`` law."""
     if clamp is None:
         return None, lambda q, qd: (-np.inf, np.inf)
 
-    def _full(value):
+    def _full(value: float) -> wp.array[float]:
         return wp.array(np.full(n, value, dtype=np.float32), dtype=float, device=device)
 
     if clamp == "max_effort":
@@ -1719,7 +1773,7 @@ def _pipeline_clamping(clamp, device, n):
             )
         ]
 
-        def limit(q, qd):
+        def limit(q: float, qd: float) -> tuple[float, float]:
             envelope = _DC_SATURATION * (1.0 - qd / _DC_VELOCITY_LIMIT)
             reverse = _DC_SATURATION * (-1.0 - qd / _DC_VELOCITY_LIMIT)
             return max(reverse, -_DC_MAX_EFFORT), min(envelope, _DC_MAX_EFFORT)
@@ -1734,7 +1788,7 @@ def _pipeline_clamping(clamp, device, n):
             )
         ]
 
-        def limit(q, qd):
+        def limit(q: float, qd: float) -> tuple[float, float]:
             effort = float(np.interp(q, _POSITION_LOOKUP_POSITIONS, _POSITION_LOOKUP_EFFORTS))
             return -effort, effort
 
@@ -1756,7 +1810,11 @@ def _pipeline_clamping(clamp, device, n):
     raise ValueError(f"unknown clamp kind: {clamp}")
 
 
-def _solve_clamped_effort(residual, bound=1.0e12, iterations=200):
+def _solve_clamped_effort(
+    residual: Callable[[float], float],
+    bound: float = 1.0e12,
+    iterations: int = 200,
+) -> float:
     """Bisect ``residual(tau) = clamped_force(tau) - tau``, which decreases in tau.
 
     Fixed-point iteration diverges at stiff gains (the map's slope is
@@ -1789,28 +1847,28 @@ class TestActuatorStep(unittest.TestCase):
 
     def _run_actuator_pipeline(
         self,
-        device,
+        device: wp.Device,
         *,
-        controller="pd",
-        clamp=None,
-        implicit=True,
-        dofs=1,
-        kp=500.0,
-        kd=5.0,
-        ki=50.0,
-        integral_max=1.0e9,
-        q0=0.2,
-        qd0=0.0,
-        target=1.0,
-        dt=0.01,
-        steps=1,
-        retune=False,
-        expect=None,
-        check_forces=True,
-        expect_integral_saturated=False,
-        worlds=1,
-        actuated=None,
-    ):
+        controller: str = "pd",
+        clamp: str | None = None,
+        implicit: bool = True,
+        dofs: int = 1,
+        kp: float | Sequence[float] = 500.0,
+        kd: float | Sequence[float] = 5.0,
+        ki: float | Sequence[float] = 50.0,
+        integral_max: float | Sequence[float] = 1.0e9,
+        q0: float | Sequence[float] = 0.2,
+        qd0: float | Sequence[float] = 0.0,
+        target: float | Sequence[float] = 1.0,
+        dt: float = 0.01,
+        steps: int = 1,
+        retune: bool = False,
+        expect: str | None = None,
+        check_forces: bool = True,
+        expect_integral_saturated: bool = False,
+        worlds: int = 1,
+        actuated: Sequence[int] | None = None,
+    ) -> None:
         """Run the actuator pipeline for one controller / clamp / effort-mode combination.
 
         Each step follows the order a simulation uses: zero the forces, refresh
@@ -1869,16 +1927,16 @@ class TestActuatorStep(unittest.TestCase):
 
         clamping, limit = _pipeline_clamping(clamp, device, driven * worlds)
 
-        def _vec(value):
+        def _vec(value: float | Sequence[float]) -> np.ndarray:
             return np.full(n, value, dtype=np.float32) if np.isscalar(value) else np.asarray(value, dtype=np.float32)
 
-        def _tiled(values):
+        def _tiled(values: np.ndarray) -> np.ndarray:
             return np.tile(np.asarray(values), worlds)
 
         kp, kd, ki = _vec(kp), _vec(kd), _vec(ki)
         integral_max, q0, qd0, target = _vec(integral_max), _vec(q0), _vec(qd0), _vec(target)
 
-        def _arr(values):
+        def _arr(values: np.ndarray) -> wp.array[float]:
             """Per-actuator array: select the driven DOFs, then repeat per world."""
             return wp.array(_tiled(np.asarray(values)[act]), dtype=float, device=device)
 
@@ -1901,7 +1959,13 @@ class TestActuatorStep(unittest.TestCase):
             actuator.set_effort_mode_implicit(response=oracle)
         self.assertTrue(actuator.is_graphable())
 
-        def reference(q, qd, integral, kp_now, kd_now):
+        def reference(
+            q: np.ndarray,
+            qd: np.ndarray,
+            integral: np.ndarray,
+            kp_now: np.ndarray,
+            kd_now: np.ndarray,
+        ) -> np.ndarray:
             """The effort the actuator should produce from state (q, qd).
 
             Returns one value per model DOF; undriven DOFs are zero, since the
@@ -1928,7 +1992,7 @@ class TestActuatorStep(unittest.TestCase):
             alpha = float(response[0, 0])
             j = act[0]
 
-            def residual(tau):
+            def residual(tau: float) -> float:
                 qd_pred = qd[j] + alpha * dt * tau
                 q_pred = q[j] + dt * qd_pred
                 lo, hi = limit(q_pred, qd_pred)
@@ -1983,7 +2047,12 @@ class TestActuatorStep(unittest.TestCase):
                 graphs[key] = capture.graph
             wp.capture_launch(graphs[key])
 
-        def check_effort(step_label, kp_now, kd_now, integral):
+        def check_effort(
+            step_label: str,
+            kp_now: np.ndarray,
+            kd_now: np.ndarray,
+            integral: np.ndarray,
+        ) -> None:
             """Step once from the live state and compare the effort to the reference."""
             q = state_in.joint_q.numpy().astype(np.float64)[:n]
             qd = state_in.joint_qd.numpy().astype(np.float64)[:n]
@@ -2134,7 +2203,7 @@ class TestActuatorStep(unittest.TestCase):
         q0 = np.array([0.3, -0.8], dtype=np.float32)
         target = np.array([0.6, 0.4], dtype=np.float32)
 
-        def efforts(dof_groups, implicit):
+        def efforts(dof_groups: Sequence[Sequence[int]], implicit: bool) -> np.ndarray:
             model = _build_two_link(device)
             state = model.state()
             state.joint_q.assign(q0)
@@ -2561,7 +2630,7 @@ class TestActuatorImplicit(unittest.TestCase):
         """
         device = wp.get_device()
 
-        def build(kind):
+        def build(kind: str) -> newton.Model:
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             link = builder.add_link(mass=1.0)
             builder.add_shape_box(link, hx=0.2, hy=0.1, hz=0.1)
@@ -2579,7 +2648,7 @@ class TestActuatorImplicit(unittest.TestCase):
             builder.add_articulation([joint])
             return builder.finalize(device=device)
 
-        def install(model):
+        def install(model: newton.Model) -> None:
             n = model.joint_dof_count
             actuator = Actuator(
                 indices=wp.array(np.arange(n, dtype=np.uint32), device=device),
@@ -2618,7 +2687,7 @@ class TestActuatorImplicit(unittest.TestCase):
         qd0 = np.array([1.5, -1.0])
         target = np.array([1.0, 1.0])
 
-        def run(max_iters):
+        def run(max_iters: int) -> tuple[np.ndarray, np.ndarray]:
             model = _build_two_link(device)
             state = model.state()
             state.joint_q.assign(q0.astype(np.float32))
@@ -2679,7 +2748,7 @@ class TestActuatorImplicit(unittest.TestCase):
         h = 0.01
         kp_val, kd_val = 5.0e3, 12.0
 
-        def run(warm_start):
+        def run(warm_start: str) -> np.ndarray:
             model = _build_two_link(device)
             state = model.state()
             state.joint_q.assign(np.array([0.1, -0.2], dtype=np.float32))
@@ -2766,7 +2835,7 @@ class TestResponseOracle(unittest.TestCase):
         device = wp.get_device()
         q0 = np.array([0.3, -0.8], dtype=np.float32)
 
-        def alpha_for(armature):
+        def alpha_for(armature: float) -> np.ndarray:
             m = _two_link_builder(armature=armature).finalize(device=device)
             st = m.state()
             st.joint_q.assign(q0)
@@ -2966,7 +3035,7 @@ class TestResponseOracle(unittest.TestCase):
         q_init = np.array([0.3, -0.8], dtype=np.float32)
         target = np.array([0.6, 0.4], dtype=np.float32)
 
-        def run(use_qm):
+        def run(use_qm: bool) -> np.ndarray:
             model = _build_two_link(device, dummy_body=True)
             states = [model.state(), model.state()]
             control = model.control()
@@ -2983,7 +3052,7 @@ class TestResponseOracle(unittest.TestCase):
             self.assertEqual(solver.mj_model.nv, model.joint_dof_count)
             solve_m = _mujoco_solve(solver)
 
-            def update_response(state_prev):
+            def update_response(state_prev: newton.State) -> None:
                 if use_qm:
                     # Full inverse response from the solver's factorization at the
                     # pose of the step that just ran — same staleness as refresh().
@@ -3595,7 +3664,7 @@ class TestStateReset(unittest.TestCase):
         n = 3
         device = wp.get_device()
 
-        def _f(vals):
+        def _f(vals: Sequence[float]) -> wp.array[float]:
             return wp.array(vals, dtype=wp.float32, device=device)
 
         indices = wp.array(list(range(n)), dtype=wp.uint32, device=device)
@@ -3773,7 +3842,16 @@ class TestDelayGraphCapture(unittest.TestCase):
             act_a, act_b = act.state(), act.state()
             return solver, s0, s1, ctrl, act, act_a, act_b
 
-        def _loop(solver, s0, s1, ctrl, act, act_a, act_b, n):
+        def _loop(
+            solver: newton.solvers.SolverMuJoCo,
+            s0: newton.State,
+            s1: newton.State,
+            ctrl: newton.Control,
+            act: Actuator,
+            act_a: Actuator.State,
+            act_b: Actuator.State,
+            n: int,
+        ) -> tuple[newton.State, newton.State, Actuator.State, Actuator.State]:
             sub_dt = dt / K
             for _ in range(n):
                 ctrl.joint_f.zero_()
@@ -3955,7 +4033,7 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
     def test_target_pos_read_from_dof_index_not_coord_index(self):
         device = wp.get_device()
 
-        def _a(vals, dtype=wp.float32):
+        def _a(vals: Sequence[float], dtype: type = wp.float32) -> wp.array[Any]:
             return wp.array(vals, dtype=dtype, device=device)
 
         kp = 100.0
@@ -4043,7 +4121,7 @@ class TestControlTargetAttrDefaults(unittest.TestCase):
         device = wp.get_device()
         actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
 
-        def _a(vals):
+        def _a(vals: Sequence[float]) -> wp.array[float]:
             return wp.array(vals, dtype=wp.float32, device=device)
 
         sim_state = types.SimpleNamespace(joint_q=_a([0.0]), joint_qd=_a([0.0]))
