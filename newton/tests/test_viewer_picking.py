@@ -259,7 +259,14 @@ def test_picking_setup_device(test: TestPickingSetup, device):
 
     # update and apply_force should not crash
     picking.update(ray_start, ray_dir)
+    state.body_f.zero_()
     picking._apply_picking_force(state)
+
+    # With the target still on the pick point the command is zero, so the whole wrench is
+    # the weight compensation: a free body hangs weightless from the cursor.
+    weight = -model.gravity.numpy()[0] * model.body_mass.numpy()[0]
+    assert_np_equal(state.body_f.numpy()[0][:3], weight, tol=1.0e-4)
+    assert_np_equal(state.body_f.numpy()[0][3:], np.zeros(3), tol=1.0e-6)
 
     picking.release()
     test.assertFalse(picking.is_picking())
@@ -269,12 +276,15 @@ def test_picking_setup_device(test: TestPickingSetup, device):
 def _apply_picking_target(
     picking: Picking, state: newton.State, target: tuple[float, float, float], body: int = 0
 ) -> np.ndarray:
+    """Apply one picking step and return the wrench with the weight compensation removed."""
     pick_state = picking.pick_state.numpy()
     pick_state[0]["picking_target_world"] = target
     picking.pick_state.assign(pick_state)
     state.body_f.zero_()
     picking._apply_picking_force(state)
-    return state.body_f.numpy()[body].copy()
+    wrench = state.body_f.numpy()[body].copy()
+    wrench[:3] += picking.model.gravity.numpy()[0] * picking.model.body_mass.numpy()[body]
+    return wrench
 
 
 def test_picking_torque_limit(test: TestPickingSetup, device):

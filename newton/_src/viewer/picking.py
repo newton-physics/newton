@@ -29,6 +29,7 @@ class Picking:
         pick_stiffness: float = 50.0,
         pick_damping: float = 5.0,
         pick_max_acceleration: float = 5.0,
+        pick_min_inertia_fraction: float = 0.2,
         world_offsets: wp.array[wp.vec3] | None = None,
     ) -> None:
         """
@@ -46,14 +47,25 @@ class Picking:
             pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
                 Clamps both linear and equivalent rotational acceleration to prevent
                 runaway divergence on light or low-inertia objects.
+            pick_min_inertia_fraction: Lower bound on the operational-space inertia at the
+                pick point, as a fraction of the articulation's total mass. Pulling a light
+                distal link folds the chain instead of moving it, so the inertia felt there
+                is small and picking stays weak. The bound keeps a foot or a fingertip as
+                usable as the base. Set to 0.0 to disable it.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
 
         Raises:
-            ValueError: If ``pick_max_acceleration`` is negative or non-finite.
+            ValueError: If ``pick_max_acceleration`` is negative or non-finite, or if
+                ``pick_min_inertia_fraction`` is outside [0, 1].
         """
         pick_max_acceleration = float(pick_max_acceleration)
         if not math.isfinite(pick_max_acceleration) or pick_max_acceleration < 0.0:
             raise ValueError("Picking maximum acceleration must be finite and nonnegative.")
+
+        pick_min_inertia_fraction = float(pick_min_inertia_fraction)
+        if not 0.0 <= pick_min_inertia_fraction <= 1.0:
+            raise ValueError("Picking minimum inertia fraction must be in [0, 1].")
+        self.pick_min_inertia_fraction = pick_min_inertia_fraction
 
         self.model = model
         self.world_offsets = world_offsets
@@ -117,6 +129,8 @@ class Picking:
                 self.model.body_inv_inertia,
                 self._pick_effective_mass,
                 self._pick_os_inertia,
+                self.model.gravity,
+                self.model.body_world,
             ],
             device=self.model.device,
         )
@@ -127,10 +141,13 @@ class Picking:
         Computes :math:`\\Lambda = (J H^{-1} J^T)^{-1}` at the pick point, where ``J`` maps
         articulation velocities to the velocity of that point and ``H`` is the joint-space mass
         matrix. This is the inertia actually felt at the grab point, so picking a light distal
-        link is not weaker than picking the base. Eigenvalues are clamped between the body's own
-        mass and the articulation total: the lower bound keeps picking usable where rotation
-        absorbs the pull, the upper bound avoids over-commanding and regularizes singular poses.
-        A body outside an articulation falls back to :math:`m I`, exact for a free body.
+        link is not weaker than picking the base. Eigenvalues are clamped to the articulation
+        total from above, which avoids over-commanding and regularizes singular poses, and from
+        below to the larger of the body's own mass and the share of the articulation implied by
+        ``pick_min_inertia_fraction``. Where the articulation Jacobian is unavailable, as for
+        :attr:`~newton.JointType.CABLE` joints, the articulation total stands in, since the
+        whole chain is a closer estimate of what resists than the single link. A body outside
+        an articulation falls back to :math:`m I`, exact for a free body.
 
         Held fixed for the duration of the pick.
 
@@ -141,7 +158,9 @@ class Picking:
         """
         model = self.model
         mass = float(model.body_mass.numpy()[body])
-        lam = np.eye(3) * mass
+        upper = max(float(self._pick_effective_mass.numpy()[body]), mass)
+        lower = min(max(mass, self.pick_min_inertia_fraction * upper), upper)
+        lam = np.eye(3) * upper
 
         joints = np.nonzero(model.joint_child.numpy() == body)[0] if model.articulation_count else []
         if len(joints) and mass > 0.0:
@@ -163,10 +182,9 @@ class Picking:
             r = np.array(point_world) - np.array(wp.transform_point(X_wb, wp.vec3(*model.body_com.numpy()[body])))
             jac_point = jac[row : row + 3] + np.cross(jac[row + 3 : row + 6].T, r).T
 
-            upper = max(float(self._pick_effective_mass.numpy()[body]), mass)
             try:
                 eigenvalues, eigenvectors = np.linalg.eigh(jac_point @ np.linalg.solve(h, jac_point.T))
-                inertia = 1.0 / np.clip(eigenvalues, 1.0 / upper, 1.0 / mass)
+                inertia = 1.0 / np.clip(eigenvalues, 1.0 / upper, 1.0 / lower)
                 lam = eigenvectors @ np.diag(inertia) @ eigenvectors.T
             except np.linalg.LinAlgError:
                 pass
@@ -367,7 +385,8 @@ class Picking:
                 device=self.model.device,
             )
 
-        self.picking_active = self.pick_body.numpy()[0] >= 0
+            picked = int(self.pick_body.numpy()[0])
+            if picked >= 0:
+                self._update_os_inertia(state, picked, hit_point_world)
 
-        if self.picking_active:
-            self._update_os_inertia(state, int(self.pick_body.numpy()[0]), hit_point_world)
+        self.picking_active = self.pick_body.numpy()[0] >= 0
