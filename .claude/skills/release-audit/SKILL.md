@@ -250,7 +250,25 @@ Classification:
 
 **If an entry mentions multiple symbols where some are new and some pre-existed** (e.g., "Add `newton.geometry.compute_offset_mesh()` and a viewer toggle"), split: the genuinely new symbols each get a New API entry; the extensions to existing symbols each get a Changes entry.
 
-**Public-API exposure check.** For every symbol that passes the "genuinely new" test, also verify at HEAD that it is reachable via one of the public re-export modules listed above. If the symbol only exists under `newton._src.*` and is not re-exported through a public module, flag it in the report (Section "CHANGELOG Review Notes" → 🕵️ Private-only) — `CODING_GUIDELINES.rst` requires user-facing symbols to be re-exported and forbids examples/docs from importing `newton._src`. Do not treat this as a hard block on the entry; surface it so the release manager can confirm the symbol was intended to be public.
+**Public-API declaration and exposure check.** At HEAD, inspect every public
+module discovered by `api_modules()` and `solver_submodule_pages()`. Each module
+must define `__all__` as a list or tuple containing only strings; a missing or
+invalid declaration is a policy finding in "CHANGELOG Review Notes". For every
+symbol that passes the "genuinely new" test, collect its memberships across
+those declarations:
+
+- No memberships: report 🕵️ Private-only. The symbol exists only under
+  `newton._src.*` and was not re-exported through a public module.
+- One membership: the symbol has a canonical public import path.
+- More than one membership: report a duplicate-public-export policy finding
+  and list every public module that exports it.
+
+`CODING_GUIDELINES.rst` requires each public symbol to appear in exactly one
+public module's `__all__` and forbids examples/docs from importing
+`newton._src`. Do not treat the private-only finding as a hard block on the
+entry; surface it so the release manager can confirm the symbol was intended
+to be public. Treat missing or invalid declarations and duplicate exports as
+policy findings that require an explicit release decision.
 
 ### 4b — Resolve New API signatures + docstrings
 

@@ -21,12 +21,34 @@ except ModuleNotFoundError as exc:
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
 class TestGenerateApiPublicSymbols(unittest.TestCase):
+    def test_public_symbols_accepts_list(self):
+        """Accept a public API declaration stored as a list."""
+        module = ModuleType("newton.list_all")
+        module.__all__ = ["first", "second"]
+
+        self.assertEqual(generate_api.public_symbols(module), ["first", "second"])
+
+    def test_public_symbols_accepts_tuple(self):
+        """Accept a public API declaration stored as a tuple."""
+        module = ModuleType("newton.tuple_all")
+        module.__all__ = ("first", "second")
+
+        self.assertEqual(generate_api.public_symbols(module), ["first", "second"])
+
     def test_public_symbols_rejects_module_without_all(self):
         """Reject a module that does not declare its public API."""
         module = ModuleType("newton.missing_all")
         module.undeclared_symbol = object()
 
         with self.assertRaisesRegex(ValueError, r"newton\.missing_all must define __all__"):
+            generate_api.public_symbols(module)
+
+    def test_public_symbols_rejects_invalid_container(self):
+        """Reject a public API declaration stored in another container type."""
+        module = ModuleType("newton.invalid_all_container")
+        module.__all__ = {"declared_symbol"}
+
+        with self.assertRaisesRegex(ValueError, r"newton\.invalid_all_container must define __all__"):
             generate_api.public_symbols(module)
 
     def test_public_symbols_rejects_non_string_entry(self):
