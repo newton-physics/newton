@@ -439,7 +439,7 @@ class Example:
 
         if self.with_dahl and (np.min(straightness) < 0.5 or np.max(straightness) > 0.9):
             raise ValueError(f"Dahl cable bundle did not retain plausible curvature: {metrics}")
-        if not self.with_dahl and np.mean(straightness) < 0.75:
+        if not self.with_dahl and np.min(straightness) < 0.75:
             raise ValueError(f"Elastic cable bundle did not recover plausibly: {metrics}")
 
     @staticmethod
