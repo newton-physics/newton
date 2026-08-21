@@ -194,6 +194,7 @@ class _UsdResolutionPolicy:
         narrow_band_range: tuple[float, float]
         texture_format: str
         padding: float | None
+        padding_policies: SchemaResolverManager._InterpretedPolicyValues
         active_settings: _UsdResolutionPolicy._SdfResolutionSettings
         legacy_settings: _UsdResolutionPolicy._SdfResolutionSettings | None
         composed_settings: _UsdResolutionPolicy._SdfResolutionSettings | None
@@ -204,6 +205,8 @@ class _UsdResolutionPolicy:
 
         enabled: bool
         stiffness: float
+        legacy_enabled: bool | None
+        composed_enabled: bool | None
 
     @dataclass(frozen=True)
     class _ShapeMassProperties:
@@ -498,6 +501,8 @@ class _UsdResolutionPolicy:
         has_sdf_api: bool,
         is_mesh: bool,
         is_plane: bool,
+        collider_is_enabled: bool,
+        rigid_gap: float,
         legacy_margin_gap: bool,
         read_legacy_mjc_gap: Callable[[], float],
     ) -> ShapeProperties:
@@ -515,7 +520,6 @@ class _UsdResolutionPolicy:
             prim_path=prim_path,
             defaults=defaults,
             has_sdf_api=has_sdf_api,
-            gap_policies=offsets.gap_policies,
         )
 
         hydroelastic = self._resolve_shape_hydroelastic(
@@ -526,6 +530,14 @@ class _UsdResolutionPolicy:
             is_mesh=is_mesh,
             is_plane=is_plane,
             sdf=sdf,
+        )
+        self._audit_shape_sdf_padding(
+            prim,
+            collider_is_enabled=collider_is_enabled,
+            rigid_gap=rigid_gap,
+            offsets=offsets,
+            sdf=sdf,
+            hydroelastic=hydroelastic,
         )
         mass = self._resolve_shape_mass(
             prim,
@@ -607,7 +619,6 @@ class _UsdResolutionPolicy:
         prim_path: str,
         defaults: Any,
         has_sdf_api: bool,
-        gap_policies: SchemaResolverManager._InterpretedPolicyValues,
     ) -> _ShapeSdfProperties:
         """Resolve and validate SDF generation settings."""
 
@@ -781,34 +792,11 @@ class _UsdResolutionPolicy:
                 f"{prim_path}: newton:sdfPadding={raw_padding!r} is invalid (must be >= 0); falling back to default.",
                 stacklevel=4,
             )
-        if all(
-            result is not None
-            for result in (
-                gap_policies.legacy,
-                gap_policies.composed,
-                padding_policies.legacy,
-                padding_policies.composed,
-            )
-        ):
-            legacy_padding = padding_policies.legacy.value
-            composed_padding = padding_policies.composed.value
-            self._resolver._audit_assembled_property(
-                prim,
-                PrimType.SHAPE,
-                gap_policies.legacy.value if legacy_padding is None else legacy_padding,
-                gap_policies.composed.value if composed_padding is None else composed_padding,
-                (
-                    padding_policies.contribution(
-                        legacy_comparison=legacy_padding,
-                        composed_comparison=composed_padding,
-                    ),
-                ),
-            )
-
         return self._ShapeSdfProperties(
             narrow_band_range=sdf_narrow_band_range,
             texture_format=texture_format_result.value,
             padding=padding_policies.active.value,
+            padding_policies=padding_policies,
             active_settings=self._SdfResolutionSettings(
                 target_voxel_size=target_voxel_size,
                 max_resolution=sdf_max_resolution,
@@ -857,17 +845,21 @@ class _UsdResolutionPolicy:
 
         requested = enabled_policies.active.value
         enabled = validate_enabled(requested, sdf.active_settings)
+        legacy_enabled = None
+        composed_enabled = None
         if (
             enabled_policies.legacy is not None
             and enabled_policies.composed is not None
             and sdf.legacy_settings is not None
             and sdf.composed_settings is not None
         ):
+            legacy_enabled = validate_enabled(enabled_policies.legacy.value, sdf.legacy_settings)
+            composed_enabled = validate_enabled(enabled_policies.composed.value, sdf.composed_settings)
             self._resolver._audit_assembled_property(
                 prim,
                 PrimType.SHAPE,
-                validate_enabled(enabled_policies.legacy.value, sdf.legacy_settings),
-                validate_enabled(enabled_policies.composed.value, sdf.composed_settings),
+                legacy_enabled,
+                composed_enabled,
                 (
                     enabled_policies.contribution(
                         legacy_comparison=enabled_policies.legacy.value,
@@ -907,7 +899,68 @@ class _UsdResolutionPolicy:
                 f"hydroelastic for this shape.",
                 stacklevel=4,
             )
-        return self._ShapeHydroelasticProperties(enabled, stiffness.value)
+        return self._ShapeHydroelasticProperties(enabled, stiffness.value, legacy_enabled, composed_enabled)
+
+    def _audit_shape_sdf_padding(
+        self,
+        prim: Any,
+        *,
+        collider_is_enabled: bool,
+        rigid_gap: float,
+        offsets: _ShapeOffsets,
+        sdf: _ShapeSdfProperties,
+        hydroelastic: _ShapeHydroelasticProperties,
+    ) -> None:
+        """Audit SDF padding after contact and hydroelastic interpretation."""
+        padding_policies = sdf.padding_policies
+        margin_policies = offsets.margin_policies
+        gap_policies = offsets.gap_policies
+        if (
+            hydroelastic.legacy_enabled is None
+            or hydroelastic.composed_enabled is None
+            or padding_policies.legacy is None
+            or padding_policies.composed is None
+            or margin_policies.legacy is None
+            or margin_policies.composed is None
+            or gap_policies.legacy is None
+            or gap_policies.composed is None
+        ):
+            return
+
+        def effective_padding(
+            padding: float | None,
+            margin: float,
+            gap: float | None,
+            hydroelastic_enabled: bool,
+        ) -> float:
+            if padding is not None:
+                return padding
+            gap = rigid_gap if gap is None else gap
+            if collider_is_enabled and hydroelastic_enabled:
+                return margin + gap
+            return gap
+
+        self._resolver._audit_assembled_property(
+            prim,
+            PrimType.SHAPE,
+            effective_padding(
+                padding_policies.legacy.value,
+                margin_policies.legacy.value,
+                gap_policies.legacy.value,
+                hydroelastic.legacy_enabled,
+            ),
+            effective_padding(
+                padding_policies.composed.value,
+                margin_policies.composed.value,
+                gap_policies.composed.value,
+                hydroelastic.composed_enabled,
+            ),
+            (
+                padding_policies.contribution(),
+                margin_policies.contribution(),
+                gap_policies.contribution(),
+            ),
+        )
 
     def _resolve_shape_mass(
         self,

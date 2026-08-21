@@ -1314,6 +1314,93 @@ class TestSchemaResolver(unittest.TestCase):
                 [str(item.message) for item in caught],
             )
 
+    def test_sdf_padding_audit_includes_hydroelastic_margin(self):
+        """Compare omitted hydroelastic SDF padding with margin and gap."""
+
+        class SchemaResolverEarlyPadding(SchemaResolver):
+            name = "early_padding"
+            mapping: ClassVar = {
+                PrimType.SHAPE: {
+                    "sdf_padding": SchemaResolver.SchemaAttribute("newton:sdfNarrowBandInner"),
+                }
+            }
+            schema_names: ClassVar = {PrimType.SHAPE: {"sdf_padding": "NewtonSDFCollisionAPI"}}
+
+        class SchemaResolverStableShape(SchemaResolver):
+            name = "stable_shape"
+            mapping: ClassVar = {
+                PrimType.SHAPE: {
+                    "margin": SchemaResolver.SchemaAttribute("stable:margin"),
+                    "gap": SchemaResolver.SchemaAttribute("stable:gap"),
+                    "hydroelastic_enabled": SchemaResolver.SchemaAttribute("stable:hydroelasticEnabled"),
+                }
+            }
+
+        class SchemaResolverMatchingPadding(SchemaResolver):
+            name = "matching_padding"
+            mapping: ClassVar = {
+                PrimType.SHAPE: {
+                    "sdf_padding": SchemaResolver.SchemaAttribute("matching:sdfPadding", 0.1),
+                }
+            }
+
+        class SchemaResolverInsufficientPadding(SchemaResolver):
+            name = "insufficient_padding"
+            mapping: ClassVar = {
+                PrimType.SHAPE: {
+                    "sdf_padding": SchemaResolver.SchemaAttribute("insufficient:sdfPadding", 0.05),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        prim = cube.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+        prim.AddAppliedSchema("NewtonSDFCollisionAPI")
+        prim.CreateAttribute("stable:margin", Sdf.ValueTypeNames.Float).Set(0.05)
+        prim.CreateAttribute("stable:gap", Sdf.ValueTypeNames.Float).Set(0.05)
+        prim.CreateAttribute("stable:hydroelasticEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+
+        cases = (
+            (SchemaResolverMatchingPadding, 0.1, False),
+            (SchemaResolverInsufficientPadding, 0.05, True),
+        )
+        for padding_resolver, legacy_padding, should_warn in cases:
+            with self.subTest(padding_resolver=padding_resolver.name):
+                builders = []
+                caught_warnings = []
+                for use_registered_schema_fallbacks in (False, True):
+                    builder = ModelBuilder()
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        result = builder.add_usd(
+                            stage,
+                            schema_resolvers=[
+                                SchemaResolverEarlyPadding(),
+                                SchemaResolverStableShape(),
+                                padding_resolver(),
+                            ],
+                            use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                        )
+                    shape = result["path_shape_map"]["/cube"]
+                    builders.append((builder, shape))
+                    caught_warnings.append(caught)
+
+                legacy_builder, legacy_shape = builders[0]
+                composed_builder, composed_shape = builders[1]
+                self.assertEqual(legacy_builder.shape_sdf_padding[legacy_shape], legacy_padding)
+                self.assertIsNone(composed_builder.shape_sdf_padding[composed_shape])
+                for builder, shape in builders:
+                    self.assertAlmostEqual(builder.shape_margin[shape], 0.05)
+                    self.assertAlmostEqual(builder.shape_gap[shape], 0.05)
+                    self.assertTrue(builder.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
+
+                messages = [str(item.message) for item in caught_warnings[0]]
+                warned = any("deprecated legacy USD property precedence" in message for message in messages)
+                self.assertEqual(warned, should_warn, messages)
+
     def test_shape_mass_settings_audit_interpreted_values(self):
         """Audit coupled shape mass settings after property interpretation."""
 
