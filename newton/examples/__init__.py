@@ -528,7 +528,10 @@ def run(example, args):
 
     perform_test = args is not None and args.test
     test_post_step = perform_test and hasattr(example, "test_post_step")
-    test_final = perform_test and hasattr(example, "test_final")
+    test_final = perform_test and callable(getattr(example, "test_final", None))
+
+    if perform_test and not test_final:
+        raise NotImplementedError("Examples must implement test_final() to run in test mode")
 
     browser = _ExampleBrowser(viewer, args) if not perform_test else None
 
@@ -570,10 +573,7 @@ def run(example, args):
         _throttle_render_fps(frame_start_time, render_fps)
 
     if perform_test:
-        if test_final:
-            example.test_final()
-        elif not (test_post_step or test_final):
-            raise NotImplementedError("Example does not have a test_final or test_post_step method")
+        example.test_final()
 
     viewer.close()
 
