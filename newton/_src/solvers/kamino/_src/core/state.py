@@ -129,6 +129,12 @@ class StateKamino:
     Shape of ``(sum_of_num_friction_joint_cts,)``.
     """
 
+    lambda_tau_j: wp.array[wp.float32] | None = None
+    """
+    Array of generalized joint effort limited actuator constraint forces [N or N·m].
+    Shape of ``(sum_of_num_effort_joint_cts,)``.
+    """
+
     ###
     # Operations
     ###
@@ -171,6 +177,7 @@ class StateKamino:
         wp.copy(self.lambda_kin_j, other.lambda_kin_j)
         wp.copy(self.lambda_dyn_j, other.lambda_dyn_j)
         wp.copy(self.lambda_f_j, other.lambda_f_j)
+        wp.copy(self.lambda_tau_j, other.lambda_tau_j)
 
     def convert_to_body_com_state(
         self,
@@ -305,6 +312,7 @@ class StateKamino:
 
         lambda_dyn_j = wp.zeros(shape=(size.sum_of_num_dynamic_joint_cts,), dtype=wp.float32, device=device)
         lambda_f_j = wp.zeros(shape=(size.sum_of_num_friction_joint_cts,), dtype=wp.float32, device=device)
+        lambda_tau_j = wp.zeros(shape=(size.sum_of_num_effort_joint_cts,), dtype=wp.float32, device=device)
 
         # Optionally initialize the `joint_q_prev` array to match the current `joint_q`
         if initialize_state_prev:
@@ -322,6 +330,7 @@ class StateKamino:
             lambda_kin_j=lambda_kin_j,
             lambda_dyn_j=lambda_dyn_j,
             lambda_f_j=lambda_f_j,
+            lambda_tau_j=lambda_tau_j,
         )
 
         # Optionally convert body poses to CoM frame

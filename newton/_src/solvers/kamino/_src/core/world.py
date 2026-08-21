@@ -177,6 +177,9 @@ class WorldDescriptor(Descriptor):
     num_friction_joint_cts: int = 0
     """The number of Coulomb joint friction constraint rows."""
 
+    num_effort_joint_cts: int = 0
+    """The number of effort limited implicit-PD actuator constraint rows."""
+
     joint_coords: list[int] = field(default_factory=list)
     """
     The list of all joint coordinates.
@@ -285,6 +288,9 @@ class WorldDescriptor(Descriptor):
 
     joint_friction_cts_idx_offset: int = 0
     """Index offset of the world's Coulomb joint friction constraints w.r.t the entire model."""
+
+    joint_effort_cts_idx_offset: int = 0
+    """Index offset of the world's effort limited actuator constraint w.r.t the entire model."""
 
     ###
     # Entity Identifiers
@@ -472,6 +478,7 @@ class WorldDescriptor(Descriptor):
         joint.kinematic_cts_offset = int(self.num_kinematic_joint_cts)
         joint.bounded_cts_offset = int(self.num_bounded_joint_cts)
         joint.friction_cts_offset = int(self.num_friction_joint_cts)
+        joint.effort_cts_offset = int(self.num_effort_joint_cts)
 
         # Append joint identifiers
         self.joint_names.append(joint.name)
@@ -491,6 +498,7 @@ class WorldDescriptor(Descriptor):
         self.num_kinematic_joint_cts += joint.num_kinematic_cts
         self.num_bounded_joint_cts += joint.num_bounded_cts
         self.num_friction_joint_cts += joint.num_friction_cts
+        self.num_effort_joint_cts += joint.num_effort_cts
 
         # Append joint connection group info
         if joint.bid_B < 0:

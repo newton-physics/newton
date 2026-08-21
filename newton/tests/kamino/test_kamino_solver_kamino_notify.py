@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 from unittest import mock
 
@@ -91,7 +92,9 @@ def _build_revolute(
     return builder.finalize()
 
 
-def _build_gimbal() -> tuple[newton.Model, int]:
+def _build_gimbal(
+    angular_axes: list[newton.ModelBuilder.JointDofConfig] | None = None,
+) -> tuple[newton.Model, int]:
     """Build a minimal articulated three-axis D6 model for notify tests."""
     builder = newton.ModelBuilder()
     parent = builder.add_link(mass=1.0, inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
@@ -100,9 +103,8 @@ def _build_gimbal() -> tuple[newton.Model, int]:
     gimbal = builder.add_joint_d6(
         parent,
         child,
-        angular_axes=[
-            newton.ModelBuilder.JointDofConfig(axis=axis) for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
-        ],
+        angular_axes=angular_axes
+        or [newton.ModelBuilder.JointDofConfig(axis=axis) for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)],
     )
     builder.add_articulation([root, gimbal])
     return builder.finalize(device="cpu"), gimbal
@@ -549,6 +551,46 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
+    def test_moving_dynamic_row_between_dofs_raises(self):
+        """Reject moving a dynamic row between axes without changing its count."""
+        model, gimbal = _build_gimbal(
+            [
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, armature=1.0),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
+            ]
+        )
+        solver = SolverKamino(model)
+        dof_start = model.joint_qd_start.numpy()[gimbal]
+        armature = model.joint_armature.numpy()
+        armature[dof_start : dof_start + 3] = [0.0, 1.0, 0.0]
+        model.joint_armature.assign(armature)
+
+        with self.assertRaisesRegex(RuntimeError, "dynamic constraint topology"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_unbounded_implicit_pd_coefficient_edit_is_allowed(self):
+        """Allow an unbounded implicit-PD gain edit that preserves its dynamic row."""
+        model, gimbal = _build_gimbal(
+            [
+                newton.ModelBuilder.JointDofConfig(
+                    axis=newton.Axis.X,
+                    effort_limit=math.inf,
+                    target_ke=10.0,
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                ),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
+            ]
+        )
+        solver = SolverKamino(model)
+        dof_start = model.joint_qd_start.numpy()[gimbal]
+        target_ke = model.joint_target_ke.numpy()
+        target_ke[dof_start] = 20.0
+        model.joint_target_ke.assign(target_ke)
+
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
     def test_joint_friction_value_edit_is_allowed(self):
         """Allow friction edits when bounded rows were allocated at construction."""
         model = _build_revolute(friction=1.0)
@@ -566,6 +608,24 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         model = _build_revolute(friction=0.0)
         solver = SolverKamino(model, SolverKamino.Config(dynamics_solver="padmm"))
         model.joint_friction.assign([1.0])
+
+        with self.assertRaisesRegex(RuntimeError, "friction row topology"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_enabling_friction_on_unallocated_axis_raises(self):
+        """Reject friction enabled on an axis without a preallocated row."""
+        model, gimbal = _build_gimbal(
+            [
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, friction=1.0),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
+            ]
+        )
+        solver = SolverKamino(model, SolverKamino.Config(dynamics_solver="padmm"))
+        dof_start = model.joint_qd_start.numpy()[gimbal]
+        friction = model.joint_friction.numpy()
+        friction[dof_start + 1] = 1.0
+        model.joint_friction.assign(friction)
 
         with self.assertRaisesRegex(RuntimeError, "friction row topology"):
             solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
@@ -659,6 +719,40 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
                     expected = solver._kamino.JointActuationType.from_newton(changed_mode)
                     self.assertEqual(solver._model_kamino.joints.act_type.numpy()[0], expected)
+
+    def test_per_dof_active_mode_changes_refresh_kamino_modes(self):
+        """Refresh each DoF actuation mode while retaining an active joint partition."""
+        model, gimbal = _build_gimbal()
+        dof_start = model.joint_qd_start.numpy()[gimbal]
+        target_modes = model.joint_target_mode.numpy()
+        target_modes[dof_start : dof_start + 3] = [
+            newton.JointTargetMode.POSITION,
+            newton.JointTargetMode.VELOCITY,
+            newton.JointTargetMode.EFFORT,
+        ]
+        model.joint_target_mode.assign(target_modes)
+        solver = SolverKamino(model)
+
+        target_modes[dof_start : dof_start + 3] = [
+            newton.JointTargetMode.VELOCITY,
+            newton.JointTargetMode.POSITION,
+            newton.JointTargetMode.EFFORT,
+        ]
+        model.joint_target_mode.assign(target_modes)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+        np.testing.assert_array_equal(
+            solver._model_kamino.joints.act_type_dof.numpy()[dof_start : dof_start + 3],
+            [
+                solver._kamino.JointActuationType.VELOCITY,
+                solver._kamino.JointActuationType.POSITION,
+                solver._kamino.JointActuationType.FORCE,
+            ],
+        )
+        self.assertEqual(
+            solver._model_kamino.joints.act_type.numpy()[gimbal],
+            solver._kamino.JointActuationType.VELOCITY,
+        )
 
     def test_fk_joint_frame_changes_propagate(self):
         """Joint and CoM notifications propagate to FK-owned frames."""

@@ -312,7 +312,7 @@ class TestModelBuilder(unittest.TestCase):
             bid_B=bid_0,
             bid_F=bid_1,
             dof_type=JointDoFType.PRISMATIC,
-            act_type=JointActuationType.FORCE,
+            act_type_dof=[JointActuationType.FORCE],
             a_j=1.0,
             b_j=1.0,
         )
@@ -330,7 +330,7 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(builder.joints[wid][jid].act_type, JointActuationType.FORCE)
         self.assertEqual(builder.joints[wid][jid].a_j, [1.0])
         self.assertEqual(builder.joints[wid][jid].b_j, [1.0])
-        self.assertTrue(builder.joints[wid][jid].is_dynamic)
+        self.assertEqual(builder.joints[wid][jid].dynamic_cts_axes(), [0])
         self.assertTrue(builder.joints[wid][jid].num_kinematic_cts, 5)
         self.assertTrue(builder.joints[wid][jid].num_dynamic_cts, 1)
 
@@ -362,12 +362,54 @@ class TestModelBuilder(unittest.TestCase):
             bid_B=bid_0,
             bid_F=bid_1,
             dof_type=JointDoFType.PRISMATIC,
-            act_type=JointActuationType.FORCE,
+            act_type_dof=[JointActuationType.FORCE],
         )
         builder.add_joint_descriptor(joint, world_index=wid)
 
         # Attempt to add the same joint again and expect an error
         self.assertRaises(ValueError, builder.add_joint_descriptor, joint, world_index=wid)
+
+    def test_add_joint_per_dof_actuation(self):
+        """Propagate per-DoF actuation into selective constraint rows and the model."""
+        builder = ModelBuilderKamino()
+        wid = builder.add_world(name="test_world", up_axis=Axis.Z)
+        body = RigidBodyDescriptor(
+            name="test_rigid_body",
+            m_i=1.0,
+            i_I_i=wp.mat33f(np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
+        )
+        bid = builder.add_rigid_body_descriptor(body, world_index=wid)
+        joint = JointDescriptor(
+            name="test_gimbal",
+            bid_B=-1,
+            bid_F=bid,
+            dof_type=JointDoFType.GIMBAL,
+            act_type_dof=[
+                JointActuationType.POSITION,
+                JointActuationType.FORCE,
+                JointActuationType.FORCE,
+            ],
+            k_p_j=[100.0, 100.0, 100.0],
+            tau_j_max=[1.0, 1.0, 1.0],
+        )
+        builder.add_joint_descriptor(joint, world_index=wid)
+
+        self.assertEqual(joint.dynamic_cts_axes(), [])
+        self.assertEqual(joint.effort_cts_axes(), [0])
+
+        model = builder.finalize(self.default_device)
+
+        np.testing.assert_array_equal(
+            model.joints.act_type_dof.numpy(),
+            [
+                JointActuationType.POSITION,
+                JointActuationType.FORCE,
+                JointActuationType.FORCE,
+            ],
+        )
+        self.assertEqual(joint.act_type, JointActuationType.POSITION)
 
     def test_08_add_invalid_joint(self):
         builder = ModelBuilderKamino()
@@ -377,7 +419,7 @@ class TestModelBuilder(unittest.TestCase):
         joint = JointDescriptor(
             name="test_joint",
             dof_type=JointDoFType.PRISMATIC,
-            act_type=JointActuationType.FORCE,
+            act_type_dof=[JointActuationType.FORCE],
         )
         # Attempt to add a joint without specifying bodies and expect an error
         self.assertRaises(ValueError, builder.add_joint_descriptor, joint, world_index=wid)

@@ -617,6 +617,7 @@ def _build_joint_friction_bounds(
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_num_friction_cts: wp.array[wp.int32],
     model_joints_friction_cts_offset: wp.array[wp.int32],
+    model_joints_friction_cts_axis: wp.array[wp.int32],
     model_joints_f_j: wp.array[wp.float32],
     # Outputs:
     problem_bound_lower: wp.array[wp.float32],
@@ -629,9 +630,67 @@ def _build_joint_friction_bounds(
     row_start = model_joints_friction_cts_offset[jid]
     dt = model_time_dt[model_joints_wid[jid]]
     for j in range(num_rows):
-        bound = dt * model_joints_f_j[dof_start + j]
+        axis = model_joints_friction_cts_axis[row_start + j]
+        bound = dt * model_joints_f_j[dof_start + axis]
         problem_bound_lower[row_start + j] = -bound
         problem_bound_upper[row_start + j] = bound
+
+
+@wp.kernel
+def _build_joint_effort_bounds(
+    # Inputs:
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_num_effort_cts: wp.array[wp.int32],
+    model_joints_effort_cts_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_joint_bounded_cts_offset: wp.array[wp.int32],
+    data_joints_bound_a: wp.array[wp.float32],
+    # Outputs:
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
+):
+    """Scatter precomputed effort-limited actuator impulse bounds."""
+    jid = wp.tid()
+    wid = model_joints_wid[jid]
+    effort_start = model_joints_effort_cts_offset[jid]
+    effort_cts_offset_world = effort_start - model_info_joint_effort_cts_offset[wid]
+    row_start = model_info_joint_bounded_cts_offset[wid] + model_info_num_friction_cts[wid] + effort_cts_offset_world
+    num_rows = model_joints_num_effort_cts[jid]
+    for j in range(num_rows):
+        bound = data_joints_bound_a[effort_start + j]
+        problem_bound_lower[row_start + j] = -bound
+        problem_bound_upper[row_start + j] = bound
+
+
+@wp.kernel
+def _build_joint_effort_bias(
+    # Inputs:
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_num_effort_cts: wp.array[wp.int32],
+    model_joints_effort_cts_offset: wp.array[wp.int32],
+    model_info_num_friction_cts: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_total_cts_offset: wp.array[wp.int32],
+    model_info_bounded_cts_group_offset: wp.array[wp.int32],
+    data_joints_dq_b_a: wp.array[wp.float32],
+    # Outputs:
+    problem_v_b: wp.array[wp.float32],
+):
+    """Scatter precomputed effort-row velocity biases into the dual problem."""
+    jid = wp.tid()
+    wid = model_joints_wid[jid]
+    effort_start = model_joints_effort_cts_offset[jid]
+    effort_cts_offset_world = effort_start - model_info_joint_effort_cts_offset[wid]
+    row_start = (
+        model_info_total_cts_offset[wid]
+        + model_info_bounded_cts_group_offset[wid]
+        + model_info_num_friction_cts[wid]
+        + effort_cts_offset_world
+    )
+    num_rows = model_joints_num_effort_cts[jid]
+    for j in range(num_rows):
+        problem_v_b[row_start + j] = -data_joints_dq_b_a[effort_start + j]
 
 
 @wp.kernel
@@ -1666,7 +1725,7 @@ class DualProblem:
 
         Primarily builds the free-velocity bias vector ``v_b`` (joint dynamics and
         kinematics, limits, contacts). Also fills auxiliary inequality data that is
-        zeroed in :meth:`zero` and consumed later by the solver: joint friction
+        zeroed in :meth:`zero` and consumed later by the solver: joint-friction
         impulse bounds (``bound_lower``, ``bound_upper``) and contact friction
         coefficients (``mu``).
         """
@@ -1683,10 +1742,48 @@ class DualProblem:
                         model.joints.dofs_offset,
                         model.joints.num_friction_cts,
                         model.joints.friction_cts_offset,
+                        model.joints.friction_cts_axis,
                         model.joints.f_j,
                         # Outputs:
                         self._data.bound_lower,
                         self._data.bound_upper,
+                    ],
+                    device=self.device,
+                )
+            if model.size.sum_of_num_effort_joint_cts > 0:
+                wp.launch(
+                    _build_joint_effort_bounds,
+                    dim=model.size.sum_of_num_joints,
+                    inputs=[
+                        # Inputs:
+                        model.joints.wid,
+                        model.joints.num_effort_cts,
+                        model.joints.effort_cts_offset,
+                        model.info.num_joint_friction_cts,
+                        model.info.joint_effort_cts_offset,
+                        model.info.joint_bounded_cts_offset,
+                        data.joints.bound_a,
+                        # Outputs:
+                        self._data.bound_lower,
+                        self._data.bound_upper,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
+                    _build_joint_effort_bias,
+                    dim=model.size.sum_of_num_joints,
+                    inputs=[
+                        # Inputs:
+                        model.joints.wid,
+                        model.joints.num_effort_cts,
+                        model.joints.effort_cts_offset,
+                        model.info.num_joint_friction_cts,
+                        model.info.joint_effort_cts_offset,
+                        model.info.total_cts_offset,
+                        model.info.joint_bounded_cts_group_offset,
+                        data.joints.dq_b_a,
+                        # Outputs:
+                        self._data.v_b,
                     ],
                     device=self.device,
                 )
