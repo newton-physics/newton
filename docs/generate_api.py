@@ -4,9 +4,9 @@
 """Generate concise API .rst files for public modules.
 
 This helper discovers Newton's top-level public modules from ``newton.__all__``,
-reads each module's ``__all__`` list or tuple, and writes one reStructuredText
-file per module with an ``autosummary`` directive. Modules without a valid
-``__all__`` are rejected so undeclared attributes cannot become documented public API.
+reads each module's ``__all__`` list, and writes one reStructuredText file per
+module with an ``autosummary`` directive. Modules without a valid ``__all__``
+are rejected so undeclared attributes cannot become documented public API.
 Modules may use ``__deprecated_symbols__`` to keep warning-only compatibility
 names documented without resolving their values.
 When Sphinx later builds the documentation (with
@@ -71,10 +71,10 @@ def public_symbols(mod: ModuleType) -> list[str]:
 
     names = getattr(mod, "__all__", None)
     if not isinstance(names, list | tuple):
-        raise ValueError(f"{mod.__name__} must define __all__ as a list or tuple of strings")
+        raise ValueError(f"{mod.__name__} must define __all__ as a list or tuple")
     for name in names:
         if not isinstance(name, str):
-            raise ValueError(f"{mod.__name__} must define __all__ as a list or tuple of strings; got {name!r}")
+            raise ValueError(f"{mod.__name__}.__all__ must contain only strings; got {name!r}")
 
     return list(names)
 
