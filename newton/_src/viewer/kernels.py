@@ -137,8 +137,7 @@ def apply_picking_force_kernel(
             pick_torque = pick_torque * (max_acceleration / wp.sqrt(rotational_acceleration_sq))
 
     # Cancel the picked body's own weight so the commanded acceleration is delivered
-    # instead of being offset by gravity. Applied as a pure force: gravity acts at the
-    # center of mass, so compensating it must not add torque about the pick point.
+    # instead of being offset by gravity.
     if gravity:
         world = int(0)
         if body_world:

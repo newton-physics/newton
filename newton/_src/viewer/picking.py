@@ -48,10 +48,7 @@ class Picking:
                 Clamps both linear and equivalent rotational acceleration to prevent
                 runaway divergence on light or low-inertia objects.
             pick_min_inertia_fraction: Lower bound on the operational-space inertia at the
-                pick point, as a fraction of the articulation's total mass. Pulling a light
-                distal link folds the chain instead of moving it, so the inertia felt there
-                is small and picking stays weak. The bound keeps a foot or a fingertip as
-                usable as the base. Set to 0.0 to disable it.
+                pick point, as a fraction of the articulation's total mass.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
 
         Raises:
