@@ -91,6 +91,22 @@ Before investing in an upstream solver contribution, open a GitHub Issue or Disc
 * the long-term maintenance plan and owners;
 * tests, benchmarks, examples, and documentation you expect to provide.
 
+## Adding Control Laws and Actuator Components
+
+The same expectations apply to control laws and actuator components as to solvers: Newton provides the composable building blocks and extension points, while domain- or asset-specific behavior is generally owned by the projects that use it.
+
+Newton core carries a small set of control laws and actuator components that are broadly used across robots, such as PD and PID control, neural policies, effort clamping, and actuation delay. Control laws that model a specific mechanism or product should be implemented on the user side using the public actuator API.
+
+A control law or actuator component is a candidate for the main Newton repository when:
+
+* it applies across many robots or benchmarks rather than to one mechanism or product family;
+* it cannot be expressed by composing existing public components;
+* it has clear long-term maintainers within the project.
+
+Everything else is better maintained externally. Instead of contributing a specialized control law upstream, consider contributing an example that shows how to implement and register a user-supplied one, or a pull request for the public extension points you are missing.
+
+As with solvers, open a GitHub Issue or Discussion and wait for feedback from [Project Members](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#project-members) before investing in an upstream contribution.
+
 ## Adding Simulation Assets and Tuned Models
 
 Newton generally does not maintain a library of tuned or verified simulation content, such as actuator models, sensor models, robot models, calibrated material parameters, datasets, or trained policies. These assets are often tied to specific OEM products, firmware versions, calibration processes, validation datasets, or support commitments. They should be owned and maintained by the OEM, lab, or user project that can validate and support them.

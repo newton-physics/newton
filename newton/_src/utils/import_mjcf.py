@@ -1311,12 +1311,37 @@ def parse_mjcf(
                 hfield_asset = hfield_assets[hfield_name]
                 nrow, ncol = hfield_asset["nrow"], hfield_asset["ncol"]
 
+                # MuJoCo's row conventions are PER SOURCE (verified against
+                # mujoco 3.10/3.11 with mj_ray probes on asymmetric fields):
+                # it reverses rows when parsing the inline XML ``elevation``
+                # string and when loading PNG images (row 0 lands at maximum
+                # y, the image-top convention), but loads its custom binary
+                # format as stored (row 0 = minimum y, which already matches
+                # Newton's grid).
                 if hfield_asset["elevation"] is not None:
                     elevation = hfield_asset["elevation"]
+                    flip_rows = True
                 elif hfield_asset["file"] is not None:
                     elevation = load_heightfield_elevation(hfield_asset["file"], nrow, ncol)
+                    flip_rows = hfield_asset["file"].lower().endswith(".png")
                 else:
                     elevation = np.zeros((nrow, ncol), dtype=np.float32)
+                    flip_rows = False
+
+                # Reproduce MuJoCo's elevation normalization exactly:
+                # (v - min) / (max - min), with CONSTANT data compiling to
+                # zeros (surface at the geom origin — verified against
+                # mujoco 3.10/3.11).
+                elevation = np.asarray(elevation, dtype=np.float32)
+                e_min, e_max = float(elevation.min()), float(elevation.max())
+                if e_max > e_min:
+                    elevation = (elevation - e_min) / (e_max - e_min)
+                else:
+                    elevation = np.zeros_like(elevation)
+
+                if flip_rows:
+                    elevation = elevation[::-1]
+                elevation = np.ascontiguousarray(elevation)
 
                 # Convert MuJoCo size (size_x, size_y, size_z, size_base) to Newton format.
                 # In MuJoCo, the heightfield's lowest point (data=0) is at the geom origin,
@@ -1543,9 +1568,10 @@ def parse_mjcf(
                 scale=site_size,
                 label=site_label,
                 visible=visible,
+                custom_attributes={"mujoco:site_size_is_display": True} if site_type == "cylinder" else None,
             )
             site_shapes.append(s)
-            site_name_to_idx[site_name] = s
+            site_name_to_idx[sanitize_name(site_name)] = s
 
         return site_shapes
 
@@ -1889,6 +1915,7 @@ def parse_mjcf(
             # frictionloss for a native <joint type="ball"/>; captured in the ball branch
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
+            ball_damping = default_joint_damping
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_attrib = resolve_element_attrib(joint, "joint", defaults)
@@ -1934,9 +1961,10 @@ def parse_mjcf(
                             dof_custom_attributes[solreflimit_mode_key][current_dof_index + dof_offset] = (
                                 solreflimit_mode
                             )
-                    # Lift frictionloss into the builder's per-DOF friction array so it
-                    # reaches the MuJoCo spec (joint_friction[qd_start]) on export.
+                    # Lift frictionloss and damping into the builder's per-DOF arrays
+                    # so they reach the MuJoCo spec on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
+                    ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
                     mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
                     current_dof_index += 3
                     break
@@ -2180,6 +2208,7 @@ def parse_mjcf(
                     child_xform=wp.transform(joint_pos, wp.quat_identity()),
                     armature=joint_armature[-1] if joint_armature else None,
                     friction=ball_friction,
+                    damping=ball_damping,
                     label=joint_label,
                     custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
@@ -2356,11 +2385,12 @@ def parse_mjcf(
             Returns:
                 Tuple of (body_idx, anchor_position) or None if site not found or not a site.
             """
-            if site_name not in site_name_to_idx:
+            site_key = sanitize_name(site_name)
+            if site_key not in site_name_to_idx:
                 if verbose:
                     print(f"Warning: Site '{site_name}' not found")
                 return None
-            site_idx = site_name_to_idx[site_name]
+            site_idx = site_name_to_idx[site_key]
             if not (builder.shape_flags[site_idx] & ShapeFlags.SITE):
                 if verbose:
                     print(f"Warning: Shape '{site_name}' is not a site")
@@ -2733,9 +2763,9 @@ def parse_mjcf(
     # -----------------
     # add equality constraints
 
-    equality = root.find("equality")
-    if equality is not None and not skip_equality_constraints:
-        parse_equality_constraints(equality)
+    if not skip_equality_constraints:
+        for equality in root.findall("equality"):
+            parse_equality_constraints(equality)
 
     # -----------------
     # parse contact pairs
@@ -2884,7 +2914,8 @@ def parse_mjcf(
             tendon_section: XML element containing tendon definitions.
         """
         for fixed in tendon_section.findall("fixed"):
-            tendon_name = fixed.attrib.get("name", "")
+            merged_attrib = resolve_element_attrib(fixed, "tendon")
+            tendon_name = merged_attrib.get("name", "")
 
             # Parse joint elements within this fixed tendon
             joint_entries = []
@@ -2915,7 +2946,7 @@ def parse_mjcf(
                 continue
 
             # Parse tendon-level attributes using the standard custom attribute parsing
-            tendon_attrs = parse_custom_attributes(fixed.attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
+            tendon_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
 
             # Determine wrap array start index
             tendon_joint_attr = builder.custom_attributes.get("mujoco:tendon_joint")
@@ -3096,47 +3127,93 @@ def parse_mjcf(
             merged_attrib = resolve_element_attrib(actuator_elem, actuator_type)
 
             joint_name = merged_attrib.get("joint")
+            joint_in_parent_name = merged_attrib.get("jointinparent")
             body_name = merged_attrib.get("body")
             tendon_name = merged_attrib.get("tendon")
             site_name = merged_attrib.get("site")
+            crank_site_name = merged_attrib.get("cranksite")
+            slider_site_name = merged_attrib.get("slidersite")
+            refsite_name = merged_attrib.get("refsite")
 
             # Sanitize names to match how they were stored in the builder
             if joint_name:
                 joint_name = sanitize_name(joint_name)
+            if joint_in_parent_name:
+                joint_in_parent_name = sanitize_name(joint_in_parent_name)
             if body_name:
                 body_name = sanitize_name(body_name)
             if tendon_name:
                 tendon_name = sanitize_name(tendon_name)
             if site_name:
                 site_name = sanitize_name(site_name)
+            if crank_site_name:
+                crank_site_name = sanitize_name(crank_site_name)
+            if slider_site_name:
+                slider_site_name = sanitize_name(slider_site_name)
+            if refsite_name:
+                refsite_name = sanitize_name(refsite_name)
 
             # Determine transmission type and target
             trntype = 0  # Default: joint
             target_name_for_log = ""
+            target_idx_alt = 0
+            crank_length = None
             qd_start = -1
             total_dofs = 0
+            target_joint_name = joint_name or joint_in_parent_name
 
-            if joint_name:
-                # Joint transmission (trntype=0)
+            if crank_site_name or slider_site_name:
+                if not crank_site_name or not slider_site_name:
+                    if verbose:
+                        print(
+                            f"Warning: {actuator_type} slider-crank actuator requires both cranksite and "
+                            "slidersite, skipping"
+                        )
+                    continue
+                crank_site_idx = site_name_to_idx.get(crank_site_name)
+                slider_site_idx = site_name_to_idx.get(slider_site_name)
+                if crank_site_idx is None:
+                    if verbose:
+                        print(
+                            f"Warning: {actuator_type} slider-crank actuator references unknown "
+                            f"cranksite '{crank_site_name}', skipping"
+                        )
+                    continue
+                if slider_site_idx is None:
+                    if verbose:
+                        print(
+                            f"Warning: {actuator_type} slider-crank actuator references unknown "
+                            f"slidersite '{slider_site_name}', skipping"
+                        )
+                    continue
+                crank_length = parse_float(merged_attrib, "cranklength", 0.0) * scale
+                if not np.isfinite(crank_length) or crank_length <= 0.0:
+                    raise ValueError("MJCF slider-crank actuator cranklength must be positive.")
+                target_idx = crank_site_idx
+                target_idx_alt = slider_site_idx
+                target_name_for_log = crank_site_name
+                trntype = int(SolverMuJoCo.TrnType.SLIDERCRANK)
+            elif target_joint_name:
+                # Joint transmissions (trntype=0 or parent-frame trntype=1)
                 # First check per-MJCF-joint mapping (for targeting specific DOFs in combined joints)
-                if joint_name in mjcf_joint_name_to_dof:
-                    qd_start = mjcf_joint_name_to_dof[joint_name]
+                if target_joint_name in mjcf_joint_name_to_dof:
+                    qd_start = mjcf_joint_name_to_dof[target_joint_name]
                     total_dofs = 1  # Individual MJCF joints always map to exactly 1 DOF
                     target_idx = qd_start  # DOF index for joint actuators
-                    target_name_for_log = joint_name
-                    trntype = 0  # TrnType.JOINT
-                elif joint_name in joint_name_to_idx:
+                    target_name_for_log = target_joint_name
+                    trntype = 1 if joint_in_parent_name else 0
+                elif target_joint_name in joint_name_to_idx:
                     # Fallback: combined Newton joint (applies to all DOFs)
-                    joint_idx = joint_name_to_idx[joint_name]
+                    joint_idx = joint_name_to_idx[target_joint_name]
                     qd_start = builder.joint_qd_start[joint_idx]
                     lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
                     total_dofs = lin_dofs + ang_dofs
                     target_idx = qd_start  # DOF index for joint actuators
-                    target_name_for_log = joint_name
-                    trntype = 0  # TrnType.JOINT
+                    target_name_for_log = target_joint_name
+                    trntype = 1 if joint_in_parent_name else 0
                 else:
                     if verbose:
-                        print(f"Warning: {actuator_type} actuator references unknown joint '{joint_name}'")
+                        print(f"Warning: {actuator_type} actuator references unknown joint '{target_joint_name}'")
                     continue
             elif body_name:
                 # Body transmission (trntype=4)
@@ -3166,11 +3243,22 @@ def parse_mjcf(
                         print(f"Warning: {actuator_type} actuator references unknown site '{site_name}'")
                     continue
                 target_idx = site_idx
+                target_idx_alt = -1
+                if refsite_name:
+                    refsite_idx = site_name_to_idx.get(refsite_name)
+                    if refsite_idx is None:
+                        if verbose:
+                            print(f"Warning: {actuator_type} actuator references unknown refsite '{refsite_name}'")
+                        continue
+                    target_idx_alt = refsite_idx
                 target_name_for_log = site_name
                 trntype = 3  # TrnType.SITE
             else:
                 if verbose:
-                    print(f"Warning: {actuator_type} actuator has no joint, body, site, or tendon target, skipping")
+                    print(
+                        f"Warning: {actuator_type} actuator has no joint, body, site, tendon, or slider-crank "
+                        "target, skipping"
+                    )
                 continue
 
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
@@ -3267,6 +3355,8 @@ def parse_mjcf(
 
             # Add actuator via custom attributes
             parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
+            if crank_length is not None:
+                parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
             # Set implicit type defaults per actuator shortcut type.
             # MuJoCo shortcut elements (position, velocity, etc.) implicitly set
@@ -3307,7 +3397,7 @@ def parse_mjcf(
             actuator_values["mujoco:ctrl_type"] = ctrl_type_val
             actuator_values["mujoco:actuator_gainprm"] = gainprm
             actuator_values["mujoco:actuator_biasprm"] = biasprm
-            actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, 0)
+            actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, target_idx_alt)
             actuator_values["mujoco:actuator_trntype"] = trntype
             actuator_values["mujoco:actuator_world"] = builder.current_world
 
@@ -3317,7 +3407,14 @@ def parse_mjcf(
                 source_name = (
                     "CTRL_DIRECT" if ctrl_source_val == SolverMuJoCo.CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
                 )
-                trn_name = {0: "joint", 2: "tendon", 4: "body"}.get(trntype, "unknown")
+                trn_name = {
+                    0: "joint",
+                    1: "jointinparent",
+                    2: "tendon",
+                    3: "site",
+                    4: "body",
+                    5: "slidercrank",
+                }.get(trntype, "unknown")
                 print(
                     f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
                     f"trntype={trntype}, source={source_name}"
@@ -3331,8 +3428,7 @@ def parse_mjcf(
         for tendon_section in tendon_sections:
             parse_tendons(tendon_section)
 
-    actuator_section = root.find("actuator")
-    if actuator_section is not None:
+    for actuator_section in root.findall("actuator"):
         parse_actuators(actuator_section)
 
     # -----------------

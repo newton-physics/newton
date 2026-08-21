@@ -1,0 +1,1 @@
+Import authored particle simulation geometry from `UsdGeom.Points` in `ModelBuilder.add_usd()`, including standard deformable mass precedence, Newton MPM materials and scene configuration, per-prim particle ranges, and resettable initial plastic volume strain.
