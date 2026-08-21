@@ -11,6 +11,7 @@ import warp as wp
 
 import newton
 from newton.sensors import SensorTiledCamera
+from newton.tests.unittest_utils import USD_AVAILABLE
 
 
 def _soft_builder():
@@ -124,6 +125,165 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
                 kind="particle",
                 tet_range=(0, builder.tet_count),
             )
+
+
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
+    """USD Gaussian graphics embedded in a volume deformable."""
+
+    @staticmethod
+    def _stage():
+        """Create a meter-scale, Z-up in-memory stage."""
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        return stage
+
+    @staticmethod
+    def _add_volume(stage, path, x=0.0):
+        """Add one volume body containing a single tetrahedron."""
+        from pxr import UsdGeom
+
+        body = UsdGeom.Xform.Define(stage, path)
+        body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+        tet = UsdGeom.TetMesh.Define(stage, f"{path}/Sim")
+        tet.CreatePointsAttr([(x, 0.0, 0.0), (x + 1.0, 0.0, 0.0), (x, 1.0, 0.0), (x, 0.0, 1.0)])
+        tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+        tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        return tet
+
+    @staticmethod
+    def _add_gaussian(stage, path, positions, *, parent=None, weights=None):
+        """Add one Gaussian field with optional authored embedding data."""
+        from pxr import Sdf
+
+        gaussian = stage.DefinePrim(path, "ParticleField3DGaussianSplat")
+        gaussian.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set(positions)
+        gaussian.CreateAttribute("scales", Sdf.ValueTypeNames.Float3Array).Set([(0.05, 0.04, 0.03)] * len(positions))
+        if parent is not None:
+            gaussian.CreateAttribute("newton:deformableSkin:tetIndices", Sdf.ValueTypeNames.IntArray).Set(parent)
+        if weights is not None:
+            gaussian.CreateAttribute("newton:deformableSkin:influenceWeights", Sdf.ValueTypeNames.Float4Array).Set(
+                weights
+            )
+        return gaussian
+
+    def test_imports_authored_tet_embedding_without_static_duplicate(self):
+        """Import authored Gaussian bindings through the public USD path."""
+        stage = self._stage()
+        self._add_volume(stage, "/World/Bear")
+        self._add_gaussian(
+            stage,
+            "/World/Bear/Gaussian",
+            [(0.1, 0.1, 0.1), (0.4, 0.2, 0.1)],
+            parent=[0, 0],
+            weights=[(0.7, 0.1, 0.1, 0.1), (0.3, 0.4, 0.2, 0.1)],
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, root_path="/World")
+        model = builder.finalize()
+
+        self.assertEqual(model.deformable_visual_gaussian_count, 1)
+        visual = model.deformable_visual_gaussians[0]
+        self.assertEqual(visual.graphics_path, "/World/Bear/Gaussian")
+        self.assertEqual(visual.sim_path, "/World/Bear/Sim")
+        np.testing.assert_array_equal(visual.parent.numpy(), [0, 0])
+        np.testing.assert_allclose(visual.weights.numpy(), [[0.7, 0.1, 0.1, 0.1], [0.3, 0.4, 0.2, 0.1]])
+        self.assertEqual(result["path_shape_map"], {"/World/Bear/Gaussian": visual.shape})
+
+    def test_local_tet_indices_rebase_across_multiple_volume_bodies(self):
+        """Rebase each field's local USD tet indices into the shared builder."""
+        stage = self._stage()
+        for name, x in (("Bear", 0.0), ("Rabbit", 2.0)):
+            self._add_volume(stage, f"/World/{name}", x)
+            self._add_gaussian(
+                stage,
+                f"/World/{name}/Gaussian",
+                [(x + 0.2, 0.2, 0.2)],
+                parent=[0],
+                weights=[(0.4, 0.2, 0.2, 0.2)],
+            )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, root_path="/World")
+        model = builder.finalize()
+
+        self.assertEqual(model.deformable_visual_gaussian_count, 2)
+        self.assertEqual([visual.parent.numpy().tolist() for visual in model.deformable_visual_gaussians], [[0], [1]])
+
+    def test_computes_embedding_when_usd_omits_skinning_data(self):
+        """Use Gaussian centers to compute a binding when no weights are authored."""
+        stage = self._stage()
+        self._add_volume(stage, "/World/Bear")
+        self._add_gaussian(stage, "/World/Bear/Gaussian", [(0.25, 0.25, 0.25)])
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, root_path="/World")
+        visual = builder.finalize().deformable_visual_gaussians[0]
+
+        np.testing.assert_array_equal(visual.parent.numpy(), [0])
+        np.testing.assert_allclose(visual.weights.numpy(), [[0.25, 0.25, 0.25, 0.25]])
+
+    def test_malformed_embedding_is_skipped_without_static_fallback(self):
+        """Do not leave a frozen Gaussian when the deformable binding is malformed."""
+        stage = self._stage()
+        self._add_volume(stage, "/World/Bear")
+        self._add_gaussian(stage, "/World/Bear/Gaussian", [(0.25, 0.25, 0.25)], parent=[0])
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "must be authored together"):
+            result = builder.add_usd(stage, root_path="/World")
+
+        self.assertEqual(builder.finalize().deformable_visual_gaussian_count, 0)
+        self.assertNotIn("/World/Bear/Gaussian", result["path_shape_map"])
+
+    def test_load_visual_shapes_false_skips_gaussian_visual(self):
+        """Honor the shared visual-shape loading flag."""
+        stage = self._stage()
+        self._add_volume(stage, "/World/Bear")
+        self._add_gaussian(stage, "/World/Bear/Gaussian", [(0.25, 0.25, 0.25)])
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, root_path="/World", load_visual_shapes=False)
+
+        self.assertEqual(builder.finalize().deformable_visual_gaussian_count, 0)
+        self.assertNotIn("/World/Bear/Gaussian", result["path_shape_map"])
+
+    def test_replicates_imported_gaussian_paths_and_drivers(self):
+        """Rebase USD ownership and tet drivers into replicated worlds."""
+        stage = self._stage()
+        self._add_volume(stage, "/World/envs/env_0/Bear")
+        self._add_gaussian(
+            stage,
+            "/World/envs/env_0/Bear/Gaussian",
+            [(0.25, 0.25, 0.25)],
+            parent=[0],
+            weights=[(0.25, 0.25, 0.25, 0.25)],
+        )
+        template = newton.ModelBuilder()
+        template.add_usd(stage, root_path="/World/envs/env_0")
+
+        builder = newton.ModelBuilder()
+        builder.replicate(
+            template,
+            2,
+            source_path_prefix="/World/envs/env_0",
+            destination_path_prefixes=["/World/envs/env_0", "/World/envs/env_1"],
+        )
+        model = builder.finalize()
+
+        self.assertEqual(model.deformable_visual_gaussian_count, 2)
+        self.assertEqual([visual.world for visual in model.deformable_visual_gaussians], [0, 1])
+        self.assertEqual([visual.parent.numpy().tolist() for visual in model.deformable_visual_gaussians], [[0], [1]])
+        self.assertEqual(
+            [visual.graphics_path for visual in model.deformable_visual_gaussians],
+            ["/World/envs/env_0/Bear/Gaussian", "/World/envs/env_1/Bear/Gaussian"],
+        )
+        self.assertNotEqual(model.deformable_visual_gaussians[0].shape, model.deformable_visual_gaussians[1].shape)
 
 
 class TestDeformableVisualGaussianEvaluation(unittest.TestCase):

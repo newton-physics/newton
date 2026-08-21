@@ -245,7 +245,7 @@ def _prim_has_collision_api(prim) -> bool:
 
 
 def _iter_deformable_pointbased_prims(body_root, ignore_paths: Sequence[str] = ()):
-    """Yield a deformable body's ``UsdGeomPointBased`` prims (colliders and graphics geometry).
+    """Yield a deformable body's point-based geometry and Gaussian fields.
 
     Nested body subtrees are pruned: a nested deformable body's geometry is its own, and a
     nested rigid body or articulation is native content the deformable must not claim.
@@ -264,7 +264,7 @@ def _iter_deformable_pointbased_prims(body_root, ignore_paths: Sequence[str] = (
         ):
             it.PruneChildren()
             continue
-        if not prim.IsA(UsdGeom.PointBased):
+        if not prim.IsA(UsdGeom.PointBased) and str(prim.GetTypeName()) != "ParticleField3DGaussianSplat":
             continue
         if ignore_paths and _is_ignored_path(str(prim.GetPath()), ignore_paths):
             continue
@@ -825,6 +825,8 @@ class _DeformablePrimBuckets:
     # Supported visual Mesh prims keyed by their owning deformable body path.
     # Each list preserves stage traversal order within that body's hierarchy.
     visual_meshes: dict[str, list[Usd.Prim]] = field(default_factory=dict)
+    # Gaussian graphics prims keyed by their owning volume deformable body path.
+    visual_gaussians: dict[str, list[Usd.Prim]] = field(default_factory=dict)
     # Prim paths the native rigid-physics loader must not parse: deformable simulation
     # geometry (any family) and collider prims governed by an imported deformable body.
     # Excluding them avoids duplicate rigid shapes for dedicated deformable colliders and
@@ -1018,6 +1020,8 @@ def _scout_deformable_prims(
                     buckets.native_physics_exclude_paths.append(path)
                     if prim.IsA(UsdGeom.Mesh):
                         buckets.visual_meshes.setdefault(body_path, []).append(prim)
+                    elif str(prim.GetTypeName()) == "ParticleField3DGaussianSplat":
+                        buckets.visual_gaussians.setdefault(body_path, []).append(prim)
                     else:
                         warnings.warn(
                             f"{path}: PointBased geometry under deformable body {body_path} cannot "
