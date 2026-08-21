@@ -67,7 +67,7 @@ class TestKinematicsConstraints(unittest.TestCase):
 
         # Create the model from the builder
         model: ModelKamino = builder.finalize(device=self.default_device)
-        msg.info(f"model.joints.cts_offset:\n{model.joints.cts_offset}")
+        msg.info(f"model.joints.bilateral_cts_offset:\n{model.joints.bilateral_cts_offset}")
         msg.info(f"model.joints.dynamic_cts_offset:\n{model.joints.dynamic_cts_offset}")
         msg.info(f"model.joints.kinematic_cts_offset:\n{model.joints.kinematic_cts_offset}")
 
@@ -123,7 +123,7 @@ class TestKinematicsConstraints(unittest.TestCase):
 
         # Create the model from the builder
         model: ModelKamino = builder.finalize(device=self.default_device)
-        msg.info(f"model.joints.cts_offset:\n{model.joints.cts_offset}")
+        msg.info(f"model.joints.bilateral_cts_offset:\n{model.joints.bilateral_cts_offset}")
         msg.info(f"model.joints.dynamic_cts_offset:\n{model.joints.dynamic_cts_offset}")
         msg.info(f"model.joints.kinematic_cts_offset:\n{model.joints.kinematic_cts_offset}")
 
@@ -178,7 +178,7 @@ class TestKinematicsConstraints(unittest.TestCase):
         max_limit_cts = model.info.max_limit_cts.numpy()
         max_contact_cts = model.info.max_contact_cts.numpy()
         max_total_cts = model.info.max_total_cts.numpy()
-        num_bounded_cts = model.info.num_bounded_cts.numpy()
+        num_bounded_cts = model.info.num_joint_bounded_cts.numpy()
         limits_offset = model.info.limits_offset.numpy()
         contacts_offset = model.info.contacts_offset.numpy()
         inequalities_offset = model.info.inequalities_offset.numpy()

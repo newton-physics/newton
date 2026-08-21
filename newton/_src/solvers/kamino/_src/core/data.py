@@ -232,7 +232,9 @@ class DataKamino:
         wp.copy(state.q_j, self.joints.q_j)
         wp.copy(state.q_j_p, self.joints.q_j_p)
         wp.copy(state.dq_j, self.joints.dq_j)
-        wp.copy(state.lambda_j, self.joints.lambda_j)
+        wp.copy(state.lambda_kin_j, self.joints.lambda_kin_j)
+        wp.copy(state.lambda_dyn_j, self.joints.lambda_dyn_j)
+        wp.copy(state.lambda_f_j, self.joints.lambda_f_j)
 
     def copy_joint_control_from(self, control: ControlKamino, model: ModelKamino | None = None) -> None:
         """

@@ -438,7 +438,7 @@ def compute_ncp_primal_residual(
     r_ncp_p = float(0.0)
     r_ncp_p_argmax = wp.int32(-1)
 
-    # NOTE: We skip the joint constraint reactions are not bounded, the cone is all of R^njc
+    # NOTE: We skip the bilateral joint constraint reactions are not bounded, the cone is all of R^njc
 
     for bid in range(nbc):
         # Bounds are stored in preconditioned coordinates, while the residual uses physical reactions.
@@ -513,7 +513,7 @@ def compute_ncp_dual_residual(
       :func:`compute_box_complementarity_residual`.
 
     Args:
-        njc: The number of joint constraints.
+        njc: The number of bilateral joint constraints.
         nl: The number of active limit constraints.
         nc: The number of active contact constraints.
         vio: The vector index offset (i.e. start index) for the constraints.
@@ -680,7 +680,7 @@ def compute_ncp_natural_map_residual(
     Coulomb friction cones.
 
     Notes:
-    - For joint constraints, the cone is all of `R^njc`, so the natural-map residual is `abs(v_aug)`.
+    - For bilateral joint constraints, the cone is all of `R^njc`, so the natural-map residual is `abs(v_aug)`.
     - For bounded-multiplier constraints, the feasible set is the box
       `C_b := { lambda | lower <= lambda <= upper }`, so the natural-map residual is
       `abs(lambda - clamp(lambda - v_aug, lower, upper))`.
@@ -688,7 +688,7 @@ def compute_ncp_natural_map_residual(
     - For contact constraints, the cone is defined as `K_c := { lambda | || lambda ||_2 <= mu * || vn ||_2 }`.
 
     Args:
-        njc: The number of joint constraints.
+        njc: The number of bilateral joint constraints.
         nbc: The number of active bounded-multiplier constraints.
         nl: The number of active limit constraints.
         nc: The number of active contact constraints.

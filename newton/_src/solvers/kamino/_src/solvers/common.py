@@ -77,13 +77,14 @@ def warmstart_joint_constraints(
     joint_num_kinematic_cts: wp.array[wp.int32],
     joint_num_friction_cts: wp.array[wp.int32],
     joint_dofs_offset: wp.array[wp.int32],
-    joint_dynamic_cts_offset_joint_cts: wp.array[wp.int32],
-    joint_kinematic_cts_offset_joint_cts: wp.array[wp.int32],
+    joint_dynamic_cts_offset: wp.array[wp.int32],
+    joint_kinematic_cts_offset: wp.array[wp.int32],
     joint_friction_cts_offset: wp.array[wp.int32],
     joint_dynamic_cts_offset_total_cts: wp.array[wp.int32],
     joint_kinematic_cts_offset_total_cts: wp.array[wp.int32],
     joint_friction_cts_offset_total_cts: wp.array[wp.int32],
-    joint_lambda_j: wp.array[wp.float32],
+    joint_lambda_dyn_j: wp.array[wp.float32],
+    joint_lambda_kin_j: wp.array[wp.float32],
     joint_lambda_f_j: wp.array[wp.float32],
     joint_dq_j: wp.array[wp.float32],
     problem_P: wp.array[wp.float32],
@@ -98,8 +99,8 @@ def warmstart_joint_constraints(
     num_kinematic_cts_j = joint_num_kinematic_cts[jid]
     num_friction_cts_j = joint_num_friction_cts[jid]
     dt = model_time_dt[wid_j]
-    joint_dyn_cts_start = joint_dynamic_cts_offset_joint_cts[jid]
-    joint_kin_cts_start = joint_kinematic_cts_offset_joint_cts[jid]
+    joint_dyn_cts_start = joint_dynamic_cts_offset[jid]
+    joint_kin_cts_start = joint_kinematic_cts_offset[jid]
     joint_friction_cts_start = joint_friction_cts_offset[jid]
     joint_dofs_start = joint_dofs_offset[jid]
     dyn_cts_row_start_j = joint_dynamic_cts_offset_total_cts[jid]
@@ -109,13 +110,13 @@ def warmstart_joint_constraints(
     # Dynamic and kinematic joint constraints do not cache a post-event velocity.
     for j in range(num_dynamic_cts_j):
         P_j = problem_P[dyn_cts_row_start_j + j]
-        lambda_j = (dt / P_j) * joint_lambda_j[joint_dyn_cts_start + j]
+        lambda_j = (dt / P_j) * joint_lambda_dyn_j[joint_dyn_cts_start + j]
         x_0[dyn_cts_row_start_j + j] = lambda_j
         y_0[dyn_cts_row_start_j + j] = lambda_j
         z_0[dyn_cts_row_start_j + j] = 0.0
     for j in range(num_kinematic_cts_j):
         P_j = problem_P[kin_cts_row_start_j + j]
-        lambda_j = (dt / P_j) * joint_lambda_j[joint_kin_cts_start + j]
+        lambda_j = (dt / P_j) * joint_lambda_kin_j[joint_kin_cts_start + j]
         x_0[kin_cts_row_start_j + j] = lambda_j
         y_0[kin_cts_row_start_j + j] = lambda_j
         z_0[kin_cts_row_start_j + j] = 0.0

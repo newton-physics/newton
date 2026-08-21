@@ -1344,10 +1344,10 @@ class JointDescriptor(Descriptor):
     all actuated joint DoFs in the world it belongs to.
     """
 
-    cts_offset: int = -1
+    bilateral_cts_offset: int = -1
     """
-    Index offset of this joint's constraints among all bilateral
-    joint constraints (kinematic + dynamic)in the world it belongs to.
+    Index offset of this joint's bilateral constraints among all bilateral
+    joint constraints (kinematic + dynamic) in the world it belongs to.
     """
 
     dynamic_cts_offset: int = -1
@@ -1421,9 +1421,9 @@ class JointDescriptor(Descriptor):
         return self.dof_type.num_dofs if self.is_actuated else 0
 
     @property
-    def num_cts(self) -> int:
+    def num_bilateral_cts(self) -> int:
         """
-        Returns the total number of constraints introduced by this joint.
+        Returns the total number of bilateral constraints introduced by this joint.
         """
         return self.num_dynamic_cts + self.num_kinematic_cts
 
@@ -1972,9 +1972,9 @@ class JointsModel:
 
     # TODO: Consider making this a wp.vec2i containing
     # both dynamic and kinematic constraint counts
-    num_cts: wp.array[wp.int32] | None = None
+    num_bilateral_cts: wp.array[wp.int32] | None = None
     """
-    Number of total constraints of each joint.
+    Number of bilateral constraints of each joint (dynamic + kinematic).
     Shape of ``(num_joints,)``.
     """
 
@@ -2072,15 +2072,15 @@ class JointsModel:
     actuated DoFs count is encoded as ``actuated_dofs_offset[j+1] - actuated_dofs_offset[j]``.
     """
 
-    cts_offset: wp.array[wp.int32] | None = None
+    bilateral_cts_offset: wp.array[wp.int32] | None = None
     """
-    Index offset of each joint's constraints block, in model-wide
+    Index offset of each joint's bilateral constraints block, in model-wide
     flattened joint constraints arrays (dynamic + kinematic).
 
     Shape of ``(num_joints + 1,)``.
 
     The last entry is the total joint constraints count, so that the per-joint
-    constraints count is encoded as ``cts_offset[j+1] - cts_offset[j]``.
+    constraints count is encoded as ``bilateral_cts_offset[j+1] - bilateral_cts_offset[j]``.
     """
 
     dynamic_cts_offset: wp.array[wp.int32] | None = None
@@ -2135,22 +2135,6 @@ class JointsModel:
 
     The last entry is the total joint friction constraints count, so that the per-joint
     friction constraints count is encoded as ``friction_cts_offset[j+1] - friction_cts_offset[j]``.
-    """
-
-    dynamic_cts_offset_joint_cts: wp.array[wp.int32] | None = None
-    """
-    Index offset of each joint's dynamic constraints block, in model-wide
-    flattened joint constraints arrays.
-
-    Shape of ``(num_joints,)``.
-    """
-
-    kinematic_cts_offset_joint_cts: wp.array[wp.int32] | None = None
-    """
-    Index offset of each joint's kinematic constraints block, in model-wide
-    flattened joint constraints arrays.
-
-    Shape of ``(num_joints,)``.
     """
 
     dynamic_cts_offset_total_cts: wp.array[wp.int32] | None = None
@@ -2247,21 +2231,34 @@ class JointsData:
     Shape of ``(sum_of_num_kinematic_joint_cts,)``.
     """
 
-    lambda_j: wp.array[wp.float32] | None = None
+    lambda_kin_j: wp.array[wp.float32] | None = None
     """
-    Flat array of bilateral joint constraint Lagrange multipliers.
+    Flat array of joint kinematic constraint Lagrange multipliers.
 
-    To access the constraint multipliers of a specific world `w` use:
-    - to get the start index: ``model.info.joint_cts_offset[w]``
-    - to get the size: ``model.info.num_joint_cts[w]``
+    To access the constraint multipliers of a specific world ``w`` use:
+    - to get the start index: ``model.info.joint_kinematic_cts_offset[w]``
+    - to get the size: ``model.info.num_joint_kinematic_cts[w]``
 
-    Then to access the individual dynamic or kinematic constraint blocks, use:
-    - dynamic constraints:
-        ``model.info.joint_dynamic_cts_group_offset[w]`` and ``model.info.num_joint_dynamic_cts[w]``
-    - kinematic constraints:
-        ``model.info.joint_kinematic_cts_group_offset[w]`` and ``model.info.num_joint_kinematic_cts[w]``
+    To access the multipliers of a specific joint ``j`` use ``model.joints.kinematic_cts_offset[j]``
+    as the start index. The per-joint row count is
+    ``model.joints.kinematic_cts_offset[j + 1] - model.joints.kinematic_cts_offset[j]``.
 
-    Shape of ``(sum_of_num_joint_cts,)``.
+    Shape of ``(sum_of_num_kinematic_joint_cts,)``.
+    """
+
+    lambda_dyn_j: wp.array[wp.float32] | None = None
+    """
+    Flat array of joint dynamic constraint Lagrange multipliers.
+
+    To access the constraint multipliers of a specific world ``w`` use:
+    - to get the start index: ``model.info.joint_dynamic_cts_offset[w]``
+    - to get the size: ``model.info.num_joint_dynamic_cts[w]``
+
+    To access the multipliers of a specific joint ``j`` use ``model.joints.dynamic_cts_offset[j]``
+    as the start index. The per-joint row count is
+    ``model.joints.dynamic_cts_offset[j + 1] - model.joints.dynamic_cts_offset[j]``.
+
+    Shape of ``(sum_of_num_dynamic_joint_cts,)``.
     """
 
     lambda_f_j: wp.array[wp.float32] | None = None
@@ -2501,7 +2498,8 @@ class JointsData:
         """
         Resets all joint constraint reactions to zero.
         """
-        self.lambda_j.zero_()
+        self.lambda_kin_j.zero_()
+        self.lambda_dyn_j.zero_()
         self.lambda_f_j.zero_()
 
     def clear_actuation_forces(self):

@@ -628,7 +628,7 @@ def _build_joint_jacobians_dense(
 @wp.kernel
 def _configure_jacobians_sparse(
     # Input:
-    model_num_joint_cts: wp.array[wp.int32],
+    model_num_bilateral_joint_cts: wp.array[wp.int32],
     model_num_bounded_cts: wp.array[wp.int32],
     num_limits: wp.array[wp.int32],
     num_contacts: wp.array[wp.int32],
@@ -638,7 +638,7 @@ def _configure_jacobians_sparse(
     world_id = wp.tid()
 
     jac_cts_rows[world_id] = (
-        model_num_joint_cts[world_id]
+        model_num_bilateral_joint_cts[world_id]
         + model_num_bounded_cts[world_id]
         + num_limits[world_id]
         + 3 * num_contacts[world_id]
@@ -1485,8 +1485,8 @@ class DenseSystemJacobians:
         # Extract the constraint and DoF sizes of each world
         nw = model.info.num_worlds
         nbd = model.info.num_body_dofs.numpy().tolist()
-        njc = model.info.num_joint_cts.numpy().tolist()
-        nbc = model.info.num_bounded_cts.numpy().tolist()
+        njc = model.info.num_joint_bilateral_cts.numpy().tolist()
+        nbc = model.info.num_joint_bounded_cts.numpy().tolist()
         njd = model.info.num_joint_dofs.numpy().tolist()
         maxnl = limits.world_max_limits_host if limits and limits.model_max_limits_host > 0 else [0] * nw
         maxnc = contacts.world_max_contacts_host if contacts and contacts.model_max_contacts_host > 0 else [0] * nw
@@ -1727,8 +1727,8 @@ class SparseSystemJacobians:
         # Extract the constraint and DoF sizes of each world
         num_worlds = model.info.num_worlds
         num_body_dofs = model.info.num_body_dofs.numpy().tolist()
-        num_joint_cts = model.info.num_joint_cts.numpy().tolist()
-        num_bounded_cts = model.info.num_bounded_cts.numpy().tolist()
+        num_bilateral_joint_cts = model.info.num_joint_bilateral_cts.numpy().tolist()
+        num_bounded_joint_cts = model.info.num_joint_bounded_cts.numpy().tolist()
         num_joint_dofs = model.info.num_joint_dofs.numpy().tolist()
         max_num_limits = (
             limits.world_max_limits_host if limits and limits.model_max_limits_host > 0 else [0] * num_worlds
@@ -1737,7 +1737,7 @@ class SparseSystemJacobians:
             contacts.world_max_contacts_host if contacts and contacts.model_max_contacts_host > 0 else [0] * num_worlds
         )
         max_num_constraints = [
-            num_joint_cts[w] + num_bounded_cts[w] + max_num_limits[w] + 3 * max_num_contacts[w]
+            num_bilateral_joint_cts[w] + num_bounded_joint_cts[w] + max_num_limits[w] + 3 * max_num_contacts[w]
             for w in range(num_worlds)
         ]
 
@@ -1746,7 +1746,7 @@ class SparseSystemJacobians:
         joint_wid = model.joints.wid.numpy()
         joint_bid_B = model.joints.bid_B.numpy()
         joint_bid_F = model.joints.bid_F.numpy()
-        joint_num_cts = model.joints.num_cts.numpy()
+        joint_num_bilateral_cts = model.joints.num_bilateral_cts.numpy()
         joint_num_kinematic_cts = model.joints.num_kinematic_cts.numpy()
         joint_num_dynamic_cts = model.joints.num_dynamic_cts.numpy()
         joint_num_bounded_cts = model.joints.num_bounded_cts.numpy()
@@ -1769,8 +1769,8 @@ class SparseSystemJacobians:
         J_dofs_joint_nzb_offsets = [0] * model.size.sum_of_num_joints
         # Static per-row nzb offsets for bounded-multiplier (friction) rows: one entry per
         # adjacent body, with the second body's entry left at -1 for unary joints.
-        J_cts_friction_nzb_offsets_F = [0] * model.size.sum_of_num_bounded_cts
-        J_cts_friction_nzb_offsets_B = [-1] * model.size.sum_of_num_bounded_cts
+        J_cts_friction_nzb_offsets_F = [0] * model.size.sum_of_num_bounded_joint_cts
+        J_cts_friction_nzb_offsets_B = [-1] * model.size.sum_of_num_bounded_joint_cts
         J_cts_nzb_row = [[] for _ in range(num_worlds)]
         J_cts_nzb_col = [[] for _ in range(num_worlds)]
         J_dofs_nzb_row = [[] for _ in range(num_worlds)]
@@ -1785,14 +1785,14 @@ class SparseSystemJacobians:
             # Joint nzb counts
             is_binary = joint_bid_B[_j] > -1
             num_adjacent_bodies = 2 if is_binary else 1
-            num_cts = int(joint_num_cts[_j])
+            num_cts = int(joint_num_bilateral_cts[_j])
             num_dynamic_cts = int(joint_num_dynamic_cts[_j])
             num_kinematic_cts = int(joint_num_kinematic_cts[_j])
-            num_bounded_cts = int(joint_num_bounded_cts[_j])
+            num_bounded_joint_cts = int(joint_num_bounded_cts[_j])
             num_friction_cts = int(joint_num_friction_cts[_j])
             num_dofs = int(joint_num_dofs[_j])
-            J_cts_nnzb_min[w] += num_adjacent_bodies * (num_cts + num_bounded_cts)
-            J_cts_nnzb_max[w] += num_adjacent_bodies * (num_cts + num_bounded_cts)
+            J_cts_nnzb_min[w] += num_adjacent_bodies * (num_cts + num_bounded_joint_cts)
+            J_cts_nnzb_max[w] += num_adjacent_bodies * (num_cts + num_bounded_joint_cts)
             J_dofs_nnzb[w] += num_adjacent_bodies * num_dofs
 
             # Static friction-row nzb offsets, still relative to the world's local nzb block
@@ -2000,8 +2000,8 @@ class SparseSystemJacobians:
             dim=model.size.num_worlds,
             inputs=[
                 # Inputs:
-                model.info.num_joint_cts,
-                model.info.num_bounded_cts,
+                model.info.num_joint_bilateral_cts,
+                model.info.num_joint_bounded_cts,
                 data.info.num_limits,
                 data.info.num_contacts,
                 # Outputs:
@@ -2167,8 +2167,8 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators[wp.float32, w
         # Extract the constraint and DoF sizes of each world
         num_worlds = model.info.num_worlds
         num_body_dofs = model.info.num_body_dofs.numpy().tolist()
-        num_joint_cts = model.info.num_joint_cts.numpy().tolist()
-        num_bounded_cts = model.info.num_bounded_cts.numpy().tolist()
+        num_bilateral_joint_cts = model.info.num_joint_bilateral_cts.numpy().tolist()
+        num_bounded_cts = model.info.num_joint_bounded_cts.numpy().tolist()
         max_num_limits = (
             limits.world_max_limits_host if limits and limits.model_max_limits_host > 0 else [0] * num_worlds
         )
@@ -2176,7 +2176,7 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators[wp.float32, w
             contacts.world_max_contacts_host if contacts and contacts.model_max_contacts_host > 0 else [0] * num_worlds
         )
         max_num_constraints = [
-            num_joint_cts[w] + num_bounded_cts[w] + max_num_limits[w] + 3 * max_num_contacts[w]
+            num_bilateral_joint_cts[w] + num_bounded_cts[w] + max_num_limits[w] + 3 * max_num_contacts[w]
             for w in range(num_worlds)
         ]
 

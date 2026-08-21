@@ -153,9 +153,9 @@ class WorldDescriptor(Descriptor):
     The number of actuated joint DoFs, for FK actuation types.
     """
 
-    num_joint_cts: int = 0
+    num_bilateral_joint_cts: int = 0
     """
-    The total number of joint constraints.
+    The total number of bilateral joint constraints.
     This is equal to the sum of the constraints of all dynamic joints defined in the world.
     """
 
@@ -171,11 +171,11 @@ class WorldDescriptor(Descriptor):
     This is equal to the sum of the kinematics constraints of all joints defined in the world.
     """
 
-    num_bounded_cts: int = 0
-    """The number of bounded-multiplier constraint rows."""
+    num_bounded_joint_cts: int = 0
+    """The number of bounded-multiplier joint constraint rows."""
 
-    num_friction_cts: int = 0
-    """The number of Coulomb-friction constraint rows."""
+    num_friction_joint_cts: int = 0
+    """The number of Coulomb-friction joint constraint rows."""
 
     joint_coords: list[int] = field(default_factory=list)
     """
@@ -271,7 +271,7 @@ class WorldDescriptor(Descriptor):
     joint_actuated_dofs_idx_offset: int = 0
     """Index offset of the world's actuated joint DoFs w.r.t the entire model."""
 
-    joint_cts_idx_offset: int = 0
+    joint_bilateral_cts_idx_offset: int = 0
     """Index offset of the world's joint constraints w.r.t the entire model."""
 
     joint_dynamic_cts_idx_offset: int = 0
@@ -280,10 +280,10 @@ class WorldDescriptor(Descriptor):
     joint_kinematic_cts_idx_offset: int = 0
     """Index offset of the world's joint kinematics constraints w.r.t the entire model."""
 
-    bounded_cts_idx_offset: int = 0
+    joint_bounded_cts_idx_offset: int = 0
     """Index offset of the world's bounded constraints w.r.t the entire model."""
 
-    friction_cts_idx_offset: int = 0
+    joint_friction_cts_idx_offset: int = 0
     """Index offset of the world's Coulomb-friction constraints w.r.t the entire model."""
 
     ###
@@ -467,11 +467,11 @@ class WorldDescriptor(Descriptor):
         joint.passive_dofs_offset = int(self.num_passive_joint_dofs)
         joint.actuated_coords_offset = int(self.num_actuated_joint_coords)
         joint.actuated_dofs_offset = int(self.num_actuated_joint_dofs)
-        joint.cts_offset = int(self.num_joint_cts)
+        joint.bilateral_cts_offset = int(self.num_bilateral_joint_cts)
         joint.dynamic_cts_offset = int(self.num_dynamic_joint_cts)
         joint.kinematic_cts_offset = int(self.num_kinematic_joint_cts)
-        joint.bounded_cts_offset = int(self.num_bounded_cts)
-        joint.friction_cts_offset = int(self.num_friction_cts)
+        joint.bounded_cts_offset = int(self.num_bounded_joint_cts)
+        joint.friction_cts_offset = int(self.num_friction_joint_cts)
 
         # Append joint identifiers
         self.joint_names.append(joint.name)
@@ -486,11 +486,11 @@ class WorldDescriptor(Descriptor):
         self.num_joints += 1
         self.num_joint_coords += joint.num_coords
         self.num_joint_dofs += joint.num_dofs
-        self.num_joint_cts += joint.num_cts
+        self.num_bilateral_joint_cts += joint.num_bilateral_cts
         self.num_dynamic_joint_cts += joint.num_dynamic_cts
         self.num_kinematic_joint_cts += joint.num_kinematic_cts
-        self.num_bounded_cts += joint.num_bounded_cts
-        self.num_friction_cts += joint.num_friction_cts
+        self.num_bounded_joint_cts += joint.num_bounded_cts
+        self.num_friction_joint_cts += joint.num_friction_cts
 
         # Append joint connection group info
         if joint.bid_B < 0:

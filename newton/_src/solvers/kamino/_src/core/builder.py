@@ -84,11 +84,11 @@ class ModelBuilderKamino:
         self._num_joint_passive_dofs: int = 0
         self._num_joint_actuated_coords: int = 0
         self._num_joint_actuated_dofs: int = 0
-        self._num_joint_cts: int = 0
+        self._num_joint_bilateral_cts: int = 0
         self._num_joint_kinematic_cts: int = 0
         self._num_joint_dynamic_cts: int = 0
-        self._num_bounded_cts: int = 0
-        self._num_friction_cts: int = 0
+        self._num_joint_bounded_cts: int = 0
+        self._num_joint_friction_cts: int = 0
 
         # Contact capacity settings
         self._max_contacts_per_pair: int | None = None
@@ -181,9 +181,9 @@ class ModelBuilderKamino:
         return self._num_joint_actuated_dofs
 
     @property
-    def num_joint_cts(self) -> int:
-        """Returns the total number of joint constraints contained in the model."""
-        return self._num_joint_cts
+    def num_bilateral_joint_cts(self) -> int:
+        """Returns the total number of bilateral joint constraints contained in the model."""
+        return self._num_joint_bilateral_cts
 
     @property
     def num_dynamic_joint_cts(self) -> int:
@@ -196,14 +196,14 @@ class ModelBuilderKamino:
         return self._num_joint_kinematic_cts
 
     @property
-    def num_bounded_cts(self) -> int:
-        """Returns the number of bounded-multiplier constraint rows contained in the model."""
-        return self._num_bounded_cts
+    def num_bounded_joint_cts(self) -> int:
+        """Returns the number of bounded-multiplier joint constraint rows contained in the model."""
+        return self._num_joint_bounded_cts
 
     @property
-    def num_friction_cts(self) -> int:
-        """Returns the number of Coulomb-friction constraint rows contained in the model."""
-        return self._num_friction_cts
+    def num_friction_joint_cts(self) -> int:
+        """Returns the number of Coulomb-friction joint constraint rows contained in the model."""
+        return self._num_joint_friction_cts
 
     @property
     def worlds(self) -> list[WorldDescriptor]:
@@ -518,11 +518,11 @@ class ModelBuilderKamino:
         self._num_joint_passive_dofs += joint.num_passive_dofs
         self._num_joint_actuated_coords += joint.num_actuated_coords
         self._num_joint_actuated_dofs += joint.num_actuated_dofs
-        self._num_joint_cts += joint.num_cts
+        self._num_joint_bilateral_cts += joint.num_bilateral_cts
         self._num_joint_dynamic_cts += joint.num_dynamic_cts
         self._num_joint_kinematic_cts += joint.num_kinematic_cts
-        self._num_bounded_cts += joint.num_bounded_cts
-        self._num_friction_cts += joint.num_friction_cts
+        self._num_joint_bounded_cts += joint.num_bounded_cts
+        self._num_joint_friction_cts += joint.num_friction_cts
 
         # Return the new joint index
         return joint.jid
@@ -739,11 +739,11 @@ class ModelBuilderKamino:
             self._num_joint_passive_dofs += world.num_passive_joint_dofs
             self._num_joint_actuated_coords += world.num_actuated_joint_coords
             self._num_joint_actuated_dofs += world.num_actuated_joint_dofs
-            self._num_joint_cts += world.num_joint_cts
+            self._num_joint_bilateral_cts += world.num_bilateral_joint_cts
             self._num_joint_dynamic_cts += world.num_dynamic_joint_cts
             self._num_joint_kinematic_cts += world.num_kinematic_joint_cts
-            self._num_bounded_cts += world.num_bounded_cts
-            self._num_friction_cts += world.num_friction_cts
+            self._num_joint_bounded_cts += world.num_bounded_joint_cts
+            self._num_joint_friction_cts += world.num_friction_joint_cts
 
         # Update the number of worlds
         self._num_worlds += other._num_worlds
@@ -1100,11 +1100,11 @@ class ModelBuilderKamino:
                 info_njpd.append(world.num_passive_joint_dofs)
                 info_njaq.append(world.num_actuated_joint_coords)
                 info_njad.append(world.num_actuated_joint_dofs)
-                info_njc.append(world.num_joint_cts)
+                info_njc.append(world.num_bilateral_joint_cts)
                 info_njdc.append(world.num_dynamic_joint_cts)
                 info_njkc.append(world.num_kinematic_joint_cts)
-                info_nbc.append(world.num_bounded_cts)
-                info_nfc.append(world.num_friction_cts)
+                info_nbc.append(world.num_bounded_joint_cts)
+                info_nfc.append(world.num_friction_joint_cts)
                 info_bio.append(world.bodies_idx_offset)
                 info_jio.append(world.joints_idx_offset)
                 info_gio.append(world.geoms_idx_offset)
@@ -1118,11 +1118,11 @@ class ModelBuilderKamino:
                 info_jpdio.append(world.joint_passive_dofs_idx_offset)
                 info_jaqio.append(world.joint_actuated_coords_idx_offset)
                 info_jadio.append(world.joint_actuated_dofs_idx_offset)
-                info_jcio.append(world.joint_cts_idx_offset)
+                info_jcio.append(world.joint_bilateral_cts_idx_offset)
                 info_jdcio.append(world.joint_dynamic_cts_idx_offset)
                 info_jkcio.append(world.joint_kinematic_cts_idx_offset)
-                info_jbcio.append(world.bounded_cts_idx_offset)
-                info_jfcio.append(world.friction_cts_idx_offset)
+                info_jbcio.append(world.joint_bounded_cts_idx_offset)
+                info_jfcio.append(world.joint_friction_cts_idx_offset)
                 info_base_bid.append((world.base_body_idx + world.bodies_idx_offset) if world.has_base_body else -1)
                 info_base_jid.append((world.base_joint_idx + world.joints_idx_offset) if world.has_base_joint else -1)
 
@@ -1188,7 +1188,7 @@ class ModelBuilderKamino:
                 joints_k_d_j.extend(joint.k_d_j)
                 joints_ncoords_j.append(joint.num_coords)
                 joints_ndofs_j.append(joint.num_dofs)
-                joints_ncts_j.append(joint.num_cts)
+                joints_ncts_j.append(joint.num_bilateral_cts)
                 joints_ndyncts_j.append(joint.num_dynamic_cts)
                 joints_nkincts_j.append(joint.num_kinematic_cts)
                 joints_nbccts_j.append(joint.num_bounded_cts)
@@ -1199,11 +1199,11 @@ class ModelBuilderKamino:
                 joints_pdq_start.append(joint.passive_dofs_offset + world.joint_passive_dofs_idx_offset)
                 joints_aq_start.append(joint.actuated_coords_offset + world.joint_actuated_coords_idx_offset)
                 joints_adq_start.append(joint.actuated_dofs_offset + world.joint_actuated_dofs_idx_offset)
-                joints_cts_start.append(joint.cts_offset + world.joint_cts_idx_offset)
+                joints_cts_start.append(joint.bilateral_cts_offset + world.joint_bilateral_cts_idx_offset)
                 joints_dcts_start.append(joint.dynamic_cts_offset + world.joint_dynamic_cts_idx_offset)
                 joints_kcts_start.append(joint.kinematic_cts_offset + world.joint_kinematic_cts_idx_offset)
-                joints_bcts_start.append(joint.bounded_cts_offset + world.bounded_cts_idx_offset)
-                joints_fcts_start.append(joint.friction_cts_offset + world.friction_cts_idx_offset)
+                joints_bcts_start.append(joint.bounded_cts_offset + world.joint_bounded_cts_idx_offset)
+                joints_fcts_start.append(joint.friction_cts_offset + world.joint_friction_cts_idx_offset)
                 joints_bid_B.append(joint.bid_B + world_bio if joint.bid_B >= 0 else -1)
                 joints_bid_F.append(joint.bid_F + world_bio if joint.bid_F >= 0 else -1)
 
@@ -1214,11 +1214,11 @@ class ModelBuilderKamino:
             joints_pdq_start.append(self._num_joint_passive_dofs)
             joints_aq_start.append(self._num_joint_actuated_coords)
             joints_adq_start.append(self._num_joint_actuated_dofs)
-            joints_cts_start.append(self._num_joint_cts)
+            joints_cts_start.append(self._num_joint_bilateral_cts)
             joints_dcts_start.append(self._num_joint_dynamic_cts)
             joints_kcts_start.append(self._num_joint_kinematic_cts)
-            joints_bcts_start.append(self._num_bounded_cts)
-            joints_fcts_start.append(self._num_friction_cts)
+            joints_bcts_start.append(self._num_joint_bounded_cts)
+            joints_fcts_start.append(self._num_joint_friction_cts)
 
         # A helper function to collect model collision geometries data
         def collect_geometry_model_data():
@@ -1307,16 +1307,16 @@ class ModelBuilderKamino:
             max_of_num_fk_actuated_joint_dofs=max([world.num_fk_actuated_joint_dofs for world in self._worlds]),
             sum_of_num_actuated_joint_dofs=self._num_joint_actuated_dofs,
             max_of_num_actuated_joint_dofs=max([world.num_actuated_joint_dofs for world in self._worlds]),
-            sum_of_num_joint_cts=self._num_joint_cts,
-            max_of_num_joint_cts=max([world.num_joint_cts for world in self._worlds]),
+            sum_of_num_bilateral_joint_cts=self._num_joint_bilateral_cts,
+            max_of_num_bilateral_joint_cts=max([world.num_bilateral_joint_cts for world in self._worlds]),
             sum_of_num_dynamic_joint_cts=self._num_joint_dynamic_cts,
             max_of_num_dynamic_joint_cts=max([world.num_dynamic_joint_cts for world in self._worlds]),
             sum_of_num_kinematic_joint_cts=self._num_joint_kinematic_cts,
             max_of_num_kinematic_joint_cts=max([world.num_kinematic_joint_cts for world in self._worlds]),
-            sum_of_num_bounded_cts=self._num_bounded_cts,
-            max_of_num_bounded_cts=max([world.num_bounded_cts for world in self._worlds]),
-            sum_of_num_friction_cts=self._num_friction_cts,
-            max_of_num_friction_cts=max([world.num_friction_cts for world in self._worlds]),
+            sum_of_num_bounded_joint_cts=self._num_joint_bounded_cts,
+            max_of_num_bounded_joint_cts=max([world.num_bounded_joint_cts for world in self._worlds]),
+            sum_of_num_friction_joint_cts=self._num_joint_friction_cts,
+            max_of_num_friction_joint_cts=max([world.num_friction_joint_cts for world in self._worlds]),
             # Initialize inequality entity counts to zero
             sum_of_max_limits=0,
             max_of_max_limits=0,
@@ -1325,8 +1325,10 @@ class ModelBuilderKamino:
             sum_of_max_inequalities=0,
             max_of_max_inequalities=0,
             # Initialize total constraint counts to joint + bounded constraint counts
-            sum_of_max_total_cts=self._num_joint_cts + self._num_bounded_cts,
-            max_of_max_total_cts=max([world.num_joint_cts + world.num_bounded_cts for world in self._worlds]),
+            sum_of_max_total_cts=self._num_joint_bilateral_cts + self._num_joint_bounded_cts,
+            max_of_max_total_cts=max(
+                [world.num_bilateral_joint_cts + world.num_bounded_joint_cts for world in self._worlds]
+            ),
         )
 
         # Append total number of bodies to body offsets
@@ -1376,11 +1378,11 @@ class ModelBuilderKamino:
                 num_passive_joint_dofs=to_warp_int32_array(info_njpd),
                 num_actuated_joint_coords=to_warp_int32_array(info_njaq),
                 num_actuated_joint_dofs=to_warp_int32_array(info_njad),
-                num_joint_cts=to_warp_int32_array(info_njc),
+                num_joint_bilateral_cts=to_warp_int32_array(info_njc),
                 num_joint_dynamic_cts=to_warp_int32_array(info_njdc),
                 num_joint_kinematic_cts=to_warp_int32_array(info_njkc),
-                num_bounded_cts=to_warp_int32_array(info_nbc),
-                num_friction_cts=to_warp_int32_array(info_nfc),
+                num_joint_bounded_cts=to_warp_int32_array(info_nbc),
+                num_joint_friction_cts=to_warp_int32_array(info_nfc),
                 bodies_offset=to_warp_int32_array(info_bio),
                 joints_offset=to_warp_int32_array(info_jio),
                 geoms_offset=to_warp_int32_array(info_gio),
@@ -1391,7 +1393,7 @@ class ModelBuilderKamino:
                 joint_passive_dofs_offset=to_warp_int32_array(info_jpdio),
                 joint_actuated_coords_offset=to_warp_int32_array(info_jaqio),
                 joint_actuated_dofs_offset=to_warp_int32_array(info_jadio),
-                joint_cts_offset=to_warp_int32_array(info_jcio),
+                joint_bilateral_cts_offset=to_warp_int32_array(info_jcio),
                 joint_dynamic_cts_offset=to_warp_int32_array(info_jdcio),
                 joint_kinematic_cts_offset=to_warp_int32_array(info_jkcio),
                 joint_bounded_cts_offset=to_warp_int32_array(info_jbcio),
@@ -1454,7 +1456,7 @@ class ModelBuilderKamino:
                 dq_j_0=wp.array(joints_dq_j_0, dtype=wp.float32, requires_grad=requires_grad),
                 num_coords=to_warp_int32_array(joints_ncoords_j),
                 num_dofs=to_warp_int32_array(joints_ndofs_j),
-                num_cts=to_warp_int32_array(joints_ncts_j),
+                num_bilateral_cts=to_warp_int32_array(joints_ncts_j),
                 num_dynamic_cts=to_warp_int32_array(joints_ndyncts_j),
                 num_kinematic_cts=to_warp_int32_array(joints_nkincts_j),
                 num_bounded_cts=to_warp_int32_array(joints_nbccts_j),
@@ -1465,7 +1467,7 @@ class ModelBuilderKamino:
                 passive_dofs_offset=to_warp_int32_array(joints_pdq_start),
                 actuated_coords_offset=to_warp_int32_array(joints_aq_start),
                 actuated_dofs_offset=to_warp_int32_array(joints_adq_start),
-                cts_offset=to_warp_int32_array(joints_cts_start),
+                bilateral_cts_offset=to_warp_int32_array(joints_cts_start),
                 dynamic_cts_offset=to_warp_int32_array(joints_dcts_start),
                 kinematic_cts_offset=to_warp_int32_array(joints_kcts_start),
                 bounded_cts_offset=to_warp_int32_array(joints_bcts_start),
@@ -1857,11 +1859,11 @@ class ModelBuilderKamino:
         joint_passive_dofs_idx_offset: int = 0
         joint_actuated_coords_idx_offset: int = 0
         joint_actuated_dofs_idx_offset: int = 0
-        joint_cts_idx_offset: int = 0
+        joint_bilateral_cts_idx_offset: int = 0
         joint_dynamic_cts_idx_offset: int = 0
         joint_kinematic_cts_idx_offset: int = 0
-        bounded_cts_idx_offset: int = 0
-        friction_cts_idx_offset: int = 0
+        joint_bounded_cts_idx_offset: int = 0
+        joint_friction_cts_idx_offset: int = 0
         # Iterate over each world and set their model offsets
         for world in self._worlds:
             # Set the offsets in the world descriptor to the current values
@@ -1875,11 +1877,11 @@ class ModelBuilderKamino:
             world.joint_passive_dofs_idx_offset = int(joint_passive_dofs_idx_offset)
             world.joint_actuated_coords_idx_offset = int(joint_actuated_coords_idx_offset)
             world.joint_actuated_dofs_idx_offset = int(joint_actuated_dofs_idx_offset)
-            world.joint_cts_idx_offset = int(joint_cts_idx_offset)
+            world.joint_bilateral_cts_idx_offset = int(joint_bilateral_cts_idx_offset)
             world.joint_dynamic_cts_idx_offset = int(joint_dynamic_cts_idx_offset)
             world.joint_kinematic_cts_idx_offset = int(joint_kinematic_cts_idx_offset)
-            world.bounded_cts_idx_offset = int(bounded_cts_idx_offset)
-            world.friction_cts_idx_offset = int(friction_cts_idx_offset)
+            world.joint_bounded_cts_idx_offset = int(joint_bounded_cts_idx_offset)
+            world.joint_friction_cts_idx_offset = int(joint_friction_cts_idx_offset)
             # Update the offsets for the next world
             bodies_idx_offset += world.num_bodies
             joints_idx_offset += world.num_joints
@@ -1891,11 +1893,11 @@ class ModelBuilderKamino:
             joint_passive_dofs_idx_offset += world.num_passive_joint_dofs
             joint_actuated_coords_idx_offset += world.num_actuated_joint_coords
             joint_actuated_dofs_idx_offset += world.num_actuated_joint_dofs
-            joint_cts_idx_offset += world.num_joint_cts
+            joint_bilateral_cts_idx_offset += world.num_bilateral_joint_cts
             joint_dynamic_cts_idx_offset += world.num_dynamic_joint_cts
             joint_kinematic_cts_idx_offset += world.num_kinematic_joint_cts
-            bounded_cts_idx_offset += world.num_bounded_cts
-            friction_cts_idx_offset += world.num_friction_cts
+            joint_bounded_cts_idx_offset += world.num_bounded_joint_cts
+            joint_friction_cts_idx_offset += world.num_friction_joint_cts
 
     def _collect_geom_max_contact_hints(self) -> tuple[int, list[int]]:
         """

@@ -469,10 +469,12 @@ class TestDVISolver(unittest.TestCase):
 
         def make_model(dimensions):
             return SimpleNamespace(
-                size=SimpleNamespace(sum_of_num_joint_cts=sum(dimensions)),
+                size=SimpleNamespace(sum_of_num_bilateral_joint_cts=sum(dimensions)),
                 info=SimpleNamespace(
-                    num_joint_cts=wp.array(dimensions, dtype=wp.int32, device=self.device),
-                    joint_cts_offset=wp.array(np.cumsum([0, *dimensions[:-1]]), dtype=wp.int32, device=self.device),
+                    num_bilateral_joint_cts=wp.array(dimensions, dtype=wp.int32, device=self.device),
+                    joint_bilateral_cts_offset=wp.array(
+                        np.cumsum([0, *dimensions[:-1]]), dtype=wp.int32, device=self.device
+                    ),
                 ),
             )
 
@@ -1307,7 +1309,7 @@ class TestDVISolver(unittest.TestCase):
         )
 
         problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
-        self.assertGreater(int(model.info.num_joint_cts.numpy()[0]), 0)
+        self.assertGreater(int(model.info.num_joint_bilateral_cts.numpy()[0]), 0)
         self.assertEqual(int(problem.data.nl.numpy()[0]), 0)
         self.assertEqual(int(problem.data.nc.numpy()[0]), 0)
 
@@ -1352,7 +1354,7 @@ class TestDVISolver(unittest.TestCase):
         )
 
         problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
-        self.assertGreater(int(model.info.num_joint_cts.numpy()[0]), 0)
+        self.assertGreater(int(model.info.num_joint_bilateral_cts.numpy()[0]), 0)
         self.assertEqual(int(problem.data.nl.numpy()[0]), 0)
         self.assertEqual(int(problem.data.nc.numpy()[0]), 0)
 
@@ -1803,7 +1805,7 @@ class TestDVISolver(unittest.TestCase):
                 self.assertLess(float(np.max(np.abs(state_in.body_qd.numpy()))), 100.0)
                 self.assertIsInstance(dvi_solver, DVISolver)
                 self.assertIsInstance(dvi_solver._bilateral_solver, (LLTBlockedSolver, LLTBlockedRCMSolver))
-                joint_dims = solver._solver_kamino._model.info.num_joint_cts.numpy()
+                joint_dims = solver._solver_kamino._model.info.num_joint_bilateral_cts.numpy()
                 self.assertTrue(np.any(joint_dims == 0))
                 self.assertTrue(np.any(joint_dims > 0))
                 np.testing.assert_array_equal(

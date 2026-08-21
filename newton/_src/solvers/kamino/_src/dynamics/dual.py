@@ -139,7 +139,7 @@ class DualProblemData:
 
     njc: wp.array[wp.int32] | None = None
     """
-    The number of active joint constraints in each world.
+    The number of active bilateral joint constraints in each world.
     Shape of `(num_worlds,)`.
     """
 
@@ -343,14 +343,14 @@ class DualProblemData:
     """
     Lower impulse bound for each bounded-multiplier row in preconditioned coordinates.
 
-    Shape of `(sum_of_num_bounded_cts,)`.
+    Shape of `(sum_of_num_bounded_joint_cts,)`.
     """
 
     bound_upper: wp.array[wp.float32] | None = None
     """
     Upper impulse bound for each bounded-multiplier row in preconditioned coordinates.
 
-    Shape of `(sum_of_num_bounded_cts,)`.
+    Shape of `(sum_of_num_bounded_joint_cts,)`.
     """
 
     mu: wp.array[wp.float32] | None = None
@@ -1385,15 +1385,15 @@ class DualProblem:
                     num_worlds=self._delassus.num_matrices,
                     max_of_maxdims=self._delassus.max_of_max_dims,
                     # Capture references to the mode and data info arrays
-                    njc=model.info.num_joint_cts,
-                    nbc=model.info.num_bounded_cts,
+                    njc=model.info.num_joint_bilateral_cts,
+                    nbc=model.info.num_joint_bounded_cts,
                     nl=data.info.num_limits,
                     nc=data.info.num_contacts,
                     bcio=model.info.joint_bounded_cts_offset,
                     lio=model.info.limits_offset,
                     cio=model.info.contacts_offset,
                     iio=model.info.inequalities_offset,
-                    bcgo=model.info.bounded_cts_group_offset,
+                    bcgo=model.info.joint_bounded_cts_group_offset,
                     lcgo=data.info.limit_cts_group_offset,
                     ccgo=data.info.contact_cts_group_offset,
                     # Capture references to arrays already create by the Delassus operator
@@ -1412,8 +1412,8 @@ class DualProblem:
                     v_i=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
                     v_f=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
                     mu=wp.zeros(shape=(model_max_contacts_host,), dtype=wp.float32),
-                    bound_lower=wp.zeros(shape=(model.size.sum_of_num_bounded_cts,), dtype=wp.float32),
-                    bound_upper=wp.zeros(shape=(model.size.sum_of_num_bounded_cts,), dtype=wp.float32),
+                    bound_lower=wp.zeros(shape=(model.size.sum_of_num_bounded_joint_cts,), dtype=wp.float32),
+                    bound_upper=wp.zeros(shape=(model.size.sum_of_num_bounded_joint_cts,), dtype=wp.float32),
                     P=wp.ones(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
                 )
                 # Connect Delassus preconditioner to data array
@@ -1424,8 +1424,8 @@ class DualProblem:
                     num_worlds=self._delassus.num_worlds,
                     max_of_maxdims=self._delassus.num_maxdims,
                     # Capture references to the mode and data info arrays
-                    njc=model.info.num_joint_cts,
-                    nbc=model.info.num_bounded_cts,
+                    njc=model.info.num_joint_bilateral_cts,
+                    nbc=model.info.num_joint_bounded_cts,
                     nl=data.info.num_limits,
                     nc=data.info.num_contacts,
                     lio=model.info.limits_offset,
@@ -1433,7 +1433,7 @@ class DualProblem:
                     iio=model.info.inequalities_offset,
                     lcgo=data.info.limit_cts_group_offset,
                     ccgo=data.info.contact_cts_group_offset,
-                    bcgo=model.info.bounded_cts_group_offset,
+                    bcgo=model.info.joint_bounded_cts_group_offset,
                     bcio=model.info.joint_bounded_cts_offset,
                     # Capture references to arrays already create by the Delassus operator
                     maxdim=self._delassus.info.maxdim,
@@ -1451,8 +1451,8 @@ class DualProblem:
                     v_i=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
                     v_f=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
                     mu=wp.zeros(shape=(model_max_contacts_host,), dtype=wp.float32),
-                    bound_lower=wp.zeros(shape=(model.size.sum_of_num_bounded_cts,), dtype=wp.float32),
-                    bound_upper=wp.zeros(shape=(model.size.sum_of_num_bounded_cts,), dtype=wp.float32),
+                    bound_lower=wp.zeros(shape=(model.size.sum_of_num_bounded_joint_cts,), dtype=wp.float32),
+                    bound_upper=wp.zeros(shape=(model.size.sum_of_num_bounded_joint_cts,), dtype=wp.float32),
                     P=wp.ones(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
                 )
 
@@ -1558,10 +1558,10 @@ class DualProblem:
             self._build_dual_preconditioner()
             self._apply_dual_preconditioner_to_dual()
 
-            if model.size.sum_of_num_bounded_cts > 0:
+            if model.size.sum_of_num_bounded_joint_cts > 0:
                 wp.launch(
                     _apply_dual_preconditioner_to_bounds,
-                    dim=(self._size.num_worlds, self._size.max_of_num_bounded_cts),
+                    dim=(self._size.num_worlds, self._size.max_of_num_bounded_joint_cts),
                     inputs=[
                         # Inputs:
                         self._data.nbc,
@@ -1673,7 +1673,7 @@ class DualProblem:
         """
 
         if model.size.sum_of_num_joints > 0:
-            if model.size.sum_of_num_friction_cts > 0:
+            if model.size.sum_of_num_friction_joint_cts > 0:
                 wp.launch(
                     _build_joint_friction_bounds,
                     dim=model.size.sum_of_num_joints,

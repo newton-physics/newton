@@ -116,7 +116,7 @@ class SparseDVIPath:
 def _can_use_sparse_colored_inequalities(path: SparseDVIPath) -> bool:
     has_limit_capacity = path.size.max_of_max_limits > 0
     has_contact_capacity = path.size.max_of_max_contacts > 0
-    has_bounded_capacity = path.size.max_of_num_bounded_cts > 0
+    has_bounded_capacity = path.size.max_of_num_bounded_joint_cts > 0
     limits_ready = not has_limit_capacity or path.limits is not None
     contacts_ready = not has_contact_capacity or path.contacts is not None
     return (
@@ -131,7 +131,7 @@ def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) ->
     """Map and color active inequalities with the multi-world fast path."""
     state = path.data.state
     num_joints = path.size.sum_of_num_joints
-    if num_joints > 0 and path.size.max_of_num_bounded_cts > 0:
+    if num_joints > 0 and path.size.max_of_num_bounded_joint_cts > 0:
         joints = path.model.joints
         wp.launch(
             kernel=_map_bounded_constraints,
@@ -367,7 +367,7 @@ def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) ->
         raise RuntimeError("Sparse DVI topology is not prepared. Call `SparseDVIPath.prepare()` before solving.")
     wp.launch(
         kernel=_set_sparse_bilateral_diagonal,
-        dim=(path.size.num_worlds, path.size.max_of_num_joint_cts),
+        dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
         inputs=[
             problem.data.njc,
             problem.data.vio,
@@ -453,7 +453,7 @@ def _solve_sparse_bilateral_block(
     state = path.data.state
     wp.launch(
         kernel=_zero_bilateral_lambdas,
-        dim=(path.size.num_worlds, path.size.max_of_num_joint_cts),
+        dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
         inputs=[
             problem.data.njc,
             problem.data.vio,
@@ -464,7 +464,7 @@ def _solve_sparse_bilateral_block(
     _sparse_delassus_matvec_rows_path(path, problem, _SPARSE_DELASSUS_ROWS_JOINTS)
     wp.launch(
         kernel=_build_sparse_bilateral_rhs,
-        dim=(path.size.num_worlds, path.size.max_of_num_joint_cts),
+        dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
         inputs=[
             problem.data.vio,
             problem.data.njc,
@@ -485,7 +485,7 @@ def _solve_sparse_bilateral_block(
         operator.info.dim = full_dim
     wp.launch(
         kernel=_scatter_bilateral_solution,
-        dim=(path.size.num_worlds, path.size.max_of_num_joint_cts),
+        dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
         inputs=[
             problem.data.vio,
             problem.data.njc,

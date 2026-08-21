@@ -267,14 +267,14 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
                 kamino = solver._model_kamino
                 self.assertIs(kamino.joints.f_j, model.joint_friction)
                 self.assertEqual(kamino.size.sum_of_num_dynamic_joint_cts, 0)
-                self.assertEqual(kamino.size.sum_of_num_friction_cts, num_friction_cts)
-                self.assertEqual(kamino.size.sum_of_num_bounded_cts, num_friction_cts)
-                np.testing.assert_array_equal(kamino.info.num_friction_cts.numpy(), [num_friction_cts])
-                np.testing.assert_array_equal(kamino.info.num_bounded_cts.numpy(), [num_friction_cts])
+                self.assertEqual(kamino.size.sum_of_num_friction_joint_cts, num_friction_cts)
+                self.assertEqual(kamino.size.sum_of_num_bounded_joint_cts, num_friction_cts)
+                np.testing.assert_array_equal(kamino.info.num_joint_friction_cts.numpy(), [num_friction_cts])
+                np.testing.assert_array_equal(kamino.info.num_joint_bounded_cts.numpy(), [num_friction_cts])
                 if num_friction_cts:
                     self.assertEqual(
                         int(kamino.info.joint_friction_cts_group_offset.numpy()[0]),
-                        int(kamino.info.num_joint_cts.numpy()[0]),
+                        int(kamino.info.num_joint_bilateral_cts.numpy()[0]),
                     )
                     np.testing.assert_array_equal(
                         kamino.info.joint_friction_cts_offset.numpy(),
@@ -282,7 +282,7 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
                     )
                     np.testing.assert_array_equal(
                         kamino.info.joint_friction_cts_group_offset.numpy(),
-                        kamino.info.bounded_cts_group_offset.numpy(),
+                        kamino.info.joint_bounded_cts_group_offset.numpy(),
                     )
 
     def test_ignore_free_joint_friction(self):
@@ -299,8 +299,8 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         with self.assertLogs("root", level="WARNING") as logs:
             solver = SolverKamino(model, _dense_config())
         self.assertTrue(any("Ignoring joint friction on FREE joint" in record.getMessage() for record in logs.records))
-        self.assertEqual(solver._model_kamino.size.sum_of_num_friction_cts, 0)
-        self.assertEqual(solver._model_kamino.size.sum_of_num_bounded_cts, 0)
+        self.assertEqual(solver._model_kamino.size.sum_of_num_friction_joint_cts, 0)
+        self.assertEqual(solver._model_kamino.size.sum_of_num_bounded_joint_cts, 0)
 
     def test_multiworld_sparse_friction_offsets(self):
         """Place sparse friction rows in their owning world's bounded group."""
@@ -343,10 +343,12 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
             )
 
         sparse_jacobians = solver._solver_kamino._jacobians
-        expected_rows = kamino.info.num_joint_cts.numpy() + kamino.info.num_bounded_cts.numpy()
+        expected_rows = kamino.info.num_joint_bilateral_cts.numpy() + kamino.info.num_joint_bounded_cts.numpy()
         self.assertTrue(np.all(sparse_jacobians._J_cts.bsm.max_dims.numpy()[:, 0] >= expected_rows))
         world_max_inequalities = (
-            kamino.info.num_bounded_cts.numpy() + kamino.info.max_limits.numpy() + kamino.info.max_contacts.numpy()
+            kamino.info.num_joint_bounded_cts.numpy()
+            + kamino.info.max_limits.numpy()
+            + kamino.info.max_contacts.numpy()
         )
         self.assertEqual(kamino.size.sum_of_max_inequalities, int(np.sum(world_max_inequalities)))
         self.assertEqual(kamino.size.max_of_max_inequalities, int(np.max(world_max_inequalities)))

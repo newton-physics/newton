@@ -56,12 +56,12 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
         problem.data.cio.numpy(), problem.data.mu.numpy().astype(np.float64), problem.delassus.info.dim.numpy()
     )
 
-    num_joint_cts = problem.data.njc.numpy()
-    num_bounded_cts = problem.data.nbc.numpy()
+    num_bilateral_joint_cts = problem.data.njc.numpy()
+    num_bounded_joint_cts = problem.data.nbc.numpy()
     num_contacts = problem.data.nc.numpy()
     num_limits = problem.data.nl.numpy()
     bounded_cts_offset = problem.data.bcio.numpy()
-    bounded_cts_group_offset = problem.data.bcgo.numpy()
+    joint_bounded_cts_group_offset = problem.data.bcgo.numpy()
     contact_group_offset = problem.data.ccgo.numpy()
     limit_group_offset = problem.data.lcgo.numpy()
     bound_lower = problem.data.bound_lower.numpy().astype(np.float64)
@@ -105,9 +105,9 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         # Compute the NCP primal residual as: r_p := || lambda - proj_C(lambda) ||_inf
         r_ncp_p_i = 0.0
-        for bounded_id in range(num_bounded_cts[mat_id]):
+        for bounded_id in range(num_bounded_joint_cts[mat_id]):
             bound_idx = bounded_cts_offset[mat_id] + bounded_id
-            vector_idx = bounded_cts_group_offset[mat_id] + bounded_id
+            vector_idx = joint_bounded_cts_group_offset[mat_id] + bounded_id
             lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
             upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
             lambda_b = lambdas_i[vector_idx]
@@ -140,7 +140,7 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         # Compute the NCP dual residual as: r_d := || v_plus + s - proj_dual_K(v_plus + s)  ||_inf
         r_ncp_d_i = 0.0
-        for jid in range(num_joint_cts[mat_id]):
+        for jid in range(num_bilateral_joint_cts[mat_id]):
             v_j = v_aug_i[jid]
             r_j = np.abs(v_j)
             r_ncp_d_i = max(r_ncp_d_i, r_j)
@@ -178,9 +178,9 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         # Compute generalized complementarity for boxes, limits, and contacts.
         r_ncp_c_i = 0.0
-        for bounded_id in range(num_bounded_cts[mat_id]):
+        for bounded_id in range(num_bounded_joint_cts[mat_id]):
             bound_idx = bounded_cts_offset[mat_id] + bounded_id
-            vector_idx = bounded_cts_group_offset[mat_id] + bounded_id
+            vector_idx = joint_bounded_cts_group_offset[mat_id] + bounded_id
             lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
             upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
             velocity = v_aug_i[vector_idx]
@@ -206,11 +206,11 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         # Compute the natural-map residuals as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
         r_vi_natmap_i = 0.0
-        for jid in range(num_joint_cts[mat_id]):
+        for jid in range(num_bilateral_joint_cts[mat_id]):
             r_vi_natmap_i = max(r_vi_natmap_i, np.abs(v_aug_i[jid]))
-        for bounded_id in range(num_bounded_cts[mat_id]):
+        for bounded_id in range(num_bounded_joint_cts[mat_id]):
             bound_idx = bounded_cts_offset[mat_id] + bounded_id
-            vector_idx = bounded_cts_group_offset[mat_id] + bounded_id
+            vector_idx = joint_bounded_cts_group_offset[mat_id] + bounded_id
             lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
             upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
             lambda_b = lambdas_i[vector_idx]

@@ -294,7 +294,7 @@ def assert_builders_equal(
         test.assertEqual(joint1.num_actuated_coords, joint2.num_actuated_coords)
         test.assertEqual(joint1.num_actuated_dofs, joint2.num_actuated_dofs)
         test.assertEqual(joint1.num_actuated_dofs, joint2.num_actuated_dofs)
-        test.assertEqual(joint1.num_cts, joint2.num_cts)
+        test.assertEqual(joint1.num_bilateral_cts, joint2.num_bilateral_cts)
         test.assertEqual(joint1.num_dynamic_cts, joint2.num_dynamic_cts)
         test.assertEqual(joint1.num_kinematic_cts, joint2.num_kinematic_cts)
         test.assertEqual(joint1.num_bounded_cts, joint2.num_bounded_cts)
@@ -305,7 +305,7 @@ def assert_builders_equal(
         test.assertEqual(joint1.passive_dofs_offset, joint2.passive_dofs_offset)
         test.assertEqual(joint1.actuated_coords_offset, joint2.actuated_coords_offset)
         test.assertEqual(joint1.actuated_dofs_offset, joint2.actuated_dofs_offset)
-        test.assertEqual(joint1.cts_offset, joint2.cts_offset)
+        test.assertEqual(joint1.bilateral_cts_offset, joint2.bilateral_cts_offset)
         test.assertEqual(joint1.dynamic_cts_offset, joint2.dynamic_cts_offset)
         test.assertEqual(joint1.kinematic_cts_offset, joint2.kinematic_cts_offset)
         test.assertEqual(joint1.bounded_cts_offset, joint2.bounded_cts_offset)
@@ -352,7 +352,7 @@ def assert_builders_equal(
 def assert_state_equal(
     test: unittest.TestCase, state0: StateKamino, state1: StateKamino, excluded: list[str] | None = None
 ) -> None:
-    attributes = ["q_i", "u_i", "w_i", "q_j", "q_j_p", "dq_j", "lambda_j"]
+    attributes = ["q_i", "u_i", "w_i", "q_j", "q_j_p", "dq_j", "lambda_kin_j", "lambda_dyn_j", "lambda_f_j"]
     if excluded:
         attributes = [attr for attr in attributes if attr not in excluded]
     assert_array_attributes_equal(test, state0, state1, attributes)
@@ -400,14 +400,14 @@ def assert_model_size_equal(
         "max_of_num_actuated_joint_coords",
         "sum_of_num_actuated_joint_dofs",
         "max_of_num_actuated_joint_dofs",
-        "sum_of_num_joint_cts",
-        "max_of_num_joint_cts",
+        "sum_of_num_bilateral_joint_cts",
+        "max_of_num_bilateral_joint_cts",
         "sum_of_num_dynamic_joint_cts",
         "max_of_num_dynamic_joint_cts",
         "sum_of_num_kinematic_joint_cts",
         "max_of_num_kinematic_joint_cts",
-        "sum_of_num_bounded_cts",
-        "max_of_num_bounded_cts",
+        "sum_of_num_bounded_joint_cts",
+        "max_of_num_bounded_joint_cts",
         "sum_of_num_friction_cts",
         "max_of_num_friction_cts",
         "sum_of_max_limits",
@@ -447,7 +447,7 @@ def assert_model_info_equal(
         "num_passive_joint_dofs",
         "num_actuated_joint_coords",
         "num_actuated_joint_dofs",
-        "num_joint_cts",
+        "num_bilateral_joint_cts",
         "num_joint_dynamic_cts",
         "num_joint_kinematic_cts",
         "num_bounded_cts",
@@ -465,7 +465,7 @@ def assert_model_info_equal(
         "joint_passive_dofs_offset",
         "joint_actuated_coords_offset",
         "joint_actuated_dofs_offset",
-        "joint_cts_offset",
+        "joint_bilateral_cts_offset",
         "joint_dynamic_cts_offset",
         "joint_kinematic_cts_offset",
         "joint_bounded_cts_offset",
@@ -473,7 +473,7 @@ def assert_model_info_equal(
         "total_cts_offset",
         "joint_dynamic_cts_group_offset",
         "joint_kinematic_cts_group_offset",
-        "bounded_cts_group_offset",
+        "joint_bounded_cts_group_offset",
         "joint_friction_cts_group_offset",
         "base_body_index",
         "base_joint_index",
@@ -660,7 +660,7 @@ def assert_model_joints_equal(
         "X_Fj",
         "num_coords",
         "num_dofs",
-        "num_cts",
+        "num_bilateral_cts",
         "num_dynamic_cts",
         "num_kinematic_cts",
         "num_bounded_cts",
@@ -677,7 +677,7 @@ def assert_model_joints_equal(
                 "passive_dofs_offset",
                 "actuated_coords_offset",
                 "actuated_dofs_offset",
-                "cts_offset",
+                "bilateral_cts_offset",
                 "dynamic_cts_offset",
                 "kinematic_cts_offset",
                 "bounded_cts_offset",

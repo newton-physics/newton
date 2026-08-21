@@ -740,7 +740,7 @@ def compute_constraint_body_wrenches_dense(
             device=model.device,
         )
 
-    if model.size.sum_of_num_friction_cts > 0:
+    if model.size.sum_of_num_friction_joint_cts > 0:
         if reset_to_zero:
             data.bodies.w_f_i.zero_()
         wp.launch(

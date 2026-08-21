@@ -173,9 +173,9 @@ class ModelKaminoInfo:
 
     # TODO: We could make this a wp.vec2i to store dynamic
     # and kinematic joint constraint counts separately
-    num_joint_cts: wp.array[wp.int32] | None = None
+    num_joint_bilateral_cts: wp.array[wp.int32] | None = None
     """
-    The number of joint constraints of each world.
+    The number of bilateral joint constraints of each world.
     Shape of ``(num_worlds,)``.
     """
 
@@ -191,13 +191,13 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
-    num_bounded_cts: wp.array[wp.int32] | None = None
+    num_joint_bounded_cts: wp.array[wp.int32] | None = None
     """
     The number of bounded-multiplier constraint rows of each world.
     Shape of ``(num_worlds,)``.
     """
 
-    num_friction_cts: wp.array[wp.int32] | None = None
+    num_joint_friction_cts: wp.array[wp.int32] | None = None
     """
     The number of Coulomb-friction constraint rows of each world.
     Shape of ``(num_worlds,)``.
@@ -319,9 +319,9 @@ class ModelKaminoInfo:
     # Constraint Offsets
     ###
 
-    joint_cts_offset: wp.array[wp.int32] | None = None
+    joint_bilateral_cts_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the joint constraints block of each world.
+    The index offset of the bilateral joint constraints block of each world.
     Used to index into arrays that contain flattened and
     concatenated dynamic and kinematic joint constraint data.
     Shape of ``(num_worlds,)``.
@@ -373,7 +373,6 @@ class ModelKaminoInfo:
     - joint_dynamic_cts_group_offset
     - joint_kinematic_cts_group_offset
     - joint_friction_cts_group_offset
-    - bounded_cts_group_offset
     - limit_cts_group_offset
     - contact_cts_group_offset
 
@@ -412,9 +411,9 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
-    bounded_cts_group_offset: wp.array[wp.int32] | None = None
+    joint_bounded_cts_group_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the bounded constraint group within each world's total constraint block.
+    The index offset of the joint bounded constraint group within each world's total constraint block.
     Shape of ``(num_worlds,)``.
     """
 
@@ -565,10 +564,9 @@ class ModelKamino:
         # Retrieve the joint coordinate, DoF and constraint counts
         njcoords = self.size.sum_of_num_joint_coords
         njdofs = self.size.sum_of_num_joint_dofs
-        njcts = self.size.sum_of_num_joint_cts
         njdyncts = self.size.sum_of_num_dynamic_joint_cts
         njkincts = self.size.sum_of_num_kinematic_joint_cts
-        njfccts = self.size.sum_of_num_friction_cts
+        njfccts = self.size.sum_of_num_friction_joint_cts
 
         # Construct the model data on the specified device
         with wp.ScopedDevice(device=device):
@@ -576,7 +574,7 @@ class ModelKamino:
             # counts initialized to the joint + bounded constraints count
             info = DataKaminoInfo(
                 num_total_cts=wp.array(
-                    self.info.num_joint_cts.numpy() + self.info.num_bounded_cts.numpy(),
+                    self.info.num_joint_bilateral_cts.numpy() + self.info.num_joint_bounded_cts.numpy(),
                     dtype=wp.int32,
                     device=device,
                 ),
@@ -614,7 +612,8 @@ class ModelKamino:
                 tau_j=wp.zeros(shape=njdofs, dtype=wp.float32, requires_grad=requires_grad),
                 r_j=wp.zeros(shape=njkincts, dtype=wp.float32, requires_grad=requires_grad),
                 dr_j=wp.zeros(shape=njkincts, dtype=wp.float32, requires_grad=requires_grad),
-                lambda_j=wp.zeros(shape=njcts, dtype=wp.float32, requires_grad=requires_grad),
+                lambda_kin_j=wp.zeros(shape=njkincts, dtype=wp.float32, requires_grad=requires_grad),
+                lambda_dyn_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 lambda_f_j=wp.zeros(shape=njfccts, dtype=wp.float32, requires_grad=requires_grad),
                 m_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 inv_m_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
@@ -677,7 +676,15 @@ class ModelKamino:
                 q_j=wp.clone(self.joints.q_j_0, requires_grad=requires_grad),
                 q_j_p=wp.clone(self.joints.q_j_0, requires_grad=requires_grad),
                 dq_j=wp.zeros(shape=self.size.sum_of_num_joint_dofs, dtype=wp.float32, requires_grad=requires_grad),
-                lambda_j=wp.zeros(shape=self.size.sum_of_num_joint_cts, dtype=wp.float32, requires_grad=requires_grad),
+                lambda_kin_j=wp.zeros(
+                    shape=self.size.sum_of_num_kinematic_joint_cts, dtype=wp.float32, requires_grad=requires_grad
+                ),
+                lambda_dyn_j=wp.zeros(
+                    shape=self.size.sum_of_num_dynamic_joint_cts, dtype=wp.float32, requires_grad=requires_grad
+                ),
+                lambda_f_j=wp.zeros(
+                    shape=self.size.sum_of_num_friction_joint_cts, dtype=wp.float32, requires_grad=requires_grad
+                ),
             )
 
         # Return the constructed state container
