@@ -10370,13 +10370,23 @@ class ModelBuilder:
                 # Active if either stiffness or damping is non-zero
                 bending_edge_active_mask = (bending_edge_props[:, 0] != 0.0) | (bending_edge_props[:, 1] != 0.0)
 
+            # Active if either Lame parameter is non-zero, matching the condition SolverVBD uses to
+            # decide whether to evaluate an element. A product would deactivate elements the solver
+            # still integrates, leaving their vertices in the same color group.
+            tri_active_mask = (
+                (tri_materials[:, 0] != 0.0) | (tri_materials[:, 1] != 0.0) if len(tri_materials) else None
+            )
+            tet_active_mask = (
+                (tet_materials[:, 0] != 0.0) | (tet_materials[:, 1] != 0.0) if len(tet_materials) else None
+            )
+
             graph_edge_indices = construct_particle_graph(
                 tri_indices,
-                tri_materials[:, 0] * tri_materials[:, 1] if len(tri_materials) else None,
+                tri_active_mask,
                 bending_edge_indices,
                 bending_edge_active_mask,
                 tet_indices,
-                tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
+                tet_active_mask,
             )
 
             if len(graph_edge_indices) > 0:
