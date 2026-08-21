@@ -71,6 +71,14 @@ def create_four_bar_tie_rod() -> ModelBuilderKamino:
         joint_copy = copy.deepcopy(joint)
         if joint.name == "link2_to_link3" or joint.name == "link3_to_link4":
             joint_copy.dof_type = JointDoFType.SPHERICAL
+            joint_copy.act_type_dof = [joint_copy.act_type] * joint_copy.dof_type.num_dofs
+            for attribute in ("q_j_min", "q_j_max", "dq_j_max", "tau_j_max", "a_j", "b_j", "k_p_j", "k_d_j", "f_j"):
+                setattr(
+                    joint_copy,
+                    attribute,
+                    [getattr(joint_copy, attribute)[0]] * joint_copy.dof_type.num_dofs,
+                )
+            joint_copy.__post_init__()
         builder_spherical.add_joint_descriptor(joint_copy)
     for geom in builder_revolute.geoms[0]:
         geom_copy = copy.deepcopy(geom)
@@ -129,6 +137,35 @@ class JacobianCheckForwardKinematics(unittest.TestCase):
 
         success = run_test_single_joint_examples(test_function, test_name, device=self.default_device)
         self.assertTrue(success)
+
+
+class PerDofActuationForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_reject_mixed_passive_and_actuated_dofs(self):
+        """Reject a joint with a mixed passive and actuated DoF partition."""
+        builder = build_unary_universal_joint_test(limits=True, ground=False)
+        builder.joint_target_mode[0] = newton.JointTargetMode.NONE
+        builder.joint_target_mode[1] = newton.JointTargetMode.POSITION
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+
+        with self.assertRaisesRegex(ValueError, "all DoFs must be passive or all must be actuated"):
+            ForwardKinematicsSolver(model)
+
+    def test_accept_differing_actuated_modes(self):
+        """Accept differing non-passive modes because FK uses one joint partition."""
+        builder = build_unary_universal_joint_test(limits=True, ground=False)
+        builder.joint_target_mode[0] = newton.JointTargetMode.POSITION
+        builder.joint_target_mode[1] = newton.JointTargetMode.VELOCITY
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+
+        ForwardKinematicsSolver(model)
 
 
 class PassiveUniversalJointFrameForwardKinematics(unittest.TestCase):

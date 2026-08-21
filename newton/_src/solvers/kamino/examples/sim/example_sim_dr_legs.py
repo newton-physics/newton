@@ -217,11 +217,12 @@ class Example:
 
         # Set joint armatures, and verify that correct gains were loaded from the USD file
         for joint in self.builder.all_joints:
-            if joint.is_dynamic or joint.is_implicit_pd:
-                joint.a_j = [0.011]  # Set joint armature according to Dynamixel XH540-V150 specs
-                joint.b_j = [0.044]  # Set joint damping according to Dynamixel XH540-V150 specs
-                assert abs(joint.k_p_j[0] - 50.0) < 1e-4
-                assert abs(joint.k_d_j[0] - 1.0) < 1e-4
+            axes = sorted(set(joint.dynamic_cts_axes()) | set(joint.effort_cts_axes()))
+            for axis in axes:
+                joint.a_j[axis] = 0.011  # Dynamixel XH540-V150 armature.
+                joint.b_j[axis] = 0.044  # Dynamixel XH540-V150 damping.
+                assert abs(joint.k_p_j[axis] - 50.0) < 1e-4
+                assert abs(joint.k_d_j[axis] - 1.0) < 1e-4
 
         if linear_solver is None:
             linear_solver = "CR" if dynamics_solver == "dvi" else "LLTB"

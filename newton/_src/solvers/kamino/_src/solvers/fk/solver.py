@@ -213,6 +213,15 @@ class ForwardKinematicsSolver:
                 device=self.device,
             )
         joints_act_type_prev = resolved_act_type.numpy()
+        joint_dof_start = self.model.joints.dofs_offset.numpy()
+        joint_act_type_dof = self.model.joints.act_type_dof.numpy()
+        for joint in range(self.model.size.sum_of_num_joints):
+            dof_actuation = joint_act_type_dof[joint_dof_start[joint] : joint_dof_start[joint + 1]]
+            passive = dof_actuation == JointActuationType.PASSIVE
+            if np.any(passive) and not np.all(passive):
+                raise ValueError(
+                    f"Invalid FK actuation for joint {joint}: all DoFs must be passive or all must be actuated."
+                )
         # Indexed by model joint: 0 is passive, 1 is actuated, and -1 skips
         # validation for an explicit base joint that FK replaces.
         built_fk_actuated = (joints_act_type_prev != JointActuationType.PASSIVE).astype(np.int32)

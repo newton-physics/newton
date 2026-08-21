@@ -206,9 +206,9 @@ class Example:
             # UsdPhysics schema does not support these properties yet
             if implicit_pd:
                 for joint in self.builder.all_joints:
-                    if joint.is_dynamic or joint.is_implicit_pd:
-                        joint.a_j = [0.1]
-                        joint.b_j = [0.001]
+                    for axis in joint.dynamic_cts_axes():
+                        joint.a_j[axis] = 0.1
+                        joint.b_j[axis] = 0.001
         else:
             msg.notif("Constructing builder using model generator ...")
             self.builder: ModelBuilderKamino = make_homogeneous_builder(

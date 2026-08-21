@@ -232,6 +232,7 @@ def assert_builders_equal(
         test.assertEqual(joint1.wid, joint2.wid)
         test.assertEqual(joint1.jid, joint2.jid)
         test.assertEqual(joint1.act_type, joint2.act_type)
+        test.assertEqual(joint1.act_type_dof, joint2.act_type_dof)
         test.assertEqual(joint1.dof_type, joint2.dof_type)
         test.assertEqual(joint1.bid_B, joint2.bid_B)
         test.assertEqual(joint1.bid_F, joint2.bid_F)
@@ -313,8 +314,6 @@ def assert_builders_equal(
         test.assertEqual(joint1.is_binary, joint2.is_binary)
         test.assertEqual(joint1.is_passive, joint2.is_passive)
         test.assertEqual(joint1.is_actuated, joint2.is_actuated)
-        test.assertEqual(joint1.is_dynamic, joint2.is_dynamic)
-        test.assertEqual(joint1.is_implicit_pd, joint2.is_implicit_pd)
 
     for geom1, geom2 in zip(builder1.all_geoms, builder2.all_geoms, strict=True):
         test.assertEqual(geom1.wid, geom2.wid)
@@ -352,7 +351,18 @@ def assert_builders_equal(
 def assert_state_equal(
     test: unittest.TestCase, state0: StateKamino, state1: StateKamino, excluded: list[str] | None = None
 ) -> None:
-    attributes = ["q_i", "u_i", "w_i", "q_j", "q_j_p", "dq_j", "lambda_kin_j", "lambda_dyn_j", "lambda_f_j"]
+    attributes = [
+        "q_i",
+        "u_i",
+        "w_i",
+        "q_j",
+        "q_j_p",
+        "dq_j",
+        "lambda_kin_j",
+        "lambda_dyn_j",
+        "lambda_f_j",
+        "lambda_tau_j",
+    ]
     if excluded:
         attributes = [attr for attr in attributes if attr not in excluded]
     assert_array_attributes_equal(test, state0, state1, attributes)
@@ -452,6 +462,7 @@ def assert_model_info_equal(
         "num_joint_kinematic_cts",
         "num_bounded_cts",
         "num_friction_cts",
+        "num_effort_cts",
         "max_limit_cts",
         "max_contact_cts",
         "max_total_cts",
@@ -470,11 +481,13 @@ def assert_model_info_equal(
         "joint_kinematic_cts_offset",
         "joint_bounded_cts_offset",
         "joint_friction_cts_offset",
+        "joint_effort_cts_offset",
         "total_cts_offset",
         "joint_dynamic_cts_group_offset",
         "joint_kinematic_cts_group_offset",
         "joint_bounded_cts_group_offset",
         "joint_friction_cts_group_offset",
+        "joint_effort_cts_group_offset",
         "base_body_index",
         "base_joint_index",
     ]
@@ -635,6 +648,7 @@ def assert_model_joints_equal(
     if excluded is None or "label" not in excluded:
         assert_scalar_attributes_equal(test, joints0, joints1, ["label"], mapping=mapping)
     dof_flat_attributes = [
+        "act_type_dof",
         "q_j_min",
         "q_j_max",
         "dq_j_max",
@@ -665,6 +679,7 @@ def assert_model_joints_equal(
         "num_kinematic_cts",
         "num_bounded_cts",
         "num_friction_cts",
+        "num_effort_cts",
     ]
     if mapping is None:
         per_joint_attributes.extend(dof_flat_attributes)
@@ -683,6 +698,7 @@ def assert_model_joints_equal(
                 "bounded_cts_offset",
                 "friction_cts_offset",
                 "friction_cts_offset_total_cts",
+                "effort_cts_offset",
             ]
         )
     if excluded:
