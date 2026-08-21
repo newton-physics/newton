@@ -296,11 +296,12 @@ class PADMMStatus:
         r_d: The total dual residual.
             Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`.
         r_c: The generalized inequality optimality residual used by the convergence test.
-            For each bounded-multiplier row `b`, the residual is the box natural map
-            `x_b - clamp(x_b - z_b, lower_b, upper_b)`. For each limit or contact
-            entity `k`, it is the complementarity inner product `x_k.T @ z_k`.
-            `r_c` is the maximum absolute value over these entity residuals. The
-            natural map is used for a box because a box has no fixed dual cone.
+            For each bounded-multiplier row `b`, the residual is the directional
+            box complementarity
+            `(x_b - lower_b) * max(z_b, 0) + (upper_b - x_b) * max(-z_b, 0)`.
+            For each limit or contact entity `k`, it is the complementarity inner
+            product `x_k.T @ z_k`. `r_c` is the maximum absolute value over these
+            entity residuals.
         r_dx: The total primal iterate residual.
             Computed as the L2-norm `r_dx := || x - x_p ||_2`.
         r_dy: The total slack iterate residual.
@@ -346,11 +347,12 @@ class PADMMStatus:
     r_c: wp.float32
     """
     The generalized inequality optimality residual used by the convergence test.
-    For each bounded-multiplier row `b`, the residual is the box natural map
-    `x_b - clamp(x_b - z_b, lower_b, upper_b)`. For each limit or contact
-    entity `k`, it is the complementarity inner product `x_k.T @ z_k`.
-    `r_c` is the maximum absolute value over these entity residuals. The
-    natural map is used for a box because a box has no fixed dual cone.
+    For each bounded-multiplier row `b`, the residual is the directional box
+    complementarity
+    `(x_b - lower_b) * max(z_b, 0) + (upper_b - x_b) * max(-z_b, 0)`.
+    For each limit or contact entity `k`, it is the complementarity inner
+    product `x_k.T @ z_k`. `r_c` is the maximum absolute value over these
+    entity residuals.
     """
 
     r_dx: wp.float32
@@ -678,8 +680,8 @@ class PADMMResiduals:
         r_dual: The PADMM dual residual vector, computed as `r_dual := eta * (x - x_p) + rho * (y - y_p)`.
             Shape of ``(sum_of_max_total_cts,)``.
         r_compl: The PADMM generalized inequality optimality residual vector used
-            by the convergence test. Per-inequality entries are bounded-multiplier
-            natural maps for box constraints and complementarity inner products
+            by the convergence test. Per-inequality entries are directional
+            box-complementarity products for bounded multipliers and inner products
             `x_j.dot(z_j)` for limit and contact constraints.
             Shape of ``(sum_of_max_inequalities,)``.
         r_dx: The PADMM primal iterate residual vector, computed as `r_dx := x - x_p`.
@@ -715,9 +717,9 @@ class PADMMResiduals:
         self.r_compl: wp.array[wp.float32] | None = None
         """
         The PADMM generalized inequality optimality residual vector used by the
-        convergence test. Per-inequality entries are bounded-multiplier natural
-        maps for box constraints and complementarity inner products
-        `x_j.dot(z_j)` for limit and contact constraints.
+        convergence test. Per-inequality entries are directional box-complementarity
+        products for bounded multipliers and inner products `x_j.dot(z_j)` for
+        limit and contact constraints.
         Shape of ``(sum_of_max_inequalities,)``.
         """
 

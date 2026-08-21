@@ -103,8 +103,17 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
         v_aug_i = v_plus_true_i + s_i
         output["v_aug"].append(v_aug_i)
 
-        # Compute the NCP primal residual as: r_p := || lambda - proj_K(lambda) ||_inf
+        # Compute the NCP primal residual as: r_p := || lambda - proj_C(lambda) ||_inf
         r_ncp_p_i = 0.0
+        for bounded_id in range(num_bounded_cts[mat_id]):
+            bound_idx = bounded_cts_offset[mat_id] + bounded_id
+            vector_idx = bounded_cts_group_offset[mat_id] + bounded_id
+            lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
+            upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
+            lambda_b = lambdas_i[vector_idx]
+            r_b = np.abs(lambda_b - np.clip(lambda_b, lower, upper))
+            r_ncp_p_i = max(r_ncp_p_i, r_b)
+
         for limit_id in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + limit_id
             r_ncp_p_i = np.max(r_ncp_p_i, np.abs(lambdas_i[lcio] - np.max(0.0, lambdas_i[lcio])))
@@ -167,8 +176,19 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         output["r_ncp_d"].append(r_ncp_d_i)
 
-        # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
+        # Compute generalized complementarity for boxes, limits, and contacts.
         r_ncp_c_i = 0.0
+        for bounded_id in range(num_bounded_cts[mat_id]):
+            bound_idx = bounded_cts_offset[mat_id] + bounded_id
+            vector_idx = bounded_cts_group_offset[mat_id] + bounded_id
+            lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
+            upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
+            velocity = v_aug_i[vector_idx]
+            lambda_value = lambdas_i[vector_idx]
+            r_b = (lambda_value - lower) * max(velocity, 0.0)
+            r_b += (upper - lambda_value) * max(-velocity, 0.0)
+            r_ncp_c_i = max(r_ncp_c_i, np.abs(r_b))
+
         for lid in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + lid
             v_l = v_aug_i[lcio]

@@ -24,6 +24,7 @@ from ..common import (
     warmstart_limit_constraints as _warmstart_limit_constraints,
 )
 from .math import (
+    compute_box_complementarity_residual,
     compute_cwise_vec_div,
     compute_cwise_vec_mul,
     compute_desaxce_corrections,
@@ -968,12 +969,13 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
 
                     if nbc > 0 and local_id >= bcgo and local_id < bcgo + nbc:
                         bio = problem_bcio[wid] + local_id - bcgo
-                        r_natmap = x - wp.clamp(
-                            x - z,
+                        r_box = compute_box_complementarity_residual(
+                            x,
+                            z,
                             problem_bound_lower[bio],
                             problem_bound_upper[bio],
                         )
-                        r_c_local = wp.max(r_c_local, wp.abs(r_natmap))
+                        r_c_local = wp.max(r_c_local, wp.abs(r_box))
                     elif nl > 0 and local_id >= lcgo and local_id < lcgo + nl:
                         r_c_local = wp.max(r_c_local, wp.abs(x * z))
 
@@ -1152,9 +1154,10 @@ def _compute_complementarity_residuals(
         bcio_j = vio + bcgo + iid
         # Compute the bound index offset
         bio = problem_bcio[wid] + iid
-        # Compute the box natural map of the primal and dual variables
-        solver_r_c[iio_i] = solver_x[bcio_j] - wp.clamp(
-            solver_x[bcio_j] - solver_z[bcio_j],
+        # Compute directional complementarity with the lower and upper box faces
+        solver_r_c[iio_i] = compute_box_complementarity_residual(
+            solver_x[bcio_j],
+            solver_z[bcio_j],
             problem_bound_lower[bio],
             problem_bound_upper[bio],
         )
@@ -1496,15 +1499,42 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         # Compute the augmented post-event constraint-space velocity as: v_aug = v_plus + s
         compute_vector_sum(ncts, vio, solver_info_v_plus, solver_info_s, solver_info_v_aug)
 
-        # Compute the NCP primal residual as: r_p := || lambda - proj_K(lambda) ||_inf
-        r_ncp_p, _ = compute_ncp_primal_residual(nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_lambdas)
+        # Compute the NCP primal residual as: r_p := || lambda - proj_C(lambda) ||_inf
+        r_ncp_p, _ = compute_ncp_primal_residual(
+            nbc,
+            nl,
+            nc,
+            vio,
+            bcio,
+            bcgo,
+            lcgo,
+            ccgo,
+            cio,
+            problem_mu,
+            problem_bound_lower,
+            problem_bound_upper,
+            problem_P,
+            solver_info_lambdas,
+        )
 
         # Compute the NCP dual residual as: r_d := || v_plus + s - proj_dual_K(v_plus + s)  ||_inf
         r_ncp_d, _ = compute_ncp_dual_residual(njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug)
 
-        # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
+        # Compute generalized complementarity for boxes, limits, and contacts.
         r_ncp_c, _ = compute_ncp_complementarity_residual(
-            nl, nc, vio, lcgo, ccgo, solver_info_v_aug, solver_info_lambdas
+            nbc,
+            nl,
+            nc,
+            vio,
+            bcio,
+            bcgo,
+            lcgo,
+            ccgo,
+            problem_bound_lower,
+            problem_bound_upper,
+            problem_P,
+            solver_info_v_aug,
+            solver_info_lambdas,
         )
 
         # Compute the natural-map residual as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
@@ -1700,15 +1730,42 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
         # Compute the augmented post-event constraint-space velocity as: v_aug = v_plus + s
         compute_vector_sum(ncts, vio, solver_info_v_plus, solver_info_s, solver_info_v_aug)
 
-        # Compute the NCP primal residual as: r_p := || lambda - proj_K(lambda) ||_inf
-        r_ncp_p, _ = compute_ncp_primal_residual(nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_lambdas)
+        # Compute the NCP primal residual as: r_p := || lambda - proj_C(lambda) ||_inf
+        r_ncp_p, _ = compute_ncp_primal_residual(
+            nbc,
+            nl,
+            nc,
+            vio,
+            bcio,
+            bcgo,
+            lcgo,
+            ccgo,
+            cio,
+            problem_mu,
+            problem_bound_lower,
+            problem_bound_upper,
+            problem_P,
+            solver_info_lambdas,
+        )
 
         # Compute the NCP dual residual as: r_d := || v_plus + s - proj_dual_K(v_plus + s)  ||_inf
         r_ncp_d, _ = compute_ncp_dual_residual(njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug)
 
-        # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
+        # Compute generalized complementarity for boxes, limits, and contacts.
         r_ncp_c, _ = compute_ncp_complementarity_residual(
-            nl, nc, vio, lcgo, ccgo, solver_info_v_aug, solver_info_lambdas
+            nbc,
+            nl,
+            nc,
+            vio,
+            bcio,
+            bcgo,
+            lcgo,
+            ccgo,
+            problem_bound_lower,
+            problem_bound_upper,
+            problem_P,
+            solver_info_v_aug,
+            solver_info_lambdas,
         )
 
         # Compute the natural-map residual as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
