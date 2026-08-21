@@ -447,20 +447,21 @@ def create_shape_support_function(support_func: Any, center_ties: bool = False):
     return shape_support
 
 
-def create_penetration_refinement_function(minkowski_support: Any):
-    """Create the shape-policy hook applied to penetrating support-map results.
+def create_triangle_prism_penetration_refiner(support_func: Any):
+    """Create physical-surface refinement for triangle-prism collision proxies.
 
     MPR operates on closed convex proxies, but a proxy may contain artificial
     faces that are needed only to give it volume. The returned function maps a
-    proxy result back to its physical collision surface without coupling the
-    generic solver to any shape types.
+    triangle-prism result back to its physical face.
 
     Args:
-        minkowski_support: Support function for the Minkowski difference.
+        support_func: Support function for individual shapes.
 
     Returns:
         A function that refines MPR witness points, normal, and penetration.
     """
+
+    shape_support = create_shape_support_function(support_func, center_ties=True)
 
     @wp.func
     def refine_penetration(
@@ -483,21 +484,20 @@ def create_penetration_refinement_function(minkowski_support: Any):
                 if surface_normal[2] < 0.0:
                     surface_normal = -surface_normal
 
-                surface_support = minkowski_support(
-                    geom_a,
-                    geom_b,
-                    surface_normal,
-                    orientation_b,
-                    position_b,
-                    extend,
-                    data_provider,
-                )
-                surface_penetration = wp.dot(surface_support.BtoA, surface_normal)
+                surface_point_a = shape_support(geom_a, surface_normal, data_provider)
+                direction_b = wp.quat_rotate_inv(orientation_b, -surface_normal)
+                surface_point_b = shape_support(geom_b, direction_b, data_provider)
+                surface_point_b = wp.quat_rotate(orientation_b, surface_point_b) + position_b
+                if extend != 0.0:
+                    offset = surface_normal * extend * 0.5
+                    surface_point_a += offset
+                    surface_point_b -= offset
+                surface_penetration = wp.dot(surface_point_a - surface_point_b, surface_normal)
 
                 # A finite triangle must not use a support point beyond its
                 # footprint. A neighboring heightfield triangle may own that
                 # point, while at the outer boundary there may be no surface.
-                projected_b = surface_support.B - wp.dot(surface_support.B, surface_normal) * surface_normal
+                projected_b = surface_point_b - wp.dot(surface_point_b, surface_normal) * surface_normal
                 closest_b = closest_point_on_triangle(
                     projected_b,
                     wp.vec3(0.0),
@@ -509,7 +509,7 @@ def create_penetration_refinement_function(minkowski_support: Any):
                 if support_on_face and surface_penetration < penetration:
                     normal = surface_normal
                     penetration = surface_penetration
-                    point_b = surface_support.B
+                    point_b = surface_point_b
                     point_a = point_b + penetration * normal
 
         return point_a, point_b, normal, penetration

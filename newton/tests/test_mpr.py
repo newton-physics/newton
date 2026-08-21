@@ -15,6 +15,7 @@ from newton._src.geometry.support_function import (
     GenericShapeData,
     GeoTypeEx,
     SupportMapDataProvider,
+    create_triangle_prism_penetration_refiner,
     support_map,
 )
 
@@ -24,6 +25,7 @@ def _triangle_mpr_kernel(
     triangle_b: wp.array[wp.vec3],
     triangle_c: wp.array[wp.vec3],
     triangle_type: int,
+    refine_proxy: bool,
     shape_b_type: int,
     shape_b_scale: wp.vec3,
     shape_b_position: wp.array[wp.vec3],
@@ -56,6 +58,19 @@ def _triangle_mpr_kernel(
         0.0,
         data_provider,
     )
+    if collision and refine_proxy:
+        point_a, point_b, normal, penetration = wp.static(create_triangle_prism_penetration_refiner(support_map))(
+            shape_a,
+            shape_b,
+            shape_b_orientation[i],
+            shape_b_position[i],
+            0.0,
+            data_provider,
+            point_a,
+            point_b,
+            normal,
+            penetration,
+        )
 
     collision_out[i] = int(collision)
     point_a_out[i] = point_a
@@ -112,6 +127,7 @@ def _run_triangle_mpr(
     shape_positions,
     shape_orientations,
     triangle_type=GeoTypeEx.TRIANGLE,
+    refine_proxy=False,
 ):
     """Run direct triangle-vs-convex MPR cases on CPU and return NumPy outputs."""
     device = "cpu"
@@ -135,6 +151,7 @@ def _run_triangle_mpr(
             triangle_b_wp,
             triangle_c_wp,
             int(triangle_type),
+            refine_proxy,
             int(shape_type),
             wp.vec3(*shape_scale),
             shape_positions_wp,
@@ -310,7 +327,7 @@ class TestMPRTriangleInitialization(unittest.TestCase):
         np.testing.assert_allclose(penetrations, [0.1, 0.1], atol=1.0e-5)
 
 
-class TestMPRTrianglePrismSurface(unittest.TestCase):
+class TestTrianglePrismSurfacePolicy(unittest.TestCase):
     """Cover physical-surface refinement for volumetric triangle proxies."""
 
     def test_deep_box_penetration_uses_top_face(self):
@@ -321,6 +338,7 @@ class TestMPRTrianglePrismSurface(unittest.TestCase):
             triangle_b=[[1.0, 0.0, 0.0]],
             triangle_c=[[0.0, 1.0, 0.0]],
             triangle_type=GeoTypeEx.TRIANGLE_PRISM,
+            refine_proxy=True,
             shape_type=GeoType.BOX,
             shape_scale=(0.1, 0.1, half_height),
             shape_positions=[[0.25, 0.25, half_height - depth]],

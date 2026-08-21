@@ -36,7 +36,6 @@ from typing import Any
 import warp as wp
 
 from .support_function import (
-    create_penetration_refinement_function,
     create_shape_center_function,
     create_shape_support_function,
 )
@@ -184,7 +183,6 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
     shape_support = create_shape_support_function(support_func, center_ties=True)
     _, mpr_support, _ = create_support_map_function(shape_support)
-    refine_penetration = create_penetration_refinement_function(mpr_support)
 
     @wp.func
     def solve_mpr_core(
@@ -270,19 +268,6 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
             temp1 = v1.BtoA
             penetration = wp.dot(temp1, normal)
-
-            point_a, point_b, normal, penetration = refine_penetration(
-                geom_a,
-                geom_b,
-                orientation_b,
-                position_b,
-                extend,
-                data_provider,
-                point_a,
-                point_b,
-                normal,
-                penetration,
-            )
 
             return True, point_a, point_b, normal, penetration
 
@@ -395,19 +380,6 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
                     point_a = alpha * vert_a(v1) + beta * vert_a(v2) + gamma * vert_a(v3)
                     point_b = alpha * v1.B + beta * v2.B + gamma * v3.B
-
-                    point_a, point_b, normal, penetration = refine_penetration(
-                        geom_a,
-                        geom_b,
-                        orientation_b,
-                        position_b,
-                        extend,
-                        data_provider,
-                        point_a,
-                        point_b,
-                        normal,
-                        penetration,
-                    )
 
                 return hit, point_a, point_b, normal, penetration
 
