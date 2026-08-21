@@ -10,12 +10,15 @@
 #
 ###########################################################################
 
+import argparse
+
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
 from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
 from newton.tests.utils import basics
 
 
@@ -31,6 +34,16 @@ class Example:
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
         self.viewer = viewer
         self.device = wp.get_device()
+
+        video_output_filename = getattr(args, "video_path", None)
+        self.record_video = enable_recording(
+            viewer=self.viewer,
+            record_video=args.record_video if args else False,
+            start_clip=True,
+            output_path=video_output_filename if video_output_filename is not None else "recording.mp4",
+            max_frames=getattr(args, "max_video_frames", 1000),
+            fps=self.fps,
+        )
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         scene_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -163,6 +176,24 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
+        parser.add_argument(
+            "--record-video",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Record a video of the viewer, up to 1000 frames.",
+        )
+        parser.add_argument(
+            "--video-path",
+            type=str,
+            default=None,
+            help="Output video path (defaults to 'recording.mp4').",
+        )
+        parser.add_argument(
+            "--max-video-frames",
+            type=int,
+            default=1000,
+            help="Maximum number of frames recorded for the video (defaults to 1000).",
+        )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)
         return parser
@@ -173,3 +204,5 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)
+    if hasattr(viewer, "finish_clip"):
+        viewer.finish_clip()
