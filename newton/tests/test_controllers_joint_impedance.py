@@ -792,13 +792,26 @@ class TestControllerJointImpedance(unittest.TestCase):
                 q_idx=_idx([model.joint_q_start.numpy()[j_rev]], device),
                 qd_idx=_idx([model.joint_qd_start.numpy()[j_rev]], device),
             ),
-            stiffness=_gains(1, 1.0, device),
+            stiffness=_gains(1, 5.0, device),
             damping=_gains(1, 0.0, device),
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
+            use_inertia_decoupling=False,
             device=device,
         )
         self.assertIsNotNone(ctrl)
+        # Full-model state: identity ball-joint quaternion (x, y, z, w) followed
+        # by the revolute joint's coordinate/DOF; q_des/qd_des are compact and
+        # address only the controlled revolute joint.
+        tau = self._run(
+            ctrl,
+            q_sim=[0.0, 0.0, 0.0, 1.0, 0.0],
+            qd_sim=[0.0, 0.0, 0.0, 0.0],
+            q_des=[1.0],
+            qd_des=[0.0],
+            device=device,
+        )
+        np.testing.assert_allclose(tau, [5.0], atol=1e-4)
 
     def test_ball_joint_controlled_raises(self):
         """Verify that controlling a multi-DOF ball joint raises ValueError."""
