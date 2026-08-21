@@ -249,7 +249,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         integrator: Literal["euler", "moreau"] = "euler"
         """
-        The time-integrator to use for state integration.\n
+        The time-integrator to use for state integration. The ``"moreau"`` option requires
+        ``use_collision_detector=True``.\n
+
         See available options in the `integrators` module.\n
         Defaults to `"euler"`.
         """
@@ -429,6 +431,12 @@ class SolverKamino(SolverBase, CouplingInterface):
                     "The DVI solver currently requires `dynamics.preconditioning=False` so convergence checks and "
                     "contact cone updates stay in physical constraint units."
                 )
+            if (
+                self.dynamics_solver == "padmm"
+                and not self.sparse_dynamics
+                and self.padmm.penalty_update_method != "fixed"
+            ):
+                raise ValueError("Adaptive PADMM penalty updates require `sparse_dynamics=True`.")
 
             # Conversion to JointCorrectionMode will raise an error if the input string is invalid.
             JointCorrectionMode.from_string(self.rotation_correction)
@@ -728,6 +736,9 @@ class SolverKamino(SolverBase, CouplingInterface):
         # found on the model, so `self._config` will always be fully initialized after this step.
         if config is None:
             config = self.Config.from_model(model)
+        else:
+            # Validate the user-provided config. Protects against modifying the config after initialization.
+            config.validate()
         self._config = config
 
         # Create a Kamino model from the Newton model
@@ -743,9 +754,18 @@ class SolverKamino(SolverBase, CouplingInterface):
             device=model.device,
         )
 
+        built_massless_np = (model.body_inv_mass.numpy() == 0.0) | np.all(
+            model.body_inv_inertia.numpy() == 0.0, axis=(1, 2)
+        )
+        self._built_massless = wp.array(
+            built_massless_np.astype(np.int32),
+            dtype=wp.int32,
+            device=model.device,
+        )
+
         # Scratch array for notify validation
         self._notify_violations = wp.empty(
-            len(self._kamino.JointUpdateViolation),
+            len(self._kamino.StructuralUpdateViolation),
             dtype=wp.int32,
             device=model.device,
         )
@@ -778,7 +798,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         if self._collision_detector_kamino is not None:
             self._contacts_kamino = self._collision_detector_kamino.contacts
             # Keep Newton's externally allocated contact buffer in sync with Kamino.
-            model.rigid_contact_max = self._contacts_kamino.model_max_contacts_host
+            # The contacts container is `None` if no contacts are possible.
+            model.rigid_contact_max = (
+                self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
+            )
         else:
             # If collision detector is disabled allocate contacts based on the capacity estimate from the Newton CollisionPipeline.
             world_count = self.model.world_count
@@ -948,10 +971,11 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         Simulate the model for a given time step using the given control input.
 
-        When ``contacts`` is not ``None`` (i.e. populated by :meth:`~newton.CollisionPipeline.collide`),
-        those contacts are converted to Kamino's internal format and used directly,
-        bypassing Kamino's own collision detector.  When ``contacts`` is ``None``,
-        Kamino's internal collision pipeline runs as a fallback.
+        Contact source is selected when the solver is constructed. When
+        :attr:`Config.use_collision_detector` is enabled, Kamino's internal collision pipeline
+        generates contacts on every step and ``contacts`` is ignored. Otherwise, non-``None``
+        contacts (for example, populated by :meth:`~newton.CollisionPipeline.collide`) are
+        converted to Kamino's internal format and used directly.
 
         Args:
             state_in: The input state.
@@ -959,8 +983,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             control: The control input.
                 Defaults to `None` which means the control values from the
                 :class:`Model` are used.
-            contacts: The contact information from Newton's collision
-                pipeline, or ``None`` to use Kamino's internal collision detector.
+            contacts: The contact information from Newton's collision pipeline. Ignored when
+                :attr:`Config.use_collision_detector` is enabled.
             dt: The time step (typically in seconds).
         """
         # Interface the input state containers to Kamino's equivalents
@@ -975,21 +999,27 @@ class SolverKamino(SolverBase, CouplingInterface):
             control = self.model.control(clone_variables=False)
         self._control_kamino.from_newton(control, self._model_kamino)
 
-        # If contacts are provided, use them directly, bypassing Kamino's collision detector
-        if contacts is not None:
-            self._detector = None
-            self._kamino.convert_contacts_newton_to_kamino(
-                model=self.model,
-                state=state_in,
-                contacts_in=contacts,
-                contacts_out=self._contacts_kamino,
-                convert_forces=False,
-                friction_mix_mode=self._config.materials.friction_mix_mode,
-                restitution_mix_mode=self._config.materials.restitution_mix_mode,
-            )
-        # Otherwise, use Kamino's internal collision detector to generate contacts
-        else:
+        # Internal detection is authoritative when enabled for this solver.
+        if self._config.use_collision_detector:
             self._detector = self._collision_detector_kamino
+        elif contacts is not None:
+            self._detector = None
+            # The contacts container is `None` when the model admits no possible contacts.
+            if self._contacts_kamino is not None:
+                self._kamino.convert_contacts_newton_to_kamino(
+                    model=self.model,
+                    state=state_in,
+                    contacts_in=contacts,
+                    contacts_out=self._contacts_kamino,
+                    convert_forces=False,
+                    friction_mix_mode=self._config.materials.friction_mix_mode,
+                    restitution_mix_mode=self._config.materials.restitution_mix_mode,
+                    cull_speculative_contacts=self._config.dynamics.cull_speculative_contacts,
+                )
+        else:
+            self._detector = None
+            # Clear the internal contacts container to avoid using stale contacts from previous steps.
+            self._contacts_kamino.clear()
 
         # Convert Newton body-frame poses to Kamino CoM-frame poses
         self._kamino.convert_body_origin_to_com(
@@ -1219,7 +1249,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - springs
         - triangles, edges, tetrahedra
         - muscles
-        - distance or cable joints
+        - distance or rod joints
         - bodies with singular inertial properties that are attached to movable bodies
 
         Args:
@@ -1255,8 +1285,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 # Check for explicitly unsupported joint types
                 if joint_type == JointType.DISTANCE:
                     unsupported_joint_types["DISTANCE"] = unsupported_joint_types.get("DISTANCE", 0) + 1
-                elif joint_type == JointType.CABLE:
-                    unsupported_joint_types["CABLE"] = unsupported_joint_types.get("CABLE", 0) + 1
+                elif joint_type == JointType.ROD:
+                    unsupported_joint_types["ROD"] = unsupported_joint_types.get("ROD", 0) + 1
             if len(unsupported_joint_types) > 0:
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
@@ -1361,25 +1391,29 @@ class SolverKamino(SolverBase, CouplingInterface):
         check_dof = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
         check_actuation = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES))
         check_axes = check_dof
-        if not check_dof and not check_actuation and not check_axes:
+        check_inertial = bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
+        if not check_dof and not check_actuation and not check_axes and not check_inertial:
             return
 
-        sentinel = self._kamino.validate_model_joint_updates(
+        sentinel = self._kamino.validate_model_structural_updates(
             self.model,
             self._model_kamino.joints,
             self._built_limit_finite,
+            self._built_massless,
             self._notify_violations,
             check_dof=check_dof,
             check_actuation=check_actuation,
             check_axes=check_axes,
+            check_inertial=check_inertial,
         )
         violations = self._notify_violations.numpy()
-        dynamic_joint = violations[self._kamino.JointUpdateViolation.DYNAMIC_CTS]
-        limit_dof = violations[self._kamino.JointUpdateViolation.LIMIT_FINITE]
-        actuation_joint = violations[self._kamino.JointUpdateViolation.ACTUATION_PARTITION]
-        invalid_joint = violations[self._kamino.JointUpdateViolation.INVALID_TARGET_MODE]
-        axis_joint = violations[self._kamino.JointUpdateViolation.NONORTHONORMAL_AXES]
-        gimbal_handedness_joint = violations[self._kamino.JointUpdateViolation.GIMBAL_HANDEDNESS]
+        dynamic_joint = violations[self._kamino.StructuralUpdateViolation.DYNAMIC_CTS]
+        limit_dof = violations[self._kamino.StructuralUpdateViolation.LIMIT_FINITE]
+        actuation_joint = violations[self._kamino.StructuralUpdateViolation.ACTUATION_PARTITION]
+        invalid_joint = violations[self._kamino.StructuralUpdateViolation.INVALID_TARGET_MODE]
+        axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
+        gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
+        massless_body = violations[self._kamino.StructuralUpdateViolation.MASSLESS]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
@@ -1422,6 +1456,13 @@ class SolverKamino(SolverBase, CouplingInterface):
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
                 "gimbal axes must preserve the solver's original handedness"
+            )
+
+        if massless_body != sentinel:
+            body = int(massless_body)
+            label = self.model.body_label[body] if self.model.body_label else f"body {body}"
+            raise RuntimeError(
+                f"Making body {body} ({label!r}) massless is not supported; recreate SolverKamino to apply the change."
             )
 
     def _update_actuation_types(self) -> None:

@@ -385,6 +385,13 @@ class ConstrainedDynamicsConfig(ConfigBase):
     Defaults to an empty dictionary.
     """
 
+    cull_speculative_contacts: bool = True
+    """
+    Whether to cull speculative (= separated) contacts in the dynamics solve.
+    These contacts have occasionally led to numerical instabilities, and
+    can yield inaccurate restitutive impacts.
+    """
+
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
@@ -584,6 +591,16 @@ class PADMMSolverConfig:
     Defaults to `containers` to warmstart from the solver data containers.
     """
 
+    warmstart_scale: float = 0.9
+    """
+    Scale applied to cached constraint forces during warm-starting.\n
+    Must be in the range [0, 1]. Defaults to `0.9`.
+
+    PADMM converges to a minimum-norm deviation from its initial guess. Scaling
+    the warm-start forces makes null-space forces converge to the overall
+    minimum-norm solution.
+    """
+
     contact_warmstart_method: Literal[
         "key_and_position",
         "geom_pair_net_force",
@@ -760,6 +777,8 @@ class PADMMSolverConfig:
             raise ValueError(
                 f"Invalid linear solver tolerance ratio: {self.linear_solver_tolerance_ratio}. Must be non-negative."
             )
+        if not 0.0 <= self.warmstart_scale <= 1.0:
+            raise ValueError(f"Invalid warmstart scale: {self.warmstart_scale}. Must be in the range [0, 1].")
 
         # Ensure that the enum-valued parameters are valid options
         # Conversion to enum-type configs will raise an error
