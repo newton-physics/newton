@@ -1018,11 +1018,11 @@ class MultiRhsVelocityForwardKinematics(unittest.TestCase):
         bodies_u = wp.zeros(
             (rhs_size, model.size.sum_of_num_bodies), dtype=wp.spatial_vectorf, device=self.default_device
         )
-        with self.assertRaisesRegex(ValueError, "request_velocity_rhs_size"):
-            solver.solve_for_body_velocities_multi_rhs(actuator_u, bodies_q, bodies_u, base_u=base_u)
+        with self.assertRaisesRegex(ValueError, "request_velocity_solve_batch_size"):
+            solver.solve_for_body_velocities(actuator_u, bodies_q, bodies_u, base_u=base_u)
 
-        solver.request_velocity_rhs_size(rhs_size)
-        solver.solve_for_body_velocities_multi_rhs(actuator_u, bodies_q, bodies_u, base_u=base_u)
+        solver.request_velocity_solve_batch_size(rhs_size)
+        solver.solve_for_body_velocities(actuator_u, bodies_q, bodies_u, base_u=base_u)
 
         np.testing.assert_allclose(bodies_u.numpy(), np.asarray(expected), rtol=2.0e-4, atol=2.0e-4)
 
@@ -1054,8 +1054,8 @@ class MultiRhsVelocityForwardKinematics(unittest.TestCase):
         )
         bodies_u = wp.zeros((3, model.size.sum_of_num_bodies), dtype=wp.spatial_vectorf, device=self.default_device)
 
-        solver.request_velocity_rhs_size(3)
-        solver.solve_for_body_velocities_multi_rhs(actuator_u, bodies_q, bodies_u, base_u=base_u)
+        solver.request_velocity_solve_batch_size(3)
+        solver.solve_for_body_velocities(actuator_u, bodies_q, bodies_u, base_u=base_u)
 
         result = bodies_u.numpy()
         np.testing.assert_allclose(result[2], result[0] + result[1], rtol=2.0e-4, atol=2.0e-4)
@@ -1105,11 +1105,11 @@ class MultiRhsVelocityForwardKinematics(unittest.TestCase):
 
         solver.actuators_q_next.assign([1.1, 0.7, -0.8])
         rhs_size = actuator_u_np.shape[0]
-        solver.request_velocity_rhs_size(rhs_size)
+        solver.request_velocity_solve_batch_size(rhs_size)
         actual = wp.zeros(
             (rhs_size, model.size.sum_of_num_bodies), dtype=wp.spatial_vectorf, device=self.default_device
         )
-        solver.solve_for_body_velocities_multi_rhs(
+        solver.solve_for_body_velocities(
             actuator_u,
             bodies_q,
             actual,

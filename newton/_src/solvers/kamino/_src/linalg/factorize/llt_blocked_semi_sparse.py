@@ -399,10 +399,33 @@ class SemiSparseBlockCholeskySolverBatched:
     to skip unnecessary computation. Handles multiple systems in parallel with fixed matrix size.
     """
 
-    def __init__(self, num_batches: int, max_num_equations: int, block_size=16, device="cuda", enable_reordering=True):
+    def __init__(
+        self,
+        num_batches: int,
+        max_num_equations: int,
+        block_size: int = 16,
+        device: wp.DeviceLike = "cuda",
+        enable_reordering: bool = True,
+        rhs_sizes: list[int] | None = None,
+    ):
+        """
+        Initialize the solver given batch and matrix dimensions.
+
+        Args:
+            num_batches: Batch dimension, i.e. number of systems to solve in parallel.
+            max_num_equations: Maximal matrix size (i.e. n for a n x n matrix), among all systems.
+            block_size: Block size for the blocked Cholesky factorization.
+            device: Device on which to allocate the solver's data.
+            enable_reordering: Whether to enable Cuthill-McKee ordering as part of the factorization.
+            rhs_sizes: List of right-hand-side sizes for which to enable a solve (i.e. k for a n x k RHS).
+                Defaults to [1] (i.e. single-column rhs) if not provided.
+                More rhs sizes can be requested after construction with :meth:`request_rhs_size()`.
+                Note that only uniform RHS sizes (across the batch dimension) are supported currently.
+        """
         self.num_batches = num_batches
         self.max_num_equations = max_num_equations
         self.device = device
+        self.enable_reordering = enable_reordering
 
         self.num_threads_per_block_factorize = 128
         self.num_threads_per_block_solve = 64
@@ -412,33 +435,36 @@ class SemiSparseBlockCholeskySolverBatched:
         self.cholesky_kernel = create_blocked_cholesky_kernel(block_size)
         self.solve_kernel = create_blocked_cholesky_solve_kernel(block_size)
 
-        # Allocate workspace arrays for factorization and solve
         # Compute padded size rounded up to next multiple of block size
         self.padded_num_equations = (
             (self.max_num_equations + self.block_size - 1) // self.block_size
         ) * self.block_size
 
+        # Allocate workspace arrays for factorization and solve
         self.A_swizzled = wp.zeros(
             shape=(num_batches, self.padded_num_equations, self.padded_num_equations), dtype=float, device=self.device
         )
         self.L = wp.zeros(
             shape=(num_batches, self.padded_num_equations, self.padded_num_equations), dtype=float, device=self.device
         )
-        self.temp_buffers: dict[int, tuple[wp.array3d[float], wp.array3d[float], wp.array3d[float]]] = {}
-        self.request_rhs_size(1)
-
         self.num_tiles = (self.padded_num_equations + self.block_size - 1) // self.block_size
         self.L_tile_pattern = wp.zeros(
             shape=(num_batches, self.num_tiles, self.num_tiles), dtype=int, device=self.device
         )
 
-        self.enable_reordering = enable_reordering
+        # Allocate temporary buffers for requested RHS sizes
+        self.temp_buffers: dict[int, tuple[wp.array3d[float], wp.array3d[float], wp.array3d[float]]] = {}
+        """ Temporary buffers: (rhs_swizzled, result_swizzled, y) for each rhs size """
+        rhs_sizes = [1] if rhs_sizes is None else rhs_sizes
+        for rhs_size in rhs_sizes:
+            self.request_rhs_size(rhs_size)
 
     def request_rhs_size(self, rhs_size: int) -> None:
-        """Preallocate solve buffers for one homogeneous RHS size across all batches.
+        """
+        Preallocate the necessary internal buffers for a solve with specified RHS size.
 
-        Each entry in :attr:`temp_buffers` stores the reordered RHS, reordered
-        result, and forward-substitution workspace for one RHS size.
+        Must be called before the first call to :meth:`solve()` with this specific RHS size, if
+        that size was not provided upon construction as part of ``rhs_sizes``.
         """
         if rhs_size < 1:
             raise ValueError("rhs_size must be positive")
@@ -576,15 +602,15 @@ class SemiSparseBlockCholeskySolverBatched:
         result: wp.array3d[float],
         batch_mask: wp.array[wp.bool],
     ) -> None:
-        """Solve one homogeneous RHS size across all matrix batches.
-
-        Solves ``A x = b`` from the most recent Cholesky factorization. Call
-        :meth:`request_rhs_size` for the desired RHS size before graph capture.
+        """
+        Solves A x = b given the Cholesky factor L (A = L L^T) using
+        blocked forward and backward substitution.
 
         Args:
-            rhs: Input matrices with shape ``(batch_size, n, rhs_size)``.
-            result: Output matrices with the same shape as ``rhs``.
-            batch_mask: Flags selecting matrix batches to solve.
+            rhs: Input right-hand-side matrices of shape (batch_size, n, rhs_size).
+                Assumes rhs_size was requested beforehand, upon construction or with :meth:`request_rhs_size`.
+            result: Output solution matrices of shape (batch_size, n, rhs_size).
+            batch_mask: Boolean flag for each matrix in the batch, indicating whether to process it (False = skip)
 
         Raises:
             ValueError: If shapes are incompatible or ``rhs_size`` was not requested.
@@ -596,6 +622,7 @@ class SemiSparseBlockCholeskySolverBatched:
         if rhs.shape[1] < self.max_num_equations:
             raise ValueError(f"rhs must have at least {self.max_num_equations} rows")
 
+        # Retrieve temporary buffers
         rhs_size = rhs.shape[2]
         buffers = self.temp_buffers.get(rhs_size)
         if buffers is None:
@@ -604,6 +631,7 @@ class SemiSparseBlockCholeskySolverBatched:
             )
         rhs_swizzled, result_swizzled, y = buffers
 
+        # Apply reordering
         solve_rhs = rhs
         solve_result = result
         if self.enable_reordering:
@@ -616,6 +644,7 @@ class SemiSparseBlockCholeskySolverBatched:
             solve_rhs = rhs_swizzled
             solve_result = result_swizzled
 
+        # Then solve the system using blocked_cholesky_solve kernel
         wp.launch_tiled(
             self.solve_kernel,
             dim=(self.num_batches, rhs_size),
@@ -632,6 +661,7 @@ class SemiSparseBlockCholeskySolverBatched:
             device=self.device,
         )
 
+        # Undo reordering
         if self.enable_reordering:
             wp.launch(
                 reorder_rows_kernel,

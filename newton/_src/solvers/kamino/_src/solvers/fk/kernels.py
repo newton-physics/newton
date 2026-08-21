@@ -488,25 +488,31 @@ def _eval_fk_actuated_dofs_or_coords(
     This uses a map from fk to model dofs/cords, that has >= 0 indices for fk dofs/coords that correspond to
     main model actuated dofs/coords, and negative indices for base dofs/coords (base dof/coord i is stored as -i - 1)
 
+    Processes a batch of batch_size sets of dofs/coords in parallel.
+
     Inputs:
-        model_base_dofs: Base dofs or coordinates with shape ``(rhs_size, flattened_base_size)``
-        model_actuated_dofs: Actuated dofs/coords with shape ``(rhs_size, actuated_size)``
+        model_base_dofs: Base dofs or coordinates of the main model, with shape (batch_size, num_base_dofs_or_coords).
+            Shape (1, num_base_dofs_or_coords) is also supported for uniform base dofs/coords along the batch.
+        model_actuated_dofs: Actuated dofs/coords of the main model, with shape (batch_size, num_actuated_dofs_or_coords)
         actuated_dofs_map: Map of fk to main model actuated/base dofs/coords
     Outputs:
-        fk_actuated_dofs: FK dofs or coordinates with shape ``(rhs_size, fk_actuated_size)``
+        fk_actuated_dofs: Actuated dofs or coordinates of the fk model, with shape (batch_size, num_fk_actuated_dofs_or_coords)
     """
 
-    # Retrieve the thread index (= fk actuated dof or coordinate index)
+    # Retrieve the thread index (= batch id, fk actuated dof or coordinate index)
     # Note: we use "dof" in variables naming to mean either dof or coordinate
-    rhs_id, fk_dof_id = wp.tid()
+    batch_id, fk_dof_id = wp.tid()
 
-    if rhs_id < fk_actuated_dofs.shape[0] and fk_dof_id < fk_actuated_dofs.shape[1]:
+    if batch_id < fk_actuated_dofs.shape[0] and fk_dof_id < fk_actuated_dofs.shape[1]:
         model_dof_id = actuated_dofs_map[fk_dof_id]
         if model_dof_id >= 0:
-            fk_actuated_dofs[rhs_id, fk_dof_id] = model_actuated_dofs[rhs_id, model_dof_id]
+            fk_actuated_dofs[batch_id, fk_dof_id] = model_actuated_dofs[batch_id, model_dof_id]
         else:  # Base dofs/coordinates are encoded as negative indices
             base_dof_id = -(model_dof_id + 1)  # Recover base dof/coord id
-            fk_actuated_dofs[rhs_id, fk_dof_id] = model_base_dofs[rhs_id, base_dof_id]
+            if model_base_dofs.shape[0] == 1:
+                fk_actuated_dofs[batch_id, fk_dof_id] = model_base_dofs[0, base_dof_id]
+            else:
+                fk_actuated_dofs[batch_id, fk_dof_id] = model_base_dofs[batch_id, base_dof_id]
 
 
 def _make_typed_joint_transform_to_coords_func(dof_type: JointDoFType):
@@ -1608,15 +1614,17 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         """
         A kernel computing the matrix product J^T * C given the Jacobian J and the constraints vector C, in each world
 
+        Processes a batch of batch_size vectors C in parallel.
+
         Inputs:
             constraints_jacobian: Constraint Jacobian per world
-            constraints: Constraint vectors per world and right-hand side
+            constraints: Constraint vectors, with shape (num_worlds, num_cts_max, batch_size)
             tile_sparsity_pattern: Per-tile sparsity pattern of the Jacobian (0 = tile is fully zero)
             world_mask: Per-world boolean flag to perform the computation (False = skip)
         Outputs:
-            jacobian_T_constraints: Jacobian^T * Constraints per world and right-hand side
+            jacobian_T_constraints: Jacobian^T * Constraints, with shape (num_worlds, num_states_max, batch_size)
         """
-        wd_id, i, rhs_id = wp.tid()  # Thread indices (= world index, output tile index, RHS index)
+        wd_id, i, batch_id = wp.tid()  # Thread indices (= world index, output tile index, batch index)
 
         if (
             wd_id < jacobian_T_constraints.shape[0]
@@ -1641,7 +1649,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
                 segment_k_3d = wp.tile_load(
                     constraints,
                     shape=(1, TILE_SIZE_CTS, 1),
-                    offset=(wd_id, k * TILE_SIZE_CTS, rhs_id),
+                    offset=(wd_id, k * TILE_SIZE_CTS, batch_id),
                 )
                 segment_k = wp.tile_reshape(segment_k_3d, (TILE_SIZE_CTS, 1))
                 wp.tile_matmul(tile_i_T, segment_k, segment_out)
@@ -1660,7 +1668,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
                 offset=(
                     wd_id,
                     i * TILE_SIZE_VRS,
-                    rhs_id,
+                    batch_id,
                 ),
             )
 
@@ -2121,6 +2129,8 @@ def _eval_target_constraint_velocities(
     A kernel computing the target constraint velocities, i.e. zero for passive constraints
     and the prescribed dof velocity for actuated constraints.
 
+    Processes a batch of batch_size velocity vectors in parallel.
+
     Inputs:
         num_joints: Num joints per world
         first_joint_id: First joint id per world
@@ -2128,14 +2138,14 @@ def _eval_target_constraint_velocities(
         joints_act_type: Joint actuation type (i.e. passive or actuated)
         actuated_dofs_offset: Joint first actuated dof id, among all actuated dofs in all worlds
         ct_full_to_red_map: Map from full to reduced constraint id
-        actuators_u: Actuated joint velocities with shape ``(rhs_size, actuator_count)``
+        actuators_u: Actuated joint velocities, with shape ``(batch_size, num_fk_actuated_dofs)``
         world_mask: Per-world boolean flag to perform the computation (False = skip)
     Outputs:
-        target_cts_u: Target constraint velocities with shape ``(world_count, constraint_count, rhs_size)``
+        target_cts_u: Target constraint velocities, with shape ``(num_worlds, num_cts_max, batch_size)``
             (assumed to be zero-initialized)
     """
-    # Retrieve the thread indices (= RHS index, world index, joint index)
-    rhs_id, wd_id, jt_id_loc = wp.tid()
+    # Retrieve the thread indices (= batch index, world index, joint index)
+    batch_id, wd_id, jt_id_loc = wp.tid()
     if wd_id >= world_mask.shape[0] or not world_mask[wd_id] or jt_id_loc >= num_joints[wd_id]:
         return
 
@@ -2149,24 +2159,24 @@ def _eval_target_constraint_velocities(
     offset_cts_j = ct_full_to_red_map[6 * jt_id_tot]
 
     if dof_type_j == FKJointDoFType.CARTESIAN:
-        target_cts_u[wd_id, offset_cts_j, rhs_id] = actuators_u[rhs_id, offset_u_j]
-        target_cts_u[wd_id, offset_cts_j + 1, rhs_id] = actuators_u[rhs_id, offset_u_j + 1]
-        target_cts_u[wd_id, offset_cts_j + 2, rhs_id] = actuators_u[rhs_id, offset_u_j + 2]
+        target_cts_u[wd_id, offset_cts_j, batch_id] = actuators_u[batch_id, offset_u_j]
+        target_cts_u[wd_id, offset_cts_j + 1, batch_id] = actuators_u[batch_id, offset_u_j + 1]
+        target_cts_u[wd_id, offset_cts_j + 2, batch_id] = actuators_u[batch_id, offset_u_j + 2]
     elif dof_type_j == FKJointDoFType.CYLINDRICAL:
-        target_cts_u[wd_id, offset_cts_j, rhs_id] = actuators_u[rhs_id, offset_u_j]
-        target_cts_u[wd_id, offset_cts_j + 3, rhs_id] = actuators_u[rhs_id, offset_u_j + 1]
+        target_cts_u[wd_id, offset_cts_j, batch_id] = actuators_u[batch_id, offset_u_j]
+        target_cts_u[wd_id, offset_cts_j + 3, batch_id] = actuators_u[batch_id, offset_u_j + 1]
     elif dof_type_j == FKJointDoFType.FIXED:
         pass  # No dofs to apply
     elif dof_type_j == FKJointDoFType.FREE:
         for i in range(6):
-            target_cts_u[wd_id, offset_cts_j + i, rhs_id] = actuators_u[rhs_id, offset_u_j + i]
+            target_cts_u[wd_id, offset_cts_j + i, batch_id] = actuators_u[batch_id, offset_u_j + i]
     elif dof_type_j == FKJointDoFType.PRISMATIC:
-        target_cts_u[wd_id, offset_cts_j, rhs_id] = actuators_u[rhs_id, offset_u_j]
+        target_cts_u[wd_id, offset_cts_j, batch_id] = actuators_u[batch_id, offset_u_j]
     elif dof_type_j == FKJointDoFType.REVOLUTE:
-        target_cts_u[wd_id, offset_cts_j + 3, rhs_id] = actuators_u[rhs_id, offset_u_j]
+        target_cts_u[wd_id, offset_cts_j + 3, batch_id] = actuators_u[batch_id, offset_u_j]
     elif dof_type_j == FKJointDoFType.SPHERICAL:
         for i in range(3):
-            target_cts_u[wd_id, offset_cts_j + 3 + i, rhs_id] = actuators_u[rhs_id, offset_u_j + i]
+            target_cts_u[wd_id, offset_cts_j + 3 + i, batch_id] = actuators_u[batch_id, offset_u_j + i]
     elif dof_type_j == FKJointDoFType.GIMBAL or dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
         third_axis_sign = 1.0
         if dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
@@ -2176,15 +2186,15 @@ def _eval_target_constraint_velocities(
             third_axis_sign,
         )
         omega = (
-            wp.vec3f(axes[:, 0]) * actuators_u[rhs_id, offset_u_j]
-            + wp.vec3f(axes[:, 1]) * actuators_u[rhs_id, offset_u_j + 1]
-            + wp.vec3f(axes[:, 2]) * actuators_u[rhs_id, offset_u_j + 2]
+            wp.vec3f(axes[:, 0]) * actuators_u[batch_id, offset_u_j]
+            + wp.vec3f(axes[:, 1]) * actuators_u[batch_id, offset_u_j + 1]
+            + wp.vec3f(axes[:, 2]) * actuators_u[batch_id, offset_u_j + 2]
         )
         for i in range(3):
-            target_cts_u[wd_id, offset_cts_j + 3 + i, rhs_id] = omega[i]
+            target_cts_u[wd_id, offset_cts_j + 3 + i, batch_id] = omega[i]
     elif dof_type_j == FKJointDoFType.UNIVERSAL:
-        target_cts_u[wd_id, offset_cts_j + 3, rhs_id] = actuators_u[rhs_id, offset_u_j]
-        target_cts_u[wd_id, offset_cts_j + 4, rhs_id] = actuators_u[rhs_id, offset_u_j + 1]
+        target_cts_u[wd_id, offset_cts_j + 3, batch_id] = actuators_u[batch_id, offset_u_j]
+        target_cts_u[wd_id, offset_cts_j + 4, batch_id] = actuators_u[batch_id, offset_u_j + 1]
     else:
         assert False, "Unexpected actuator dof type"  # noqa: B011
 
@@ -2211,6 +2221,8 @@ def _correct_universal_constraint_velocities(
     This is needed because for universal joints, the dof-space velocity is expressed in the frame of the
     intermediary body, rather than in the frame on the base body.
 
+    Processes a batch of batch_size velocity vectors in parallel.
+
     Inputs:
         num_joints: Num joints per world
         first_joint_id: First joint id per world
@@ -2224,11 +2236,11 @@ def _correct_universal_constraint_velocities(
         bodies_q: Current body poses.
         world_mask: Per-world boolean flag to perform the computation (False = skip)
     Outputs:
-        target_cts_u: Corrected target constraint velocities with shape
-            ``(world_count, constraint_count, rhs_size)`` (provided uncorrected as input).
+        target_cts_u: Corrected target constraint velocities, with shape ``(num_worlds, num_cts_max, batch_size)``
+            (provided uncorrected as input).
     """
-    # Retrieve the thread indices (= RHS index, world index, joint index)
-    rhs_id, wd_id, jt_id_loc = wp.tid()
+    # Retrieve the thread indices (= batch index, world index, joint index)
+    batch_id, wd_id, jt_id_loc = wp.tid()
     if wd_id >= world_mask.shape[0] or not world_mask[wd_id] or jt_id_loc >= num_joints[wd_id]:
         return
 
@@ -2243,8 +2255,8 @@ def _correct_universal_constraint_velocities(
     # Read target angular velocity (currently, in dof space i.e. in the frame of the intermediary body)
     offset_cts_j = ct_full_to_red_map[6 * jt_id_tot]
     omega_curr = wp.vec3f(
-        target_cts_u[wd_id, offset_cts_j + 3, rhs_id],
-        target_cts_u[wd_id, offset_cts_j + 4, rhs_id],
+        target_cts_u[wd_id, offset_cts_j + 3, batch_id],
+        target_cts_u[wd_id, offset_cts_j + 4, batch_id],
         0.0,
     )
     # Compute relative orientation of joint frame on follower body w.r.t. joint frame on base body
@@ -2261,13 +2273,14 @@ def _correct_universal_constraint_velocities(
     e_y = wp.vec3f(0.0, 1.0, 0.0)
     a_x = e_x  # x axis on base
     a_y_raw = wp.quat_rotate(q_rel, e_y)  # y axis on follower (constrained to be orthogonal to a_x)
-    a_y = wp.normalize(a_y_raw - wp.dot(a_y_raw, a_x) * a_x)
+    a_y = a_y_raw - wp.dot(a_y_raw, a_x) * a_x  # orthogonalize (in case of constraint violations)
+    a_y = wp.normalize(a_y)
     a_z = wp.cross(a_x, a_y)
 
     # Convert target angular velocity back to joint frame on the base body
     omega = omega_curr[0] * a_x + omega_curr[1] * a_y + omega_curr[2] * a_z
     for i in range(3):
-        target_cts_u[wd_id, offset_cts_j + 3 + i, rhs_id] = omega[i]
+        target_cts_u[wd_id, offset_cts_j + 3 + i, batch_id] = omega[i]
 
 
 @wp.kernel
@@ -2285,17 +2298,19 @@ def _eval_body_velocities(
     A kernel computing the body velocities (twists) from the time derivative of body poses,
     computing in particular angular velocities omega = 2G(q)q_dot.
 
+    Processes a batch of batch_size velocity vectors in parallel.
+
     Inputs:
         num_bodies: Number of bodies per world
         first_body_id: First body id per world
         bodies_q: Body poses
-        bodies_q_dot: Time derivative of body poses with shape ``(world_count, state_count, rhs_size)``
+        bodies_q_dot: Time derivative of body poses, with shape ``(num_worlds, num_states_max, batch_size)``
         world_mask: Per-world boolean flag to perform the computation (False = skip)
     Outputs:
-        bodies_u: Body velocities (twists) with shape ``(rhs_size, body_count)``
+        bodies_u: Body velocities (twists), with shape ``(batch_size, sum_of_num_bodies)``
     """
-    # Retrieve the thread indices (= RHS index, world index, body index)
-    rhs_id, wd_id, rb_id_loc = wp.tid()
+    # Retrieve the thread indices (= batch index, world index, body index)
+    batch_id, wd_id, rb_id_loc = wp.tid()
     if not world_mask[wd_id] or rb_id_loc >= num_bodies[wd_id]:
         return
 
@@ -2305,19 +2320,20 @@ def _eval_body_velocities(
 
     # Copy linear velocity
     linear = wp.vec3f(
-        bodies_q_dot[wd_id, offset_q_dot, rhs_id],
-        bodies_q_dot[wd_id, offset_q_dot + 1, rhs_id],
-        bodies_q_dot[wd_id, offset_q_dot + 2, rhs_id],
+        bodies_q_dot[wd_id, offset_q_dot, batch_id],
+        bodies_q_dot[wd_id, offset_q_dot + 1, batch_id],
+        bodies_q_dot[wd_id, offset_q_dot + 2, batch_id],
     )
     # Compute angular velocity
+    q = wp.transform_get_rotation(bodies_q[rb_id_tot])
     q_dot = wp.vec4f(
-        bodies_q_dot[wd_id, offset_q_dot + 3, rhs_id],
-        bodies_q_dot[wd_id, offset_q_dot + 4, rhs_id],
-        bodies_q_dot[wd_id, offset_q_dot + 5, rhs_id],
-        bodies_q_dot[wd_id, offset_q_dot + 6, rhs_id],
+        bodies_q_dot[wd_id, offset_q_dot + 3, batch_id],
+        bodies_q_dot[wd_id, offset_q_dot + 4, batch_id],
+        bodies_q_dot[wd_id, offset_q_dot + 5, batch_id],
+        bodies_q_dot[wd_id, offset_q_dot + 6, batch_id],
     )
-    omega = 2.0 * (G_of(wp.transform_get_rotation(bodies_q[rb_id_tot])) * q_dot)
-    bodies_u[rhs_id, rb_id_tot] = wp.spatial_vector(linear, omega)
+    omega = 2.0 * (G_of(q) * q_dot)
+    bodies_u[batch_id, rb_id_tot] = wp.spatial_vector(linear, omega)
 
 
 @wp.kernel
