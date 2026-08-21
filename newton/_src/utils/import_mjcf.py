@@ -694,7 +694,10 @@ def parse_mjcf(
             mesh_file = mesh_attrib.get("file")
             mesh_name = mesh_attrib.get("name")
             mesh_scale = np.array(mesh_attrib.get("scale", "1.0 1.0 1.0").split(), dtype=np.float32)
-            maxhullvert = int(mesh_attrib.get("maxhullvert", str(mesh_maxhullvert)))
+            authored_maxhullvert = mesh_attrib.get("maxhullvert")
+            maxhullvert = int(authored_maxhullvert) if authored_maxhullvert is not None else mesh_maxhullvert
+            # MuJoCo defaults inertia hulls to unlimited; mesh_maxhullvert only controls Newton collision hulls.
+            inertia_maxhullvert = int(authored_maxhullvert) if authored_maxhullvert is not None else -1
             inertia_mode = mesh_attrib.get("inertia", "legacy")
             if inertia_mode not in {"convex", "exact", "legacy", "shell"}:
                 raise ValueError(f"Unsupported inertia mode {inertia_mode!r} for MJCF mesh asset {mesh_name!r}")
@@ -709,6 +712,7 @@ def parse_mjcf(
                     "file": fname,
                     "scale": mesh_scale,
                     "maxhullvert": maxhullvert,
+                    "inertia_maxhullvert": inertia_maxhullvert,
                     "inertia": inertia_mode,
                 }
             elif "vertex" in mesh_attrib:
@@ -797,6 +801,7 @@ def parse_mjcf(
                     "refquat": refquat,
                     "scale": mesh_scale,
                     "maxhullvert": maxhullvert,
+                    "inertia_maxhullvert": inertia_maxhullvert,
                     "inertia": inertia_mode,
                 }
         for texture in asset.findall("texture"):
@@ -1389,13 +1394,14 @@ def parse_mjcf(
                 )
                 mass_mesh = m_meshes[0]
                 inertia_mode = mesh_asset["inertia"]
+                inertia_maxhullvert = mesh_asset["inertia_maxhullvert"]
                 contributes_inertia = (
                     shape_cfg.is_solid
                     and link >= 0
                     and (shape_cfg.density > 0.0 or (geom_mass_explicit is not None and geom_mass_explicit > 0.0))
                 )
                 if contributes_inertia:
-                    cache_key = (tuple(float(value) for value in scaling), inertia_mode, maxhullvert)
+                    cache_key = (tuple(float(value) for value in scaling), inertia_mode, inertia_maxhullvert)
                     inertia_cache = mesh_asset.setdefault("_inertia_cache", {})
                     if cache_key not in inertia_cache:
                         convex_meshes = None
@@ -1403,12 +1409,12 @@ def parse_mjcf(
                             convex_meshes = load_mesh_asset(
                                 geom_attrib["mesh"],
                                 np.ones(3),
-                                maxhullvert,
+                                inertia_maxhullvert,
                             )
                         inertia_cache[cache_key] = _compute_mjcf_mesh_inertia(
                             m_meshes,
                             inertia_mode,
-                            maxhullvert,
+                            inertia_maxhullvert,
                             convex_meshes=convex_meshes,
                             scaling=scaling,
                         )

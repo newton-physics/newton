@@ -3384,6 +3384,42 @@ f 2 3 4
                 atol=1e-6,
             )
 
+    def test_unset_convex_maxhullvert_uses_unlimited_inertia_hull(self):
+        """Keep the collision hull budget from changing default convex inertia."""
+        import mujoco
+        import trimesh
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mesh_path = os.path.join(temp_dir, "sphere.obj")
+            trimesh.creation.icosphere(subdivisions=2, radius=0.5).export(mesh_path)
+            mjcf = f"""
+<mujoco>
+  <asset><mesh name="sphere" file="{mesh_path}" inertia="convex"/></asset>
+  <worldbody>
+    <body name="sphere"><freejoint/><geom type="mesh" mesh="sphere" density="1000"/></body>
+  </worldbody>
+</mujoco>
+"""
+            native_model = mujoco.MjModel.from_xml_string(mjcf)
+            inertia_rotation = np.empty(9)
+            mujoco.mju_quat2Mat(inertia_rotation, native_model.body_iquat[1])
+            inertia_rotation = inertia_rotation.reshape(3, 3)
+            native_inertia = inertia_rotation @ np.diag(native_model.body_inertia[1]) @ inertia_rotation.T
+
+            for collision_maxhullvert in (64, 256):
+                with self.subTest(collision_maxhullvert=collision_maxhullvert):
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf, mesh_maxhullvert=collision_maxhullvert)
+
+                    self.assertEqual(builder.shape_source[0].maxhullvert, collision_maxhullvert)
+                    self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1], places=6)
+                    np.testing.assert_allclose(builder.body_com[0], native_model.body_ipos[1], atol=1e-6)
+                    np.testing.assert_allclose(
+                        np.asarray(builder.body_inertia[0]).reshape(3, 3),
+                        native_inertia,
+                        atol=1e-6,
+                    )
+
     def test_compiler_inertiagrouprange(self):
         """Test that only geom groups in the compiler range contribute inertia."""
         mjcf = """<?xml version="1.0" ?>
