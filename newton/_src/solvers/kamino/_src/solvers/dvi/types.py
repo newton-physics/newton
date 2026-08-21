@@ -56,11 +56,11 @@ class DVIStatus:
     iterations: int32
     """Projected sweeps; direct-bilateral solves report block/contact sweeps."""
     r_p: float32
-    """Primal cone-feasibility residual."""
+    """Maximum primal box- and cone-feasibility residual."""
     r_d: float32
     """Maximum dual cone-feasibility and bilateral velocity residual."""
     r_c: float32
-    """Maximum absolute impulse-velocity inner product."""
+    """Maximum absolute impulse-velocity product, directional on box rows."""
     r_b: float32
     """Bilateral constraint-space velocity residual."""
 

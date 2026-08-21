@@ -8,7 +8,11 @@ from __future__ import annotations
 import warp as wp
 
 from ...core.math import FLOAT32_EPS
-from ..padmm.math import project_to_coulomb_cone, project_to_coulomb_dual_cone
+from ..padmm.math import (
+    compute_box_complementarity_residual,
+    project_to_coulomb_cone,
+    project_to_coulomb_dual_cone,
+)
 from .projections import (
     project_box_update as _project_box_update,
 )
@@ -276,16 +280,17 @@ def _compute_dvi_status_residuals(
         v_j = state_v_aug[vio + jid]
         r_b = wp.max(r_b, wp.abs(v_j))
 
-    # Bounded-multiplier rows fold primal, dual, and complementarity feasibility into a
-    # single natural-map residual, since the box `[lower, upper]` has no cone-projection
-    # split analogous to the limit/contact terms below.
+    # Bounded-multiplier rows require lambda in the box `[lower, upper]` and directional
+    # complementarity with the face selected by the sign of v_aug. There is no dual
+    # condition, since v_aug is free to take either sign on a box row.
     for bid in range(nbc):
         bcio_v = vio + bcgo + bid
         lambda_b = solution_lambdas[bcio_v]
         v_b = state_v_aug[bcio_v]
         lower = problem_bound_lower[bcio + bid]
         upper = problem_bound_upper[bcio + bid]
-        r_c = wp.max(r_c, wp.abs(lambda_b - wp.clamp(lambda_b - v_b, lower, upper)))
+        r_p = wp.max(r_p, wp.abs(lambda_b - wp.clamp(lambda_b, lower, upper)))
+        r_c = wp.max(r_c, wp.abs(compute_box_complementarity_residual(lambda_b, v_b, lower, upper)))
 
     # Limits require lambda and v_aug in R+ with lambda * v_aug = 0.
     for lid in range(nl):
@@ -308,8 +313,8 @@ def _compute_dvi_status_residuals(
         r_d = wp.max(r_d, wp.max(wp.abs(v_c - v_proj)))
         r_c = wp.max(r_c, wp.abs(wp.dot(lambda_c, v_c)))
 
-    # Thus r_p and r_d are infinity-norm cone-projection distances, while r_c
-    # is the maximum absolute impulse-velocity inner product.
+    # Thus r_p and r_d are infinity-norm box- and cone-projection distances, while r_c
+    # is the maximum absolute impulse-velocity product.
     status.r_b = r_b
     status.r_p = r_p
     status.r_d = wp.max(r_d, r_b)
