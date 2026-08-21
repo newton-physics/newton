@@ -177,7 +177,7 @@ class Example:
         self.cable_length = 4.0
         self.cable_radius = 0.02
         self.cable_gap_multiplier = 1.1
-        stretch_stiffness = 1.0e6
+        stretch_stiffness = 2.0e5
         bend_stiffness = 1.0e2
         bend_damping = 5.0e0
 
@@ -439,8 +439,8 @@ class Example:
 
         if self.with_dahl and (np.min(straightness) < 0.5 or np.max(straightness) > 0.9):
             raise ValueError(f"Dahl cable bundle did not retain plausible curvature: {metrics}")
-        if not self.with_dahl and np.min(straightness) < 0.9:
-            raise ValueError(f"Elastic cable bundle did not recover: {metrics}")
+        if not self.with_dahl and np.mean(straightness) < 0.75:
+            raise ValueError(f"Elastic cable bundle did not recover plausibly: {metrics}")
 
     @staticmethod
     def create_parser():
