@@ -8,7 +8,7 @@
 # Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
 # The first segment of each cable continuously spins, propagating twist along the cable.
 # The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
-# is transported through cable joints and across bends.
+# is transported through rod joints and across bends.
 #
 # Run interactively:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_twist
@@ -109,7 +109,7 @@ class Example:
             z = 0.0
             points.append(pos + wp.vec3(x, y, z))
 
-        edge_q = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=float(twisting_angle))
+        edge_q = newton.utils.rod_parallel_transport_quaternions(points, twist_total=float(twisting_angle))
         return points, edge_q
 
     def __init__(self, viewer, args):

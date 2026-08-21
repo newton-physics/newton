@@ -17,6 +17,7 @@ from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
+from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.import_usd_deformable_utils import _validate_mass_array, _warn_geometry_authored_material_attrs
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
@@ -1110,6 +1111,7 @@ def _get_mesh_from_source(
     preserve_facevarying_uvs: bool,
     compute_inertia: bool,
     apply_stage_units: bool,
+    load_visual_materials: bool,
 ) -> Mesh:
     """Load and merge mesh prims from a USD stage, path, URL, or prim subtree."""
     if Usd is None or UsdGeom is None:
@@ -1162,6 +1164,7 @@ def _get_mesh_from_source(
             vertex_splitting_angle_threshold_deg=vertex_splitting_angle_threshold_deg,
             preserve_facevarying_uvs=preserve_facevarying_uvs,
             compute_inertia=False,
+            load_visual_materials=load_visual_materials,
         )
         source_meshes.append(source_mesh)
         matrix = _relative_transform_matrix(prim, root, xform_cache)
@@ -1321,6 +1324,7 @@ def _find_uv_primvar(prim: Usd.Prim):
 @overload
 def get_mesh(
     source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1333,12 +1337,14 @@ def get_mesh(
     root_path: str | None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
+    load_visual_materials: bool = True,
 ) -> Mesh: ...
 
 
 @overload
 def get_mesh(
     source: Usd.Prim,
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1351,12 +1357,14 @@ def get_mesh(
     root_path: None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
+    load_visual_materials: bool = True,
 ) -> tuple[Mesh, np.ndarray | None]: ...
 
 
 @overload
 def get_mesh(
     source: None = None,
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1369,14 +1377,15 @@ def get_mesh(
     root_path: str | None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
-    *,
     prim: Usd.Prim,
+    load_visual_materials: bool = True,
 ) -> Mesh: ...
 
 
 @overload
 def get_mesh(
     source: None = None,
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1389,13 +1398,15 @@ def get_mesh(
     root_path: None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
-    *,
     prim: Usd.Prim,
+    load_visual_materials: bool = True,
 ) -> tuple[Mesh, np.ndarray | None]: ...
 
 
+@deprecate_nonkeyword_arguments
 def get_mesh(
     source: Usd.Prim | Usd.Stage | str | os.PathLike[str] | None = None,
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1408,8 +1419,8 @@ def get_mesh(
     root_path: str | None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
-    *,
     prim: Usd.Prim | None = None,
+    load_visual_materials: bool = True,
 ) -> Mesh | tuple[Mesh, np.ndarray | None]:
     """
     Load a triangle mesh from a USD mesh prim, stage, file path, or URL.
@@ -1484,6 +1495,16 @@ def get_mesh(
             non-mesh prim sources from authored USD distance units to meters.
             Single mesh prim sources keep their authored coordinates for
             backward compatibility unless ``root_path`` is provided.
+        load_visual_materials: If True, resolve the mesh's visual material and
+            populate :attr:`newton.Mesh.color`, :attr:`newton.Mesh.texture`,
+            :attr:`newton.Mesh.metallic`, and :attr:`newton.Mesh.roughness`.
+            Resolution also covers materials bound through an instance
+            prototype or a ``UsdGeom.Subset`` child, and the ``displayColor``
+            primvar fallback. If False, those attributes keep their
+            :class:`newton.Mesh` defaults; set it to False when only mesh
+            geometry is needed. If ``load_uvs`` is True, the material's shader
+            network may still be inspected to select the UV primvar used by
+            the texture.
 
     Returns:
         newton.Mesh: The loaded mesh, or ``(mesh, uv_indices)`` if
@@ -1520,6 +1541,7 @@ def get_mesh(
             preserve_facevarying_uvs=preserve_facevarying_uvs,
             compute_inertia=compute_inertia,
             apply_stage_units=apply_stage_units,
+            load_visual_materials=load_visual_materials,
         )
 
     if Usd is not None and isinstance(source, Usd.Prim):
@@ -1584,6 +1606,21 @@ def get_mesh(
 
     if normals is not None:
         normals = np.array(normals, dtype=np.float64)
+        if normals_interpolation == UsdGeom.Tokens.uniform:
+            # One normal per face, commonly indexed so that flat-shaded geometry stores each
+            # distinct direction once. Resolve the indices and hand each face's normal to its
+            # own corners, which is the faceVarying form the rest of this function expects.
+            prim_path = str(prim.GetPath())
+            if normal_indices is not None and len(normal_indices) > 0:
+                normals = _expand_indexed_primvar(normals, normal_indices, "Normal", prim_path)
+                normal_indices = None
+            if len(normals) != len(counts):
+                raise ValueError(
+                    f"Length of uniform normals ({len(normals)}) does not match number of faces "
+                    f"({len(counts)}) for mesh {prim_path}"
+                )
+            normals = np.repeat(normals, np.asarray(counts, dtype=np.int32), axis=0)
+            normals_interpolation = UsdGeom.Tokens.faceVarying
         if normals_interpolation == UsdGeom.Tokens.faceVarying:
             prim_path = str(prim.GetPath())
             if normal_indices is not None and len(normal_indices) > 0:
@@ -1719,7 +1756,7 @@ def get_mesh(
     if return_uv_indices and uvs is not None and uv_indices is None:
         uv_indices = faces.reshape(-1)
 
-    material_props = resolve_material_properties_for_prim(prim)
+    material_props = resolve_material_properties_for_prim(prim) if load_visual_materials else {}
 
     mesh_out = Mesh(
         points,

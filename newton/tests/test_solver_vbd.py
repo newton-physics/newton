@@ -1536,8 +1536,8 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         joint_x_p = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_x_c = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_axis = wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
-        joint_cable_rest_kb_local = wp.zeros(1, dtype=wp.vec3, device=device)
-        joint_cable_rest_twist = wp.zeros(1, dtype=float, device=device)
+        joint_rod_rest_kb_local = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_rod_rest_twist = wp.zeros(1, dtype=float, device=device)
         joint_qd_start = wp.array([0], dtype=wp.int32, device=device)
         joint_target_q_start = wp.array([0], dtype=wp.int32, device=device)
         joint_constraint_start = wp.array([0], dtype=wp.int32, device=device)
@@ -1575,8 +1575,8 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_x_p,
                 joint_x_c,
                 joint_axis,
-                joint_cable_rest_kb_local,
-                joint_cable_rest_twist,
+                joint_rod_rest_kb_local,
+                joint_rod_rest_twist,
                 joint_qd_start,
                 joint_target_q_start,
                 joint_constraint_start,
@@ -1618,18 +1618,18 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         np.testing.assert_allclose(lambda_ang.numpy(), [[0.0, 2.0, 3.0]])
 
 
-def _cable_soft_dual_slots_clear_preserved_lambda(test, device):
-    """Soft cable slots should not preserve stale lambda components when recombined."""
+def _rod_soft_dual_slots_clear_preserved_lambda(test, device):
+    """Verify soft rod slots clear stale lambda components when recombined."""
     with wp.ScopedDevice(device):
-        joint_type = wp.array([int(newton.JointType.CABLE)], dtype=wp.int32, device=device)
+        joint_type = wp.array([int(newton.JointType.ROD)], dtype=wp.int32, device=device)
         joint_enabled = wp.array([True], dtype=bool, device=device)
         joint_parent = wp.array([-1], dtype=wp.int32, device=device)
         joint_child = wp.array([0], dtype=wp.int32, device=device)
         joint_x_p = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_x_c = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_axis = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
-        joint_cable_rest_kb_local = wp.zeros(1, dtype=wp.vec3, device=device)
-        joint_cable_rest_twist = wp.zeros(1, dtype=float, device=device)
+        joint_rod_rest_kb_local = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_rod_rest_twist = wp.zeros(1, dtype=float, device=device)
         joint_qd_start = wp.array([0], dtype=wp.int32, device=device)
         joint_target_q_start = wp.array([0], dtype=wp.int32, device=device)
         joint_constraint_start = wp.array([0], dtype=wp.int32, device=device)
@@ -1672,8 +1672,8 @@ def _cable_soft_dual_slots_clear_preserved_lambda(test, device):
                 joint_x_p,
                 joint_x_c,
                 joint_axis,
-                joint_cable_rest_kb_local,
-                joint_cable_rest_twist,
+                joint_rod_rest_kb_local,
+                joint_rod_rest_twist,
                 joint_qd_start,
                 joint_target_q_start,
                 joint_constraint_start,
@@ -3271,7 +3271,7 @@ def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
     child = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
     builder.add_shape_box(parent, hx=0.1, hy=0.1, hz=0.1)
     builder.add_shape_box(child, hx=0.1, hy=0.1, hz=0.1)
-    joint = builder.add_joint_cable(
+    joint = builder.add_joint_rod(
         parent,
         child,
         parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()),
@@ -3487,10 +3487,10 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True, rigid_c
     direction = wp.vec3(float(math.cos(yaw)), float(math.sin(yaw)), 0.0)
     center = wp.vec3(0.0, 0.0, radius + 0.05)
     start = center - 0.5 * length * direction
-    points = newton.utils.create_straight_cable_points(
+    points = newton.utils.cable_straight_points(
         start=start, direction=direction, length=length, num_segments=num_segments
     )
-    quaternions = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=0.0)
+    quaternions = newton.utils.rod_parallel_transport_quaternions(points, twist_total=0.0)
     bodies, _joints = builder.add_rod(
         positions=points,
         quaternions=quaternions,
@@ -3837,8 +3837,8 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_cable_soft_dual_slots_clear_preserved_lambda",
-    _cable_soft_dual_slots_clear_preserved_lambda,
+    "test_rod_soft_dual_slots_clear_preserved_lambda",
+    _rod_soft_dual_slots_clear_preserved_lambda,
     devices=devices,
 )
 add_function_test(
