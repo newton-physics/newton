@@ -1113,9 +1113,8 @@ class Model:
         :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
         :attr:`joint_qd_start` to match the active layout.
 
-        For ROD joints, this array stores structural-rest translation [m] and
-        rotation: a unitless quaternion in coordinate layout or extrinsic ZYX
-        angles [rad] in legacy layout. See :ref:`Rod joints`.
+        For ROD joints, this Model-owned array defines structural rest;
+        see :ref:`Rod joints`.
         """
         self.joint_target_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type] used to initialize :attr:`newton.Control.joint_target_qd`, shape [joint_dof_count], float.

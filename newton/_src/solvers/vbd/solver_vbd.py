@@ -64,7 +64,7 @@ from .rigid_vbd_kernels import (
     init_body_body_contact_materials,
     init_body_body_contacts_alm,
     init_body_particle_contacts,
-    init_rod_rest,
+    init_rod_rest_bend_twist,
     refresh_body_structural_k,
     reset_rigid_state,
     snapshot_body_body_contact_history,
@@ -207,14 +207,14 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Call :meth:`newton.ModelBuilder.color` to automatically color both particles and rigid bodies.
 
-        VBD uses ``model.body_q`` as the structural rest pose and reads
-        ``model.joint_q`` for drive/limit rest-angle offsets. The body
-        transforms must match the joint angles at solver construction time
-        (see example below).
+        For non-ROD rigid joints, VBD uses ``model.body_q`` as the structural
+        rest pose and reads ``model.joint_q`` for drive/limit rest-angle
+        offsets. The body transforms must match the joint angles at solver
+        creation time (see example below).
 
-        Rod structural rest is instead captured from the full
-        ``model.joint_target_q`` relative pose when the solver is constructed.
-        Construct a new solver after changing rod rest.
+        For ROD joints, SolverVBD captures structural-rest bend and twist from
+        ``model.joint_target_q`` when constructed. Construct a new solver after
+        changing these Model-owned angular rest targets.
 
         For CUDA graph capture, the recommended construction order is
         ``CollisionPipeline`` -> ``Contacts`` -> ``SolverVBD``, all before capture.
@@ -973,15 +973,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
                 self.enable_dahl_friction = False
 
-            # Per-joint rod rest invariants captured from the Model target at construction:
-            # parent-local stretch/shear, curvature binormal, and transported twist.
+            # Per-joint rod angular-rest invariants captured from the Model
+            # target at construction: curvature binormal and transported twist.
             # Rod joints use local +Z as the material tangent (a SolverVBD convention).
-            self.joint_rod_rest_offset_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
-            self.joint_rod_rest_uses_material_arm = wp.zeros(model.joint_count, dtype=bool, device=self.device)
             self.joint_rod_rest_kb_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_rod_rest_twist = wp.zeros(model.joint_count, dtype=float, device=self.device)
-            if model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
-                self._init_rod_rest_cache()
+            self._init_rod_rest_bend_twist_cache()
 
         # -------------------------------------------------------------
         # Body-particle interaction shared state.
@@ -1379,8 +1376,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 "which publishes model.rigid_contact_max; there is no equivalent for body-particle contacts."
             )
 
-    def _init_rod_rest_cache(self) -> None:
-        """Compute static rod rest invariants from Model target poses."""
+    def _init_rod_rest_bend_twist_cache(self) -> None:
+        """Compute static Rod bend/twist rest invariants from Model targets."""
         # The cache is only allocated when SolverVBD integrates the rigid system
         # (see _init_rigid_system); skip when bodies are handled externally.
         if not self._integrates_rigid_bodies or self.model.joint_count == 0:
@@ -1391,19 +1388,15 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         wp.launch(
-            kernel=init_rod_rest,
+            kernel=init_rod_rest_bend_twist,
             dim=self.model.joint_count,
             inputs=[
                 self.model.joint_type,
                 self.model.joint_target_q_start,
                 self.model.joint_target_q,
-                self.model.joint_X_p,
-                self.model.joint_X_c,
                 self.model.use_coord_layout_targets,
             ],
             outputs=[
-                self.joint_rod_rest_offset_local,
-                self.joint_rod_rest_uses_material_arm,
                 self.joint_rod_rest_kb_local,
                 self.joint_rod_rest_twist,
             ],
@@ -2724,7 +2717,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.joint_child,
                         model.joint_X_p,
                         model.joint_X_c,
-                        self.joint_rod_rest_offset_local,
                         model.joint_axis,
                         model.joint_qd_start,
                         model.joint_dof_dim,
@@ -3231,8 +3223,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
-                    self.joint_rod_rest_offset_local,
-                    self.joint_rod_rest_uses_material_arm,
                     self.joint_rod_rest_kb_local,
                     self.joint_rod_rest_twist,
                     model.joint_qd_start,
@@ -3344,7 +3334,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
-                    self.joint_rod_rest_offset_local,
                     self.joint_rod_rest_kb_local,
                     self.joint_rod_rest_twist,
                     model.joint_qd_start,

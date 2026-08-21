@@ -56,8 +56,8 @@ class Example:
 
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 8
-        self.sim_iterations = 8
+        self.sim_substeps = 5
+        self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
@@ -67,15 +67,15 @@ class Example:
         helix_axis_length = 2.6
         helix_turns = 2.5
         stretch_stiffness = 1.0e6
-        bend_stiffness = 4.0e2
-        bend_damping = 5.0e-2
+        bend_stiffness = 5.0e2
+        bend_damping = 1.0e0
 
         builder = newton.ModelBuilder()
         cable_cfg = builder.default_shape_cfg.copy()
         cable_cfg.density = 800.0
         cable_cfg.ke = 5.0e4
         cable_cfg.kd = 0.0
-        cable_cfg.mu = 0.6
+        cable_cfg.mu = 0.1
 
         cable_height = cable_radius + helix_radius
         left_center = wp.vec3(0.0, -0.75, cable_height)

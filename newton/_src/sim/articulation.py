@@ -1534,7 +1534,7 @@ def eval_inverse_dynamics_force(
         ValueError: If the model contains a :attr:`~newton.JointType.ROD`
             joint or an input, output, or mask has an unexpected shape.
     """
-    if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+    if model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
         raise ValueError("eval_inverse_dynamics_force() does not support JointType.ROD joints.")
 
     if model.articulation_count == 0:

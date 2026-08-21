@@ -2257,16 +2257,13 @@ class TestModelJoints(unittest.TestCase):
         finally:
             newton.use_coord_layout_targets = previous_flag
 
-    def test_ball_free_rod_per_axis_target_pos_preserved(self):
-        """Preserve per-axis BALL, FREE, and ROD targets in coordinate layout.
-
-        Angular targets are interpreted as extrinsic ZYX Euler angles and
-        converted to a unit quaternion. FREE and ROD linear targets fill the
-        position slice verbatim.
-        """
-        self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
-        newton.use_coord_layout_targets = True
-
+    def test_ball_free_per_axis_target_pos_preserved(self):
+        """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
+        into the ``joint_target_q`` coord slice: the 3 angular scalars are
+        interpreted as extrinsic ZYX Euler angles and converted to a unit
+        quaternion via :meth:`ModelBuilder._quat_from_euler_zyx`, matching
+        kamino's DOF→coord conversion. FREE linear targets fill the position
+        slice verbatim."""
         ang_targets = (0.1, 0.2, -0.3)
 
         def _make_axes():
@@ -2305,18 +2302,8 @@ class TestModelJoints(unittest.TestCase):
             linear_axes=_make_linear_axes(),
             angular_axes=_make_axes(),
         )
-        # ROD via low-level add_joint to exercise generic per-axis target authoring
-        b_rod = builder.add_link(mass=1.0)
-        j_rod = builder.add_joint(
-            newton.JointType.ROD,
-            parent=-1,
-            child=b_rod,
-            linear_axes=_make_linear_axes(),
-            angular_axes=_make_axes(),
-        )
         builder.add_articulation([j_ball])
         builder.add_articulation([j_free])
-        builder.add_articulation([j_rod])
         model = builder.finalize()
 
         target_q = model.joint_target_q.numpy()
@@ -2332,12 +2319,6 @@ class TestModelJoints(unittest.TestCase):
         # Verify unit norm (would only hold post-conversion)
         self.assertAlmostEqual(float(np.linalg.norm(target_q[b : b + 4])), 1.0, places=5)
         self.assertAlmostEqual(float(np.linalg.norm(target_q[f + 3 : f + 7])), 1.0, places=5)
-
-        # ROD uses the same coordinate target layout as FREE.
-        c = int(q_starts[j_rod])
-        np.testing.assert_allclose(target_q[c : c + 3], lin_targets, rtol=0, atol=1e-6)
-        np.testing.assert_allclose(target_q[c + 3 : c + 7], expected_quat, rtol=0, atol=1e-6)
-        self.assertAlmostEqual(float(np.linalg.norm(target_q[c + 3 : c + 7])), 1.0, places=5)
 
     def test_collapse_keeps_attachment_anchored_rod_joints(self):
         """collapse_fixed_joints must not delete non-fixed joints: a rod anchored

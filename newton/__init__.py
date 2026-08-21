@@ -22,7 +22,7 @@ Controls the shape of :attr:`~newton.Model.joint_target_q` and
 - ``False`` (the default): legacy shape ``(joint_dof_count,)``, which is
   misaligned with :attr:`~newton.State.joint_q` whenever an articulation
   contains a free, ball, or distance joint upstream of a position-controlled
-  DOF, or contains a Rod joint.
+  DOF, or contains a rod joint.
 
 :attr:`joint_target_qd` is shaped ``(joint_dof_count,)`` in both layouts,
 matching :attr:`~newton.State.joint_qd`.

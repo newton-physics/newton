@@ -9,7 +9,6 @@ import warp as wp
 
 from ..core.types import Devicelike
 from .articulation import eval_jacobian, eval_mass_matrix
-from .enums import JointType
 
 if TYPE_CHECKING:
     from .model import Model
@@ -429,7 +428,7 @@ def eval_inverse_dynamics_passive(
             joint, no outputs are requested, or an output or mask has an
             unexpected shape.
     """
-    if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+    if model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
         raise ValueError("eval_inverse_dynamics_passive() does not support JointType.ROD joints.")
 
     if mass_matrix is None and gravity_force is None and coriolis_force is None:

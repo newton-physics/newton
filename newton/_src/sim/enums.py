@@ -210,7 +210,8 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
     """
 
     ROD = CABLE
-    """Experimental rod joint: 7-coordinate relative pose and 6-DoF relative twist."""
+    """Experimental rod joint: 7-coordinate relative pose and 6-DoF relative
+    twist with stretch, shear, bend, and twist response."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """

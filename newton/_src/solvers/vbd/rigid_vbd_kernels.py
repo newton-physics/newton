@@ -52,9 +52,6 @@ _DRIVE_LIMIT_MODE_DRIVE = wp.constant(3)
 _SMALL_LENGTH_EPS = wp.constant(1.0e-9)
 """Small length tolerance (e.g., segment length checks)"""
 
-_ROD_REST_OFFSET_REL_TOL = wp.constant(1.0e-6)
-"""Relative threshold for negligible Rod rest offsets in Hessian-arm selection."""
-
 _USE_SMALL_ANGLE_APPROX = wp.constant(True)
 """If True use first-order small-angle rotation approximation; if False use closed-form rotation update"""
 
@@ -1655,8 +1652,6 @@ def evaluate_rod_stretch_shear_force_hessian(
     parent_com: wp.vec3,
     child_com: wp.vec3,
     is_parent: bool,
-    rest_u_local: wp.vec3,
-    rest_u_uses_material_arm: bool,
     k_diag: wp.vec3,
     C0_force_local: wp.vec3,
     lambda_local: wp.vec3,
@@ -1666,9 +1661,8 @@ def evaluate_rod_stretch_shear_force_hessian(
 ):
     """Rod-joint stretch/shear anchor force, torque, and PSD Gauss-Newton self-Hessian.
 
-    All inputs are parent-material: strain ``u - rest_u_local`` for
-    ``u = R_p^T (x_c - x_p) = [shear_x, shear_y, stretch_z]``,
-    diagonal ``k_diag = (k_shear, k_shear,
+    All inputs are parent-material: residual ``u = R_p^T (x_c - x_p) =
+    [shear_x, shear_y, stretch_z]``, diagonal ``k_diag = (k_shear, k_shear,
     k_stretch)`` / ``kd_diag``, and local ``C0_force_local`` / ``lambda_local``.
     Elastic and AL are energy gradients, damping is dissipative in ``u``, and both
     bodies react at the shared child anchor, so the net internal wrench is zero.
@@ -1685,8 +1679,7 @@ def evaluate_rod_stretch_shear_force_hessian(
 
     C_vec = x_c - x_p
     u = wp.quat_rotate_inv(q_wp, C_vec)
-    strain = u - rest_u_local
-    psi = wp.cw_mul(k_diag, strain) - C0_force_local + lambda_local
+    psi = wp.cw_mul(k_diag, u) - C0_force_local + lambda_local
 
     k_s = k_diag[0]
     k_z = k_diag[2]
@@ -1708,9 +1701,10 @@ def evaluate_rod_stretch_shear_force_hessian(
     identity = wp.identity(3, float)
     K_eff = h_s * identity + (h_z - h_s) * wp.outer(t, t)
     H_ll = K_eff
-    if is_parent and not rest_u_uses_material_arm:
-        # With a negligible rest offset, isotropic elastic energy is frame-invariant and uses
-        # the parent-anchor arm. Damping and anisotropy keep the material arm.
+    if is_parent:
+        # Isotropic elastic energy is frame-invariant, so it takes the parent-anchor arm that
+        # evaluate_linear_constraint_force_hessian also uses; min() extracts the largest such block
+        # leaving a PSD remainder. Damping keeps the material arm: u_prev is frozen one step back.
         k_iso = wp.min(k_s, k_z)
         K_material = K_eff - k_iso * identity
         r_elastic = x_p - com_w
@@ -2782,8 +2776,6 @@ def evaluate_joint_force_hessian(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
-    joint_rod_rest_u_local: wp.array[wp.vec3],
-    joint_rod_rest_u_uses_material_arm: wp.array[bool],
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
     joint_qd_start: wp.array[int],
@@ -3038,8 +3030,6 @@ def evaluate_joint_force_hessian(
                 parent_com,
                 child_com,
                 is_parent_body,
-                joint_rod_rest_u_local[joint_index],
-                joint_rod_rest_u_uses_material_arm[joint_index],
                 k_diag,
                 C0_force_local,
                 lambda_local,
@@ -4113,22 +4103,16 @@ def _joint_axis_angular_support(
 
 
 @wp.kernel
-def init_rod_rest(
+def init_rod_rest_bend_twist(
     joint_type: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_target_q: wp.array[float],
-    joint_X_p: wp.array[wp.transform],
-    joint_X_c: wp.array[wp.transform],
     target_uses_coord_layout: bool,
-    joint_rod_rest_u_local: wp.array[wp.vec3],
-    joint_rod_rest_u_uses_material_arm: wp.array[bool],
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
 ):
-    """Precompute rod rest stretch/shear/bend/twist invariants."""
+    """Precompute rod-joint rest angular deformation invariants."""
     j = wp.tid()
-    joint_rod_rest_u_local[j] = wp.vec3(0.0)
-    joint_rod_rest_u_uses_material_arm[j] = False
     joint_rod_rest_kb_local[j] = wp.vec3(0.0)
     joint_rod_rest_twist[j] = 0.0
 
@@ -4136,23 +4120,6 @@ def init_rod_rest(
         return
 
     target_start = joint_target_q_start[j]
-    rest_u_local = wp.vec3(
-        joint_target_q[target_start],
-        joint_target_q[target_start + 1],
-        joint_target_q[target_start + 2],
-    )
-    joint_rod_rest_u_local[j] = rest_u_local
-    rest_u_length = wp.length(rest_u_local)
-    rest_u_scale = wp.max(
-        rest_u_length,
-        wp.max(
-            wp.length(wp.transform_get_translation(joint_X_p[j])),
-            wp.length(wp.transform_get_translation(joint_X_c[j])),
-        ),
-    )
-    # Classify the rest offset once so closure noise does not select the
-    # finite-offset Hessian.
-    joint_rod_rest_u_uses_material_arm[j] = rest_u_length > _ROD_REST_OFFSET_REL_TOL * rest_u_scale
     if target_uses_coord_layout:
         q_wc_rest = wp.quat(
             joint_target_q[target_start + 3],
@@ -4170,8 +4137,7 @@ def init_rod_rest(
     q_wc_rest = wp.normalize(q_wc_rest)
 
     # Rest DER bend (parent-local curvature binormal) and rest twist (transported
-    # material spin), measured in the identity parent frame so a pre-curved
-    # rest yields zero strain.
+    # material spin), measured once so a pre-curved rest yields zero strain.
     rest_measure = _measure_rod_bend_twist_z(wp.quat_identity(), q_wc_rest)
     joint_rod_rest_kb_local[j] = rest_measure.kb_world
     joint_rod_rest_twist[j] = rest_measure.twist
@@ -4185,7 +4151,6 @@ def step_joint_C0_lambda_rho(
     joint_child: wp.array[int],
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
-    joint_rod_rest_u_local: wp.array[wp.vec3],
     joint_axis: wp.array[wp.vec3],
     joint_qd_start: wp.array[int],
     joint_dof_dim: wp.array2d[int],
@@ -4414,8 +4379,8 @@ def step_joint_C0_lambda_rho(
         if has_linear == 1:
             x_p = wp.transform_get_translation(X_wp)
             x_c = wp.transform_get_translation(X_wc)
-            # Store the parent-material residual [shear_x, shear_y, stretch_z].
-            joint_C0_lin[j] = wp.quat_rotate_inv(wp.transform_get_rotation(X_wp), x_c - x_p) - joint_rod_rest_u_local[j]
+            # Parent-material residual: [shear_x, shear_y, stretch_z].
+            joint_C0_lin[j] = wp.quat_rotate_inv(wp.transform_get_rotation(X_wp), x_c - x_p)
             joint_lambda_lin[j] = joint_lambda_lin[j] * lambda_retention
         else:
             joint_C0_lin[j] = zero
@@ -5589,8 +5554,6 @@ def solve_rigid_body(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
-    joint_rod_rest_u_local: wp.array[wp.vec3],
-    joint_rod_rest_u_uses_material_arm: wp.array[bool],
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
     joint_qd_start: wp.array[int],
@@ -5769,8 +5732,6 @@ def solve_rigid_body(
             joint_X_p,
             joint_X_c,
             joint_axis,
-            joint_rod_rest_u_local,
-            joint_rod_rest_u_uses_material_arm,
             joint_rod_rest_kb_local,
             joint_rod_rest_twist,
             joint_qd_start,
@@ -5858,7 +5819,6 @@ def update_duals_joint(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
-    joint_rod_rest_u_local: wp.array[wp.vec3],
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
     joint_qd_start: wp.array[int],
@@ -5957,7 +5917,7 @@ def update_duals_joint(
         # u = [shear_x, shear_y, stretch_z], so stretch is z and shear is xy.
         stretch_idx = c_start
         shear_idx = c_start + 1
-        u = wp.quat_rotate_inv(q_wp, C_vec) - joint_rod_rest_u_local[j]
+        u = wp.quat_rotate_inv(q_wp, C_vec)
         lambda_lin = joint_lambda_lin[j]
         C0_lin = joint_C0_lin[j]
 
