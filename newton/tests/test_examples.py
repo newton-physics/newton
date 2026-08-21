@@ -1069,12 +1069,6 @@ add_contact_example_test(
     allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
 add_contact_example_test(
-    name="contacts.example_hydroelastic_margin_gap",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 360},
-    use_viewer=True,
-)
-add_contact_example_test(
     name="contacts.example_brick_stacking",
     devices=cuda_test_devices,
     test_options={"num-frames": 1200},

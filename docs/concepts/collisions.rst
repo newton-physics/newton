@@ -1935,8 +1935,7 @@ their activation stiffness uses the declared ``kh`` values and the deprecated
 ``margin_contact_area`` compatibility setting.
 
 See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked
-example. For a deliberately exaggerated view of margin and gap separation,
-run ``python -m newton.examples hydroelastic_margin_gap``.
+example.
 
 Contact reduction options for hydroelastic contacts are configured via :class:`~geometry.HydroelasticSDF.Config` (see :ref:`Contact Reduction`).
 
