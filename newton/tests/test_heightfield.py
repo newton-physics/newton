@@ -356,6 +356,58 @@ class TestHeightfield(unittest.TestCase):
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(contact_count, 0, "No contacts detected between sphere and heightfield")
 
+    def test_heightfield_box_penetration_uses_top_face(self):
+        """A box sunk into a flat heightfield reports its true depth along +Z, not the prism skirt.
+
+        ``support_map`` extrudes a heightfield triangle 1 m along -Z so GJK/MPR can resolve
+        shapes reaching its back side. The skirt and bottom cap are interior to the terrain and
+        cannot carry a contact, but once the box's center passes below the surface the portal
+        can settle on them: a pre-fix build reports roughly a metre of penetration with a normal
+        of (0, 0, -1), which pushes the box further into the ground instead of separating it.
+
+        The surface is flat and the box is axis-aligned, so the expected answer needs no
+        collision code: the penetration is how far the box's underside sits below z = 0 and the
+        normal is +Z. Depths on both sides of the box's half-thickness are checked because that
+        is where the pre-fix behavior changes.
+        """
+        half_z = 0.02
+        for depth in (0.005, 0.019, 0.021, 0.05):
+            with self.subTest(depth=depth):
+                builder = newton.ModelBuilder()
+
+                nrow, ncol = 21, 21
+                elevation = np.zeros((nrow, ncol), dtype=np.float32)
+                hfield = Heightfield(data=elevation, nrow=nrow, ncol=ncol, hx=1.0, hy=1.0, min_z=0.0, max_z=1.0)
+                builder.add_shape_heightfield(heightfield=hfield)
+
+                body = builder.add_body(xform=wp.transform((0.0, 0.0, half_z - depth), wp.quat_identity()))
+                builder.add_shape_box(body=body, hx=0.2, hy=0.065, hz=half_z)
+
+                model = builder.finalize()
+                state = model.state()
+
+                pipeline = newton.CollisionPipeline(model, requires_grad=True)
+                contacts = pipeline.contacts()
+                pipeline.collide(state, contacts)
+
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertGreater(count, 0, "no contacts between box and heightfield")
+                distance = contacts.rigid_contact_diff_distance.numpy()[:count]
+                normal = contacts.rigid_contact_normal.numpy()[:count]
+
+                deepest = int(np.argmin(distance))
+                self.assertAlmostEqual(
+                    float(distance[deepest]),
+                    -depth,
+                    places=4,
+                    msg=f"deepest contact reports {distance[deepest]:.4f} m for a {depth:.4f} m overlap",
+                )
+                self.assertGreater(
+                    float(normal[deepest][2]),
+                    0.9,
+                    msg=f"deepest contact normal {normal[deepest]} does not point out of the surface",
+                )
+
     def test_heightfield_native_collision_scaled(self):
         """Per-instance ``scale`` on ``add_shape_heightfield`` is honored by narrow-phase.
 
