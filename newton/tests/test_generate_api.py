@@ -40,7 +40,10 @@ class TestGenerateApiPublicSymbols(unittest.TestCase):
         module = ModuleType("newton.missing_all")
         module.undeclared_symbol = object()
 
-        with self.assertRaisesRegex(ValueError, r"newton\.missing_all must define __all__"):
+        with self.assertRaisesRegex(
+            ValueError,
+            r"newton\.missing_all must define __all__ as a list or tuple of strings",
+        ):
             generate_api.public_symbols(module)
 
     def test_public_symbols_rejects_invalid_container(self):
@@ -48,7 +51,10 @@ class TestGenerateApiPublicSymbols(unittest.TestCase):
         module = ModuleType("newton.invalid_all_container")
         module.__all__ = {"declared_symbol"}
 
-        with self.assertRaisesRegex(ValueError, r"newton\.invalid_all_container must define __all__"):
+        with self.assertRaisesRegex(
+            ValueError,
+            r"newton\.invalid_all_container must define __all__ as a list or tuple of strings",
+        ):
             generate_api.public_symbols(module)
 
     def test_public_symbols_rejects_non_string_entry(self):
@@ -58,7 +64,7 @@ class TestGenerateApiPublicSymbols(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            r"newton\.invalid_all_entry\.__all__ must contain only strings; got 1",
+            r"newton\.invalid_all_entry must define __all__ as a list or tuple of strings; got 1",
         ):
             generate_api.public_symbols(module)
 

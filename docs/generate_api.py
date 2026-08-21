@@ -71,10 +71,10 @@ def public_symbols(mod: ModuleType) -> list[str]:
 
     names = getattr(mod, "__all__", None)
     if not isinstance(names, list | tuple):
-        raise ValueError(f"{mod.__name__} must define __all__ as a list or tuple")
+        raise ValueError(f"{mod.__name__} must define __all__ as a list or tuple of strings")
     for name in names:
         if not isinstance(name, str):
-            raise ValueError(f"{mod.__name__}.__all__ must contain only strings; got {name!r}")
+            raise ValueError(f"{mod.__name__} must define __all__ as a list or tuple of strings; got {name!r}")
 
     return list(names)
 
