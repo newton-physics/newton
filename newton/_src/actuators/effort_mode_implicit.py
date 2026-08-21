@@ -564,7 +564,7 @@ class _EffortModeImplicit:
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
         computed_forces: wp.array[float],
-        applied_forces: wp.array[float] | None,
+        applied_forces: wp.array[float],
         ctrl_state: Any,
         dt: float | None,
     ) -> wp.array[float]:
@@ -578,8 +578,6 @@ class _EffortModeImplicit:
             raise ValueError("Implicit actuation requires dt")
         if dt <= 0.0:
             raise ValueError(f"Implicit actuation requires dt > 0, got {dt}")
-        if applied_forces is None:
-            raise RuntimeError("Implicit actuation requires an applied-effort buffer")
         if self._needs_prepare:
             wp.launch(
                 _gather_slot_response_kernel,

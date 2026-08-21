@@ -234,18 +234,18 @@ class ControllerPID(Controller):
 
     def prepare_implicit(
         self,
-        positions,
-        velocities,
-        target_pos,
-        target_vel,
-        pos_indices,
-        vel_indices,
-        target_pos_indices,
-        target_vel_indices,
-        ctrl_state,
-        dt,
-        inv_mass=None,
-        device=None,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        ctrl_state: ControllerPID.State | None,
+        dt: float,
+        inv_mass: wp.array[float] | None = None,
+        device: wp.Device | None = None,
     ) -> None:
         """Fold ``ki*integral`` into the pack's constant column.
 
