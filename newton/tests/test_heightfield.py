@@ -356,6 +356,168 @@ class TestHeightfield(unittest.TestCase):
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(contact_count, 0, "No contacts detected between sphere and heightfield")
 
+    def _get_contact_kinematics(self, model, state, *, reduce_contacts=True):
+        """Return contact distances, normals, and heightfield points for a model state."""
+        pipeline = newton.CollisionPipeline(model, reduce_contacts=reduce_contacts)
+        contacts = pipeline.contacts()
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=model.device)
+        point0 = wp.empty(contacts.rigid_contact_max, dtype=wp.vec3, device=model.device)
+
+        pipeline.collide(state, contacts)
+        newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance, out_point0_world=point0)
+
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        return (
+            distance.numpy()[:count],
+            contacts.rigid_contact_normal.numpy()[:count],
+            point0.numpy()[:count],
+        )
+
+    @staticmethod
+    def _add_flat_heightfield(builder, *, xform=None):
+        """Add a flat unit heightfield to a model builder."""
+        heightfield = Heightfield(
+            data=np.zeros((21, 21), dtype=np.float32),
+            nrow=21,
+            ncol=21,
+            hx=1.0,
+            hy=1.0,
+            min_z=0.0,
+            max_z=1.0,
+        )
+        builder.add_shape_heightfield(xform=xform, heightfield=heightfield)
+
+    def test_heightfield_box_penetration_uses_surface(self):
+        """Verify box penetration is resolved through the heightfield surface."""
+        half_z = 0.02
+        for depth in (0.005, 0.019, 0.021, 0.05):
+            with self.subTest(depth=depth):
+                builder = newton.ModelBuilder()
+                self._add_flat_heightfield(builder)
+
+                body = builder.add_body(xform=wp.transform((0.0, 0.0, half_z - depth), wp.quat_identity()))
+                builder.add_shape_box(body=body, hx=0.2, hy=0.065, hz=half_z)
+
+                model = builder.finalize()
+                distance, normal, point0 = self._get_contact_kinematics(model, model.state())
+
+                self.assertGreater(len(distance), 0, "no contacts between box and heightfield")
+                deepest = int(np.argmin(distance))
+                self.assertAlmostEqual(float(distance[deepest]), -depth, places=4)
+                self.assertGreater(float(normal[deepest][2]), 0.999)
+                self.assertAlmostEqual(float(point0[deepest][2]), 0.0, places=5)
+
+    def test_heightfield_sphere_penetration_uses_surface(self):
+        """Verify sphere penetration remains surface-normal below its center."""
+        radius = 0.02
+        for reduce_contacts in (False, True):
+            for depth in (0.005, 0.019, 0.021, 0.05):
+                with self.subTest(reduce_contacts=reduce_contacts, depth=depth):
+                    builder = newton.ModelBuilder()
+                    self._add_flat_heightfield(builder)
+
+                    body = builder.add_body(xform=wp.transform((0.0, 0.0, radius - depth), wp.quat_identity()))
+                    builder.add_shape_sphere(body=body, radius=radius)
+
+                    model = builder.finalize()
+                    distance, normal, point0 = self._get_contact_kinematics(
+                        model, model.state(), reduce_contacts=reduce_contacts
+                    )
+
+                    self.assertGreater(len(distance), 0, "no contacts between sphere and heightfield")
+                    deepest = int(np.argmin(distance))
+                    self.assertAlmostEqual(float(distance[deepest]), -depth, places=3)
+                    self.assertGreater(float(normal[deepest][2]), 0.999)
+                    self.assertAlmostEqual(float(point0[deepest][2]), 0.0, places=5)
+
+    def test_heightfield_sloped_penetration_uses_surface(self):
+        """Verify penetration follows a sloped heightfield face normal."""
+        slope = 0.25
+        radius = 0.05
+        depth = 0.08
+        x = np.linspace(-1.0, 1.0, 21, dtype=np.float32)
+        elevation = np.broadcast_to(slope * x, (21, 21)).copy()
+        expected_normal = np.array((-slope, 0.0, 1.0), dtype=np.float32)
+        expected_normal /= np.linalg.norm(expected_normal)
+
+        builder = newton.ModelBuilder()
+        heightfield = Heightfield(data=elevation, nrow=21, ncol=21, hx=1.0, hy=1.0)
+        builder.add_shape_heightfield(heightfield=heightfield)
+
+        center = expected_normal * (radius - depth)
+        body = builder.add_body(xform=wp.transform(wp.vec3(*center), wp.quat_identity()))
+        builder.add_shape_sphere(body=body, radius=radius)
+
+        model = builder.finalize()
+        distance, normal, point0 = self._get_contact_kinematics(model, model.state())
+
+        self.assertGreater(len(distance), 0, "no contacts between sphere and sloped heightfield")
+        deepest = int(np.argmin(distance))
+        self.assertAlmostEqual(float(distance[deepest]), -depth, places=3)
+        self.assertGreater(float(np.dot(normal[deepest], expected_normal)), 0.999)
+        self.assertAlmostEqual(float(point0[deepest][2] - slope * point0[deepest][0]), 0.0, places=5)
+
+    def test_heightfield_rotated_penetration_uses_surface(self):
+        """Verify penetration follows a transformed heightfield surface normal."""
+        radius = 0.05
+        depth = 0.08
+        rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4)
+        expected_normal = np.asarray(wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, 1.0)), dtype=np.float32)
+
+        builder = newton.ModelBuilder()
+        self._add_flat_heightfield(builder, xform=wp.transform(wp.vec3(0.0), rotation))
+
+        center = expected_normal * (radius - depth)
+        body = builder.add_body(xform=wp.transform(wp.vec3(*center), wp.quat_identity()))
+        builder.add_shape_sphere(body=body, radius=radius)
+
+        model = builder.finalize()
+        distance, normal, point0 = self._get_contact_kinematics(model, model.state())
+
+        self.assertGreater(len(distance), 0, "no contacts between sphere and rotated heightfield")
+        deepest = int(np.argmin(distance))
+        self.assertAlmostEqual(float(distance[deepest]), -depth, places=3)
+        self.assertGreater(float(np.dot(normal[deepest], expected_normal)), 0.999)
+        self.assertAlmostEqual(float(np.dot(point0[deepest], expected_normal)), 0.0, places=5)
+
+    def test_heightfield_boundary_has_no_skirt_contact(self):
+        """Verify the heightfield boundary does not expose the prism skirt."""
+        radius = 0.02
+        builder = newton.ModelBuilder()
+        self._add_flat_heightfield(builder)
+
+        body = builder.add_body(xform=wp.transform((1.0 + radius + 0.01, 0.0, -0.05), wp.quat_identity()))
+        builder.add_shape_sphere(body=body, radius=radius)
+
+        model = builder.finalize()
+        distance, _normal, _point0 = self._get_contact_kinematics(model, model.state())
+
+        self.assertTrue(np.all(distance >= 0.0), f"penetrating boundary contacts: {distance}")
+
+    def test_heightfield_boundary_ignores_external_lowest_point(self):
+        """Ignore a penetrating support point outside the heightfield footprint."""
+        builder = newton.ModelBuilder()
+        self._add_flat_heightfield(builder)
+
+        rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.25 * wp.pi)
+        body = builder.add_body(xform=wp.transform((0.95, 0.0, 0.11), rotation))
+        builder.add_shape_box(body=body, hx=0.2, hy=0.05, hz=0.05)
+
+        model = builder.finalize()
+        for reduce_contacts in (False, True):
+            with self.subTest(reduce_contacts=reduce_contacts):
+                distance, normal, point0 = self._get_contact_kinematics(
+                    model, model.state(), reduce_contacts=reduce_contacts
+                )
+
+                self.assertGreater(len(distance), 0, "no contacts between box and heightfield boundary")
+                deepest = int(np.argmin(distance))
+                self.assertLess(float(distance[deepest]), -0.001)
+                self.assertGreater(float(distance[deepest]), -0.015, f"overestimated penetration: {distance}")
+                self.assertGreater(float(normal[deepest][2]), 0.999)
+                self.assertLessEqual(float(point0[deepest][0]), 1.0 + 1.0e-5)
+                self.assertAlmostEqual(float(point0[deepest][2]), 0.0, places=5)
+
     def test_heightfield_native_collision_scaled(self):
         """Per-instance ``scale`` on ``add_shape_heightfield`` is honored by narrow-phase.
 

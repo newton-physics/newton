@@ -66,6 +66,7 @@ from ..utils.heightfield import HeightfieldData, get_triangle_shape_from_heightf
 from .collision_core import (
     create_compute_gjk_mpr_contacts,
     get_triangle_shape_from_mesh,
+    post_process_triangle_contact,
 )
 from .contact_data import ContactData, compute_contact_approach_speed
 from .contact_reduction import (
@@ -2372,8 +2373,11 @@ def mesh_triangle_contacts_to_reducer_kernel(
         gap_b = shape_gap[shape_b]
         gap_sum = gap_a + gap_b
 
-        # Compute and write contacts using GJK/MPR
-        wp.static(create_compute_gjk_mpr_contacts(write_contact_to_reducer))(
+        wp.static(
+            create_compute_gjk_mpr_contacts(
+                write_contact_to_reducer, post_process_contact=post_process_triangle_contact
+            )
+        )(
             shape_data_a,
             shape_data_b,
             quat_a,

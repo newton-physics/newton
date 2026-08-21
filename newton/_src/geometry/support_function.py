@@ -28,6 +28,7 @@ defining generic shape data structures that work across all primitive types.
 """
 
 import enum
+from typing import Any
 
 import warp as wp
 
@@ -37,6 +38,7 @@ from .types import GeoType
 # Near-zero direction components (e.g. from quaternion rotation noise ~1e-14)
 # are treated as non-negative, biasing toward the +1 vertex.
 BOX_SUPPORT_DEADBAND = 1.0e-10
+_CENTERED_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
 
 
 @wp.func_native("""
@@ -386,6 +388,213 @@ def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: 
         result = n * radius
 
     return result
+
+
+def create_shape_support_function(support_func: Any, center_ties: bool = False):
+    """Create a support function with built-in shape policies."""
+    fuse_builtin_box_support = support_func is support_map or support_func is support_map_lean
+
+    if center_ties:
+
+        @wp.func
+        def shape_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+            result = wp.vec3(0.0, 0.0, 0.0)
+            if wp.static(fuse_builtin_box_support):
+                if geom.shape_type == GeoType.BOX:
+                    abs_direction = wp.vec3(wp.abs(direction[0]), wp.abs(direction[1]), wp.abs(direction[2]))
+                    result = _support_map_box(geom, direction)
+                    contribution = wp.cw_mul(abs_direction, geom.scale)
+                    threshold = _CENTERED_BOX_SUPPORT_TIE_EPSILON * (
+                        contribution[0] + contribution[1] + contribution[2]
+                    )
+                    if contribution[0] <= threshold:
+                        result[0] = 0.0
+                    if contribution[1] <= threshold:
+                        result[1] = 0.0
+                    if contribution[2] <= threshold:
+                        result[2] = 0.0
+                else:
+                    result = support_func(geom, direction, data_provider)
+            else:
+                result = support_func(geom, direction, data_provider)
+                if geom.shape_type == GeoType.BOX:
+                    contribution = wp.cw_mul(wp.abs(direction), geom.scale)
+                    threshold = _CENTERED_BOX_SUPPORT_TIE_EPSILON * (
+                        contribution[0] + contribution[1] + contribution[2]
+                    )
+                    if contribution[0] <= threshold:
+                        result[0] = 0.0
+                    if contribution[1] <= threshold:
+                        result[1] = 0.0
+                    if contribution[2] <= threshold:
+                        result[2] = 0.0
+            return result
+
+    else:
+
+        @wp.func
+        def shape_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+            result = wp.vec3(0.0, 0.0, 0.0)
+            if wp.static(fuse_builtin_box_support):
+                if geom.shape_type == GeoType.BOX:
+                    result = _support_map_box(geom, direction)
+                else:
+                    result = support_func(geom, direction, data_provider)
+            else:
+                result = support_func(geom, direction, data_provider)
+            return result
+
+    return shape_support
+
+
+@wp.func
+def _shape_center(geom: Any) -> wp.vec3:
+    """Return a local interior-point approximation for a supported shape."""
+    if geom.shape_type == int(GeoType.CONVEX_MESH):
+        mesh = wp.mesh_get(unpack_mesh_ptr(geom.auxiliary))
+        scale = geom.scale
+        first = wp.cw_mul(mesh.points[0], scale)
+        lower = first
+        upper = first
+        for i in range(1, mesh.points.shape[0]):
+            point = wp.cw_mul(mesh.points[i], scale)
+            lower = wp.min(lower, point)
+            upper = wp.max(upper, point)
+        return 0.5 * (lower + upper)
+    return wp.vec3(0.0)
+
+
+@wp.func
+def _adjust_minkowski_center(geom_a: Any, center_b_world: wp.vec3, center_b_to_a: wp.vec3) -> wp.vec3:
+    """Adjust the Minkowski center for shapes that need a local contact seed."""
+    if geom_a.shape_type != int(GeoTypeEx.TRIANGLE) and geom_a.shape_type != int(GeoTypeEx.TRIANGLE_PRISM):
+        return center_b_to_a
+
+    tri_a = wp.vec3(0.0)
+    tri_b = geom_a.scale
+    tri_c = geom_a.auxiliary
+    face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
+    face_normal_length_sq = wp.length_sq(face_normal)
+    projection = closest_point_on_triangle(center_b_world, tri_a, tri_b, tri_c)
+    if face_normal_length_sq < 1.0e-20:
+        return projection - center_b_world
+
+    face_normal_unit = face_normal / wp.sqrt(face_normal_length_sq)
+    signed_plane_distance = wp.dot(center_b_world - tri_a, face_normal_unit)
+    plane_projection = center_b_world - signed_plane_distance * face_normal_unit
+    inside_face = (
+        wp.dot(wp.cross(tri_b - tri_a, plane_projection - tri_a), face_normal) >= 0.0
+        and wp.dot(wp.cross(tri_c - tri_b, plane_projection - tri_b), face_normal) >= 0.0
+        and wp.dot(wp.cross(tri_a - tri_c, plane_projection - tri_c), face_normal) >= 0.0
+    )
+    if inside_face:
+        projection = plane_projection
+        center_b_to_a = -signed_plane_distance * face_normal_unit
+    else:
+        center_b_to_a = projection - center_b_world
+
+    to_centroid = (tri_a + tri_b + tri_c) / 3.0 - projection
+    to_centroid -= wp.dot(to_centroid, face_normal_unit) * face_normal_unit
+    distance_to_centroid = wp.length(to_centroid)
+    if distance_to_centroid > 1.0e-12:
+        nudge_distance = 0.01 * wp.min(distance_to_centroid, wp.abs(signed_plane_distance))
+        center_b_to_a += to_centroid * (nudge_distance / distance_to_centroid)
+    return center_b_to_a
+
+
+@wp.func
+def _minkowski_center_fallback(geom_a: Any, center_b_world: wp.vec3) -> wp.vec3:
+    """Return a nonzero triangle seed when the Minkowski centers coincide."""
+    if geom_a.shape_type != int(GeoTypeEx.TRIANGLE) and geom_a.shape_type != int(GeoTypeEx.TRIANGLE_PRISM):
+        return wp.vec3(0.0)
+
+    tri_a = wp.vec3(0.0)
+    tri_b = geom_a.scale
+    tri_c = geom_a.auxiliary
+    face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
+    face_normal_length_sq = wp.length_sq(face_normal)
+    if face_normal_length_sq < 1.0e-20:
+        return wp.vec3(0.0)
+
+    face_normal /= wp.sqrt(face_normal_length_sq)
+    projection = closest_point_on_triangle(center_b_world, tri_a, tri_b, tri_c)
+    to_centroid = (tri_a + tri_b + tri_c) / 3.0 - projection
+    to_centroid -= wp.dot(to_centroid, face_normal) * face_normal
+    to_centroid_length_sq = wp.length_sq(to_centroid)
+
+    fallback_direction = -face_normal
+    if wp.dot(center_b_world - projection, face_normal) < 0.0:
+        fallback_direction = face_normal
+    if to_centroid_length_sq > 1.0e-20:
+        fallback_direction += 0.01 * to_centroid / wp.sqrt(to_centroid_length_sq)
+    return wp.normalize(fallback_direction) * 1.0e-5
+
+
+@wp.struct
+class MinkowskiCenter:
+    """Store a Minkowski interior point and optional coincident-center fallback."""
+
+    B: wp.vec3
+    BtoA: wp.vec3
+
+
+def create_shape_center_function(use_precomputed_center: bool = False):
+    """Create the common Minkowski-center function used by MPR and GJK.
+
+    The returned function supplies the initial interior point of the
+    Minkowski difference. Most primitives use their local origin. Uncached
+    convex meshes use the center of their scaled AABB, while cached callers
+    use ``geom.center`` and must provide a valid interior-point approximation.
+
+    Triangle-like shape A needs a partner-relative seed. Its center is moved
+    to the point on the physical triangle nearest shape B's center and nudged
+    toward the triangle centroid. This avoids portals collapsing onto one
+    vertex when a large, thin triangle is paired with a much smaller shape.
+
+    Args:
+        use_precomputed_center: Use the center stored in each geometry instead
+            of computing convex-mesh AABB centers.
+
+    Returns:
+        A shape-center function with a ``fallback`` attribute for the
+        coincident-center case.
+    """
+
+    @wp.func
+    def shape_center(
+        geom_a: Any,
+        geom_b: Any,
+        orientation_b: wp.quat,
+        position_b: wp.vec3,
+        data_provider: Any,
+    ) -> MinkowskiCenter:
+        """Compute an interior point of the Minkowski difference.
+
+        Args:
+            geom_a: Shape A geometry data.
+            geom_b: Shape B geometry data.
+            orientation_b: Shape B orientation relative to shape A.
+            position_b: Shape B position relative to shape A.
+            data_provider: Support-map data provider.
+
+        Returns:
+            Centers in the relative frame. ``B`` is shape B's center and
+            ``BtoA`` points from it to the selected center on shape A.
+        """
+        center = MinkowskiCenter()
+        if wp.static(use_precomputed_center):
+            center_a = geom_a.center
+            center_b_local = geom_b.center
+        else:
+            center_a = _shape_center(geom_a)
+            center_b_local = _shape_center(geom_b)
+
+        center.B = position_b + wp.quat_rotate(orientation_b, center_b_local)
+        center.BtoA = _adjust_minkowski_center(geom_a, center.B, center_a - center.B)
+        return center
+
+    shape_center.fallback = _minkowski_center_fallback
+    return shape_center
 
 
 @wp.func

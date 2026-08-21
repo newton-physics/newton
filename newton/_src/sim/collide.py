@@ -747,6 +747,47 @@ def _resolve_shape_pairs_max(model: Model, override: int | None) -> int:
 
 
 BROAD_PHASE_MODES = ("nxn", "sap", "explicit")
+_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD = 27_776
+_SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD = 65_536
+
+
+def _compute_generic_convex_pair_work_estimate(
+    model: Model,
+    *,
+    broad_phase_mode: str,
+    shape_pairs_filtered: wp.array[wp.vec2i] | None,
+    candidate_pair_work_estimate: int,
+) -> int:
+    """Estimate how much of the candidate-pair bound can reach GJK/MPR."""
+    shape_types_array = getattr(model, "shape_type", None)
+    if shape_types_array is None:
+        return candidate_pair_work_estimate
+
+    shape_types = shape_types_array.numpy()
+    if broad_phase_mode == "explicit":
+        requirements = _generic_convex_pair_requirements(
+            model,
+            broad_phase_mode=broad_phase_mode,
+            shape_pairs_filtered=shape_pairs_filtered,
+        )
+        return (
+            candidate_pair_work_estimate
+            if requirements is None
+            else min(candidate_pair_work_estimate, sum(requirements))
+        )
+
+    colliding_mask = _shape_collide_mask(model, len(shape_types))
+    generic_pair_bound = 0
+    unique_types = np.unique(shape_types[colliding_mask])
+    for index, type_a in enumerate(unique_types):
+        first_mask = colliding_mask & (shape_types == type_a)
+        for type_b in unique_types[index:]:
+            if not _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b)):
+                continue
+            second_mask = colliding_mask & (shape_types == type_b)
+            generic_pair_bound += _compute_per_world_mask_pair_max(model, first_mask, second_mask)
+
+    return min(candidate_pair_work_estimate, generic_pair_bound)
 
 
 def _normalize_broad_phase_mode(mode: str) -> str:
@@ -1471,6 +1512,22 @@ class CollisionPipeline:
             candidate_pair_work_estimate = min(self.shape_pairs_max, _compute_per_world_shape_pairs_max(model))
             if self.broad_phase_mode == "explicit":
                 candidate_pair_work_estimate = self.shape_pairs_max
+            generic_convex_pair_work_estimate = _compute_generic_convex_pair_work_estimate(
+                model,
+                broad_phase_mode=self.broad_phase_mode,
+                shape_pairs_filtered=self.shape_pairs_filtered,
+                candidate_pair_work_estimate=candidate_pair_work_estimate,
+            )
+            split_pair_count_threshold = (
+                _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD
+                if use_lean_gjk_mpr
+                else _SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD
+            )
+            split_gjk_mpr = (
+                device.is_cuda
+                and has_generic_convex_pairs
+                and generic_convex_pair_work_estimate >= split_pair_count_threshold
+            )
             # Initialize narrow phase with pre-allocated buffers
             # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
             # Pass write_contact as custom writer to write directly to final Contacts format
@@ -1498,6 +1555,7 @@ class CollisionPipeline:
                 has_heightfields=model.heightfield_count > 0,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
                 has_generic_convex_pairs=has_generic_convex_pairs,
+                split_gjk_mpr=split_gjk_mpr,
                 candidate_pair_work_estimate=candidate_pair_work_estimate,
                 mesh_sdf_identity_scale_only=mesh_sdf_identity_scale_only,
                 mesh_sdf_texture_only=mesh_sdf_texture_only,

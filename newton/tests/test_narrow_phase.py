@@ -2241,18 +2241,36 @@ class TestBufferOverflowWarnings(unittest.TestCase):
 
     @unittest.skipUnless(_cuda_available, "Split GJK/MPR is enabled only on CUDA")
     def test_split_buffers_use_candidate_work_estimate(self):
-        """Size split GJK/MPR buffers from the candidate work estimate."""
-        narrow_phase = NarrowPhase(
+        """Allocate split buffers to the candidate bound for both support variants."""
+        lean_support = NarrowPhase(
+            max_candidate_pairs=5000,
+            candidate_pair_work_estimate=4096,
+            has_meshes=False,
+            use_lean_gjk_mpr=True,
+            split_gjk_mpr=True,
+            device="cuda:0",
+        )
+        full_support = NarrowPhase(
+            max_candidate_pairs=5000,
+            candidate_pair_work_estimate=4096,
+            has_meshes=False,
+            use_lean_gjk_mpr=False,
+            split_gjk_mpr=True,
+            device="cuda:0",
+        )
+        disabled = NarrowPhase(
             max_candidate_pairs=5000,
             candidate_pair_work_estimate=4096,
             has_meshes=False,
             device="cuda:0",
         )
 
-        self.assertTrue(narrow_phase.split_gjk_mpr)
-        self.assertEqual(narrow_phase.split_query_results.shape[0], 4096)
-        self.assertEqual(narrow_phase.split_gjk_work_items.shape[0], 4096)
-        self.assertEqual(narrow_phase.split_manifold_work_items.shape[0], 4096)
+        self.assertTrue(lean_support.split_gjk_mpr)
+        self.assertTrue(full_support.split_gjk_mpr)
+        self.assertFalse(disabled.split_gjk_mpr)
+        self.assertEqual(lean_support.split_query_results.shape[0], 4096)
+        self.assertEqual(lean_support.split_gjk_work_items.shape[0], 4096)
+        self.assertEqual(lean_support.split_manifold_work_items.shape[0], 4096)
 
     def test_broad_phase_buffer_overflow(self):
         """Test that broad phase buffer overflow produces a warning and no crash."""
