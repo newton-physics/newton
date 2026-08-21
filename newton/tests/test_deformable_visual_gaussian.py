@@ -285,6 +285,32 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         )
         self.assertNotEqual(model.deformable_visual_gaussians[0].shape, model.deformable_visual_gaussians[1].shape)
 
+    def test_nonuniform_usd_transform_preserves_gaussian_covariance(self):
+        """Bake an affine prim transform into rotated anisotropic splats exactly."""
+        from pxr import Gf, Sdf, UsdGeom
+
+        stage = self._stage()
+        self._add_volume(stage, "/World/Bear")
+        UsdGeom.Xformable(stage.GetPrimAtPath("/World/Bear")).AddScaleOp().Set((2.0, 1.0, 0.5))
+        gaussian = self._add_gaussian(stage, "/World/Bear/Gaussian", [(0.2, 0.2, 0.2)])
+        angle = math.radians(45.0)
+        local_rotation = np.array([0.0, 0.0, math.sin(0.5 * angle), math.cos(0.5 * angle)], dtype=np.float32)
+        gaussian.CreateAttribute("orientations", Sdf.ValueTypeNames.QuatfArray).Set(
+            [Gf.Quatf(float(local_rotation[3]), Gf.Vec3f(*[float(value) for value in local_rotation[:3]]))]
+        )
+        local_scale = np.array([0.12, 0.04, 0.02], dtype=np.float32)
+        gaussian.GetAttribute("scales").Set([Gf.Vec3f(*[float(value) for value in local_scale])])
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, root_path="/World")
+        imported = builder.finalize().deformable_visual_gaussians[0].gaussian
+
+        linear = np.diag([2.0, 1.0, 0.5]).astype(np.float32)
+        local_axes = _quat_matrix(local_rotation) @ np.diag(local_scale)
+        expected_covariance = linear @ local_axes @ local_axes.T @ linear.T
+        imported_axes = _quat_matrix(imported.rotations[0]) @ np.diag(imported.scales[0])
+        np.testing.assert_allclose(imported_axes @ imported_axes.T, expected_covariance, rtol=1.0e-5, atol=1.0e-7)
+
 
 class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
     """Reusable current Gaussian transforms and scales."""

@@ -89,11 +89,17 @@ def _gaussian_in_world(ctx: _DeformableImportContext, prim, gaussian):
     """Bake the prim placement into Gaussian centers, orientations, and scales."""
     world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
     positions = _transform_points_np(world_mat, gaussian.positions).astype(np.float32)
-    _pos, world_rot, world_scale = wp.transform_decompose(world_mat)
+    linear = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)[:3, :3]
     rotations = np.empty_like(gaussian.rotations)
-    for i, rotation in enumerate(gaussian.rotations):
-        rotations[i] = np.asarray(world_rot * wp.quat(*rotation), dtype=np.float32)
-    scales = gaussian.scales * np.abs(np.asarray(world_scale, dtype=np.float32))
+    scales = np.empty_like(gaussian.scales)
+    for i, (rotation, scale) in enumerate(zip(gaussian.rotations, gaussian.scales, strict=True)):
+        rest_rotation = np.asarray(wp.quat_to_matrix(wp.quat(*rotation)), dtype=np.float64).reshape(3, 3)
+        axes = linear @ rest_rotation @ np.diag(scale)
+        world_rotation, world_scale, _ = np.linalg.svd(axes)
+        if np.linalg.det(world_rotation) < 0.0:
+            world_rotation[:, -1] *= -1.0
+        rotations[i] = np.asarray(wp.quat_from_matrix(wp.mat33f(world_rotation.astype(np.float32))), dtype=np.float32)
+        scales[i] = world_scale.astype(np.float32)
     return type(gaussian)(
         positions=positions,
         rotations=rotations,
