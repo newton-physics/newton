@@ -58,8 +58,30 @@ wp.set_module_options({"enable_backward": False})
 
 @dataclass
 class ModelKaminoInfo:
-    """
-    A container to hold the time-invariant information and meta-data of a model.
+    """A container holding the time-invariant information and metadata of a model.
+
+    Kamino lays out the constraints of each world in the following order::
+
+        | dynamic | kinematic | Coulomb friction | effort limits | position limits | contacts |
+
+    where all constraints except contacts are associated with joints.
+
+    These constraint types form groups:
+
+    - **Bilateral:** dynamic and kinematic constraints. These are equality
+      constraints without a projection operator.
+    - **Bounded:** Coulomb joint friction and effort limit constraints. They have box
+      constraints on the Lagrange multipliers.
+    - **Unilateral:** position-limit and contact constraints. Their multipliers
+      are projected onto the nonnegative half-line and Coulomb cone, respectively.
+
+    All constraints that have a projection operator, i.e. bounded and
+    unilateral, are considered **Inequality** constraints.
+
+    The sizes and topologies of the bilateral and bounded groups are fixed when
+    the model is constructed. The unilateral group instead reserves capacity for
+    position limits and contacts; the active constraints in this group may change
+    during the simulation.
     """
 
     ###
