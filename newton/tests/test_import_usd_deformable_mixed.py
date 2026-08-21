@@ -11,6 +11,7 @@ family-specific lowering, and ``test_import_usd_deformable_groups`` covers the b
 group registries across the model lifecycle.
 """
 
+import math
 import os
 import unittest
 import warnings
@@ -310,6 +311,31 @@ class TestUSDDeformableMixed(unittest.TestCase):
             self.assertTrue(all(im > 0.0 for im in model.particle_inv_mass.numpy()))
             self.assertEqual(result["path_soft_attrs"]["/World/Soft/Sim"]["resolved_density"], 1000.0)
 
+    def test_invalid_body_mass_and_density_warn_and_use_fallbacks(self):
+        """Reject malformed body overrides while preserving finite fallback masses."""
+        from pxr import Sdf
+
+        for attr_name in ("mass", "density"):
+            for value in (-1.0, float("nan"), float("inf"), float("-inf"), 0.0):
+                with self.subTest(attribute=attr_name, value=value):
+                    stage = _deformable_stage()
+                    cloth = _add_cloth_mesh(stage, "/World/Cloth")
+                    cloth.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+                    cloth.GetPrim().CreateAttribute(f"physics:{attr_name}", Sdf.ValueTypeNames.Float).Set(value)
+
+                    builder = newton.ModelBuilder()
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        builder.add_usd(stage)
+                    messages = [str(item.message) for item in caught]
+                    invalid = [message for message in messages if f"invalid physics:{attr_name}" in message]
+                    if value == 0.0:
+                        self.assertEqual(invalid, [], "zero is the schema sentinel, not an invalid value")
+                    else:
+                        self.assertGreaterEqual(len(invalid), 1)
+                        self.assertTrue(all("/World/Cloth" in message for message in invalid))
+                    self.assertTrue(all(math.isfinite(float(mass)) and mass > 0.0 for mass in builder.particle_mass))
+
     def test_disabled_body_collision_geometry_stays_static(self):
         """A physics:bodyEnabled=false deformable is not simulated, but by rigid-body
         precedent its collision geometry persists as static colliders instead of
@@ -361,11 +387,15 @@ class TestUSDDeformableMixed(unittest.TestCase):
         UsdGeom.PointBased(cable.GetPrim()).CreateVelocitiesAttr([(1.0, 0.0, 0.0)] * 4)
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
         cloth.GetPrim().CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set([0.1])
+        cloth.GetPrim().CreateAttribute("physics:restTriVertexIndices", Sdf.ValueTypeNames.IntArray).Set(
+            [0, 1, 2, 0, 2, 3]
+        )
         UsdGeom.PointBased(cloth.GetPrim()).CreateVelocitiesAttr([(1.0, 0.0, 0.0)] * 4)
         tet = _author_unit_tet(stage, "/World/Soft")
         tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
             [(0.0, 0.0, 0.0)] * 4
         )
+        tet.GetPrim().CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.IntArray).Set([0, 1, 2, 3])
 
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
@@ -376,7 +406,9 @@ class TestUSDDeformableMixed(unittest.TestCase):
         for field, path in (
             ("restNormals", "/World/Cable"),
             ("restBendAngles", "/World/Cloth"),
+            ("restTriVertexIndices", "/World/Cloth"),
             ("restShapePoints", "/World/Soft"),
+            ("restTetVertexIndices", "/World/Soft"),
         ):
             self.assertTrue(any(path in m and field in m and "not yet supported" in m for m in messages), field)
         for path in ("/World/Cable", "/World/Cloth"):

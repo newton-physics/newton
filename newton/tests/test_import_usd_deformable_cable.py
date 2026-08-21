@@ -727,6 +727,75 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertTrue(any("invalid physics:curvesStretchStiffness" in message for message in messages))
         self.assertTrue(all(math.isfinite(value) for value in builder.joint_target_ke))
 
+    def test_cable_derived_stiffness_falls_back_before_float32_overflow(self):
+        """Fall back before derived cable stiffness overflows Newton's float32 storage."""
+        stage = _deformable_stage(up_axis="y")
+        curves = _add_cable_curve(
+            stage,
+            "/World/Cable",
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+            thickness=2.2,
+        )
+        _bind_deformable_material(
+            stage,
+            curves.GetPrim(),
+            "/World/Mat",
+            youngsModulus=3.0e38,
+            poissonsRatio=-0.99999994,
+        )
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+            model = builder.finalize()
+        messages = [str(item.message) for item in caught]
+
+        for mode in (
+            "curvesStretchStiffness",
+            "curvesShearStiffness",
+            "curvesBendStiffness",
+            "curvesTwistStiffness",
+        ):
+            self.assertTrue(
+                any(
+                    "/World/Cable" in message and mode in message and "finite float32 range" in message
+                    for message in messages
+                ),
+                mode,
+            )
+        self.assertTrue(all(math.isfinite(value) for value in builder.joint_target_ke))
+        self.assertTrue(np.all(np.isfinite(model.joint_target_ke.numpy())))
+
+    def test_cable_post_discretization_overflow_preserves_valid_modes(self):
+        """Replace only the cable mode that overflows after joint-length lowering."""
+        stage = _deformable_stage(up_axis="y")
+        curves = _add_cable_curve(
+            stage,
+            "/World/Cable",
+            [(0.0, 0.0, 0.0), (1.0e-4, 0.0, 0.0), (2.0e-4, 0.0, 0.0)],
+            thickness=2.0e-6,
+        )
+        _bind_deformable_material(
+            stage,
+            curves.GetPrim(),
+            "/World/Mat",
+            curvesStretchStiffness=3.0e38,
+            curvesShearStiffness=7.0,
+            curvesBendStiffness=11.0,
+            curvesTwistStiffness=13.0,
+        )
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "curvesStretchStiffness.*joint-length lowering"):
+            builder.add_usd(stage)
+
+        joint_start, _ = group_range(builder, "cable", "/World/Cable", "joint")
+        dof_start = builder.joint_qd_start[joint_start]
+        lowered = builder.joint_target_ke[dof_start : dof_start + 4]
+        self.assertTrue(math.isfinite(lowered[0]))
+        np.testing.assert_allclose(lowered[1:], [7.0e4, 11.0e4, 13.0e4], rtol=1.0e-5)
+
     def test_cable_density_segment_mass_is_cylinder_not_capsule(self):
         """A density-derived cable segment gets the cylinder mass m = rho*pi*r^2*L per segment
         (so mass scales with density and segment length), not add_rod's capsule mass whose

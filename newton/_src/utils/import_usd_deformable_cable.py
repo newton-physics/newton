@@ -34,6 +34,7 @@ from .import_usd_deformable_utils import (
     _deformable_body_skip_reason,
     _deformable_collision_enabled,
     _DeformableImportContext,
+    _is_float32_representable,
     _is_ignored_path,
     _read_deformable_element_array,
     _resolve_deformable_density,
@@ -49,8 +50,8 @@ from .import_usd_deformable_utils import (
 )
 
 _AOUSD_CIRCULAR_SECTION_SHEAR_CORRECTION = 0.9
-# Attributes that distinguish proposal revisions; density is shared and intentionally omitted.
-_CURRENT_CURVE_MATERIAL_ATTRS = (
+# Attributes introduced after the family-prefix rename; density is shared and intentionally omitted.
+_POST_RENAME_CURVE_MATERIAL_ATTRS = (
     "curvesThickness",
     "youngsModulus",
     "poissonsRatio",
@@ -66,8 +67,14 @@ _LEGACY_CURVE_MATERIAL_ATTRS = (
     "bendStiffness",
     "twistStiffness",
 )
-# Thickness attributes in resolution order: the current revision first, then the deprecated name.
+# Removed family-prefixed thickness first, then the earlier unprefixed compatibility name.
 _CABLE_THICKNESS_ATTRS = ("curvesThickness", "thickness")
+_CABLE_STIFFNESS_ATTRS = (
+    ("curvesStretchStiffness", "stretchStiffness"),
+    ("curvesShearStiffness", "shearStiffness"),
+    ("curvesBendStiffness", "bendStiffness"),
+    ("curvesTwistStiffness", "twistStiffness"),
+)
 
 
 def _curve_thickness_samples(
@@ -215,7 +222,9 @@ def _has_legacy_curve_material(material: dict[str, float]) -> bool:
 
 def _is_legacy_only_curve_material(material: dict[str, float]) -> bool:
     """Whether legacy attributes are authored without any current-revision attributes."""
-    return _has_legacy_curve_material(material) and not any(name in material for name in _CURRENT_CURVE_MATERIAL_ATTRS)
+    return _has_legacy_curve_material(material) and not any(
+        name in material for name in _POST_RENAME_CURVE_MATERIAL_ATTRS
+    )
 
 
 def _warn_legacy_curve_material(path: str, material: dict[str, float] | None) -> None:
@@ -317,6 +326,7 @@ def _apply_local_rod_stiffnesses(
     segment_radii: list[float],
     joint_radii: list[float],
     linear_unit: float,
+    path: str,
 ) -> None:
     """Discretize cable material stiffnesses using each rod joint's dual rest length.
 
@@ -330,36 +340,87 @@ def _apply_local_rod_stiffnesses(
 
     body_rest_lengths = dict(zip(bodies, segment_rest_lengths, strict=True))
     body_radii = dict(zip(bodies, segment_radii, strict=True))
+    legacy_only = _is_legacy_only_curve_material(material)
+    warned_modes: set[str] = set()
+
+    def series_stiffness(
+        parent_value: float | None,
+        child_value: float | None,
+        parent_segment_length: float,
+        child_segment_length: float,
+    ) -> float | None:
+        if parent_value is None or child_value is None:
+            return None
+        if parent_value == 0.0 or child_value == 0.0:
+            return 0.0
+        return 1.0 / (0.5 * parent_segment_length / parent_value + 0.5 * child_segment_length / child_value)
+
+    def lower(
+        candidate_material: dict[str, float],
+        parent: int,
+        child: int,
+        joint_radius: float,
+        parent_length: float,
+        child_length: float,
+    ) -> tuple[float | None, float | None, float | None, float | None]:
+        parent_values = _resolve_cable_structural_stiffnesses(candidate_material, body_radii[parent], linear_unit)
+        child_values = _resolve_cable_structural_stiffnesses(candidate_material, body_radii[child], linear_unit)
+        joint_values = _resolve_cable_structural_stiffnesses(candidate_material, joint_radius, linear_unit)
+        if parent_values is None or child_values is None or joint_values is None:
+            return None, None, None, None
+        joint_rest_length = 0.5 * (parent_length + child_length)
+        return (
+            series_stiffness(parent_values[0], child_values[0], parent_length, child_length),
+            series_stiffness(parent_values[1], child_values[1], parent_length, child_length),
+            None if joint_values[2] is None else joint_values[2] / joint_rest_length,
+            None if joint_values[3] is None else joint_values[3] / joint_rest_length,
+        )
+
     for joint, joint_radius in zip(joints, joint_radii, strict=True):
         parent = builder.joint_parent[joint]
         child = builder.joint_child[joint]
         parent_length = body_rest_lengths[parent]
         child_length = body_rest_lengths[child]
-        parent_values = _resolve_cable_structural_stiffnesses(material, body_radii[parent], linear_unit)
-        child_values = _resolve_cable_structural_stiffnesses(material, body_radii[child], linear_unit)
-        if parent_values is None or child_values is None:
-            continue
+        lower_args = (parent, child, joint_radius, parent_length, child_length)
 
-        def series_stiffness(
-            parent_value: float | None,
-            child_value: float | None,
-            parent_segment_length: float,
-            child_segment_length: float,
-        ) -> float | None:
-            if parent_value is None or child_value is None:
-                return None
-            if parent_value == 0.0 or child_value == 0.0:
-                return 0.0
-            return 1.0 / (0.5 * parent_segment_length / parent_value + 0.5 * child_segment_length / child_value)
+        lowered = list(lower(material, *lower_args))
+        for mode_index, (mode, legacy_mode) in enumerate(_CABLE_STIFFNESS_ATTRS):
+            value = lowered[mode_index]
+            if value is None or _is_float32_representable(value):
+                continue
 
-        stretch = series_stiffness(parent_values[0], child_values[0], parent_length, child_length)
-        shear = series_stiffness(parent_values[1], child_values[1], parent_length, child_length)
-        joint_rest_length = 0.5 * (parent_length + child_length)
-        joint_values = _resolve_cable_structural_stiffnesses(material, joint_radius, linear_unit)
-        bend = None if joint_values is None or joint_values[2] is None else joint_values[2] / joint_rest_length
-        twist = None if joint_values is None or joint_values[3] is None else joint_values[3] / joint_rest_length
+            fallback = None
+            fallback_message = "leaving Newton's rod-builder default."
+            if not legacy_only:
+                fallback_material = dict(material)
+                fallback_material.pop(mode, None)
+                fallback_material.pop(legacy_mode, None)
+                candidate = lower(fallback_material, *lower_args)[mode_index]
+                if candidate is not None and _is_float32_representable(candidate):
+                    fallback = candidate
+                    fallback_message = f"using the material's isotropic fallback ({candidate:g})."
+                else:
+                    fallback_material["youngsModulus"] = _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit
+                    candidate = lower(fallback_material, *lower_args)[mode_index]
+                    if candidate is not None and _is_float32_representable(candidate):
+                        fallback = candidate
+                        fallback_message = f"using the proposal Young's modulus fallback ({candidate:g})."
+
+            if mode not in warned_modes:
+                warnings.warn(
+                    f"{path}: resolved physics:{mode}={value:g} is outside Newton's finite float32 range "
+                    f"after joint-length lowering; {fallback_message}",
+                    stacklevel=2,
+                )
+                warned_modes.add(mode)
+            lowered[mode_index] = fallback
+
         builder._set_joint_rod_stiffnesses(
-            joint, stretch_stiffness=stretch, shear_stiffness=shear, bend_stiffness=bend, twist_stiffness=twist
+            joint,
+            stretch_stiffness=lowered[0],
+            shear_stiffness=lowered[1],
+            bend_stiffness=lowered[2],
+            twist_stiffness=lowered[3],
         )
 
 
@@ -732,6 +793,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             edge_radii,
             graph_joint_radii,
             linear_unit,
+            comp_paths[0],
         )
         for key in rest_lengths_by_curve:
             _warn_cable_rest_shape_effect(key)
@@ -1067,6 +1129,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 curve_radii,
                 curve_joint_radii,
                 linear_unit,
+                path,
             )
             has_valid_rest_shape |= rest_seg_lengths is not None
             cable_bodies.extend(bodies)

@@ -225,6 +225,68 @@ class TestUSDDeformableCloth(unittest.TestCase):
         tri_start, _ = group_range(builder, "cloth", "/World/Cloth", "tri")
         self.assertAlmostEqual(builder.tri_materials[tri_start][0], 1098.901098901099, delta=2.0e-4)
 
+    def test_surface_stiffness_falls_back_before_float32_overflow(self):
+        """Fall back before derived surface stiffness overflows Newton's float32 storage."""
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(
+            stage,
+            cloth.GetPrim(),
+            "/World/Mat",
+            youngsModulus=3.0e38,
+            poissonsRatio=-0.99999994,
+        )
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.02], "constant")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+            model = builder.finalize()
+        messages = [str(item.message) for item in caught]
+
+        for mode in ("surfaceStretchStiffness", "surfaceBendStiffness"):
+            self.assertTrue(
+                any(
+                    "/World/Cloth" in message and mode in message and "finite float32 range" in message
+                    for message in messages
+                ),
+                mode,
+            )
+        self.assertTrue(np.all(np.isfinite(np.asarray(builder.tri_materials, dtype=np.float64))))
+        self.assertTrue(np.all(np.isfinite(np.asarray(builder.edge_bending_properties, dtype=np.float64))))
+        self.assertTrue(np.all(np.isfinite(model.tri_materials.numpy())))
+        self.assertTrue(np.all(np.isfinite(model.edge_bending_properties.numpy())))
+
+    def test_surface_overflow_tries_material_isotropic_fallback_first(self):
+        """Use authored isotropic elasticity before the proposal stiffness fallback."""
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(
+            stage,
+            cloth.GetPrim(),
+            "/World/Mat",
+            youngsModulus=2.0e6,
+            poissonsRatio=0.3,
+            stretchStiffness=3.0e38,
+        )
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [2.0], "constant")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        messages = [str(item.message) for item in caught]
+
+        self.assertTrue(
+            any(
+                "surfaceStretchStiffness" in message and "material's isotropic fallback" in message
+                for message in messages
+            )
+        )
+        expected = 2.0e6 * 2.0 / (1.0 - 0.3**2)
+        self.assertAlmostEqual(builder.tri_materials[0][0], expected, delta=1.0)
+
     def test_surface_vendor_namespace_material_needs_resolver(self):
         """Read vendor-namespaced surface attributes only through a compatibility resolver."""
         stage = _deformable_stage(up_axis="y")
@@ -508,6 +570,25 @@ class TestUSDDeformableCloth(unittest.TestCase):
         expected_bend = 1.0e6 * 0.02**3 / (12.0 * (1.0 - 0.3**2))
         self.assertAlmostEqual(builder.edge_bending_properties[shared_edge][0], expected_bend, places=6)
 
+    def test_unrepresentable_face_stiffness_keeps_builder_default(self):
+        """Keep the builder default when one varying-thickness face cannot lower safely."""
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", stretchStiffness=1.0e6)
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.01, 3.0e38], "face")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        messages = [str(item.message) for item in caught]
+
+        self.assertTrue(
+            any("surfaceStretchStiffness" in message and "finite float32 range" in message for message in messages)
+        )
+        self.assertAlmostEqual(builder.tri_materials[0][0], 1.0e4, delta=1.0e-2)
+        self.assertEqual(builder.tri_materials[1][0], builder.default_tri_ke)
+
     def test_cloth_point_thickness_samples_bend_on_edge_endpoints(self):
         """Average point thickness at edge endpoints when deriving bend stiffness."""
         stage = _deformable_stage(up_axis="y")
@@ -565,13 +646,21 @@ class TestUSDDeformableCloth(unittest.TestCase):
             ("unsupported", "vertex", [0.02], "invalid physics:thicknesses:elementType"),
             ("wrong_count", "face", [0.02], "element type 'face' count 2"),
             ("empty_with_type", "face", [], "is empty but physics:thicknesses:elementType"),
+            ("type_without_array", "constant", None, "thicknesses:elementType.*thicknesses is not authored"),
+            ("outside_float_range", "constant", [1.0e308], "outside the finite USD float range"),
         )
         for label, element_type, thicknesses, warning in cases:
             with self.subTest(kind=label):
                 stage = _deformable_stage(up_axis="y")
                 cloth = _add_cloth_mesh(stage, "/World/Cloth")
-                value_type = Sdf.ValueTypeNames.Float if label == "scalar" else Sdf.ValueTypeNames.FloatArray
-                cloth.GetPrim().CreateAttribute("physics:thicknesses", value_type).Set(thicknesses)
+                if thicknesses is not None:
+                    if label == "scalar":
+                        value_type = Sdf.ValueTypeNames.Float
+                    elif label == "outside_float_range":
+                        value_type = Sdf.ValueTypeNames.DoubleArray
+                    else:
+                        value_type = Sdf.ValueTypeNames.FloatArray
+                    cloth.GetPrim().CreateAttribute("physics:thicknesses", value_type).Set(thicknesses)
                 if element_type is not None:
                     cloth.GetPrim().CreateAttribute("physics:thicknesses:elementType", Sdf.ValueTypeNames.Token).Set(
                         element_type
@@ -592,6 +681,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 stage = _deformable_stage()
                 cloth = _add_cloth_mesh(stage, "/World/Cloth")
                 cloth.GetPointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0)])
+                # Import must use these default-time points, not the planar animation sample.
                 cloth.GetPointsAttr().Set(
                     [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
                     Usd.TimeCode(1.0),

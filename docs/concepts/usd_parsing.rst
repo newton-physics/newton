@@ -135,7 +135,7 @@ across three families:
   for the closing segment.
 * **Surface / cloth** -- a ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI`` becomes
   cloth: particles with FEM triangles and bending edges. Polygonal faces (such as quads) are
-  fan-triangulated on import.
+  fan-triangulated on import as a Newton extension to the proposal's triangle-only input.
 * **Volume** -- a ``UsdGeom.TetMesh`` with ``PhysicsVolumeDeformableSimAPI`` becomes a soft
   body. Under a ``PhysicsDeformableBodyAPI`` ancestor exactly one simulation TetMesh is
   selected; other TetMeshes in that hierarchy are graphics/collision geometry and are not
@@ -186,11 +186,20 @@ The first release deliberately supports a narrow, predictable set of inputs:
   * For volumes, the shared isotropic properties become Lamé parameters. An authored
     ``physics:poissonsRatio = 0.5`` is approximated as 0.499 with a warning so the parameters
     remain finite; values in ``(-1, 0.5)`` retain their authored sign.
+  * Every stiffness written to Newton must fit its finite float32 storage. An out-of-range
+    surface or cable mode warns and retries that mode with the material's isotropic fallback,
+    then the proposal's Young's modulus fallback. If neither is representable, that mode keeps
+    Newton's builder default; independently valid modes remain unchanged.
 
-  Removed material ``physics:surfaceThickness`` / ``physics:curvesThickness`` attributes and
-  the earlier unprefixed material attributes remain accepted during a deprecation window. The
-  former supply only a thickness fallback; geometry ``physics:thicknesses`` wins. Every path
-  emits a ``DeprecationWarning`` with the geometry-owned replacement.
+  Removed material ``physics:surfaceThickness`` / ``physics:curvesThickness`` attributes remain
+  accepted during a deprecation window and supply only a thickness fallback. Move their values to
+  simulation-geometry ``physics:thicknesses`` and author the corresponding
+  ``physics:thicknesses:elementType``; an authored geometry array takes precedence.
+
+  The earlier unprefixed material stiffness attributes have a separate compatibility path. They
+  retain their former modulus interpretation during the deprecation window; convert them to the
+  appropriate family-prefixed structural stiffnesses. Both migrations emit an actionable
+  ``DeprecationWarning``.
 * Typed simulation-geometry ``physics:masses`` arrays. Every non-empty array must author
   ``physics:masses:elementType``: volume supports ``constant``, ``tetrahedron``, and ``point``;
   surface supports ``constant``, ``face``, and ``point``; curves support ``constant``, ``curve``,

@@ -91,7 +91,12 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         if is_volume_deformable and _skip_for_deformable_body_owner(ctx, prim, path):
             continue
         if is_volume_deformable:
-            _warn_unsupported_rest_fields(prim, path, ("restShapePoints",), deformable_read)
+            _warn_unsupported_rest_fields(
+                prim,
+                path,
+                ("restShapePoints", "restTetVertexIndices"),
+                deformable_read,
+            )
             _warn_dropped_velocities(prim, path)
             _warn_geometry_authored_material_attrs(prim, path, "PhysicsVolumeDeformableMaterialAPI", deformable_read)
             _warn_subset_material_bindings(prim, path)
@@ -180,6 +185,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             "vertices": world_vertices,
             "label": path,
         }
+        volume_material = None
         if is_volume_deformable:
             volume_material = usd._get_volume_deformable_material(prim, deformable_read)
             if volume_material is not None:

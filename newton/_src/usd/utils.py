@@ -1956,10 +1956,6 @@ def get_tetmesh(
             ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
             gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
             canonical-only.
-        _load_custom_attributes: Whether to import registered custom attributes. Reserved for
-            Newton's USD importer.
-        _load_material: Whether to resolve the bound volume-deformable material. Reserved for
-            Newton's USD importer.
 
     Returns:
         TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
@@ -2463,17 +2459,29 @@ def _get_deformable_body_overrides(
     material's density (see the precedence in :meth:`ModelBuilder.add_usd`).
 
     Returns:
-        ``(mass, density)`` with each entry ``None`` when unset / non-positive.
+        ``(mass, density)`` with each entry ``None`` when unset, zero, or invalid.
     """
     body_prim = _find_deformable_body_prim(prim)
     if body_prim is None:
         return None, None
-    mass = read_attr(body_prim, "mass")
-    density = read_attr(body_prim, "density")
-    # Require a finite positive value; drop unset, non-positive, or inf/nan overrides.
-    mass = float(mass) if mass is not None and math.isfinite(float(mass)) and float(mass) > 0.0 else None
-    density = float(density) if density is not None and math.isfinite(float(density)) and float(density) > 0.0 else None
-    return mass, density
+
+    def read_override(name: str) -> float | None:
+        raw_value = read_attr(body_prim, name)
+        if raw_value is None:
+            return None
+        value = float(raw_value)
+        if value == 0.0:
+            return None
+        if math.isfinite(value) and value > 0.0:
+            return value
+        warnings.warn(
+            f"{body_prim.GetPath()}: invalid physics:{name} {value:g} "
+            "(expected a finite positive value or the zero sentinel); treating it as unauthored.",
+            stacklevel=2,
+        )
+        return None
+
+    return read_override("mass"), read_override("density")
 
 
 def _get_physics_scenes_from_results(stage: Usd.Stage, physics_results: dict[Any, Any]) -> list[UsdPhysics.Scene]:

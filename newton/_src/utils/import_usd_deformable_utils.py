@@ -34,6 +34,12 @@ _AOUSD_DEFAULT_DENSITY = 1000.0
 _AOUSD_DEFAULT_THICKNESS = 1.0e-3
 _AOUSD_DEFAULT_YOUNGS_MODULUS = 1.0e6
 _AOUSD_DEFAULT_POISSONS_RATIO = 0.3
+_FLOAT32_MAX = float(np.finfo(np.float32).max)
+
+
+def _is_float32_representable(value: float) -> bool:
+    """Return whether a scalar can be stored as a finite Newton float32 value."""
+    return math.isfinite(value) and abs(value) <= _FLOAT32_MAX
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +74,16 @@ def _read_deformable_element_array(
 ) -> _DeformableElementArray | None:
     """Read and validate a simulation-geometry array and its namespaced element type."""
     raw_values = read_attr(prim, name)
+    raw_element_type = read_attr(prim, f"{name}:elementType")
+    element_type = "" if raw_element_type is None else str(raw_element_type)
+    path = prim.GetPath()
     if raw_values is None:
+        if element_type:
+            warnings.warn(
+                f"{path}: physics:{name}:elementType is '{element_type}' but physics:{name} is not authored; "
+                "treating the pair as unauthored.",
+                stacklevel=2,
+            )
         return None
     try:
         values = tuple(float(value) for value in raw_values)
@@ -78,10 +93,6 @@ def _read_deformable_element_array(
             stacklevel=2,
         )
         return None
-    raw_element_type = read_attr(prim, f"{name}:elementType")
-    element_type = "" if raw_element_type is None else str(raw_element_type)
-    path = prim.GetPath()
-
     if not values:
         if element_type:
             warnings.warn(
@@ -131,6 +142,12 @@ def _read_deformable_element_array(
         expected = ">= 0" if allow_zero else "> 0"
         warnings.warn(
             f"{path}: physics:{name} contains invalid values (expected finite values {expected}); ignoring the array.",
+            stacklevel=2,
+        )
+        return None
+    if any(not _is_float32_representable(value) for value in values):
+        warnings.warn(
+            f"{path}: physics:{name} contains a value outside the finite USD float range; ignoring the array.",
             stacklevel=2,
         )
         return None
@@ -530,13 +547,15 @@ def _warn_unsupported_rest_fields(prim: Usd.Prim, path: str, names: Sequence[str
     Rest-state import (rest shape, rest dihedral angles) is not implemented yet; warn rather than
     silently drop an authored rest configuration.
     """
-    for name in names:
-        if read_attr(prim, name) is not None:
-            warnings.warn(
-                f"{path}: 'physics:{name}' is authored but its import is not yet supported; it is ignored.",
-                stacklevel=2,
-            )
-            return
+    authored = [name for name in names if read_attr(prim, name) is not None]
+    if not authored:
+        return
+    fields = ", ".join(f"'physics:{name}'" for name in authored)
+    if len(authored) == 1:
+        message = f"{fields} is authored but its import is not yet supported; it is ignored."
+    else:
+        message = f"{fields} are authored but their import is not yet supported; they are ignored."
+    warnings.warn(f"{path}: {message}", stacklevel=2)
 
 
 def _warn_dropped_velocities(prim: Usd.Prim, path: str) -> None:
@@ -810,7 +829,7 @@ def _apply_particle_masses(
 
     n = p1 - p0
     if n <= 0:
-        return
+        return None
     point_masses, authored = _resolve_simplex_point_masses(
         prim,
         n,
@@ -872,12 +891,29 @@ def _apply_cable_masses(
 
     if authored is not None:
         imported_volume = sum(sum(run.element_volumes) for run in runs)
+        if authored.element_type == "constant" and (imported_volume <= 0.0 or not math.isfinite(imported_volume)):
+            warnings.warn(
+                f"{prim.GetPath()}: simulation geometry has no positive finite volume; ignoring physics:masses.",
+                stacklevel=2,
+            )
+            authored = None
+
+    if authored is not None:
         for run in runs:
             volumes = list(run.element_volumes)
             if authored.element_type == "constant":
                 segment_masses = [authored.values[0] * volume / imported_volume for volume in volumes]
             elif authored.element_type == "curve":
                 curve_volume = sum(volumes)
+                if curve_volume <= 0.0 or not math.isfinite(curve_volume):
+                    warnings.warn(
+                        f"{prim.GetPath()}: curve {run.curve_index} has no positive finite volume; "
+                        "ignoring physics:masses.",
+                        stacklevel=2,
+                    )
+                    authored = None
+                    resolved_runs.clear()
+                    break
                 segment_masses = [authored.values[run.curve_index] * volume / curve_volume for volume in volumes]
             elif authored.element_type == "segment":
                 segment_masses = list(authored.values[run.segment_offset : run.segment_offset + len(run.body_ids)])
