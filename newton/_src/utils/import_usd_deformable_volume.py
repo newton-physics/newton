@@ -216,8 +216,26 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
+        authored_masses = None
         if is_volume_deformable:
-            _apply_particle_masses(builder, prim, soft_p0, builder.particle_count, deformable_read)
+            mass_indices = np.asarray(
+                add_soft_mesh_kwargs.get("indices", tetmesh_for_builder.tet_indices), dtype=np.int64
+            ).reshape(-1, 4)
+            mass_points = np.asarray(world_vertices, dtype=np.float64)
+            edges_a = mass_points[mass_indices[:, 1]] - mass_points[mass_indices[:, 0]]
+            edges_b = mass_points[mass_indices[:, 2]] - mass_points[mass_indices[:, 0]]
+            edges_c = mass_points[mass_indices[:, 3]] - mass_points[mass_indices[:, 0]]
+            mass_volumes = np.abs(np.einsum("ij,ij->i", np.cross(edges_a, edges_b), edges_c)) / 6.0
+            authored_masses = _apply_particle_masses(
+                builder,
+                prim,
+                soft_p0,
+                builder.particle_count,
+                deformable_read,
+                element_name="tetrahedron",
+                element_indices=mass_indices,
+                element_volumes=mass_volumes,
+            )
         path_soft_map[path] = {
             "particle": (soft_p0, builder.particle_count),
             "tet": (soft_t0, builder.tet_count),
@@ -235,6 +253,14 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         path_soft_attrs[path] = {
             "resolved_density": effective_density,
         }
+        if authored_masses is not None:
+            path_soft_attrs[path]["simulation"] = {
+                "masses": {
+                    "values": list(authored_masses.values),
+                    "element_type": authored_masses.element_type,
+                    "legacy_implicit_type": authored_masses.legacy_implicit_type,
+                }
+            }
 
         if verbose:
             print(f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra.")

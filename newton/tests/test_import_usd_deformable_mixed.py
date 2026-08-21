@@ -22,6 +22,7 @@ import newton
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
+    _author_deformable_element_array,
     _bind_deformable_material,
     _deformable_stage,
     group_labels,
@@ -101,9 +102,11 @@ class TestUSDDeformableMixed(unittest.TestCase):
         """Use 1000 kg/m^3 only for proposal-marked deformables without a density."""
         stage = _deformable_stage()
         cable = _add_cable_curve(stage, "/World/Cable", _CABLE_PTS, thickness=None)
-        _bind_deformable_material(stage, cable.GetPrim(), "/World/CableMat", curvesThickness=0.02)
+        _author_deformable_element_array(cable.GetPrim(), "thicknesses", [0.02], "constant")
+        _bind_deformable_material(stage, cable.GetPrim(), "/World/CableMat")
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
-        _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat", surfaceThickness=0.01)
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.01], "constant")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat")
         volume = _author_unit_tet(stage, "/World/Volume", sim_api=True)
         volume.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
         _bind_deformable_material(stage, volume.GetPrim(), "/World/VolumeMat")
@@ -242,7 +245,8 @@ class TestUSDDeformableMixed(unittest.TestCase):
             mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 1, 3, 2])
             mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
             mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
-            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", surfaceThickness=0.001)
+            _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat")
             _with_body_mass(mesh.GetPrim(), 8.0)
 
             builder = newton.ModelBuilder()

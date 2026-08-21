@@ -20,6 +20,7 @@ from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
     _apply_deformable_body_api,
+    _author_deformable_element_array,
     _bind_deformable_material,
     _deformable_stage,
     group_labels,
@@ -44,7 +45,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
         mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
         mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
         mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
-        _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", surfaceThickness=0.001)
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+        _author_deformable_element_array(mesh.GetPrim(), "masses", [8.0], "face")
 
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
@@ -53,6 +55,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         # The quad fan-triangulates to 2 triangles.
         self.assertEqual(group_range(builder, "cloth", "/World/Cloth", "tri"), (0, 2))
         self.assertEqual(builder.particle_count, 4)
+        self.assertAlmostEqual(sum(builder.particle_mass), 8.0, places=6)
 
     def test_cloth_left_handed_orientation_flips_winding(self):
         """A left-handed cloth mesh flips triangle winding, matching the rigid mesh path."""
@@ -66,7 +69,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         mesh.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
         mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
         mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
-        _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", surfaceThickness=0.001)
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
 
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
@@ -112,12 +115,12 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 stage,
                 cloth.GetPrim(),
                 f"/World/{name}Mat",
-                surfaceThickness=thickness,
                 surfaceStretchStiffness=stretch,
                 surfaceShearStiffness=shear,
                 surfaceBendStiffness=bend,
                 density=900.0,
             )
+            _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [thickness], "constant")
 
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
@@ -149,20 +152,20 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage,
             derived.GetPrim(),
             "/World/DerivedMat",
-            surfaceThickness=thickness,
             youngsModulus=youngs,
             poissonsRatio=poissons,
         )
+        _author_deformable_element_array(derived.GetPrim(), "thicknesses", [thickness], "constant")
         overridden = _add_cloth_mesh(stage, "/World/Overridden")
         _bind_deformable_material(
             stage,
             overridden.GetPrim(),
             "/World/OverriddenMat",
-            surfaceThickness=thickness,
             youngsModulus=youngs,
             poissonsRatio=poissons,
             surfaceStretchStiffness=77.0,
         )
+        _author_deformable_element_array(overridden.GetPrim(), "thicknesses", [thickness], "constant")
 
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
@@ -206,7 +209,6 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage,
             cloth.GetPrim(),
             "/World/Mat",
-            surfaceThickness=float("-inf"),
             youngsModulus=float("-inf"),
             poissonsRatio=0.75,
             surfaceStretchStiffness=-1.0,
@@ -220,7 +222,6 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
         self.assertEqual(sum("invalid physics:poissonsRatio" in message for message in messages), 1)
         self.assertEqual(sum("invalid physics:surfaceStretchStiffness" in message for message in messages), 1)
-        self.assertFalse(any("surfaceThickness -inf" in message for message in messages))
         tri_start, _ = group_range(builder, "cloth", "/World/Cloth", "tri")
         self.assertAlmostEqual(builder.tri_materials[tri_start][0], 1098.901098901099, delta=2.0e-4)
 
@@ -233,15 +234,15 @@ class TestUSDDeformableCloth(unittest.TestCase):
             cloth.GetPrim(),
             "/World/Mat",
             namespace="omniphysics",
-            surfaceThickness=0.02,
             surfaceStretchStiffness=77.0,
         )
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.02], "constant")
 
         builder_default = newton.ModelBuilder()
         builder_default.add_usd(stage)
         default_tri, _ = group_range(builder_default, "cloth", "/World/Cloth", "tri")
         self.assertNotAlmostEqual(builder_default.tri_materials[default_tri][0], 77.0)
-        self.assertAlmostEqual(builder_default.particle_radius[0], 0.0005, places=7)
+        self.assertAlmostEqual(builder_default.particle_radius[0], 0.01, places=7)
 
         builder_compat = newton.ModelBuilder()
         builder_compat.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
@@ -260,6 +261,19 @@ class TestUSDDeformableCloth(unittest.TestCase):
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "surfaceStretchStiffness.*authored on the geometry"):
             builder.add_usd(stage)
+
+    def test_legacy_geometry_thickness_warning_names_array_replacement(self):
+        """Direct legacy geometry thickness users to the typed thicknesses array."""
+        from pxr import Sdf
+
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        cloth.GetPrim().CreateAttribute("physics:surfaceThickness", Sdf.ValueTypeNames.Float).Set(0.02)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(DeprecationWarning, "thicknesses.*thicknesses:elementType"):
+            builder.add_usd(stage)
+        self.assertAlmostEqual(builder.particle_radius[0], 0.0005, places=7)
 
     def test_legacy_surface_material_retains_old_units_during_deprecation(self):
         """Preserve the old surface modulus conversion while warning users to migrate."""
@@ -368,21 +382,14 @@ class TestUSDDeformableCloth(unittest.TestCase):
         UsdShade.MaterialBindingAPI.Apply(base_cloth.GetPrim()).Bind(mat, materialPurpose="physics")
 
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.add_usd(stage)
-        messages = [str(w.message) for w in caught]
+        builder.add_usd(stage)
 
         for path in ("/World/ClothBodyDensity", "/World/ClothBaseMat"):
-            self.assertTrue(
-                any(path in m and "compatibility default thickness" in m for m in messages),
-                f"{path}: expected a default-thickness warning",
-            )
             p0, p1 = group_range(builder, "cloth", path, "particle")
-            # Unit quad (area 1): mass = density * default thickness * area = 1000 * 0.002 = 2 kg.
-            self.assertAlmostEqual(sum(builder.particle_mass[p0:p1]), 2.0, places=5)
+            # Unit quad (area 1): mass = density * default thickness * area = 1000 * 0.001 = 1 kg.
+            self.assertAlmostEqual(sum(builder.particle_mass[p0:p1]), 1.0, places=5)
             # The collision radius describes the same assumed shell: half the default thickness.
-            self.assertAlmostEqual(builder.particle_radius[p0], 0.001, places=6)
+            self.assertAlmostEqual(builder.particle_radius[p0], 0.0005, places=7)
 
     def test_cloth_thickness_density_and_radius(self):
         """Surface thickness (material attribute, or NewtonMassAPI shell fallback when the
@@ -394,7 +401,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
         thickness = 0.01
         stage = _deformable_stage(up_axis="y")
         thick = _add_cloth_mesh(stage, "/World/ClothThick")
-        _bind_deformable_material(stage, thick.GetPrim(), "/World/MatThick", density=1000.0, surfaceThickness=thickness)
+        _bind_deformable_material(stage, thick.GetPrim(), "/World/MatThick", density=1000.0)
+        _author_deformable_element_array(thick.GetPrim(), "thicknesses", [thickness], "constant")
         shell = _add_cloth_mesh(stage, "/World/ClothShell")
         # Material density only -- thickness is left to the shell mass model.
         _bind_deformable_material(stage, shell.GetPrim(), "/World/MatShell", density=1000.0)
@@ -429,6 +437,188 @@ class TestUSDDeformableCloth(unittest.TestCase):
         for i in range(p0, p1):
             self.assertAlmostEqual(builder.particle_radius[i], 0.5 * thickness, places=6)
         self.assertNotAlmostEqual(builder.particle_radius[p0], builder.default_particle_radius, places=6)
+
+    def test_cloth_constant_geometry_thickness_controls_physics(self):
+        """Apply constant simulation thickness to cloth mass, radius, and derived stiffness."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage(up_axis="y")
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(
+            stage,
+            cloth.GetPrim(),
+            "/World/Mat",
+            density=1000.0,
+            youngsModulus=1.0e6,
+            poissonsRatio=0.3,
+        )
+        cloth.GetPrim().CreateAttribute("physics:thicknesses", Sdf.ValueTypeNames.FloatArray).Set([0.02])
+        cloth.GetPrim().CreateAttribute("physics:thicknesses:elementType", Sdf.ValueTypeNames.Token).Set("constant")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertAlmostEqual(sum(builder.particle_mass), 20.0, places=5)
+        for radius in builder.particle_radius:
+            self.assertAlmostEqual(radius, 0.01, places=7)
+        expected_stretch = 1.0e6 * 0.02 / (1.0 - 0.3**2)
+        expected_bend = 1.0e6 * 0.02**3 / (12.0 * (1.0 - 0.3**2))
+        for material in builder.tri_materials:
+            self.assertAlmostEqual(material[0], expected_stretch, delta=1.0e-3)
+        for properties in builder.edge_bending_properties:
+            self.assertAlmostEqual(properties[0], expected_bend, places=6)
+
+    def test_cloth_face_thickness_and_constant_mass_lower_independently(self):
+        """Lower face thicknesses and a constant total mass through their own element types."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage(up_axis="y")
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(
+            stage,
+            cloth.GetPrim(),
+            "/World/Mat",
+            density=1000.0,
+            youngsModulus=1.0e6,
+            poissonsRatio=0.3,
+        )
+        cloth.GetPrim().CreateAttribute("physics:thicknesses", Sdf.ValueTypeNames.FloatArray).Set([0.01, 0.03])
+        cloth.GetPrim().CreateAttribute("physics:thicknesses:elementType", Sdf.ValueTypeNames.Token).Set("face")
+        cloth.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([12.0])
+        cloth.GetPrim().CreateAttribute("physics:masses:elementType", Sdf.ValueTypeNames.Token).Set("constant")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        np.testing.assert_allclose(builder.particle_mass, [4.0, 1.0, 4.0, 3.0], atol=1.0e-6)
+        np.testing.assert_allclose(builder.particle_radius, [0.01, 0.005, 0.01, 0.015], atol=1.0e-7)
+        expected_stretch = [
+            1.0e6 * 0.01 / (1.0 - 0.3**2),
+            1.0e6 * 0.03 / (1.0 - 0.3**2),
+        ]
+        np.testing.assert_allclose([material[0] for material in builder.tri_materials], expected_stretch, rtol=1.0e-7)
+
+        shared_edge = next(
+            index
+            for index, (_opposite_a, _opposite_b, edge_a, edge_b) in enumerate(builder.edge_indices)
+            if {int(edge_a), int(edge_b)} == {0, 2}
+        )
+        expected_bend = 1.0e6 * 0.02**3 / (12.0 * (1.0 - 0.3**2))
+        self.assertAlmostEqual(builder.edge_bending_properties[shared_edge][0], expected_bend, places=6)
+
+    def test_cloth_point_thickness_samples_bend_on_edge_endpoints(self):
+        """Average point thickness at edge endpoints when deriving bend stiffness."""
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(
+            stage,
+            cloth.GetPrim(),
+            "/World/Mat",
+            youngsModulus=1.0e6,
+            poissonsRatio=0.3,
+        )
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.02, 0.10, 0.02, 0.20], "point")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        shared_edge = next(
+            index
+            for index, (_opposite_a, _opposite_b, edge_a, edge_b) in enumerate(builder.edge_indices)
+            if {int(edge_a), int(edge_b)} == {0, 2}
+        )
+        expected_bend = 1.0e6 * 0.02**3 / (12.0 * (1.0 - 0.3**2))
+        self.assertAlmostEqual(builder.edge_bending_properties[shared_edge][0], expected_bend, places=6)
+
+    def test_cloth_material_thickness_is_a_deprecated_fallback(self):
+        """Prefer geometry thickness while warning for the removed material attribute."""
+        from pxr import Sdf
+
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(
+            stage,
+            cloth.GetPrim(),
+            "/World/Mat",
+            density=1000.0,
+            surfaceThickness=0.1,
+        )
+        cloth.GetPrim().CreateAttribute("physics:thicknesses", Sdf.ValueTypeNames.FloatArray).Set([0.02])
+        cloth.GetPrim().CreateAttribute("physics:thicknesses:elementType", Sdf.ValueTypeNames.Token).Set("constant")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(DeprecationWarning, "surfaceThickness.*thicknesses"):
+            builder.add_usd(stage)
+
+        self.assertAlmostEqual(sum(builder.particle_mass), 20.0, places=5)
+        self.assertAlmostEqual(builder.particle_radius[0], 0.01, places=7)
+
+    def test_cloth_thickness_requires_a_valid_element_type(self):
+        """Ignore malformed thickness arrays and require a valid matching element type."""
+        from pxr import Sdf
+
+        cases = (
+            ("scalar", None, 0.02, "must be an array of numeric values"),
+            ("missing", None, [0.02], "requires physics:thicknesses:elementType"),
+            ("unsupported", "vertex", [0.02], "invalid physics:thicknesses:elementType"),
+            ("wrong_count", "face", [0.02], "element type 'face' count 2"),
+            ("empty_with_type", "face", [], "is empty but physics:thicknesses:elementType"),
+        )
+        for label, element_type, thicknesses, warning in cases:
+            with self.subTest(kind=label):
+                stage = _deformable_stage(up_axis="y")
+                cloth = _add_cloth_mesh(stage, "/World/Cloth")
+                value_type = Sdf.ValueTypeNames.Float if label == "scalar" else Sdf.ValueTypeNames.FloatArray
+                cloth.GetPrim().CreateAttribute("physics:thicknesses", value_type).Set(thicknesses)
+                if element_type is not None:
+                    cloth.GetPrim().CreateAttribute("physics:thicknesses:elementType", Sdf.ValueTypeNames.Token).Set(
+                        element_type
+                    )
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, warning):
+                    builder.add_usd(stage)
+                for radius in builder.particle_radius:
+                    self.assertAlmostEqual(radius, 0.0005, places=7)
+
+    def test_cloth_rest_bend_default_is_flat_unless_rest_shape_is_requested(self):
+        """Set missing cloth bend angles flat unless restShape preserves the imported dihedral."""
+        from pxr import Sdf, Usd
+
+        for token, expect_flat in ((None, True), ("flat", True), ("restShape", False)):
+            with self.subTest(rest_bend_angles_default=token):
+                stage = _deformable_stage()
+                cloth = _add_cloth_mesh(stage, "/World/Cloth")
+                cloth.GetPointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0)])
+                cloth.GetPointsAttr().Set(
+                    [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
+                    Usd.TimeCode(1.0),
+                )
+                cloth.GetPrim().CreateAttribute("physics:thicknesses", Sdf.ValueTypeNames.FloatArray).Set([0.01])
+                cloth.GetPrim().CreateAttribute("physics:thicknesses:elementType", Sdf.ValueTypeNames.Token).Set(
+                    "constant"
+                )
+                if token is not None:
+                    cloth.GetPrim().CreateAttribute("physics:restBendAnglesDefault", Sdf.ValueTypeNames.Token).Set(
+                        token
+                    )
+
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage)
+                e0, e1 = group_range(builder, "cloth", "/World/Cloth", "edge")
+                interior_edges = [
+                    edge
+                    for edge in range(e0, e1)
+                    if builder.edge_indices[edge][0] != -1 and builder.edge_indices[edge][1] != -1
+                ]
+                self.assertEqual(len(interior_edges), 1)
+                (edge,) = interior_edges
+                if expect_flat:
+                    self.assertEqual(builder.edge_rest_angle[edge], 0.0)
+                else:
+                    self.assertGreater(abs(builder.edge_rest_angle[edge]), 0.1)
 
     def test_degenerate_cloth_triangle_warns_and_skips(self):
         """A zero-area (collinear) triangle cannot form an FEM element: the cloth is
@@ -597,7 +787,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
         stage = _deformable_stage()
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
-        _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", density=1000.0, surfaceThickness=0.01)
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", density=1000.0)
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.01], "constant")
         subset = UsdGeom.Subset.Define(stage, "/World/Cloth/Patch")
         subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
         subset.CreateIndicesAttr().Set([0])
@@ -713,36 +904,47 @@ class TestUSDDeformableCloth(unittest.TestCase):
         builder.finalize()
 
     def test_cloth_per_point_mass_policy(self):
-        """Valid physics:masses on the cloth Mesh set the particle masses directly; negative /
-        inf / nan arrays warn and fall back to density-derived masses.
+        """Convert point masses through faces and retain the deprecated direct interpretation.
 
-        Per-point masses have the highest precedence, so a poisoned array would otherwise be
-        written straight into the particles.
+        Invalid arrays warn and fall back to density-derived masses.
         """
         from pxr import Sdf
 
-        def import_cloth(masses):
+        def import_cloth(masses, *, element_type="point"):
             stage = _deformable_stage(up_axis="y")
             mesh = _add_cloth_mesh(stage, "/World/Cloth")
-            # Surface thickness keeps the volumetric density convertible (no unrelated warning under
+            # Geometry thickness keeps the volumetric density convertible (no unrelated warning under
             # --strict-warnings); per-point masses take precedence over it either way.
-            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0, surfaceThickness=0.1)
+            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
+            _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.1], "constant")
             mesh.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(masses)
+            if element_type is not None:
+                mesh.GetPrim().CreateAttribute("physics:masses:elementType", Sdf.ValueTypeNames.Token).Set(element_type)
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
             return builder
 
         with self.subTest(kind="valid"):
             builder = import_cloth([1.0, 2.0, 3.0, 4.0])
+            np.testing.assert_allclose(
+                [builder.particle_mass[i] for i in range(4)],
+                [10.0 / 3.0, 4.0 / 3.0, 10.0 / 3.0, 2.0],
+                atol=1.0e-6,
+            )
+
+        with self.subTest(kind="legacy_implicit_point"):
+            with self.assertWarnsRegex(DeprecationWarning, "masses:elementType"):
+                builder = import_cloth([1.0, 2.0, 3.0, 4.0], element_type=None)
             self.assertEqual([builder.particle_mass[i] for i in range(4)], [1.0, 2.0, 3.0, 4.0])
 
         for label, bad in (
+            ("zero", [1.0, 0.0, 3.0, 4.0]),
             ("negative", [1.0, -2.0, 3.0, 4.0]),
             ("inf", [1.0, float("inf"), 3.0, 4.0]),
             ("nan", [1.0, float("nan"), 3.0, 4.0]),
         ):
             with self.subTest(kind=label):
-                with self.assertWarnsRegex(UserWarning, "non-finite or negative"):
+                with self.assertWarnsRegex(UserWarning, "invalid values"):
                     builder = import_cloth(bad)
                 masses = [builder.particle_mass[i] for i in range(4)]
                 # Fell back to density-derived masses: all finite and strictly positive.
@@ -760,7 +962,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         def import_cloth(scale):
             stage = _deformable_stage()  # Z up: avoid Y->Z axis conversion
             mesh = _add_cloth_mesh(stage, "/World/Cloth")  # points (0,0,1)(1,0,1)(1,1,1)(0,1,1)
-            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", surfaceThickness=0.001)
+            _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
             UsdGeom.Xformable(mesh).AddScaleOp().Set(Gf.Vec3d(*scale))
             builder = newton.ModelBuilder()
             builder.add_usd(stage)

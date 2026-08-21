@@ -126,7 +126,8 @@ class TestUSDDeformableVolume(unittest.TestCase):
         _apply_deformable_body_api(ovr_tet.GetPrim(), density=500.0)
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        with self.assertWarnsRegex(DeprecationWarning, "masses:elementType"):
+            builder.add_usd(stage)
 
         def masses(path):
             p0, p1 = group_range(builder, "soft", path, "particle")
@@ -155,6 +156,40 @@ class TestUSDDeformableVolume(unittest.TestCase):
         total_ovr = sum(masses("/World/SoftDensity"))
         self.assertGreater(total_mat, 0.0)
         self.assertAlmostEqual(total_ovr / total_mat, 5.0, places=4)
+
+    def test_volume_constant_mass_array_distributes_total(self):
+        """Distribute a constant simulation-geometry mass over the volume elements."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([12.0])
+        tet.GetPrim().CreateAttribute("physics:masses:elementType", Sdf.ValueTypeNames.Token).Set("constant")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual([builder.particle_mass[i] for i in range(4)], [3.0, 3.0, 3.0, 3.0])
+
+    def test_volume_element_mass_types_convert_to_particles(self):
+        """Convert tetrahedron and point mass arrays through element mass distribution."""
+        from pxr import Sdf
+
+        cases = (
+            ("tetrahedron", _author_two_tet_wedge, [8.0, 2.0], [2.5, 2.5, 2.5, 2.0, 0.5]),
+            ("point", lambda stage, path: _author_unit_tet(stage, path, sim_api=True), [1.0, 2.0, 3.0, 4.0], [2.5] * 4),
+        )
+        for element_type, author, authored, expected in cases:
+            with self.subTest(element_type=element_type):
+                stage = _deformable_stage()
+                tet = author(stage, "/World/Soft")
+                tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(authored)
+                tet.GetPrim().CreateAttribute("physics:masses:elementType", Sdf.ValueTypeNames.Token).Set(element_type)
+
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage)
+
+                np.testing.assert_allclose(builder.particle_mass, expected, atol=1.0e-6)
 
     def test_body_hierarchy_selects_single_sim_mesh(self):
         """A PhysicsDeformableBodyAPI ancestor governs exactly one simulation mesh: its

@@ -21,7 +21,6 @@ from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
     _AOUSD_DEFAULT_YOUNGS_MODULUS,
-    _validate_mass_array,
     _warn_geometry_authored_material_attrs,
 )
 from ..utils.texture import linear_texture_to_srgb, load_texture
@@ -1957,6 +1956,10 @@ def get_tetmesh(
             ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
             gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
             canonical-only.
+        _load_custom_attributes: Whether to import registered custom attributes. Reserved for
+            Newton's USD importer.
+        _load_material: Whether to resolve the bound volume-deformable material. Reserved for
+            Newton's USD importer.
 
     Returns:
         TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
@@ -2293,10 +2296,10 @@ def _get_curve_deformable_material(
 ) -> dict[str, float] | None:
     """Read curve-deformable (cable) ``PhysicsCurvesDeformableMaterialAPI`` parameters bound to a prim.
 
-    Returns a dict of authored, in-range values from the current AOUSD curve material proposal,
-    plus the earlier unprefixed material attributes during their deprecation window; or ``None``
-    if the bound material does not declare ``PhysicsCurvesDeformableMaterialAPI``. See
-    :func:`_read_deformable_material` for value-validation rules.
+    Returns authored, in-range elasticity and structural stiffness values, plus removed
+    ``curvesThickness`` and earlier unprefixed attributes during their deprecation windows.
+    Returns ``None`` if the bound material does not declare
+    ``PhysicsCurvesDeformableMaterialAPI``. See :func:`_read_deformable_material` for validation.
     """
     return _read_deformable_material(
         prim,
@@ -2338,8 +2341,9 @@ def _get_surface_deformable_material(
 ) -> dict[str, float] | None:
     """Read surface-deformable (cloth) ``PhysicsSurfaceDeformableMaterialAPI`` parameters bound to a prim.
 
-    Returns current AOUSD surface material values plus the earlier unprefixed attributes during
-    their deprecation window, or ``None`` if the bound material does not declare
+    Returns authored, in-range elasticity and structural stiffness values, plus removed
+    ``surfaceThickness`` and earlier unprefixed attributes during their deprecation windows.
+    Returns ``None`` if the bound material does not declare
     ``PhysicsSurfaceDeformableMaterialAPI``. See :func:`_read_deformable_material` for validation.
     """
     return _read_deformable_material(
@@ -2470,18 +2474,6 @@ def _get_deformable_body_overrides(
     mass = float(mass) if mass is not None and math.isfinite(float(mass)) and float(mass) > 0.0 else None
     density = float(density) if density is not None and math.isfinite(float(density)) and float(density) > 0.0 else None
     return mass, density
-
-
-def _get_deformable_point_masses(prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]) -> list[float] | None:
-    """Read the simulation API's per-point ``physics:masses`` array.
-
-    Per-point masses take precedence over body and material mass/density (proposal
-    "Simulation Geometry and Rest Shape"). Returns ``None`` when unauthored/empty.
-    """
-    val = read_attr(prim, "masses")
-    if val is None:
-        return None
-    return _validate_mass_array(val, str(prim.GetPath()))
 
 
 def _get_physics_scenes_from_results(stage: Usd.Stage, physics_results: dict[Any, Any]) -> list[UsdPhysics.Scene]:
