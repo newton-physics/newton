@@ -586,9 +586,9 @@ class ModelBuilder:
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to
-        :attr:`gap` when ``None``. Distinct from :attr:`gap` (broad-phase
-        inflation) and :attr:`margin` (contact-surface inflation). Rejected on
-        ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
+        :attr:`gap`, plus :attr:`margin` for hydroelastic shapes, when
+        ``None``. Hydroelastic padding must cover ``margin + gap``. Rejected
+        on ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
         :meth:`~newton.geometry.Mesh.build_sdf` instead."""
 
         def configure_sdf(
@@ -10580,6 +10580,51 @@ class ModelBuilder:
                 continue
             margin = self.shape_margin[i]
             gap = self.shape_gap[i]
+            sdf_padding = self.shape_sdf_padding[i]
+            if (
+                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                and sdf_padding is not None
+                and sdf_padding < margin + gap
+                and not math.isclose(sdf_padding, margin + gap, rel_tol=1.0e-9, abs_tol=1.0e-12)
+            ):
+                raise ValueError(
+                    f"Hydroelastic shape {i} requires sdf_padding >= margin + gap "
+                    f"({margin + gap:.6g}), got {sdf_padding:.6g}."
+                )
+            if (
+                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                and self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH)
+            ):
+                shape_src = self.shape_source[i]
+                mesh_sdf = getattr(shape_src, "sdf", None) if shape_src is not None else None
+                if mesh_sdf is not None:
+                    required_sdf_padding = margin + gap
+                    construction_padding = getattr(mesh_sdf, "_construction_padding", None)
+                    if mesh_sdf.texture_data is not None and construction_padding is None:
+                        raise ValueError(
+                            f"Hydroelastic shape {i} has precomputed SDF data with unknown construction padding. "
+                            "Declare the original padding with "
+                            "SDF.create_from_data(construction_padding=...), or rebuild it with "
+                            "Mesh.build_sdf(margin=margin + gap)."
+                        )
+                    if (
+                        construction_padding is not None
+                        and construction_padding < required_sdf_padding
+                        and not math.isclose(
+                            construction_padding,
+                            required_sdf_padding,
+                            rel_tol=1.0e-9,
+                            abs_tol=1.0e-12,
+                        )
+                    ):
+                        raise ValueError(
+                            f"Hydroelastic shape {i} requires SDF construction padding >= margin + gap "
+                            f"({required_sdf_padding:.6g}), but the attached SDF uses "
+                            f"{construction_padding:.6g}. Rebuild it with "
+                            f"Mesh.build_sdf(margin={required_sdf_padding:.6g})."
+                        )
             if gap < 0.0:
                 shapes_with_bad_gap.append(
                     f"{self.shape_label[i] or f'shape_{i}'} (margin={margin:.6g}, gap={gap:.6g})"
@@ -11722,9 +11767,11 @@ class ModelBuilder:
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
                 sdf_padding = self.shape_sdf_padding[i]
-                # Fall back to shape_gap when sdf_padding is unset (see ShapeConfig.sdf_padding).
-                sdf_gen_margin = sdf_padding if sdf_padding is not None else shape_gap
-                is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
+                is_hydroelastic = bool(
+                    shape_flags & ShapeFlags.HYDROELASTIC and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                )
+                required_sdf_padding = shape_gap + self.shape_margin[i] if is_hydroelastic else shape_gap
+                sdf_gen_margin = sdf_padding if sdf_padding is not None else required_sdf_padding
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
                 cache_key = None
