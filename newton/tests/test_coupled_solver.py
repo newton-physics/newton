@@ -1257,7 +1257,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
     def _seeded_full_surface_contacts(model, corners, particle=None):
         """Build contacts with a face record and an optional particle record."""
         pipeline = newton.CollisionPipeline(
-            model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+            model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
         )
         contacts = pipeline.contacts()
 
@@ -1271,6 +1271,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         _set(contacts.soft_contact_indices, 0, list(corners))
         _set(contacts.soft_contact_barycentric, 0, [0.6, 0.3, 0.1])
         _set(contacts.soft_contact_shape, 0, 0)
+        _set(contacts.soft_contact_rigid_indices, 0, [3, 4, 5])
         _set(contacts.soft_contact_normal, 0, [0.0, 0.0, 1.0])
         if particle is not None:
             _set(contacts.soft_contact_particle, 1, particle)
@@ -1314,6 +1315,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(int(filtered.soft_contact_count.numpy()[0]), 1, "face record must survive the filter")
         np.testing.assert_array_equal(filtered.soft_contact_indices.numpy()[0], particles)
         np.testing.assert_allclose(filtered.soft_contact_barycentric.numpy()[0], [0.6, 0.3, 0.1])
+        np.testing.assert_array_equal(filtered.soft_contact_rigid_indices.numpy()[0], [3, 4, 5])
         self.assertTrue(filtered._enable_rigid_soft_full_surface_contact, "capability marker must be carried over")
 
     def test_full_surface_records_straddling_entries_are_dropped(self):
@@ -3720,6 +3722,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
     # One particle soft contact: particle 0 on shape 0, unified record (0, -1, -1) + (1, 0, 0).
     dst_indices = wp.full(1, wp.vec3i(-1, -1, -1), dtype=wp.vec3i, device=device)
     dst_barycentric = wp.zeros(1, dtype=wp.vec3, device=device)
+    dst_rigid_indices = wp.full(1, wp.vec3i(-1, -1, -1), dtype=wp.vec3i, device=device)
     wp.launch(
         _filter_soft_contacts_global_shape_ids_kernel,
         dim=1,
@@ -3734,6 +3737,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             wp.array([7], dtype=wp.int32, device=device),  # src_tids
             wp.array([wp.vec3i(0, -1, -1)], dtype=wp.vec3i, device=device),  # src_indices
             wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device),  # src_barycentric
+            wp.array([wp.vec3i(3, 4, 5)], dtype=wp.vec3i, device=device),  # src_rigid_indices
             wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),  # shape_flags
             wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),  # particle_flags
             int(ShapeFlags.COLLIDE_PARTICLES),
@@ -3748,6 +3752,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             wp.full(1, -1, dtype=wp.int32, device=device),  # dst_tids
             dst_indices,
             dst_barycentric,
+            dst_rigid_indices,
             wp.full(1, -1, dtype=wp.int32, device=device),  # src_to_dst
         ],
         device=device,
@@ -3759,6 +3764,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
         "unified particle record must be copied through the filter, not left at the (-1,-1,-1) sentinel",
     )
     np.testing.assert_allclose(dst_barycentric.numpy()[0], [1.0, 0.0, 0.0])
+    np.testing.assert_array_equal(dst_rigid_indices.numpy()[0], [3, 4, 5])
 
 
 add_function_test(

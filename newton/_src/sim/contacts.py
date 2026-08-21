@@ -9,6 +9,7 @@ from typing import Literal
 import warp as wp
 from warp import DeviceLike as Devicelike
 
+from ..geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 
 GENERATION_SENTINEL = -1
@@ -176,6 +177,13 @@ class Contacts:
         requested_attributes: set[str] | None = None,
         contact_matching: bool = False,
         contact_report: bool = False,
+        soft_self_contact: bool = False,
+        particle_count: int = 0,
+        tri_count: int = 0,
+        edge_count: int = 0,
+        soft_self_contact_vertex_buffer_pre_alloc: int = 16,
+        soft_self_contact_edge_buffer_pre_alloc: int = 32,
+        soft_self_contact_record_triangle_vertices: bool = False,
     ):
         """
         Initialize Contacts storage.
@@ -212,6 +220,18 @@ class Contacts:
                 :attr:`rigid_contact_broken_indices`,
                 :attr:`rigid_contact_broken_count`) populated each frame by
                 the collision pipeline.  Requires ``contact_matching=True``.
+            soft_self_contact: Allocate tri-mesh self-contact result buffers
+                (:attr:`soft_self_contact_data`). Requires the mesh sizes below.
+            particle_count: Number of mesh vertices; used only when
+                ``soft_self_contact=True``.
+            tri_count: Number of mesh triangles; used only when ``soft_self_contact=True``.
+            edge_count: Number of mesh edges; used only when ``soft_self_contact=True``.
+            soft_self_contact_vertex_buffer_pre_alloc: Per-vertex collision buffer capacity;
+                pairs beyond it are silently dropped during detection.
+            soft_self_contact_edge_buffer_pre_alloc: Per-edge collision buffer capacity;
+                pairs beyond it are silently dropped during detection.
+            soft_self_contact_record_triangle_vertices: Also record per-triangle
+                contacting vertices.
 
         .. experimental::
 
@@ -377,6 +397,24 @@ class Contacts:
             self.soft_contact_barycentric = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Barycentric weights of the contact point on the soft feature's particles [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
+            # Allocated unconditionally (like the other soft-contact fields): every
+            # writer stamps this field — non-BVH rows store the (-1, -1, -1) sentinel —
+            # so full capacity must exist regardless of the active back-end.
+            self.soft_contact_rigid_indices = wp.full(soft_contact_max, wp.vec3i(-1, -1, -1), dtype=wp.vec3i)
+            """Rigid mesh face-vertex indices per full-surface BVH contact, shape (soft_contact_max,), dtype :class:`vec3i`.
+
+            ``(v0, v1, v2)`` identifies a rigid triangle for soft-vertex/rigid-triangle
+            contacts, ``(v0, v1, -1)`` a rigid edge, and ``(v0, -1, -1)`` a rigid
+            vertex. Non-BVH contacts contain ``(-1, -1, -1)`` because an analytic SDF
+            row does not identify a complete rigid mesh primitive. Shape-local mesh
+            points are obtained with :func:`warp.mesh_get_point` and transformed using
+            :attr:`soft_contact_shape`.
+
+            The indices are stable identifiers but not canonical: the same physical
+            rigid vertex may appear under different face-vertex indices depending on
+            the record family (a triangle corner slot vs. the vertex/edge table
+            representative), so do not use the triple as a cross-record key.
+            """
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`.
 
@@ -412,6 +450,30 @@ class Contacts:
             if requested_attributes and "force" in requested_attributes:
                 total_contacts = rigid_contact_max + soft_contact_max
                 self.force = wp.zeros(total_contacts, dtype=wp.spatial_vector, requires_grad=requires_grad)
+
+        self.soft_self_contact_data: TriMeshCollisionInfo | None = None
+        """Tri-mesh self-contact results owned by this container, written by the
+        collision pipeline's tri-mesh collision detector; ``None`` unless
+        constructed with ``soft_self_contact=True``."""
+        if soft_self_contact:
+            mesh_counts = {
+                "particle_count": particle_count,
+                "tri_count": tri_count,
+                "edge_count": edge_count,
+            }
+            invalid_counts = {name: count for name, count in mesh_counts.items() if count <= 0}
+            if invalid_counts:
+                values = ", ".join(f"{name}={count}" for name, count in invalid_counts.items())
+                raise ValueError(f"soft_self_contact=True requires positive mesh counts; got {values}")
+            self.soft_self_contact_data = build_tri_mesh_collision_info(
+                particle_count,
+                tri_count,
+                edge_count,
+                vertex_collision_buffer_pre_alloc=soft_self_contact_vertex_buffer_pre_alloc,
+                edge_collision_buffer_pre_alloc=soft_self_contact_edge_buffer_pre_alloc,
+                record_triangle_contacting_vertices=soft_self_contact_record_triangle_vertices,
+                device=device,
+            )
 
         self.requires_grad = requires_grad
 
@@ -473,6 +535,7 @@ class Contacts:
                 self.rigid_contact_match_index.fill_(-1)
 
             self.soft_contact_indices.fill_(wp.vec3i(-1, -1, -1))
+            self.soft_contact_rigid_indices.fill_(wp.vec3i(-1, -1, -1))
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)
