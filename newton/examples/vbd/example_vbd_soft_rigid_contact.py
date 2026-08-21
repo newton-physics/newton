@@ -302,6 +302,7 @@ def setup_sim(builder, info, params):
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.params = PARAMS
         self.sim_time = 0.0

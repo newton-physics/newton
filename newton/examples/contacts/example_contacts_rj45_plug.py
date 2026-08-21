@@ -223,6 +223,7 @@ def _load_cable_centerline(stage) -> tuple[wp.vec3, ...]:
 
 class Example:
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -241,7 +242,6 @@ class Example:
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        SolverVBD.register_custom_attributes(builder)
         builder.rigid_gap = 0.005
 
         builder.add_ground_plane()
@@ -293,7 +293,6 @@ class Example:
             angular_axes=None,
             parent_xform=wp.transform(plug_pos, wp.quat_identity()),
             child_xform=wp.transform_identity(),
-            custom_attributes={"vbd:joint_is_hard": 0},
         )
 
         # Revolute joint: plug -> latch (hinge along -X axis)
@@ -309,7 +308,6 @@ class Example:
             limit_upper=LATCH_LIMIT_UPPER,
             limit_kd=LATCH_LIMIT_KD,
             collision_filter_parent=True,
-            custom_attributes={"vbd:joint_is_hard": 0},
         )
 
         builder.add_articulation([d6_joint, rev_joint])

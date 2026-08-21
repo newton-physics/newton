@@ -671,10 +671,10 @@ class with the following interface:
             """Optional per-step validation, called after every step() in test mode."""
             ...
 
-Every example **must** implement ``test_final()`` (or ``test_post_step()``, or both).
-The test harness runs examples with ``--viewer null --test`` and calls these methods to
-verify simulation correctness. An example that implements neither will raise
-``NotImplementedError`` in CI.
+Every example **must** implement ``test_final()``. Examples may additionally implement
+``test_post_step()`` for per-step validation. The test harness runs examples with
+``--viewer null --test`` and calls these methods to verify simulation correctness. An
+example without ``test_final()`` will raise ``NotImplementedError`` in CI.
 
 Discovery and registration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -683,6 +683,10 @@ Examples are discovered automatically: any file matching
 ``newton/examples/<category>/example_*.py`` is picked up by ``newton.examples.get_examples()``.
 The short name used on the command line is the filename without the ``example_`` prefix and
 ``.py`` extension (e.g. ``basic_pendulum``).
+
+The example test suite gives every discovered example a baseline CUDA test automatically.
+Add an explicit registration in ``newton/tests/test_examples.py`` only when an example needs
+tailored arguments, devices, dependencies, or additional variants.
 
 New examples must also be registered in the examples ``README.md`` with a                                                        
 ``python -m newton.examples <example_name>`` command and a 320x320 jpg screenshot.  
