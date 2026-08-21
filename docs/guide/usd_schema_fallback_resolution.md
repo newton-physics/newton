@@ -90,6 +90,8 @@ Migration auditing compares the value observed by the importer, not the raw USD 
 
 Properties assembled from several inputs are compared after assembly. Examples include joint-limit gains, contact response, and SDF configuration. Warnings name only the inputs that contribute to the interpreted change.
 
+Omitted SDF padding is compared with the gap selected by the same policy. For a colliding hydroelastic shape, the comparison also includes that policy's margin.
+
 The audit stops at the property seam rather than shadow-running all model construction. An unrelated downstream rule can therefore mask a reported property change without making the property resolution itself unchanged.
 
 Equal numbers are normally equivalent. Source provenance is compared only when the source changes consumer behavior, such as MuJoCo joint-limit modes.

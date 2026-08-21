@@ -16,6 +16,7 @@ from .support_function import (
     GenericShapeData,
     GeoTypeEx,
     SupportMapDataProvider,
+    closest_point_on_triangle,
     pack_mesh_ptr,
     support_map,
     unpack_mesh_ptr,
@@ -273,6 +274,52 @@ def post_process_axial_on_discrete_contact(
             contact_data.contact_point_center = projected_point
 
     return contact_data
+
+
+@wp.func
+def post_process_triangle_contact(
+    contact_data: ContactData,
+    shape_a: GenericShapeData,
+    pos_a_adjusted: wp.vec3,
+    rot_a: wp.quat,
+    shape_b: GenericShapeData,
+    pos_b_adjusted: wp.vec3,
+    rot_b: wp.quat,
+) -> ContactData:
+    """Constrain heightfield-prism contacts to their physical triangle face."""
+    if shape_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM) and contact_data.contact_distance < 0.0:
+        normal_local = wp.cross(shape_a.scale, shape_a.auxiliary)
+        normal_length_sq = wp.length_sq(normal_local)
+        if normal_length_sq >= 1.0e-20:
+            normal_local = normal_local / wp.sqrt(normal_length_sq)
+            if normal_local[2] < 0.0:
+                normal_local = -normal_local
+            normal_world = wp.quat_rotate(rot_a, normal_local)
+
+            point_b_world = (
+                contact_data.contact_point_center
+                + 0.5 * contact_data.contact_distance * contact_data.contact_normal_a_to_b
+            )
+            point_b_local = wp.quat_rotate_inv(rot_a, point_b_world - pos_a_adjusted)
+            projected_b = point_b_local - wp.dot(point_b_local, normal_local) * normal_local
+            point_a = closest_point_on_triangle(
+                projected_b,
+                wp.vec3(0.0),
+                shape_a.scale,
+                shape_a.auxiliary,
+            )
+            distance = float(0.0)
+            if wp.length_sq(point_a - projected_b) < 1.0e-10:
+                distance = wp.dot(point_b_local - point_a, normal_local)
+            contact_data.contact_point_center = (
+                wp.quat_rotate(rot_a, point_a) + pos_a_adjusted + 0.5 * distance * normal_world
+            )
+            contact_data.contact_normal_a_to_b = normal_world
+            contact_data.contact_distance = distance
+
+    return post_process_axial_on_discrete_contact(
+        contact_data, shape_a, pos_a_adjusted, rot_a, shape_b, pos_b_adjusted, rot_b
+    )
 
 
 def create_compute_gjk_mpr_contacts(

@@ -1446,8 +1446,10 @@ verifying the Newton import.
 
    Applying ``NewtonSDFCollisionAPI`` declares the prim's SDF configuration.
    The importer fills in schema defaults for any attributes that are not
-   authored (e.g. ``sdfMaxResolution=64``; ``sdfPadding`` defaults to the
-   value of ``newton:contactGap``).
+   authored. For example, ``sdfMaxResolution`` defaults to 64. An omitted
+   ``sdfPadding`` uses ``newton:contactGap`` for ordinary SDF collision and
+   ``newton:contactMargin + newton:contactGap`` for colliding hydroelastic
+   shapes.
 
    For **mesh** shapes, applying the API causes ``ModelBuilder.finalize()``
    to build a deferred SDF on the underlying ``Mesh``. For **primitive**

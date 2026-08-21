@@ -30,6 +30,7 @@ ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
 
 SDF_MAX_RESOLUTION = 128
 SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
+SDF_CONSTRUCTION_PADDING = 0.005
 # Persist cooked SDFs across runs so the (slow) cook only happens once.
 # Entries are content-addressed, so leftovers from older runs are harmless.
 MESH_SDF_CACHE_DIR = Path(tempfile.gettempdir()) / "newton_sdf_cache"
@@ -45,7 +46,7 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     kh=1e11,  # Hydroelastic contact stiffness
     ke=1e7,
     kd=1e4,
-    gap=0.005,
+    gap=0.0,
     density=8000.0,
     mu_torsional=0.0,
     mu_rolling=0.0,
@@ -110,7 +111,6 @@ def add_mesh_object(
 
 def load_mesh_with_sdf(
     mesh_file: str,
-    shape_cfg: newton.ModelBuilder.ShapeConfig | None = None,
     scale: float = 1.0,
     center_origin: bool = True,
 ) -> tuple[newton.Mesh, wp.vec3]:
@@ -118,7 +118,6 @@ def load_mesh_with_sdf(
 
     Args:
         mesh_file: Mesh file path.
-        shape_cfg: Optional shape configuration used for contact margin [m].
         scale: Uniform mesh scale [unitless].
         center_origin: Whether to recenter mesh vertices about the AABB center.
 
@@ -141,7 +140,7 @@ def load_mesh_with_sdf(
     mesh.build_sdf(
         max_resolution=SDF_MAX_RESOLUTION,
         narrow_band_range=SDF_NARROW_BAND_RANGE,
-        margin=shape_cfg.gap if shape_cfg and shape_cfg.gap is not None else 0.005,
+        margin=SDF_CONSTRUCTION_PADDING,
         scale=(scale, scale, scale),
         cache_dir=MESH_SDF_CACHE_DIR,
     )
@@ -293,12 +292,8 @@ class Example:
 
         bolt_file = str(asset_path / f"factory_bolt_{ASSEMBLY_STR}.obj")
         nut_file = str(asset_path / f"factory_nut_{ASSEMBLY_STR}_subdiv_3x.obj")
-        bolt_mesh, bolt_center = load_mesh_with_sdf(
-            bolt_file, shape_cfg=SHAPE_CFG, scale=self.scene_scale, center_origin=True
-        )
-        nut_mesh, nut_center = load_mesh_with_sdf(
-            nut_file, shape_cfg=SHAPE_CFG, scale=self.scene_scale, center_origin=True
-        )
+        bolt_mesh, bolt_center = load_mesh_with_sdf(bolt_file, scale=self.scene_scale, center_origin=True)
+        nut_mesh, nut_center = load_mesh_with_sdf(nut_file, scale=self.scene_scale, center_origin=True)
 
         # Spacing between assemblies in the grid
         spacing = 0.1 * self.scene_scale

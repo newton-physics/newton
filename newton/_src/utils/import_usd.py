@@ -3587,6 +3587,8 @@ def parse_usd(
                     has_sdf_api=has_sdf_api,
                     is_mesh=key == UsdPhysics.ObjectType.MeshShape,
                     is_plane=key == UsdPhysics.ObjectType.PlaneShape,
+                    collider_is_enabled=collider_is_enabled,
+                    rigid_gap=builder.rigid_gap,
                     legacy_margin_gap=legacy_margin_gap,
                     read_legacy_mjc_gap=_get_legacy_mjc_gap,
                 )
