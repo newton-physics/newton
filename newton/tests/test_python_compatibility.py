@@ -12,12 +12,12 @@ postponed -- which is how a Python 3.10 ``TypeError`` reached users through
 
 import unittest
 
+import newton
+
 
 class TestPythonCompatibility(unittest.TestCase):
     def test_stable_solver_exports_resolve(self):
         """Resolve every stable public solver export."""
-        import newton
-
         for name in newton.solvers.__all__:
             if name == "experimental":
                 continue
