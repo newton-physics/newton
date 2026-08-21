@@ -346,9 +346,9 @@ class PADMMStatus:
 
     r_c: wp.float32
     """
-    The generalized inequality optimality residual used by the convergence test.
-    For each bounded-multiplier row `b`, the residual is the directional box
-    complementarity
+    The complementarity residual used by the convergence test.
+    For each bounded-multiplier row `b`, the residual is the directional
+    box complementarity between its velocity and lower/upper box faces,
     `(x_b - lower_b) * max(z_b, 0) + (upper_b - x_b) * max(-z_b, 0)`.
     For each limit or contact entity `k`, it is the complementarity inner
     product `x_k.T @ z_k`. `r_c` is the maximum absolute value over these

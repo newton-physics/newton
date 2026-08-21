@@ -107,6 +107,7 @@ def warmstart_joint_constraints(
     kin_cts_row_start_j = joint_kinematic_cts_offset_total_cts[jid]
     friction_cts_row_start_j = joint_friction_cts_offset_total_cts[jid]
 
+    # Convert cached forces to preconditioned impulses.
     # These constraints do not cache a post-event velocity.
     for j in range(num_dynamic_cts_j):
         P_j = problem_P[dyn_cts_row_start_j + j]

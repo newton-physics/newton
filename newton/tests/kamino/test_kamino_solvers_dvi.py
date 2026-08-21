@@ -471,7 +471,7 @@ class TestDVISolver(unittest.TestCase):
             return SimpleNamespace(
                 size=SimpleNamespace(sum_of_num_bilateral_joint_cts=sum(dimensions)),
                 info=SimpleNamespace(
-                    num_bilateral_joint_cts=wp.array(dimensions, dtype=wp.int32, device=self.device),
+                    num_joint_bilateral_cts=wp.array(dimensions, dtype=wp.int32, device=self.device),
                     joint_bilateral_cts_offset=wp.array(
                         np.cumsum([0, *dimensions[:-1]]), dtype=wp.int32, device=self.device
                     ),
