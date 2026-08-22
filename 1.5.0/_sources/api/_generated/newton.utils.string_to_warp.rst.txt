@@ -1,0 +1,6 @@
+﻿newton.utils.string\_to\_warp
+=============================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: string_to_warp

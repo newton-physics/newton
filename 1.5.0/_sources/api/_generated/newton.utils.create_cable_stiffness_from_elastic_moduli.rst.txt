@@ -1,0 +1,6 @@
+﻿newton.utils.create\_cable\_stiffness\_from\_elastic\_moduli
+============================================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: create_cable_stiffness_from_elastic_moduli

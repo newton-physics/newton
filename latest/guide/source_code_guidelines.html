@@ -1,0 +1,1358 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Source Code and Public API Guidelines &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=5243179c" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+
+    <script src="../_static/documentation_options.js?v=b1514d62"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'guide/source_code_guidelines';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Worlds" href="../concepts/worlds.html" />
+    <link rel="prev" title="Release Process" href="release.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.6.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="compatibility.html">Compatibility and Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="visualization.html">Viewers and Debugging</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="development.html">Development</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Source Code Guidelines</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../concepts/worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../concepts/extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/simulation_tuning.html">Simulation Tuning</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/coupling.html">Coupled Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Solvers</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../solvers/index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/kamino.html">Kamino</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_controllers.html">newton.controllers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lab/isaac-lab.html">Isaac Lab</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Source Code and Public API Guidelines</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="source-code-and-public-api-guidelines">
+<span id="source-code-guidelines"></span><h1>Source Code and Public API Guidelines<a class="headerlink" href="#source-code-and-public-api-guidelines" title="Link to this heading">#</a></h1>
+<p>This document is the canonical source code and public API guidance for Newton
+contributors and reviewers. It applies prospectively to new code and to
+existing code that is being changed substantially. Do not request unrelated
+cleanup or break a supported API merely to make existing code conform.</p>
+<p>Its scope is limited to source-code and public-API conventions. Repository
+contribution and pull-request workflows are documented in
+<a class="reference external" href="https://github.com/newton-physics/newton/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>;
+environment setup and operational procedures are in the
+<a class="reference external" href="https://newton-physics.github.io/newton/latest/guide/development.html">development guide</a>.
+General review concerns such as specification fidelity, project fit,
+reviewability, and maintenance burden are tracked separately in
+<a class="reference external" href="https://github.com/newton-physics/newton/issues/3509">issue #3509</a>.
+Release readiness is assessed by the
+<a class="reference external" href="https://github.com/newton-physics/newton/tree/main/.claude/skills/release-audit">release-audit workflow</a>.</p>
+<p>In this document, <em>must</em> identifies a requirement, <em>should</em> identifies the
+normal choice from which a well-justified exception may be made, and <em>may</em>
+identifies an allowed choice. Breaking changes must follow Newton’s deprecation
+policy even when the replacement would better follow these guidelines.</p>
+<section id="public-api-surface">
+<h2>Public API surface<a class="headerlink" href="#public-api-surface" title="Link to this heading">#</a></h2>
+<section id="expose-each-public-symbol-once">
+<h3>Expose each public symbol once<a class="headerlink" href="#expose-each-public-symbol-once" title="Link to this heading">#</a></h3>
+<p>Each public module must define <code class="docutils literal notranslate"><span class="pre">__all__</span></code> as the authoritative list of the
+symbols it supports. Each public symbol should have exactly one canonical,
+documented import path and should appear in the <code class="docutils literal notranslate"><span class="pre">__all__</span></code> of exactly one
+public module. Do not re-export the same symbol from multiple public submodules.</p>
+<p>Compatibility exports retained by the deprecation policy are the exception.
+Keep such aliases out of the preferred API documentation, mark them as
+deprecated, and remove them only after the required deprecation period.</p>
+<p>Python may still allow users to reach implementation details through other
+paths, but accessibility does not make those paths public or stable. In
+particular, <code class="docutils literal notranslate"><span class="pre">newton._src</span></code> is internal: examples and documentation must import
+through public modules such as <a class="reference internal" href="../api/newton_geometry.html#module-newton.geometry" title="newton.geometry"><code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.geometry</span></code></a> and
+<a class="reference internal" href="../api/newton_solvers.html#module-newton.solvers" title="newton.solvers"><code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.solvers</span></code></a>.</p>
+<p>The API reference is generated from public <code class="docutils literal notranslate"><span class="pre">__all__</span></code> declarations. Follow
+the <a class="reference external" href="https://newton-physics.github.io/newton/latest/guide/development.html#api-documentation">API documentation procedure</a>
+whenever a public symbol or module is added, removed, or renamed.</p>
+</section>
+<section id="keep-namespaces-shallow-and-purposeful">
+<h3>Keep namespaces shallow and purposeful<a class="headerlink" href="#keep-namespaces-shallow-and-purposeful" title="Link to this heading">#</a></h3>
+<p>Balance a discoverable top-level namespace against excessively deep import
+paths:</p>
+<ul class="simple">
+<li><p>Reserve <code class="docutils literal notranslate"><span class="pre">newton</span></code> for concepts broadly needed in ordinary simulation
+workflows. Adding a root symbol requires justification that it belongs in
+typical user code rather than a specialized domain.</p></li>
+<li><p>Put families of related types in a public submodule, even when one member of
+the family could plausibly be exposed at the root.</p></li>
+<li><p>Put specialized APIs in stable domain modules such as <code class="docutils literal notranslate"><span class="pre">newton.geometry</span></code>,
+<code class="docutils literal notranslate"><span class="pre">newton.solvers</span></code>, and <code class="docutils literal notranslate"><span class="pre">newton.viewer</span></code>.</p></li>
+<li><p>Do not add nesting solely to categorize a small number of names. Additional
+levels should represent a durable boundary such as a backend, provider, or
+cohesive experimental subsystem.</p></li>
+<li><p>Group provider-specific integrations or implementations under an appropriate
+domain namespace rather than distributing their symbols throughout the
+library.</p></li>
+<li><p>Do not use a general-purpose module such as <code class="docutils literal notranslate"><span class="pre">utils</span></code> as a substitute for a
+clear domain boundary.</p></li>
+</ul>
+<p>An internal implementation may be deeply organized when that improves
+maintenance. These restrictions concern the public import path, not the layout
+under <code class="docutils literal notranslate"><span class="pre">newton._src</span></code>.</p>
+<p>Keep public imports lightweight. Importing <a class="reference internal" href="../api/newton.html#module-newton" title="newton"><code class="xref py py-mod docutils literal notranslate"><span class="pre">newton</span></code></a> or a lightweight
+public module must not eagerly initialize optional backends or load heavy,
+provider-specific dependencies. Use lazy loading at optional-dependency and
+backend boundaries, and account for import-time cost when assigning a symbol
+to a public module.</p>
+</section>
+<section id="mark-experimental-public-api-explicitly">
+<h3>Mark experimental public API explicitly<a class="headerlink" href="#mark-experimental-public-api-explicitly" title="Link to this heading">#</a></h3>
+<p>Mark every user-facing experimental API in the public docstring or concept
+page where users encounter it. The marker is part of the compatibility
+contract: it must identify the exact module, type, callable, parameter, or mode
+that may change without the normal deprecation period. Describe relevant
+limitations alongside the marker.</p>
+<p>Use a domain-local experimental namespace only for a cohesive new subsystem
+that can reasonably live behind an opt-in import path. Do not move an existing
+public type into an experimental namespace merely to describe implementation
+maturity. Follow the <a class="reference external" href="https://newton-physics.github.io/newton/latest/guide/development.html#experimental-features">experimental-feature documentation procedure</a>
+for directive syntax and generated API documentation.</p>
+</section>
+</section>
+<section id="naming">
+<h2>Naming<a class="headerlink" href="#naming" title="Link to this heading">#</a></h2>
+<section id="prefer-common-prefixes">
+<h3>Prefer common prefixes<a class="headerlink" href="#prefer-common-prefixes" title="Link to this heading">#</a></h3>
+<p>Name related public symbols prefix-first so they cluster in autocomplete,
+documentation, and search. Put the shared concept before its specialization:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ViewerUSD</span></code> and <code class="docutils literal notranslate"><span class="pre">ViewerGL</span></code>;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code> and <code class="docutils literal notranslate"><span class="pre">SolverXPBD</span></code>;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">IKObjectivePosition</span></code> and <code class="docutils literal notranslate"><span class="pre">IKObjectiveRotation</span></code>;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">add_shape_sphere()</span></code> rather than <code class="docutils literal notranslate"><span class="pre">add_sphere_shape()</span></code>.</p></li>
+</ul>
+<p>Use the same principle for attributes and parameters. Prefer a stable noun
+followed by its qualifier, such as <code class="docutils literal notranslate"><span class="pre">geom_count</span></code> rather than <code class="docutils literal notranslate"><span class="pre">num_geoms</span></code>.
+Reuse the terminology already established by the corresponding public model
+instead of introducing synonyms.</p>
+</section>
+<section id="avoid-overly-general-public-names">
+<h3>Avoid overly general public names<a class="headerlink" href="#avoid-overly-general-public-names" title="Link to this heading">#</a></h3>
+<p>A public name should remain understandable when it appears without its module
+path in generated documentation, an error message, or search results. Include
+the domain or concept family when a name could plausibly refer to several parts
+of the simulation pipeline. For example, prefer <code class="docutils literal notranslate"><span class="pre">IKObjectivePosition</span></code> to
+<code class="docutils literal notranslate"><span class="pre">PositionObjective</span></code>.</p>
+<p>Avoid redundant prefixes for private helpers whose context is unambiguous and
+which are not re-exported or documented independently.</p>
+</section>
+<section id="minimize-new-concepts">
+<h3>Minimize new concepts<a class="headerlink" href="#minimize-new-concepts" title="Link to this heading">#</a></h3>
+<p>Before introducing a new public noun, determine whether an established Newton
+concept describes the same responsibility. Prefer extending or composing
+existing concepts to adding vague abstractions such as <code class="docutils literal notranslate"><span class="pre">Entity</span></code> or
+<code class="docutils literal notranslate"><span class="pre">Manager</span></code>.</p>
+<p>When a new concept is necessary, the pull request should explain:</p>
+<ul class="simple">
+<li><p>why existing terminology is inaccurate;</p></li>
+<li><p>how the concept relates to the existing model; and</p></li>
+<li><p>which component owns its lifecycle and responsibilities.</p></li>
+</ul>
+</section>
+</section>
+<section id="types-and-signatures">
+<h2>Types and signatures<a class="headerlink" href="#types-and-signatures" title="Link to this heading">#</a></h2>
+<section id="keep-api-families-consistent">
+<h3>Keep API families consistent<a class="headerlink" href="#keep-api-families-consistent" title="Link to this heading">#</a></h3>
+<p>When adding to or changing a family of related public types, methods, or
+functions, follow the vocabulary and signature structure already established
+by that family. In particular:</p>
+<ul class="simple">
+<li><p>use the same parameter names for the same concepts rather than introducing
+synonyms;</p></li>
+<li><p>keep shared parameters in a consistent relative order and group
+operation-specific parameters predictably;</p></li>
+<li><p>support the family’s common options when they apply, and document any
+deliberate omission; and</p></li>
+<li><p>use <code class="docutils literal notranslate"><span class="pre">None</span></code> for optional objects that must be constructed at call time,
+especially mutable or runtime-owned objects, rather than constructing them
+in the signature.</p></li>
+</ul>
+<p>For example, a new <code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_*</span></code> method should follow the
+existing shape methods’ use and placement of terms such as <code class="docutils literal notranslate"><span class="pre">body</span></code>,
+<code class="docutils literal notranslate"><span class="pre">xform</span></code>, and <code class="docutils literal notranslate"><span class="pre">cfg</span></code>, along with applicable shared options. Existing family
+members are the detailed precedent; do not copy an example signature without
+checking the current API.</p>
+</section>
+<section id="prefer-enums-for-closed-categories">
+<h3>Prefer enums for closed categories<a class="headerlink" href="#prefer-enums-for-closed-categories" title="Link to this heading">#</a></h3>
+<p>For a new public closed set of categorical values, prefer an <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.Enum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">enum.Enum</span></code></a>
+family over a collection of module-level constants. Enums improve type safety,
+group related values, and produce clearer API documentation. Use an appropriate
+enum variant when integer interoperability or bitwise flags are part of the
+contract.</p>
+<p>When an integer enum includes a <code class="docutils literal notranslate"><span class="pre">NONE</span></code> sentinel, define <code class="docutils literal notranslate"><span class="pre">NONE</span> <span class="pre">=</span> <span class="pre">0</span></code> first.
+Append later real values after existing values so their integer identities
+remain stable.</p>
+<p>This preference does not apply to numerical constants, default values,
+tolerances, or sentinels. It is also constrained by Warp code generation: until
+Warp supports an enum type natively at a particular code-generation boundary,
+keep the kernel-facing representation compatible and translate at the public
+Python boundary when practical. Do not replace existing public constants
+without the required deprecation.</p>
+</section>
+<section id="use-keyword-only-optional-arguments">
+<h3>Use keyword-only optional arguments<a class="headerlink" href="#use-keyword-only-optional-arguments" title="Link to this heading">#</a></h3>
+<p>Keep the positional portion of a new public callable to the minimal, stable set
+of primary operands. Parameters with defaults should normally be keyword-only
+so new options can be added and optional parameters can be reorganized without
+breaking callers.</p>
+<p>For example:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">create_mesh</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">indices</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">normals</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">uvs</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+    <span class="o">...</span>
+</pre></div>
+</div>
+<p>Established Python idioms may justify an exception. Changing an existing
+positional parameter to keyword-only is a breaking change and must use the
+deprecation process.</p>
+</section>
+<section id="put-reusable-math-at-the-right-layer">
+<h3>Put reusable math at the right layer<a class="headerlink" href="#put-reusable-math-at-the-right-layer" title="Link to this heading">#</a></h3>
+<p>A generally useful operation on Warp-native types should normally be proposed
+upstream in Warp rather than becoming a Newton-specific concept. If Newton
+needs the operation before it is available upstream:</p>
+<ul class="simple">
+<li><p>prefer a private compatibility helper linked to the upstream issue;</p></li>
+<li><p>put a Newton-owned public math operation in <a class="reference internal" href="../api/newton_math.html#module-newton.math" title="newton.math"><code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.math</span></code></a>, not in a
+catch-all utility namespace; and</p></li>
+<li><p>treat any temporary public helper as supported API, including the normal
+deprecation requirements when migrating users to Warp.</p></li>
+</ul>
+</section>
+</section>
+<section id="python-source-conventions">
+<h2>Python source conventions<a class="headerlink" href="#python-source-conventions" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Follow PEP 8 for Python code.</p></li>
+<li><p>Prefer a nested helper class or enum when it is self-contained within one
+owning class and has no independent public meaning.</p></li>
+<li><p>Use PEP 604 union syntax, such as <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">|</span> <span class="pre">None</span></code>, instead of
+<code class="docutils literal notranslate"><span class="pre">typing.Optional</span></code>.</p></li>
+<li><p>Annotate Warp arrays with bracket syntax, such as <code class="docutils literal notranslate"><span class="pre">wp.array[wp.vec3]</span></code>,
+<code class="docutils literal notranslate"><span class="pre">wp.array2d[float]</span></code>, and <code class="docutils literal notranslate"><span class="pre">wp.array[Any]</span></code>. Do not use the parenthesized
+<code class="docutils literal notranslate"><span class="pre">wp.array(dtype=...)</span></code> form. Use <code class="docutils literal notranslate"><span class="pre">wp.array[X]</span></code> for one-dimensional arrays,
+not <code class="docutils literal notranslate"><span class="pre">wp.array1d[X]</span></code>.</p></li>
+<li><p>Use kebab-case for command-line arguments, such as <code class="docutils literal notranslate"><span class="pre">--use-cuda-graph</span></code>
+rather than <code class="docutils literal notranslate"><span class="pre">--use_cuda_graph</span></code>.</p></li>
+<li><p>Avoid new required dependencies. Strongly prefer Warp, NumPy, or the standard
+library to a new optional dependency.</p></li>
+<li><p>A pull request that introduces a required or optional dependency must
+identify its license and verify that it is compatible with Newton’s
+distribution. Update license metadata and notices when required. Treat an
+unknown or undeclared dependency license as requiring review before merge.</p></li>
+</ul>
+</section>
+<section id="documentation-and-comments">
+<h2>Documentation and comments<a class="headerlink" href="#documentation-and-comments" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Use Google-style docstrings. Put types in annotations, not in docstrings, and
+write arguments as <code class="docutils literal notranslate"><span class="pre">name:</span> <span class="pre">description</span></code> under <code class="docutils literal notranslate"><span class="pre">Args:</span></code>.</p></li>
+<li><p>Put a dataclass field’s docstring on the line immediately after the field.</p></li>
+<li><p>Use the shortest useful Sphinx cross-reference target and prefer public API
+paths. Never reference <code class="docutils literal notranslate"><span class="pre">newton._src</span></code> from user-facing documentation.</p></li>
+<li><p>State SI units for physical quantities in public API docstrings, for example
+<code class="docutils literal notranslate"><span class="pre">Particle</span> <span class="pre">positions</span> <span class="pre">[m],</span> <span class="pre">shape</span> <span class="pre">[particle_count,</span> <span class="pre">3].</span></code> Use <code class="docutils literal notranslate"><span class="pre">[m</span> <span class="pre">or</span> <span class="pre">rad]</span></code>
+for joint-dependent values and <code class="docutils literal notranslate"><span class="pre">[N,</span> <span class="pre">N·m]</span></code> for spatial force vectors.
+Describe compound arrays per component. Do not add units to non-physical
+fields.</p></li>
+<li><p>Keep inline comments brief and reserve them for non-obvious intent,
+constraints, or edge cases. Explain <em>why</em>, not what the code already states.
+Prefer an appropriate cross-reference to repeating a longer explanation.</p></li>
+<li><p>Before relying on or changing a documented claim, inspect its internal
+cross-references and external primary sources. Verify Newton-specific
+behavior against the current code. If a source is unavailable, state that
+limitation instead of assuming its support.</p></li>
+</ul>
+</section>
+<section id="tests-and-repository-conventions">
+<h2>Tests and repository conventions<a class="headerlink" href="#tests-and-repository-conventions" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Use <a class="reference external" href="https://docs.python.org/3/library/unittest.html#module-unittest" title="(in Python v3.14)"><code class="xref py py-mod docutils literal notranslate"><span class="pre">unittest</span></code></a>, not pytest.</p></li>
+<li><p>Give every test function or method a triple-double-quoted docstring. Begin
+with a concise, imperative summary of the behavior being verified. Add a
+Google-style body after a blank line only when the test needs more context.</p></li>
+<li><p>Do not call <code class="docutils literal notranslate"><span class="pre">wp.synchronize()</span></code> or <code class="docutils literal notranslate"><span class="pre">wp.synchronize_device()</span></code> immediately
+before calling <code class="docutils literal notranslate"><span class="pre">.numpy()</span></code> on a Warp array; <code class="docutils literal notranslate"><span class="pre">.numpy()</span></code> already performs a
+synchronous device-to-host copy.</p></li>
+<li><p>Pin GitHub Actions by commit SHA and retain the version comment in the form
+<code class="docutils literal notranslate"><span class="pre">action&#64;&lt;sha&gt;</span>&#160; <span class="pre">#</span> <span class="pre">vX.Y.Z</span></code>. Use the hashes already allowlisted under
+<code class="docutils literal notranslate"><span class="pre">.github/workflows</span></code> when applicable.</p></li>
+<li><p>In SPDX copyright lines, use the year the file was first created. Do not use
+date ranges or update the year when modifying an existing file.</p></li>
+</ul>
+</section>
+<section id="public-api-review-checklist">
+<h2>Public API review checklist<a class="headerlink" href="#public-api-review-checklist" title="Link to this heading">#</a></h2>
+<p>When reviewing a new or substantially changed public API, check that:</p>
+<ul class="simple">
+<li><p>each public symbol has one canonical export and the relevant <code class="docutils literal notranslate"><span class="pre">__all__</span></code> is
+updated;</p></li>
+<li><p>the namespace is shallow, purposeful, and not unnecessarily added to
+<code class="docutils literal notranslate"><span class="pre">newton</span></code>;</p></li>
+<li><p>names cluster with their concept family and remain clear out of context;</p></li>
+<li><p>members of an API family use consistent vocabulary, parameter grouping,
+options, and safe defaults;</p></li>
+<li><p>new categorical types use an enum where the execution boundary supports it;</p></li>
+<li><p>new public nouns are necessary and have clear ownership;</p></li>
+<li><p>optional parameters are keyword-only unless an established idiom justifies
+positional use;</p></li>
+<li><p>reusable Warp-native math is placed at the appropriate ownership layer; and</p></li>
+<li><p>compatibility changes follow the deprecation policy and update generated API
+documentation.</p></li>
+</ul>
+<p>Prefer deterministic lint or test coverage for mechanically checkable rules.
+Use code review for semantic and architectural judgment rather than as the only
+enforcement of an invariant.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#public-api-surface">Public API surface</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#expose-each-public-symbol-once">Expose each public symbol once</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#keep-namespaces-shallow-and-purposeful">Keep namespaces shallow and purposeful</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mark-experimental-public-api-explicitly">Mark experimental public API explicitly</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#naming">Naming</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prefer-common-prefixes">Prefer common prefixes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#avoid-overly-general-public-names">Avoid overly general public names</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minimize-new-concepts">Minimize new concepts</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#types-and-signatures">Types and signatures</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#keep-api-families-consistent">Keep API families consistent</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prefer-enums-for-closed-categories">Prefer enums for closed categories</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#use-keyword-only-optional-arguments">Use keyword-only optional arguments</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#put-reusable-math-at-the-right-layer">Put reusable math at the right layer</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#python-source-conventions">Python source conventions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#documentation-and-comments">Documentation and comments</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tests-and-repository-conventions">Tests and repository conventions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#public-api-review-checklist">Public API review checklist</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.18.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
