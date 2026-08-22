@@ -24,19 +24,23 @@ from newton._src.sim.builder import ModelBuilder
 from newton._src.sim.inverse_dynamics import eval_inverse_dynamics_passive
 
 from ...controller import ControllerBase
-from ...utils import _normalize_indices
+from ...utils import _normalize_indices, _validate_array, _validate_flat_port
 from ._common import _gather_dof_flat_kernel, _idx_max
 from .model_free import ControllerJointImpedanceModelFree
 
 
 class ControllerJointImpedance(ControllerBase):
-    """One-step joint-space impedance controller for a batch of robots.
+    """Joint-space impedance controller with internally computed dynamics.
 
-    Has an identical input/output interface to
-    :class:`ControllerJointImpedanceModelFree` — flat 1D sim arrays in,
-    flat 1D torque array out — except that the dynamics terms (mass matrix,
-    gravity force, Coriolis force) are computed internally from the Newton
-    model rather than supplied by the caller.
+    Implements the joint-space impedance control law. This model-based variant
+    computes the mass matrix, gravity, and Coriolis terms itself: it holds a
+    private :class:`~newton.Model` built from ``builder`` and evaluates forward
+    kinematics and the enabled dynamics terms on every :meth:`step`, so the
+    caller supplies only joint positions and velocities.
+
+    ``builder`` is not modified at construction — and the internal :class:`newton.Model` cannot be rebuilt after construction. Later changes to ``builder`` or
+    to the simulated model do not propagate, so a mismatched topology computes
+    dynamics for a different robot with no diagnostic.
 
     Supports heterogeneous robot fleets — robots in the batch may have
     different DOF counts. The ``builder`` articulations define the
@@ -46,6 +50,10 @@ class ControllerJointImpedance(ControllerBase):
     Only 1-DOF joints (Revolute, Prismatic) and zero-DOF Fixed joints are
     supported. The PD error term ``q_des - q`` is only valid for scalar
     joint coordinates.
+
+    See also :class:`ControllerJointImpedanceModelFree`, which takes the mass
+    matrix, gravity, and Coriolis terms as inputs instead of computing them
+    from a :class:`newton.Model`.
 
     Impedance law (terms enabled at construction):
 
@@ -60,11 +68,14 @@ class ControllerJointImpedance(ControllerBase):
             ``sum(dofs per articulation)`` mapping controller DOF slots to
             positions in the flat simulation arrays (robot 0's indices first,
             then robot 1's, etc.).
-        stiffness: Position-error gain Kp [N/m or N·m/rad], shape
-            ``(N, max_dofs)``. Pass a baked array or ``None`` to read from
-            ``inputs.stiffness`` each step.
-        damping: Velocity-error gain Kd [N·s/m or N·m·s/rad]. Same format
-            as ``stiffness``.
+        stiffness: Position-error gain Kp, shape ``(N, max_dofs)``. Units
+            depend on ``use_inertia_decoupling``: [1/s²] when enabled, since
+            the PD term is then an acceleration premultiplied by M(q);
+            otherwise [N/m or N·m/rad]. Pass an array to copy it at
+            construction, or ``None`` to read ``inputs.stiffness`` each step.
+        damping: Velocity-error gain Kd, [1/s] when
+            ``use_inertia_decoupling`` is enabled, otherwise
+            [N·s/m or N·m·s/rad]. Same format as ``stiffness``.
         use_gravity_compensation: Add gravity generalized forces to τ.
         use_coriolis_compensation: Add Coriolis generalized forces to τ.
         use_inertia_decoupling: Premultiply the PD term by M(q).
@@ -100,9 +111,9 @@ class ControllerJointImpedance(ControllerBase):
         joint_qdd: wp.array[wp.float32] | None
         """Desired acceleration feedforward [m/s² or rad/s²], flat sim-level array. ``None`` unless ``has_qdd_feedforward=True``."""
         stiffness: wp.array2d[wp.float32] | None
-        """Position-error gain Kp [N/m or N·m/rad], shape ``(robot_count, max_dofs)``. ``None`` when gains are baked at construction."""
+        """Position-error gain Kp, shape ``(robot_count, max_dofs)``. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
         damping: wp.array2d[wp.float32] | None
-        """Velocity-error gain Kd [N·s/m or N·m·s/rad], shape ``(robot_count, max_dofs)``. ``None`` when gains are baked at construction."""
+        """Velocity-error gain Kd, shape ``(robot_count, max_dofs)``. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerJointImpedance.output`."""
@@ -132,9 +143,6 @@ class ControllerJointImpedance(ControllerBase):
     ):
         if not isinstance(builder, ModelBuilder):
             raise TypeError(f"builder must be a newton.ModelBuilder, got {type(builder).__name__}.")
-        if not isinstance(default_dof_indices, wp.array) or default_dof_indices.dtype != wp.uint32:
-            raise TypeError("default_dof_indices must be wp.array[uint32].")
-
         robot_count = builder.articulation_count
         if robot_count < 1:
             raise ValueError("builder has no articulations.")
@@ -152,7 +160,7 @@ class ControllerJointImpedance(ControllerBase):
                 f"zero-DOF fixed joints; found unsupported joint types: {unsupported_joints}"
             )
 
-        self._device = device if device is not None else wp.get_device()
+        self._device = wp.get_device(device)
         self._requires_grad = requires_grad
         self._use_gravity = bool(use_gravity_compensation)
         self._use_coriolis = bool(use_coriolis_compensation)
@@ -178,21 +186,40 @@ class ControllerJointImpedance(ControllerBase):
         dofs_per_robot = wp.array(dofs_per_robot_np, dtype=wp.int32, device=self._device)
         total_dofs = int(dofs_per_robot_np.sum())
 
-        if int(default_dof_indices.size) != total_dofs:
-            raise ValueError(
-                f"default_dof_indices length {default_dof_indices.size} must equal "
-                f"sum of per-robot DOF counts = {total_dofs}."
-            )
+        # ------------------------------------------------------------------
+        # Validation: every wp.array argument is checked here, and nowhere
+        # else. This runs after finalize() because the expected shapes derive
+        # from the finalized model.
+        # ------------------------------------------------------------------
+        gain_shape, idx_shape = (robot_count, max_dofs), (total_dofs,)
+        for name, array, dtype, shape, required in (
+            ("default_dof_indices", default_dof_indices, wp.uint32, idx_shape, True),
+            ("stiffness", stiffness, wp.float32, gain_shape, False),
+            ("damping", damping, wp.float32, gain_shape, False),
+            ("joint_q_idx", joint_q_idx, wp.uint32, idx_shape, False),
+            ("joint_qd_idx", joint_qd_idx, wp.uint32, idx_shape, False),
+            ("joint_q_des_idx", joint_q_des_idx, wp.uint32, idx_shape, False),
+            ("joint_qd_des_idx", joint_qd_des_idx, wp.uint32, idx_shape, False),
+            ("joint_qdd_idx", joint_qdd_idx, wp.uint32, idx_shape, False),
+            ("joint_f_idx", joint_f_idx, wp.uint32, idx_shape, False),
+        ):
+            _validate_array(array=array, name=name, dtype=dtype, shape=shape, device=self._device, required=required)
+        # ------------------------------------------------------------------
 
         self._robot_count = robot_count
         self._max_dofs = max_dofs
         self._total_dofs = total_dofs
 
-        self._q_idx = _normalize_indices(joint_q_idx, default_dof_indices, name="joint_q")
-        self._qd_idx = _normalize_indices(joint_qd_idx, default_dof_indices, name="joint_qd")
-        self._q_des_idx = _normalize_indices(joint_q_des_idx, default_dof_indices, name="joint_q_des")
-        self._qd_des_idx = _normalize_indices(joint_qd_des_idx, default_dof_indices, name="joint_qd_des")
-        self._qdd_idx = _normalize_indices(joint_qdd_idx, default_dof_indices, name="joint_qdd")
+        self._q_idx = _normalize_indices(idx=joint_q_idx, default_idx=default_dof_indices)
+        self._qd_idx = _normalize_indices(idx=joint_qd_idx, default_idx=default_dof_indices)
+        self._q_des_idx = _normalize_indices(idx=joint_q_des_idx, default_idx=default_dof_indices)
+        self._qd_des_idx = _normalize_indices(idx=joint_qd_des_idx, default_idx=default_dof_indices)
+        self._qdd_idx = _normalize_indices(idx=joint_qdd_idx, default_idx=default_dof_indices)
+
+        # joint_q and joint_qd are gathered by this class before it delegates,
+        # so their ports are checked here rather than by the inner controller.
+        self._min_len_q = _idx_max(self._q_idx)
+        self._min_len_qd = _idx_max(self._qd_idx)
 
         self._mass_matrix: wp.array3d[wp.float32] | None = None
         self._gravity_flat: wp.array[wp.float32] | None = None
@@ -218,9 +245,7 @@ class ControllerJointImpedance(ControllerBase):
         identity_idx = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self._device)
 
         self._model_free = ControllerJointImpedanceModelFree(
-            robot_count=robot_count,
             dofs_per_robot=dofs_per_robot,
-            max_dofs=max_dofs,
             default_dof_indices=default_dof_indices,
             stiffness=stiffness,
             damping=damping,
@@ -309,6 +334,15 @@ class ControllerJointImpedance(ControllerBase):
             outputs: :class:`Outputs` struct to write torques into.
             dt: Unused. Accepted for API compatibility.
         """
+        # Checked here because the gathers below read these two ports before
+        # the inner controller — which validates the rest — ever sees them.
+        _validate_flat_port(
+            array=inputs.joint_q, name="inputs.joint_q", min_length=self._min_len_q, device=self._device
+        )
+        _validate_flat_port(
+            array=inputs.joint_qd, name="inputs.joint_qd", min_length=self._min_len_qd, device=self._device
+        )
+
         wp.launch(
             _gather_dof_flat_kernel,
             dim=self._total_dofs,
