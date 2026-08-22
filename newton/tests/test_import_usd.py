@@ -12722,10 +12722,8 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mesh_max_hull_vertices_parsing(self):
-        """Test that max_hull_vertices is parsed correctly from mesh collision."""
+        """Verify mesh hull vertex limits from USD and importer overrides."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
-
-        from newton._src.usd.schemas import SchemaResolverNewton  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -12765,7 +12763,7 @@ def Xform "Articulation" (
         builder.add_usd(
             stage,
             mesh_maxhullvert=20,
-            schema_resolution=_composed_resolution([SchemaResolverNewton()]),
+            schema_resolution=_composed_resolution([usd.SchemaResolverNewton()]),
         )
         self.assertEqual(builder.shape_source[0].maxhullvert, 20)
 

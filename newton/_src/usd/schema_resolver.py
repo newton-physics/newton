@@ -701,11 +701,14 @@ class _ResolvedValue:
 class SchemaResolution:
     """Reuse one resolver order and fallback policy across USD sources.
 
+    .. experimental::
+
     :meth:`resolve` returns one :class:`SchemaResolution.Result` per logical
     property. Each result contains the canonical resolver value and the source
     that supplied it. Source adapters provide applicable schema identities and
     registered fallback metadata; importer-specific interpretation remains
-    with the importer.
+    with the importer. The mapping interface is scalar, and adapters must
+    provide their schema applicability and fallback metadata explicitly.
 
     Args:
         resolvers: Resolver instances in priority order.
@@ -730,21 +733,18 @@ class SchemaResolution:
 
     @dataclass(frozen=True)
     class Result:
-        """Describe a resolved property and its winning source.
-
-        Args:
-            value: Canonical value produced by the configured resolver.
-            source: Source category that supplied the value.
-            resolver: Resolver that supplied the value, when applicable.
-            schema_name: Schema declared to own the property, when applicable.
-            attribute_names: Source attributes read for the property.
-        """
+        """Describe a resolved property and its winning source."""
 
         value: Any
+        """Canonical value produced by the configured resolver."""
         source: SchemaResolution.Source
+        """Source category that supplied the value."""
         resolver: SchemaResolver | None
+        """Resolver responsible for the value, when applicable."""
         schema_name: str | None
+        """Schema declared to own the property, when applicable."""
         attribute_names: tuple[str, ...]
+        """Source attributes read for the property."""
 
     _SOURCE_BY_INTERNAL: ClassVar = {
         _ValueSource.UNRESOLVED: Source.UNRESOLVED,
