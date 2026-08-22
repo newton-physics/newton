@@ -178,11 +178,22 @@ class SchemaResolver:
     Subclasses may declare static schema ownership and control whether
     compatibility defaults remain eligible for unregistered schemas or
     unowned mappings.
+
+    .. experimental::
+
+        The ``schema_names`` and ``use_compatibility_defaults`` extension
+        hooks may change without prior notice.
     """
 
     @dataclass
     class SchemaAttribute:
-        """Specify a USD attribute and its transformation functions."""
+        """Specify a USD attribute and its transformation functions.
+
+        .. experimental::
+
+            The ``fallback_is_unset`` and ``angular_unit`` fields may change
+            without prior notice.
+        """
 
         name: str
         """USD attribute name, or primary attribute when using a getter."""
