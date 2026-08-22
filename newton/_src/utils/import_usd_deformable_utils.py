@@ -6,7 +6,7 @@
 This module owns builder-independent leaf helpers and the shared mass / density / anchor utilities
 used by the cable / cloth / volume / attachment /
 collision-filter import passes, plus the :class:`_DeformableImportContext` that carries the
-:func:`parse_usd` inputs, helper closures, and result maps the passes mutate. The passes
+``parse_usd()`` inputs, helper closures, and result maps the passes mutate. The passes
 themselves live in the sibling ``import_usd_deformable_{cable,cloth,volume,attachments}`` modules.
 """
 
@@ -1262,9 +1262,10 @@ def _scout_deformable_prims(
 class _DeformableImportContext:
     """Shared state for the deformable import passes (cable / cloth / volume / attachment).
 
-    Bundles the :func:`parse_usd` inputs, the helper closures the passes need, and the result maps
-    they populate, so the passes can live in this module instead of as closures in ``parse_usd``.
-    The result maps are the same dict objects ``parse_usd`` returns, mutated in place.
+    Bundles the ``parse_usd()`` inputs, the helper closures the passes need, and the result maps
+    they populate, so the passes can live in sibling modules instead of as closures in
+    ``parse_usd()``. The result maps are the same dict objects ``parse_usd()`` returns, mutated in
+    place.
     """
 
     builder: ModelBuilder
