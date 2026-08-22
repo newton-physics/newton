@@ -376,6 +376,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
         self.assertEqual(config.padmm.warmstart_scale, 0.9)
 
     def test_01_make_explicit(self):
+        """Construct an explicit solver configuration with requested overrides."""
         config = SolverKaminoImpl.Config(
             dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type="CR"),
             padmm=kamino_config.PADMMSolverConfig(warmstart_mode="internal", warmstart_scale=0.5),
@@ -538,6 +539,86 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         state_in = model.state()
         state_out = model.state()
         solver.step(state_in, state_out, None, None, dt=1.0 / 60.0)
+
+
+class TestSolverKaminoPublic(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def test_padmm_preserves_immovable_joint_anchor(self):
+        """Keep zero-inverse-mass joint anchors fixed with PADMM."""
+        for integrator in ("euler", "moreau"):
+            for sparse_jacobian in (False, True):
+                with self.subTest(integrator=integrator, sparse_jacobian=sparse_jacobian):
+                    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                    SolverKamino.register_custom_attributes(builder)
+                    static_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+                    anchor = builder.add_link(
+                        label="anchor",
+                        xform=wp.transformf(wp.vec3f(0.0, 0.0, 2.0), wp.quat_identity(dtype=wp.float32)),
+                    )
+                    link = builder.add_link(
+                        label="link",
+                        xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.5), wp.quat_identity(dtype=wp.float32)),
+                    )
+                    builder.add_shape_box(body=anchor, hx=0.1, hy=0.1, hz=0.2, cfg=static_cfg)
+                    builder.add_shape_box(body=link, hx=0.1, hy=0.1, hz=0.75)
+                    fixed = builder.add_joint_fixed(
+                        parent=-1,
+                        child=anchor,
+                        parent_xform=wp.transformf(
+                            wp.vec3f(0.0, 0.0, 2.0),
+                            wp.quat_identity(dtype=wp.float32),
+                        ),
+                    )
+                    revolute = builder.add_joint_revolute(
+                        parent=anchor,
+                        child=link,
+                        axis=newton.Axis.X,
+                        parent_xform=wp.transformf(
+                            wp.vec3f(0.0, 0.0, -0.2),
+                            wp.quat_identity(dtype=wp.float32),
+                        ),
+                        child_xform=wp.transformf(
+                            wp.vec3f(0.0, 0.0, 0.75),
+                            wp.quat_identity(dtype=wp.float32),
+                        ),
+                    )
+                    builder.add_articulation([fixed, revolute])
+                    builder.joint_q[-1] = 0.5 * np.pi
+                    model = builder.finalize(device=self.default_device)
+                    newton.eval_fk(model, model.joint_q, model.joint_qd, model)
+
+                    state_in = model.state()
+                    state_out = model.state()
+                    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+                    anchor_q_initial = state_in.body_q.numpy()[anchor].copy()
+                    link_q_initial = state_in.body_q.numpy()[link].copy()
+
+                    config = SolverKamino.Config(
+                        dynamics_solver="padmm",
+                        integrator=integrator,
+                        sparse_jacobian=sparse_jacobian,
+                        use_collision_detector=False,
+                    )
+                    solver = SolverKamino(model, config=config)
+                    np.testing.assert_array_equal(solver._model_kamino.joints.num_cts.numpy(), [0, 5])
+
+                    for _ in range(16):
+                        state_in.clear_forces()
+                        solver.step(state_in, state_out, control=None, contacts=None, dt=1.0e-3)
+                        state_in, state_out = state_out, state_in
+
+                    body_q = state_in.body_q.numpy()
+                    body_qd = state_in.body_qd.numpy()
+                    np.testing.assert_array_equal(body_q[anchor], anchor_q_initial)
+                    np.testing.assert_array_equal(body_qd[anchor], np.zeros(6, dtype=np.float32))
+                    self.assertGreater(float(np.linalg.norm(body_q[link, :3] - link_q_initial[:3])), 1.0e-4)
+                    self.assertGreater(float(abs(body_qd[link, 3])), 1.0e-2)
+                    self.assertTrue(np.all(np.isfinite(body_q)))
+                    self.assertTrue(np.all(np.isfinite(body_qd)))
 
 
 class TestSolverKaminoImpl(unittest.TestCase):

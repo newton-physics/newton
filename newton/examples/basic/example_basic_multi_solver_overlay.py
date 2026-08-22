@@ -4,9 +4,9 @@
 ###########################################################################
 # Example Basic Multi-Solver Overlay
 #
-# Demonstrates the viewer "layer" system by running three simulations of
+# Demonstrates the viewer "layer" system by running four simulations of
 # the same quadruple-pendulum chain in a single viewer window, each driven
-# by a different solver (XPBD, Featherstone, MuJoCo Warp). By default the
+# by a different solver (XPBD, Featherstone, MuJoCo Warp, Kamino DVI). By default the
 # layers overlay exactly so the per-solver divergence is obvious; bumping
 # the ``spacing`` constant lays them out side-by-side along the world
 # X-axis via ``viewer.set_layer_transform``. Layers can also be toggled
@@ -34,7 +34,7 @@ import newton
 import newton.examples
 
 
-def _build_pendulum_model(num_links: int = 4) -> tuple[newton.Model, list[int]]:
+def _build_pendulum_model(num_links: int = 4, register_solver_attributes=None) -> tuple[newton.Model, list[int]]:
     """Build an ``num_links``-link pendulum chain hanging from the world.
 
     Returns ``(model, link_shape_indices)``. ``link_shape_indices`` lists
@@ -43,6 +43,8 @@ def _build_pendulum_model(num_links: int = 4) -> tuple[newton.Model, list[int]]:
     while keeping the shared ground plane neutral.
     """
     builder = newton.ModelBuilder()
+    if register_solver_attributes is not None:
+        register_solver_attributes(builder)
 
     hx = 1.0
     hy = 0.1
@@ -86,6 +88,17 @@ def _build_pendulum_model(num_links: int = 4) -> tuple[newton.Model, list[int]]:
     return builder.finalize(), link_shapes
 
 
+def _create_kamino_solver(model: newton.Model) -> newton.solvers.SolverKamino:
+    config = newton.solvers.SolverKamino.Config.from_model(
+        model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+    )
+    config.use_collision_detector = True
+    config.integrator = "moreau"
+    config.dvi.max_alternating_iterations = 8
+    config.dvi.bilateral_solve_interval = 8
+    return newton.solvers.SolverKamino(model, config=config)
+
+
 class _SolverLayer:
     """Bundle of (layer_id, model, solver, states, contacts) tracked together.
 
@@ -104,10 +117,12 @@ class _SolverLayer:
         viewer,
         sim_substeps: int,
         sim_dt: float,
+        register_solver_attributes=None,
+        native_contacts: bool = False,
     ):
         self.layer_id = layer_id
         self.color = color
-        self.model, link_shape_indices = _build_pendulum_model()
+        self.model, link_shape_indices = _build_pendulum_model(register_solver_attributes=register_solver_attributes)
         # Tint only the pendulum link shapes so each layer is visually
         # distinct, leaving the ground plane its default checkerboard.
         if self.model.shape_color is not None:
@@ -115,12 +130,22 @@ class _SolverLayer:
             for s in link_shape_indices:
                 self.model.shape_color[s : s + 1].fill_(color_vec)
         self.solver = solver_factory(self.model)
+        self.native_contacts = native_contacts
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.collision_pipeline.contacts()
+        if native_contacts:
+            self.collision_pipeline = None
+            self.contacts = newton.Contacts(
+                self.model.rigid_contact_max,
+                0,
+                device=self.model.device,
+                requested_attributes=self.model.get_requested_contact_attributes(),
+            )
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         self._viewer = viewer
         self._sim_substeps = sim_substeps
@@ -128,11 +153,13 @@ class _SolverLayer:
         self.graph: wp.Graph | None = self._capture()
 
     def _simulate(self) -> None:
+        contacts = None if self.native_contacts else self.contacts
         for _ in range(self._sim_substeps):
             self.state_0.clear_forces()
             self._viewer.apply_forces(self.state_0)
-            self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self._sim_dt)
+            if self.collision_pipeline is not None:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
+            self.solver.step(self.state_0, self.state_1, self.control, contacts, self._sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def _capture(self) -> wp.Graph | None:
@@ -167,23 +194,39 @@ class Example:
         self.viewer = viewer
         self.args = args
 
-        # Three layers driven by different solvers. The colors make it easy
+        # Four layers driven by different solvers. The colors make it easy
         # to tell them apart when toggling individual layers on/off in the
         # "Layers" group of the viewer sidebar. Each layer captures its own
         # CUDA graph on construction (where supported).
         specs = [
-            ("XPBD", (0.95, 0.45, 0.10), newton.solvers.SolverXPBD),
-            ("Featherstone", (0.20, 0.70, 0.95), newton.solvers.SolverFeatherstone),
-            ("MuJoCo Warp", (0.50, 0.85, 0.30), newton.solvers.SolverMuJoCo),
+            ("XPBD", (0.95, 0.45, 0.10), newton.solvers.SolverXPBD, None, False),
+            ("Featherstone", (0.20, 0.70, 0.95), newton.solvers.SolverFeatherstone, None, False),
+            ("MuJoCo Warp", (0.50, 0.85, 0.30), newton.solvers.SolverMuJoCo, None, False),
+            (
+                "Kamino DVI",
+                (0.75, 0.35, 0.90),
+                _create_kamino_solver,
+                newton.solvers.SolverKamino.register_custom_attributes,
+                True,
+            ),
         ]
         self.layers: list[_SolverLayer] = [
-            _SolverLayer(name, color, factory, self.viewer, self.sim_substeps, self.sim_dt)
-            for name, color, factory in specs
+            _SolverLayer(
+                name,
+                color,
+                factory,
+                self.viewer,
+                self.sim_substeps,
+                self.sim_dt,
+                register_attributes,
+                native_contacts,
+            )
+            for name, color, factory, register_attributes, native_contacts in specs
         ]
 
         # Bind each layer to the viewer. Activating then calling ``set_model``
         # is all the per-solver wiring needed — the viewer auto-prefixes object
-        # names so all three pendulums coexist in the same scene.
+        # names so all four pendulums coexist in the same scene.
         # ``set_layer_transform`` positions each layer relative to the others.
         # The default ``spacing = 0`` overlays them so per-solver divergence
         # is obvious; raise ``spacing`` (each link is 2 m long, so ~9 m gives
@@ -224,7 +267,10 @@ class Example:
         for layer in self.layers:
             self.viewer.activate(layer.layer_id)
             self.viewer.log_state(layer.state_0)
-            self.viewer.log_contacts(layer.contacts, layer.state_0)
+            if layer.contacts is not None:
+                if layer.native_contacts and self.viewer.show_contacts:
+                    layer.solver.update_contacts(layer.contacts, layer.state_0)
+                self.viewer.log_contacts(layer.contacts, layer.state_0)
         self.viewer.end_frame()
 
 

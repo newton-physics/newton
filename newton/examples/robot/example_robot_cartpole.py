@@ -27,11 +27,15 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
+        self.solver_type = args.solver
 
         self.viewer = viewer
 
         cartpole = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(cartpole)
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(cartpole)
+        else:
+            newton.solvers.SolverMuJoCo.register_custom_attributes(cartpole)
         cartpole.default_shape_cfg.density = 100.0
         cartpole.default_joint_cfg.armature = 0.1
 
@@ -40,6 +44,8 @@ class Example:
             enable_self_collisions=False,
             collapse_fixed_joints=True,
         )
+        for shape in range(cartpole.shape_count):
+            cartpole.shape_flags[shape] &= ~newton.ShapeFlags.COLLIDE_SHAPES
 
         # apply additional inertia to the bodies for better stability
         body_armature = 0.1
@@ -57,7 +63,15 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=False, sparse_jacobian=False
+            )
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.bilateral_solve_interval = 8
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(self.model)
         # self.solver = newton.solvers.SolverSemiImplicit(self.model, joint_attach_ke=1600.0, joint_attach_kd=20.0)
         # self.solver = newton.solvers.SolverFeatherstone(self.model)
 
@@ -116,12 +130,16 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        constrained_atol = 1.0e-6
         num_bodies_per_world = self.model.body_count // self.world_count
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "cart is at ground level and has correct orientation",
-            lambda q, qd: q[2] == 0.0 and newton.math.vec_allclose(q.q, wp.quat_identity()),
+            lambda q, qd: (
+                abs(q[2]) < constrained_atol
+                and newton.math.vec_allclose(q.q, wp.quat_identity(), atol=constrained_atol)
+            ),
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
         # fmt: off
@@ -129,34 +147,34 @@ class Example:
             self.model,
             self.state_0,
             "cart only moves along y direction",
-            lambda q, qd: qd[0] == 0.0
+            lambda q, qd: abs(qd[0]) < constrained_atol
             and abs(qd[1]) > 0.05
-            and qd[2] == 0.0
-            and wp.length_sq(wp.spatial_bottom(qd)) == 0.0,
+            and abs(qd[2]) < constrained_atol
+            and wp.length_sq(wp.spatial_bottom(qd)) < constrained_atol * constrained_atol,
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole1 only has y-axis linear velocity and x-axis angular velocity",
-            lambda q, qd: qd[0] == 0.0
+            lambda q, qd: abs(qd[0]) < constrained_atol
             and abs(qd[1]) > 0.05
-            and qd[2] == 0.0
+            and abs(qd[2]) < constrained_atol
             and abs(qd[3]) > 0.3
-            and qd[4] == 0.0
-            and qd[5] == 0.0,
+            and abs(qd[4]) < constrained_atol
+            and abs(qd[5]) < constrained_atol,
             indices=[i * num_bodies_per_world + 1 for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole2 only has yz-plane linear velocity and x-axis angular velocity",
-            lambda q, qd: qd[0] == 0.0
+            lambda q, qd: abs(qd[0]) < constrained_atol
             and abs(qd[1]) > 0.05
             and abs(qd[2]) > 0.05
             and abs(qd[3]) > 0.2
-            and qd[4] == 0.0
-            and qd[5] == 0.0,
+            and abs(qd[4]) < constrained_atol
+            and abs(qd[5]) < constrained_atol,
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
         # fmt: on
@@ -164,27 +182,34 @@ class Example:
         world0_cart_vel = wp.spatial_vector(*qd[0])
         world0_pole1_vel = wp.spatial_vector(*qd[1])
         world0_pole2_vel = wp.spatial_vector(*qd[2])
-        # Replicated GPU worlds can drift by a few ulps in body twists.
+        # Replicated GPU worlds can accumulate small relative differences in body twists.
         world_velocity_atol = 1e-6
+        world_velocity_rtol = 2.5e-4
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "cart velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_cart_vel, atol=world_velocity_atol),
+            lambda q, qd: newton.math.vec_allclose(
+                qd, world0_cart_vel, rtol=world_velocity_rtol, atol=world_velocity_atol
+            ),
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole1 velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_pole1_vel, atol=world_velocity_atol),
+            lambda q, qd: newton.math.vec_allclose(
+                qd, world0_pole1_vel, rtol=world_velocity_rtol, atol=world_velocity_atol
+            ),
             indices=[i * num_bodies_per_world + 1 for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole2 velocities match across worlds",
-            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel, atol=world_velocity_atol),
+            lambda q, qd: newton.math.vec_allclose(
+                qd, world0_pole2_vel, rtol=world_velocity_rtol, atol=world_velocity_atol
+            ),
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
 
@@ -192,6 +217,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
+        parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=100)
         return parser
 

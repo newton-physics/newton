@@ -95,10 +95,12 @@ class Example:
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 5
+        self.sim_substeps = 3 if args.solver == "kamino" else 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
+        if self.world_count is None:
+            self.world_count = 16 if args.solver == "kamino" else 100
         self.viewer = viewer
         self.solver_type = args.solver
         self.test_mode = args.test
@@ -118,7 +120,7 @@ class Example:
         self.grid_y = int(np.ceil(self.num_per_world / self.grid_x))
 
         # Maximum number of rigid contacts to allocate (limits memory usage).
-        # Use a per-world budget so default world_count=100 scales appropriately.
+        # Use a per-world budget so the batched defaults scale appropriately.
         self.rigid_contact_max = 500 * self.world_count
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
@@ -127,6 +129,8 @@ class Example:
         world_builder = self._build_nut_bolt_scene()
 
         main_scene = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(main_scene)
         main_scene.default_shape_cfg.gap = 0.001 * self.scene_scale
         # Add ground plane at z = ground_plane_offset.
         # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d.
@@ -172,8 +176,14 @@ class Example:
                 ls_iterations=100,
                 impratio=1.0,
             )
+        elif self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.dvi.max_alternating_iterations = 4
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
-            raise ValueError(f"Unknown solver type: {self.solver_type}. Choose from 'xpbd' or 'mujoco'.")
+            raise ValueError(f"Unknown solver type: {self.solver_type}. Choose from 'xpbd', 'mujoco', or 'kamino'.")
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -388,13 +398,13 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
-        parser.set_defaults(world_count=100)
+        parser.set_defaults(world_count=None)
         parser.add_argument(
             "--solver",
             type=str,
-            choices=["xpbd", "mujoco"],
+            choices=["xpbd", "mujoco", "kamino"],
             default="mujoco",
-            help="Solver to use: 'xpbd' (Extended Position-Based Dynamics) or 'mujoco' (MuJoCo constraint solver).",
+            help="Solver to use: 'xpbd', 'mujoco', or 'kamino'.",
         )
         parser.add_argument("--num-per-world", type=int, default=1, help="Number of assemblies per world.")
         return parser

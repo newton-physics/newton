@@ -1243,7 +1243,7 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
                 self._sort_val,
                 self._row_idx_sorted,
                 self._cursor,
-                model.bodies.inv_m_i,
+                model.bodies.effective_inv_m_i,
                 data.bodies.inv_I_i,
                 model.info.bodies_offset,
                 precond,
