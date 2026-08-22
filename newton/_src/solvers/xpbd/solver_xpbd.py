@@ -459,11 +459,22 @@ class SolverXPBD(SolverBase, CouplingInterface):
                     state_in.body_f = body_f_prev
 
             spring_constraint_lambdas = None
+            spring_constraint_lambdas_next = None
             if model.spring_count:
-                spring_constraint_lambdas = wp.empty_like(model.spring_rest_length)
+                spring_constraint_lambdas = wp.zeros_like(model.spring_rest_length, requires_grad=requires_grad)
+                spring_constraint_lambdas_next = wp.zeros_like(model.spring_rest_length, requires_grad=requires_grad)
             edge_constraint_lambdas = None
+            edge_constraint_lambdas_next = None
             if model.edge_count:
-                edge_constraint_lambdas = wp.empty_like(model.edge_rest_angle)
+                edge_constraint_lambdas = wp.zeros_like(model.edge_rest_angle, requires_grad=requires_grad)
+                edge_constraint_lambdas_next = wp.zeros_like(model.edge_rest_angle, requires_grad=requires_grad)
+            tet_constraint_lambdas = None
+            tet_constraint_lambdas_next = None
+            if model.tet_count:
+                tet_constraint_lambdas = wp.zeros(
+                    model.tet_count * 2, dtype=float, device=model.device, requires_grad=requires_grad
+                )
+                tet_constraint_lambdas_next = wp.zeros_like(tet_constraint_lambdas, requires_grad=requires_grad)
 
             for i in range(self.iterations):
                 with wp.ScopedTimer(f"iteration_{i}", False):
@@ -541,7 +552,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
                         # distance constraints
                         if model.spring_count:
-                            spring_constraint_lambdas.zero_()
                             wp.launch(
                                 kernel=solve_springs,
                                 dim=model.spring_count,
@@ -556,13 +566,20 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                     dt,
                                     spring_constraint_lambdas,
                                 ],
-                                outputs=[particle_deltas],
+                                outputs=[spring_constraint_lambdas_next, particle_deltas],
                                 device=model.device,
                             )
+                            previous_lambdas = spring_constraint_lambdas
+                            spring_constraint_lambdas = spring_constraint_lambdas_next
+                            if requires_grad and i + 1 < self.iterations:
+                                spring_constraint_lambdas_next = wp.zeros_like(
+                                    spring_constraint_lambdas, requires_grad=True
+                                )
+                            else:
+                                spring_constraint_lambdas_next = previous_lambdas
 
                         # bending constraints
                         if model.edge_count:
-                            edge_constraint_lambdas.zero_()
                             wp.launch(
                                 kernel=bending_constraint,
                                 dim=model.edge_count,
@@ -576,9 +593,17 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                     dt,
                                     edge_constraint_lambdas,
                                 ],
-                                outputs=[particle_deltas],
+                                outputs=[edge_constraint_lambdas_next, particle_deltas],
                                 device=model.device,
                             )
+                            previous_lambdas = edge_constraint_lambdas
+                            edge_constraint_lambdas = edge_constraint_lambdas_next
+                            if requires_grad and i + 1 < self.iterations:
+                                edge_constraint_lambdas_next = wp.zeros_like(
+                                    edge_constraint_lambdas, requires_grad=True
+                                )
+                            else:
+                                edge_constraint_lambdas_next = previous_lambdas
 
                         # tetrahedral FEM
                         if model.tet_count:
@@ -595,10 +620,17 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                     model.tet_materials,
                                     dt,
                                     self.soft_body_relaxation,
+                                    tet_constraint_lambdas,
                                 ],
-                                outputs=[particle_deltas],
+                                outputs=[tet_constraint_lambdas_next, particle_deltas],
                                 device=model.device,
                             )
+                            previous_lambdas = tet_constraint_lambdas
+                            tet_constraint_lambdas = tet_constraint_lambdas_next
+                            if requires_grad and i + 1 < self.iterations:
+                                tet_constraint_lambdas_next = wp.zeros_like(tet_constraint_lambdas, requires_grad=True)
+                            else:
+                                tet_constraint_lambdas_next = previous_lambdas
 
                         particle_q, particle_qd = self._apply_particle_deltas(
                             model, state_in, state_out, particle_deltas, dt

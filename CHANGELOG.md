@@ -140,6 +140,7 @@
 - Fix MJCF imports ignoring `compiler assetdir` when resolving mesh, texture, and heightfield assets.
 - Fix scrambled textures on USD meshes whose texture-coordinate primvar is not named `st` (e.g. `st_0`). The texcoord set is now resolved from the bound material's shader network (the `UsdPreviewSurface` texture reader's `varname` or an MDL/OmniPBR `uv_space_index`), and textured material subsets slice real per-corner UVs and authored normals instead of collapsing faceVarying data per vertex.
 - Fix builder merging (`ModelBuilder.add_builder()`, `add_world()`, `replicate()`) offsetting negative reference sentinels in custom attribute values stored as NumPy or Warp integer scalars.
+- Fix `SolverXPBD` spring, bending, and tetrahedral compliance becoming artificially rigid as nonlinear iteration counts increase.
 - Fix `ModelBuilder.add_usd()` requiring the optional `mujoco` package when handling `MjcActuator` prims, including during default MJC equality conversion.
 - Fix `ModelBuilder.add_usd()` ignoring enabled collider mass properties and counting disabled colliders toward body mass. (#3594)
 - Fix `ModelBuilder.add_usd()` treating explicitly authored USD `MassAPI` schema fallback values (zero mass, density, inertia, or principal axes; non-finite center of mass) as overrides; per the schema's value semantics they now behave like unauthored attributes, while negative or non-finite mass, density, and diagonal inertia values are ignored with a warning. (#3418)
