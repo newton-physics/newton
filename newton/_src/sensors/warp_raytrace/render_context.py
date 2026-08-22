@@ -10,7 +10,7 @@ import warp as wp
 
 from ...core import Axis
 from ...geometry import Gaussian, GeoType, Mesh
-from ...geometry.bvh import compute_shape_local_bounds
+from ...geometry.bvh import SHAPE_BOUNDS_BLOCK_DIM, compute_shape_local_bounds
 from ...sim import DeformableVisualGaussian, DeformableVisuals, Model, State
 from ...utils import load_texture, normalize_texture
 from ...utils.texture import compute_texture_hash
@@ -299,9 +299,10 @@ class RenderContext:
                 )
                 gaussian_bvh.refit()
 
-            wp.launch(
-                compute_shape_local_bounds,
+            wp.launch_tiled(
+                kernel=compute_shape_local_bounds,
                 dim=model.shape_count,
+                block_dim=SHAPE_BOUNDS_BLOCK_DIM,
                 inputs=[model.shape_type, model.shape_source_ptr, model.gaussians_data, model.bvh_shape_bounds],
                 device=self.device,
             )
