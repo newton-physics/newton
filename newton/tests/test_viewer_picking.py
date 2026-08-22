@@ -12,7 +12,7 @@ from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_
 
 
 def _make_single_sphere_model(
-    device=None, *, is_kinematic: bool = False, body_com=None, body_inertia=None, body_rotation=None
+    device=None, *, is_kinematic: bool = False, body_com=None, body_inertia=None, body_rotation=None, mass=1.0
 ):
     """Create a model containing one body and a sphere at the origin.
 
@@ -22,6 +22,7 @@ def _make_single_sphere_model(
         body_com: Optional body-frame center of mass.
         body_inertia: Optional body-frame inertia tensor.
         body_rotation: Optional initial body orientation.
+        mass: Body mass.
     """
     lock_inertia = body_com is not None or body_inertia is not None
     if body_inertia is None:
@@ -32,7 +33,7 @@ def _make_single_sphere_model(
     builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), body_rotation),
         com=body_com,
-        mass=1.0,
+        mass=mass,
         inertia=body_inertia,
         lock_inertia=lock_inertia,
         is_kinematic=is_kinematic,
@@ -82,10 +83,11 @@ class TestPickingSetup(unittest.TestCase):
 
         self.assertFalse(picking.is_picking())
         self.assertEqual(picking.pick_body.numpy()[0], -1)
-        self.assertEqual(picking.pick_stiffness, 100.0)
-        self.assertEqual(picking.pick_damping, 10.0)
         self.assertIsNotNone(picking.pick_state)
         self.assertEqual(picking.pick_state.shape[0], 1)
+        pick_state_np = picking.pick_state.numpy()[0]
+        self.assertEqual(pick_state_np["pick_stiffness"], 100.0)
+        self.assertEqual(pick_state_np["pick_damping"], 10.0)
 
     def test_release_clears_state(self):
         """release() clears pick_body and sets picking_active to False."""
@@ -257,20 +259,32 @@ def test_picking_setup_device(test: TestPickingSetup, device):
 
     # update and apply_force should not crash
     picking.update(ray_start, ray_dir)
+    state.body_f.zero_()
     picking._apply_picking_force(state)
+
+    # With the target still on the pick point the command is zero, so the whole wrench is
+    # the weight compensation: a free body hangs weightless from the cursor.
+    weight = -model.gravity.numpy()[0] * model.body_mass.numpy()[0]
+    assert_np_equal(state.body_f.numpy()[0][:3], weight, tol=1.0e-4)
+    assert_np_equal(state.body_f.numpy()[0][3:], np.zeros(3), tol=1.0e-6)
 
     picking.release()
     test.assertFalse(picking.is_picking())
     test.assertEqual(picking.pick_body.numpy()[0], -1)
 
 
-def _apply_picking_target(picking: Picking, state: newton.State, target: tuple[float, float, float]) -> np.ndarray:
+def _apply_picking_target(
+    picking: Picking, state: newton.State, target: tuple[float, float, float], body: int = 0
+) -> np.ndarray:
+    """Apply one picking step and return the wrench with the weight compensation removed."""
     pick_state = picking.pick_state.numpy()
     pick_state[0]["picking_target_world"] = target
     picking.pick_state.assign(pick_state)
     state.body_f.zero_()
     picking._apply_picking_force(state)
-    return state.body_f.numpy()[0].copy()
+    wrench = state.body_f.numpy()[body].copy()
+    wrench[:3] += picking.model.gravity.numpy()[0] * picking.model.body_mass.numpy()[body]
+    return wrench
 
 
 def test_picking_torque_limit(test: TestPickingSetup, device):
@@ -306,9 +320,67 @@ def test_picking_torque_limit_is_noop_below_limit(test: TestPickingSetup, device
 
     picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
     wrench = _apply_picking_target(picking, state, (0.01, 0.0, -0.5))
-    expected_force = np.array([(10.0 + model.body_mass.numpy()[0]) * 100.0 * 0.01, 0.0, 0.0])
+    expected_force = np.array([model.body_mass.numpy()[0] * 100.0 * 0.01, 0.0, 0.0])
     expected_torque = np.cross(np.array([0.0, 0.0, -0.5]), expected_force)
     assert_np_equal(wrench, np.concatenate((expected_force, expected_torque)), tol=1.0e-5)
+
+
+def _mass_independence_cases(device):
+    """Yield (model, ray_start, ray_dir, articulated) spanning free bodies and an articulated link."""
+    for mass in (1.0, 1.0e-3):
+        model = _make_single_sphere_model(device=device, body_com=wp.vec3(0.0), mass=mass)
+        yield model, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0), False
+    for arm_mass in (1.0, 10.0):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_MJCF_ARM_AND_FINGER.format(arm_mass=arm_mass))
+        yield builder.finalize(device=device), wp.vec3(0.4, 0.0, 1.0), wp.vec3(0.0, 0.0, -1.0), True
+
+
+def test_picking_acceleration_mass_independent(test: TestPickingSetup, device):
+    """Below the clamp, picking scales the commanded acceleration by the operational-space mass.
+
+    A free body feels exactly its own mass, so gains stay mass-independent. A light link on a
+    heavy articulation feels more than its own mass, because the rest of the chain resists,
+    which keeps picking a distal link from becoming uselessly weak.
+    """
+    stiffness, displacement = 100.0, 0.01
+    for model, ray_start, ray_dir, articulated in _mass_independence_cases(device):
+        state = model.state()
+        picking = Picking(model, pick_stiffness=stiffness, pick_damping=0.0, pick_max_acceleration=5.0)
+        picking.pick(state, ray_start, ray_dir)
+        test.assertTrue(picking.is_picking())
+
+        body = int(picking.pick_body.numpy()[0])
+        mass = float(model.body_mass.numpy()[body])
+        articulation_mass = float(picking._pick_effective_mass.numpy()[body])
+
+        picked = np.array(picking.pick_state.numpy()[0]["picked_point_world"], dtype=float)
+        target = tuple(picked + np.array([displacement, 0.0, 0.0]))
+        wrench = _apply_picking_target(picking, state, target, body=body)[:3]
+
+        assert_np_equal(wrench[1:], np.zeros(2), tol=1.0e-4)
+        felt_mass = wrench[0] / (stiffness * displacement)
+        test.assertGreaterEqual(felt_mass, mass * (1.0 - 1.0e-4))
+        test.assertLessEqual(felt_mass, articulation_mass * (1.0 + 1.0e-4))
+        if articulated:
+            test.assertGreater(felt_mass, 5.0 * mass)
+        else:
+            test.assertAlmostEqual(felt_mass, mass, delta=mass * 1.0e-4)
+
+
+_MJCF_ARM_AND_FINGER = """<mujoco>
+  <worldbody>
+    <body name="arm" pos="0 0 0">
+      <joint name="j1" type="hinge" axis="0 0 1"/>
+      <geom type="box" size="0.2 0.05 0.05" mass="{arm_mass}"/>
+      <body name="finger" pos="0.4 0 0">
+        <joint name="j2" type="hinge" axis="0 0 1"/>
+        <geom type="box" size="0.05 0.02 0.02" mass="0.1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
 
 
 def test_picking_torque_limit_rotates_with_inertia(test: TestPickingSetup, device):
@@ -405,6 +477,12 @@ add_function_test(
     TestPickingSetup,
     "test_picking_torque_limit_is_noop_below_limit",
     test_picking_torque_limit_is_noop_below_limit,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestPickingSetup,
+    "test_picking_acceleration_mass_independent",
+    test_picking_acceleration_mass_independent,
     devices=get_test_devices(),
 )
 add_function_test(

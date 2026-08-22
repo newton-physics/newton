@@ -29,30 +29,42 @@ class Picking:
         pick_stiffness: float = 50.0,
         pick_damping: float = 5.0,
         pick_max_acceleration: float = 5.0,
+        pick_min_inertia_fraction: float = 0.2,
         world_offsets: wp.array[wp.vec3] | None = None,
     ) -> None:
         """
-        Initializes the picking system.
+        Initializes the picking system. All parameters are fixed at construction.
 
         Args:
             model: The model to pick from.
-            pick_stiffness: The stiffness that will be used to compute the force applied to the picked body.
-            pick_damping: The damping that will be used to compute the force applied to the picked body.
+            pick_stiffness: Stiffness of the picking spring, in acceleration per unit
+                displacement [1/s^2]. The commanded acceleration is mapped to a force
+                through the operational-space inertia at the pick point, so gains are
+                mass-independent and picking a light distal link is as effective as
+                picking a heavy one.
+            pick_damping: Damping of the picking spring, in acceleration per unit
+                velocity of the pick point [1/s].
             pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
                 Clamps both linear and equivalent rotational acceleration to prevent
                 runaway divergence on light or low-inertia objects.
+            pick_min_inertia_fraction: Lower bound on the operational-space inertia at the
+                pick point, as a fraction of the articulation's total mass.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
 
         Raises:
-            ValueError: If ``pick_max_acceleration`` is negative or non-finite.
+            ValueError: If ``pick_max_acceleration`` is negative or non-finite, or if
+                ``pick_min_inertia_fraction`` is outside [0, 1].
         """
         pick_max_acceleration = float(pick_max_acceleration)
         if not math.isfinite(pick_max_acceleration) or pick_max_acceleration < 0.0:
             raise ValueError("Picking maximum acceleration must be finite and nonnegative.")
 
+        pick_min_inertia_fraction = float(pick_min_inertia_fraction)
+        if not 0.0 <= pick_min_inertia_fraction <= 1.0:
+            raise ValueError("Picking minimum inertia fraction must be in [0, 1].")
+        self.pick_min_inertia_fraction = pick_min_inertia_fraction
+
         self.model = model
-        self.pick_stiffness = pick_stiffness
-        self.pick_damping = pick_damping
         self.world_offsets = world_offsets
         self.visible_worlds_mask: wp.array[int] | None = None
 
@@ -60,9 +72,6 @@ class Picking:
         self.min_index = None
         self.min_body_index = None
         self.lock = None
-        self._contact_points0 = None
-        self._contact_points1 = None
-        self._debug = False
 
         # picking state
         if model and model.device.is_cuda:
@@ -79,13 +88,11 @@ class Picking:
         self.pick_dist = 0.0
         self.picking_active = False
 
-        self._default_on_mouse_drag = None
-
-        # Pre-compute effective mass per body for picking force clamping.
-        # For articulated bodies, use the total articulation mass so that
-        # picking a light link (e.g. fingertip) still allows enough force
-        # to move the whole chain. Free bodies use their own mass.
         self._pick_effective_mass = self._compute_effective_mass(model)
+
+        # Operational-space inertia at the pick point, refreshed on every pick.
+        # Identity-scaled by the body mass is the correct value for a free body.
+        self._pick_os_inertia = wp.zeros(1, dtype=wp.mat33, device=model.device if model else "cpu")
 
     def _apply_picking_force(self, state: newton.State) -> None:
         """
@@ -118,17 +125,79 @@ class Picking:
                 self.model.body_mass,
                 self.model.body_inv_inertia,
                 self._pick_effective_mass,
+                self._pick_os_inertia,
+                self.model.gravity,
+                self.model.body_world,
             ],
             device=self.model.device,
         )
 
+    def _update_os_inertia(self, state: newton.State, body: int, point_world: wp.vec3f) -> None:
+        """Refresh the operational-space inertia used to turn commanded acceleration into force.
+
+        Computes :math:`\\Lambda = (J H^{-1} J^T)^{-1}` at the pick point, where ``J`` maps
+        articulation velocities to the velocity of that point and ``H`` is the joint-space mass
+        matrix. This is the inertia actually felt at the grab point, so picking a light distal
+        link is not weaker than picking the base. Eigenvalues are clamped to the articulation
+        total from above, which avoids over-commanding and regularizes singular poses, and from
+        below to the larger of the body's own mass and the share of the articulation implied by
+        ``pick_min_inertia_fraction``. Where the articulation Jacobian is unavailable, as for
+        :attr:`~newton.JointType.CABLE` joints, the articulation total stands in, since the
+        whole chain is a closer estimate of what resists than the single link. A body outside
+        an articulation falls back to :math:`m I`, exact for a free body.
+
+        Held fixed for the duration of the pick.
+
+        Args:
+            state: The simulation state supplying the current pose.
+            body: Index of the picked body.
+            point_world: The pick point in world space.
+        """
+        model = self.model
+        mass = float(model.body_mass.numpy()[body])
+        upper = max(float(self._pick_effective_mass.numpy()[body]), mass)
+        lower = min(max(mass, self.pick_min_inertia_fraction * upper), upper)
+        lam = np.eye(3) * upper
+
+        joints = np.nonzero(model.joint_child.numpy() == body)[0] if model.articulation_count else []
+        if len(joints) and mass > 0.0:
+            joint = int(joints[0])
+            art = int(model.joint_articulation.numpy()[joint])
+            first = int(model.articulation_start.numpy()[art])
+            qd_start = model.joint_qd_start.numpy()
+            row = 6 * (joint - first)
+            ndof = int(qd_start[int(model.articulation_end.numpy()[art])]) - int(qd_start[first])
+
+            mask = wp.array(np.arange(model.articulation_count) == art, dtype=bool, device=model.device)
+            jacobian = newton.eval_jacobian(model, state, mask=mask)
+            h = newton.eval_mass_matrix(model, state, J=jacobian, mask=mask).numpy()[art][:ndof, :ndof]
+            jac = jacobian.numpy()[art][:, :ndof]
+
+            # Newton stores twists as (linear, angular); shift the linear rows from the COM to
+            # the pick point via v_p = v_com + omega x r.
+            X_wb = wp.transform(*state.body_q.numpy()[body])
+            r = np.array(point_world) - np.array(wp.transform_point(X_wb, wp.vec3(*model.body_com.numpy()[body])))
+            jac_point = jac[row : row + 3] + np.cross(jac[row + 3 : row + 6].T, r).T
+
+            try:
+                eigenvalues, eigenvectors = np.linalg.eigh(jac_point @ np.linalg.solve(h, jac_point.T))
+                inertia = 1.0 / np.clip(eigenvalues, 1.0 / upper, 1.0 / lower)
+                lam = eigenvectors @ np.diag(inertia) @ eigenvectors.T
+            except np.linalg.LinAlgError:
+                pass
+
+        self._pick_os_inertia.assign(np.ascontiguousarray(lam, dtype=np.float32).reshape(1, 3, 3))
+
     @staticmethod
     def _compute_effective_mass(model: newton.Model) -> wp.array[float]:
-        """Compute per-body effective mass for picking force clamping.
+        """Compute the per-body mass bound used to clamp the picking force.
 
         For bodies in an articulation, returns the total mass of that
         articulation so that picking a light link still allows enough
         force to move the whole chain.  Free bodies get their own mass.
+
+        This bounds the force only; the commanded acceleration is mapped to a force
+        by :meth:`_update_os_inertia`.
         """
         if model is None:
             return wp.zeros(1, dtype=float)
@@ -312,12 +381,9 @@ class Picking:
                 outputs=[self.pick_body, self.pick_state],
                 device=self.model.device,
             )
-            wp.synchronize()
+
+            picked = int(self.pick_body.numpy()[0])
+            if picked >= 0:
+                self._update_os_inertia(state, picked, hit_point_world)
 
         self.picking_active = self.pick_body.numpy()[0] >= 0
-
-        if self._debug:
-            if dist < 1.0e10:
-                print("#" * 80)
-                print(f"Hit geom {index} of body {body_index} at distance {dist}")
-                print("#" * 80)
