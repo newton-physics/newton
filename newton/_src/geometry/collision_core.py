@@ -327,6 +327,7 @@ def create_compute_gjk_mpr_contacts(
     post_process_contact: Any = post_process_axial_on_discrete_contact,
     support_func: Any = None,
     use_precomputed_center: bool = False,
+    penetration_refiner: Any = None,
 ):
     """
     Factory function to create a compute_gjk_mpr_contacts function with a specific writer function.
@@ -336,6 +337,7 @@ def create_compute_gjk_mpr_contacts(
         post_process_contact: Function to post-process contact data
         support_func: Support mapping function (defaults to support_map)
         use_precomputed_center: Whether the geometry data supplies a cached center.
+        penetration_refiner: Optional physical-proxy result refinement function.
 
     Returns:
         A compute_gjk_mpr_contacts function with the writer function baked in
@@ -411,7 +413,11 @@ def create_compute_gjk_mpr_contacts(
         if wp.static(ENABLE_MULTI_CONTACT):
             wp.static(
                 create_solve_convex_multi_contact(
-                    support_func, writer_func, post_process_contact, use_precomputed_center
+                    support_func,
+                    writer_func,
+                    post_process_contact,
+                    use_precomputed_center,
+                    penetration_refiner,
                 )
             )(
                 shape_a_data,
@@ -432,7 +438,11 @@ def create_compute_gjk_mpr_contacts(
         else:
             wp.static(
                 create_solve_convex_single_contact(
-                    support_func, writer_func, post_process_contact, use_precomputed_center
+                    support_func,
+                    writer_func,
+                    post_process_contact,
+                    use_precomputed_center,
+                    penetration_refiner,
                 )
             )(
                 shape_a_data,

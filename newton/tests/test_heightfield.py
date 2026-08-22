@@ -356,9 +356,13 @@ class TestHeightfield(unittest.TestCase):
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(contact_count, 0, "No contacts detected between sphere and heightfield")
 
-    def _get_contact_kinematics(self, model, state, *, reduce_contacts=True):
+    def _get_contact_kinematics(self, model, state, *, reduce_contacts=True, requires_grad=False):
         """Return contact distances, normals, and heightfield points for a model state."""
-        pipeline = newton.CollisionPipeline(model, reduce_contacts=reduce_contacts)
+        pipeline = newton.CollisionPipeline(
+            model,
+            reduce_contacts=reduce_contacts,
+            requires_grad=requires_grad,
+        )
         contacts = pipeline.contacts()
         distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=model.device)
         point0 = wp.empty(contacts.rigid_contact_max, dtype=wp.vec3, device=model.device)
@@ -399,7 +403,11 @@ class TestHeightfield(unittest.TestCase):
                 builder.add_shape_box(body=body, hx=0.2, hy=0.065, hz=half_z)
 
                 model = builder.finalize()
-                distance, normal, point0 = self._get_contact_kinematics(model, model.state())
+                distance, normal, point0 = self._get_contact_kinematics(
+                    model,
+                    model.state(),
+                    requires_grad=True,
+                )
 
                 self.assertGreater(len(distance), 0, "no contacts between box and heightfield")
                 deepest = int(np.argmin(distance))
