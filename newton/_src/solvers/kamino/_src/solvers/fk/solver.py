@@ -251,6 +251,7 @@ class ForwardKinematicsSolver:
         joints_num_actuated_coords = []  # Number of actuated coordinates per joint (0 for passive joints)
         joints_num_actuated_dofs = []  # Number of actuated dofs per joint (0 for passive joints)
         joints_source_id = []  # Source joint in the main model, or -1 for synthetic joints
+        joints_world_id = []  # World index per joint
         fk_axis_joint = []  # FK index of each synthetic axis joint
         fk_axis_body = []  # Body defining each synthetic axis joint
         fk_axis_source_joint_0 = []  # First source joint defining each synthetic axis joint
@@ -282,6 +283,7 @@ class ForwardKinematicsSolver:
                 joints_bid_B.append(joints_bid_B_prev[jt_id_prev])
                 joints_bid_F.append(joints_bid_F_prev[jt_id_prev])
                 joints_source_id.append(jt_id_prev)
+                joints_world_id.append(wd_id)
                 if joints_act_type[-1] != JointActuationType.PASSIVE:
                     num_coords_jt = joints_num_coords_prev[jt_id_prev]
                     joints_num_actuated_coords.append(num_coords_jt)
@@ -324,6 +326,7 @@ class ForwardKinematicsSolver:
                     joints_bid_B.append(-1)
                     joints_bid_F.append(rb_id_tot)
                     joints_source_id.append(-1)
+                    joints_world_id.append(wd_id)
                     fk_axis_joint.append(len(joints_dof_type) - 1)
                     fk_axis_body.append(rb_id_tot)
                     fk_axis_source_joint_0.append(rotation_joints_per_body[rb_id][0])
@@ -338,6 +341,7 @@ class ForwardKinematicsSolver:
                 joints_bid_B.append(-1)
                 joints_bid_F.append(joints_bid_F_prev[base_joint_id])
                 joints_source_id.append(base_joint_id)
+                joints_world_id.append(wd_id)
                 joints_num_actuated_coords.append(7)
                 coord_offset = -7 * wd_id - 1  # We encode offsets in base_q negatively with i -> -i - 1
                 actuated_coords_map.extend(range(coord_offset, coord_offset - 7, -1))
@@ -352,6 +356,7 @@ class ForwardKinematicsSolver:
                 joints_bid_B.append(-1)
                 joints_bid_F.append(base_body_id)
                 joints_source_id.append(-1)
+                joints_world_id.append(wd_id)
                 joints_num_actuated_coords.append(7)
                 coord_offset = -7 * wd_id - 1  # We encode offsets in base_q negatively with i -> -i - 1
                 actuated_coords_map.extend(range(coord_offset, coord_offset - 7, -1))
@@ -562,6 +567,7 @@ class ForwardKinematicsSolver:
             self.joints_X_Bj = wp.empty(self.num_joints_tot, dtype=wp.mat33f)
             self.joints_X_Fj = wp.empty(self.num_joints_tot, dtype=wp.mat33f)
             self.joints_source_id = to_warp_int32_array(joints_source_id)
+            self.joints_world_id = to_warp_int32_array(joints_world_id)
             self.fk_axis_joint = to_warp_int32_array(fk_axis_joint)
             self.fk_axis_body = to_warp_int32_array(fk_axis_body)
             self.fk_axis_source_joint_0 = to_warp_int32_array(fk_axis_source_joint_0)
@@ -1227,6 +1233,7 @@ class ForwardKinematicsSolver:
         self,
         actuators_q: wp.array[wp.float32],
         target_rel_transforms: wp.array[wp.transformf],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Internal evaluator for target relative transformations, from actuated coordinates of the FK model.
@@ -1242,6 +1249,8 @@ class ForwardKinematicsSolver:
                 self.joints_X_Fj,
                 actuators_q,
                 self.config.use_incremental_solve,  # Incremental solve may result in non-unit quaternions
+                self.joints_world_id,
+                world_mask,
                 target_rel_transforms,
             ],
             device=self.device,
@@ -1711,7 +1720,9 @@ class ForwardKinematicsSolver:
         # Update actuators_q and kinematic constraints, for incremental solve
         if self.config.use_incremental_solve:
             self._update_incremental_target_actuators_q(self.newton_iteration, self.newton_mask)
-            self._eval_target_relative_transformations(self.actuators_q_curr, self.target_rel_transforms)
+            self._eval_target_relative_transformations(
+                self.actuators_q_curr, self.target_rel_transforms, self.newton_mask
+            )
             self._eval_kinematic_constraints(bodies_q, self.target_rel_transforms, self.newton_mask, self.constraints)
 
         # Evaluate constraints Jacobian if needed
@@ -1960,7 +1971,7 @@ class ForwardKinematicsSolver:
 
         # Evaluate target relative transformations
         target_rel_transforms = wp.array(dtype=wp.transformf, shape=(self.num_joints_tot,), device=self.device)
-        self._eval_target_relative_transformations(actuators_q_fk, target_rel_transforms)
+        self._eval_target_relative_transformations(actuators_q_fk, target_rel_transforms, self.all_worlds_mask)
 
         return target_rel_transforms
 
@@ -2069,7 +2080,7 @@ class ForwardKinematicsSolver:
         # Extract target relative transformations from state if not provided
         if target_rel_transforms is None:
             self._eval_actuator_coords(bodies_q, self.actuators_q_next)
-            self._eval_target_relative_transformations(self.actuators_q_next, self.target_rel_transforms)
+            self._eval_target_relative_transformations(self.actuators_q_next, self.target_rel_transforms, world_mask)
             target_rel_transforms = self.target_rel_transforms
 
         # Compute velocities
@@ -2155,7 +2166,7 @@ class ForwardKinematicsSolver:
 
         # Compute target actuator coordinates and corresponding transforms
         self._eval_target_actuators_q(base_q, actuators_q, self.actuators_q_next)
-        self._eval_target_relative_transformations(self.actuators_q_next, self.target_rel_transforms)
+        self._eval_target_relative_transformations(self.actuators_q_next, self.target_rel_transforms, self.newton_mask)
 
         # Evaluate constraints, and initialize loop condition (might not even need to loop)
         self._eval_kinematic_constraints(bodies_q, self.target_rel_transforms, self.newton_mask, self.constraints)
