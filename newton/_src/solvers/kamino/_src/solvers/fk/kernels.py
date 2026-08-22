@@ -846,6 +846,8 @@ def _eval_target_relative_transformations(
     joints_X_Fj: wp.array[wp.mat33f],
     actuators_q: wp.array[wp.float32],
     normalize_quaternions: wp.bool,
+    joints_world_id: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
     # Outputs
     target_rel_transforms: wp.array[wp.transformf],
 ):
@@ -868,12 +870,19 @@ def _eval_target_relative_transformations(
         joints_X_Fj: Joint local frame on follower body
         actuators_q: Actuated coordinates
         normalize_quaternions: Whether to normalize quaternions in actuators_q (else unit length is assumed)
+        joints_world_id: World index per joint
+        world_mask: Per-world boolean flag to perform the computation (False = skip)
     Outputs:
         target_rel_transforms: Joint target relative transformation
     """
 
     # Retrieve the thread index (= joint index)
     jt_id = wp.tid()
+
+    # Early return based on world mask
+    wid = joints_world_id[jt_id]
+    if not world_mask[wid]:
+        return
 
     if jt_id < joints_dof_type.shape[0]:
         # Retrieve the joint model data

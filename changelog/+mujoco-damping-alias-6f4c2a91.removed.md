@@ -1,0 +1,1 @@
+Remove the deprecated `Model.mujoco.dof_passive_damping` alias and its `mujoco:dof_passive_damping` custom attribute (deprecated in 1.3.0); use `Model.joint_damping` instead. USD `mjc:damping` now resolves natively through `SchemaResolverMjc`, and MJCF `damping` continues to parse directly into `joint_damping`.
