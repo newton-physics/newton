@@ -23,7 +23,9 @@ class _ActuatorBiasType(IntEnum):
     NONE = 0
     AFFINE = 1
     MUSCLE = 2
-    USER = 3
+    DCMOTOR = 3
+    SO3 = 4
+    USER = 5
 
 
 class _ActuatorDynamicsType(IntEnum):
@@ -32,14 +34,17 @@ class _ActuatorDynamicsType(IntEnum):
     FILTER = 2
     FILTER_EXACT = 3
     MUSCLE = 4
-    USER = 5
+    DCMOTOR = 5
+    USER = 6
 
 
 class _ActuatorGainType(IntEnum):
     FIXED = 0
     AFFINE = 1
     MUSCLE = 2
-    USER = 3
+    DCMOTOR = 3
+    SO3 = 4
+    USER = 5
 
 
 __all__ = ["EqType"]
