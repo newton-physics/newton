@@ -22,7 +22,6 @@ from ..geometry.collision_core import (
     mesh_vs_convex_midphase,
     post_process_axial_on_discrete_contact,
     post_process_minkowski_only,
-    post_process_triangle_contact,
 )
 from ..geometry.collision_primitive import (
     _collide_plane_capsule_contacts,
@@ -1650,7 +1649,6 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
             wp.static(
                 create_compute_gjk_mpr_contacts(
                     writer_func,
-                    post_process_contact=post_process_triangle_contact,
                     penetration_refiner=create_triangle_prism_penetration_refiner(support_map),
                 )
             )(

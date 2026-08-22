@@ -39,6 +39,8 @@ from .types import GeoType
 # are treated as non-negative, biasing toward the +1 vertex.
 BOX_SUPPORT_DEADBAND = 1.0e-10
 _CENTERED_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
+TRIANGLE_PRISM_EXTRUSION = 1.0
+"""Depth [m] a triangle is extruded along -Z to give a heightfield cell volume."""
 
 
 @wp.func_native("""
@@ -197,7 +199,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         # always the heightfield's down direction.
         if geom.shape_type == GeoTypeEx.TRIANGLE_PRISM:
             if direction[2] < 0.0:
-                result = result + wp.vec3(0.0, 0.0, -1.0)
+                result = result + wp.vec3(0.0, 0.0, -TRIANGLE_PRISM_EXTRUSION)
     elif geom.shape_type == GeoType.BOX:
         # Use a relative deadband so near-zero direction components
         # (from solver rotation drift ~1e-7) cannot flip the sign
@@ -506,11 +508,17 @@ def create_triangle_prism_penetration_refiner(support_func: Any):
                 )
                 support_on_face = wp.length_sq(projected_b - closest_b) < 1.0e-10
 
-                if support_on_face and surface_penetration < penetration:
-                    normal = surface_normal
-                    penetration = surface_penetration
-                    point_b = surface_point_b
-                    point_a = point_b + penetration * normal
+                if not support_on_face:
+                    # A neighboring cell owns the deepest point, so measure this cell's overlap
+                    # at MPR's own witness instead.  The face normal still applies -- the
+                    # surface is what shape B is resting on -- but the depth is only what this
+                    # triangle actually carries.
+                    surface_point_b = point_b
+                    surface_penetration = wp.dot(surface_point_a - point_b, surface_normal)
+                normal = surface_normal
+                penetration = surface_penetration
+                point_b = surface_point_b
+                point_a = point_b + penetration * normal
 
         return point_a, point_b, normal, penetration
 
@@ -569,6 +577,17 @@ def _adjust_minkowski_center(geom_a: Any, center_b_world: wp.vec3, center_b_to_a
     if distance_to_centroid > 1.0e-12:
         nudge_distance = 0.01 * wp.min(distance_to_centroid, wp.abs(signed_plane_distance))
         center_b_to_a += to_centroid * (nudge_distance / distance_to_centroid)
+
+    if geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
+        # MPR reports the face its ray from this seed to the origin exits through, so a seed on
+        # the boundary of shape A decides nothing.  A triangle has no interior and has to be
+        # seeded on its face, but a prism does, and seeding a prism on its top face makes that
+        # ray reverse the moment shape B's center crosses the face: from then on the portal
+        # settles on the extruded bottom and reports a metre of penetration pointing into the
+        # terrain.  Sink the seed to mid-extrusion instead.  The offset is along the extrusion
+        # axis and shorter than the extrusion, so the seed stays inside the prism for any
+        # triangle, however steep.
+        center_b_to_a -= wp.vec3(0.0, 0.0, 0.5 * TRIANGLE_PRISM_EXTRUSION)
     return center_b_to_a
 
 

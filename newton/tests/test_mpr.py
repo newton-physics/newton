@@ -352,5 +352,34 @@ class TestTrianglePrismSurfacePolicy(unittest.TestCase):
         np.testing.assert_allclose(points_b[:, 2], [-depth], atol=1.0e-6)
 
 
+    def test_deep_box_exits_the_top_face_without_refinement(self):
+        """MPR alone must not settle on the volume the triangle is extruded into.
+
+        MPR reports the face its ray from the Minkowski seed to the origin exits through. Seeding
+        a prism on its own top face -- the face is on the prism's boundary -- lets that ray
+        reverse as soon as the partner's center crosses the surface, and the portal then settles
+        on the extruded bottom: about ``TRIANGLE_PRISM_EXTRUSION`` metres of penetration with a
+        normal pointing into the terrain. The box here is centered below the face, which is one
+        substep of a normal landing for a humanoid foot, so this is the configuration that has to
+        hold before any surface refinement runs.
+        """
+        depth = 0.05
+        half_height = 0.02
+        collision, _points_a, _points_b, normals, penetrations = _run_triangle_mpr(
+            triangle_b=[[1.0, 0.0, 0.0]],
+            triangle_c=[[0.0, 1.0, 0.0]],
+            triangle_type=GeoTypeEx.TRIANGLE_PRISM,
+            refine_proxy=False,
+            shape_type=GeoType.BOX,
+            shape_scale=(0.1, 0.1, half_height),
+            shape_positions=[[0.25, 0.25, half_height - depth]],
+            shape_orientations=[[0.0, 0.0, 0.0, 1.0]],
+        )
+
+        np.testing.assert_array_equal(collision, [1])
+        self.assertGreater(float(normals[0][2]), 0.9, f"MPR exited through {normals[0]}")
+        self.assertLess(float(penetrations[0]), 10.0 * depth, f"reported {penetrations[0]} m")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

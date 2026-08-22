@@ -415,6 +415,58 @@ class TestHeightfield(unittest.TestCase):
                 self.assertGreater(float(normal[deepest][2]), 0.999)
                 self.assertAlmostEqual(float(point0[deepest][2]), 0.0, places=5)
 
+    def test_heightfield_no_contact_reaches_the_prism_interior(self):
+        """No contact may resolve against the volume a heightfield cell is extruded into.
+
+        ``support_map`` extrudes each cell triangle ``TRIANGLE_PRISM_EXTRUSION`` metres along -Z
+        so that GJK/MPR have a closed shape to work with. Only the top face is a real surface;
+        the skirt and the bottom cap are inside the terrain and cannot carry a contact. MPR
+        reports the face its ray from the Minkowski seed to the origin exits through, so seeding
+        a prism on its own top face lets that ray reverse as soon as the partner's center crosses
+        the surface -- from there the portal settles on the bottom cap and reports about a metre
+        of penetration with a normal pointing into the ground.
+
+        The collider here is a humanoid foot on terrain sampled at 0.1 m, so it spans several
+        cells at once and most of them do not own its deepest point. Depths on both sides of its
+        half-thickness are covered because that is where a seed on the surface changes behaviour.
+        Every contact is checked, not just the deepest one: a single contact reporting the prism
+        interior is enough to blow the solver up.
+        """
+        half = (0.2, 0.065, 0.0185)
+        for reduce_contacts in (False, True):
+            for depth in (0.005, 0.015, 0.019, 0.03, 0.05):
+                with self.subTest(reduce_contacts=reduce_contacts, depth=depth):
+                    builder = newton.ModelBuilder()
+                    self._add_flat_heightfield(builder)
+
+                    body = builder.add_body(
+                        xform=wp.transform((0.0, 0.0, half[2] - depth), wp.quat_identity())
+                    )
+                    builder.add_shape_box(body=body, hx=half[0], hy=half[1], hz=half[2])
+
+                    model = builder.finalize()
+                    distance, normal, _point0 = self._get_contact_kinematics(
+                        model, model.state(), reduce_contacts=reduce_contacts
+                    )
+
+                    self.assertGreater(len(distance), 0, "no contacts between box and heightfield")
+                    # The box cannot overlap the surface by more than its own extent, whatever
+                    # pose it is in, so anything deeper came from the extrusion.
+                    self.assertGreater(
+                        float(np.min(distance)),
+                        -max(half),
+                        f"a contact resolved against the prism interior: {np.min(distance)}",
+                    )
+                    self.assertGreater(
+                        float(np.min(normal[:, 2])),
+                        -0.5,
+                        f"a contact normal points into the terrain: {normal[int(np.argmin(normal[:, 2]))]}",
+                    )
+
+                    deepest = int(np.argmin(distance))
+                    self.assertAlmostEqual(float(distance[deepest]), -depth, places=4)
+                    self.assertGreater(float(normal[deepest][2]), 0.999)
+
     def test_heightfield_sphere_penetration_uses_surface(self):
         """Verify sphere penetration remains surface-normal below its center."""
         radius = 0.02
