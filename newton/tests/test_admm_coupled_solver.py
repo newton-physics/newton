@@ -141,7 +141,7 @@ def _make_solver(
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(model=v, iterations=5),
+                solver=lambda v: SolverVBD(model=v, iterations=5, rigid_compliant_alm=True),
                 bodies=[int(i) for i in vbd_ids.numpy()],
                 particles=list(range(model.particle_count)),
             ),
@@ -820,7 +820,7 @@ class TestAdmmGraphCapture(unittest.TestCase):
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=1),
+                    solver=lambda v: SolverVBD(model=v, iterations=1, rigid_compliant_alm=True),
                     bodies=[body_b],
                 ),
             ],

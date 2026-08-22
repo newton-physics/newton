@@ -8,7 +8,7 @@
 # Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
 # The first segment of each cable continuously spins, propagating twist along the cable.
 # The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
-# is transported through cable joints and across bends.
+# is transported through rod joints and across bends.
 #
 # Run interactively:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_twist
@@ -109,7 +109,7 @@ class Example:
             z = 0.0
             points.append(pos + wp.vec3(x, y, z))
 
-        edge_q = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=float(twisting_angle))
+        edge_q = newton.utils.rod_parallel_transport_quaternions(points, twist_total=float(twisting_angle))
         return points, edge_q
 
     def __init__(self, viewer, args):
@@ -144,9 +144,9 @@ class Example:
         builder = newton.ModelBuilder()
 
         # Set default material properties before adding any shapes
-        builder.default_shape_cfg.ke = 1.0e4  # Contact stiffness
+        builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
         builder.default_shape_cfg.kd = 0.0
-        builder.default_shape_cfg.mu = 1.0e0  # Friction coefficient
+        builder.default_shape_cfg.mu = 5.0e-1  # Friction coefficient
 
         kinematic_body_indices = []
         self.cable_bodies_list = []
@@ -207,9 +207,12 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
-        # Use full hard-contact correction (contact alpha 0.0) for stronger repulsion with low iterations.
         self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_avbd_contact_alpha=0.0)
+        self.solver = newton.solvers.SolverVBD(
+            self.model,
+            iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
