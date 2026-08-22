@@ -964,7 +964,7 @@ def apply_joint_forces(
     type = joint_type[tid]
     if not joint_enabled[tid]:
         return
-    if type == JointType.FIXED or type == JointType.ROD:
+    if type == JointType.FIXED:
         return
 
     # rigid body indices of the child and parent
@@ -1003,17 +1003,17 @@ def apply_joint_forces(
     t_total = wp.vec3()
     f_total = wp.vec3()
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         f_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
         t_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
-        # Interpret free-joint forces as spatial wrench at the COM (same as body_f).
+        # Interpret six-DoF joint forces as a spatial wrench at the COM (same as body_f).
         # Avoid adding a moment arm that would introduce torque for pure forces.
         wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total))
         if id_p >= 0:
             wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total))
         # Record the contribution to the inbound joint wrench (used to populate
-        # ``State.body_parent_f``).  For FREE joints this is a diagnostic only;
-        # for DISTANCE joints the constraint solver adds its own contribution.
+        # ``State.body_parent_f``). For FREE and ROD joints this is diagnostic
+        # only; for DISTANCE joints the constraint solver adds its contribution.
         # Convention: positive = wrench transmitted parent->child at child COM.
         if joint_impulse:
             wp.atomic_add(joint_impulse, tid, wp.spatial_vector(f_total, t_total) * dt)
@@ -1226,7 +1226,7 @@ def solve_simple_body_joints(
 
     if not joint_enabled[tid]:
         return
-    if type == JointType.FREE:
+    if type == JointType.FREE or type == JointType.ROD:
         return
     if type == JointType.DISTANCE:
         return
@@ -1546,7 +1546,7 @@ def solve_body_joints(
 
     if not joint_enabled[tid]:
         return
-    if type == JointType.FREE:
+    if type == JointType.FREE or type == JointType.ROD:
         return
     # if type == JointType.FIXED:
     #     return

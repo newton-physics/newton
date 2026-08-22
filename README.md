@@ -318,6 +318,18 @@ If you run the examples from a source checkout with uv, use
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_initial_rest_pose.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_initial_rest_pose.jpg" alt="Cable Initial and Rest Poses">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_initial_rest_pose</code>
+    </td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Cloth Examples</h3></td>
   </tr>
   <tr>
