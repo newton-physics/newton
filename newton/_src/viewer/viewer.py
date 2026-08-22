@@ -1728,6 +1728,7 @@ class ViewerBase(ABC):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1752,6 +1753,10 @@ class ViewerBase(ABC):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            colors: Optional per-vertex RGB colors with values in ``[0, 1]``.
+                Takes precedence over ``color``. Valid textures with ``uvs``
+                take precedence over ``colors``; handling of invalid or
+                unsupported texture inputs is backend-specific.
         """
         pass
 
@@ -2952,18 +2957,23 @@ class ViewerBase(ABC):
     def _log_triangles(self, state: newton.State):
         if self.model.tri_count:
             points = self._apply_layer_transform_to_points(state.particle_q)
+            appearance = {}
+            if self.model.particle_display_color is not None:
+                appearance["colors"] = self.model.particle_display_color
             self.log_mesh(
                 self._qualify("/model/triangles"),
                 points,
                 self.model.tri_indices.flatten(),
                 hidden=not self.show_triangles or self._layer_force_hidden(),
                 backface_culling=False,
+                **appearance,
             )
 
     def _log_particles(self, state: newton.State):
         if self.model.particle_count:
             points = state.particle_q
             radii = self.model.particle_radius
+            colors = self.model.particle_display_color
 
             # Filter out inactive particles so emitters/culled particles are not rendered.
             # Uses Warp stream compaction to stay on device and avoid GPU→CPU→GPU roundtrips.
@@ -2991,13 +3001,15 @@ class ViewerBase(ABC):
                         radii_out = wp.empty(active_count, dtype=wp.float32, device=self.device)
                         wp.launch(compact, dim=n, inputs=[radii, mask, offsets, radii_out], device=self.device)
                         radii = radii_out
+                    if colors is not None:
+                        colors_out = wp.empty(active_count, dtype=wp.vec3, device=self.device)
+                        wp.launch(compact, dim=n, inputs=[colors, mask, offsets, colors_out], device=self.device)
+                        colors = colors_out
 
             points = self._apply_layer_transform_to_points(points)
 
-            if self.model_changed:
+            if colors is None and self.model_changed:
                 colors = wp.full(shape=len(points), value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
-            else:
-                colors = None
 
             self.log_points(
                 name=self._qualify("/model/particles"),

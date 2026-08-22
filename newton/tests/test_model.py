@@ -4008,7 +4008,14 @@ class TestModelValidation(unittest.TestCase):
         self.assertEqual(len(builder.particle_flags), 3)
 
     def test_finalize_rejects_mismatched_particle_arrays(self):
-        for name in ("particle_qd", "particle_mass", "particle_radius", "particle_flags", "particle_world"):
+        for name in (
+            "particle_qd",
+            "particle_display_color",
+            "particle_mass",
+            "particle_radius",
+            "particle_flags",
+            "particle_world",
+        ):
             with self.subTest(name=name):
                 builder = ModelBuilder()
                 builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0)

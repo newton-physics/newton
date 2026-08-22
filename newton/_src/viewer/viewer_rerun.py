@@ -258,6 +258,7 @@ class ViewerRerun(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Log a mesh to rerun for visualization.
@@ -277,6 +278,10 @@ class ViewerRerun(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            colors: Optional per-vertex RGB colors. Takes precedence over
+                ``color``. Valid textures with ``uvs`` take precedence over
+                ``colors``; handling of invalid or unsupported texture inputs
+                is backend-specific.
         """
         name = self._qualify(name)
 
@@ -285,6 +290,7 @@ class ViewerRerun(ViewerBase):
             assert isinstance(indices, wp.array)
             assert normals is None or isinstance(normals, wp.array)
             assert uvs is None or isinstance(uvs, wp.array)
+            assert colors is None or isinstance(colors, wp.array)
 
         # Convert to numpy arrays
         points_np = self._to_numpy(points).astype(np.float32)
@@ -306,7 +312,11 @@ class ViewerRerun(ViewerBase):
             normals_np = self._to_numpy(normals)
 
         uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
+        colors_np = self._to_numpy(colors).astype(np.float32) if colors is not None else None
         texture_image = self._prepare_texture(texture)
+
+        if colors_np is not None and len(colors_np) != len(points_np):
+            raise ValueError("Number of colors must match number of points")
 
         if uvs_np is not None and len(uvs_np) != len(points_np):
             uvs_np = None
@@ -322,6 +332,13 @@ class ViewerRerun(ViewerBase):
         if texture_image is not None and self._mesh3d_supports("albedo_texture_buffer"):
             texture_buffer, texture_format = self._build_texture_components(texture_image)
 
+        uses_texture = (texture_buffer is not None and texture_format is not None) or (
+            texture_image is not None and self._mesh3d_supports("albedo_texture")
+        )
+        vertex_colors = None
+        if colors_np is not None and not uses_texture:
+            vertex_colors = np.clip(np.rint(colors_np * 255.0), 0, 255).astype(np.uint8)
+
         # make sure deformable mesh updates are not kept in the viewer if desired
         static = name in self._meshes and not self.keep_historical_data
 
@@ -334,6 +351,7 @@ class ViewerRerun(ViewerBase):
             "texture_image": texture_image,
             "texture_buffer": texture_buffer,
             "texture_format": texture_format,
+            "vertex_colors": vertex_colors,
         }
 
         if hidden:
@@ -346,6 +364,8 @@ class ViewerRerun(ViewerBase):
         }
         if uvs_np is not None and self._mesh3d_supports("vertex_texcoords"):
             mesh_kwargs["vertex_texcoords"] = uvs_np
+        if vertex_colors is not None:
+            mesh_kwargs["vertex_colors"] = vertex_colors
         if texture_buffer is not None and texture_format is not None:
             mesh_kwargs["albedo_texture_buffer"] = texture_buffer
             mesh_kwargs["albedo_texture_format"] = texture_format
@@ -402,8 +422,8 @@ class ViewerRerun(ViewerBase):
 
             # Handle colors - ReRun doesn't support per-instance colors
             # so we just use the first instance's color for all instances
-            vertex_colors = None
-            if colors is not None and not has_texture:
+            vertex_colors = mesh_data.get("vertex_colors")
+            if vertex_colors is None and colors is not None and not has_texture:
                 colors_np = self._to_numpy(colors).astype(np.float32)
                 # Take the first instance's color and apply to all vertices
                 first_color = colors_np[0]

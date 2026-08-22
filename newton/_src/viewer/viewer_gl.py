@@ -871,6 +871,7 @@ class ViewerGL(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Log a mesh for rendering.
@@ -890,11 +891,16 @@ class ViewerGL(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            colors: Optional per-vertex RGB colors. Takes precedence over
+                ``color``. Valid textures with ``uvs`` take precedence over
+                ``colors``; handling of invalid or unsupported texture inputs
+                is backend-specific.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
         assert uvs is None or isinstance(uvs, wp.array)
+        assert colors is None or isinstance(colors, wp.array)
 
         # Route user-supplied names through the active layer (idempotent).
         name = self._qualify(name)
@@ -904,12 +910,14 @@ class ViewerGL(ViewerBase):
                 len(points), len(indices), self.device, hidden=hidden, backface_culling=backface_culling
             )
 
-        self.objects[name].update(points, indices, normals, uvs, texture)
+        vertex_colors = colors if texture is None or uvs is None else None
+        self.objects[name].update(points, indices, normals, uvs, texture, vertex_colors)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 
         if color is not None:
-            self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
+            self.objects[name].base_color = (float(color[0]), float(color[1]), float(color[2]))
+        self.objects[name].color = (1.0, 1.0, 1.0) if vertex_colors is not None else self.objects[name].base_color
 
         if roughness is not None or metallic is not None:
             r, m, c, t = self.objects[name].material

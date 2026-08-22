@@ -26,6 +26,7 @@ class RenderContext:
 
         num_gaussians: int = 0
         has_particles: bool = False
+        has_particle_display_color: bool = False
         render_color: bool = False
         render_depth: bool = False
         render_forward_depth: bool = False
@@ -77,6 +78,7 @@ class RenderContext:
         self.texture_data: wp.array[TextureData] | None = None
 
         self.particle_world: wp.array[wp.int32] | None = None
+        self.particle_display_color: wp.array[wp.vec3f] | None = None
 
         self.lights_active: wp.array[wp.bool] | None = None
         self.lights_type: wp.array[wp.int32] | None = None
@@ -110,6 +112,8 @@ class RenderContext:
         self.__topology_particle_mask = None
         self.__has_particles = False
         self.state.has_particles = False
+        self.particle_display_color = None
+        self.state.has_particle_display_color = False
 
         self.shape_count_total = model.shape_count
         self.shape_world_index = model.shape_world
@@ -133,6 +137,19 @@ class RenderContext:
         if model.particle_q is not None and model.particle_q.shape[0]:
             self.__has_particles = True
             self.state.has_particles = True
+            if model.particle_display_color is not None:
+                if model.particle_display_color.shape[0] != model.particle_q.shape[0]:
+                    raise ValueError(
+                        "model.particle_display_color length must match model.particle_q: "
+                        f"got {model.particle_display_color.shape[0]} and {model.particle_q.shape[0]}"
+                    )
+                if model.particle_display_color.device != model.particle_q.device:
+                    raise ValueError(
+                        "model.particle_display_color and model.particle_q must be on the same device: "
+                        f"got {model.particle_display_color.device} and {model.particle_q.device}"
+                    )
+                self.particle_display_color = model.particle_display_color
+                self.state.has_particle_display_color = True
             topology_particle_mask = np.zeros(model.particle_q.shape[0], dtype=bool)
 
             def mask_topology_particles(indices: wp.array[wp.int32] | None):
@@ -372,6 +389,7 @@ class RenderContext:
                     state.particle_q if has_particles else None,
                     model.particle_radius if has_particles else None,
                     self.__topology_particle_mask if has_particles else None,
+                    self.particle_display_color,
                     # Triangle Mesh
                     self.triangle_mesh.id if self.triangle_mesh is not None else 0,
                     self.triangle_mesh_group_roots,
