@@ -3336,6 +3336,12 @@ def parse_mjcf(
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
+            elif actuator_type == "damper":
+                kv = parse_float(merged_attrib, "kv", 1.0)
+                gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+
             elif actuator_type == "general":
                 gainprm_str = merged_attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
                 biasprm_str = merged_attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
@@ -3366,6 +3372,11 @@ def parse_mjcf(
             shortcut_type_defaults = {
                 "position": {"mujoco:actuator_biastype": 1},  # affine
                 "velocity": {"mujoco:actuator_biastype": 1},  # affine
+                "damper": {
+                    "mujoco:actuator_gaintype": 1,  # affine
+                    "mujoco:actuator_biastype": 0,  # none
+                    "mujoco:actuator_ctrllimited": 1,  # true
+                },
             }
             for key, value in shortcut_type_defaults.get(actuator_type, {}).items():
                 if key not in parsed_attrs:
