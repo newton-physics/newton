@@ -794,7 +794,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(b1 - b0, 3)
 
     def test_vendor_namespace_material_needs_resolver(self):
-        """Vendor-namespaced (omniphysics:) material is read only with a compat resolver.
+        """Read vendor-namespaced material only through a compatible resolver.
 
         The base parser targets the canonical ``physics:`` schema as written; the
         omniphysics fallback is opt-in via a schema resolver that declares it
@@ -824,12 +824,16 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         # With the PhysX resolver active, omniphysics:curvesThickness is honored (radius = thickness / 2).
         builder_compat = newton.ModelBuilder()
-        builder_compat.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
+        builder_compat.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverPhysx()],
+            use_registered_schema_fallbacks=True,
+        )
         self.assertAlmostEqual(cable_radius(builder_compat), 0.5 * 0.02, places=5)
         self.assertNotAlmostEqual(default_radius, 0.5 * 0.02, places=5)
 
     def test_deformable_ignores_generic_physx_namespaces(self):
-        """Deformable material reads only deformable vendor namespaces, not generic PhysX ones."""
+        """Ignore generic PhysX namespaces when reading deformable material."""
 
         def cable_radius(namespace):
             stage = _deformable_stage(up_axis="y")
@@ -837,7 +841,11 @@ class TestUSDDeformableCable(unittest.TestCase):
             curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
             _bind_deformable_material(stage, curves.GetPrim(), "/World/Mat", namespace=namespace, curvesThickness=0.02)
             builder = newton.ModelBuilder()
-            builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
+            builder.add_usd(
+                stage,
+                schema_resolvers=[SchemaResolverPhysx()],
+                use_registered_schema_fallbacks=True,
+            )
             return builder.shape_scale[builder.body_shapes[0][0]][0]
 
         # omniphysics is a deformable vendor namespace -> thickness honored (no fallback warning).

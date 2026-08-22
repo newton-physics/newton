@@ -133,6 +133,83 @@ class TestApi(unittest.TestCase):
 
         _check_builder_method_matches_importer_function_signature(parse_usd, ModelBuilder.add_usd)
 
+    def test_usd_import_signatures_preserve_public_defaults(self):
+        """Expose ordinary typed defaults for public USD importer arguments."""
+        from newton import ModelBuilder  # noqa: PLC0415
+        from newton._src.utils.import_usd import parse_usd  # noqa: PLC0415
+
+        expected_defaults = {
+            "joint_drive_gains_scaling": 1.0,
+            "collapse_fixed_joints": False,
+            "enable_self_collisions": True,
+            "mesh_maxhullvert": None,
+        }
+
+        for function in (parse_usd, ModelBuilder.add_usd):
+            with self.subTest(function=function.__qualname__):
+                parameters = inspect.signature(function).parameters
+                for name, expected in expected_defaults.items():
+                    self.assertEqual(parameters[name].default, expected)
+                    self.assertIs(type(parameters[name].default), type(expected))
+
+    def test_usd_import_argument_roles_cover_public_signature(self):
+        """Classify every keyword-only USD importer argument exactly once."""
+        from newton import ModelBuilder  # noqa: PLC0415
+
+        argument_roles = {
+            "resolved_option": {
+                "joint_drive_gains_scaling",
+                "collapse_fixed_joints",
+                "enable_self_collisions",
+                "mesh_maxhullvert",
+            },
+            "structural": {
+                "xform",
+                "floating",
+                "base_joint",
+                "parent_body",
+                "override_root_xform",
+            },
+            "selection": {
+                "only_load_enabled_rigid_bodies",
+                "only_load_enabled_joints",
+                "ignore_paths",
+                "root_path",
+                "skip_mesh_approximation",
+                "load_sites",
+                "load_visual_shapes",
+                "load_static_visual_shapes",
+                "hide_collision_shapes",
+                "force_show_colliders",
+                "parse_mujoco_options",
+                "convert_mjc_equality_constraints",
+            },
+            "interpretation": {
+                "apply_up_axis_from_stage",
+                "joint_ordering",
+                "bodies_follow_joint_ordering",
+                "force_position_velocity_actuation",
+                "legacy_margin_gap",
+            },
+            "policy": {
+                "schema_resolvers",
+                "use_registered_schema_fallbacks",
+            },
+            "diagnostic_or_output": {
+                "verbose",
+                "return_deformable_results",
+            },
+        }
+        keyword_only = {
+            name
+            for name, parameter in inspect.signature(ModelBuilder.add_usd).parameters.items()
+            if parameter.kind == inspect.Parameter.KEYWORD_ONLY
+        }
+        classified = set().union(*argument_roles.values())
+
+        self.assertEqual(sum(map(len, argument_roles.values())), len(classified), "argument roles overlap")
+        self.assertEqual(classified, keyword_only)
+
     def test_tetmesh_create_from_usd_docstring_parity(self):
         from newton import TetMesh  # noqa: PLC0415
         from newton._src.usd.utils import get_tetmesh  # noqa: PLC0415
