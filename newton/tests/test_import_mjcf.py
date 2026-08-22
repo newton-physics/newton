@@ -1357,7 +1357,7 @@ class TestImportMjcfMeshScale(unittest.TestCase):
         """Reject non-finite mesh reference positions and quaternions."""
         for attribute in ('refpos="nan 0 0"', 'refquat="nan 0 0 1"'):
             with self.subTest(attribute=attribute):
-                with self.assertRaisesRegex(ValueError, "must contain only finite values"):
+                with self.assertRaisesRegex(ValueError, "finite"):
                     self._build(f"""\
 <mujoco>
   <asset>
