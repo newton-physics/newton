@@ -1342,6 +1342,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 usd_value_transformer=cls._parse_jacobian,
             )
         )
+        for name in ("disableflags", "disableflags_authored", "enableflags", "enableflags_authored"):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency=AttributeFrequency.ONCE,
+                    assignment=AttributeAssignment.MODEL,
+                    dtype=wp.int32,
+                    default=0,
+                    namespace="mujoco",
+                )
+            )
         # endregion solver options
 
         # region pair attributes
@@ -3399,12 +3410,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         wind: tuple | None = None,
         magnetic: tuple | None = None,
         use_mujoco_cpu: bool = False,
-        enable_multiccd: bool = False,
+        enable_multiccd: bool | None = None,
         enable_sleeping: bool | None = None,
         nvmax: int | None = None,
         sleep_tolerance: float | None = None,
-        disable_contacts: bool = False,
-        disable_sensors: bool = False,
+        disable_contacts: bool | None = None,
+        disable_sensors: bool | None = None,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
@@ -3442,12 +3453,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             wind: Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
             magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
             use_mujoco_cpu: If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
-            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
+            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). If False, disable it. If None, use an imported MJCF option or disable it by default. Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
             enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, MuJoCo contact handling, and a non-RK4 integrator.
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
-            disable_contacts: If True, disable contact computation in MuJoCo.
-            disable_sensors: If True, disable sensor computation in MuJoCo.
+            disable_contacts: If True, disable contact computation in MuJoCo. If False, enable it. If None, use an imported MJCF option or enable it by default.
+            disable_sensors: If True, disable sensor computation in MuJoCo. If False, enable it. If None, use an imported MJCF option or enable it by default.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
@@ -3644,25 +3655,53 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Controls margin zeroing: when True, geom/pair margins on the MuJoCo
         model are kept at zero for NATIVECCD compatibility (#2106)."""
 
+        mujoco_attrs = getattr(model, "mujoco", None)
+
+        def get_imported_flag_mask(name: str) -> int:
+            attr = getattr(mujoco_attrs, name, None) if mujoco_attrs is not None else None
+            return int(np.ravel(attr.numpy())[0]) if attr is not None else 0
+
+        enableflags = get_imported_flag_mask("enableflags")
+        disableflags = get_imported_flag_mask("disableflags")
+        disableflags_authored = get_imported_flag_mask("disableflags_authored")
+
+        def resolve_disable_flag(bit: int, disabled: bool | None, *, default_disabled: bool) -> None:
+            nonlocal disableflags
+            if disabled is None and disableflags_authored & bit:
+                return
+            if default_disabled if disabled is None else disabled:
+                disableflags |= bit
+            else:
+                disableflags &= ~bit
+
+        multiccd_bit = int(mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+        contact_bit = int(mujoco.mjtDisableBit.mjDSBL_CONTACT)
+        sensor_bit = int(mujoco.mjtDisableBit.mjDSBL_SENSOR)
+        resolve_disable_flag(
+            multiccd_bit,
+            None if enable_multiccd is None else not enable_multiccd,
+            default_disabled=True,
+        )
+        resolve_disable_flag(contact_bit, disable_contacts, default_disabled=False)
+        resolve_disable_flag(sensor_bit, disable_sensors, default_disabled=False)
+
+        contacts_disabled = bool(disableflags & contact_bit)
+        multiccd_enabled = not bool(disableflags & multiccd_bit)
+
         # mujoco_warp.put_model() rejects non-zero margins on box-box pairs
         # (default NATIVECCD path) or any box/mesh pair when MULTICCD is enabled.
         # Skip the workaround entirely when no such geom types exist in the model.
         shape_types_arr = model.shape_type.numpy()
         has_box = bool(np.any(shape_types_arr == GeoType.BOX))
         has_mesh = bool(np.any((shape_types_arr == GeoType.MESH) | (shape_types_arr == GeoType.CONVEX_MESH)))
-        self._zero_margins_for_native_ccd = has_box or (enable_multiccd and has_mesh)
+        self._zero_margins_for_native_ccd = has_box or (multiccd_enabled and has_mesh)
         """True when the NATIVECCD/MULTICCD margin workaround applies (#2106)."""
 
-        enableflags = 0
-        disableflags = 0
+        sleep_bit = int(mujoco.mjtEnableBit.mjENBL_SLEEP)
         if enable_sleeping:
-            enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
-        if not enable_multiccd:
-            disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
-        if disable_contacts:
-            disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
-        if disable_sensors:
-            disableflags |= mujoco.mjtDisableBit.mjDSBL_SENSOR
+            enableflags |= sleep_bit
+        else:
+            enableflags &= ~sleep_bit
         self.use_mujoco_cpu = use_mujoco_cpu
         if use_mujoco_contacts or use_mujoco_cpu:
             mujoco_attrs_for_warn = getattr(model, "mujoco", None)
@@ -3725,7 +3764,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 model,
                 enableflags=enableflags,
                 disableflags=disableflags,
-                disable_contacts=disable_contacts,
+                disable_contacts=contacts_disabled,
                 separate_worlds=separate_worlds,
                 njmax=njmax,
                 nconmax=nconmax,
