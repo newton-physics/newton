@@ -2001,6 +2001,29 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="actuator_lengthrange",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="lengthrange",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_has_lengthrange",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                mjcf_attribute_name="lengthrange",
+                mjcf_value_transformer=parse_presence,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="actuator_gear",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
@@ -3138,6 +3161,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             mujoco_attrs.actuator_has_actrange.numpy() if hasattr(mujoco_attrs, "actuator_has_actrange") else None
         )
         actrange_arr = mujoco_attrs.actuator_actrange.numpy() if hasattr(mujoco_attrs, "actuator_actrange") else None
+        has_lengthrange_arr = (
+            mujoco_attrs.actuator_has_lengthrange.numpy() if hasattr(mujoco_attrs, "actuator_has_lengthrange") else None
+        )
+        lengthrange_arr = (
+            mujoco_attrs.actuator_lengthrange.numpy() if hasattr(mujoco_attrs, "actuator_lengthrange") else None
+        )
         actlimited_arr = (
             mujoco_attrs.actuator_actlimited.numpy() if hasattr(mujoco_attrs, "actuator_actlimited") else None
         )
@@ -3300,6 +3329,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 general_args["forcelimited"] = int(forcelimited_arr[mujoco_act_idx])
             if has_actrange_arr is not None and has_actrange_arr[mujoco_act_idx]:
                 general_args["actrange"] = tuple(actrange_arr[mujoco_act_idx])
+            if has_lengthrange_arr is not None and has_lengthrange_arr[mujoco_act_idx] and lengthrange_arr is not None:
+                general_args["lengthrange"] = tuple(lengthrange_arr[mujoco_act_idx])
             if actlimited_arr is not None:
                 general_args["actlimited"] = int(actlimited_arr[mujoco_act_idx])
             if hasattr(mujoco_attrs, "actuator_actearly"):
@@ -3321,8 +3352,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Detect position/velocity actuator shortcuts. Use set_to_position/
             # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
             # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
-            shortcut = None  # "position" or "velocity" if detected
-            shortcut_args: dict[str, float] = {}
+            shortcut = None  # Recognized MuJoCo shortcut type, if any
+            shortcut_args: dict[str, Any] = {}
+            if (
+                general_args.get("dyntype") == mujoco.mjtDyn.mjDYN_MUSCLE
+                and general_args.get("gaintype") == mujoco.mjtGain.mjGAIN_MUSCLE
+                and general_args.get("biastype") == mujoco.mjtBias.mjBIAS_MUSCLE
+            ):
+                dynprm = general_args["dynprm"]
+                gainprm = general_args["gainprm"]
+                shortcut = "muscle"
+                shortcut_args = {
+                    "timeconst": dynprm[:2],
+                    "tausmooth": dynprm[2],
+                    "range": gainprm[:2],
+                    "force": gainprm[2],
+                    "scale": gainprm[3],
+                    "lmin": gainprm[4],
+                    "lmax": gainprm[5],
+                    "vmax": gainprm[6],
+                    "fpmax": gainprm[7],
+                    "fvmax": gainprm[8],
+                }
+                for key in ("dynprm", "dyntype", "biasprm", "biastype", "gainprm", "gaintype"):
+                    general_args.pop(key, None)
             if general_args.get("biastype") == mujoco.mjtBias.mjBIAS_AFFINE and general_args.get("gainprm", [0])[0] > 0:
                 kp = general_args["gainprm"][0]
                 bp = general_args.get("biasprm", [0, 0, 0])
@@ -3363,6 +3416,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 act.set_to_position(**shortcut_args)
             elif shortcut == "velocity":
                 act.set_to_velocity(**shortcut_args)
+            elif shortcut == "muscle":
+                act.set_to_muscle(**shortcut_args)
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT

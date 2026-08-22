@@ -927,6 +927,26 @@ MJCF_SITE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+MJCF_MUSCLE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_muscle_actuator">
+    <option gravity="0 0 0" timestep="0.01"/>
+    <default>
+        <muscle timeconst="0.02 0.05" range="0.8 1.2"
+                force="5" scale="250" lmin="0.6" lmax="1.7"
+                vmax="1.8" fpmax="1.4" fvmax="1.5"/>
+    </default>
+    <worldbody>
+        <body name="body">
+            <joint name="slide" type="slide" axis="1 0 0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <muscle name="drive" joint="slide" lengthrange="0.5 1.5"/>
+    </actuator>
+</mujoco>
+"""
+
 MJCF_JOINT_IN_PARENT_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_joint_in_parent_actuator">
     <option gravity="0 0 0"/>
@@ -975,6 +995,83 @@ MJCF_SITE_ACTUATOR_WITH_REFSITE = """<?xml version="1.0" encoding="utf-8"?>
     </actuator>
 </mujoco>
 """
+
+
+class TestMuJoCoMuscleActuators(unittest.TestCase):
+    """Tests for muscle actuator shortcuts."""
+
+    def test_muscle_actuator_parsed_from_mjcf(self):
+        """Expand inherited muscle parameters into actuator metadata."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_MUSCLE_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+        np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [4])
+        np.testing.assert_array_equal(model.mujoco.actuator_gaintype.numpy(), [2])
+        np.testing.assert_array_equal(model.mujoco.actuator_biastype.numpy(), [2])
+        np.testing.assert_allclose(model.mujoco.actuator_dynprm.numpy()[0, :3], [0.02, 0.05, 0.0])
+        expected_gain = [0.8, 1.2, 5.0, 250.0, 0.6, 1.7, 1.8, 1.4, 1.5]
+        np.testing.assert_allclose(model.mujoco.actuator_gainprm.numpy()[0, :9], expected_gain)
+        np.testing.assert_allclose(model.mujoco.actuator_biasprm.numpy()[0, :9], expected_gain)
+        np.testing.assert_allclose(model.mujoco.actuator_lengthrange.numpy(), [[0.5, 1.5]])
+
+    def test_muscle_actuator_matches_native_mujoco(self):
+        """Match native MuJoCo muscle activation and force."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(MJCF_MUSCLE_ACTUATOR)
+        native_data = mujoco.MjData(native_model)
+
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_MUSCLE_ACTUATOR, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.nu, 1)
+        self.assertEqual(solver.mj_model.na, 1)
+        np.testing.assert_allclose(solver.mj_model.actuator_dynprm, native_model.actuator_dynprm)
+        np.testing.assert_allclose(solver.mj_model.actuator_gainprm, native_model.actuator_gainprm)
+        np.testing.assert_allclose(solver.mj_model.actuator_biasprm, native_model.actuator_biasprm)
+
+        solver.mj_model.opt.timestep = native_model.opt.timestep
+        solver.mj_model.opt.integrator = native_model.opt.integrator
+        solver.mj_model.opt.gravity[:] = native_model.opt.gravity
+        native_data.qpos[:] = 1.0
+        solver.mj_data.qpos[:] = 1.0
+        native_data.ctrl[:] = 0.5
+        solver.mj_data.ctrl[:] = 0.5
+        for _ in range(5):
+            mujoco.mj_step(native_model, native_data)
+            mujoco.mj_step(solver.mj_model, solver.mj_data)
+
+        np.testing.assert_allclose(solver.mj_data.act, native_data.act, atol=1.0e-8)
+        np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, atol=1.0e-7)
+        np.testing.assert_allclose(solver.mj_data.qpos, native_data.qpos, atol=1.0e-7)
+
+    def test_muscle_actuator_preserves_native_defaults(self):
+        """Match native MuJoCo default muscle parameters."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body>
+            <joint name="slide" type="slide"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <muscle joint="slide" lengthrange="0.5 1.5"/>
+    </actuator>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+        builder = ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        np.testing.assert_allclose(model.mujoco.actuator_dynprm.numpy(), native_model.actuator_dynprm)
+        np.testing.assert_allclose(model.mujoco.actuator_gainprm.numpy(), native_model.actuator_gainprm)
+        np.testing.assert_allclose(model.mujoco.actuator_biasprm.numpy(), native_model.actuator_biasprm)
 
 
 class TestMuJoCoJointInParentActuators(unittest.TestCase):
