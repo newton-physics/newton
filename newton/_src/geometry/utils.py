@@ -702,7 +702,8 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
 
     Args:
         vertices: A numpy array of shape (N, 3) containing the vertex positions.
-        maxhullvert: The maximum number of vertices for the convex hull. If 0, no limit is applied.
+        maxhullvert: The maximum number of vertices for the convex hull. Non-positive values disable the limit;
+            positive values must be at least 4.
         eps: Relative threshold used to classify a point cloud as coincident,
             collinear, or coplanar. A singular value is considered zero if it is
             smaller than ``eps`` times the largest singular value (or ``eps``
@@ -715,14 +716,15 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
         - faces: A numpy array of shape (K, 3) containing the vertex indices of the triangular faces of the convex hull.
 
     Raises:
-        ValueError: If ``vertices`` is empty. Empty input has no geometric
-            interpretation; the caller must decide whether to skip the hull
-            computation or supply a fallback rather than having this function
-            fabricate a point at the origin.
+        ValueError: If ``vertices`` is empty or ``maxhullvert`` is positive and
+            less than 4. Empty input has no geometric interpretation; the caller
+            must decide whether to skip the hull computation or supply a fallback
+            rather than having this function fabricate a point at the origin.
 
     Guarantees:
-        - Never raises on non-empty degenerate input; always returns a
-          well-formed ``(verts, faces)`` pair with ``M >= 3`` and ``K >= 2``.
+        - With a valid ``maxhullvert``, never raises on non-empty degenerate
+          input; always returns a well-formed ``(verts, faces)`` pair with
+          ``M >= 3`` and ``K >= 2``.
         - ``verts`` is always a subset of the true convex hull's vertex set.
         - For full-rank (rank-3) inputs, the output is a closed 3D convex hull
           with outward-facing triangle windings, unchanged from the pre-degeneracy
@@ -777,6 +779,8 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
     # the caller decide whether to skip or supply a fallback.
     if vertices.shape[0] == 0:
         raise ValueError("remesh_convex_hull requires at least one input vertex; got an empty array.")
+    if 0 < maxhullvert < 4:
+        raise ValueError(f"maxhullvert must be non-positive or at least 4; got {maxhullvert}.")
 
     def _warn_degenerate(rank: str) -> None:
         # Warn so callers (Mesh.convex_hull, PointCloud.as_mesh, remesh, ...)
@@ -854,9 +858,9 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
     # General (full 3D) case.
     qhull_options = "Qt"
     if maxhullvert > 0:
-        # qhull "TA" actually means "number of vertices added after the initial simplex"
-        # from mujoco's user_mesh.cc
-        qhull_options += f" TA{maxhullvert - 4}"
+        # MuJoCo pairs furthest-point processing (Q9) with a cap on vertices
+        # added after Qhull's initial simplex (TA).
+        qhull_options += f" Q9 TA{maxhullvert - 4}"
     try:
         hull = ConvexHull(vertices, qhull_options=qhull_options)
     except QhullError:
