@@ -6522,6 +6522,8 @@ def update_duals_body_body_contacts(
 @wp.kernel
 def update_duals_body_particle_contacts(
     body_particle_contact_count: wp.array[int],
+    body_particle_contact_max: int,
+    contact_stride: int,
     soft_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
@@ -6545,48 +6547,48 @@ def update_duals_body_particle_contacts(
     2-3 soft particles -- matching _eval_soft_ef_contact.
     """
     idx = wp.tid()
-    if idx >= body_particle_contact_count[0]:
-        return
+    count = min(body_particle_contact_max, body_particle_contact_count[0])
+    while idx < count:
+        corners = soft_contact_indices[idx]
+        shape_idx = body_particle_contact_shape[idx]
+        body_idx = shape_body[shape_idx] if shape_idx >= 0 else -1
 
-    corners = soft_contact_indices[idx]
-    shape_idx = body_particle_contact_shape[idx]
-    body_idx = shape_body[shape_idx] if shape_idx >= 0 else -1
+        stiffness = body_particle_contact_material_ke[idx]
 
-    stiffness = body_particle_contact_material_ke[idx]
+        X_wb = wp.transform_identity()
+        if body_idx >= 0:
+            X_wb = body_q[body_idx]
 
-    X_wb = wp.transform_identity()
-    if body_idx >= 0:
-        X_wb = body_q[body_idx]
+        cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[idx])
+        margin = shape_margin[shape_idx] if shape_idx >= 0 and shape_margin.shape[0] > 0 else 0.0
+        n = body_particle_contact_normal[idx]
 
-    cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[idx])
-    margin = shape_margin[shape_idx] if shape_idx >= 0 and shape_margin.shape[0] > 0 else 0.0
-    n = body_particle_contact_normal[idx]
+        if corners[1] < 0:
+            # Particle contact (p, -1, -1).
+            p = corners[0]
+            contact_pos = particle_q[p]
+            radius = particle_radius[p]
+        else:
+            # Edge/face: barycentric point + max radius over the record's valid corners.
+            bary = soft_contact_barycentric[idx]
+            v0 = corners[0]
+            c1 = corners[1]
+            c2 = corners[2]
+            contact_pos = bary[0] * particle_q[v0]
+            radius = particle_radius[v0]
+            if c1 >= 0:
+                contact_pos += bary[1] * particle_q[c1]
+                radius = wp.max(radius, particle_radius[c1])
+            if c2 >= 0:
+                contact_pos += bary[2] * particle_q[c2]
+                radius = wp.max(radius, particle_radius[c2])
 
-    if corners[1] < 0:
-        # Particle contact (p, -1, -1).
-        p = corners[0]
-        contact_pos = particle_q[p]
-        radius = particle_radius[p]
-    else:
-        # Edge/face: barycentric point + max radius over the record's valid corners.
-        bary = soft_contact_barycentric[idx]
-        v0 = corners[0]
-        c1 = corners[1]
-        c2 = corners[2]
-        contact_pos = bary[0] * particle_q[v0]
-        radius = particle_radius[v0]
-        if c1 >= 0:
-            contact_pos += bary[1] * particle_q[c1]
-            radius = wp.max(radius, particle_radius[c1])
-        if c2 >= 0:
-            contact_pos += bary[2] * particle_q[c2]
-            radius = wp.max(radius, particle_radius[c2])
+        penetration = -(wp.dot(n, contact_pos - cp_world) - radius - margin)
+        penetration = wp.max(0.0, penetration)
 
-    penetration = -(wp.dot(n, contact_pos - cp_world) - radius - margin)
-    penetration = wp.max(0.0, penetration)
-
-    k = body_particle_contact_penalty_k[idx]
-    body_particle_contact_penalty_k[idx] = wp.min(k + beta * penetration, stiffness)
+        k = body_particle_contact_penalty_k[idx]
+        body_particle_contact_penalty_k[idx] = wp.min(k + beta * penetration, stiffness)
+        idx += contact_stride
 
 
 # -----------------------------
