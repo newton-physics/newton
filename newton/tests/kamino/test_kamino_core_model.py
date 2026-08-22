@@ -1216,6 +1216,10 @@ class TestModelConversions(unittest.TestCase):
         self.assertEqual(state_newton.joint_q_prev.size, model_newton.joint_coord_count)
         self.assertIsNotNone(state_newton.joint_lambdas)
         self.assertEqual(state_newton.joint_lambdas.size, model_newton.joint_constraint_count)
+        self.assertEqual(
+            model_newton.joint_constraint_count,
+            model_kamino_converted.size.sum_of_num_kinematic_joint_cts,
+        )
 
         # Create a Kamino state container
         state_kamino: StateKamino = model_kamino.state()
@@ -1236,7 +1240,8 @@ class TestModelConversions(unittest.TestCase):
         self.assertIs(state_kamino_converted.q_j, state_newton.joint_q)
         self.assertIs(state_kamino_converted.dq_j, state_newton.joint_qd)
         self.assertIs(state_kamino_converted.q_j_p, state_newton.joint_q_prev)
-        self.assertIs(state_kamino_converted.lambda_j, state_newton.joint_lambdas)
+        self.assertIs(state_kamino_converted.lambda_kin_j, state_newton.joint_lambdas)
+        self.assertIsNot(state_kamino_converted.lambda_dyn_j, state_newton.joint_lambdas)
         # TODO: re-enable the check below once the free-joint handling is fixed in Newton
         # test_util_checks.assert_state_equal(self, state_kamino_converted, state_kamino)
 
@@ -1252,7 +1257,7 @@ class TestModelConversions(unittest.TestCase):
         self.assertIs(state_newton_converted.joint_q, state_kamino_converted.q_j)
         self.assertIs(state_newton_converted.joint_qd, state_kamino_converted.dq_j)
         self.assertIs(state_newton_converted.joint_q_prev, state_kamino_converted.q_j_p)
-        self.assertIs(state_newton_converted.joint_lambdas, state_kamino_converted.lambda_j)
+        self.assertIs(state_newton_converted.joint_lambdas, state_kamino_converted.lambda_kin_j)
 
     def test_40_control_conversions(self):
         """

@@ -14,6 +14,7 @@ import warp as wp
 from .....geometry import ShapeFlags
 from .....sim.model import Model
 from ....coupled.model_view import ModelView
+from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
     convert_body_origin_to_com,
@@ -70,6 +71,7 @@ class StructuralUpdateViolation(IntEnum):
     NONORTHONORMAL_AXES = 4
     GIMBAL_HANDEDNESS = 5
     MASSLESS = 6
+    FRICTION_CTS = 7
 
 
 ###
@@ -104,6 +106,19 @@ def joint_requires_dynamic_constraints(
     for dof in range(dof_start, dof_end):
         dynamic = dynamic or (armature[dof] > 0.0 or damping[dof] > 0.0 or target_ke[dof] > 0.0 or target_kd[dof] > 0.0)
     return dynamic
+
+
+@wp.func
+def joint_requires_friction_constraints(
+    dof_start: int,
+    dof_end: int,
+    friction: wp.array[wp.float32],
+) -> bool:
+    """Return whether any DoF has positive Coulomb friction."""
+    frictional = bool(False)
+    for dof in range(dof_start, dof_end):
+        frictional = frictional or friction[dof] > 0.0
+    return frictional
 
 
 @wp.kernel
@@ -220,7 +235,10 @@ def validate_joint_dof_updates_kernel(
     joint_damping: wp.array[wp.float32],
     joint_target_ke: wp.array[wp.float32],
     joint_target_kd: wp.array[wp.float32],
+    joint_friction: wp.array[wp.float32],
+    joint_dof_type: wp.array[wp.int32],
     num_dynamic_cts: wp.array[wp.int32],
+    num_friction_cts: wp.array[wp.int32],
     joint_limit_lower: wp.array[wp.float32],
     joint_limit_upper: wp.array[wp.float32],
     built_limit_finite: wp.array[wp.int32],
@@ -243,6 +261,13 @@ def validate_joint_dof_updates_kernel(
             joint_target_kd,
         ) != (num_dynamic_cts[tid] > 0):
             wp.atomic_min(violations, StructuralUpdateViolation.DYNAMIC_CTS, tid)
+        frictional = joint_dof_type[tid] != JointDoFType.FREE and joint_requires_friction_constraints(
+            dof_start, dof_end, joint_friction
+        )
+        # Existing rows remain valid at zero bound; only adding friction requires
+        # rows that were not allocated when the model was built.
+        if frictional and num_friction_cts[tid] == 0:
+            wp.atomic_min(violations, StructuralUpdateViolation.FRICTION_CTS, tid)
 
     if tid < dof_count:
         current_finite = joint_limit_lower[tid] > JOINT_QMIN or joint_limit_upper[tid] < JOINT_QMAX
@@ -422,6 +447,7 @@ def joint_conversion_kernel(
     model_joint_damping: wp.array[wp.float32],
     model_joint_target_ke: wp.array[wp.float32],
     model_joint_target_kd: wp.array[wp.float32],
+    model_joint_friction: wp.array[wp.float32],
     joint_limit_lower: wp.array[wp.float32],
     joint_limit_upper: wp.array[wp.float32],
     # Outputs:
@@ -430,9 +456,11 @@ def joint_conversion_kernel(
     joint_act_type: wp.array[wp.int32],
     joint_num_coords: wp.array[wp.int32],
     joint_num_dofs: wp.array[wp.int32],
-    joint_num_cts: wp.array[wp.int32],
+    joint_num_bilateral_cts: wp.array[wp.int32],
     joint_num_dynamic_cts: wp.array[wp.int32],
     joint_num_kinematic_cts: wp.array[wp.int32],
+    joint_num_bounded_cts: wp.array[wp.int32],
+    joint_num_friction_cts: wp.array[wp.int32],
 ):
     # Retrieve the joint index
     joint_id = wp.tid()
@@ -488,7 +516,18 @@ def joint_conversion_kernel(
     joint_num_kinematic_cts[joint_id] = ncts_j
     if is_dynamic_j:
         joint_num_dynamic_cts[joint_id] = ndofs_j
-    joint_num_cts[joint_id] = joint_num_dynamic_cts[joint_id] + joint_num_kinematic_cts[joint_id]
+    joint_num_bilateral_cts[joint_id] = joint_num_dynamic_cts[joint_id] + joint_num_kinematic_cts[joint_id]
+
+    # Coulomb friction rows have static topology. A non-free joint with any
+    # positive friction allocates one friction row for every DoF so row-to-DoF
+    # indexing remains direct even when some component bounds are zero.
+    nfriction_j = int(0)
+    if dof_type_j != JointDoFType.FREE and joint_requires_friction_constraints(
+        dofs_start_j, dofs_start_j + ndofs_j, model_joint_friction
+    ):
+        nfriction_j = ndofs_j
+    joint_num_friction_cts[joint_id] = nfriction_j
+    joint_num_bounded_cts[joint_id] = nfriction_j
 
 
 @wp.kernel
@@ -556,6 +595,8 @@ def joint_indexing_kernel(
     joint_num_dofs: wp.array[wp.int32],
     joint_num_kinematic_cts: wp.array[wp.int32],
     joint_num_dynamic_cts: wp.array[wp.int32],
+    joint_num_bounded_cts: wp.array[wp.int32],
+    joint_num_friction_cts: wp.array[wp.int32],
     model_fk_act_flag: wp.array[wp.int32],
     # Outputs:
     num_passive_joints: wp.array[wp.int32],
@@ -569,18 +610,22 @@ def joint_indexing_kernel(
     num_joint_fk_actuated_coords: wp.array[wp.int32],
     num_joint_actuated_dofs: wp.array[wp.int32],
     num_joint_fk_actuated_dofs: wp.array[wp.int32],
-    num_joint_cts: wp.array[wp.int32],
+    num_joint_bilateral_cts: wp.array[wp.int32],
     num_joint_dynamic_cts: wp.array[wp.int32],
     num_joint_kinematic_cts: wp.array[wp.int32],
+    num_bounded_cts: wp.array[wp.int32],
+    num_friction_cts: wp.array[wp.int32],
     joint_coord_start: wp.array[wp.int32],
     joint_dofs_start: wp.array[wp.int32],
     joint_actuated_coord_start: wp.array[wp.int32],
     joint_actuated_dofs_start: wp.array[wp.int32],
     joint_passive_coord_start: wp.array[wp.int32],
     joint_passive_dofs_start: wp.array[wp.int32],
-    joint_cts_start: wp.array[wp.int32],
+    joint_bilateral_cts_start: wp.array[wp.int32],
     joint_dynamic_cts_start: wp.array[wp.int32],
     joint_kinematic_cts_start: wp.array[wp.int32],
+    joint_bounded_cts_start: wp.array[wp.int32],
+    joint_friction_cts_start: wp.array[wp.int32],
 ):
     world_id = wp.tid()
 
@@ -599,9 +644,11 @@ def joint_indexing_kernel(
     num_fk_actuated_dofs = int(0)
     num_passive_coords = int(0)
     num_passive_dofs = int(0)
-    num_cts = int(0)
+    num_bilateral_cts = int(0)
     num_dynamic_cts = int(0)
     num_kinematic_cts = int(0)
+    num_bounded = int(0)
+    num_friction = int(0)
 
     for jid in range(num_joints_world):
         joint_id = joints_world_start + jid
@@ -613,21 +660,25 @@ def joint_indexing_kernel(
         joint_actuated_dofs_start[joint_id] = num_actuated_dofs
         joint_passive_coord_start[joint_id] = num_passive_coords
         joint_passive_dofs_start[joint_id] = num_passive_dofs
-        joint_cts_start[joint_id] = num_cts
+        joint_bilateral_cts_start[joint_id] = num_bilateral_cts
         joint_dynamic_cts_start[joint_id] = num_dynamic_cts
         joint_kinematic_cts_start[joint_id] = num_kinematic_cts
+        joint_bounded_cts_start[joint_id] = num_bounded
+        joint_friction_cts_start[joint_id] = num_friction
 
         # Reading off joint properties from previous kernel
         ncoords_j = joint_num_coords[joint_id]
         ndofs_j = joint_num_dofs[joint_id]
         n_kin_cts_j = joint_num_kinematic_cts[joint_id]
         n_dyn_cts_j = joint_num_dynamic_cts[joint_id]
+        n_bounded_cts_j = joint_num_bounded_cts[joint_id]
+        n_friction_cts_j = joint_num_friction_cts[joint_id]
         act_type_j = joint_act_type[joint_id]
 
         # Update world sizes based on joint sizes
         num_coords += ncoords_j
         num_dofs += ndofs_j
-        num_cts += n_kin_cts_j
+        num_bilateral_cts += n_kin_cts_j
         num_kinematic_cts += n_kin_cts_j
 
         # Update sizes based on passive/active joint distinction
@@ -649,8 +700,11 @@ def joint_indexing_kernel(
         # Update sizes based on whether joint is dynamic
         if n_dyn_cts_j > 0:
             num_dynamic_cts += n_dyn_cts_j
-            num_cts += n_dyn_cts_j
+            num_bilateral_cts += n_dyn_cts_j
             num_dynamic_j += 1
+
+        num_bounded += n_bounded_cts_j
+        num_friction += n_friction_cts_j
 
     # Write sizes for this world
     num_passive_joints[world_id] = num_passive_j
@@ -658,9 +712,11 @@ def joint_indexing_kernel(
     num_dynamic_joints[world_id] = num_dynamic_j
     num_joint_coords[world_id] = num_coords
     num_joint_dofs[world_id] = num_dofs
-    num_joint_cts[world_id] = num_cts
+    num_joint_bilateral_cts[world_id] = num_bilateral_cts
     num_joint_kinematic_cts[world_id] = num_kinematic_cts
     num_joint_dynamic_cts[world_id] = num_dynamic_cts
+    num_bounded_cts[world_id] = num_bounded
+    num_friction_cts[world_id] = num_friction
     num_joint_actuated_coords[world_id] = num_actuated_coords
     num_joint_fk_actuated_coords[world_id] = num_fk_actuated_coords
     num_joint_actuated_dofs[world_id] = num_actuated_dofs
@@ -679,9 +735,11 @@ def _globalize_joint_offsets(
     world_passive_dof_offset: wp.array[wp.int32],
     world_actuated_coord_offset: wp.array[wp.int32],
     world_actuated_dof_offset: wp.array[wp.int32],
-    world_cts_offset: wp.array[wp.int32],
+    world_bilateral_cts_offset: wp.array[wp.int32],
     world_dynamic_cts_offset: wp.array[wp.int32],
     world_kinematic_cts_offset: wp.array[wp.int32],
+    world_bounded_cts_offset: wp.array[wp.int32],
+    world_friction_cts_offset: wp.array[wp.int32],
     # Outputs:
     joint_coord_start: wp.array[wp.int32],
     joint_dofs_start: wp.array[wp.int32],
@@ -689,9 +747,11 @@ def _globalize_joint_offsets(
     joint_passive_dofs_start: wp.array[wp.int32],
     joint_actuated_coord_start: wp.array[wp.int32],
     joint_actuated_dofs_start: wp.array[wp.int32],
-    joint_cts_start: wp.array[wp.int32],
+    joint_bilateral_cts_start: wp.array[wp.int32],
     joint_dynamic_cts_start: wp.array[wp.int32],
     joint_kinematic_cts_start: wp.array[wp.int32],
+    joint_bounded_cts_start: wp.array[wp.int32],
+    joint_friction_cts_start: wp.array[wp.int32],
 ):
     jid = wp.tid()
     w = joint_world[jid]
@@ -701,9 +761,11 @@ def _globalize_joint_offsets(
     joint_passive_dofs_start[jid] += world_passive_dof_offset[w]
     joint_actuated_coord_start[jid] += world_actuated_coord_offset[w]
     joint_actuated_dofs_start[jid] += world_actuated_dof_offset[w]
-    joint_cts_start[jid] += world_cts_offset[w]
+    joint_bilateral_cts_start[jid] += world_bilateral_cts_offset[w]
     joint_dynamic_cts_start[jid] += world_dynamic_cts_offset[w]
     joint_kinematic_cts_start[jid] += world_kinematic_cts_offset[w]
+    joint_bounded_cts_start[jid] += world_bounded_cts_offset[w]
+    joint_friction_cts_start[jid] += world_friction_cts_offset[w]
 
 
 @wp.kernel
@@ -925,6 +987,7 @@ def validate_model_structural_updates(
     - :attr:`StructuralUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/gimbal axes
     - :attr:`StructuralUpdateViolation.GIMBAL_HANDEDNESS`: gimbal axis handedness changed
     - :attr:`StructuralUpdateViolation.MASSLESS`: a built massive body became massless
+    - :attr:`StructuralUpdateViolation.FRICTION_CTS`: joint friction constraint topology changed
 
     An entry equal to the maximum of the body, joint, and DoF counts indicates that no
     violation of that type was found.
@@ -956,7 +1019,10 @@ def validate_model_structural_updates(
                 model.joint_damping,
                 model.joint_target_ke,
                 model.joint_target_kd,
+                model.joint_friction,
+                joints.dof_type,
                 joints.num_dynamic_cts,
+                joints.num_friction_cts,
                 model.joint_limit_lower,
                 model.joint_limit_upper,
                 built_limit_finite,
@@ -1302,6 +1368,25 @@ def convert_rigid_bodies(
     return model_bodies
 
 
+def _warn_ignored_free_joint_friction(
+    model: Model | ModelView,
+    joint_dof_type: wp.array[wp.int32],
+) -> None:
+    """Warn when friction is assigned to a FREE joint (ignored by Kamino)."""
+    if model.joint_count == 0:
+        return
+    dof_type_np = joint_dof_type.numpy()
+    friction_np = model.joint_friction.numpy()
+    qd_start_np = model.joint_qd_start.numpy()
+    for jid in range(model.joint_count):
+        if dof_type_np[jid] != JointDoFType.FREE:
+            continue
+        dof_start = int(qd_start_np[jid])
+        dof_end = int(qd_start_np[jid + 1])
+        if np.any(friction_np[dof_start:dof_end] > 0.0):
+            msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
+
+
 def convert_joints(
     model: Model | ModelView,
     model_size: SizeKamino,
@@ -1332,9 +1417,11 @@ def convert_joints(
         joint_act_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_num_coords = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_num_dofs = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
-        joint_num_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
+        joint_num_bilateral_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_num_dynamic_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_num_kinematic_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
+        joint_num_bounded_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
+        joint_num_friction_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_B_r_B = wp.empty(shape=(model.joint_count,), dtype=wp.vec3f)
         joint_F_r_F = wp.empty(shape=(model.joint_count,), dtype=wp.vec3f)
         joint_X_B = wp.empty(shape=(model.joint_count,), dtype=wp.mat33f)
@@ -1357,6 +1444,7 @@ def convert_joints(
             model.joint_damping,
             model.joint_target_ke,
             model.joint_target_kd,
+            model.joint_friction,
             model.joint_limit_lower,
             model.joint_limit_upper,
             # Outputs:
@@ -1365,12 +1453,16 @@ def convert_joints(
             joint_act_type,
             joint_num_coords,
             joint_num_dofs,
-            joint_num_cts,
+            joint_num_bilateral_cts,
             joint_num_dynamic_cts,
             joint_num_kinematic_cts,
+            joint_num_bounded_cts,
+            joint_num_friction_cts,
         ],
         device=model.device,
     )
+
+    _warn_ignored_free_joint_friction(model, joint_dof_type)
 
     axis_validation_violations = wp.empty(len(StructuralUpdateViolation), dtype=wp.int32, device=model.device)
     _validate_joint_axes(model, joint_dof_type, axis_validation_violations)
@@ -1411,18 +1503,22 @@ def convert_joints(
         num_joint_fk_actuated_coords = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_actuated_dofs = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_fk_actuated_dofs = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
-        num_joint_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
+        num_joint_bilateral_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_dynamic_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_kinematic_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
+        num_bounded_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
+        num_friction_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         joint_coord_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_dofs_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_actuated_coord_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_actuated_dofs_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_passive_coord_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_passive_dofs_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
-        joint_cts_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
+        joint_bilateral_cts_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_dynamic_cts_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
         joint_kinematic_cts_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
+        joint_bounded_cts_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
+        joint_friction_cts_start = wp.zeros(shape=(model.joint_count + 1,), dtype=wp.int32)
 
     wp.launch(
         kernel=joint_indexing_kernel,
@@ -1434,6 +1530,8 @@ def convert_joints(
             joint_num_dofs,
             joint_num_kinematic_cts,
             joint_num_dynamic_cts,
+            joint_num_bounded_cts,
+            joint_num_friction_cts,
             model.fk_actuation_flag if hasattr(model, "fk_actuation_flag") else None,
         ],
         outputs=[
@@ -1448,18 +1546,22 @@ def convert_joints(
             num_joint_fk_actuated_coords,
             num_joint_actuated_dofs,
             num_joint_fk_actuated_dofs,
-            num_joint_cts,
+            num_joint_bilateral_cts,
             num_joint_dynamic_cts,
             num_joint_kinematic_cts,
+            num_bounded_cts,
+            num_friction_cts,
             joint_coord_start,
             joint_dofs_start,
             joint_actuated_coord_start,
             joint_actuated_dofs_start,
             joint_passive_coord_start,
             joint_passive_dofs_start,
-            joint_cts_start,
+            joint_bilateral_cts_start,
             joint_dynamic_cts_start,
             joint_kinematic_cts_start,
+            joint_bounded_cts_start,
+            joint_friction_cts_start,
         ],
         device=model.device,
     )
@@ -1476,9 +1578,11 @@ def convert_joints(
     num_joint_fk_actuated_coords_np = num_joint_fk_actuated_coords.numpy()
     num_joint_actuated_dofs_np = num_joint_actuated_dofs.numpy()
     num_joint_fk_actuated_dofs_np = num_joint_fk_actuated_dofs.numpy()
-    num_joint_cts_np = num_joint_cts.numpy()
+    num_joint_bilateral_cts_np = num_joint_bilateral_cts.numpy()
     num_joint_dynamic_cts_np = num_joint_dynamic_cts.numpy()
     num_joint_kinematic_cts_np = num_joint_kinematic_cts.numpy()
+    num_joint_bounded_cts_np = num_bounded_cts.numpy()
+    num_joint_friction_cts_np = num_friction_cts.numpy()
 
     # Compute offsets per world
     world_joint_offset_np = np.zeros((model.world_count,), dtype=int)
@@ -1488,9 +1592,11 @@ def convert_joints(
     world_actuated_joint_dofs_offset_np = np.zeros((model.world_count,), dtype=int)
     world_passive_joint_coord_offset_np = np.zeros((model.world_count,), dtype=int)
     world_passive_joint_dofs_offset_np = np.zeros((model.world_count,), dtype=int)
-    world_joint_cts_offset_np = np.zeros((model.world_count,), dtype=int)
+    world_joint_bilateral_cts_offset_np = np.zeros((model.world_count,), dtype=int)
     world_joint_dynamic_cts_offset_np = np.zeros((model.world_count,), dtype=int)
     world_joint_kinematic_cts_offset_np = np.zeros((model.world_count,), dtype=int)
+    world_joint_bounded_cts_offset_np = np.zeros((model.world_count,), dtype=int)
+    world_joint_friction_cts_offset_np = np.zeros((model.world_count,), dtype=int)
     for w in range(1, model.world_count):
         world_joint_offset_np[w] = world_joint_offset_np[w - 1] + num_joints_np[w - 1]
         world_joint_coord_offset_np[w] = world_joint_coord_offset_np[w - 1] + num_joint_coords_np[w - 1]
@@ -1507,12 +1613,20 @@ def convert_joints(
         world_passive_joint_dofs_offset_np[w] = (
             world_passive_joint_dofs_offset_np[w - 1] + num_joint_passive_dofs_np[w - 1]
         )
-        world_joint_cts_offset_np[w] = world_joint_cts_offset_np[w - 1] + num_joint_cts_np[w - 1]
+        world_joint_bilateral_cts_offset_np[w] = (
+            world_joint_bilateral_cts_offset_np[w - 1] + num_joint_bilateral_cts_np[w - 1]
+        )
         world_joint_dynamic_cts_offset_np[w] = (
             world_joint_dynamic_cts_offset_np[w - 1] + num_joint_dynamic_cts_np[w - 1]
         )
         world_joint_kinematic_cts_offset_np[w] = (
             world_joint_kinematic_cts_offset_np[w - 1] + num_joint_kinematic_cts_np[w - 1]
+        )
+        world_joint_bounded_cts_offset_np[w] = (
+            world_joint_bounded_cts_offset_np[w - 1] + num_joint_bounded_cts_np[w - 1]
+        )
+        world_joint_friction_cts_offset_np[w] = (
+            world_joint_friction_cts_offset_np[w - 1] + num_joint_friction_cts_np[w - 1]
         )
 
     # Determine the base body and joint indices per world
@@ -1589,14 +1703,18 @@ def convert_joints(
     model_size.max_of_num_actuated_joint_dofs = int(num_joint_actuated_dofs_np.max())
     model_size.sum_of_num_fk_actuated_joint_dofs = int(num_joint_fk_actuated_dofs_np.sum())
     model_size.max_of_num_fk_actuated_joint_dofs = int(num_joint_fk_actuated_dofs_np.max())
-    model_size.sum_of_num_joint_cts = int(num_joint_cts_np.sum())
-    model_size.max_of_num_joint_cts = int(num_joint_cts_np.max())
+    model_size.sum_of_num_bilateral_joint_cts = int(num_joint_bilateral_cts_np.sum())
+    model_size.max_of_num_bilateral_joint_cts = int(num_joint_bilateral_cts_np.max())
     model_size.sum_of_num_dynamic_joint_cts = int(num_joint_dynamic_cts_np.sum())
     model_size.max_of_num_dynamic_joint_cts = int(num_joint_dynamic_cts_np.max())
     model_size.sum_of_num_kinematic_joint_cts = int(num_joint_kinematic_cts_np.sum())
     model_size.max_of_num_kinematic_joint_cts = int(num_joint_kinematic_cts_np.max())
-    model_size.sum_of_max_total_cts = int(num_joint_cts_np.sum())
-    model_size.max_of_max_total_cts = int(num_joint_cts_np.max())
+    model_size.sum_of_num_bounded_joint_cts = int(num_joint_bounded_cts_np.sum())
+    model_size.max_of_num_bounded_joint_cts = int(num_joint_bounded_cts_np.max())
+    model_size.sum_of_num_friction_joint_cts = int(num_joint_friction_cts_np.sum())
+    model_size.max_of_num_friction_joint_cts = int(num_joint_friction_cts_np.max())
+    model_size.sum_of_max_total_cts = int(num_joint_bilateral_cts_np.sum() + num_joint_bounded_cts_np.sum())
+    model_size.max_of_max_total_cts = int(np.max(num_joint_bilateral_cts_np + num_joint_bounded_cts_np))
 
     # Update per-world heterogeneous model info
     model_info.num_passive_joints = num_passive_joints
@@ -1608,10 +1726,12 @@ def convert_joints(
     model_info.num_passive_joint_dofs = num_joint_passive_dofs
     model_info.num_actuated_joint_coords = num_joint_actuated_coords
     model_info.num_actuated_joint_dofs = num_joint_actuated_dofs
-    model_info.num_joint_cts = num_joint_cts
+    model_info.num_joint_bilateral_cts = num_joint_bilateral_cts
     model_info.num_joint_dynamic_cts = num_joint_dynamic_cts
     model_info.num_joint_kinematic_cts = num_joint_kinematic_cts
     model_info.has_world_without_base_body = has_world_without_base_body
+    model_info.num_joint_bounded_cts = num_bounded_cts
+    model_info.num_joint_friction_cts = num_friction_cts
     with wp.ScopedDevice(model.device):
         model_info.num_joints = to_warp_int32_array(num_joints_np)
         model_info.joints_offset = to_warp_int32_array(world_joint_offset_np)
@@ -1621,9 +1741,11 @@ def convert_joints(
         model_info.joint_passive_dofs_offset = to_warp_int32_array(world_passive_joint_dofs_offset_np)
         model_info.joint_actuated_coords_offset = to_warp_int32_array(world_actuated_joint_coord_offset_np)
         model_info.joint_actuated_dofs_offset = to_warp_int32_array(world_actuated_joint_dofs_offset_np)
-        model_info.joint_cts_offset = to_warp_int32_array(world_joint_cts_offset_np)
+        model_info.joint_bilateral_cts_offset = to_warp_int32_array(world_joint_bilateral_cts_offset_np)
         model_info.joint_dynamic_cts_offset = to_warp_int32_array(world_joint_dynamic_cts_offset_np)
         model_info.joint_kinematic_cts_offset = to_warp_int32_array(world_joint_kinematic_cts_offset_np)
+        model_info.joint_bounded_cts_offset = to_warp_int32_array(world_joint_bounded_cts_offset_np)
+        model_info.joint_friction_cts_offset = to_warp_int32_array(world_joint_friction_cts_offset_np)
         model_info.base_body_index = to_warp_int32_array(base_body_idx_np)
         model_info.base_joint_index = to_warp_int32_array(base_joint_idx_np)
 
@@ -1639,9 +1761,11 @@ def convert_joints(
             model_info.joint_passive_dofs_offset,
             model_info.joint_actuated_coords_offset,
             model_info.joint_actuated_dofs_offset,
-            model_info.joint_cts_offset,
+            model_info.joint_bilateral_cts_offset,
             model_info.joint_dynamic_cts_offset,
             model_info.joint_kinematic_cts_offset,
+            model_info.joint_bounded_cts_offset,
+            model_info.joint_friction_cts_offset,
         ],
         outputs=[
             joint_coord_start,
@@ -1650,68 +1774,35 @@ def convert_joints(
             joint_passive_dofs_start,
             joint_actuated_coord_start,
             joint_actuated_dofs_start,
-            joint_cts_start,
+            joint_bilateral_cts_start,
             joint_dynamic_cts_start,
             joint_kinematic_cts_start,
+            joint_bounded_cts_start,
+            joint_friction_cts_start,
         ],
         device=model.device,
     )
 
     # Write the N+1 entry (grand total) into each offset array.
-    wp.launch(
-        write_coeff_kernel,
-        dim=1,
-        inputs=[joint_coord_start, model_size.sum_of_num_joints, model_size.sum_of_num_joint_coords],
-        device=model.device,
-    )
-    wp.launch(
-        write_coeff_kernel,
-        dim=1,
-        inputs=[joint_dofs_start, model_size.sum_of_num_joints, model_size.sum_of_num_joint_dofs],
-        device=model.device,
-    )
-    wp.launch(
-        write_coeff_kernel,
-        dim=1,
-        inputs=[joint_passive_coord_start, model_size.sum_of_num_joints, model_size.sum_of_num_passive_joint_coords],
-        device=model.device,
-    )
-    wp.launch(
-        write_coeff_kernel,
-        dim=1,
-        inputs=[joint_passive_dofs_start, model_size.sum_of_num_joints, model_size.sum_of_num_passive_joint_dofs],
-        device=model.device,
-    )
-    wp.launch(
-        write_coeff_kernel,
-        dim=1,
-        inputs=[joint_actuated_coord_start, model_size.sum_of_num_joints, model_size.sum_of_num_actuated_joint_coords],
-        device=model.device,
-    )
-    wp.launch(
-        write_coeff_kernel,
-        dim=1,
-        inputs=[joint_actuated_dofs_start, model_size.sum_of_num_joints, model_size.sum_of_num_actuated_joint_dofs],
-        device=model.device,
-    )
-    wp.launch(
-        write_coeff_kernel,
-        dim=1,
-        inputs=[joint_cts_start, model_size.sum_of_num_joints, model_size.sum_of_num_joint_cts],
-        device=model.device,
-    )
-    wp.launch(
-        write_coeff_kernel,
-        dim=1,
-        inputs=[joint_dynamic_cts_start, model_size.sum_of_num_joints, model_size.sum_of_num_dynamic_joint_cts],
-        device=model.device,
-    )
-    wp.launch(
-        write_coeff_kernel,
-        dim=1,
-        inputs=[joint_kinematic_cts_start, model_size.sum_of_num_joints, model_size.sum_of_num_kinematic_joint_cts],
-        device=model.device,
-    )
+    for start_array, total in (
+        (joint_coord_start, model_size.sum_of_num_joint_coords),
+        (joint_dofs_start, model_size.sum_of_num_joint_dofs),
+        (joint_passive_coord_start, model_size.sum_of_num_passive_joint_coords),
+        (joint_passive_dofs_start, model_size.sum_of_num_passive_joint_dofs),
+        (joint_actuated_coord_start, model_size.sum_of_num_actuated_joint_coords),
+        (joint_actuated_dofs_start, model_size.sum_of_num_actuated_joint_dofs),
+        (joint_bilateral_cts_start, model_size.sum_of_num_bilateral_joint_cts),
+        (joint_dynamic_cts_start, model_size.sum_of_num_dynamic_joint_cts),
+        (joint_kinematic_cts_start, model_size.sum_of_num_kinematic_joint_cts),
+        (joint_bounded_cts_start, model_size.sum_of_num_bounded_joint_cts),
+        (joint_friction_cts_start, model_size.sum_of_num_friction_joint_cts),
+    ):
+        wp.launch(
+            write_coeff_kernel,
+            dim=1,
+            inputs=[start_array, model_size.sum_of_num_joints, total],
+            device=model.device,
+        )
 
     # Joints
     model_joints = JointsModel(
@@ -1734,24 +1825,29 @@ def convert_joints(
         tau_j_max=model.joint_effort_limit,
         a_j=model.joint_armature,
         b_j=model.joint_damping,
+        f_j=model.joint_friction,
         k_p_j=model.joint_target_ke,
         k_d_j=model.joint_target_kd,
         q_j_0=model.joint_q,
         dq_j_0=model.joint_qd,
         num_coords=joint_num_coords,
         num_dofs=joint_num_dofs,
-        num_cts=joint_num_cts,
+        num_bilateral_cts=joint_num_bilateral_cts,
         num_dynamic_cts=joint_num_dynamic_cts,
         num_kinematic_cts=joint_num_kinematic_cts,
+        num_bounded_cts=joint_num_bounded_cts,
+        num_friction_cts=joint_num_friction_cts,
         coords_offset=joint_coord_start,
         dofs_offset=joint_dofs_start,
         passive_coords_offset=joint_passive_coord_start,
         passive_dofs_offset=joint_passive_dofs_start,
         actuated_coords_offset=joint_actuated_coord_start,
         actuated_dofs_offset=joint_actuated_dofs_start,
-        cts_offset=joint_cts_start,
+        bilateral_cts_offset=joint_bilateral_cts_start,
         dynamic_cts_offset=joint_dynamic_cts_start,
         kinematic_cts_offset=joint_kinematic_cts_start,
+        bounded_cts_offset=joint_bounded_cts_start,
+        friction_cts_offset=joint_friction_cts_start,
     )
     return model_joints
 
