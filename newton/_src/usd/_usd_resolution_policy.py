@@ -92,8 +92,11 @@ class _UsdResolutionPolicy:
         """Hold interpreted PhysicsScene properties."""
 
         physics_dt: float
+        """Simulation time step [s]."""
         gravity_enabled: bool
+        """Whether gravity is enabled for the scene."""
         max_solver_iterations: int
+        """Maximum solver iterations, or ``-1`` when unspecified."""
 
     @dataclass(frozen=True)
     class ContactResponse:
@@ -102,9 +105,13 @@ class _UsdResolutionPolicy:
         names: ClassVar[tuple[str, ...]] = ("ke", "kd", "kf", "ka")
 
         ke: Any
+        """Contact stiffness [N/m]."""
         kd: Any
+        """Contact damping [N·s/m]."""
         kf: Any
+        """Contact friction gain [N·s/m]."""
         ka: Any
+        """Contact adhesion distance [m]."""
 
         @classmethod
         def from_getter(cls, getter: Callable[[str], Any]) -> _UsdResolutionPolicy.ContactResponse:
@@ -124,24 +131,38 @@ class _UsdResolutionPolicy:
         """Keep selected contact values and their owning input group."""
 
         values: _UsdResolutionPolicy.ContactResponse
+        """Contact values selected for one resolution policy."""
         owners: _UsdResolutionPolicy.ContactResponse
+        """Input group that supplied each selected contact value."""
 
     @dataclass
     class PhysicsMaterial:
         """Keep one parsed physics material and its resolution policies."""
 
         static_friction: float
+        """Static friction coefficient."""
         dynamic_friction: float
+        """Dynamic friction coefficient."""
         torsional_friction: float
+        """Torsional friction coefficient [m]."""
         rolling_friction: float
+        """Rolling friction coefficient [m]."""
         restitution: float
+        """Restitution coefficient."""
         density: float
+        """Material density [kg/m³]."""
         ke: float | None = None
+        """Contact stiffness [N/m], or ``None`` when unspecified."""
         kd: float | None = None
+        """Contact damping [N·s/m], or ``None`` when unspecified."""
         kf: float | None = None
+        """Contact friction gain [N·s/m], or ``None`` when unspecified."""
         ka: float | None = None
+        """Contact adhesion distance [m], or ``None`` when unspecified."""
         prim: Any = None
+        """PXR material prim used for migration diagnostics."""
         policies: dict[str, SchemaResolverManager._InterpretedPolicyValues] = field(default_factory=dict)
+        """Resolution-policy values keyed by logical material property."""
 
         @classmethod
         def from_shape_config(cls, config: Any) -> _UsdResolutionPolicy.PhysicsMaterial:
@@ -160,85 +181,125 @@ class _UsdResolutionPolicy:
         """Hold interpreted properties shared by rigid collision shapes."""
 
         margin: float
+        """Collision margin [m]."""
         gap: float
+        """Collision gap [m]."""
         sdf_max_resolution: int | None
+        """Maximum SDF resolution, or ``None`` when unspecified."""
         sdf_narrow_band_range: tuple[float, float]
+        """Inner and outer SDF narrow-band widths [m]."""
         sdf_target_voxel_size: float | None
+        """Target SDF voxel size [m], or ``None`` when unspecified."""
         sdf_texture_format: str
+        """SDF texture storage format."""
         sdf_padding: float | None
+        """SDF padding [m], or ``None`` when inferred from shape offsets."""
         is_hydroelastic: bool
+        """Whether the shape uses hydroelastic contact."""
         kh: float
+        """Hydroelastic stiffness [Pa/m]."""
         is_solid: bool
+        """Whether geometric mass integration treats the shape as solid."""
         shell_thickness: float | None
+        """Shell thickness [m], or ``None`` when not applicable."""
         inertia_margin: float
+        """Margin used for geometric inertia integration [m]."""
 
     @dataclass(frozen=True)
     class _ShapeOffsets:
         """Keep resolved contact offsets and their policy values."""
 
         margin: float
+        """Collision margin selected by the active policy [m]."""
         gap: float
+        """Collision gap selected by the active policy [m]."""
         margin_policies: SchemaResolverManager._InterpretedPolicyValues
+        """Interpreted margin under each resolution policy."""
         gap_policies: SchemaResolverManager._InterpretedPolicyValues
+        """Interpreted gap under each resolution policy."""
 
     @dataclass(frozen=True)
     class _SdfResolutionSettings:
         """Keep the coupled SDF resolution settings for one policy."""
 
         target_voxel_size: float | None
+        """Target SDF voxel size [m], or ``None`` when unspecified."""
         max_resolution: int | None
+        """Maximum SDF resolution, or ``None`` when unspecified."""
 
     @dataclass(frozen=True)
     class _ShapeSdfProperties:
         """Keep resolved SDF settings used by shape validation."""
 
         narrow_band_range: tuple[float, float]
+        """Inner and outer SDF narrow-band widths [m]."""
         texture_format: str
+        """SDF texture storage format."""
         padding: float | None
+        """Active SDF padding [m], or ``None`` when inferred."""
         padding_policies: SchemaResolverManager._InterpretedPolicyValues
+        """Interpreted padding under each resolution policy."""
         active_settings: _UsdResolutionPolicy._SdfResolutionSettings
+        """Resolution settings selected by the active policy."""
         legacy_settings: _UsdResolutionPolicy._SdfResolutionSettings | None
+        """Legacy resolution settings when migration auditing is active."""
         composed_settings: _UsdResolutionPolicy._SdfResolutionSettings | None
+        """Registered-schema settings when migration auditing is active."""
 
     @dataclass(frozen=True)
     class _ShapeHydroelasticProperties:
         """Keep validated hydroelastic shape properties."""
 
         enabled: bool
+        """Validated hydroelastic state selected by the active policy."""
         stiffness: float
+        """Hydroelastic stiffness [Pa/m]."""
         legacy_enabled: bool | None
+        """Validated legacy state when migration auditing is active."""
         composed_enabled: bool | None
+        """Validated registered-schema state during migration auditing."""
 
     @dataclass(frozen=True)
     class _ShapeMassProperties:
         """Keep interpreted shell mass properties."""
 
         is_solid: bool
+        """Whether geometric mass integration treats the shape as solid."""
         shell_thickness: float | None
+        """Shell thickness [m], or ``None`` when not applicable."""
         inertia_margin: float
+        """Margin used for geometric inertia integration [m]."""
 
     @dataclass(frozen=True)
     class _JointDampingValue:
         """Keep the angular unit selected by a damping mapping key."""
 
         value: float
+        """Joint damping value in its declared angular unit."""
         angular_unit: Literal["degrees", "radians"] | None
+        """Angular unit for a rotational degree of freedom."""
 
     @dataclass(frozen=True)
     class JointLimitDefaults:
         """Hold builder defaults for one joint limit."""
 
         ke: float
+        """Default limit stiffness [N/m or N·m/rad]."""
         kd: float
+        """Default limit damping [N·s/m or N·m·s/rad]."""
 
     @dataclass(frozen=True)
     class JointLimitResult:
         """Hold one assembled joint-limit result and its source semantics."""
 
         ke: float
+        """Resolved limit stiffness [N/m or N·m/rad]."""
         kd: float
+        """Resolved limit damping [N·s/m or N·m·s/rad]."""
         ke_source: Literal["force", "mjc_authored", "mjc_default"]
+        """Consumer semantics associated with ``ke``."""
         kd_source: Literal["force", "mjc_authored", "mjc_default"]
+        """Consumer semantics associated with ``kd``."""
 
         @property
         def solref_mode(self) -> int:
@@ -257,9 +318,13 @@ class _UsdResolutionPolicy:
         """Describe one legacy-to-composed joint-limit comparison."""
 
         legacy: _UsdResolutionPolicy.JointLimitResult
+        """Joint-limit result under legacy precedence."""
         composed: _UsdResolutionPolicy.JointLimitResult
+        """Joint-limit result under registered-schema precedence."""
         legacy_owners: tuple[str, str]
+        """Legacy owner for stiffness and damping, respectively."""
         composed_owners: tuple[str, str]
+        """Registered-schema owner for stiffness and damping, respectively."""
 
     def __init__(
         self,
