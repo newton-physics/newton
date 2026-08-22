@@ -61,6 +61,123 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_compiler_mass_and_inertia_bounds_match_native_mujoco(self):
+        """Apply MJCF compiler mass and inertia lower bounds."""
+        mjcf = """
+<mujoco model="compiler_bounds">
+    <compiler boundmass="0.5" boundinertia="0.02"/>
+    <worldbody>
+        <body name="body">
+            <joint name="joint"/>
+            <inertial pos="0 0 0" mass="0.1" diaginertia="0.001 0.002 0.003"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+
+        self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1], places=6)
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+            native_model.body_inertia[1],
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        )
+
+    def test_compiler_balanceinertia_matches_native_mujoco(self):
+        """Balance invalid inertia only when the MJCF compiler requests it."""
+        body = """
+<worldbody>
+    <body name="body">
+        <joint name="joint"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.1"/>
+    </body>
+</worldbody>
+"""
+        balanced_mjcf = f'<mujoco><compiler balanceinertia="true"/>{body}</mujoco>'
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(balanced_mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(balanced_mjcf, ignore_inertial_definitions=False)
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(np.array(builder.body_inertia[0]).reshape(3, 3)),
+            native_model.body_inertia[1],
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        )
+
+        unbalanced_mjcf = f'<mujoco><compiler balanceinertia="false"/>{body}</mujoco>'
+        with self.assertRaisesRegex(ValueError, "inertia must satisfy"):
+            newton.ModelBuilder().add_mjcf(unbalanced_mjcf, ignore_inertial_definitions=False)
+
+    def test_compiler_inertia_guards_preserve_existing_bodies(self):
+        """Guard only imported bodies and update their inverse properties."""
+        mjcf = """
+<mujoco model="compiler_bounds">
+    <compiler boundmass="0.5" boundinertia="0.02"/>
+    <worldbody>
+        <body name="body">
+            <joint name="joint"/>
+            <inertial pos="0 0 0" mass="0.1" diaginertia="0.001 0.002 0.003"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        existing_inertia = np.diag([0.2, 0.3, 0.4])
+        builder = newton.ModelBuilder()
+        existing_body = builder.add_link(mass=2.0, inertia=wp.mat33(existing_inertia))
+        existing_properties = (
+            builder.body_mass[existing_body],
+            np.array(builder.body_inertia[existing_body]),
+            builder.body_inv_mass[existing_body],
+            np.array(builder.body_inv_inertia[existing_body]),
+        )
+
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        imported_body = existing_body + 1
+        imported_inertia = np.array(builder.body_inertia[imported_body]).reshape(3, 3)
+        imported_inv_inertia = np.array(builder.body_inv_inertia[imported_body]).reshape(3, 3)
+
+        self.assertEqual(builder.body_mass[existing_body], existing_properties[0])
+        np.testing.assert_array_equal(builder.body_inertia[existing_body], existing_properties[1])
+        self.assertEqual(builder.body_inv_mass[existing_body], existing_properties[2])
+        np.testing.assert_array_equal(builder.body_inv_inertia[existing_body], existing_properties[3])
+        self.assertAlmostEqual(builder.body_mass[imported_body], native_model.body_mass[1], places=6)
+        np.testing.assert_allclose(
+            np.linalg.eigvalsh(imported_inertia),
+            native_model.body_inertia[1],
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        )
+        self.assertAlmostEqual(builder.body_inv_mass[imported_body], 1.0 / native_model.body_mass[1], places=6)
+        np.testing.assert_allclose(imported_inv_inertia, np.linalg.inv(imported_inertia), rtol=1.0e-6, atol=1.0e-8)
+
+    def test_compiler_inertia_guards_reject_negative_values(self):
+        """Reject negative body mass and principal inertia before clamping."""
+        invalid_inertials = {
+            "mass": 'mass="-1" diaginertia="0.01 0.02 0.03"',
+            "inertia": 'mass="1" diaginertia="-0.01 0.02 0.03"',
+        }
+        for property_name, inertial_attrib in invalid_inertials.items():
+            with self.subTest(property=property_name):
+                mjcf = f"""
+<mujoco>
+    <worldbody>
+        <body name="body">
+            <joint/>
+            <inertial pos="0 0 0" {inertial_attrib}/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+                with self.assertRaisesRegex(ValueError, "mass and inertia must be nonnegative"):
+                    newton.ModelBuilder().add_mjcf(mjcf, ignore_inertial_definitions=False)
+
     def test_collision_shapes_hidden_by_default_even_without_same_body_visuals(self):
         mjcf = """
 <mujoco model="collision_visibility">
