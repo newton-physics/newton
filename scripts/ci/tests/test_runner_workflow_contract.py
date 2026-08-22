@@ -19,7 +19,6 @@ WORKLOADS = {
     ".github/workflows/aws_gpu_benchmarks.yml": "gpu-benchmarks",
     ".github/workflows/minimum_deps_tests.yml": "minimum-deps-tests",
     ".github/workflows/warp_nightly_tests.yml": "warp-nightly-tests",
-    ".github/workflows/mujoco_warp_tests.yml": "mujoco-warp-tests",
 }
 DIRECT_DISPATCH_WORKFLOWS = WORKLOADS.keys() - {".github/workflows/aws_gpu_benchmarks.yml"}
 REUSABLE_CALLERS = {
