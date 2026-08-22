@@ -1530,7 +1530,7 @@ class ModelBuilder:
         # articulation_label/articulation_world so applications can rebase identities before
         # finalization. add_builder() and replicate() preserve the entries and assign their
         # destination worlds. Private [start, end) ranges locate simulation data in builder
-        # arrays: rod-backed curves use bodies/joints, cloth-backed surfaces use
+        # arrays: rod-backed curves use bodies/joints, triangle surfaces use
         # particles/triangles/edges, and tetrahedral volumes use particles/tets.
         self.curve_label: list[str] = []
         """Labels of rod-backed curve groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`curve_world`."""
@@ -1548,7 +1548,7 @@ class ModelBuilder:
         """Nesting depth for private curve-group recording suppression."""
 
         self.surface_label: list[str] = []
-        """Labels of cloth-backed surface groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`surface_world`."""
+        """Labels of triangle surface groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`surface_world`."""
         self.surface_world: list[int] = []
         """World index corresponding to each entry in :attr:`surface_label`."""
         self._surface_particle_start: list[int] = []
@@ -7898,7 +7898,7 @@ class ModelBuilder:
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
-            label: Optional label prefix for bodies, shapes, joints, and the selectable cable
+            label: Optional label prefix for bodies, shapes, joints, and the selectable curve
                 group. If None, the group receives a generated ``curve_N`` label. See
                 :class:`~newton.selection.DeformableView`. Generated joint labels retain the
                 historical ``{label}_cable_{n}`` form for compatibility.
@@ -8147,7 +8147,7 @@ class ModelBuilder:
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, articulations, and the
-                selectable cable group. If None, the group receives a generated ``curve_N``
+                selectable curve group. If None, the group receives a generated ``curve_N``
                 label. See :class:`~newton.selection.DeformableView`. Generated joint labels retain
                 the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation

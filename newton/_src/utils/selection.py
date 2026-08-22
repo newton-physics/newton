@@ -2206,7 +2206,7 @@ class DeformableView:
     builder calls may provide stable labels for later lookup; otherwise Newton assigns
     family-specific labels such as ``surface_0``. USD deformables use their prim paths.
 
-    A group is one independently addressable cable, cloth, or soft volume together
+    A group is one independently addressable curve, surface, or volume together
     with the ranges of its simulation elements. Fixed-joint collapse does not preserve
     joints merely because a curve is labeled. A curve group is omitted if collapse
     removes any of its segment bodies or joints; pass those fixed joints through

@@ -613,7 +613,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # caller choice, and only a tree (not the all-incident-edges joint set produced when
         # unwrapped) is articulation-safe. So the importer wraps each component into its own
         # articulation here; path_cable_map exposes empty joints for graph curves accordingly.
-        # The graph spans several welded curves; per-curve cable groups are recorded
+        # The graph spans several welded curves; per-curve selection groups are recorded
         # below instead of one group for the whole component.
         with builder._suppress_curve_group_recording():
             body_ids, graph_joint_ids = builder.add_rod_graph(

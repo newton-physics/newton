@@ -1297,7 +1297,7 @@ class Model:
         self.max_dofs_per_articulation: int = 0
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
-        # Deformable groups: each cable/cloth/volume recorded by the builder is a world-tagged
+        # Each curve, surface, or volume recorded by the builder is a world-tagged
         # group with [start, end) index ranges into the per-element arrays. Kept private so
         # :class:`newton.selection.DeformableView` stays the public addressability surface;
         # the representation is free to evolve into a general selection layer.
