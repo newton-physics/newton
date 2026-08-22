@@ -7,6 +7,7 @@ from math import sqrt
 import numpy as np
 import warp as wp
 
+from newton._src.geometry.broad_phase_sap import _advance_sap_chunk_base
 from newton._src.geometry.flags import ShapeFlags
 from newton.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, BroadPhaseSAP
 
@@ -147,8 +148,32 @@ def find_overlapping_pairs_np(
     return pairs
 
 
+@wp.kernel
+def _test_advance_sap_chunk_base(
+    chunk_base: int,
+    chunk_stride: int,
+    total_work_packages: int,
+    result: wp.array[int],
+):
+    result[0] = _advance_sap_chunk_base(chunk_base, chunk_stride, total_work_packages)
+
+
 class TestBroadPhase(unittest.TestCase):
+    def test_sap_chunk_advance_avoids_int32_overflow(self):
+        """Stop dense SAP scheduling before the next chunk would overflow."""
+        result = wp.empty(1, dtype=wp.int32)
+        wp.launch(
+            _test_advance_sap_chunk_base,
+            dim=1,
+            inputs=[2_147_418_112, 262_140, 2_147_483_647, result],
+        )
+        self.assertEqual(int(result.numpy()[0]), 2_147_483_647)
+
+        wp.launch(_test_advance_sap_chunk_base, dim=1, inputs=[100, 16, 1_000, result])
+        self.assertEqual(int(result.numpy()[0]), 116)
+
     def test_public_launch_previous_positional_layout(self):
+        """Preserve the previous positional layout of public launch methods."""
         device = wp.get_device()
         shape_lower = wp.array([wp.vec3(-1.0), wp.vec3(-0.5)], dtype=wp.vec3, device=device)
         shape_upper = wp.array([wp.vec3(1.0), wp.vec3(0.5)], dtype=wp.vec3, device=device)
@@ -202,6 +227,174 @@ class TestBroadPhase(unittest.TestCase):
             False,
         )
         self.assertEqual(int(candidate_pair_count.numpy()[0]), 1)
+
+    def test_sap_adaptive_chunk_enumerates_dense_pairs(self):
+        """Verify adaptive SAP chunks enumerate every overlapping pair exactly once."""
+        device = wp.get_device()
+        shape_count = 32
+        expected_count = shape_count * (shape_count - 1) // 2
+        shape_lower = wp.full(shape_count, wp.vec3(-1.0), dtype=wp.vec3, device=device)
+        shape_upper = wp.full(shape_count, wp.vec3(1.0), dtype=wp.vec3, device=device)
+        shape_group = wp.ones(shape_count, dtype=wp.int32, device=device)
+        shape_world = wp.zeros(shape_count, dtype=wp.int32, device=device)
+        candidate_pair = wp.zeros(expected_count, dtype=wp.vec2i, device=device)
+        candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+        BroadPhaseSAP(shape_world, device=device).launch(
+            shape_lower,
+            shape_upper,
+            None,
+            shape_group,
+            shape_world,
+            shape_count,
+            candidate_pair,
+            candidate_pair_count,
+            device=device,
+        )
+
+        count = int(candidate_pair_count.numpy()[0])
+        self.assertEqual(count, expected_count)
+        actual_pairs = {tuple(pair) for pair in candidate_pair.numpy()[:count]}
+        expected_pairs = {(i, j) for i in range(shape_count) for j in range(i + 1, shape_count)}
+        self.assertEqual(actual_pairs, expected_pairs)
+
+    def test_swept_aabb_requires_simultaneous_overlap(self):
+        """Reject swept-union overlap unless both AABBs overlap at one time."""
+        device = wp.get_device()
+        shape_world = wp.zeros(2, dtype=wp.int32, device=device)
+        shape_group = wp.ones(2, dtype=wp.int32, device=device)
+        explicit_pairs = wp.array([(0, 1)], dtype=wp.vec2i, device=device)
+        candidate_pair = wp.zeros(1, dtype=wp.vec2i, device=device)
+        candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+        def launch(broad_phase, lower, upper, displacement):
+            if isinstance(broad_phase, BroadPhaseExplicit):
+                broad_phase.launch(
+                    lower,
+                    upper,
+                    None,
+                    explicit_pairs,
+                    1,
+                    candidate_pair,
+                    candidate_pair_count,
+                    device,
+                    shape_displacement=displacement,
+                )
+            else:
+                broad_phase.launch(
+                    lower,
+                    upper,
+                    None,
+                    shape_group,
+                    shape_world,
+                    2,
+                    candidate_pair,
+                    candidate_pair_count,
+                    device,
+                    shape_displacement=displacement,
+                )
+            return int(candidate_pair_count.numpy()[0])
+
+        half_extent = wp.vec3(0.1)
+        lower = wp.array([-half_extent, wp.vec3(0.5, -0.5, 0.0) - half_extent], dtype=wp.vec3, device=device)
+        upper = wp.array([half_extent, wp.vec3(0.5, -0.5, 0.0) + half_extent], dtype=wp.vec3, device=device)
+        same_displacement = wp.array([wp.vec3(1.0, 1.0, 0.0), wp.vec3(1.0, 1.0, 0.0)], dtype=wp.vec3, device=device)
+        union_lower = wp.array([-half_extent, wp.vec3(0.5, -0.5, 0.0) - half_extent], dtype=wp.vec3, device=device)
+        union_upper = wp.array(
+            [wp.vec3(1.0, 1.0, 0.0) + half_extent, wp.vec3(1.5, 0.5, 0.0) + half_extent],
+            dtype=wp.vec3,
+            device=device,
+        )
+
+        colliding_lower = wp.array([-half_extent, wp.vec3(1.0, 1.0, 0.0) - half_extent], dtype=wp.vec3, device=device)
+        colliding_upper = wp.array([half_extent, wp.vec3(1.0, 1.0, 0.0) + half_extent], dtype=wp.vec3, device=device)
+        colliding_displacement = wp.array([wp.vec3(1.0, 1.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+
+        for broad_phase in (
+            BroadPhaseAllPairs(shape_world, device=device),
+            BroadPhaseSAP(shape_world, device=device),
+            BroadPhaseExplicit(),
+        ):
+            with self.subTest(broad_phase=type(broad_phase).__name__):
+                self.assertEqual(launch(broad_phase, union_lower, union_upper, None), 1)
+                self.assertEqual(launch(broad_phase, lower, upper, same_displacement), 0)
+                self.assertEqual(launch(broad_phase, colliding_lower, colliding_upper, colliding_displacement), 1)
+
+        fast_lower = wp.array([-half_extent, wp.vec3(0.4, 0.0, 0.0) - half_extent], dtype=wp.vec3, device=device)
+        fast_upper = wp.array([half_extent, wp.vec3(0.4, 0.0, 0.0) + half_extent], dtype=wp.vec3, device=device)
+        fast_displacement = wp.array([wp.vec3(2.0, 0.0, 0.0), wp.vec3(1.7, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        BroadPhaseSAP(shape_world, device=device).launch(
+            fast_lower,
+            fast_upper,
+            None,
+            shape_group,
+            shape_world,
+            2,
+            candidate_pair,
+            candidate_pair_count,
+            device,
+            shape_displacement=fast_displacement,
+            sort_axis_displacement_limit=0.25,
+        )
+        self.assertEqual(int(candidate_pair_count.numpy()[0]), 1)
+
+    def test_shape_displacement_length_validation(self):
+        """Reject shape displacements whose length differs from the shape bounds."""
+        device = wp.get_device()
+        shape_lower = wp.zeros(2, dtype=wp.vec3, device=device)
+        shape_upper = wp.ones(2, dtype=wp.vec3, device=device)
+        shape_group = wp.ones(2, dtype=wp.int32, device=device)
+        shape_world = wp.zeros(2, dtype=wp.int32, device=device)
+        shape_displacement = wp.zeros(1, dtype=wp.vec3, device=device)
+        candidate_pair = wp.zeros(1, dtype=wp.vec2i, device=device)
+        candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+        for broad_phase in (
+            BroadPhaseAllPairs(shape_world, device=device),
+            BroadPhaseSAP(shape_world, device=device),
+        ):
+            with (
+                self.subTest(broad_phase=type(broad_phase).__name__),
+                self.assertRaisesRegex(ValueError, "shape_displacement length must match"),
+            ):
+                broad_phase.launch(
+                    shape_lower,
+                    shape_upper,
+                    None,
+                    shape_group,
+                    shape_world,
+                    2,
+                    candidate_pair,
+                    candidate_pair_count,
+                    device,
+                    shape_displacement=shape_displacement,
+                )
+
+        with self.assertRaisesRegex(ValueError, "shape_displacement length must match"):
+            BroadPhaseExplicit().launch(
+                shape_lower,
+                shape_upper,
+                None,
+                wp.array([(0, 1)], dtype=wp.vec2i, device=device),
+                1,
+                candidate_pair,
+                candidate_pair_count,
+                device,
+                shape_displacement=shape_displacement,
+            )
+
+        BroadPhaseSAP(shape_world, device=device).launch(
+            shape_lower,
+            shape_upper,
+            None,
+            shape_group,
+            shape_world,
+            1,
+            candidate_pair,
+            candidate_pair_count,
+            device,
+        )
+        self.assertEqual(int(candidate_pair_count.numpy()[0]), 0)
 
     def test_nxn_broadphase(self):
         verbose = False

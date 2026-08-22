@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -22,10 +23,12 @@ def test_no_overhead_when_disabled(test, device):
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
 
-        test.assertIsNone(contacts.rigid_contact_diff_distance)
-        test.assertIsNone(contacts.rigid_contact_diff_normal)
-        test.assertIsNone(contacts.rigid_contact_diff_point0_world)
-        test.assertIsNone(contacts.rigid_contact_diff_point1_world)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            test.assertIsNone(contacts.rigid_contact_diff_distance)
+            test.assertIsNone(contacts.rigid_contact_diff_normal)
+            test.assertIsNone(contacts.rigid_contact_diff_point0_world)
+            test.assertIsNone(contacts.rigid_contact_diff_point1_world)
 
 
 def test_arrays_allocated_when_enabled(test, device):
@@ -40,11 +43,103 @@ def test_arrays_allocated_when_enabled(test, device):
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
 
-        test.assertIsNotNone(contacts.rigid_contact_diff_distance)
-        test.assertIsNotNone(contacts.rigid_contact_diff_normal)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            test.assertIsNotNone(contacts.rigid_contact_diff_distance)
+            test.assertIsNotNone(contacts.rigid_contact_diff_normal)
+            test.assertIsNotNone(contacts.rigid_contact_diff_point0_world)
+            test.assertIsNotNone(contacts.rigid_contact_diff_point1_world)
+            test.assertTrue(contacts.rigid_contact_diff_distance.requires_grad)
+
+
+def test_eval_rigid_contact_kinematics(test, device):
+    """Verify caller-provided rigid-contact kinematics outputs and gradients."""
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
+        builder.add_shape_sphere(body=body, radius=0.5)
+        builder.add_ground_plane()
+        model = builder.finalize(device=device, requires_grad=True)
+
+        pipeline = newton.CollisionPipeline(model, requires_grad=False)
+        contacts = pipeline.contacts()
+        state = model.state(requires_grad=True)
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device, requires_grad=True)
+        point0_world = wp.empty(contacts.rigid_contact_max, dtype=wp.vec3, device=device, requires_grad=True)
+        point1_world = wp.empty(contacts.rigid_contact_max, dtype=wp.vec3, device=device, requires_grad=True)
+
+        with wp.Tape() as tape:
+            pipeline.collide(state, contacts)
+            newton.eval_rigid_contact_kinematics(
+                model,
+                state,
+                contacts,
+                out_distance=distance,
+                out_point0_world=point0_world,
+                out_point1_world=point1_world,
+            )
+
+        count = contacts.rigid_contact_count.numpy()[0]
+        test.assertGreater(count, 0)
+        distances = distance.numpy()[:count]
+        points0 = point0_world.numpy()[:count]
+        points1 = point1_world.numpy()[:count]
+        normals = contacts.rigid_contact_normal.numpy()[:count]
+        margins0 = contacts.rigid_contact_margin0.numpy()[:count]
+        margins1 = contacts.rigid_contact_margin1.numpy()[:count]
+
+        expected_distances = np.sum(normals * (points1 - points0), axis=1) - margins0 - margins1
+        np.testing.assert_allclose(distances, expected_distances, atol=1.0e-6)
+
+        distance_only = wp.empty_like(distance)
+        newton.eval_rigid_contact_kinematics(
+            model,
+            state,
+            contacts,
+            out_distance=distance_only,
+        )
+        np.testing.assert_allclose(distance_only.numpy()[:count], distances, atol=1.0e-6)
+
+        point0_only = wp.empty_like(point0_world)
+        newton.eval_rigid_contact_kinematics(
+            model,
+            state,
+            contacts,
+            out_point0_world=point0_only,
+        )
+        np.testing.assert_allclose(point0_only.numpy()[:count], points0, atol=1.0e-6)
+
+        with test.assertRaisesRegex(ValueError, "At least one output"):
+            newton.eval_rigid_contact_kinematics(model, state, contacts)
+
+        tape.backward(grads={distance: wp.ones_like(distance)})
+        grad_q = tape.gradients.get(state.body_q)
+        test.assertIsNotNone(grad_q)
+        test.assertGreater(float(grad_q.numpy()[0, 2]), 0.0)
+
+
+def test_legacy_rigid_contact_kinematics_deprecated(test, device):
+    """Verify legacy rigid-contact kinematics attributes emit migration guidance."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
+    builder.add_shape_sphere(body=body, radius=0.5)
+    builder.add_ground_plane()
+    model = builder.finalize(device=device, requires_grad=True)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        pipeline.collide(model.state(), contacts)
+
+    with test.assertWarnsRegex(DeprecationWarning, r"deprecated in Newton 1\.6.*out_distance"):
+        distance = contacts.rigid_contact_diff_distance
+        test.assertTrue(np.any(distance.numpy()[: contacts.rigid_contact_count.numpy()[0]] < 0.0))
+    with test.assertWarnsRegex(DeprecationWarning, "rigid_contact_normal"):
+        test.assertIs(contacts.rigid_contact_diff_normal, contacts.rigid_contact_normal)
+    with test.assertWarnsRegex(DeprecationWarning, "out_point0_world"):
         test.assertIsNotNone(contacts.rigid_contact_diff_point0_world)
+    with test.assertWarnsRegex(DeprecationWarning, "out_point1_world"):
         test.assertIsNotNone(contacts.rigid_contact_diff_point1_world)
-        test.assertTrue(contacts.rigid_contact_diff_distance.requires_grad)
 
 
 def test_sphere_on_plane_distance(test, device):
@@ -58,16 +153,18 @@ def test_sphere_on_plane_distance(test, device):
         builder.add_ground_plane()
         model = builder.finalize(device=device, requires_grad=True)
 
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model, requires_grad=False)
         contacts = pipeline.contacts()
         state = model.state()
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
 
         pipeline.collide(state, contacts)
+        newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
 
         count = contacts.rigid_contact_count.numpy()[0]
         test.assertGreater(count, 0, "Expected at least one contact")
 
-        diff_dist = contacts.rigid_contact_diff_distance.numpy()[:count]
+        diff_dist = distance.numpy()[:count]
         test.assertTrue(
             np.any(diff_dist < 0.0),
             f"Expected negative (penetrating) distance, got {diff_dist}",
@@ -83,18 +180,16 @@ def test_gradient_flow_through_body_q(test, device):
         builder.add_ground_plane()
         model = builder.finalize(device=device, requires_grad=True)
 
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model, requires_grad=False)
         contacts = pipeline.contacts()
         state = model.state(requires_grad=True)
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device, requires_grad=True)
 
         with wp.Tape() as tape:
             pipeline.collide(state, contacts)
+            newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
 
-        tape.backward(
-            grads={
-                contacts.rigid_contact_diff_distance: wp.ones(contacts.rigid_contact_max, dtype=float, device=device)
-            }
-        )
+        tape.backward(grads={distance: wp.ones_like(distance)})
 
         grad_q = tape.gradients.get(state.body_q)
         test.assertIsNotNone(grad_q, "body_q gradient should be recorded on tape")
@@ -115,18 +210,16 @@ def test_gradient_direction(test, device):
         builder.add_ground_plane()
         model = builder.finalize(device=device, requires_grad=True)
 
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model, requires_grad=False)
         contacts = pipeline.contacts()
         state = model.state(requires_grad=True)
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device, requires_grad=True)
 
         with wp.Tape() as tape:
             pipeline.collide(state, contacts)
+            newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
 
-        tape.backward(
-            grads={
-                contacts.rigid_contact_diff_distance: wp.ones(contacts.rigid_contact_max, dtype=float, device=device)
-            }
-        )
+        tape.backward(grads={distance: wp.ones_like(distance)})
 
         grad_q = tape.gradients.get(state.body_q)
         test.assertIsNotNone(grad_q)
@@ -150,15 +243,17 @@ def test_collide_outside_tape(test, device):
         builder.add_ground_plane()
         model = builder.finalize(device=device, requires_grad=True)
 
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model, requires_grad=False)
         contacts = pipeline.contacts()
         state = model.state()
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
 
         pipeline.collide(state, contacts)
+        newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
 
         count = contacts.rigid_contact_count.numpy()[0]
         test.assertGreater(count, 0)
-        diff_dist = contacts.rigid_contact_diff_distance.numpy()[:count]
+        diff_dist = distance.numpy()[:count]
         test.assertTrue(np.any(diff_dist < 0.0))
 
 
@@ -172,21 +267,19 @@ def test_two_body_contact(test, device):
         builder.add_shape_box(body=body_b, hx=0.5, hy=0.5, hz=0.5)
         model = builder.finalize(device=device, requires_grad=True)
 
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model, requires_grad=False)
         contacts = pipeline.contacts()
         state = model.state(requires_grad=True)
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device, requires_grad=True)
 
         with wp.Tape() as tape:
             pipeline.collide(state, contacts)
+            newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
 
         count = contacts.rigid_contact_count.numpy()[0]
         test.assertGreater(count, 0, "Expected contacts between two overlapping boxes")
 
-        tape.backward(
-            grads={
-                contacts.rigid_contact_diff_distance: wp.ones(contacts.rigid_contact_max, dtype=float, device=device)
-            }
-        )
+        tape.backward(grads={distance: wp.ones_like(distance)})
 
         grad_q = tape.gradients.get(state.body_q)
         test.assertIsNotNone(grad_q)
@@ -209,18 +302,29 @@ def test_world_points_correctness(test, device):
         builder.add_ground_plane()
         model = builder.finalize(device=device, requires_grad=True)
 
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model, requires_grad=False)
         contacts = pipeline.contacts()
         state = model.state()
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+        point0_world = wp.empty(contacts.rigid_contact_max, dtype=wp.vec3, device=device)
+        point1_world = wp.empty(contacts.rigid_contact_max, dtype=wp.vec3, device=device)
         pipeline.collide(state, contacts)
+        newton.eval_rigid_contact_kinematics(
+            model,
+            state,
+            contacts,
+            out_distance=distance,
+            out_point0_world=point0_world,
+            out_point1_world=point1_world,
+        )
 
         count = contacts.rigid_contact_count.numpy()[0]
         test.assertGreater(count, 0)
 
-        p0 = contacts.rigid_contact_diff_point0_world.numpy()[:count]
-        p1 = contacts.rigid_contact_diff_point1_world.numpy()[:count]
-        normals = contacts.rigid_contact_diff_normal.numpy()[:count]
-        distances = contacts.rigid_contact_diff_distance.numpy()[:count]
+        p0 = point0_world.numpy()[:count]
+        p1 = point1_world.numpy()[:count]
+        normals = contacts.rigid_contact_normal.numpy()[:count]
+        distances = distance.numpy()[:count]
         margins0 = contacts.rigid_contact_margin0.numpy()[:count]
         margins1 = contacts.rigid_contact_margin1.numpy()[:count]
 
@@ -257,13 +361,15 @@ def test_finite_difference_distance_gradient(test, device):
         builder.add_ground_plane()
         model = builder.finalize(device=device, requires_grad=True)
 
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model, requires_grad=False)
         contacts = pipeline.contacts()
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device, requires_grad=True)
 
         # Analytical gradient via tape
         state = model.state(requires_grad=True)
         with wp.Tape() as tape:
             pipeline.collide(state, contacts)
+            newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
 
         count = contacts.rigid_contact_count.numpy()[0]
         test.assertGreater(count, 0)
@@ -272,7 +378,7 @@ def test_finite_difference_distance_gradient(test, device):
         grad_seed_np[:count] = 1.0
         grad_seed = wp.array(grad_seed_np, dtype=float, device=device)
 
-        tape.backward(grads={contacts.rigid_contact_diff_distance: grad_seed})
+        tape.backward(grads={distance: grad_seed})
         grad_q = tape.gradients.get(state.body_q)
         analytic_dz = grad_q.numpy()[0, 2]
 
@@ -285,8 +391,9 @@ def test_finite_difference_distance_gradient(test, device):
             q_np[0, 2] += sign * eps
             state_fd.body_q = wp.array(q_np, dtype=wp.transform, device=device)
             pipeline.collide(state_fd, contacts)
+            newton.eval_rigid_contact_kinematics(model, state_fd, contacts, out_distance=distance)
             c = contacts.rigid_contact_count.numpy()[0]
-            d = contacts.rigid_contact_diff_distance.numpy()[:c].sum() if c > 0 else 0.0
+            d = distance.numpy()[:c].sum() if c > 0 else 0.0
             dist_vals.append(d)
 
         fd_dz = (dist_vals[1] - dist_vals[0]) / (2.0 * eps)
@@ -308,29 +415,24 @@ def test_repeated_collide_independent_gradients(test, device):
         builder.add_ground_plane()
         model = builder.finalize(device=device, requires_grad=True)
 
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model, requires_grad=False)
         contacts = pipeline.contacts()
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device, requires_grad=True)
 
         # First tape
         state1 = model.state(requires_grad=True)
         with wp.Tape() as tape1:
             pipeline.collide(state1, contacts)
-        tape1.backward(
-            grads={
-                contacts.rigid_contact_diff_distance: wp.ones(contacts.rigid_contact_max, dtype=float, device=device)
-            }
-        )
+            newton.eval_rigid_contact_kinematics(model, state1, contacts, out_distance=distance)
+        tape1.backward(grads={distance: wp.ones_like(distance)})
         grad1 = tape1.gradients.get(state1.body_q).numpy().copy()
 
         # Second tape with same state values
         state2 = model.state(requires_grad=True)
         with wp.Tape() as tape2:
             pipeline.collide(state2, contacts)
-        tape2.backward(
-            grads={
-                contacts.rigid_contact_diff_distance: wp.ones(contacts.rigid_contact_max, dtype=float, device=device)
-            }
-        )
+            newton.eval_rigid_contact_kinematics(model, state2, contacts, out_distance=distance)
+        tape2.backward(grads={distance: wp.ones_like(distance)})
         grad2 = tape2.gradients.get(state2.body_q).numpy().copy()
 
         np.testing.assert_allclose(
@@ -351,13 +453,15 @@ def test_finite_difference_two_body_gradient(test, device):
         builder.add_shape_box(body=body_b, hx=0.5, hy=0.5, hz=0.5)
         model = builder.finalize(device=device, requires_grad=True)
 
-        pipeline = newton.CollisionPipeline(model)
+        pipeline = newton.CollisionPipeline(model, requires_grad=False)
         contacts = pipeline.contacts()
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device, requires_grad=True)
 
         # Analytical gradient via tape
         state = model.state(requires_grad=True)
         with wp.Tape() as tape:
             pipeline.collide(state, contacts)
+            newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
 
         count = contacts.rigid_contact_count.numpy()[0]
         test.assertGreater(count, 0, "Expected contacts between two overlapping boxes")
@@ -367,7 +471,7 @@ def test_finite_difference_two_body_gradient(test, device):
         grad_seed_np[:count] = 1.0
         grad_seed = wp.array(grad_seed_np, dtype=float, device=device)
 
-        tape.backward(grads={contacts.rigid_contact_diff_distance: grad_seed})
+        tape.backward(grads={distance: grad_seed})
         grad_q = tape.gradients.get(state.body_q)
         test.assertIsNotNone(grad_q)
         analytic_grad = grad_q.numpy()
@@ -382,8 +486,9 @@ def test_finite_difference_two_body_gradient(test, device):
                     q_np[body_idx, axis] += sign * eps
                     state_fd.body_q = wp.array(q_np, dtype=wp.transform, device=device)
                     pipeline.collide(state_fd, contacts)
+                    newton.eval_rigid_contact_kinematics(model, state_fd, contacts, out_distance=distance)
                     c = contacts.rigid_contact_count.numpy()[0]
-                    d = contacts.rigid_contact_diff_distance.numpy()[:c].sum() if c > 0 else 0.0
+                    d = distance.numpy()[:c].sum() if c > 0 else 0.0
                     dist_vals.append(d)
 
                 fd_grad = (dist_vals[1] - dist_vals[0]) / (2.0 * eps)
@@ -532,6 +637,18 @@ add_function_test(
     TestDifferentiableContacts,
     "test_arrays_allocated_when_enabled",
     test_arrays_allocated_when_enabled,
+    devices=devices,
+)
+add_function_test(
+    TestDifferentiableContacts,
+    "test_eval_rigid_contact_kinematics",
+    test_eval_rigid_contact_kinematics,
+    devices=devices,
+)
+add_function_test(
+    TestDifferentiableContacts,
+    "test_legacy_rigid_contact_kinematics_deprecated",
+    test_legacy_rigid_contact_kinematics_deprecated,
     devices=devices,
 )
 add_function_test(

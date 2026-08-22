@@ -385,6 +385,13 @@ class ConstrainedDynamicsConfig(ConfigBase):
     Defaults to an empty dictionary.
     """
 
+    cull_speculative_contacts: bool = True
+    """
+    Whether to cull speculative (= separated) contacts in the dynamics solve.
+    These contacts have occasionally led to numerical instabilities, and
+    can yield inaccurate restitutive impacts.
+    """
+
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:

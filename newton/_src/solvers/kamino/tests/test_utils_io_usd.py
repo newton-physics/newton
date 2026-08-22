@@ -1258,6 +1258,77 @@ class TestUSDImporter(unittest.TestCase):
         self.assertFalse(collider_visible(builder_hidden, "BodyWithVisuals"))
         self.assertTrue(collider_visible(builder_hidden, "BodyWithoutVisuals"))
 
+    def _only_mesh_data(self, builder: ModelBuilderKamino):
+        """Return the ``Mesh`` data of the builder's single mesh shape."""
+        meshes = [shape.data for shape in builder.shapes.values() if hasattr(shape, "data")]
+        self.assertEqual(len(meshes), 1)
+        return meshes[0]
+
+    @staticmethod
+    def _define_mesh_quad(stage, path: str):
+        """Define a unit quad mesh, returning the UsdGeom.Mesh."""
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        xform = UsdGeom.Xform.Define(stage, path)
+        UsdPhysics.RigidBodyAPI.Apply(xform.GetPrim())
+        mass = UsdPhysics.MassAPI.Apply(xform.GetPrim())
+        mass.CreateMassAttr(1.0)
+        mass.CreateDiagonalInertiaAttr(Gf.Vec3f(1.0, 1.0, 1.0))
+
+        mesh = UsdGeom.Mesh.Define(stage, f"{path}/Mesh")
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        mesh.CreatePointsAttr([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(1, 1, 0), Gf.Vec3f(0, 1, 0)])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        mesh.CreateFaceVertexCountsAttr([4])
+        return mesh
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_mesh_with_declared_but_unauthored_normals(self):
+        """Import a mesh whose normals attribute is declared without a value.
+
+        ``CreateNormalsAttr()`` leaves ``IsDefined()`` true while ``Get()`` returns
+        ``None``, so guarding on ``IsDefined()`` alone used to pass ``None`` through to
+        ``Mesh`` and raise ``cannot reshape array of size 1 into shape (3)``.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        mesh = self._define_mesh_quad(stage, "/Body")
+        mesh.CreateNormalsAttr()  # declared, never authored
+        self.assertTrue(mesh.GetNormalsAttr().IsDefined())
+        self.assertIsNone(mesh.GetNormalsAttr().Get())
+
+        builder = USDImporter().import_from(stage, load_materials=False)
+
+        mesh_data = self._only_mesh_data(builder)
+        self.assertIsNone(mesh_data.normals)
+        # The quad is fan-triangulated into two triangles.
+        self.assertEqual(len(mesh_data.indices), 6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_mesh_prefers_primvars_normals(self):
+        """Read normals from ``primvars:normals`` in preference to the mesh attribute."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        mesh = self._define_mesh_quad(stage, "/Body")
+        primvar = UsdGeom.PrimvarsAPI(mesh.GetPrim()).CreatePrimvar(
+            "normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex
+        )
+        primvar.Set([Gf.Vec3f(0, 0, 1)] * 4)
+
+        builder = USDImporter().import_from(stage, load_materials=False)
+
+        normals = self._only_mesh_data(builder).normals
+        self.assertIsNotNone(normals)
+        np.testing.assert_allclose(normals, np.tile([0.0, 0.0, 1.0], (4, 1)), atol=1e-6)
+
 
 class TestUSDKaminoSceneAPIImport(unittest.TestCase):
     def setUp(self):
