@@ -9,6 +9,7 @@ import time
 import unittest
 import warnings
 import xml.etree.ElementTree as ET
+from unittest.mock import patch
 
 import numpy as np  # For numerical operations and random values
 import warp as wp
@@ -4387,6 +4388,22 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             self.sphere_radius * 1.2,
             f"Sphere is floating above the plane. Final height: {final_height}",
         )
+
+    def test_initial_forward_skips_mujoco_contacts(self):
+        """Newton-contact mode avoids transient MuJoCo collision detection."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        original_forward = mujoco.mj_forward
+        contact_disabled_during_forward: list[bool] = []
+
+        def recording_forward(model, data):
+            contact_disabled_during_forward.append(bool(model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_CONTACT))
+            return original_forward(model, data)
+
+        with patch.object(mujoco, "mj_forward", side_effect=recording_forward):
+            solver = SolverMuJoCo(self.model, use_mujoco_contacts=False)
+
+        self.assertEqual(contact_disabled_during_forward, [True])
+        self.assertFalse(solver.mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_CONTACT)
 
     def test_sphere_rolls_without_slip_with_newton_contacts(self):
         radius = 0.1
