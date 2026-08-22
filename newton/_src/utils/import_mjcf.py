@@ -50,6 +50,123 @@ from .import_utils import (
 from .mesh import load_meshes_from_file
 
 
+def _compute_mjcf_primitive_shell_inertia(
+    geom_type: str,
+    size: tuple[float, ...] | list[float] | np.ndarray,
+    mass: float,
+) -> tuple[float, wp.mat33]:
+    """Compute primitive surface area and shell inertia using MuJoCo formulas."""
+    size = np.asarray(size, dtype=np.float64)
+
+    if geom_type == "sphere":
+        radius = size[0]
+        area = 4.0 * np.pi * radius**2
+        inertia = np.full(3, 2.0 * mass * radius**2 / 3.0)
+    elif geom_type == "capsule":
+        radius, half_height = size[:2]
+        height = 2.0 * half_height
+        sphere_area = 4.0 * np.pi * radius**2
+        cylinder_area = 2.0 * np.pi * radius * height
+        area = sphere_area + cylinder_area
+        sphere_mass = mass * sphere_area / area
+        cylinder_mass = mass - sphere_mass
+        transverse = cylinder_mass * (6.0 * radius**2 + height**2) / 12.0
+        axial = cylinder_mass * radius**2
+        sphere_inertia = 2.0 * sphere_mass * radius**2 / 3.0
+        hemisphere_com = radius / 2.0
+        hemisphere_pos = half_height + hemisphere_com
+        transverse += sphere_inertia + sphere_mass * (hemisphere_pos**2 - hemisphere_com**2)
+        axial += sphere_inertia
+        inertia = np.array([transverse, transverse, axial])
+    elif geom_type == "cylinder":
+        radius, half_height = size[:2]
+        height = 2.0 * half_height
+        disk_area = np.pi * radius**2
+        cylinder_area = 2.0 * np.pi * radius * height
+        area = 2.0 * disk_area + cylinder_area
+        disk_mass = mass * disk_area / area
+        cylinder_mass = mass - 2.0 * disk_mass
+        transverse = cylinder_mass * (6.0 * radius**2 + height**2) / 12.0
+        axial = cylinder_mass * radius**2
+        transverse += 2.0 * disk_mass * (radius**2 / 4.0 + half_height**2)
+        axial += disk_mass * radius**2
+        inertia = np.array([transverse, transverse, axial])
+    elif geom_type == "ellipsoid":
+        rx, ry, rz = size[:3]
+        p = 1.6075
+        area = 4.0 * np.pi * ((rx * ry) ** p + (ry * rz) ** p + (rz * rx) ** p) ** (1.0 / p) / (3.0 ** (1.0 / p))
+        eps = 1.0e-6
+        expanded = np.array([rx + eps, ry + eps, rz + eps])
+        volume = 4.0 * np.pi * rx * ry * rz / 3.0
+        expanded_volume = 4.0 * np.pi * np.prod(expanded) / 3.0
+        shell_density = mass / (expanded_volume - volume)
+        inner_mass = volume * shell_density
+        outer_mass = expanded_volume * shell_density
+        inner_sq = np.square([rx, ry, rz])
+        outer_sq = np.square(expanded)
+        inner_inertia = (
+            inner_mass
+            * np.array([inner_sq[1] + inner_sq[2], inner_sq[0] + inner_sq[2], inner_sq[0] + inner_sq[1]])
+            / 5.0
+        )
+        outer_inertia = (
+            outer_mass
+            * np.array([outer_sq[1] + outer_sq[2], outer_sq[0] + outer_sq[2], outer_sq[0] + outer_sq[1]])
+            / 5.0
+        )
+        inertia = outer_inertia - inner_inertia
+    elif geom_type == "box":
+        hx, hy, hz = size[:3]
+        lx, ly, lz = 2.0 * hx, 2.0 * hy, 2.0 * hz
+        area_xy, area_yz, area_zx = lx * ly, ly * lz, lz * lx
+        area = 2.0 * (area_xy + area_yz + area_zx)
+        mass_xy = mass * area_xy / area
+        mass_yz = mass * area_yz / area
+        mass_zx = mass * area_zx / area
+        inertia = np.array(
+            [
+                2.0
+                * (
+                    mass_xy * hz**2
+                    + mass_zx * hy**2
+                    + mass_xy * ly**2 / 12.0
+                    + mass_yz * (ly**2 + lz**2) / 12.0
+                    + mass_zx * lz**2 / 12.0
+                ),
+                2.0
+                * (
+                    mass_xy * hz**2
+                    + mass_yz * hx**2
+                    + mass_xy * lx**2 / 12.0
+                    + mass_yz * lz**2 / 12.0
+                    + mass_zx * (lx**2 + lz**2) / 12.0
+                ),
+                2.0
+                * (
+                    mass_yz * hx**2
+                    + mass_zx * hy**2
+                    + mass_xy * (lx**2 + ly**2) / 12.0
+                    + mass_yz * ly**2 / 12.0
+                    + mass_zx * lx**2 / 12.0
+                ),
+            ]
+        )
+    else:
+        raise ValueError(f"Unsupported primitive shell inertia type: {geom_type}")
+
+    return float(area), wp.mat33(
+        float(inertia[0]),
+        0.0,
+        0.0,
+        0.0,
+        float(inertia[1]),
+        0.0,
+        0.0,
+        0.0,
+        float(inertia[2]),
+    )
+
+
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
     """Default path resolver - joins base_dir with file_path.
 
@@ -972,11 +1089,21 @@ def parse_mjcf(
                 geom_density = 0.0
                 geom_mass_explicit = None
 
+            primitive_shell_inertia = geom_attrib.get("shellinertia", "false").lower() == "true" and geom_type in {
+                "sphere",
+                "capsule",
+                "cylinder",
+                "ellipsoid",
+                "box",
+            }
+            shell_density = geom_density
+
             shape_cfg = builder.default_shape_cfg.copy()
             shape_cfg.is_visible = visible
             shape_cfg.has_shape_collision = not just_visual
             shape_cfg.has_particle_collision = not just_visual
-            shape_cfg.density = geom_density
+            shape_cfg.density = 0.0 if primitive_shell_inertia else geom_density
+            shape_cfg.is_solid = not primitive_shell_inertia
 
             # Respect MJCF contype/conaffinity=0: disable automatic broadphase contacts
             # while keeping the shape as a collider for explicit <pair> contacts.
@@ -1391,6 +1518,18 @@ def parse_mjcf(
             else:
                 if verbose:
                     print(f"MJCF parsing shape {geom_name} issue: geom type {geom_type} is unsupported")
+
+            if primitive_shell_inertia and link >= 0 and not shape_builder.body_lock_inertia[link]:
+                if geom_type in {"capsule", "cylinder"}:
+                    shell_size = (geom_radius, geom_height)
+                else:
+                    shell_size = geom_size
+                unit_area, _ = _compute_mjcf_primitive_shell_inertia(geom_type, shell_size, 1.0)
+                shell_mass = geom_mass_explicit if geom_mass_explicit is not None else shell_density * unit_area
+                if shell_mass > 0.0:
+                    _, inertia_tensor = _compute_mjcf_primitive_shell_inertia(geom_type, shell_size, shell_mass)
+                    shape_builder._update_body_mass(link, shell_mass, inertia_tensor, tf.p, tf.q)
+                explicit_mass_handled = geom_mass_explicit is not None
 
             # Handle explicit mass: compute inertia using existing functions, add to body.
             # Visual geoms can still contribute authored mass when parse_visuals=True.
