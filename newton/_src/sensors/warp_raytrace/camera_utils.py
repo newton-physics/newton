@@ -440,6 +440,63 @@ def compute_camera_rays_pinhole_from_aperture_kernel(
     out_rays[output_camera_index, py, px, 1] = wp.normalize(ray_direction_camera_space)
 
 
+_PINHOLE_OPENCV_INVERSION_ITERATIONS = 10
+
+
+@wp.kernel(enable_backward=False)
+def compute_camera_rays_pinhole_opencv_kernel(
+    width: int,
+    height: int,
+    image_width: wp.float32,
+    image_height: wp.float32,
+    fx: wp.float32,
+    fy: wp.float32,
+    cx: wp.float32,
+    cy: wp.float32,
+    k1: wp.float32,
+    k2: wp.float32,
+    k3: wp.float32,
+    k4: wp.float32,
+    k5: wp.float32,
+    k6: wp.float32,
+    p1: wp.float32,
+    p2: wp.float32,
+    s1: wp.float32,
+    s2: wp.float32,
+    s3: wp.float32,
+    s4: wp.float32,
+    camera_index: int,
+    out_rays: wp.array4d[wp.vec3f],
+):
+    py, px = wp.tid()
+    u = ((float(px) + 0.5) / float(width)) * image_width
+    v = ((float(py) + 0.5) / float(height)) * image_height
+    x_distorted = (u - cx) / fx
+    y_distorted = (v - cy) / fy
+
+    x = x_distorted
+    y = y_distorted
+    for _ in range(_PINHOLE_OPENCV_INVERSION_ITERATIONS):
+        radius_squared = x * x + y * y
+        radius_fourth = radius_squared * radius_squared
+        radius_sixth = radius_fourth * radius_squared
+        radial = (1.0 + k1 * radius_squared + k2 * radius_fourth + k3 * radius_sixth) / (
+            1.0 + k4 * radius_squared + k5 * radius_fourth + k6 * radius_sixth
+        )
+        tangential_prism_x = (
+            2.0 * p1 * x * y + p2 * (radius_squared + 2.0 * x * x) + s1 * radius_squared + s2 * radius_fourth
+        )
+        tangential_prism_y = (
+            p1 * (radius_squared + 2.0 * y * y) + 2.0 * p2 * x * y + s3 * radius_squared + s4 * radius_fourth
+        )
+        x = (x_distorted - tangential_prism_x) / radial
+        y = (y_distorted - tangential_prism_y) / radial
+
+    ray_direction_camera_space = wp.normalize(wp.vec3f(x, -y, -1.0))
+    out_rays[camera_index, py, px, 0] = wp.vec3f(0.0)
+    out_rays[camera_index, py, px, 1] = ray_direction_camera_space
+
+
 @wp.kernel(enable_backward=False)
 def compute_camera_rays_fisheye_opencv_kernel(
     width: int,
