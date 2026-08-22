@@ -207,7 +207,8 @@ class Mesh:
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
 
         self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
-        self._indices = np.array(indices, dtype=np.int32).flatten()
+        self._indices = self._normalize_indices(indices)
+        self._validate_indices(self._vertices, self._indices)
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self._color: Vec3 | None = None
@@ -235,11 +236,57 @@ class Mesh:
         self.sdf = sdf
 
         if compute_inertia:
-            self.mass, self.com, self.inertia, _ = compute_inertia_mesh(1.0, vertices, indices, is_solid=is_solid)
+            self.mass, self.com, self.inertia, _ = compute_inertia_mesh(
+                1.0, self._vertices, self._indices, is_solid=is_solid
+            )
         else:
             self.inertia = wp.mat33(np.eye(3))
             self.mass = 1.0
             self.com = wp.vec3()
+
+    @staticmethod
+    def _normalize_indices(indices: Sequence[int] | np.ndarray) -> np.ndarray:
+        """Convert triangle connectivity to int32 without changing values."""
+        try:
+            source = np.asarray(indices)
+            if np.iscomplexobj(source):
+                raise ValueError
+            normalized = np.asarray(indices, dtype=np.int64)
+            if not np.array_equal(source, normalized):
+                raise ValueError
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError("indices must contain integer indices representable as int32.") from exc
+
+        int32_info = np.iinfo(np.int32)
+        if normalized.size > 0 and (int(normalized.min()) < int32_info.min or int(normalized.max()) > int32_info.max):
+            raise ValueError("indices must contain integer indices representable as int32.")
+        return normalized.astype(np.int32).flatten()
+
+    @staticmethod
+    def _validate_indices(vertices: np.ndarray, indices: np.ndarray) -> None:
+        """Validate flattened triangle connectivity against the vertex array."""
+        if len(indices) % 3 != 0:
+            raise ValueError(f"indices length must be a multiple of 3, got {len(indices)}.")
+
+        if len(indices) == 0:
+            return
+
+        vertex_count = len(vertices)
+        idx_min = int(indices.min())
+        idx_max = int(indices.max())
+        if idx_min < 0:
+            raise ValueError(f"indices contains negative index {idx_min}.")
+        if idx_max >= vertex_count:
+            raise ValueError(f"indices contains index {idx_max} which exceeds vertex count {vertex_count}.")
+
+    def _replace_geometry(self, vertices: Sequence[Vec3] | np.ndarray, indices: Sequence[int] | np.ndarray) -> None:
+        """Replace vertices and indices as one validated geometry update."""
+        normalized_vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
+        normalized_indices = self._normalize_indices(indices)
+        self._validate_indices(normalized_vertices, normalized_indices)
+        self._vertices = normalized_vertices
+        self._indices = normalized_indices
+        self.invalidate_cache()
 
     @staticmethod
     def create_sphere(
@@ -384,11 +431,12 @@ class Mesh:
         up_axis: Axis = Axis.Y,
         segments: int = 32,
         top_radius: float | None = None,
+        barrel_radius: float = 0.0,
         compute_normals: bool = True,
         compute_uvs: bool = True,
         compute_inertia: bool = True,
     ) -> "Mesh":
-        """Create a cylinder or truncated cone mesh.
+        """Create a cylinder, barrel cylinder, or truncated cone mesh.
 
         Args:
             radius [m]: Bottom radius.
@@ -396,6 +444,9 @@ class Mesh:
             up_axis: Long axis as a ``newton.Axis`` value.
             segments: Circumferential tessellation resolution.
             top_radius [m]: Optional top radius. If ``None``, equals ``radius``.
+            barrel_radius [m]: Radius of the symmetric circular side-profile arc. Use ``0.0`` for
+                straight sides. Nonzero values must be at least ``half_height`` and cannot be
+                combined with a different ``top_radius``.
             compute_normals: If ``True``, generate per-vertex normals.
             compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
@@ -411,6 +462,7 @@ class Mesh:
             up_axis=int(up_axis),
             segments=segments,
             top_radius=top_radius,
+            barrel_radius=barrel_radius,
             compute_normals=compute_normals,
             compute_uvs=compute_uvs,
         )
@@ -778,6 +830,7 @@ class Mesh:
         texture_format: str = "uint16",
         sign_method: "SignMethod" = "auto",
         cache_dir: str | os.PathLike[str] | None = None,
+        paired_samples: bool = True,
         edge_lower_angle_threshold_rad: float = math.radians(0.1),
         edge_upper_angle_threshold_rad: float = math.radians(10.0),
         edge_inward_filter: bool = True,
@@ -822,6 +875,11 @@ class Mesh:
                 sparse SDF. Keyed by mesh content and build parameters
                 (``shape_margin`` is applied at sample time and is *not*
                 part of the cache key). Defaults to no caching.
+            paired_samples: Store each SDF sample with its positive-X
+                neighbor for faster software interpolation. Disable to halve
+                texture memory at the cost of slower hydroelastic sampling.
+                When the mesh is added to a :class:`ModelBuilder`, this value
+                must match :attr:`ModelBuilder.sdf_texture_paired_samples`.
             edge_lower_angle_threshold_rad: Drop internal edges whose
                 dihedral angle is below this value [rad]. Set to 0 to keep
                 every manifold edge. A negative value opts out of edge
@@ -893,6 +951,7 @@ class Mesh:
             texture_format=texture_format,
             sign_method=sign_method,
             cache_dir=cache_dir,
+            paired_samples=paired_samples,
         )
 
         try:
@@ -998,9 +1057,26 @@ class Mesh:
             self._collision_edges = None
             return
 
-        full_edges, full_angles, full_avg_normals, full_area_sums = self._filter_edges_by_dihedral_angle(
-            lower_angle_threshold_rad, return_diagnostics=True
-        )
+        canonical = None
+        topology = None
+        run_inward_filter = enable_inward_filter and sign_method != "normal" and self._indices.size > 0
+        if run_inward_filter:
+            canonical = self._canonical_vertex_ids()
+            topology = self._build_edge_slot_topology(canonical)
+
+        if enable_box_absorption:
+            full_edges, full_angles, full_avg_normals, full_area_sums = self._filter_edges_by_dihedral_angle(
+                lower_angle_threshold_rad,
+                return_diagnostics=True,
+                _canonical=canonical,
+                _topology=topology,
+            )
+        else:
+            full_edges = self._filter_edges_by_dihedral_angle(
+                lower_angle_threshold_rad,
+                _canonical=canonical,
+                _topology=topology,
+            )
 
         if enable_box_absorption and len(full_edges) > 0:
             from .edge_redundancy import find_redundant_edges, resolve_edge_removals  # noqa: PLC0415
@@ -1026,10 +1102,15 @@ class Mesh:
 
         # Pseudo-normal SDFs define a sided sheet rather than a closed solid,
         # so they have no unambiguous fully inward features to remove.
-        if enable_inward_filter and sign_method != "normal" and len(full_edges) > 0:
+        if run_inward_filter and len(full_edges) > 0:
             from .edge_inward_filter import filter_fully_inward_edges  # noqa: PLC0415
 
-            full_edges = filter_fully_inward_edges(self, full_edges)
+            full_edges = filter_fully_inward_edges(
+                self,
+                full_edges,
+                canonical_vertex_ids=canonical,
+                edge_slot_topology=topology,
+            )
 
         self._collision_edges = np.ascontiguousarray(full_edges, dtype=np.int32)
 
@@ -1072,7 +1153,9 @@ class Mesh:
 
     @vertices.setter
     def vertices(self, value):
-        self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
+        vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
+        self._validate_indices(vertices, self._indices)
+        self._vertices = vertices
         self.invalidate_cache()
 
     @property
@@ -1081,7 +1164,9 @@ class Mesh:
 
     @indices.setter
     def indices(self, value):
-        self._indices = np.array(value, dtype=np.int32).flatten()
+        indices = self._normalize_indices(value)
+        self._validate_indices(self._vertices, indices)
+        self._indices = indices
         self.invalidate_cache()
 
     def _canonical_vertex_ids(self) -> np.ndarray:
@@ -1128,6 +1213,7 @@ class Mesh:
 
     def _build_edge_slot_topology(
         self,
+        canonical: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Return shared per-slot edge topology and per-triangle face normals.
 
@@ -1151,7 +1237,8 @@ class Mesh:
         """
         tris = self._indices.reshape(-1, 3)
         n = len(tris)
-        canonical = self._canonical_vertex_ids()
+        if canonical is None:
+            canonical = self._canonical_vertex_ids()
 
         c = canonical[tris]
         canon_edges = np.empty((n * 3, 2), dtype=np.int64)
@@ -1221,6 +1308,8 @@ class Mesh:
         lower_angle_threshold_rad: float,
         *,
         return_diagnostics: bool = False,
+        _canonical: np.ndarray | None = None,
+        _topology: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None,
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Return unique edge vertex pairs, dropping near-coplanar internal edges.
 
@@ -1247,14 +1336,16 @@ class Mesh:
             edges = self.edges
             if not return_diagnostics:
                 return edges
-            return self._compute_edge_dihedral_diagnostics(edges)
+            return self._compute_edge_dihedral_diagnostics(edges, canonical=_canonical, topology=_topology)
 
         if lower_angle_threshold_rad <= 0.0:
             return _full_with_optional_diagnostics()
         if self._indices.size == 0 or self._vertices.size == 0:
             return _full_with_optional_diagnostics()
 
-        orig_edges, _slot_keys, order, keys_sorted, face_normals, face_norms = self._build_edge_slot_topology()
+        if _topology is None:
+            _topology = self._build_edge_slot_topology(_canonical)
+        orig_edges, _slot_keys, order, keys_sorted, face_normals, face_norms = _topology
         n_slots = orig_edges.shape[0]
 
         # Group boundaries via change points in the sorted keys.
@@ -1315,7 +1406,11 @@ class Mesh:
         return kept_edges, kept_angles, kept_avg_normals, kept_area_sums
 
     def _compute_edge_dihedral_diagnostics(
-        self, edges: np.ndarray
+        self,
+        edges: np.ndarray,
+        *,
+        canonical: np.ndarray | None = None,
+        topology: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Per-edge dihedral angle, averaged adjacent-face normal, and area sum.
 
@@ -1331,9 +1426,12 @@ class Mesh:
         if n_edges == 0 or self._indices.size == 0 or self._vertices.size == 0:
             return edges, angles, avg_normals, area_sums
 
-        _orig_edges, _slot_keys, order, keys_sorted, face_normals, face_norms = self._build_edge_slot_topology()
+        if topology is None:
+            topology = self._build_edge_slot_topology(canonical)
+        _orig_edges, _slot_keys, order, keys_sorted, face_normals, face_norms = topology
 
-        canonical = self._canonical_vertex_ids()
+        if canonical is None:
+            canonical = self._canonical_vertex_ids()
         edge_canon0 = np.minimum(canonical[edges[:, 0]], canonical[edges[:, 1]])
         edge_canon1 = np.maximum(canonical[edges[:, 0]], canonical[edges[:, 1]])
         edge_keys = (edge_canon0.astype(np.int64) << 32) | edge_canon1.astype(np.int64)
@@ -1487,6 +1585,7 @@ class Mesh:
         Returns:
             The ID of the simulation-ready Warp Mesh.
         """
+        self._validate_indices(self._vertices, self._indices)
         device = wp.get_device(device)
         # wp.Device is not hashable, key on its alias instead
         cache_key = (device.alias, requires_grad, bvh_constructor)
@@ -1517,8 +1616,7 @@ class Mesh:
 
         hull_vertices, hull_faces = remesh_convex_hull(self.vertices, maxhullvert=self.maxhullvert)
         if replace:
-            self.vertices = hull_vertices
-            self.indices = hull_faces
+            self._replace_geometry(hull_vertices, hull_faces)
             return self
         else:
             # create a new mesh for the convex hull
@@ -2210,6 +2308,9 @@ class Heightfield:
             hy: Half-extent in Y direction. The heightfield spans [-hy, +hy].
             min_z: World-space Z value corresponding to data minimum. Must be provided
                 together with ``max_z``, or both omitted to auto-derive from data.
+                Uniform data normalizes to zeros, so with an explicit range the flat
+                surface sits at ``min_z`` (matching MuJoCo's compilation of constant
+                elevation); omit both bounds to place a flat field at its value.
             max_z: World-space Z value corresponding to data maximum. Must be provided
                 together with ``min_z``, or both omitted to auto-derive from data.
         """
@@ -2221,7 +2322,11 @@ class Heightfield:
         raw = np.array(data, dtype=np.float32).reshape(nrow, ncol)
         d_min, d_max = float(raw.min()), float(raw.max())
 
-        # Normalize data to [0, 1]
+        # Normalize data to [0, 1]. Uniform data has no range of its own and
+        # normalizes to zeros, so the surface sits at min_z — the same
+        # convention MuJoCo compiles (and SolverMuJoCo re-derives), keeping
+        # every solver's view of the field identical. To place a flat field
+        # at its value, omit min_z/max_z so both derive from the data.
         if d_max > d_min:
             self._data = (raw - d_min) / (d_max - d_min)
         else:
