@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Literal
 
 import warp as wp
@@ -12,6 +13,28 @@ from ..utils.deprecation import deprecate_nonkeyword_arguments
 
 GENERATION_SENTINEL = -1
 """Value reserved as an impossible generation; the increment kernel skips it."""
+
+_RIGID_CONTACT_DIFF_REPLACEMENTS = {
+    "rigid_contact_diff_distance": (
+        "allocate an output array and pass it as out_distance to newton.eval_rigid_contact_kinematics()"
+    ),
+    "rigid_contact_diff_normal": "use Contacts.rigid_contact_normal",
+    "rigid_contact_diff_point0_world": (
+        "allocate an output array and pass it as out_point0_world to newton.eval_rigid_contact_kinematics()"
+    ),
+    "rigid_contact_diff_point1_world": (
+        "allocate an output array and pass it as out_point1_world to newton.eval_rigid_contact_kinematics()"
+    ),
+}
+
+
+def _warn_rigid_contact_diff_deprecated(name: str) -> None:
+    replacement = _RIGID_CONTACT_DIFF_REPLACEMENTS[name]
+    warnings.warn(
+        f"Contacts.{name} is deprecated in Newton 1.6 and will be removed in a future release; {replacement}.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 @wp.kernel(enable_backward=False)
@@ -166,12 +189,12 @@ class Contacts:
                 particle + edge + face candidate-pair count so a custom (smaller)
                 ``soft_contact_max`` cannot drop a launch thread's replay slot.
             requires_grad: Whether contact arrays require gradients for differentiable
-                simulation.  When ``True``, soft contact arrays (body_pos, body_vel, normal)
+                simulation. When ``True``, soft contact arrays (body_pos, body_vel, normal)
                 are allocated with gradients so that gradient-based optimization can flow
-                through particle-shape contacts, **and** additional differentiable rigid
-                contact arrays are allocated (``rigid_contact_diff_*``) that provide
-                first-order gradients of contact distance and world-space points with
-                respect to body poses.
+                through particle-shape contacts. For compatibility, the deprecated
+                rigid-contact distance and point outputs are also allocated; new code
+                should provide selected outputs to
+                :func:`newton.eval_rigid_contact_kinematics`.
             device: Device to allocate buffers on
             per_contact_shape_properties: Enable per-contact stiffness/damping/friction arrays
             clear_buffers: If True, clear() will zero all contact buffers (slower but conservative).
@@ -192,9 +215,9 @@ class Contacts:
 
         .. experimental::
 
-            The ``rigid_contact_diff_*`` arrays allocated when
-            ``requires_grad=True`` may change without prior notice; see
-            :meth:`newton.CollisionPipeline.collide`.
+            Rigid-contact gradients computed by
+            :func:`newton.eval_rigid_contact_kinematics` are a
+            tangent approximation and may change without prior notice.
         """
         if contact_report and not contact_matching:
             raise ValueError("contact_report=True requires contact_matching=True")
@@ -253,27 +276,24 @@ class Contacts:
             self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Contact force [N], shape (rigid_contact_max,), dtype :class:`vec3`."""
 
-            # Differentiable rigid contact arrays -- only allocated when requires_grad
-            # is True.  Populated by the post-processing kernel in
-            # :mod:`newton._src.geometry.differentiable_contacts`.
+            # Deprecated compatibility outputs, retained for one deprecation cycle.
             if requires_grad:
-                self.rigid_contact_diff_distance = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=True)
+                self._rigid_contact_diff_distance = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=True)
                 """Differentiable signed distance [m], shape (rigid_contact_max,), dtype float."""
-                self.rigid_contact_diff_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=False)
-                """Contact normal (A-to-B, world frame) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
-                self.rigid_contact_diff_point0_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
+                self._rigid_contact_diff_point0_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
                 """World-space contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
-                self.rigid_contact_diff_point1_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
+                self._rigid_contact_diff_point1_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
                 """World-space contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             else:
-                self.rigid_contact_diff_distance = None
+                self._rigid_contact_diff_distance = None
                 """Differentiable signed distance [m], shape (rigid_contact_max,), dtype float."""
-                self.rigid_contact_diff_normal = None
-                """Contact normal (A-to-B, world frame) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
-                self.rigid_contact_diff_point0_world = None
+                self._rigid_contact_diff_point0_world = None
                 """World-space contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
-                self.rigid_contact_diff_point1_world = None
+                self._rigid_contact_diff_point1_world = None
                 """World-space contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            # The deprecated normal output aliases rigid_contact_normal by
+            # default; retain a separate array only if a caller assigns one.
+            self._rigid_contact_diff_normal_override = None
 
             # contact stiffness/damping/friction (only allocated if per_contact_shape_properties is enabled)
             if self.per_contact_shape_properties:
@@ -437,11 +457,12 @@ class Contacts:
             if self.force is not None:
                 self.force.zero_()
 
-            if self.rigid_contact_diff_distance is not None:
-                self.rigid_contact_diff_distance.zero_()
-                self.rigid_contact_diff_normal.zero_()
-                self.rigid_contact_diff_point0_world.zero_()
-                self.rigid_contact_diff_point1_world.zero_()
+            if self._rigid_contact_diff_distance is not None:
+                self._rigid_contact_diff_distance.zero_()
+                self._rigid_contact_diff_point0_world.zero_()
+                self._rigid_contact_diff_point1_world.zero_()
+            if self._rigid_contact_diff_normal_override is not None:
+                self._rigid_contact_diff_normal_override.zero_()
 
             if self.per_contact_shape_properties:
                 self.rigid_contact_stiffness.zero_()
@@ -465,6 +486,73 @@ class Contacts:
         Returns the device on which the contact buffers are allocated.
         """
         return self.rigid_contact_count.device
+
+    @property
+    def rigid_contact_diff_distance(self) -> wp.array[float] | None:
+        """Differentiable signed distance [m].
+
+        .. deprecated:: 1.6
+            Allocate an output array and pass it as ``out_distance`` to
+            :func:`newton.eval_rigid_contact_kinematics`.
+        """
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_distance")
+        return self._rigid_contact_diff_distance
+
+    @rigid_contact_diff_distance.setter
+    def rigid_contact_diff_distance(self, value: wp.array[float] | None) -> None:
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_distance")
+        self._rigid_contact_diff_distance = value
+
+    @property
+    def rigid_contact_diff_normal(self) -> wp.array[wp.vec3] | None:
+        """Frozen world-space contact normal.
+
+        .. deprecated:: 1.6
+            Use :attr:`rigid_contact_normal`, which contains the same values.
+        """
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_normal")
+        if self._rigid_contact_diff_normal_override is not None:
+            return self._rigid_contact_diff_normal_override
+        if self.requires_grad:
+            return self.rigid_contact_normal
+        return None
+
+    @rigid_contact_diff_normal.setter
+    def rigid_contact_diff_normal(self, value: wp.array[wp.vec3] | None) -> None:
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_normal")
+        self._rigid_contact_diff_normal_override = value
+
+    @property
+    def rigid_contact_diff_point0_world(self) -> wp.array[wp.vec3] | None:
+        """Differentiable world-space contact point on shape 0 [m].
+
+        .. deprecated:: 1.6
+            Allocate an output array and pass it as ``out_point0_world`` to
+            :func:`newton.eval_rigid_contact_kinematics`.
+        """
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_point0_world")
+        return self._rigid_contact_diff_point0_world
+
+    @rigid_contact_diff_point0_world.setter
+    def rigid_contact_diff_point0_world(self, value: wp.array[wp.vec3] | None) -> None:
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_point0_world")
+        self._rigid_contact_diff_point0_world = value
+
+    @property
+    def rigid_contact_diff_point1_world(self) -> wp.array[wp.vec3] | None:
+        """Differentiable world-space contact point on shape 1 [m].
+
+        .. deprecated:: 1.6
+            Allocate an output array and pass it as ``out_point1_world`` to
+            :func:`newton.eval_rigid_contact_kinematics`.
+        """
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_point1_world")
+        return self._rigid_contact_diff_point1_world
+
+    @rigid_contact_diff_point1_world.setter
+    def rigid_contact_diff_point1_world(self, value: wp.array[wp.vec3] | None) -> None:
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_point1_world")
+        self._rigid_contact_diff_point1_world = value
 
     @property
     def contact_matching_mode(self) -> Literal["disabled", "latest", "sticky"]:
