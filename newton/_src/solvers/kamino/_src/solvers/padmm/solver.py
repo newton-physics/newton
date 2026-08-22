@@ -20,6 +20,7 @@ from ...core.size import SizeKamino
 from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.limits import LimitsKamino
+from ...utils import logger as msg
 from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
     _apply_dual_preconditioner_to_solution,
@@ -242,7 +243,12 @@ class PADMMSolver:
         # Cache high-level solver options shared across all worlds
         self._warmstart = warmstart
         self._use_acceleration = use_acceleration
-        self._use_graph_conditionals = use_graph_conditionals
+        self._use_graph_conditionals = use_graph_conditionals and wp.is_conditional_graph_supported()
+        if use_graph_conditionals and not self._use_graph_conditionals:
+            msg.warning(
+                "Graph conditionals are unavailable on this platform, "
+                "using unrolled for-loops over max iterations in the PADMM solver."
+            )
         self._collect_info = collect_info
 
         # Check if any world uses adaptive penalty updates (requiring per-step regularization updates)
