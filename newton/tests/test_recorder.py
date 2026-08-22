@@ -4,6 +4,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -15,7 +16,9 @@ from newton._src.viewer.viewer_file import (
     HAS_CBOR2,
     RingBuffer,
     depointer_as_key,
+    deserialize,
     pointer_as_key,
+    serialize,
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.viewer import ViewerFile
@@ -31,6 +34,36 @@ class TestRecorder(unittest.TestCase):
 
             viewer_file.close()
             self.assertFalse(viewer_file.is_running())
+
+    def test_numpy_scalar_tags_round_trip(self):
+        """Round-trip the NumPy scalar classes emitted by recordings."""
+
+        def callback(value, _path):
+            return value
+
+        for scalar in (np.int8(-3), np.uint64(7), np.float32(1.25), np.complex64(1.0 + 2.0j)):
+            with self.subTest(scalar_type=type(scalar).__name__):
+                encoded = serialize(scalar, callback)
+                decoded = deserialize(encoded, callback)
+                self.assertIsInstance(decoded, type(scalar))
+                self.assertEqual(decoded, scalar)
+
+    def test_numpy_callable_tags_are_rejected(self):
+        """Reject recording tags that name NumPy callables instead of scalar classes."""
+
+        def callback(value, _path):
+            return value
+
+        for callable_name in ("ones", "fromfile"):
+            with self.subTest(callable_name=callable_name), mock.patch.object(np, callable_name) as callable_mock:
+                with self.assertRaisesRegex(ValueError, "Unsupported NumPy scalar type"):
+                    deserialize({"__type__": f"numpy.{callable_name}", "value": [1]}, callback)
+                callable_mock.assert_not_called()
+
+    def test_unknown_numpy_scalar_tag_is_rejected(self):
+        """Reject unknown NumPy scalar tags with a descriptive error."""
+        with self.assertRaisesRegex(ValueError, "Unsupported NumPy scalar type"):
+            deserialize({"__type__": "numpy.not_a_scalar", "value": 1}, lambda value, _path: value)
 
 
 def test_ringbuffer_basic(test: TestRecorder, device):

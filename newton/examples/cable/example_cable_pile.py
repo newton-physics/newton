@@ -131,7 +131,7 @@ class Example:
 
                 cable_length = float(self.cable_length)
                 start0 = start - 0.5 * cable_length * dir_vec
-                pts = newton.utils.create_straight_cable_points(
+                pts = newton.utils.cable_straight_points(
                     start=start0,
                     direction=dir_vec,
                     length=cable_length,
@@ -148,7 +148,7 @@ class Example:
                         amp = wav * cable_length * waviness_scale
                         pts[i] = pts[i] + ortho_vec * (amp * math.sin(phase))
 
-                edge_q = newton.utils.create_parallel_transport_cable_quaternions(pts, twist_total=float(twist))
+                edge_q = newton.utils.rod_parallel_transport_quaternions(pts, twist_total=float(twist))
 
                 builder.add_rod(
                     positions=pts,

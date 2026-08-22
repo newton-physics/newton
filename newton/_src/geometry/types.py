@@ -2308,6 +2308,9 @@ class Heightfield:
             hy: Half-extent in Y direction. The heightfield spans [-hy, +hy].
             min_z: World-space Z value corresponding to data minimum. Must be provided
                 together with ``max_z``, or both omitted to auto-derive from data.
+                Uniform data normalizes to zeros, so with an explicit range the flat
+                surface sits at ``min_z`` (matching MuJoCo's compilation of constant
+                elevation); omit both bounds to place a flat field at its value.
             max_z: World-space Z value corresponding to data maximum. Must be provided
                 together with ``min_z``, or both omitted to auto-derive from data.
         """
@@ -2319,7 +2322,11 @@ class Heightfield:
         raw = np.array(data, dtype=np.float32).reshape(nrow, ncol)
         d_min, d_max = float(raw.min()), float(raw.max())
 
-        # Normalize data to [0, 1]
+        # Normalize data to [0, 1]. Uniform data has no range of its own and
+        # normalizes to zeros, so the surface sits at min_z — the same
+        # convention MuJoCo compiles (and SolverMuJoCo re-derives), keeping
+        # every solver's view of the field identical. To place a flat field
+        # at its value, omit min_z/max_z so both derive from the data.
         if d_max > d_min:
             self._data = (raw - d_min) / (d_max - d_min)
         else:
