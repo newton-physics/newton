@@ -195,13 +195,16 @@ state objects — simply omit them:
 
    m2.actuators[0].step(m2.state(), m2.control())
 
+.. _neural-network-checkpoints:
+
 Neural-Network Checkpoints
 --------------------------
 
 Neural-network controllers (:class:`ControllerNeuralMLP`,
-:class:`ControllerNeuralLSTM`) support two checkpoint backends: ONNX
-checkpoints (``.onnx``) run on Warp-NN's Warp-backed runtime, while Torch
-checkpoints use the Torch backend and require PyTorch.
+:class:`ControllerNeuralLSTM`) support two checkpoint backends. `ONNX
+<https://onnx.ai/>`__ (``.onnx``) is an open format for trained networks, which
+Warp-NN runs with its own Warp kernels. Torch checkpoints use the Torch backend
+and require PyTorch.
 
 Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
 Checkpoint metadata (scales and network configuration) is stored as a JSON
@@ -221,6 +224,106 @@ the metadata of both pt2 and ONNX checkpoints.  Only legacy Torch checkpoints
 may omit them: they contain the original module, whose ``torch.nn.LSTM``
 submodule is inspected directly, while ``torch.export`` flattens the network
 into a computation graph that no longer exposes it.
+
+Effort Modes
+------------
+
+By default an actuator computes effort **explicitly**: the control law is
+evaluated at the current state and held constant over the step (zero-order
+hold). At stiff gains and large timesteps this can overshoot or go unstable.
+
+The **implicit** effort mode instead solves the control law against the
+predicted end-of-step state (a Stable-PD style solve). A key advantage of this
+formulation over the explicit effort mode is that it stays stable at higher
+gains.
+
+That stability comes at a cost: the solve reaches it by applying less effort
+than the control law nominally asks for. The trade-off is between stability at
+large timesteps with the implicit mode, and fidelity to the requested gains at
+small timesteps with the explicit mode.
+
+The predicted state accounts only for the actuator's own impulse. Gravity, any
+other applied force, other actuators driving the same articulation, and joint
+drive applied without the actuator are all absent from it.
+
+The implicit effort mode necessarily requires the joint-space inverse mass
+matrix. This is supplied by a :class:`~newton.actuators.ResponseOracle`, which
+is refreshed once per step at the current pose:
+
+.. code-block:: python
+
+   from newton.actuators import ResponseOracle
+
+   oracle = ResponseOracle(model)
+   actuator.set_effort_mode_implicit(response=oracle)
+
+   # Simulation loop
+   oracle.refresh(sim_state)
+   sim_control.joint_f.zero_()
+   actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
+   solver.step(sim_state, next_sim_state, sim_control, contacts, dt=0.01)
+
+In this mode :meth:`Actuator.step <newton.actuators.Actuator.step>` evaluates
+the joint force for each actuated DOF. A force on one DOF changes the velocity
+of every DOF in its articulation, so an articulation's actuated DOFs are solved
+together as one coupled system.
+
+The inverse mass matrix, called *the response* below, is computed for a whole
+articulation. The actuator then reads only the entries for the DOFs it drives.
+:class:`~newton.actuators.ResponseOracle` is responsible for providing that
+matrix, and there are two ways to obtain it: compute it from scratch
+(:meth:`ResponseOracle.refresh <newton.actuators.ResponseOracle.refresh>`), or
+reuse what the solver already has (:meth:`ResponseOracle.refresh_from_solve
+<newton.actuators.ResponseOracle.refresh_from_solve>`).
+
+:meth:`~newton.actuators.ResponseOracle.refresh` builds the mass matrix itself,
+from :func:`~newton.eval_mass_matrix` and joint armature. This comes with
+approximations. First, joint damping, joint limits, friction, contacts and
+constraint regularization are absent. All of those resist motion, so the
+response comes out larger than anticipated. A larger response further divides
+the control law and so yields a smaller effort than would have been evaluated
+without the simplifications listed above. Second, kinematic loop closures are
+also ignored.
+
+The approximations inherent in :meth:`ResponseOracle.refresh
+<newton.actuators.ResponseOracle.refresh>` may be avoided when working with a
+solver that is able to evaluate the inverse mass matrix more directly, with the
+exception of loop closure effects. To this end,
+:meth:`ResponseOracle.refresh_from_solve
+<newton.actuators.ResponseOracle.refresh_from_solve>` takes a callable that
+computes ``x = M^-1 y``. The oracle recovers the response one column at a time,
+by passing unit vectors through that callable. MuJoCo is currently the only
+Newton solver that provides one.
+
+.. code-block:: python
+
+   def solve_inverse(x, y):
+       # x = M^-1 y, using the factorization the solver already built
+       mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
+
+   # Simulation loop, in place of oracle.refresh(sim_state)
+   oracle.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+
+Both refresh paths launch only kernels, so the actuator, the solver step and the
+response update can be captured in one CUDA graph.
+
+:meth:`~newton.actuators.Actuator.set_effort_mode_explicit` switches back to
+explicit mode. :class:`~newton.actuators.Actuator.ImplicitOptions` sets the
+solve's iteration count and convergence tolerances.
+
+All controllers support the implicit mode:
+:class:`~newton.actuators.ControllerPD`,
+:class:`~newton.actuators.ControllerPID`,
+:class:`~newton.actuators.ControllerNeuralMLP` and
+:class:`~newton.actuators.ControllerNeuralLSTM`.
+
+The neural controllers enter the solve as a per-step linearization of the
+network. Its slopes come from a Warp autodiff pass over the loaded network, so
+only the ONNX backend supports them (see :ref:`neural-network-checkpoints`);
+with a Torch checkpoint
+:meth:`~newton.actuators.Actuator.set_effort_mode_implicit` raises
+``NotImplementedError``. :class:`~newton.actuators.ControllerNeuralMLP` also
+needs a single-step input history (``input_idx == [0]``).
 
 Differentiability and Graph Capture
 -----------------------------------
