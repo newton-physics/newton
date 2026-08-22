@@ -44,6 +44,7 @@ class _ImporterDefault:
     """Carry an importer default that may be None."""
 
     value: Any
+    """Importer default preserved across omission-sensitive call boundaries."""
 
     def __repr__(self) -> str:
         return f"<omitted; importer default={self.value!r}>"
@@ -109,8 +110,12 @@ def _importer_default(default: Any) -> tuple[bool, Any]:
 
 @dataclass(frozen=True)
 class _ResolverValue:
+    """Carry one value read from a resolver."""
+
     value: Any
+    """Value returned by the resolver."""
     authored: bool
+    """Whether the source explicitly authored the value."""
 
     @property
     def usable(self) -> bool:
@@ -177,33 +182,29 @@ class SchemaResolver:
 
     @dataclass
     class SchemaAttribute:
-        """
-        Specifies a USD attribute and its transformation function.
-
-        Args:
-            name: The name of the USD attribute (or primary attribute when using a getter).
-            default: Legacy compatibility fallback used after importer defaults.
-            usd_value_transformer: Optional function to transform the raw value into the format expected by Newton.
-            usd_value_getter: Optional function (prim) -> value used instead of reading a single attribute (e.g. to compute gap from contactOffset - restOffset).
-            attribute_names: When set, names used for collect_prim_attrs; otherwise [name] is used.
-            fallback_is_unset: Optional predicate that returns ``True`` when a registered schema fallback expresses
-                no opinion and resolution should continue.
-            angular_unit: Unit used when an angular DOF consumes this value.
-        """
+        """Specify a USD attribute and its transformation functions."""
 
         name: str
+        """USD attribute name, or primary attribute when using a getter."""
         default: Any | None = None
+        """Legacy compatibility fallback used after importer defaults."""
         usd_value_transformer: Callable[[Any], Any] | None = None
+        """Optional transformation from a raw USD value to a Newton value."""
         usd_value_getter: Callable[[Usd.Prim], Any] | None = None
+        """Optional PXR getter used instead of reading one attribute."""
         attribute_names: Sequence[str] = ()
+        """Attribute names read by a compound getter, if any."""
         fallback_is_unset: Callable[[Any], bool] | None = None
+        """Optional predicate identifying a registered fallback with no opinion."""
         angular_unit: Literal["degrees", "radians"] = "degrees"
+        """Unit used when an angular degree of freedom consumes the value."""
         _reader_value_getter: Callable[[Callable[[str], Any | None]], Any] | None = field(
             default=None,
             init=False,
             repr=False,
             compare=False,
         )
+        """Source-neutral counterpart to ``usd_value_getter``, when available."""
 
     # mapping is a dictionary for known variables in Newton. Its purpose is to map USD attributes to existing Newton data.
     # PrimType -> Newton variable -> Attribute
@@ -566,11 +567,17 @@ class _ResolvedValue:
     """Carry a resolved value and its consumer-visible source."""
 
     value: Any
+    """Terminal value selected by the resolution policy."""
     resolver: SchemaResolver | None
+    """Resolver that supplied an authored or registered-fallback value."""
     source: _ValueSource
+    """Source category that supplied the terminal value."""
     comparison: Any = field(default=_NO_COMPARISON, repr=False, compare=False)
+    """Optional consumer interpretation used by migration auditing."""
     compatibility_resolver: SchemaResolver | None = field(default=None, repr=False, compare=False)
+    """Resolver that supplied a compatibility default, when applicable."""
     mapping_key: str | None = field(default=None, repr=False, compare=False)
+    """Resolver mapping key that supplied the terminal value."""
 
     @property
     def authored(self) -> bool:
@@ -594,26 +601,37 @@ class SchemaResolverManager:
         """Hold active and comparison results for one property."""
 
         active: _ResolvedValue
+        """Result selected by the configured policy."""
         legacy: _ResolvedValue | None
+        """Legacy-policy result when migration auditing is active."""
         composed: _ResolvedValue | None
+        """Registered-schema result when migration auditing is active."""
 
     @dataclass(frozen=True)
     class _PolicyChangeCandidate:
         """Describe one input to an assembled property comparison."""
 
         key: str
+        """Logical property key used in diagnostics."""
         policies: SchemaResolverManager._PolicyValues
+        """Raw resolution results for each policy."""
         legacy_comparison: Any = field(default=_NO_COMPARISON, repr=False)
+        """Consumer value contributed under legacy precedence."""
         composed_comparison: Any = field(default=_NO_COMPARISON, repr=False)
+        """Consumer value contributed under registered-schema precedence."""
         compare_source: bool = False
+        """Whether source changes affect the property's consumer meaning."""
 
     @dataclass(frozen=True)
     class _MigrationEndpoint:
         """Describe one side of a migration transition."""
 
         source: _ValueSource
+        """Source category selected at this endpoint."""
         owner: str | None = None
+        """Resolver or schema label responsible for the value."""
         attribute_names: tuple[str, ...] = ()
+        """USD attributes that contributed to the value."""
 
         def format(self) -> str:
             source = _VALUE_SOURCE_LABELS[self.source]
@@ -627,9 +645,13 @@ class SchemaResolverManager:
         """Describe a property transition between resolution policies."""
 
         key: str
+        """Logical property key used in diagnostics."""
         attribute_names: tuple[str, ...]
+        """USD attributes associated with the property."""
         legacy: SchemaResolverManager._MigrationEndpoint
+        """Endpoint selected under legacy precedence."""
         composed: SchemaResolverManager._MigrationEndpoint
+        """Endpoint selected under registered-schema precedence."""
 
         def format(self) -> str:
             if (
@@ -658,7 +680,9 @@ class SchemaResolverManager:
         """Keep one raw resolver result and its interpreted property value."""
 
         resolved: _ResolvedValue
+        """Raw terminal resolution result."""
         value: Any
+        """Consumer interpretation of the resolved value."""
 
         @property
         def raw_value(self) -> Any:
@@ -677,10 +701,15 @@ class SchemaResolverManager:
         """Keep interpreted active and migration results for one property."""
 
         key: str
+        """Logical property key."""
         raw: SchemaResolverManager._PolicyValues
+        """Raw policy results before consumer interpretation."""
         active: SchemaResolverManager._InterpretedPolicyValue
+        """Interpreted result selected by the configured policy."""
         legacy: SchemaResolverManager._InterpretedPolicyValue | None
+        """Interpreted legacy result when migration auditing is active."""
         composed: SchemaResolverManager._InterpretedPolicyValue | None
+        """Interpreted registered-schema result during migration auditing."""
 
         def select(self, policy: _PolicySelection) -> SchemaResolverManager._InterpretedPolicyValue | None:
             if policy == "active":
