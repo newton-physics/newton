@@ -138,13 +138,13 @@ class _UsdResolutionPolicy:
     class PhysicsMaterial:
         """Keep one parsed physics material and its resolution policies."""
 
-        staticFriction: float
+        static_friction: float
         """Static friction coefficient."""
-        dynamicFriction: float
+        dynamic_friction: float
         """Dynamic friction coefficient."""
-        torsionalFriction: float
+        torsional_friction: float
         """Torsional friction coefficient [m]."""
-        rollingFriction: float
+        rolling_friction: float
         """Rolling friction coefficient [m]."""
         restitution: float
         """Restitution coefficient."""
@@ -167,10 +167,10 @@ class _UsdResolutionPolicy:
         def from_shape_config(cls, config: Any) -> _UsdResolutionPolicy.PhysicsMaterial:
             """Create the importer material from the builder shape defaults."""
             return cls(
-                staticFriction=config.mu,
-                dynamicFriction=config.mu,
-                torsionalFriction=config.mu_torsional,
-                rollingFriction=config.mu_rolling,
+                static_friction=config.mu,
+                dynamic_friction=config.mu,
+                torsional_friction=config.mu_torsional,
+                rolling_friction=config.mu_rolling,
                 restitution=config.restitution,
                 density=config.density,
             )
@@ -495,8 +495,8 @@ class _UsdResolutionPolicy:
             if resolved is not None:
                 return resolved.value
             if key == "mu_torsional":
-                return material.torsionalFriction
-            return material.rollingFriction
+                return material.torsional_friction
+            return material.rolling_friction
 
         friction_keys = ("mu_torsional", "mu_rolling")
         legacy_friction = tuple(material_friction(key, "legacy") for key in friction_keys)
@@ -543,11 +543,11 @@ class _UsdResolutionPolicy:
             return policies.active.value
 
         return self.PhysicsMaterial(
-            staticFriction=static_friction,
-            dynamicFriction=dynamic_friction,
+            static_friction=static_friction,
+            dynamic_friction=dynamic_friction,
             restitution=restitution,
-            torsionalFriction=resolve_property("mu_torsional", default_shape.mu_torsional),
-            rollingFriction=resolve_property("mu_rolling", default_shape.mu_rolling),
+            torsional_friction=resolve_property("mu_torsional", default_shape.mu_torsional),
+            rolling_friction=resolve_property("mu_rolling", default_shape.mu_rolling),
             density=density,
             ke=resolve_property("ke", interpret_contact=True),
             kd=resolve_property("kd", interpret_contact=True),
