@@ -3,9 +3,12 @@
 
 from .controller import ControllerBase
 from .impl import ControllerJointImpedance, ControllerJointImpedanceModelFree
+from .joint_selection import JointSelection, select_joints
 
 __all__ = [
     "ControllerBase",
     "ControllerJointImpedance",
     "ControllerJointImpedanceModelFree",
+    "JointSelection",
+    "select_joints",
 ]

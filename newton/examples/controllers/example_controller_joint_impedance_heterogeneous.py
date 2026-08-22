@@ -14,7 +14,7 @@
 # decoupling computed internally from their respective Newton models).
 #
 # The two robots have different DOF counts, exercising the heterogeneous
-# gather/scatter and per-robot kernel guard paths.
+# per-robot DOF layout and the indexed-view scatter into the sim.
 #
 # Command: python -m newton.examples controller_joint_impedance_heterogeneous
 ###########################################################################
@@ -28,7 +28,7 @@ import newton
 import newton.examples
 import newton.solvers
 from newton import JointTargetMode
-from newton.controllers import ControllerJointImpedance
+from newton.controllers import ControllerJointImpedance, select_joints
 
 # ---------------------------------------------------------------------------
 # Robot geometry
@@ -38,12 +38,11 @@ LINK_LEN_A = 0.25  # length of each link in robot A [m]
 LINK_LEN_B = 0.45  # length of robot B's single link [m]
 DOFS_A = 3
 DOFS_B = 1
-MAX_DOFS = max(DOFS_A, DOFS_B)  # = 3
 TOTAL_DOFS = DOFS_A + DOFS_B  # = 4
 
-# Gains — shape (2, MAX_DOFS); robot B's columns 1 and 2 are padding (unused)
-KP = np.array([[200.0, 200.0, 200.0], [200.0, 0.0, 0.0]], dtype=np.float32)
-KD = np.array([[20.0, 20.0, 20.0], [20.0, 0.0, 0.0]], dtype=np.float32)
+# Gains — compact, one entry per controlled DOF: robot A's 3, then robot B's 1.
+KP = np.array([200.0, 200.0, 200.0, 200.0], dtype=np.float32)
+KD = np.array([20.0, 20.0, 20.0, 20.0], dtype=np.float32)
 
 # Sinusoidal target for robot A: each joint offset by π/3
 TARGET_AMP = 0.4  # [rad]
@@ -120,12 +119,12 @@ class Example:
         self.device = wp.get_device()
 
         # ---- Controller model ------------------------------------------------
-        # Both articulations in one builder so ControllerJointImpedance can
+        # Both articulations in one model so ControllerJointImpedance can
         # derive per-robot DOF counts and run FK/dynamics for both.
         ctrl_builder = newton.ModelBuilder()
         _add_revolute_chain(ctrl_builder, DOFS_A, LINK_LEN_A, x_offset=-0.5, label="robot_a")
         _add_revolute_chain(ctrl_builder, DOFS_B, LINK_LEN_B, x_offset=+0.5, label="robot_b")
-        # ctrl_builder is passed to ControllerJointImpedance; it finalizes it internally.
+        ctrl_model = ctrl_builder.finalize(device=self.device)
 
         # ---- Physics scene ---------------------------------------------------
         # Identical topology to ctrl_builder, with effort-control mode.
@@ -148,12 +147,14 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
 
         # ---- Impedance controller --------------------------------------------
-        # default_dof_indices: identity — robot A occupies DOFs 0..2, robot B DOF 3.
-        default_idx = wp.array(np.arange(TOTAL_DOFS, dtype=np.uint32), device=self.device)
+        # select_joints resolves every joint of both articulations into the
+        # matched coordinate/DOF index pair the controller needs. Here the two
+        # spaces coincide since all joints are 1-DOF.
+        selection = select_joints(ctrl_model)
 
         self.controller = ControllerJointImpedance(
-            builder=ctrl_builder,
-            default_dof_indices=default_idx,
+            ctrl_model,
+            joint_selection=selection,
             stiffness=wp.array(KP, dtype=wp.float32, device=self.device),
             damping=wp.array(KD, dtype=wp.float32, device=self.device),
             use_gravity_compensation=True,
@@ -164,8 +165,9 @@ class Example:
 
         self._input = self.controller.input()
         self._output = self.controller.output()
-        # Wire torque output directly into the sim control buffer.
-        self._output.joint_f = self.control.joint_f
+        # The controller's torque output is compact (one entry per controlled
+        # DOF); an indexed view scatters it straight into the sim control buffer.
+        self._output.joint_f = self.control.joint_f[selection.qd_idx]
 
         # Bind live sim arrays before capture so the graph records the correct
         # buffer addresses. state_0 holds the current frame result after
