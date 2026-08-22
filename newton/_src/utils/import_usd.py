@@ -38,11 +38,6 @@ from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode, JointType
 from ..sim.model import Model
-from ..solvers.mujoco.constants import (
-    SOLREF_MODE_FORCE_SPACE,
-    SOLREF_MODE_MJCF_DEFAULT,
-    SOLREF_MODE_RAW,
-)
 from ..solvers.mujoco.enums import EqType, _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from ..solvers.mujoco.equality import _add_equality_constraint, _register_equality_constraint_attributes
 from ..solvers.mujoco.utils import (
@@ -52,8 +47,17 @@ from ..solvers.mujoco.utils import (
 )
 from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
+from ..usd._usd_resolution_policy import _UsdResolutionPolicy
 from ..usd.particles import find_particle_prims, import_particles
-from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+from ..usd.schema_resolver import (
+    PrimType,
+    SchemaResolution,
+    SchemaResolver,
+    SchemaResolverManager,
+    _interpret_import_argument,
+    _resolve_import_option,
+    _track_omitted_usd_import_defaults,
+)
 from ..usd.schemas import SchemaResolverNewton
 from .color import color_linear_to_srgb
 from .import_usd_deformable_attachments import (
@@ -76,77 +80,11 @@ AttributeFrequency = Model.AttributeFrequency
 
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
-# Stiffness used for a hard joint limit (NewtonJointAPI newton:limitStiffness == +inf).
-_HARD_LIMIT_KE = 1.0e8
-
 # `UsdPreviewSurface`'s schema default for `diffuseColor`. A visual shape whose prim binds no
 # material is given this rather than left for ModelBuilder's per-shape debug palette, which
 # would render an unmaterialed scene in colours the asset never authored. Display-encoded to
 # match the colours that are resolved from a material.
 _UNMATERIALED_VISUAL_COLOR = color_linear_to_srgb((0.18, 0.18, 0.18))
-
-
-def _resolve_newton_limit_ke(
-    limit_ke: float | None,
-    fallback: float,
-    fallback_source: str,
-    builder_default: float,
-) -> tuple[float, str]:
-    """Resolve a NewtonJointAPI ``newton:limitStiffness`` value.
-
-    ``limit_ke`` is ``None`` when the attribute is not authored, ``-inf`` when
-    authored as the engine-default sentinel, ``+inf`` for a hard limit, or a
-    finite stiffness value.
-
-    ``fallback`` is the per-DOF stiffness resolved from lower-priority schemas
-    (PhysX/MuJoCo).  ``builder_default`` is the ModelBuilder engine default.
-
-    An explicit ``-inf`` takes precedence over the per-DOF fallback and selects
-    the builder default so that a lower-priority schema cannot override an
-    authored Newton sentinel.
-
-    Returns (resolved_value, source) where source is ``"force"`` when Newton
-    broadcast values are used, or the original ``fallback_source`` otherwise.
-    """
-    if limit_ke is None:
-        return fallback, fallback_source
-    if limit_ke == float("-inf"):
-        return builder_default, "force"
-    if limit_ke == float("inf"):
-        return _HARD_LIMIT_KE, "force"
-    return limit_ke, "force"
-
-
-def _resolve_newton_limit_kd(
-    limit_ke: float | None,
-    limit_kd: float | None,
-    fallback: float,
-    fallback_source: str,
-    builder_default: float,
-) -> tuple[float, str]:
-    """Resolve a NewtonJointAPI ``newton:limitDamping`` value.
-
-    Hard limits (``limit_ke`` or ``limit_kd`` == ``+inf``) have no damping.
-    An authored ``-inf`` selects the builder default (engine default), taking
-    precedence over per-DOF fallbacks from lower-priority schemas.
-    When neither Newton attribute is authored (``None``), the per-DOF ``fallback``
-    from other resolvers is used.
-
-    Returns (resolved_value, source) where source is ``"force"`` when Newton
-    broadcast values are used, or the original ``fallback_source`` otherwise.
-    """
-    # Hard (rigid) limit: infinite ke or kd means no dissipation is needed.
-    if limit_ke is not None and limit_ke == float("inf"):
-        return 0.0, "force"
-    if limit_kd is not None and limit_kd == float("inf"):
-        return 0.0, "force"
-    # Not authored → lower-priority per-DOF fallback.
-    if limit_kd is None:
-        return fallback, fallback_source
-    # Authored -inf → builder default.
-    if limit_kd == float("-inf"):
-        return builder_default, "force"
-    return limit_kd, "force"
 
 
 def _validate_https_usd_url(url: str) -> None:
@@ -253,7 +191,7 @@ class _DofParams:
     armature: float
     friction: float
     damping: float
-    velocity_limit: float | None
+    velocity_limit: float
     limit_lower: float
     limit_upper: float
     limit_ke: float
@@ -270,6 +208,7 @@ class _DofParams:
     limit_solref_mode: int
 
 
+@_track_omitted_usd_import_defaults(mesh_maxhullvert=Mesh.MAX_HULL_VERTICES)
 def parse_usd(
     builder: ModelBuilder,
     source: str | UsdStage,
@@ -298,6 +237,8 @@ def parse_usd(
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
+    schema_resolution: SchemaResolution | None = None,
+    use_registered_schema_fallbacks: bool = False,
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
@@ -388,11 +329,25 @@ def parse_usd(
 
         only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
-        joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
+        joint_drive_gains_scaling: When omitted, use ``1.0`` as the importer
+            default for scaling PD control gains. With
+            ``use_registered_schema_fallbacks=True``, an explicitly provided value
+            overrides ``newton:joint_drive_gains_scaling`` on the PhysicsScene.
+            Legacy resolution continues to treat it as an importer default.
         verbose: If True, print additional information about the parsed USD file. Default is False.
         ignore_paths: A list of regular expressions matching prim paths to ignore.
-        collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+        collapse_fixed_joints: When omitted, use ``False`` as the
+            importer default for removing fixed joints and merging their bodies.
+            With ``use_registered_schema_fallbacks=True``, an explicitly provided
+            value overrides ``newton:collapse_fixed_joints`` on the PhysicsScene.
+            Legacy resolution continues to treat it as an importer default.
+        enable_self_collisions: When omitted, use ``True`` as the importer
+            default for self-collisions within an articulation. With
+            ``use_registered_schema_fallbacks=True``, an explicitly provided value
+            overrides the corresponding authored USD value and schema fallback.
+            Legacy resolution continues to treat it as an importer default. USD
+            resolution reads ``newton:selfCollisionEnabled``
+            (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``.
         apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path: The USD path to import, defaults to "/".
         joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
@@ -415,7 +370,13 @@ def parse_usd(
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
             equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
             and finalize under ``model.mujoco.equality_constraint_*``.
-        mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+        mesh_maxhullvert: When omitted, use
+            :attr:`newton.Mesh.MAX_HULL_VERTICES` as the importer default for
+            convex hull approximation. Passing ``None`` explicitly selects
+            the same limit. With
+            ``use_registered_schema_fallbacks=True``, an explicitly provided value
+            overrides the corresponding authored USD value and schema fallback.
+            Legacy resolution continues to treat it as an importer default.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
             These include namespaced attributes such as ``newton:*``, ``physx*``
@@ -426,7 +387,26 @@ def parse_usd(
 
             .. experimental::
 
-                The ``schema_resolvers`` argument may change without prior notice.
+                The ``schema_resolvers`` and ``schema_resolution`` arguments may
+                change without prior notice.
+        schema_resolution: Reusable source-neutral schema resolution. It is
+            mutually exclusive with ``schema_resolvers`` and owns the registered
+            schema fallback policy when provided.
+        use_registered_schema_fallbacks: If True, resolve each ordered resolver's
+            authored value and registered schema fallback before advancing to the
+            next resolver, then use importer and unregistered compatibility defaults.
+            False retains deprecated legacy precedence and warns when future
+            precedence would change the interpreted property or its source-dependent
+            meaning.
+
+            .. experimental::
+
+                The ``use_registered_schema_fallbacks`` argument may change without
+                prior notice.
+
+            .. deprecated:: 1.6
+                Passing False selects deprecated legacy fallback precedence. Pass
+                True to adopt registered schema fallback precedence.
         force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -556,11 +536,20 @@ def parse_usd(
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
 
+    self_collision_override, self_collision_default = _interpret_import_argument(enable_self_collisions)
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
+    max_hull_vertices_override, max_hull_vertices_default = _interpret_import_argument(mesh_maxhullvert)
 
-    if schema_resolvers is None:
+    if schema_resolvers is None and schema_resolution is None:
         schema_resolvers = [SchemaResolverNewton()]
+    resolver_manager = SchemaResolverManager(
+        schema_resolvers,
+        resolution=schema_resolution,
+        use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+    )
+    schema_resolvers = resolver_manager.resolvers
+    use_registered_schema_fallbacks = resolver_manager.use_registered_schema_fallbacks
     collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
@@ -570,19 +559,6 @@ def parse_usd(
     require_newton_usd_schemas(Usd)
 
     from .topology import topological_sort_undirected  # noqa: PLC0415
-
-    @dataclass
-    class PhysicsMaterial:
-        staticFriction: float = builder.default_shape_cfg.mu
-        dynamicFriction: float = builder.default_shape_cfg.mu
-        torsionalFriction: float = builder.default_shape_cfg.mu_torsional
-        rollingFriction: float = builder.default_shape_cfg.mu_rolling
-        restitution: float = builder.default_shape_cfg.restitution
-        density: float = builder.default_shape_cfg.density
-        ke: float | None = None
-        kd: float | None = None
-        kf: float | None = None
-        ka: float | None = None
 
     # load joint defaults
     default_joint_friction = builder.default_joint_cfg.friction
@@ -661,6 +637,26 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
+    authored_drive_gain_scaling = (
+        usd.get_attribute(physics_scene_prim, "newton:joint_drive_gains_scaling")
+        if physics_scene_prim is not None
+        else None
+    )
+    joint_drive_gains_scaling = _resolve_import_option(
+        joint_drive_gains_scaling,
+        authored_drive_gain_scaling,
+        use_explicit_overrides=use_registered_schema_fallbacks,
+    )
+    authored_collapse_fixed_joints = (
+        usd.get_attribute(physics_scene_prim, "newton:collapse_fixed_joints")
+        if physics_scene_prim is not None
+        else None
+    )
+    collapse_fixed_joints = _resolve_import_option(
+        collapse_fixed_joints,
+        authored_collapse_fixed_joints,
+        use_explicit_overrides=use_registered_schema_fallbacks,
+    )
 
     legacy_rigid_object_types = (
         UsdPhysics.ObjectType.RigidBody,
@@ -705,21 +701,31 @@ def parse_usd(
                 stacklevel=_external_stacklevel(),
             )
 
-    # Initialize schema resolver according to precedence
-    R = SchemaResolverManager(schema_resolvers)
-
     # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a
     # fallback to the canonical physics: deformable schema. Empty unless a
     # resolver declaring them (e.g. SchemaResolverPhysx) is active, so a default
     # import parses the AOUSD proposal as written.
-    deformable_compat_ns = R.deformable_compat_namespaces()
+    deformable_compat_ns = resolver_manager.deformable_compat_namespaces()
     # Resolver-owned deformable read (physics: first, then opted-in vendor namespaces).
-    deformable_read = R.read_deformable_attr
+    deformable_read = resolver_manager.read_deformable_attr
 
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
     mjc_resolver = next((resolver for resolver in schema_resolvers if resolver.name == "mjc"), None)
+    resolution = _UsdResolutionPolicy(
+        resolver_manager,
+        degrees_to_radian=DegreesToRadian,
+        default_joint_damping=default_joint_damping,
+        default_joint_velocity_limit=default_joint_velocity_limit,
+        mjc_resolver=mjc_resolver,
+        mjc_schema_is_applied=(
+            (lambda prim, key: mjc_resolver._schema_is_applied(prim, PrimType.JOINT, key))
+            if mjc_resolver is not None
+            else None
+        ),
+        verbose=verbose,
+    )
     solreflimit_mode_key = "mujoco:solreflimit_mode"
 
     # mapping from prim path to body index in ModelBuilder
@@ -909,60 +915,6 @@ def parse_usd(
 
     def _should_write_solreflimit_mode() -> bool:
         return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
-
-    # Keep source tracking local until schema applicability and provenance are modeled globally (#3307).
-    def _get_mjc_joint_limit_default(prim: Usd.Prim, key: str) -> float | None:
-        if mjc_resolver is None or not _has_api_schema(prim, "MjcJointAPI"):
-            return None
-        spec = mjc_resolver.mapping.get(PrimType.JOINT, {}).get(key)
-        if spec is None or spec.default is None:
-            return None
-        if spec.usd_value_transformer is not None:
-            return spec.usd_value_transformer(spec.default)
-        return spec.default
-
-    def _resolve_joint_limit_gain(
-        prim: Usd.Prim, key: str, builder_default: float
-    ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
-        """Resolve a limit gain and report the semantics of its source."""
-        for resolver in R.resolvers:
-            spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
-            if spec is None:
-                continue
-
-            if resolver.name == "mjc":
-                raw_value = usd.get_attribute(prim, spec.name)
-                if raw_value is None:
-                    continue
-                R._collect_on_first_use(resolver, prim)
-                authored_value = (
-                    spec.usd_value_transformer(raw_value) if spec.usd_value_transformer is not None else raw_value
-                )
-                if authored_value is not None:
-                    return authored_value, "mjc_authored"
-                mjc_default = _get_mjc_joint_limit_default(prim, key)
-                if mjc_default is not None:
-                    return mjc_default, "mjc_authored"
-                return builder_default, "mjc_authored"
-
-            authored_value = resolver.get_value(prim, PrimType.JOINT, key)
-            if authored_value is not None:
-                R._collect_on_first_use(resolver, prim)
-                return authored_value, "force"
-
-        if mjc_resolver is not None:
-            mjc_default = _get_mjc_joint_limit_default(prim, key)
-            if mjc_default is not None:
-                return mjc_default, "mjc_default"
-        return builder_default, "force"
-
-    def _joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
-        """Choose MuJoCo limit-solref semantics from the resolved gain sources."""
-        if ke_source == kd_source == "mjc_authored":
-            return SOLREF_MODE_RAW
-        if ke_source == kd_source == "mjc_default":
-            return SOLREF_MODE_MJCF_DEFAULT
-        return SOLREF_MODE_FORCE_SPACE
 
     def _get_rigid_body_ancestor_path(prim: Usd.Prim) -> str | None:
         current = prim
@@ -1739,69 +1691,33 @@ def parse_usd(
         else:
             return parent_id, child_id
 
-    def resolve_joint_damping(jp_prim: Usd.Prim) -> tuple[float, float]:
-        """Resolve passive damping for linear and angular DOFs.
-
-        MuJoCo authors SI damping per radian for angular DOFs, while Newton's
-        regular USD damping mapping follows USD's per-degree convention.
-
-        Returns:
-            The linear and angular damping values in Newton units.
-        """
-        for resolver in R.resolvers:
-            for key, angular_scale in (("damping", 1.0 / DegreesToRadian), ("damping_per_rad", 1.0)):
-                damping = resolver.get_value(jp_prim, PrimType.JOINT, key)
-                if damping is not None:
-                    R._collect_on_first_use(resolver, jp_prim)
-                    damping = float(damping)
-                    return damping, damping * angular_scale
-        return default_joint_damping, default_joint_damping
-
     def resolve_dof_params(jp_prim: Usd.Prim, jd: UsdPhysics.JointDesc, is_revolute: bool) -> _DofParams:
         """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
 
-        Returns values in Newton units (radians for revolute DOFs). ``velocity_limit``
-        and the initial state stay ``None`` when unauthored so callers can apply their
-        own fallbacks; drive targets/gains are zero when ``has_drive`` is False.
+        Returns values in Newton units (radians for revolute DOFs). Initial state
+        stays ``None`` when unauthored so callers can apply their own fallback;
+        drive targets/gains are zero when ``has_drive`` is False.
         """
         limit_gains_scaling = DegreesToRadian if is_revolute else 1.0
-        armature = R.get_value(
-            jp_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
+        armature, friction = resolution.resolve_joint_passive_properties(
+            jp_prim,
+            default_armature=default_joint_armature,
+            default_friction=default_joint_friction,
         )
-        friction = R.get_value(
-            jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
-        )
-        linear_damping, angular_damping = resolve_joint_damping(jp_prim)
-        damping = angular_damping if is_revolute else linear_damping
-        velocity_limit = R.get_value(
-            jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
-        )
-        # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
-        if velocity_limit == float("inf"):
-            velocity_limit = None
-        newton_limit_ke = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
-        newton_limit_kd = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
+        damping = resolution.resolve_joint_damping(jp_prim, revolute=(is_revolute,))[0]
+        velocity_limit = resolution.resolve_joint_velocity_limits(jp_prim, revolute=(is_revolute,))[0]
         limit_key = "limit_angular" if is_revolute else "limit_linear"
-        fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
+        builder_limit_ke = default_joint_limit_ke * limit_gains_scaling
+        builder_limit_kd = default_joint_limit_kd * limit_gains_scaling
+        active_limit = resolution.resolve_joint_limits(
             jp_prim,
-            f"{limit_key}_ke",
-            default_joint_limit_ke * limit_gains_scaling,
-        )
-        fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
-            jp_prim,
-            f"{limit_key}_kd",
-            default_joint_limit_kd * limit_gains_scaling,
-        )
-        limit_ke, limit_ke_source = _resolve_newton_limit_ke(
-            newton_limit_ke, fallback_limit_ke, limit_ke_source, default_joint_limit_ke * limit_gains_scaling
-        )
-        limit_kd, limit_kd_source = _resolve_newton_limit_kd(
-            newton_limit_ke,
-            newton_limit_kd,
-            fallback_limit_kd,
-            limit_kd_source,
-            default_joint_limit_kd * limit_gains_scaling,
-        )
+            {
+                limit_key: resolution.JointLimitDefaults(
+                    ke=builder_limit_ke,
+                    kd=builder_limit_kd,
+                )
+            },
+        )[limit_key]
         limit_lower = jd.limit.lower
         limit_upper = jd.limit.upper
 
@@ -1819,12 +1735,10 @@ def parse_usd(
             actuator_mode = JointTargetMode.NONE
 
         state_prefix = "angular" if is_revolute else "linear"
-        initial_position = R.get_value(
-            jp_prim, PrimType.JOINT, f"{state_prefix}_position", default=None, verbose=verbose
-        )
-        initial_velocity = R.get_value(
-            jp_prim, PrimType.JOINT, f"{state_prefix}_velocity", default=None, verbose=verbose
-        )
+        initial_position = resolution.resolve_optional_joint_state(jp_prim, f"{state_prefix}_position")
+        initial_velocity = resolution.resolve_optional_joint_state(jp_prim, f"{state_prefix}_velocity")
+        limit_ke = active_limit.ke
+        limit_kd = active_limit.kd
 
         if is_revolute:
             limit_lower *= DegreesToRadian
@@ -1836,8 +1750,6 @@ def parse_usd(
                 target_vel *= DegreesToRadian
                 target_ke /= DegreesToRadian / joint_drive_gains_scaling
                 target_kd /= DegreesToRadian / joint_drive_gains_scaling
-            if velocity_limit is not None:
-                velocity_limit *= DegreesToRadian
             if initial_position is not None:
                 initial_position *= DegreesToRadian
 
@@ -1859,7 +1771,7 @@ def parse_usd(
             actuator_mode=actuator_mode,
             initial_position=initial_position,
             initial_velocity=initial_velocity,
-            limit_solref_mode=_joint_limit_solref_mode(limit_ke_source, limit_kd_source),
+            limit_solref_mode=active_limit.solref_mode,
         )
 
     def parse_joint(
@@ -1874,7 +1786,7 @@ def parse_usd(
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
         # collect engine-specific attributes on the joint prim if requested
         if collect_schema_attrs:
-            R.collect_prim_attrs(joint_prim)
+            resolver_manager.collect_prim_attrs(joint_prim)
         parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
             joint_desc, path_body_map, get_transforms=True
         )
@@ -1931,25 +1843,57 @@ def parse_usd(
             else:
                 joint_index = builder.add_joint_prismatic(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
-            _, joint_damping = resolve_joint_damping(joint_prim)
-            joint_params["damping"] = joint_damping
+            joint_params["damping"] = resolution.resolve_joint_damping(joint_prim, revolute=(True,))[0]
             joint_index = builder.add_joint_ball(**joint_params)
         elif key == UsdPhysics.ObjectType.D6Joint:
-            joint_armature = R.get_value(
-                joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
+            _trans_axes = {
+                UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
+                UsdPhysics.JointDOF.TransY: (0.0, 1.0, 0.0),
+                UsdPhysics.JointDOF.TransZ: (0.0, 0.0, 1.0),
+            }
+            _trans_names = {
+                UsdPhysics.JointDOF.TransX: "transX",
+                UsdPhysics.JointDOF.TransY: "transY",
+                UsdPhysics.JointDOF.TransZ: "transZ",
+            }
+            _rot_axes = {
+                UsdPhysics.JointDOF.RotX: (1.0, 0.0, 0.0),
+                UsdPhysics.JointDOF.RotY: (0.0, 1.0, 0.0),
+                UsdPhysics.JointDOF.RotZ: (0.0, 0.0, 1.0),
+            }
+            _rot_names = {
+                UsdPhysics.JointDOF.RotX: "rotX",
+                UsdPhysics.JointDOF.RotY: "rotY",
+                UsdPhysics.JointDOF.RotZ: "rotZ",
+            }
+
+            def _resolve_d6_limit_bounds(limit):
+                lower = limit.second.lower if limit.second.enabled else builder.default_joint_cfg.limit_lower
+                upper = limit.second.upper if limit.second.enabled else builder.default_joint_cfg.limit_upper
+                return lower, upper, lower < upper
+
+            d6_free_dofs = []
+            for limit in joint_desc.jointLimits:
+                _, _, free_axis = _resolve_d6_limit_bounds(limit)
+                if free_axis and (limit.first in _trans_axes or limit.first in _rot_axes):
+                    d6_free_dofs.append(limit.first)
+            d6_revolute = tuple(dof in _rot_axes for dof in d6_free_dofs)
+
+            joint_armature, joint_friction = resolution.resolve_joint_passive_properties(
+                joint_prim,
+                default_armature=default_joint_armature,
+                default_friction=default_joint_friction,
             )
-            joint_friction = R.get_value(
-                joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
+            d6_damping = dict(
+                zip(d6_free_dofs, resolution.resolve_joint_damping(joint_prim, revolute=d6_revolute), strict=True)
             )
-            joint_linear_damping, joint_angular_damping = resolve_joint_damping(joint_prim)
-            joint_velocity_limit = R.get_value(
-                joint_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
+            d6_velocity_limits = dict(
+                zip(
+                    d6_free_dofs,
+                    resolution.resolve_joint_velocity_limits(joint_prim, revolute=d6_revolute),
+                    strict=True,
+                )
             )
-            # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
-            if joint_velocity_limit == float("inf"):
-                joint_velocity_limit = None
-            limit_ke = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
-            limit_kd = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
             linear_axes = []
             angular_axes = []
             num_dofs = 0
@@ -1960,6 +1904,19 @@ def parse_usd(
             d6_dof_axes = []
             linear_solref_modes: list[int] = []
             angular_solref_modes: list[int] = []
+            d6_limit_keys = {
+                dof: f"limit_{_trans_names[dof] if dof in _trans_names else _rot_names[dof]}" for dof in d6_free_dofs
+            }
+            d6_limit_defaults = {
+                key: resolution.JointLimitDefaults(
+                    ke=default_joint_limit_ke * (1.0 if dof in _trans_names else DegreesToRadian),
+                    kd=default_joint_limit_kd * (1.0 if dof in _trans_names else DegreesToRadian),
+                )
+                for dof, key in d6_limit_keys.items()
+            }
+            resolved_d6_limits = resolution.resolve_joint_limits(joint_prim, d6_limit_defaults)
+            active_d6_limits = {dof: resolved_d6_limits[key] for dof, key in d6_limit_keys.items()}
+
             # print(joint_desc.jointLimits, joint_desc.jointDrives)
             # print(joint_desc.body0)
             # print(joint_desc.body1)
@@ -1973,14 +1930,7 @@ def parse_usd(
 
             for limit in joint_desc.jointLimits:
                 dof = limit.first
-                if limit.second.enabled:
-                    limit_lower = limit.second.lower
-                    limit_upper = limit.second.upper
-                else:
-                    limit_lower = builder.default_joint_cfg.limit_lower
-                    limit_upper = builder.default_joint_cfg.limit_upper
-
-                free_axis = limit_lower < limit_upper
+                limit_lower, limit_upper, free_axis = _resolve_d6_limit_bounds(limit)
 
                 def define_joint_targets(dof, joint_desc):
                     target_pos = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
@@ -2008,147 +1958,71 @@ def parse_usd(
                     dof, joint_desc
                 )
 
-                _trans_axes = {
-                    UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
-                    UsdPhysics.JointDOF.TransY: (0.0, 1.0, 0.0),
-                    UsdPhysics.JointDOF.TransZ: (0.0, 0.0, 1.0),
-                }
-                _rot_axes = {
-                    UsdPhysics.JointDOF.RotX: (1.0, 0.0, 0.0),
-                    UsdPhysics.JointDOF.RotY: (0.0, 1.0, 0.0),
-                    UsdPhysics.JointDOF.RotZ: (0.0, 0.0, 1.0),
-                }
-                _rot_names = {
-                    UsdPhysics.JointDOF.RotX: "rotX",
-                    UsdPhysics.JointDOF.RotY: "rotY",
-                    UsdPhysics.JointDOF.RotZ: "rotZ",
-                }
                 if free_axis and dof in _trans_axes:
                     # Per-axis translation names: transX/transY/transZ
-                    trans_name = {
-                        UsdPhysics.JointDOF.TransX: "transX",
-                        UsdPhysics.JointDOF.TransY: "transY",
-                        UsdPhysics.JointDOF.TransZ: "transZ",
-                    }[dof]
+                    trans_name = _trans_names[dof]
                     # Store initial state for this axis
-                    d6_initial_positions[trans_name] = R.get_value(
-                        joint_prim,
-                        PrimType.JOINT,
-                        f"{trans_name}_position",
-                        default=None,
-                        verbose=verbose,
+                    d6_initial_positions[trans_name] = resolution.resolve_optional_joint_state(
+                        joint_prim, f"{trans_name}_position"
                     )
-                    d6_initial_velocities[trans_name] = R.get_value(
-                        joint_prim,
-                        PrimType.JOINT,
-                        f"{trans_name}_velocity",
-                        default=None,
-                        verbose=verbose,
+                    d6_initial_velocities[trans_name] = resolution.resolve_optional_joint_state(
+                        joint_prim, f"{trans_name}_velocity"
                     )
-                    fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
-                        joint_prim,
-                        f"limit_{trans_name}_ke",
-                        default_joint_limit_ke,
-                    )
-                    fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
-                        joint_prim,
-                        f"limit_{trans_name}_kd",
-                        default_joint_limit_kd,
-                    )
-                    current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
-                        limit_ke, fallback_limit_ke, limit_ke_source, default_joint_limit_ke
-                    )
-                    current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
-                        limit_ke, limit_kd, fallback_limit_kd, limit_kd_source, default_joint_limit_kd
-                    )
+                    current_limit = active_d6_limits[dof]
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
                             axis=_trans_axes[dof],
                             limit_lower=limit_lower,
                             limit_upper=limit_upper,
-                            limit_ke=current_joint_limit_ke,
-                            limit_kd=current_joint_limit_kd,
+                            limit_ke=current_limit.ke,
+                            limit_kd=current_limit.kd,
                             target_pos=target_pos,
                             target_vel=target_vel,
                             target_ke=target_ke,
                             target_kd=target_kd,
-                            damping=joint_linear_damping,
+                            damping=d6_damping[dof],
                             armature=joint_armature,
                             effort_limit=effort_limit,
-                            velocity_limit=joint_velocity_limit
-                            if joint_velocity_limit is not None
-                            else default_joint_velocity_limit,
+                            velocity_limit=d6_velocity_limits[dof],
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
                     )
-                    linear_solref_modes.append(_joint_limit_solref_mode(limit_ke_source, limit_kd_source))
+                    linear_solref_modes.append(current_limit.solref_mode)
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(trans_name)
                 elif free_axis and dof in _rot_axes:
                     # Resolve per-axis rotational gains
                     rot_name = _rot_names[dof]
                     # Store initial state for this axis
-                    d6_initial_positions[rot_name] = R.get_value(
-                        joint_prim,
-                        PrimType.JOINT,
-                        f"{rot_name}_position",
-                        default=None,
-                        verbose=verbose,
+                    d6_initial_positions[rot_name] = resolution.resolve_optional_joint_state(
+                        joint_prim, f"{rot_name}_position"
                     )
-                    d6_initial_velocities[rot_name] = R.get_value(
-                        joint_prim,
-                        PrimType.JOINT,
-                        f"{rot_name}_velocity",
-                        default=None,
-                        verbose=verbose,
+                    d6_initial_velocities[rot_name] = resolution.resolve_optional_joint_state(
+                        joint_prim, f"{rot_name}_velocity"
                     )
-                    fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
-                        joint_prim,
-                        f"limit_{rot_name}_ke",
-                        default_joint_limit_ke * DegreesToRadian,
-                    )
-                    fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
-                        joint_prim,
-                        f"limit_{rot_name}_kd",
-                        default_joint_limit_kd * DegreesToRadian,
-                    )
-                    current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
-                        limit_ke,
-                        fallback_limit_ke,
-                        limit_ke_source,
-                        default_joint_limit_ke * DegreesToRadian,
-                    )
-                    current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
-                        limit_ke,
-                        limit_kd,
-                        fallback_limit_kd,
-                        limit_kd_source,
-                        default_joint_limit_kd * DegreesToRadian,
-                    )
+                    current_limit = active_d6_limits[dof]
 
                     angular_axes.append(
                         ModelBuilder.JointDofConfig(
                             axis=_rot_axes[dof],
                             limit_lower=limit_lower * DegreesToRadian,
                             limit_upper=limit_upper * DegreesToRadian,
-                            limit_ke=current_joint_limit_ke / DegreesToRadian,
-                            limit_kd=current_joint_limit_kd / DegreesToRadian,
+                            limit_ke=current_limit.ke / DegreesToRadian,
+                            limit_kd=current_limit.kd / DegreesToRadian,
                             target_pos=target_pos * DegreesToRadian,
                             target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
-                            damping=joint_angular_damping,
+                            damping=d6_damping[dof],
                             armature=joint_armature,
                             effort_limit=effort_limit,
-                            velocity_limit=joint_velocity_limit * DegreesToRadian
-                            if joint_velocity_limit is not None
-                            else default_joint_velocity_limit,
+                            velocity_limit=d6_velocity_limits[dof],
                             friction=joint_friction,
                             actuator_mode=actuator_mode,
                         )
                     )
-                    angular_solref_modes.append(_joint_limit_solref_mode(limit_ke_source, limit_kd_source))
+                    angular_solref_modes.append(current_limit.solref_mode)
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(rot_name)
                     num_dofs += 1
@@ -2320,7 +2194,7 @@ def parse_usd(
             collision_filter_parent = collision_filter_parent or not jd.collisionEnabled
             jp_prim = stage.GetPrimAtPath(jd.primPath)
             if collect_schema_attrs:
-                R.collect_prim_attrs(jp_prim)
+                resolver_manager.collect_prim_attrs(jp_prim)
 
             key = jd.type
             if key not in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint):
@@ -2491,22 +2365,10 @@ def parse_usd(
         for attr in declarations.values():
             builder.add_custom_attribute(attr)
 
-        # Updating joint_drive_gains_scaling if set of the PhysicsScene
-        joint_drive_gains_scaling = usd.get_float(
-            physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
-        )
-
-        time_steps_per_second = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="time_steps_per_second", default=1000, verbose=verbose
-        )
-        physics_dt = (1.0 / time_steps_per_second) if time_steps_per_second > 0 else 0.001
-
-        gravity_enabled = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
-        )
-        max_solver_iters = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None, verbose=verbose
-        )
+        scene_properties = resolution.resolve_scene(physics_scene_prim)
+        physics_dt = scene_properties.physics_dt
+        gravity_enabled = scene_properties.gravity_enabled
+        max_solver_iters = scene_properties.max_solver_iterations
 
     stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
 
@@ -2584,9 +2446,7 @@ def parse_usd(
                     f"{scene_path}: physics:gravityMagnitude does not convert to a finite, representable SI value."
                 )
 
-        mpm_gravity_enabled = R.get_value(
-            scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
-        )
+        mpm_gravity_enabled = resolution.resolve_gravity_enabled(scene_prim)
         gravity_xform = axis_xform if override_root_xform else incoming_world_xform
         direction = wp.transform_vector(gravity_xform, wp.vec3(*direction_array))
         gravity = direction * magnitude_si if mpm_gravity_enabled else wp.vec3()
@@ -2640,7 +2500,7 @@ def parse_usd(
     if physics_scene_prim is not None:
         # Collect schema-defined attributes from the scene prim for inspection (e.g., mjc:* attributes)
         if collect_schema_attrs:
-            R.collect_prim_attrs(physics_scene_prim)
+            resolver_manager.collect_prim_attrs(physics_scene_prim)
 
         # Extract custom attributes for model (ONCE and WORLD frequency) from the PhysicsScene prim
         # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -2671,7 +2531,7 @@ def parse_usd(
     # set of prim paths of rigid bodies that are ignored
     # (to avoid repeated regex evaluations)
     ignored_body_paths = set()
-    material_specs = {}
+    material_specs: dict[str, _UsdResolutionPolicy.PhysicsMaterial] = {}
     # maps from articulation_id to list of body_ids
     articulation_bodies = {}
 
@@ -2685,7 +2545,7 @@ def parse_usd(
         yield from zip(*physics_utils_results[key], strict=False)
 
     # Setting up the default material
-    material_specs[""] = PhysicsMaterial()
+    material_specs[""] = resolution.PhysicsMaterial.from_shape_config(builder.default_shape_cfg)
 
     def warn_invalid_desc(path, descriptor) -> bool:
         if not descriptor.isValid:
@@ -2702,43 +2562,21 @@ def parse_usd(
             continue
         prim = stage.GetPrimAtPath(sdf_path)
 
-        def _resolve_contact_attr(key, _prim=prim):
-            val = R.get_value(_prim, prim_type=PrimType.MATERIAL, key=key, verbose=verbose)
-            if val is None:
-                return None
-            return float(val)
-
         if not math.isfinite(desc.density):
             warnings.warn(
                 f"{sdf_path}: authored material density must be finite; treating it as unspecified.",
                 stacklevel=2,
             )
 
-        material_specs[str(sdf_path)] = PhysicsMaterial(
-            staticFriction=desc.staticFriction,
-            dynamicFriction=desc.dynamicFriction,
+        material_specs[str(sdf_path)] = resolution.resolve_material(
+            prim,
+            static_friction=desc.staticFriction,
+            dynamic_friction=desc.dynamicFriction,
             restitution=desc.restitution,
-            torsionalFriction=R.get_value(
-                prim,
-                prim_type=PrimType.MATERIAL,
-                key="mu_torsional",
-                default=builder.default_shape_cfg.mu_torsional,
-                verbose=verbose,
-            ),
-            rollingFriction=R.get_value(
-                prim,
-                prim_type=PrimType.MATERIAL,
-                key="mu_rolling",
-                default=builder.default_shape_cfg.mu_rolling,
-                verbose=verbose,
-            ),
             # Treat non-positive, non-finite, or unauthored material density as "use importer default".
             # Effective collider/body MassAPI mass+inertia is handled later.
             density=desc.density if math.isfinite(desc.density) and desc.density > 0.0 else default_shape_density,
-            ke=_resolve_contact_attr("ke"),
-            kd=_resolve_contact_attr("kd"),
-            kf=_resolve_contact_attr("kf"),
-            ka=_resolve_contact_attr("ka"),
+            default_shape=builder.default_shape_cfg,
         )
 
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -2842,14 +2680,14 @@ def parse_usd(
             )
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
-                R.collect_prim_attrs(articulation_prim)
+                resolver_manager.collect_prim_attrs(articulation_prim)
                 # Also collect on the parent prim (e.g. Xform with PhysxArticulationAPI)
                 try:
                     parent_prim = articulation_prim.GetParent()
                 except Exception:
                     parent_prim = None
                 if parent_prim is not None and parent_prim.IsValid():
-                    R.collect_prim_attrs(parent_prim)
+                    resolver_manager.collect_prim_attrs(parent_prim)
 
             # Extract custom attributes for articulation frequency from the articulation root prim
             # (the one with PhysicsArticulationRootAPI, typically the articulation_prim itself or its parent)
@@ -2890,7 +2728,7 @@ def parse_usd(
                 usd_prim = stage.GetPrimAtPath(p)
                 if collect_schema_attrs:
                     # Collect on each articulated body prim encountered
-                    R.collect_prim_attrs(usd_prim)
+                    resolver_manager.collect_prim_attrs(usd_prim)
 
                 if key in body_specs:
                     body_desc = body_specs[key]
@@ -3257,14 +3095,10 @@ def parse_usd(
                 )
 
             articulation_bodies[articulation_id] = art_bodies
-            articulation_has_self_collision[articulation_id] = bool(
-                R.get_value(
-                    articulation_prim,
-                    prim_type=PrimType.ARTICULATION,
-                    key="self_collision_enabled",
-                    default=enable_self_collisions,
-                    verbose=verbose,
-                )
+            articulation_has_self_collision[articulation_id] = resolution.resolve_articulation_self_collision(
+                articulation_prim,
+                default=self_collision_default,
+                override=self_collision_override,
             )
             articulation_id += 1
     no_articulations = UsdPhysics.ObjectType.Articulation not in ret_dict
@@ -3652,14 +3486,16 @@ def parse_usd(
                         collision_group_ids[cgroup_name] = len(collision_group_ids) + 1
                     collision_group = collision_group_ids[cgroup_name]
                 material = material_specs[""]
+                material_path = ""
                 has_shape_material = len(shape_spec.materials) >= 1
                 if has_shape_material:
                     if len(shape_spec.materials) > 1 and verbose:
                         print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
-                    material = material_specs[str(shape_spec.materials[0])]
+                    material_path = str(shape_spec.materials[0])
+                    material = material_specs[material_path]
                     if verbose:
                         print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
+                            f"\tMaterial of '{path}':\tfriction: {material.dynamic_friction},\ttorsional friction: {material.torsional_friction},\trolling friction: {material.rolling_friction},\trestitution: {material.restitution},\tdensity: {material.density}"
                         )
                 elif verbose:
                     print(f"No material found for shape at '{path}'.")
@@ -3683,35 +3519,15 @@ def parse_usd(
                     prim, builder_custom_attr_shape, context={"builder": builder}
                 )
                 if collect_schema_attrs:
-                    R.collect_prim_attrs(prim)
+                    resolver_manager.collect_prim_attrs(prim)
 
-                margin_val, margin_resolver = R.get_value_with_resolver(
-                    prim,
-                    prim_type=PrimType.SHAPE,
-                    key="margin",
-                    default=builder.default_shape_cfg.margin,
-                    verbose=verbose,
-                )
-                gap_val = R.get_value(
-                    prim,
-                    prim_type=PrimType.SHAPE,
-                    key="gap",
-                    verbose=verbose,
-                )
-                if gap_val == float("-inf"):
-                    gap_val = builder.default_shape_cfg.gap
-                if legacy_margin_gap and margin_resolver is not None and margin_resolver.name == "mjc":
-                    # Legacy pre-3.9 import: newton_margin = mjc_margin - mjc_gap.
-                    mjc_gap = usd.get_attribute(prim, "mjc:gap")
-                    mjc_gap = 0.0 if mjc_gap is None else float(mjc_gap)
-                    newton_margin = float(margin_val) - mjc_gap
-                    if newton_margin < 0.0:
-                        warnings.warn(
-                            f"Prim '{prim.GetPath()}': legacy translation yields "
-                            f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
-                            stacklevel=2,
-                        )
-                    margin_val = newton_margin
+                legacy_mjc_gap: list[float] = []
+
+                def _get_legacy_mjc_gap(prim=prim, cache=legacy_mjc_gap):
+                    if not cache:
+                        value = usd.get_attribute(prim, "mjc:gap")
+                        cache.append(0.0 if value is None else float(value))
+                    return cache[0]
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = _get_material_props_cached(prim)
@@ -3734,34 +3550,16 @@ def parse_usd(
 
                 # Contact response precedence:
                 #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
-                _default = builder.default_shape_cfg
-                mjc_has_priority = False
-                for _r in R.resolvers:
-                    if _r.name == "mjc":
-                        mjc_has_priority = True
-                        break
-                    if _r.name == "newton":
-                        break
-                has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
-                shape_contact = {}
-                for _ck in ("ke", "kd", "kf", "ka"):
-                    per_shape_val = R.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
-                    has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))
-                    mat_val = getattr(material, _ck)
-                    has_mat = mat_val is not None and math.isfinite(mat_val)
-
-                    if has_solref and _ck in ("ke", "kd") and has_shape:
-                        shape_contact[_ck] = float(per_shape_val)
-                    elif has_mat:
-                        shape_contact[_ck] = mat_val
-                    elif has_shape:
-                        shape_contact[_ck] = float(per_shape_val)
-                    else:
-                        shape_contact[_ck] = getattr(_default, _ck)
-                shape_ke = shape_contact["ke"]
-                shape_kd = shape_contact["kd"]
-                shape_kf = shape_contact["kf"]
-                shape_ka = shape_contact["ka"]
+                shape_contact = resolution.resolve_contact_response(
+                    prim,
+                    material,
+                    builder.default_shape_cfg,
+                    has_mjc_solref=usd.get_attribute(prim, "mjc:solref") is not None,
+                )
+                shape_ke = shape_contact.ke
+                shape_kd = shape_contact.kd
+                shape_kf = shape_contact.kf
+                shape_ka = shape_contact.ka
 
                 shape_color = material_props.get("color")
                 carries_texture = material_props.get("texture") is not None and key == UsdPhysics.ObjectType.MeshShape
@@ -3782,163 +3580,30 @@ def parse_usd(
                         stacklevel=2,
                     )
 
-                # Resolve target_voxel_size first because it overrides
-                # sdf_max_resolution and the two are mutually exclusive in
-                # ShapeConfig.validate().
-                sdf_target_voxel_size = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
+                shape_properties = resolution.resolve_shape(
+                    prim,
+                    prim_path=path,
+                    defaults=builder.default_shape_cfg,
+                    has_sdf_api=has_sdf_api,
+                    is_mesh=key == UsdPhysics.ObjectType.MeshShape,
+                    is_plane=key == UsdPhysics.ObjectType.PlaneShape,
+                    collider_is_enabled=collider_is_enabled,
+                    rigid_gap=builder.rigid_gap,
+                    legacy_margin_gap=legacy_margin_gap,
+                    read_legacy_mjc_gap=_get_legacy_mjc_gap,
                 )
-                if sdf_target_voxel_size == float("-inf"):
-                    sdf_target_voxel_size = None
-                elif sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
-                    warnings.warn(
-                        f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
-                        f"(must be > 0); falling back to default.",
-                        stacklevel=2,
-                    )
-                    sdf_target_voxel_size = None
-                if sdf_target_voxel_size is None:
-                    sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
-
-                sdf_max_resolution = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
-                )
-                if sdf_max_resolution == float("-inf"):
-                    sdf_max_resolution = None
-                elif sdf_max_resolution is not None and sdf_max_resolution <= 0:
-                    warnings.warn(
-                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
-                        f"(must be > 0); falling back to default.",
-                        stacklevel=2,
-                    )
-                    sdf_max_resolution = None
-                elif sdf_max_resolution is not None and sdf_max_resolution % 8 != 0:
-                    warnings.warn(
-                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
-                        f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
-                        stacklevel=2,
-                    )
-                    sdf_max_resolution = None
-                if sdf_target_voxel_size is not None and sdf_max_resolution is not None:
-                    warnings.warn(
-                        f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
-                        f"are set; sdfTargetVoxelSize takes precedence.",
-                        stacklevel=2,
-                    )
-                    sdf_max_resolution = None
-                if sdf_max_resolution is None:
-                    # When the API is applied but neither attribute is authored,
-                    # fall back to the schema default (64). When target voxel
-                    # size already drives the resolution, leave max_resolution
-                    # unset so the two don't conflict in ShapeConfig.validate().
-                    if has_sdf_api and sdf_target_voxel_size is None:
-                        sdf_max_resolution = 64
-                    else:
-                        sdf_max_resolution = builder.default_shape_cfg.sdf_max_resolution
-
-                sdf_narrow_band_inner = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
-                )
-                if sdf_narrow_band_inner == float("-inf"):
-                    sdf_narrow_band_inner = None
-                sdf_narrow_band_outer = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
-                )
-                if sdf_narrow_band_outer == float("-inf"):
-                    sdf_narrow_band_outer = None
-                default_nb = builder.default_shape_cfg.sdf_narrow_band_range
-                sdf_narrow_band_range = (
-                    sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
-                    sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
-                )
-
-                sdf_texture_format = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose
-                )
-                _valid_sdf_tex_fmts = ("float32", "uint16", "uint8")
-                if sdf_texture_format is not None and sdf_texture_format not in _valid_sdf_tex_fmts:
-                    warnings.warn(
-                        f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
-                        f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
-                        stacklevel=2,
-                    )
-                    sdf_texture_format = None
-                if sdf_texture_format is None:
-                    sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
-
-                sdf_padding = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_padding", verbose=verbose)
-                if sdf_padding == float("-inf"):
-                    sdf_padding = None
-                elif sdf_padding is not None and sdf_padding < 0:
-                    warnings.warn(
-                        f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid "
-                        f"(must be >= 0); falling back to default.",
-                        stacklevel=2,
-                    )
-                    sdf_padding = None
-
-                hydroelastic_enabled = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
-                )
-                kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
-                if kh == float("-inf"):
-                    kh = None
-                elif kh is not None and kh <= 0:
-                    warnings.warn(
-                        f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid "
-                        f"(must be > 0); falling back to default.",
-                        stacklevel=2,
-                    )
-                    kh = None
-                if hydroelastic_enabled is True:
-                    is_hydroelastic = True
-                elif hydroelastic_enabled is False:
-                    is_hydroelastic = False
-                elif has_sdf_api:
-                    # API applied but hydroelasticEnabled unauthored -> schema default False, not builder default.
-                    is_hydroelastic = False
-                else:
-                    is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
-                if kh is None:
-                    kh = builder.default_shape_cfg.kh
-
-                # Hydroelastic meshes need an SDF source. For primitives, a texture
-                # SDF is generated from a synthesized watertight mesh at finalize(),
-                # but meshes require either an attached mesh.sdf or a
-                # resolution/voxel_size so one can be built deferred. Warn and
-                # disable hydroelastic on this shape rather than aborting the whole
-                # import — typically reached when newton:hydroelasticEnabled=true
-                # is authored without applying NewtonSDFCollisionAPI.
-                if (
-                    is_hydroelastic
-                    and key == UsdPhysics.ObjectType.MeshShape
-                    and sdf_max_resolution is None
-                    and sdf_target_voxel_size is None
-                ):
-                    warnings.warn(
-                        f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
-                        f"or newton:sdfTargetVoxelSize so an SDF can be generated; "
-                        f"disabling hydroelastic for this shape.",
-                        stacklevel=2,
-                    )
-                    is_hydroelastic = False
-                # Mass model and shell thickness (resolved across Newton / MuJoCo schemas)
-                mass_model = R.get_value(prim, PrimType.SHAPE, "mass_model", default="solid")
-                shape_is_solid = mass_model != "shell"
-                shell_thickness_val = R.get_value(prim, PrimType.SHAPE, "shell_thickness")
-                # When shell thickness is authored, pass it as margin so compute_inertia_shape
-                # uses the correct thickness. The real collision margin is restored after add_shape.
-                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
-                    if float(shell_thickness_val) >= 0.0:
-                        inertia_margin = float(shell_thickness_val)
-                    else:
-                        warnings.warn(
-                            f"Shape {path}: negative shell thickness {shell_thickness_val}; falling back to margin.",
-                            stacklevel=2,
-                        )
-                        inertia_margin = margin_val
-                else:
-                    inertia_margin = margin_val
+                margin_val = shape_properties.margin
+                gap_val = shape_properties.gap
+                sdf_max_resolution = shape_properties.sdf_max_resolution
+                sdf_narrow_band_range = shape_properties.sdf_narrow_band_range
+                sdf_target_voxel_size = shape_properties.sdf_target_voxel_size
+                sdf_texture_format = shape_properties.sdf_texture_format
+                sdf_padding = shape_properties.sdf_padding
+                is_hydroelastic = shape_properties.is_hydroelastic
+                kh = shape_properties.kh
+                shape_is_solid = shape_properties.is_solid
+                shell_thickness_val = shape_properties.shell_thickness
+                inertia_margin = shape_properties.inertia_margin
 
                 if shape_already_added:
                     _record_fallback_collider_mass_information(
@@ -3964,10 +3629,10 @@ def parse_usd(
                         ka=shape_ka,
                         margin=inertia_margin,
                         gap=gap_val,
-                        mu=material.dynamicFriction,
+                        mu=material.dynamic_friction,
                         restitution=material.restitution,
-                        mu_torsional=material.torsionalFriction,
-                        mu_rolling=material.rollingFriction,
+                        mu_torsional=material.torsional_friction,
+                        mu_rolling=material.rolling_friction,
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
@@ -4063,12 +3728,10 @@ def parse_usd(
                             mesh.roughness = material_props["roughness"]
                         if material_props.get("metallic") is not None:
                             mesh.metallic = material_props["metallic"]
-                    mesh.maxhullvert = R.get_value(
+                    mesh.maxhullvert = resolution.resolve_max_hull_vertices(
                         prim,
-                        prim_type=PrimType.SHAPE,
-                        key="max_hull_vertices",
-                        default=mesh_maxhullvert,
-                        verbose=verbose,
+                        default=max_hull_vertices_default,
+                        override=max_hull_vertices_override,
                     )
                     # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
                     # write the SDF intent to the builder lists, deferring the build to finalize().
@@ -4581,7 +4244,8 @@ def parse_usd(
             builder=builder,
             stage=stage,
             root_prim=root_prim,
-            resolver=R,
+            resolver=resolver_manager,
+            resolution_policy=resolution,
             collect_schema_attrs=collect_schema_attrs,
             deformable_read=deformable_read,
             get_prim_world_mat=_get_prim_world_mat,
@@ -4805,7 +4469,7 @@ def parse_usd(
                 continue
 
             if collect_schema_attrs and (is_connect or is_weld):
-                R.collect_prim_attrs(joint_prim)
+                resolver_manager.collect_prim_attrs(joint_prim)
 
             eq_custom_attrs = usd.get_custom_attribute_values(
                 joint_prim, builder_custom_attr_eq, context={"builder": builder}
@@ -4973,7 +4637,7 @@ def parse_usd(
     collapse_results = None
     path_body_relative_transform = {}
     builder_joint_labels_before_collapse = list(builder.joint_label)
-    if scene_attributes.get("newton:collapse_fixed_joints", collapse_fixed_joints):
+    if collapse_fixed_joints:
         collapse_results = builder.collapse_fixed_joints()
         body_merged_parent = collapse_results["body_merged_parent"]
         body_merged_transform = collapse_results["body_merged_transform"]
@@ -5236,7 +4900,7 @@ def parse_usd(
         "physics_scene_path": str(physics_scene_prim.GetPath()) if physics_scene_prim is not None else None,
         "physics_dt": physics_dt,
         "collapse_results": collapse_results,
-        "schema_attrs": R.schema_attrs,
+        "schema_attrs": resolver_manager.schema_attrs,
         # "articulation_roots": articulation_roots,
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
@@ -5432,6 +5096,14 @@ def parse_usd(
                 "path_attachment_map": path_attachment_map,
                 "path_attachment_attrs": path_attachment_attrs,
             }
+        )
+
+    fallback_migration_warning = resolver_manager._fallback_migration_warning()
+    if fallback_migration_warning is not None:
+        warnings.warn(
+            fallback_migration_warning,
+            DeprecationWarning,
+            stacklevel=_external_stacklevel(),
         )
 
     return result
