@@ -172,6 +172,8 @@
 - Fix convex decomposition of disconnected mesh components so unified multi-part collision meshes preserve separate convex parts. (#3261)
 - Fix `ModelBuilder.add_mjcf()` ignoring positive explicit mass on mesh geoms. (#3595)
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
+- Initialize free-joint coordinate-layout position targets from the authored pose. (#3380)
+- Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix `ModelBuilder.add_usd()` to initialize maximal and free-base generalized state from authored rigid-body velocities, including local-to-world rotation and angular unit conversion. (#3322)
 - Fix `ModelBuilder.collapse_fixed_joints()` to transport body velocity when merging changes the center of mass. (#3322)

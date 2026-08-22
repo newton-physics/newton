@@ -741,6 +741,11 @@ def parse_urdf(
         builder.joint_q[start + 4] = xform.q[1]
         builder.joint_q[start + 5] = xform.q[2]
         builder.joint_q[start + 6] = xform.q[3]
+
+        import newton  # noqa: PLC0415
+
+        if newton.use_coord_layout_targets:
+            builder.joint_target_q[start : start + 7] = builder.joint_q[start : start + 7]
     else:
         # Fixed joint to world or to parent_body
         # When parent_body is set, xform is interpreted as relative to the parent body
