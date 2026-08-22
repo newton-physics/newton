@@ -22,7 +22,7 @@ from .core.conversions import (
 )
 from .core.joints import JOINT_QMAX, JOINT_QMIN, JointActuationType
 from .core.model import ModelKamino
-from .core.state import StateKamino
+from .core.state import StateKamino, compute_body_acceleration, reset_body_acceleration
 from .geometry.contacts import (
     ContactsKamino,
     convert_contacts_kamino_to_newton,
@@ -47,6 +47,7 @@ __all__ = [
     "SolverKaminoImpl",
     "StateKamino",
     "StructuralUpdateViolation",
+    "compute_body_acceleration",
     "compute_material_first_shape",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
@@ -58,5 +59,6 @@ __all__ = [
     "convert_model_joint_transforms",
     "convert_model_materials",
     "msg",
+    "reset_body_acceleration",
     "validate_model_structural_updates",
 ]
