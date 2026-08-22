@@ -406,6 +406,7 @@ class TestViewerLayerBackends(unittest.TestCase):
         server.on_client_connect = Mock()
         server.on_client_disconnect = Mock()
         server.get_scene_serializer = Mock(return_value=None)
+        server.get_clients = Mock(return_value={})
         server.stop = Mock()
 
         fake_viser = Mock()
@@ -453,6 +454,38 @@ class TestViewerLayerBackends(unittest.TestCase):
             scene.captured_calls["add_batched_meshes_simple"]["name"],
             "/layers/solverA/instances",
         )
+
+    def test_viser_set_camera_preserves_orientation_when_omitted(self):
+        """Verify set_camera keeps the last angle for each axis omitted as None.
+
+        Covers omitting both angles, omitting only one, and passing an
+        explicit 0.0 (which must be applied, not treated as missing).
+        """
+        viewer, _ = self._make_viser_viewer()
+
+        viewer.set_camera(wp.vec3(4.0, 5.0, 6.0), pitch=20.0, yaw=90.0)
+        self.assertEqual(viewer._camera_pitch, 20.0)
+        self.assertEqual(viewer._camera_yaw, 90.0)
+
+        viewer.set_camera(wp.vec3(7.0, 8.0, 9.0))
+        self.assertEqual(viewer._camera_pitch, 20.0)
+        self.assertEqual(viewer._camera_yaw, 90.0)
+
+        viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), pitch=-15.0)
+        self.assertEqual(viewer._camera_pitch, -15.0)
+        self.assertEqual(viewer._camera_yaw, 90.0)
+
+        viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), yaw=45.0)
+        self.assertEqual(viewer._camera_pitch, -15.0)
+        self.assertEqual(viewer._camera_yaw, 45.0)
+
+        viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), pitch=0.0, yaw=0.0)
+        self.assertEqual(viewer._camera_pitch, 0.0)
+        self.assertEqual(viewer._camera_yaw, 0.0)
+
+        viewer.set_camera(wp.vec3(1.0, 1.0, 1.0))
+        self.assertEqual(viewer._camera_pitch, 0.0)
+        self.assertEqual(viewer._camera_yaw, 0.0)
 
 
 if __name__ == "__main__":

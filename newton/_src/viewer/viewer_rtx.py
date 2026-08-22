@@ -842,13 +842,13 @@ void main() {
             self.picking.world_offsets = self.world_offsets
 
     @override
-    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float) -> None:
+    def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None) -> None:
         """Set the camera position, pitch, and yaw.
 
         Args:
             pos: Camera position [m].
-            pitch: Camera pitch [deg].
-            yaw: Camera yaw [deg].
+            pitch: Camera pitch [deg]. If None, the current pitch is kept.
+            yaw: Camera yaw [deg]. If None, the current yaw is kept.
         """
         from pyglet.math import Vec3 as PyVec3
 
@@ -856,8 +856,10 @@ void main() {
             self.camera.pos = PyVec3(float(pos[0]), float(pos[1]), float(pos[2]))
         except (TypeError, IndexError, KeyError):
             pass
-        self.camera.pitch = pitch
-        self.camera.yaw = yaw
+        if pitch is not None:
+            self.camera.pitch = pitch
+        if yaw is not None:
+            self.camera.yaw = yaw
         self._camera_dirty = True
 
     def _ensure_picking_line_primitive(self):

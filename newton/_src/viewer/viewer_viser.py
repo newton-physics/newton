@@ -156,6 +156,8 @@ class ViewerViser(ViewerBase):
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._camera_pitch = 0.0
+        self._camera_yaw = 0.0
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
@@ -547,17 +549,21 @@ class ViewerViser(ViewerBase):
             client.camera.up_direction = tuple(up_direction.tolist())
 
     @override
-    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+    def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None):
         """Set camera position and orientation for connected Viser clients.
 
         The requested view is also cached so that newly connected clients receive
         the same camera setup as soon as they report camera state.
 
         Args:
-            pos: Requested camera position.
-            pitch: Requested camera pitch angle.
-            yaw: Requested camera yaw angle.
+            pos: Requested camera position [m].
+            pitch: Requested camera pitch angle [deg]. If None, the current pitch is kept.
+            yaw: Requested camera yaw angle [deg]. If None, the current yaw is kept.
         """
+        pitch = self._camera_pitch if pitch is None else float(pitch)
+        yaw = self._camera_yaw if yaw is None else float(yaw)
+        self._camera_pitch = pitch
+        self._camera_yaw = yaw
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         front, up_direction = self._compute_camera_front_up(pitch, yaw)
         look_at = position + front
