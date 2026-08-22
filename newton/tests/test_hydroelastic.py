@@ -15,6 +15,14 @@ from newton._src.geometry.contact_reduction_hydroelastic import (
     _from_fixed,
     _to_fixed,
 )
+from newton._src.geometry.sdf_hydroelastic import (
+    _extract_mc_corner_pair,
+    _mc_corner_offset,
+    pack_hydro_voxel_record,
+    unpack_hydro_voxel_coords,
+    vec8f,
+)
+from newton._src.geometry.sdf_mc import get_triangle_fraction
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -73,6 +81,141 @@ def _test_fixed_point_extreme_exponents(
     tid = wp.tid()
     fixed_values[tid] = _to_fixed(values[tid], exponents[tid], mantissa_bits)
     roundtrip_values[tid] = _from_fixed(fixed_values[tid], exponents[tid], mantissa_bits)
+
+
+@wp.kernel
+def _test_mc_corner_offsets(offsets: wp.array[wp.vec3i]):
+    """Store each canonical marching-cubes corner offset."""
+    corner_idx = wp.tid()
+    offsets[corner_idx] = _mc_corner_offset(corner_idx)
+
+
+@wp.kernel
+def _test_mc_corner_pair_selection(
+    values: wp.array[wp.float32],
+    depths: wp.array[wp.float32],
+    selected: wp.array[wp.vec2f],
+):
+    """Select every marching-cubes value/depth pair from register vectors."""
+    corner_idx = wp.tid()
+    corner_vals = vec8f(values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7])
+    corner_depths = vec8f(depths[0], depths[1], depths[2], depths[3], depths[4], depths[5], depths[6], depths[7])
+    selected[corner_idx] = _extract_mc_corner_pair(corner_vals, corner_depths, corner_idx)
+
+
+@wp.kernel
+def _test_triangle_fraction_rotations(
+    depths: wp.array[wp.vec3f],
+    num_inside: wp.array[wp.int32],
+    fractions: wp.array[wp.float32],
+):
+    """Evaluate each triangle-depth rotation used for partial coverage."""
+    tid = wp.tid()
+    fractions[tid] = get_triangle_fraction(depths[tid], num_inside[tid])
+
+
+@wp.kernel
+def _test_hydro_voxel_record_roundtrip(
+    coords: wp.array[wp.vec3us],
+    pairs: wp.array[wp.vec2i],
+    records: wp.array[wp.vec3ui],
+    decoded_coords: wp.array[wp.vec3us],
+    decoded_pairs: wp.array[wp.vec2i],
+):
+    """Pack and unpack one hydroelastic octree record."""
+    tid = wp.tid()
+    record = pack_hydro_voxel_record(coords[tid], tid)
+    records[tid] = record
+    decoded_coords[tid] = unpack_hydro_voxel_coords(record)
+    decoded_pairs[tid] = pairs[wp.int32(record[2])]
+
+
+def test_triangle_fraction_rotations(test, device):
+    """Verify triangle coverage is invariant to the distinct vertex rotation."""
+    depths_np = np.array(
+        [
+            [1.0, 2.0, 3.0],
+            [-1.0, -2.0, -3.0],
+            [-1.0, 2.0, 3.0],
+            [2.0, -1.0, 3.0],
+            [2.0, 3.0, -1.0],
+            [1.0, -2.0, -3.0],
+            [-2.0, 1.0, -3.0],
+            [-2.0, -3.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    num_inside_np = np.array([0, 3, 1, 1, 1, 2, 2, 2], dtype=np.int32)
+    expected = np.array(
+        [
+            0.0,
+            1.0,
+            1.0 / 12.0,
+            1.0 / 12.0,
+            1.0 / 12.0,
+            11.0 / 12.0,
+            11.0 / 12.0,
+            11.0 / 12.0,
+        ]
+    )
+
+    fractions = wp.empty(len(depths_np), dtype=wp.float32, device=device)
+    wp.launch(
+        _test_triangle_fraction_rotations,
+        dim=len(depths_np),
+        inputs=[
+            wp.array(depths_np, dtype=wp.vec3f, device=device),
+            wp.array(num_inside_np, dtype=wp.int32, device=device),
+            fractions,
+        ],
+        device=device,
+    )
+    np.testing.assert_allclose(fractions.numpy(), expected, rtol=1.0e-6, atol=0.0)
+
+
+def test_hydro_voxel_record_roundtrip(test, device):
+    """Verify packed hydroelastic octree records preserve coordinates and pair indices."""
+    coords_np = np.array([[0, 0, 0], [1, 255, 256], [65535, 32768, 17]], dtype=np.uint16)
+    pairs_np = np.array([[0, 1], [12345, 67890], [2**27 - 1, 2**27]], dtype=np.int32)
+    coords = wp.array(coords_np, dtype=wp.vec3us, device=device)
+    pairs = wp.array(pairs_np, dtype=wp.vec2i, device=device)
+    records = wp.empty(len(coords_np), dtype=wp.vec3ui, device=device)
+    decoded_coords = wp.empty_like(coords)
+    decoded_pairs = wp.empty_like(pairs)
+    wp.launch(
+        _test_hydro_voxel_record_roundtrip,
+        dim=len(coords_np),
+        inputs=[coords, pairs, records, decoded_coords, decoded_pairs],
+        device=device,
+    )
+    np.testing.assert_array_equal(decoded_coords.numpy(), coords_np)
+    np.testing.assert_array_equal(decoded_pairs.numpy(), pairs_np)
+
+
+def test_mc_corner_offsets_match_canonical(test, device):
+    """Verify canonical marching-cubes corner offsets."""
+    offsets = wp.empty(8, dtype=wp.vec3i, device=device)
+    wp.launch(_test_mc_corner_offsets, dim=8, inputs=[offsets], device=device)
+    expected = np.asarray(wp.MarchingCubes.CUBE_CORNER_OFFSETS, dtype=np.int32)
+    np.testing.assert_array_equal(offsets.numpy(), expected)
+
+
+def test_mc_corner_pair_selection(test, device):
+    """Preserve every marching-cubes corner value and depth during selection."""
+    values_np = np.arange(8, dtype=np.float32) + 0.25
+    depths_np = -np.arange(8, dtype=np.float32) - 0.5
+    selected = wp.empty(8, dtype=wp.vec2f, device=device)
+    wp.launch(
+        _test_mc_corner_pair_selection,
+        dim=8,
+        inputs=[
+            wp.array(values_np, dtype=wp.float32, device=device),
+            wp.array(depths_np, dtype=wp.float32, device=device),
+            selected,
+        ],
+        device=device,
+    )
+    np.testing.assert_array_equal(selected.numpy(), np.column_stack((values_np, depths_np)))
 
 
 # --- Helper functions ---
@@ -408,6 +551,38 @@ def test_deterministic_hydroelastic_contacts(test, device, moment_matching=False
 def test_deterministic_hydroelastic_contacts_moment_matching(test, device):
     """Keep hydroelastic contacts bit-identical when moment matching is enabled."""
     test_deterministic_hydroelastic_contacts(test, device, moment_matching=True)
+
+
+def test_cached_shape_sdf_data_matches_fallback(test, device):
+    """Keep cached and per-frame SDF descriptor mapping bit-identical."""
+    model, _, state, _, _, pipeline, _, _ = build_stacked_cubes_scene(
+        device=device,
+        solver_fn=lambda model: None,
+        shape_type=ShapeType.PRIMITIVE,
+        deterministic=True,
+    )
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    contacts = pipeline.contacts()
+    test.assertTrue(pipeline._hydro_shape_sdf_data_prepared)
+
+    fields = (
+        "rigid_contact_shape0",
+        "rigid_contact_shape1",
+        "rigid_contact_point0",
+        "rigid_contact_point1",
+        "rigid_contact_normal",
+        "rigid_contact_stiffness",
+    )
+    pipeline.collide(state, contacts)
+    cached_count = int(contacts.rigid_contact_count.numpy()[0])
+    cached = tuple(getattr(contacts, name).numpy()[:cached_count].copy() for name in fields)
+
+    pipeline._hydro_shape_sdf_data_prepared = False
+    pipeline.collide(state, contacts)
+    fallback_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertEqual(fallback_count, cached_count)
+    for name, expected in zip(fields, cached, strict=True):
+        np.testing.assert_array_equal(getattr(contacts, name).numpy()[:fallback_count], expected, err_msg=name)
 
 
 def test_deterministic_hydroelastic_contacts_unreduced(test, device):
@@ -1334,41 +1509,64 @@ def test_translational_friction_invariance(test, device):
             )
 
 
-def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
-    """Validate entry_k_eff uses the pairwise harmonic-mean stiffness formula."""
-    expected_k_eff = 0.5 * 1.0e10  # k_a == k_b == default kh for these shapes
+def test_exported_margin_stiffness_matches_shape_harmonic_mean(test, device):
+    """Verify exported margin stiffness uses the pairwise harmonic mean."""
+    margin_contact_area = 0.0125
     config = HydroelasticSDF.Config(
         reduce_contacts=True,
         pre_prune_contacts=False,
+        anchor_contact=False,
+        margin_contact_area=margin_contact_area,
         buffer_fraction=1.0,
         buffer_mult_contact=2,
     )
     model, _, state_0, _, _, pipeline, _, _ = build_stacked_cubes_scene(
         device=device,
         solver_fn=solvers["xpbd"],
-        shape_type=ShapeType.MESH,
+        shape_type=ShapeType.PRIMITIVE,
         cube_half=CUBE_HALF_SMALL,
         reduce_contacts=True,
         sdf_hydroelastic_config=config,
     )
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    top_body = 2
     contacts = pipeline.contacts()
     pipeline.collide(state_0, contacts)
 
-    hydro = pipeline.hydroelastic_sdf
-    reducer = hydro.contact_reduction.reducer
-    active_slots = reducer.hashtable.active_slots.numpy()
-    ht_capacity = reducer.hashtable.capacity
-    active_count = int(active_slots[ht_capacity])
-    test.assertGreater(active_count, 0, "Expected at least one active reduction hashtable entry")
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0, "Expected exported hydroelastic contacts")
 
-    active_indices = active_slots[:active_count]
-    entry_k_eff = reducer.entry_k_eff.numpy()[active_indices]
-    nonzero_k_eff = entry_k_eff[entry_k_eff > 0.0]
-    test.assertGreater(len(nonzero_k_eff), 0, "Expected non-zero entry_k_eff values")
-    test.assertTrue(
-        np.allclose(nonzero_k_eff, expected_k_eff, rtol=1.0e-4, atol=1.0e-3),
-        f"Expected entry_k_eff to match harmonic mean ({expected_k_eff:.6e})",
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    shape_body = model.shape_body.numpy()
+    lower_shape = int(np.flatnonzero(shape_body == top_body - 1)[0])
+    top_shape = int(np.flatnonzero(shape_body == top_body)[0])
+    pair_mask = ((shape0 == lower_shape) & (shape1 == top_shape)) | ((shape0 == top_shape) & (shape1 == lower_shape))
+    test.assertTrue(np.any(pair_mask), "Expected contacts for the touching top-cube pair")
+
+    point0 = contacts.rigid_contact_point0.numpy()[:count]
+    point1 = contacts.rigid_contact_point1.numpy()[:count]
+    normal = contacts.rigid_contact_normal.numpy()[:count]
+    body_q = state_0.body_q.numpy()
+    body0 = shape_body[shape0]
+    body1 = shape_body[shape1]
+    point0_world = point0 + np.where((body0 != -1)[:, None], body_q[np.maximum(body0, 0), :3], 0.0)
+    point1_world = point1 + np.where((body1 != -1)[:, None], body_q[np.maximum(body1, 0), :3], 0.0)
+    contact_distance = np.einsum("ij,ij->i", point1_world - point0_world, normal)
+    margin_mask = pair_mask & (contact_distance >= 0.0)
+    test.assertTrue(np.any(margin_mask), "Expected nonpenetrating margin contacts for the touching pair")
+
+    stiffness = contacts.rigid_contact_stiffness.numpy()[:count]
+    shape_kh = model.shape_material_kh.numpy()
+    k_a = shape_kh[shape0[margin_mask]]
+    k_b = shape_kh[shape1[margin_mask]]
+    expected_stiffness = margin_contact_area * (k_a * k_b) / (k_a + k_b)
+    np.testing.assert_allclose(
+        stiffness[margin_mask],
+        expected_stiffness,
+        rtol=1.0e-5,
+        atol=1.0e-3,
+        err_msg="Exported margin stiffness must use the pairwise harmonic mean",
     )
 
 
@@ -1614,6 +1812,104 @@ def test_convex_mesh_hydroelastic_contacts(test, device):
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
+def _canonicalize_contact_records(records):
+    """Sort exported contacts independently by identity and rounded geometry."""
+    point_id, shape0, shape1, point0, point1, normal, _, _ = records
+    keys = np.column_stack(
+        (
+            point_id,
+            shape0,
+            shape1,
+            np.round(point0, decimals=4),
+            np.round(point1, decimals=4),
+            np.round(normal, decimals=4),
+        )
+    )
+    order = np.lexsort(tuple(keys[:, column] for column in reversed(range(keys.shape[1]))))
+    return tuple(values[order] for values in records)
+
+
+def test_scalar_sdf_texture_hydroelastic_contacts(test, device):
+    """Preserve hydroelastic contacts across paired and scalar texture storage."""
+
+    def collide(paired_samples):
+        cube_mesh = newton.Mesh.create_box(
+            0.5,
+            0.5,
+            0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        cube_mesh.build_sdf(
+            max_resolution=32,
+            narrow_band_range=(-0.1, 0.1),
+            margin=0.02,
+            paired_samples=paired_samples,
+            device=device,
+        )
+
+        cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True, gap=0.02)
+        builder = newton.ModelBuilder(sdf_texture_paired_samples=paired_samples)
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        body_b = builder.add_body(
+            xform=wp.transform(
+                wp.vec3(0.07, -0.04, 0.9),
+                wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 1.0, -0.2)), 0.08),
+            )
+        )
+        builder.add_shape_convex_hull(body=body_a, mesh=cube_mesh, cfg=cfg)
+        builder.add_shape_convex_hull(body=body_b, mesh=cube_mesh, cfg=cfg)
+
+        model = builder.finalize(device=device)
+        state = model.state()
+        collision_pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="sap",
+            rigid_contact_max=256,
+            sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_mult_contact=2),
+        )
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
+
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreater(count, 0)
+        point_id = contacts.rigid_contact_point_id.numpy()[:count]
+        shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+        shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+        point0 = contacts.rigid_contact_point0.numpy()[:count]
+        point1 = contacts.rigid_contact_point1.numpy()[:count]
+        normal = contacts.rigid_contact_normal.numpy()[:count]
+        stiffness = contacts.rigid_contact_stiffness.numpy()[:count]
+        body_q = state.body_q.numpy()
+        shape_body = model.shape_body.numpy()
+        point0_world = point0 + body_q[shape_body[shape0], :3]
+        point1_world = point1 + body_q[shape_body[shape1], :3]
+        penetration = np.einsum("ij,ij->i", point1_world - point0_world, normal)
+        return cube_mesh.sdf._coarse_texture.num_channels, tuple(
+            values.copy() for values in (point_id, shape0, shape1, point0, point1, normal, penetration, stiffness)
+        )
+
+    paired_channels, paired = collide(True)
+    scalar_channels, scalar = collide(False)
+    test.assertEqual(paired_channels, 2)
+    test.assertEqual(scalar_channels, 1)
+    test.assertEqual(len(scalar[0]), len(paired[0]))
+    paired = _canonicalize_contact_records(paired)
+    scalar = _canonicalize_contact_records(scalar)
+    for name, paired_values, scalar_values in zip(
+        ("point_id", "shape0", "shape1", "point0", "point1", "normal", "penetration", "stiffness"),
+        paired,
+        scalar,
+        strict=True,
+    ):
+        if name == "point_id" or name.startswith("shape"):
+            np.testing.assert_array_equal(scalar_values, paired_values, err_msg=name)
+        else:
+            np.testing.assert_allclose(scalar_values, paired_values, rtol=2.0e-5, atol=2.0e-5, err_msg=name)
+
+
 def test_fixed_point_extreme_exponents(test, device):
     """Handle sentinel and high finite pressure contributions without overflow."""
     mantissa_bits = _fixed_mantissa_bits(1024)
@@ -1784,6 +2080,14 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_scalar_sdf_texture_hydroelastic_contacts",
+    test_scalar_sdf_texture_hydroelastic_contacts,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_buffer_fraction_no_crash",
     test_buffer_fraction_no_crash,
     devices=cuda_devices,
@@ -1800,8 +2104,32 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_cached_shape_sdf_data_matches_fallback",
+    test_cached_shape_sdf_data_matches_fallback,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_fixed_point_extreme_exponents_cuda",
     test_fixed_point_extreme_exponents,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_triangle_fraction_rotations",
+    test_triangle_fraction_rotations,
+    devices=["cpu", *cuda_devices],
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydro_voxel_record_roundtrip",
+    test_hydro_voxel_record_roundtrip,
     devices=cuda_devices,
     check_output=False,
 )
@@ -1838,8 +2166,8 @@ add_function_test(
 )
 add_function_test(
     TestHydroelastic,
-    "test_entry_k_eff_matches_shape_harmonic_mean",
-    test_entry_k_eff_matches_shape_harmonic_mean,
+    "test_exported_margin_stiffness_matches_shape_harmonic_mean",
+    test_exported_margin_stiffness_matches_shape_harmonic_mean,
     devices=cuda_devices,
 )
 
@@ -1865,6 +2193,20 @@ add_function_test(
     test_reduced_vs_unreduced_contact_forces_deterministic,
     devices=cuda_devices,
     check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_mc_corner_offsets_match_canonical",
+    test_mc_corner_offsets_match_canonical,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_mc_corner_pair_selection",
+    test_mc_corner_pair_selection,
+    devices=cuda_devices,
 )
 
 add_function_test(

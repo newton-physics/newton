@@ -303,7 +303,7 @@ class PADMMStatus:
         r_dz: The total dual iterate residual.
             Computed as the L2-norm `r_dz := || z - z_p ||_2`.
         r_a: The total combined primal-dual residual used for acceleration restart checks.
-            Computed as `r_a := rho * r_dy + (1.0 / rho) * r_dz`.
+            Computed as `r_a := rho * r_dy^2 + (1.0 / rho) * r_dz^2`.
         r_a_p: The previous total combined primal-dual residual.
         r_a_pp: An auxiliary cache of the previous total combined primal-dual residual.
         restart: A flag indicating whether gradient acceleration requires a restart (`1`) or not (`0`).
@@ -366,7 +366,7 @@ class PADMMStatus:
     r_a: wp.float32
     """
     The total combined primal-dual residual used for acceleration restart checks.
-    Computed as `r_a := rho * r_dy + (1.0 / rho) * r_dz`.
+    Computed as `r_a := rho * r_dy^2 + (1.0 / rho) * r_dz^2`.
     """
 
     r_a_p: wp.float32

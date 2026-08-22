@@ -94,7 +94,6 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
         model = builder.finalize(self.default_device)
         data = model.data()
-        state = model.state()
 
         # Create a collision detector with primitive pipeline
         config = CollisionDetector.Config(
@@ -106,7 +105,7 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         self.assertIs(detector.device, self.default_device)
 
         # Run collision detection
-        detector.collide(data, state)
+        detector.collide(data)
 
         # Create a list of expected number of contacts per shape pair
         expected_world_contacts: list[int] = [self.expected_contacts] * builder.num_worlds
@@ -135,7 +134,6 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
         model = builder.finalize(self.default_device)
         data = model.data()
-        state = model.state()
 
         # Create a collision detector with unified pipeline
         config = CollisionDetector.Config(
@@ -147,7 +145,7 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         self.assertIs(detector.device, self.default_device)
 
         # Run collision detection
-        detector.collide(data, state)
+        detector.collide(data)
 
         # Create a list of expected number of contacts per shape pair
         expected_world_contacts: list[int] = [self.expected_contacts] * builder.num_worlds
