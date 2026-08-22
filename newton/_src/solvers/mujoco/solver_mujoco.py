@@ -1077,6 +1077,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="dof_springdamper",
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:springdamper",
+                mjcf_attribute_name="springdamper",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="dof_ref",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
@@ -5553,6 +5565,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         body_gravcomp = get_custom_attribute("gravcomp")
         body_sleep_policy = get_custom_attribute("sleep_policy")
         joint_springref = get_custom_attribute("dof_springref")
+        joint_springdamper = get_custom_attribute("dof_springdamper")
         joint_ref = get_custom_attribute("dof_ref")
 
         def joint_has_raw_limit_solref(dof_idx: int) -> bool:
@@ -6402,6 +6415,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     ball_params["stiffness"] = float(joint_stiffness[qd_start])
                 if joint_damping is not None:
                     ball_params["damping"] = float(joint_damping[qd_start])
+                if joint_springdamper is not None and np.any(joint_springdamper[qd_start]):
+                    ball_params["springdamper"] = joint_springdamper[qd_start]
                 body.add_joint(**ball_params)
                 mjc_joint_names.append(name)
                 # For ball joints, all 3 DOFs map to the same MuJoCo joint
@@ -6496,6 +6511,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         joint_params["stiffness"] = float(joint_stiffness[ai])
                     if joint_damping is not None:
                         joint_params["damping"] = float(joint_damping[ai])
+                    if joint_springdamper is not None and np.any(joint_springdamper[ai]):
+                        joint_params["springdamper"] = joint_springdamper[ai]
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = bool(joint_actgravcomp[ai])
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
@@ -6614,6 +6631,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         joint_params["stiffness"] = float(joint_stiffness[ai])
                     if joint_damping is not None:
                         joint_params["damping"] = float(joint_damping[ai])
+                    if joint_springdamper is not None and np.any(joint_springdamper[ai]):
+                        joint_params["springdamper"] = joint_springdamper[ai]
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = bool(joint_actgravcomp[ai])
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
@@ -7870,6 +7889,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mujoco_attrs = getattr(self.model, "mujoco", None)
         dof_solimp = getattr(mujoco_attrs, "solimpfriction", None) if mujoco_attrs is not None else None
         dof_solref = getattr(mujoco_attrs, "solreffriction", None) if mujoco_attrs is not None else None
+        dof_springdamper = getattr(mujoco_attrs, "dof_springdamper", None) if mujoco_attrs is not None else None
 
         nworld = self.mjc_dof_to_newton_dof.shape[0]
         nv = self.mjc_dof_to_newton_dof.shape[1]
@@ -7883,6 +7903,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.joint_armature,
                 self.model.joint_friction,
                 self.model.joint_damping,
+                dof_springdamper,
                 dof_solimp,
                 dof_solref,
             ],
@@ -7912,6 +7933,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.joint_effort_limit,
                 solimplimit,
                 joint_stiffness,
+                dof_springdamper,
                 joint_dof_limit_margin,
             ],
             outputs=[

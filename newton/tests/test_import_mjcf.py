@@ -61,6 +61,50 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_joint_springdamper_matches_native_mujoco(self):
+        """Preserve joint springdamper auto-tuning through MuJoCo compilation."""
+        mjcf = """
+<mujoco model="joint_springdamper">
+    <worldbody>
+        <body name="body">
+            <joint name="joint" type="hinge" springdamper="0.2 1.5"/>
+            <geom type="sphere" size="0.1" mass="2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True)
+
+        np.testing.assert_allclose(
+            solver.mj_model.jnt_stiffness,
+            native_model.jnt_stiffness,
+            rtol=5.0e-4,
+            atol=1.0e-8,
+        )
+        np.testing.assert_allclose(
+            solver.mj_model.dof_damping,
+            native_model.dof_damping,
+            rtol=5.0e-4,
+            atol=1.0e-8,
+        )
+        np.testing.assert_allclose(
+            solver.mjw_model.jnt_stiffness.numpy()[0],
+            native_model.jnt_stiffness,
+            rtol=5.0e-4,
+            atol=1.0e-8,
+        )
+        np.testing.assert_allclose(
+            solver.mjw_model.dof_damping.numpy()[0],
+            native_model.dof_damping,
+            rtol=5.0e-4,
+            atol=1.0e-8,
+        )
+
     def test_collision_shapes_hidden_by_default_even_without_same_body_visuals(self):
         mjcf = """
 <mujoco model="collision_visibility">
