@@ -113,8 +113,8 @@ class SolverKamino(SolverBase, CouplingInterface):
     under-/overactuation, joint-limits, hard frictional contacts and restitutive impacts.
 
     Forward dynamics are formulated as a Nonlinear Complementarity Problem (NCP)
-    over bilateral kinematic joint constraints and unilateral joint-limit and
-    contact constraints. The default PADMM backend solves this problem with
+    over bilateral kinematic joint constraints, bounded-multiplier constraints, and unilateral joint-limit
+    and contact constraints. The default PADMM backend solves this problem with
     Proximal ADMM. An opt-in DVI backend uses projected iterations with a direct
     bilateral block solve.
 
@@ -1414,14 +1414,16 @@ class SolverKamino(SolverBase, CouplingInterface):
         axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
         massless_body = violations[self._kamino.StructuralUpdateViolation.MASSLESS]
+        friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
+        effort_joint = violations[self._kamino.StructuralUpdateViolation.EFFORT_CTS]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
             raise RuntimeError(
                 f"Changing dynamic constraint topology for joint {joint} "
                 f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
-                "The dynamic constraint topology changes if armature, damping, target stiffness, or target damping are updated to non-zero values, while they were zero when creating the solver. "
-                "The opposite is also true: if the values are updated to zero, while they were non-zero when creating the solver, the dynamic constraint topology also changes."
+                "Each dynamic row is selected per DoF by passive armature or damping, or by active implicit PD "
+                "without a finite effort limit. Moving, adding, or removing one of those rows requires recreation."
             )
 
         if limit_dof != sentinel:
@@ -1429,6 +1431,20 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise RuntimeError(
                 f"Changing the existence of a joint limit for DoF {dof} "
                 f"is not supported; recreate SolverKamino to apply the change."
+            )
+
+        if friction_joint != sentinel:
+            joint = int(friction_joint)
+            raise RuntimeError(
+                f"Changing joint friction row topology for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
+            )
+
+        if effort_joint != sentinel:
+            joint = int(effort_joint)
+            raise RuntimeError(
+                f"Changing effort-limit row topology for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
             )
 
         if actuation_joint != sentinel:

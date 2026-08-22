@@ -241,7 +241,7 @@ def run_set_floating_base_check(
     """
     try:
         # Create a new model data, with body states set as per previous data
-        data = model.data(unilateral_cts=False, joint_wrenches=False, device=model.device)
+        data = model.data(device=model.device)
         wp.copy(data.bodies.q_i, data_prev.bodies.q_i)
         wp.copy(data.bodies.u_i, data_prev.bodies.u_i)
 
@@ -337,7 +337,7 @@ def set_model_to_random_pose(
 
     # Set the model into generated non-trivial pose using FK
     fk_solver = ForwardKinematicsSolver(model=model)
-    data = model.data(unilateral_cts=False, joint_wrenches=False, device=model.device)
+    data = model.data(device=model.device)
     fk_solver.run_fk_solve(
         actuators_q=actuator_q,
         actuators_u=actuator_u,

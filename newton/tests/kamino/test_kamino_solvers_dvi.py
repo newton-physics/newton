@@ -40,6 +40,7 @@ from newton._src.solvers.kamino._src.solvers.dvi.sparse import (
 )
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
     _color_mapped_dvi_inequalities,
+    _map_bounded_constraints,
     _solve_dvi_sparse_inequalities_pgs,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, convert_config_to_struct
@@ -468,10 +469,12 @@ class TestDVISolver(unittest.TestCase):
 
         def make_model(dimensions):
             return SimpleNamespace(
-                size=SimpleNamespace(sum_of_num_joint_cts=sum(dimensions)),
+                size=SimpleNamespace(sum_of_num_bilateral_joint_cts=sum(dimensions)),
                 info=SimpleNamespace(
-                    num_joint_cts=wp.array(dimensions, dtype=wp.int32, device=self.device),
-                    joint_cts_offset=wp.array(np.cumsum([0, *dimensions[:-1]]), dtype=wp.int32, device=self.device),
+                    num_joint_bilateral_cts=wp.array(dimensions, dtype=wp.int32, device=self.device),
+                    joint_bilateral_cts_offset=wp.array(
+                        np.cumsum([0, *dimensions[:-1]]), dtype=wp.int32, device=self.device
+                    ),
                 ),
             )
 
@@ -759,19 +762,25 @@ class TestDVISolver(unittest.TestCase):
                     jacobian_block,  # jacobian_nzb_values
                     int32_array([0]),  # bsm_row_start
                     int32_array([0]),  # bsm_col_start
+                    wp.array([wp.vec2i(-1, -1)], dtype=wp.vec2i, device=self.device),  # friction_nzb_offsets
                     int32_array([0]),  # limit_nzb_offsets
                     int32_array([0]),  # contact_nzb_offsets
                     int32_array([limit_index]),  # limit_indices
                     int32_array([-1]),  # contact_indices
+                    int32_array([0]),  # problem_nbc
                     int32_array([1]),  # problem_nl
                     int32_array([0]),  # problem_nc
+                    int32_array([0]),  # problem_bcio
                     int32_array([0]),  # problem_lio
                     int32_array([0]),  # problem_cio
                     int32_array([0]),  # problem_uio
+                    int32_array([0]),  # problem_bcgo
                     int32_array([0]),  # problem_lcgo
                     int32_array([1]),  # problem_ccgo
                     int32_array([0]),  # problem_vio
                     float_array([0.0]),  # problem_mu
+                    float_array([0.0]),  # problem_bound_lower
+                    float_array([0.0]),  # problem_bound_upper
                     float_array([1.0]),  # problem_P
                     float_array([-1.0]),  # problem_v_f
                     float_array([1.0]),  # problem_diag
@@ -1300,7 +1309,7 @@ class TestDVISolver(unittest.TestCase):
         )
 
         problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
-        self.assertGreater(int(model.info.num_joint_cts.numpy()[0]), 0)
+        self.assertGreater(int(model.info.num_joint_bilateral_cts.numpy()[0]), 0)
         self.assertEqual(int(problem.data.nl.numpy()[0]), 0)
         self.assertEqual(int(problem.data.nc.numpy()[0]), 0)
 
@@ -1345,7 +1354,7 @@ class TestDVISolver(unittest.TestCase):
         )
 
         problem = _make_dense_dual_problem(model, data, limits, detector.contacts, jacobians)
-        self.assertGreater(int(model.info.num_joint_cts.numpy()[0]), 0)
+        self.assertGreater(int(model.info.num_joint_bilateral_cts.numpy()[0]), 0)
         self.assertEqual(int(problem.data.nl.numpy()[0]), 0)
         self.assertEqual(int(problem.data.nc.numpy()[0]), 0)
 
@@ -1383,6 +1392,7 @@ class TestDVISolver(unittest.TestCase):
 
     def test_03g_dvi_inequality_coloring_separates_dynamic_conflicts(self):
         """Separate conflicting inequality endpoints while sharing safe colors."""
+        problem_nbc = wp.array([0], dtype=wp.int32, device=self.device)
         problem_nl = wp.array([1], dtype=wp.int32, device=self.device)
         problem_nc = wp.array([4], dtype=wp.int32, device=self.device)
         problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
@@ -1407,6 +1417,7 @@ class TestDVISolver(unittest.TestCase):
             kernel=_color_mapped_dvi_inequalities,
             dim=1,
             inputs=[
+                problem_nbc,
                 problem_nl,
                 problem_nc,
                 problem_uio,
@@ -1435,6 +1446,7 @@ class TestDVISolver(unittest.TestCase):
 
     def test_03g1_dvi_inequality_coloring_keeps_worlds_independent(self):
         """Color independent worlds concurrently without sharing body masks."""
+        problem_nbc = wp.array([0, 0], dtype=wp.int32, device=self.device)
         problem_nl = wp.array([0, 0], dtype=wp.int32, device=self.device)
         problem_nc = wp.array([2, 2], dtype=wp.int32, device=self.device)
         problem_uio = wp.array([0, 2], dtype=wp.int32, device=self.device)
@@ -1453,6 +1465,7 @@ class TestDVISolver(unittest.TestCase):
             kernel=_color_mapped_dvi_inequalities,
             dim=2,
             inputs=[
+                problem_nbc,
                 problem_nl,
                 problem_nc,
                 problem_uio,
@@ -1474,6 +1487,7 @@ class TestDVISolver(unittest.TestCase):
     def test_03g2_dvi_inequality_coloring_handles_more_than_64_colors(self):
         """Preserve valid coloring when one body requires more than 64 colors."""
         num_inequalities = 66
+        problem_nbc = wp.array([0], dtype=wp.int32, device=self.device)
         problem_nl = wp.array([0], dtype=wp.int32, device=self.device)
         problem_nc = wp.array([num_inequalities], dtype=wp.int32, device=self.device)
         problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
@@ -1497,6 +1511,7 @@ class TestDVISolver(unittest.TestCase):
             kernel=_color_mapped_dvi_inequalities,
             dim=1,
             inputs=[
+                problem_nbc,
                 problem_nl,
                 problem_nc,
                 problem_uio,
@@ -1515,6 +1530,82 @@ class TestDVISolver(unittest.TestCase):
 
         np.testing.assert_array_equal(inequality_ids_by_color.numpy(), np.arange(num_inequalities))
         np.testing.assert_array_equal(inequality_color_starts.numpy(), np.arange(num_inequalities + 1))
+
+    def test_03g3_dvi_inequality_coloring_separates_bounded_from_limit_conflicts(self):
+        """Give a bounded (friction) row and a limit row on the same body different colors."""
+        problem_nbc = wp.array([1], dtype=wp.int32, device=self.device)
+        problem_nl = wp.array([2], dtype=wp.int32, device=self.device)
+        problem_nc = wp.array([0], dtype=wp.int32, device=self.device)
+        problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
+        # Entity 0 (bounded) and entity 1 (limit) share body 0; entity 2 (limit)
+        # is on an independent body and may reuse a color safely.
+        inequality_bodies = wp.array(
+            [wp.vec2i(0, -1), wp.vec2i(0, -1), wp.vec2i(5, -1)],
+            dtype=wp.vec2i,
+            device=self.device,
+        )
+        body_color_masks = wp.zeros(shape=6, dtype=wp.uint64, device=self.device)
+        inequality_colors = wp.full(shape=3, value=-1, dtype=wp.int32, device=self.device)
+        inequality_num_colors = wp.zeros(shape=1, dtype=wp.int32, device=self.device)
+        inequality_ids_by_color = wp.full(shape=3, value=-1, dtype=wp.int32, device=self.device)
+        inequality_color_starts = wp.zeros(shape=4, dtype=wp.int32, device=self.device)
+
+        wp.launch(
+            kernel=_color_mapped_dvi_inequalities,
+            dim=1,
+            inputs=[
+                problem_nbc,
+                problem_nl,
+                problem_nc,
+                problem_uio,
+                inequality_bodies,
+                body_color_masks,
+                inequality_colors,
+                inequality_num_colors,
+                inequality_ids_by_color,
+                inequality_color_starts,
+            ],
+            device=self.device,
+        )
+
+        colors = inequality_colors.numpy()
+        num_colors = int(inequality_num_colors.numpy()[0])
+        self.assertNotEqual(colors[0], colors[1])
+        self.assertEqual(colors[2], colors[0])
+        ids_by_color = inequality_ids_by_color.numpy()
+        color_starts = inequality_color_starts.numpy()
+        np.testing.assert_array_equal(np.sort(ids_by_color), np.arange(3))
+        for color in range(num_colors):
+            scheduled = ids_by_color[color_starts[color] : color_starts[color + 1]]
+            self.assertTrue(np.all(colors[scheduled] == color))
+
+    def test_03g4_dvi_map_bounded_constraints_writes_joint_body_pairs(self):
+        """Map each joint's friction rows to its body pair at the right entity slot."""
+        joint_wid = wp.array([0, 0], dtype=wp.int32, device=self.device)
+        joint_bid_F = wp.array([0, 1], dtype=wp.int32, device=self.device)
+        joint_bid_B = wp.array([-1, 2], dtype=wp.int32, device=self.device)
+        # Joint 0 (unary) owns global bounded row 0; joint 1 (binary) owns row 1.
+        joint_bounded_cts_offset = wp.array([0, 1, 2], dtype=wp.int32, device=self.device)
+        problem_bcio = wp.array([0], dtype=wp.int32, device=self.device)
+        problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
+        inequality_bodies = wp.full(shape=2, value=wp.vec2i(-5, -5), dtype=wp.vec2i, device=self.device)
+
+        wp.launch(
+            kernel=_map_bounded_constraints,
+            dim=2,
+            inputs=[
+                joint_wid,
+                joint_bid_B,
+                joint_bid_F,
+                joint_bounded_cts_offset,
+                problem_bcio,
+                problem_uio,
+                inequality_bodies,
+            ],
+            device=self.device,
+        )
+
+        np.testing.assert_array_equal(inequality_bodies.numpy(), [[-1, 0], [2, 1]])
 
     def test_03i_dvi_coldstart_is_repeatable(self):
         for sparse in (False, True):
@@ -1714,7 +1805,7 @@ class TestDVISolver(unittest.TestCase):
                 self.assertLess(float(np.max(np.abs(state_in.body_qd.numpy()))), 100.0)
                 self.assertIsInstance(dvi_solver, DVISolver)
                 self.assertIsInstance(dvi_solver._bilateral_solver, (LLTBlockedSolver, LLTBlockedRCMSolver))
-                joint_dims = solver._solver_kamino._model.info.num_joint_cts.numpy()
+                joint_dims = solver._solver_kamino._model.info.num_joint_bilateral_cts.numpy()
                 self.assertTrue(np.any(joint_dims == 0))
                 self.assertTrue(np.any(joint_dims > 0))
                 np.testing.assert_array_equal(
