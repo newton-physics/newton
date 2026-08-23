@@ -109,7 +109,7 @@ class Example:
             z = 0.0
             points.append(pos + wp.vec3(x, y, z))
 
-        edge_q = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=float(twisting_angle))
+        edge_q = newton.rod.compute_parallel_transport_quaternions(points, twist_total=float(twisting_angle))
         return points, edge_q
 
     def __init__(self, viewer, args):

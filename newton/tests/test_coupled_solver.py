@@ -525,7 +525,7 @@ class TestModelView(unittest.TestCase):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parent = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         child = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        joint = builder.add_joint_cable(
+        joint = builder.add_joint_rod(
             parent=parent,
             child=child,
             parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()),
@@ -538,7 +538,7 @@ class TestModelView(unittest.TestCase):
 
         self.assertFalse(bool(view.joint_enabled.numpy()[joint]))
         self.assertEqual(int(view.joint_type.numpy()[joint]), int(newton.JointType.D6))
-        self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.CABLE))
+        self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.ROD))
         np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], model.joint_dof_dim.numpy()[joint])
 
     def test_zero_particle_mass(self):
