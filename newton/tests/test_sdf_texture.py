@@ -28,6 +28,7 @@ from newton._src.geometry.sdf_texture import (
     create_texture_sdf_from_primitive,
     create_texture_sdf_from_volume,
     texture_sample_sdf,
+    texture_sample_sdf_at_voxel,
     texture_sample_sdf_grad,
     texture_sample_sdf_hw,
 )
@@ -180,6 +181,21 @@ def _sample_texture_sdf_kernel(
 ):
     tid = wp.tid()
     results[tid] = texture_sample_sdf(sdf, query_points[tid])
+
+
+@wp.kernel
+def _compare_integer_voxel_samples_kernel(
+    sdf: TextureSDFData,
+    voxel_coords: wp.array[wp.vec3i],
+    interpolated: wp.array[float],
+    direct: wp.array[float],
+):
+    """Sample identical integer voxel coordinates through both texture paths."""
+    tid = wp.tid()
+    coord = voxel_coords[tid]
+    local_pos = sdf.sdf_box_lower + wp.cw_mul(wp.vec3f(coord), sdf.voxel_size)
+    interpolated[tid] = texture_sample_sdf(sdf, local_pos)
+    direct[tid] = texture_sample_sdf_at_voxel(sdf, coord[0], coord[1], coord[2])
 
 
 @wp.kernel
@@ -411,6 +427,128 @@ def test_texture_sdf_construction(test, device):
     mesh_max = mesh.vertices.max(axis=0)
     test.assertTrue(np.all(box_lower <= mesh_min))
     test.assertTrue(np.all(box_upper >= mesh_max))
+
+
+def test_texture_sdf_integer_voxel_sampling(test, device):
+    """Match direct voxel reads to interpolation within float32 rounding."""
+    mesh = _create_box_mesh()
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    tex_sdf, _coarse_tex, _subgrid_tex = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        device=device,
+    )
+
+    lower = np.array(tex_sdf.sdf_box_lower, dtype=np.float32)
+    upper = np.array(tex_sdf.sdf_box_upper, dtype=np.float32)
+    voxel_size = np.array(tex_sdf.voxel_size, dtype=np.float32)
+    dims = np.rint((upper - lower) / voxel_size).astype(np.int32) + 1
+    rng = np.random.default_rng(2026)
+    coords = rng.integers(np.zeros(3, dtype=np.int32), dims, size=(256, 3), dtype=np.int32)
+
+    voxel_coords = wp.array(coords, dtype=wp.vec3i, device=device)
+    interpolated = wp.empty(len(coords), dtype=float, device=device)
+    direct = wp.empty(len(coords), dtype=float, device=device)
+    wp.launch(
+        _compare_integer_voxel_samples_kernel,
+        dim=len(coords),
+        inputs=[tex_sdf, voxel_coords, interpolated, direct],
+        device=device,
+    )
+
+    np.testing.assert_allclose(direct.numpy(), interpolated.numpy(), rtol=2.0e-5, atol=2.0e-6)
+
+
+def test_texture_sdf_software_sampling_honors_layout(test, device):
+    """Honor paired and scalar storage in the public software sampler."""
+    mesh = _create_box_mesh()
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    paired_sdf, paired_coarse, paired_subgrid = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        paired_samples=True,
+        device=device,
+    )
+    scalar_sdf, scalar_coarse, scalar_subgrid = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        paired_samples=False,
+        device=device,
+    )
+
+    test.assertEqual(paired_coarse.num_channels, 2)
+    test.assertEqual(paired_subgrid.num_channels, 2)
+    test.assertEqual(scalar_coarse.num_channels, 1)
+    test.assertEqual(scalar_subgrid.num_channels, 1)
+
+    lower = np.array(paired_sdf.sdf_box_lower, dtype=np.float32)
+    upper = np.array(paired_sdf.sdf_box_upper, dtype=np.float32)
+    voxel_size = np.array(paired_sdf.voxel_size, dtype=np.float32)
+    rng = np.random.default_rng(2027)
+    query_np = rng.uniform(lower - voxel_size, upper + voxel_size, size=(512, 3)).astype(np.float32)
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    paired_values = wp.empty(len(query_np), dtype=float, device=device)
+    scalar_values = wp.empty(len(query_np), dtype=float, device=device)
+    wp.launch(
+        _sample_texture_sdf_kernel,
+        dim=len(query_np),
+        inputs=[paired_sdf, query_points, paired_values],
+        device=device,
+    )
+    wp.launch(
+        _sample_texture_sdf_kernel,
+        dim=len(query_np),
+        inputs=[scalar_sdf, query_points, scalar_values],
+        device=device,
+    )
+
+    np.testing.assert_allclose(scalar_values.numpy(), paired_values.numpy(), rtol=0.0, atol=2.0e-6)
+
+
+def test_texture_sdf_scalar_extract_isomesh(test, device):
+    """Match public isomesh extraction across paired and scalar texture layouts."""
+    paired_mesh = _create_box_mesh(half_extents=(0.3, 0.3, 0.3))
+    scalar_mesh = _create_box_mesh(half_extents=(0.3, 0.3, 0.3))
+    paired_sdf = paired_mesh.build_sdf(max_resolution=64, paired_samples=True, device=device)
+    scalar_sdf = scalar_mesh.build_sdf(max_resolution=64, paired_samples=False, device=device)
+
+    paired_isomesh = paired_sdf.extract_isomesh(device=device)
+    scalar_isomesh = scalar_sdf.extract_isomesh(device=device)
+    test.assertIsNotNone(paired_isomesh)
+    test.assertIsNotNone(scalar_isomesh)
+    test.assertGreater(len(scalar_isomesh.vertices), 0)
+    test.assertEqual(len(scalar_isomesh.vertices), len(paired_isomesh.vertices))
+
+    paired_vertices = paired_isomesh.vertices
+    scalar_vertices = scalar_isomesh.vertices
+    np.testing.assert_allclose(
+        np.max(np.abs(scalar_vertices), axis=0),
+        np.max(np.abs(paired_vertices), axis=0),
+        rtol=0.0,
+        atol=1.0e-5,
+    )
+    paired_order = np.lexsort((paired_vertices[:, 2], paired_vertices[:, 1], paired_vertices[:, 0]))
+    scalar_order = np.lexsort((scalar_vertices[:, 2], scalar_vertices[:, 1], scalar_vertices[:, 0]))
+    np.testing.assert_allclose(
+        scalar_vertices[scalar_order],
+        paired_vertices[paired_order],
+        rtol=0.0,
+        atol=1.0e-5,
+    )
 
 
 def _compare_texture_vs_nanovdb(test, tex_sdf, nanovdb_data, query_points, narrow_band, device):
@@ -1640,6 +1778,24 @@ def test_texture_sdf_sign_mode_normal_open_mesh(test, device):
 # Register tests for CUDA devices
 devices = get_cuda_test_devices()
 add_function_test(TestTextureSDF, "test_texture_sdf_construction", test_texture_sdf_construction, devices=devices)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_integer_voxel_sampling",
+    test_texture_sdf_integer_voxel_sampling,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_software_sampling_honors_layout",
+    test_texture_sdf_software_sampling_honors_layout,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_scalar_extract_isomesh",
+    test_texture_sdf_scalar_extract_isomesh,
+    devices=devices,
+)
 add_function_test(
     TestTextureSDF, "test_texture_sdf_values_match_nanovdb", test_texture_sdf_values_match_nanovdb, devices=devices
 )

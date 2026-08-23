@@ -15,7 +15,7 @@ Two complementary tests share this file as the canonical friction benchmark:
   * ``test_friction_stopping_distance`` — sliding boxes on flat ground decelerate
     under kinetic Coulomb friction and stop at d = v0^2 / (2 mu g). Provides
     the precise kinetic-friction oracle for Coulomb-cone solvers and a tight
-    empirical regression envelope for VBD's penalty-friction model.
+    empirical regression envelope for compliant-ALM VBD contact friction.
 """
 
 import math
@@ -49,7 +49,8 @@ RAMP_HZ = 0.05
 BOX_HX = 0.2
 BOX_HY = 0.2
 BOX_HZ = 0.05
-BOX_GAP = 0.001  # initial offset above the ramp surface to avoid penalty pop-out
+BOX_GAP = 0.001  # initial offset above the ramp surface to avoid initial contact transient
+VBD_STOPPING_CONTACT_KE = 1.0e6  # Near-rigid normal for VBD kinetic-friction oracle
 
 SIM_DT = 1.0 / 60.0
 SIM_SUBSTEPS = 30
@@ -57,13 +58,12 @@ SETTLE_FRAMES = 30  # 0.5 s, lets the contact-stiffness transient decay
 MEASURE_FRAMES = 15  # 0.25 s window for sliding cells to accumulate a measurable displacement
 VIEWER_FRAMES = 600
 
-# Sweeps. Non-VBD solvers cover a wide mu range; VBD's penalty friction
-# saturates above mu ~ 0.30, so it gets a narrower sweep with looser
-# thresholds (see _VBD_THRESHOLDS). Angles are capped at 40 deg because
-# constraint-solver friction enforcement on a steep slope from rest is
-# noisy near 50 deg. mu=1.00 therefore exercises only the static side.
-# Quantitative kinetic-friction validation for Coulomb-cone solvers lives in
-# test_friction_stopping_distance, which is unaffected by these caps.
+# Sweeps. Non-VBD solvers cover a wide mu range. VBD uses a denser low-mu
+# sweep around the static/sliding transition, where finite-step errors are
+# easiest to expose (see _VBD_THRESHOLDS). Higher-mu kinetic accuracy is
+# covered by test_friction_stopping_distance. Angles are capped at 40 deg
+# because constraint-solver friction enforcement on a steep slope from rest
+# is noisy near 50 deg. mu=1.00 therefore exercises only the static side.
 _DEFAULT_MUS = (0.10, 0.30, 0.50, 0.70, 1.00)
 _DEFAULT_ANGLES_DEG = (3.0, 10.0, 20.0, 30.0, 40.0)
 _VBD_MUS = (0.10, 0.15, 0.20, 0.25, 0.30)
@@ -73,8 +73,7 @@ _VBD_ANGLES_DEG = (5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0)
 # Thresholds. Below-crit cells: |v| < v_rest AND post-settle disp < eps_pos.
 # Above-crit cells: post-settle disp >= min_slide (a sanity bound — the precise
 # kinetic-friction oracle is in test_friction_stopping_distance). VBD gets a
-# wider deadband and looser static thresholds because AVBD's penalty friction
-# is fuzzy near the static/kinetic boundary.
+# wider deadband and looser static thresholds near the static/kinetic boundary.
 class _Thresholds(NamedTuple):
     margin_deg: float
     v_rest: float
@@ -83,8 +82,8 @@ class _Thresholds(NamedTuple):
 
 
 _DEFAULT_THRESHOLDS = _Thresholds(margin_deg=2.0, v_rest=0.10, eps_pos=0.02, min_slide=0.02)
-# VBD's min_slide is loose: AVBD penalty-friction creeps borderline cells a few mm
-# in 0.25 s rather than sliding fully.
+# VBD's min_slide is loose: finite-step / finite-iteration contact error can
+# creep borderline cells a few mm in 0.25 s rather than sliding fully.
 _VBD_THRESHOLDS = _Thresholds(margin_deg=5.0, v_rest=0.12, eps_pos=0.10, min_slide=0.005)
 
 # --- Stopping-distance config ---
@@ -224,7 +223,7 @@ def test_friction_ramp(test, device, solver_fn, mus, angles_deg, thresholds, nat
     assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box_ids, thresholds)
 
 
-def build_stopping_distance_scene(device):
+def build_stopping_distance_scene(device, contact_ke=1.0e5):
     """Boxes on per-box static ground patches with matching mu.
 
     Newton averages mu across the two contact shapes, so a shared ground would
@@ -239,7 +238,7 @@ def build_stopping_distance_scene(device):
     for i, mu in enumerate(STOPPING_MUS):
         cfg = newton.ModelBuilder.ShapeConfig(collision_group=i + 1)
         cfg.mu = mu
-        cfg.ke = 1.0e5
+        cfg.ke = contact_ke
         cfg.kd = 0.0
         cfg.kf = 0.0
         cfg.gap = 0.0
@@ -277,7 +276,9 @@ def build_stopping_distance_scene(device):
     return model, box_ids
 
 
-def test_friction_stopping_distance(test, device, solver_fn, rel_tol, rest_speed_max, native_contacts=False):
+def test_friction_stopping_distance(
+    test, device, solver_fn, rel_tol, rest_speed_max, native_contacts=False, contact_ke=1.0e5
+):
     """Verify a sliding box stops at d = v0^2 / (2 mu g).
 
     Three boxes at mu in STOPPING_MUS settle on matching ground patches, then
@@ -286,7 +287,7 @@ def test_friction_stopping_distance(test, device, solver_fn, rel_tol, rest_speed
     distance against the analytical value and check average planar motion over
     a short trailing rest window.
     """
-    model, box_ids = build_stopping_distance_scene(device)
+    model, box_ids = build_stopping_distance_scene(device, contact_ke=contact_ke)
     solver = solver_fn(model)
 
     state_0 = model.state()
@@ -375,9 +376,9 @@ cuda_devices = get_selected_cuda_test_devices()
 # Featherstone and SemiImplicit use viscous (kf) friction rather than Coulomb,
 # so the critical-angle criterion does not apply; excluded here.
 # stopping_distance_rel_tol: per-solver tolerance on d_measured/d_expected. Coulomb-cone
-# solvers (XPBD, MuJoCo) hit ~0.05-0.2% in practice. VBD uses penalty friction with
-# low-velocity regularization and saturation, so keep a small empirical margin
-# above the precise Coulomb stopping-distance oracle.
+# solvers (XPBD, MuJoCo) hit ~0.05-0.2% in practice. VBD still has finite-step and
+# finite-iteration error, so keep a small empirical margin above the precise
+# Coulomb stopping-distance oracle.
 _SOLVERS = {
     "xpbd": {
         "factory": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
@@ -446,10 +447,15 @@ _SOLVERS = {
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
     "vbd": {
-        "factory": lambda model: newton.solvers.SolverVBD(model, iterations=40, rigid_contact_k_start=1.0e5),
+        "factory": lambda model: newton.solvers.SolverVBD(
+            model,
+            iterations=40,
+            rigid_compliant_alm=True,
+        ),
         "mus": _VBD_MUS,
         "angles_deg": _VBD_ANGLES_DEG,
         "thresholds": _VBD_THRESHOLDS,
+        "stopping_distance_contact_ke": VBD_STOPPING_CONTACT_KE,
         "stopping_distance_rel_tol": 0.02,
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
@@ -545,7 +551,9 @@ class TestRigidFrictionRamp(unittest.TestCase):
         device = wp.get_device("cuda:0")
         cfg = _SOLVERS[solver_name]
 
-        model, box_ids = build_stopping_distance_scene(device)
+        model, box_ids = build_stopping_distance_scene(
+            device, contact_ke=cfg.get("stopping_distance_contact_ke", 1.0e5)
+        )
         solver = cfg["factory"](model)
         state_0 = model.state()
         state_1 = model.state()
@@ -624,6 +632,7 @@ for device in devices:
             rel_tol=cfg["stopping_distance_rel_tol"],
             rest_speed_max=cfg["stopping_distance_rest_speed_max"],
             native_contacts=cfg.get("native_contacts", False),
+            contact_ke=cfg.get("stopping_distance_contact_ke", 1.0e5),
         )
 
 

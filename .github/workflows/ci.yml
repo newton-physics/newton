@@ -15,7 +15,7 @@ on:
       - release-*
 
 jobs:
-  minimal-import-test:
+  python-compatibility-test:
     if: github.event_name != 'push' || github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
     steps:
@@ -41,19 +41,19 @@ jobs:
           version: "0.11.26"
       - name: Test CI tooling
         run: uv run --no-project -m unittest discover -s scripts/ci/tests
-      - name: Test minimal import (Python 3.10)
-        run: uv run --python 3.10 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
-      - name: Test minimal import (Python 3.11)
-        run: uv run --python 3.11 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
-      - name: Test minimal import (Python 3.12)
-        run: uv run --python 3.12 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
-      - name: Test minimal import (Python 3.13)
-        run: uv run --python 3.13 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
-      - name: Test minimal import (Python 3.14)
-        run: uv run --python 3.14 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+      - name: Python compatibility (Python 3.10)
+        run: uv run --python 3.10 python -m unittest newton.tests.test_python_compatibility
+      - name: Python compatibility (Python 3.11)
+        run: uv run --python 3.11 python -m unittest newton.tests.test_python_compatibility
+      - name: Python compatibility (Python 3.12)
+        run: uv run --python 3.12 python -m unittest newton.tests.test_python_compatibility
+      - name: Python compatibility (Python 3.13)
+        run: uv run --python 3.13 python -m unittest newton.tests.test_python_compatibility
+      - name: Python compatibility (Python 3.14)
+        run: uv run --python 3.14 python -m unittest newton.tests.test_python_compatibility
 
   dependency-install-test:
-    needs: minimal-import-test
+    needs: python-compatibility-test
     strategy:
       fail-fast: false
       matrix:

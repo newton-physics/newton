@@ -266,8 +266,8 @@ def eval_single_articulation_fk(
 
         # compute transform across the joint
         type = joint_type[i]
-        if type == JointType.CABLE:
-            # CABLE joints are skipped by generic forward kinematics.
+        if type == JointType.ROD:
+            # ROD joints are skipped by generic forward kinematics.
             continue
 
         X_pj = joint_X_p[i]
@@ -514,7 +514,7 @@ def eval_fk(
 
     .. note::
 
-        :attr:`~newton.JointType.CABLE` body transforms are not changed by
+        :attr:`~newton.JointType.ROD` body transforms are not changed by
         :func:`newton.eval_fk`; they are advanced directly by
         :class:`newton.solvers.SolverVBD`.
 
@@ -1008,10 +1008,9 @@ def jcalc_motion_subspace(
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
 
-        CABLE joints are not currently supported. CABLE joints have complex,
-        configuration-dependent motion subspaces (dynamic stretch direction and
-        isotropic angular DOF) and are primarily designed for VBD solver.
-        If encountered, their Jacobian columns will remain zero.
+        ROD joints are not currently supported because their material slots do
+        not define generalized-coordinate motion subspaces. Their Jacobian
+        columns remain zero.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1501,7 +1500,7 @@ def eval_inverse_dynamics_force(
     ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
     ``joint_f`` is entirely in that world convention.
 
-    :attr:`~newton.JointType.CABLE` joints are not supported because their DOF
+    :attr:`~newton.JointType.ROD` joints are not supported because their material
     slots are constraints rather than generalized coordinates for this
     inverse-dynamics formulation.
 
@@ -1538,11 +1537,11 @@ def eval_inverse_dynamics_force(
             reading their mass-matrix, acceleration, or bias-force inputs.
 
     Raises:
-        ValueError: If the model contains a :attr:`~newton.JointType.CABLE`
+        ValueError: If the model contains a :attr:`~newton.JointType.ROD`
             joint or an input, output, or mask has an unexpected shape.
     """
-    if model._has_cable_joints:  # pyright: ignore[reportPrivateUsage]
-        raise ValueError("eval_inverse_dynamics_force() does not support JointType.CABLE joints.")
+    if model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+        raise ValueError("eval_inverse_dynamics_force() does not support JointType.ROD joints.")
 
     if model.articulation_count == 0:
         return
