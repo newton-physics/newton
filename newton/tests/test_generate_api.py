@@ -4,7 +4,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 try:
@@ -17,6 +17,28 @@ except ModuleNotFoundError as exc:
     if exc.name != "docs":
         raise
     generate_api = None
+
+
+@unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
+class TestGenerateApiPublicSymbols(unittest.TestCase):
+    def test_public_symbols_rejects_module_without_all(self):
+        """Reject a module that does not declare its public API."""
+        module = ModuleType("newton.missing_all")
+        module.undeclared_symbol = object()
+
+        with self.assertRaisesRegex(ValueError, r"newton\.missing_all must define __all__"):
+            generate_api.public_symbols(module)
+
+    def test_public_symbols_rejects_non_string_entry(self):
+        """Reject a public API declaration containing a non-string entry."""
+        module = ModuleType("newton.invalid_all_entry")
+        module.__all__ = ["declared_symbol", 1]
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"newton\.invalid_all_entry\.__all__ must contain only strings; got 1",
+        ):
+            generate_api.public_symbols(module)
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
