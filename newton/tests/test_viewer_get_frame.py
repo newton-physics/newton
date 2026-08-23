@@ -414,6 +414,87 @@ class TestViewerGLGetFrame(unittest.TestCase):
         self.assertEqual(frame.device, wp.get_device("cpu"))
         self.assertEqual(fake_gl.readback_count, 1)
 
+    def test_world_projected_texture_keeps_physical_scale_on_large_quads(self):
+        """Keep projected texture density independent of a generic quad's dimensions."""
+        viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+
+        try:
+            renderer = viewer.renderer
+            renderer.draw_sky = False
+            renderer.sky_upper = (0.0, 0.0, 0.0)
+            renderer.sky_lower = (0.0, 0.0, 0.0)
+            renderer.draw_shadows = False
+            renderer.diffuse_scale = 0.0
+            renderer.specular_scale = 0.0
+            renderer.spotlight_enabled = False
+            renderer.ambient_sky = (1.0, 1.0, 1.0)
+            renderer.ambient_ground = (1.0, 1.0, 1.0)
+            renderer.exposure = 1.0
+
+            points = wp.array(
+                [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)],
+                dtype=wp.vec3,
+                device=viewer.device,
+            )
+            indices = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32, device=viewer.device)
+            normals = wp.array([(0.0, 0.0, 1.0)] * 4, dtype=wp.vec3, device=viewer.device)
+            uvs = wp.array([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], dtype=wp.vec2, device=viewer.device)
+            texture = np.full((64, 64, 3), (20, 40, 70), dtype=np.uint8)
+            texture[:5, :] = 240
+            texture[:, :5] = 240
+            xforms = wp.array(
+                [wp.transform((0.0, 0.0, 0.0), wp.quat_identity())],
+                dtype=wp.transform,
+                device=viewer.device,
+            )
+            colors = wp.array([(1.0, 1.0, 1.0)], dtype=wp.vec3, device=viewer.device)
+            materials = wp.array([(0.5, 0.0, 0.0, 1.0)], dtype=wp.vec4, device=viewer.device)
+
+            viewer.set_camera(wp.vec3(8.0, -8.0, 6.0), pitch=0.0, yaw=0.0)
+            viewer.camera.look_at((0.0, 0.0, 0.0))
+
+            def render(size: float, projection: newton.Mesh.TextureProjection) -> float:
+                viewer.log_mesh(
+                    "/test/projected_quad",
+                    points,
+                    indices,
+                    normals,
+                    uvs,
+                    texture,
+                    backface_culling=False,
+                    texture_scale=(0.5, 0.5),
+                    texture_projection=projection,
+                )
+                scales = wp.array([(size, size, 1.0)], dtype=wp.vec3, device=viewer.device)
+                viewer.log_instances(
+                    "/test/projected_quad_instance",
+                    "/test/projected_quad",
+                    xforms,
+                    scales,
+                    colors,
+                    materials,
+                )
+                for _ in range(2):
+                    viewer.begin_frame(0.0)
+                    viewer.end_frame()
+                gray = viewer.get_frame().numpy().astype(np.float32).mean(axis=2)
+                roi = gray[160:290, 20:380]
+                return float(np.mean(np.abs(np.diff(roi, axis=1)) > 15.0))
+
+            projected_densities = [render(size, newton.Mesh.TextureProjection.WORLD) for size in (2.0e2, 2.0e3)]
+            for size, density in zip((2.0e2, 2.0e3), projected_densities, strict=True):
+                self.assertGreater(density, 0.05, f"projected texture did not tile on a {size:g} m quad")
+            self.assertLess(
+                abs(projected_densities[0] - projected_densities[1]),
+                0.01,
+                "changing quad dimensions changed the projected texture's physical density",
+            )
+
+            stretched_density = render(2.0e3, newton.Mesh.TextureProjection.UV)
+            self.assertLess(stretched_density, 0.005, "the control UV mapping unexpectedly tiled the large quad")
+        finally:
+            viewer.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

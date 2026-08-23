@@ -167,6 +167,18 @@ class Mesh:
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
+    class TextureProjection(enum.IntEnum):
+        """Coordinate source used to sample a mesh texture."""
+
+        UV = 0
+        """Use the mesh's authored UV coordinates."""
+
+        OBJECT = 1
+        """Generate cubic projection coordinates in object space."""
+
+        WORLD = 2
+        """Generate cubic projection coordinates in world space."""
+
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
@@ -181,6 +193,10 @@ class Mesh:
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
         *,
+        texture_scale: Vec2 = (1.0, 1.0),
+        texture_translate: Vec2 = (0.0, 0.0),
+        texture_rotate: float = 0.0,
+        texture_projection: int = TextureProjection.UV,
         sdf: "SDF | None" = None,
     ):
         """
@@ -202,6 +218,10 @@ class Mesh:
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
             texture: Optional texture path/URL or image data (H, W, C).
+            texture_scale: UV scale applied before texture sampling.
+            texture_translate: UV translation applied before texture sampling.
+            texture_rotate: Counter-clockwise UV rotation in degrees.
+            texture_projection: Coordinate source from :class:`Mesh.TextureProjection`.
             sdf: Optional prebuilt SDF object owned by this mesh.
         """
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
@@ -215,6 +235,15 @@ class Mesh:
         self.color = color
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
+        self._texture_scale = self._normalize_texture_vec2(texture_scale, "texture_scale")
+        self._texture_translate = self._normalize_texture_vec2(texture_translate, "texture_translate")
+        self._texture_rotate = float(texture_rotate)
+        if not math.isfinite(self._texture_rotate):
+            raise ValueError("texture_rotate must be finite.")
+        try:
+            self._texture_projection = self.TextureProjection(texture_projection)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid texture_projection: {texture_projection!r}.") from exc
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -243,6 +272,13 @@ class Mesh:
             self.inertia = wp.mat33(np.eye(3))
             self.mass = 1.0
             self.com = wp.vec3()
+
+    @staticmethod
+    def _normalize_texture_vec2(value: Vec2, name: str) -> tuple[float, float]:
+        values = np.asarray(value, dtype=np.float64).reshape(-1)
+        if values.size != 2 or not np.all(np.isfinite(values)):
+            raise ValueError(f"{name} must contain two finite values.")
+        return (float(values[0]), float(values[1]))
 
     @staticmethod
     def _normalize_indices(indices: Sequence[int] | np.ndarray) -> np.ndarray:
@@ -801,6 +837,10 @@ class Mesh:
             else (self._texture.copy() if self._texture is not None else None),
             roughness=self._roughness,
             metallic=self._metallic,
+            texture_scale=self._texture_scale,
+            texture_translate=self._texture_translate,
+            texture_rotate=self._texture_rotate,
+            texture_projection=self._texture_projection,
         )
         if not recompute_inertia:
             m.inertia = self.inertia
@@ -1534,6 +1574,52 @@ class Mesh:
         """
         return self._compute_texture_hash()
 
+    @property
+    def texture_scale(self) -> tuple[float, float]:
+        """UV scale applied before texture sampling."""
+        return self._texture_scale
+
+    @texture_scale.setter
+    def texture_scale(self, value: Vec2):
+        self._texture_scale = self._normalize_texture_vec2(value, "texture_scale")
+        self._cached_hash = None
+
+    @property
+    def texture_translate(self) -> tuple[float, float]:
+        """UV translation applied before texture sampling."""
+        return self._texture_translate
+
+    @texture_translate.setter
+    def texture_translate(self, value: Vec2):
+        self._texture_translate = self._normalize_texture_vec2(value, "texture_translate")
+        self._cached_hash = None
+
+    @property
+    def texture_rotate(self) -> float:
+        """Counter-clockwise UV rotation in degrees."""
+        return self._texture_rotate
+
+    @texture_rotate.setter
+    def texture_rotate(self, value: float):
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("texture_rotate must be finite.")
+        self._texture_rotate = value
+        self._cached_hash = None
+
+    @property
+    def texture_projection(self) -> TextureProjection:
+        """Coordinate source used to sample this mesh's texture."""
+        return self._texture_projection
+
+    @texture_projection.setter
+    def texture_projection(self, value: int):
+        try:
+            self._texture_projection = self.TextureProjection(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid texture_projection: {value!r}.") from exc
+        self._cached_hash = None
+
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
             self._texture_hash = compute_texture_hash(self._texture)
@@ -1646,6 +1732,10 @@ class Mesh:
                 [
                     np.nan if self._roughness is None else float(self._roughness),
                     np.nan if self._metallic is None else float(self._metallic),
+                    *self._texture_scale,
+                    *self._texture_translate,
+                    self._texture_rotate,
+                    int(self._texture_projection),
                 ],
                 dtype=np.float64,
             )

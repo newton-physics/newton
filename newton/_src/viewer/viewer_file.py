@@ -1346,6 +1346,11 @@ class ViewerFile(ViewerBase):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
+        *,
+        texture_scale: tuple[float, float] = (1.0, 1.0),
+        texture_translate: tuple[float, float] = (0.0, 0.0),
+        texture_rotate: float = 0.0,
+        texture_projection: int = Mesh.TextureProjection.UV,
     ):
         """File viewer does not render meshes.
 

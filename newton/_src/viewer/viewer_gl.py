@@ -919,6 +919,11 @@ class ViewerGL(ViewerBase):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
+        *,
+        texture_scale: tuple[float, float] = (1.0, 1.0),
+        texture_translate: tuple[float, float] = (0.0, 0.0),
+        texture_rotate: float = 0.0,
+        texture_projection: int = nt.Mesh.TextureProjection.UV,
     ):
         """
         Log a mesh for rendering.
@@ -939,6 +944,10 @@ class ViewerGL(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
+            texture_scale: Scale applied to texture coordinates.
+            texture_translate: Translation applied to texture coordinates.
+            texture_rotate: Counter-clockwise texture-coordinate rotation in degrees.
+            texture_projection: Coordinate source from :class:`newton.Mesh.TextureProjection`.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -994,6 +1003,10 @@ class ViewerGL(ViewerBase):
             self.objects[name].update(points, indices, normals, uvs, texture)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+        self.objects[name].texture_scale = tuple(float(value) for value in texture_scale)
+        self.objects[name].texture_translate = tuple(float(value) for value in texture_translate)
+        self.objects[name].texture_rotate = float(texture_rotate)
+        self.objects[name].texture_projection = nt.Mesh.TextureProjection(texture_projection)
 
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))

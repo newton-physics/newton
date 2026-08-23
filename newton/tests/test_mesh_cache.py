@@ -42,6 +42,24 @@ class TestMeshCache(unittest.TestCase):
         mesh.invalidate_cache()
         self.assertNotEqual(hash(mesh), old_hash)
 
+    def test_texture_mapping_is_copied_and_hashed(self):
+        """Texture-coordinate semantics survive copies and distinguish cached prototypes."""
+        mesh = _make_tet_mesh()
+        mesh.texture_scale = (0.5, 2.0)
+        mesh.texture_translate = (0.25, -0.75)
+        mesh.texture_rotate = 30.0
+        mesh.texture_projection = Mesh.TextureProjection.WORLD
+
+        copied = mesh.copy()
+        self.assertEqual(copied.texture_scale, mesh.texture_scale)
+        self.assertEqual(copied.texture_translate, mesh.texture_translate)
+        self.assertEqual(copied.texture_rotate, mesh.texture_rotate)
+        self.assertEqual(copied.texture_projection, mesh.texture_projection)
+        self.assertEqual(hash(copied), hash(mesh))
+
+        copied.texture_projection = Mesh.TextureProjection.OBJECT
+        self.assertNotEqual(hash(copied), hash(mesh))
+
 
 def test_finalize_reuses_cached_mesh(test: TestMeshCache, device):
     """Verify finalize() reuses the cached Warp mesh only for identical arguments.

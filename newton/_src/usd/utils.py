@@ -1203,6 +1203,12 @@ def _get_mesh_from_source(
         texture=material_source.texture if material_source is not None else None,
         metallic=material_source.metallic if material_source is not None else None,
         roughness=material_source.roughness if material_source is not None else None,
+        texture_scale=material_source.texture_scale if material_source is not None else (1.0, 1.0),
+        texture_translate=material_source.texture_translate if material_source is not None else (0.0, 0.0),
+        texture_rotate=material_source.texture_rotate if material_source is not None else 0.0,
+        texture_projection=material_source.texture_projection
+        if material_source is not None
+        else Mesh.TextureProjection.UV,
     )
 
 
@@ -1769,6 +1775,14 @@ def get_mesh(
         texture=material_props.get("texture"),
         metallic=material_props.get("metallic"),
         roughness=material_props.get("roughness"),
+        texture_scale=(1.0, 1.0) if material_props.get("texture_scale") is None else material_props["texture_scale"],
+        texture_translate=(0.0, 0.0)
+        if material_props.get("texture_translate") is None
+        else material_props["texture_translate"],
+        texture_rotate=0.0 if material_props.get("texture_rotate") is None else material_props["texture_rotate"],
+        texture_projection=Mesh.TextureProjection.UV
+        if material_props.get("texture_projection") is None
+        else material_props["texture_projection"],
     )
     if return_uv_indices:
         return mesh_out, uv_indices
@@ -2673,7 +2687,16 @@ def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> 
 
 def _empty_material_properties() -> dict[str, Any]:
     """Return an empty material properties dictionary."""
-    return {"color": None, "metallic": None, "roughness": None, "texture": None}
+    return {
+        "color": None,
+        "metallic": None,
+        "roughness": None,
+        "texture": None,
+        "texture_scale": None,
+        "texture_translate": None,
+        "texture_rotate": None,
+        "texture_projection": None,
+    }
 
 
 def _coerce_color(value: Any) -> tuple[float, float, float] | None:
@@ -2698,6 +2721,19 @@ def _coerce_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_vec2(value: Any) -> tuple[float, float] | None:
+    """Coerce a value to a finite two-component tuple, or ``None``."""
+    if value is None:
+        return None
+    try:
+        result = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if result.size != 2 or not np.all(np.isfinite(result)):
+        return None
+    return (float(result[0]), float(result[1]))
 
 
 def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
@@ -2904,6 +2940,23 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
                 properties["texture"] = texture
                 break
 
+    texture_scale = _coerce_vec2(_get_input_value(shader, ("texture_scale",)))
+    if texture_scale is not None:
+        properties["texture_scale"] = texture_scale
+    texture_translate = _coerce_vec2(_get_input_value(shader, ("texture_translate",)))
+    if texture_translate is not None:
+        properties["texture_translate"] = texture_translate
+    texture_rotate = _coerce_float(_get_input_value(shader, ("texture_rotate",)))
+    if texture_rotate is not None:
+        properties["texture_rotate"] = texture_rotate
+
+    if bool(_get_input_value(shader, ("project_uvw",))):
+        properties["texture_projection"] = (
+            Mesh.TextureProjection.WORLD
+            if bool(_get_input_value(shader, ("world_or_object",)))
+            else Mesh.TextureProjection.OBJECT
+        )
+
     return properties
 
 
@@ -2916,6 +2969,8 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
     properties = _empty_material_properties()
     if material is None:
         return properties
+    project_uvw = None
+    world_or_object = None
 
     for inp in material.GetInputs():
         name = inp.GetBaseName()
@@ -2927,6 +2982,22 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             continue
         value = inp.Get()
         if value is None:
+            continue
+
+        if name_lower == "texture_scale":
+            properties["texture_scale"] = _coerce_vec2(value)
+            continue
+        if name_lower == "texture_translate":
+            properties["texture_translate"] = _coerce_vec2(value)
+            continue
+        if name_lower == "texture_rotate":
+            properties["texture_rotate"] = _coerce_float(value)
+            continue
+        if name_lower == "project_uvw":
+            project_uvw = bool(value)
+            continue
+        if name_lower == "world_or_object":
+            world_or_object = bool(value)
             continue
 
         if properties["texture"] is None and ("texture" in name_lower or "file" in name_lower):
@@ -2961,6 +3032,11 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             roughness = _coerce_float(value)
             if roughness is not None:
                 properties["roughness"] = roughness
+
+    if project_uvw:
+        properties["texture_projection"] = (
+            Mesh.TextureProjection.WORLD if world_or_object else Mesh.TextureProjection.OBJECT
+        )
 
     return properties
 
@@ -3021,7 +3097,16 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     # it has fallback logic for common shader input names.
     properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
-    for key in ("texture", "color", "metallic", "roughness"):
+    for key in (
+        "texture",
+        "color",
+        "metallic",
+        "roughness",
+        "texture_scale",
+        "texture_translate",
+        "texture_rotate",
+        "texture_projection",
+    ):
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
     if properties["color"] is None and properties["texture"] is None:
@@ -3054,7 +3139,7 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
         prim: The prim whose bound material should be inspected.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with scalar surface properties, texture data, and texture-coordinate mapping.
     """
     if not prim or not prim.IsValid():
         return _empty_material_properties()

@@ -252,6 +252,7 @@ class MeshGL:
         gl.glDisableVertexAttribArray(7)
         gl.glDisableVertexAttribArray(8)
         gl.glDisableVertexAttribArray(9)
+        gl.glDisableVertexAttribArray(10)
 
         #   column 0  (1,0,0,0)
         gl.glVertexAttrib4f(3, 1.0, 0.0, 0.0, 0.0)
@@ -267,6 +268,10 @@ class MeshGL:
         # Per-mesh albedo and material (applied in render()).
         self.color = (0.7, 0.5, 0.3)
         self.material = (0.5, 0.0, 0.0, 0.0)
+        self.texture_scale = (1.0, 1.0)
+        self.texture_translate = (0.0, 0.0)
+        self.texture_rotate = 0.0
+        self.texture_projection = 0
 
         self.vertex_cuda_buffer = None
         self.index_cuda_buffer = None
@@ -432,10 +437,17 @@ class MeshGL:
             # Set per-mesh albedo and material (global state, not per-VAO).
             gl.glVertexAttrib3f(7, *self.color)
             gl.glVertexAttrib4f(8, *self.material)
+            self._set_texture_mapping_attributes()
 
             gl.glBindVertexArray(self.vao)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
             gl.glBindVertexArray(0)
+
+    def _set_texture_mapping_attributes(self):
+        """Set constant shader attributes shared by this mesh's instances."""
+        gl = RendererGL.gl
+        gl.glVertexAttrib4f(9, *self.texture_scale, *self.texture_translate)
+        gl.glVertexAttrib2f(10, self.texture_rotate, int(self.texture_projection))
 
 
 class LinesGL:
@@ -830,6 +842,10 @@ class MeshInstancerGL:
         gl.glEnableVertexAttribArray(8)
         gl.glVertexAttribDivisor(8, 1)
 
+        # Texture mapping belongs to the mesh prototype, not individual instances.
+        gl.glDisableVertexAttribArray(9)
+        gl.glDisableVertexAttribArray(10)
+
         gl.glBindVertexArray(0)
 
         if self._enable_cuda_interop and self.device.is_cuda and self.instance_transform_buffer_size > 0:
@@ -1004,6 +1020,8 @@ class MeshInstancerGL:
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.mesh.texture_id)
         else:
             gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
+
+        self.mesh._set_texture_mapping_attributes()
 
         gl.glBindVertexArray(self.vao)
         gl.glDrawElementsInstanced(

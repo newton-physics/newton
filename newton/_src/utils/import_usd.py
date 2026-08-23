@@ -1083,20 +1083,33 @@ def parse_usd(
             mesh.has_inertia = physics_mesh.has_inertia
         else:
             mesh = physics_mesh.copy(recompute_inertia=False)
-        if texture is not None:
-            mesh.texture = texture
+        _apply_visual_material(mesh, material_props)
         if mesh.texture is not None and mesh.uvs is None:
             logger.info("Mesh %s has a texture but no UVs; texture will use projected UVs.", path_name)
+        return mesh
+
+    def _apply_visual_material(mesh: Mesh, material_props: dict[str, Any]) -> None:
+        """Apply one resolved USD visual material to its owning mesh."""
+        texture = material_props.get("texture")
+        if texture is not None:
+            mesh.texture = texture
         if mesh.texture is not None:
-            # The texture provides albedo, so avoid tinting it with a scalar color.
+            # Textures provide albedo; do not tint them with the shape palette.
             mesh.color = (1.0, 1.0, 1.0)
         elif material_props.get("color") is not None:
             mesh.color = material_props["color"]
-        if material_props.get("roughness") is not None:
-            mesh.roughness = material_props["roughness"]
-        if material_props.get("metallic") is not None:
-            mesh.metallic = material_props["metallic"]
-        return mesh
+
+        for key in (
+            "roughness",
+            "metallic",
+            "texture_scale",
+            "texture_translate",
+            "texture_rotate",
+            "texture_projection",
+        ):
+            value = material_props.get(key)
+            if value is not None:
+                setattr(mesh, key, value)
 
     def _get_face_material_subsets(prim: Usd.Prim) -> list[Usd.Prim]:
         """Return face-based material subsets authored directly under a mesh prim."""
@@ -1191,24 +1204,12 @@ def parse_usd(
             maxhullvert=mesh.maxhullvert,
         )
 
-        texture = material_props.get("texture")
-        if texture is not None:
-            submesh.texture = texture
+        _apply_visual_material(submesh, material_props)
         if submesh.texture is not None and submesh.uvs is None:
             logger.info(
                 "Mesh material subset %s has a texture but no UVs; texture will use projected UVs.",
                 path_name,
             )
-
-        color = material_props.get("color")
-        if submesh.texture is not None:
-            submesh.color = (1.0, 1.0, 1.0)
-        elif color is not None:
-            submesh.color = color
-        if material_props.get("roughness") is not None:
-            submesh.roughness = material_props["roughness"]
-        if material_props.get("metallic") is not None:
-            submesh.metallic = material_props["metallic"]
         return submesh
 
     def _get_visual_material_subset_meshes(prim: Usd.Prim) -> list[tuple[str, Mesh]]:
@@ -4054,15 +4055,7 @@ def parse_usd(
                         # show_static. Mutating the shared cache entry is safe: both caches key on the
                         # prim path, so every consumer resolves the same values.
                         mesh = _get_mesh_cached(prim)
-                        if material_props.get("texture") is not None:
-                            mesh.texture = material_props["texture"]
-                            # A textured material resolves no scalar color, so add_shape()
-                            # would otherwise fall back to its palette and tint the texture.
-                            mesh.color = (1.0, 1.0, 1.0)
-                        if material_props.get("roughness") is not None:
-                            mesh.roughness = material_props["roughness"]
-                        if material_props.get("metallic") is not None:
-                            mesh.metallic = material_props["metallic"]
+                        _apply_visual_material(mesh, material_props)
                     mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,

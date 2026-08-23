@@ -1632,6 +1632,10 @@ class ViewerBase(ABC):
                 uvs,
                 hidden=hidden,
                 texture=texture,
+                texture_scale=geo_src.texture_scale,
+                texture_translate=geo_src.texture_translate,
+                texture_rotate=geo_src.texture_rotate,
+                texture_projection=geo_src.texture_projection,
             )
             return
 
@@ -1729,6 +1733,11 @@ class ViewerBase(ABC):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
+        *,
+        texture_scale: tuple[float, float] = (1.0, 1.0),
+        texture_translate: tuple[float, float] = (0.0, 0.0),
+        texture_rotate: float = 0.0,
+        texture_projection: int = newton.Mesh.TextureProjection.UV,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1754,6 +1763,10 @@ class ViewerBase(ABC):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
+            texture_scale: Scale applied to texture coordinates.
+            texture_translate: Translation applied to texture coordinates.
+            texture_rotate: Counter-clockwise texture-coordinate rotation in degrees.
+            texture_projection: Coordinate source from :class:`newton.Mesh.TextureProjection`.
         """
         pass
 
@@ -2279,6 +2292,10 @@ class ViewerBase(ABC):
             uvs_wp,
             hidden=hidden,
             texture=getattr(src, "texture", None),
+            texture_scale=src.texture_scale,
+            texture_translate=src.texture_translate,
+            texture_rotate=src.texture_rotate,
+            texture_projection=src.texture_projection,
         )
 
     # creates meshes and instances for each shape in the Model

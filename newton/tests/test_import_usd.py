@@ -7780,6 +7780,33 @@ def Xform "Articulation" (
         self.assertIsNone(src.texture)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mdl_texture_coordinate_mapping_is_preserved(self):
+        """Preserve OmniPBR coordinate projection and transforms on imported meshes."""
+        from pxr import Sdf, UsdShade
+
+        for project, world, expected in (
+            (False, True, newton.Mesh.TextureProjection.UV),
+            (True, False, newton.Mesh.TextureProjection.OBJECT),
+            (True, True, newton.Mesh.TextureProjection.WORLD),
+        ):
+            with self.subTest(project_uvw=project, world_or_object=world):
+                stage = self._build_mdl_shader_mesh_stage({"diffuse_texture": "albedo.png"})
+                shader = UsdShade.Shader(stage.GetPrimAtPath("/M/Mdl"))
+                shader.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(project)
+                shader.CreateInput("world_or_object", Sdf.ValueTypeNames.Bool).Set(world)
+                shader.CreateInput("texture_scale", Sdf.ValueTypeNames.Float2).Set((0.5, 2.0))
+                shader.CreateInput("texture_translate", Sdf.ValueTypeNames.Float2).Set((0.25, -0.75))
+                shader.CreateInput("texture_rotate", Sdf.ValueTypeNames.Float).Set(30.0)
+
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage)
+                src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+                self.assertEqual(src.texture_projection, expected)
+                self.assertEqual(src.texture_scale, (0.5, 2.0))
+                self.assertEqual(src.texture_translate, (0.25, -0.75))
+                self.assertEqual(src.texture_rotate, 30.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_loads_alternate_texcoord_set(self):
         """``get_mesh`` loads UVs from an alternate texcoord set name (``st_0``), not just ``st``.
 
