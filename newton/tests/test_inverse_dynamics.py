@@ -1966,7 +1966,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.gravity_force.numpy())))
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.coriolis_force.numpy())))
 
-    def test_inverse_dynamics_rejects_cable_joint(self):
+    def test_inverse_dynamics_rejects_rod_joint(self):
         """Verify both inverse-dynamics entrypoints reject rod joints eagerly."""
         identity_xform = wp.transform_identity()
         builder = newton.ModelBuilder()

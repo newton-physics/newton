@@ -252,16 +252,17 @@ class SolverVBD(SolverBase, CouplingInterface):
           - BALL: LINEAR=0 only
           - FIXED/REVOLUTE/PRISMATIC/D6: LINEAR=0, ANGULAR=1
 
-        STRETCH/SHEAR/BEND/TWIST are rod-only names for the SolverVBD rod
-        layout emitted by the builder rod APIs. Only structural slots are named
-        here; per-DOF drive/limit slots (slot 2+ on non-rod joints) are not.
+        STRETCH/SHEAR/BEND/TWIST name the four-slot layout emitted by the builder
+        rod APIs and apply only to :attr:`~newton.JointType.ROD`. Only structural
+        slots are named here; per-DOF drive/limit slots (slot 2+ on non-rod
+        joints) are not.
         """
 
         # Non-rod structural slots.
         LINEAR = 0
         ANGULAR = 1
-        # Rod structural slots (all four are linear/angular rod constraints;
-        # they are not the non-rod LINEAR/ANGULAR despite STRETCH sharing index 0).
+        # Rod structural slots (all four are linear/angular rod constraints; they
+        # are not the non-rod LINEAR/ANGULAR despite STRETCH sharing index 0).
         STRETCH = 0
         SHEAR = 1
         BEND = 2
@@ -970,7 +971,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             # Per-joint DER rest invariants, refreshed at init and on model change
             # (see _refresh_rod_rest_bend_twist_cache): the parent-local rest
             # curvature binormal (bend) and the rest transported-material twist.
-            # Split rods use local +Z as the material tangent (a SolverVBD convention).
+            # Rod joints use local +Z as the material tangent (a SolverVBD convention).
             self.joint_rod_rest_kb_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_rod_rest_twist = wp.zeros(model.joint_count, dtype=float, device=self.device)
             self._refresh_rod_rest_bend_twist_cache()
@@ -1418,7 +1419,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         VBD indexes scalar constraint components for structural joint penalties,
         compliant-ALM rho, and drive/limit penalty slots:
-          - ROD: 4 scalars (stretch, shear, bend, twist)
+          - ROD:   4 scalars (stretch, shear, bend, twist)
           - BALL:  1 scalar (isotropic linear anchor-coincidence)
           - FIXED: 2 scalars (isotropic linear + isotropic angular)
           - REVOLUTE:  3 scalars (isotropic linear + 2-DOF perpendicular angular + angular drive/limit)
@@ -1563,7 +1564,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     if dof0 < 0 or (dof0 + 3) >= len(jtarget_ke) or (dof0 + 3) >= len(jtarget_kd):
                         raise RuntimeError(
                             "SolverVBD _init_joint_penalty_k: JointType.ROD requires "
-                            "4 DOF entries in "
+                            "four material-slot entries in "
                             "model.joint_target_ke/kd starting at joint_qd_start[j]. "
                             f"Got joint_index={j}, joint_qd_start={dof0}, "
                             f"len(joint_target_ke)={len(jtarget_ke)}, len(joint_target_kd)={len(jtarget_kd)}."
@@ -1696,7 +1697,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Initialize the per-body structural stiffness summary from joint state.
 
         ``body_structural_k[b]`` is the max enabled linear-joint stiffness
-        anchored on body ``b`` (rods use ``max(stretch, shear)``). Contact
+        anchored on body ``b`` (rod joints use ``max(stretch, shear)``). Contact
         conditioning augments each dynamic endpoint's inertial scale with its
         own summary before combining endpoints.
         Direction- and chain-blind by design: it bounds neighborhood stiffness to
@@ -1969,7 +1970,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             slot: Specific slot index to set. If None, sets all structural slots.
                 Use JointSlot.LINEAR / JointSlot.ANGULAR for non-rod joints,
                 or JointSlot.STRETCH / JointSlot.SHEAR / JointSlot.BEND /
-                JointSlot.TWIST for rods.
+                JointSlot.TWIST for rod joints.
 
         Raises:
             ValueError: If the joint index is out of range or the slot is not a

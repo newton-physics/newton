@@ -578,7 +578,7 @@ class RodBendTwistMeasure:
 
 @wp.func
 def _measure_rod_bend_twist_z(q_wp: wp.quat, q_wc: wp.quat) -> RodBendTwistMeasure:
-    """Measure bend/twist for SolverVBD rods, whose material tangent is local +Z.
+    """Measure bend/twist for SolverVBD rod joints whose material tangent is local +Z.
 
     The fixed rod material basis is local ``+X, +Y, +Z``.
     SolverVBD keeps body rotations normalized, so rotated basis axes are already
@@ -775,7 +775,7 @@ def _rod_bend_twist_jacobian_z_from_measure(
     measure: RodBendTwistMeasure,
     is_parent: bool,
 ) -> wp.mat33:
-    """Jacobian of [bend_x, bend_y, twist_z] for fixed local +Z rods.
+    """Jacobian of [bend_x, bend_y, twist_z] for rod joints with fixed local +Z.
 
     The local residual is exactly ``[bend_x, bend_y, twist_z]``, so no bend
     projector or twist-axis vector is needed in this hot path.
@@ -818,7 +818,7 @@ def _assemble_geometric_rod_kappa_z(
     kb_rest_local: wp.vec3,
     twist_rest: float,
 ) -> wp.vec3:
-    """Assemble [bend_x, bend_y, twist_z] for SolverVBD local +Z rods."""
+    """Assemble [bend_x, bend_y, twist_z] for SolverVBD local +Z rod joints."""
     bend_now_local = wp.quat_rotate(wp.quat_inverse(q_wp), kb_now_world)
     bend_residual_local = bend_now_local - kb_rest_local
     # In the local +Z convention, parent-frame x/y are bend and z is twist.
@@ -854,7 +854,7 @@ def compute_geometric_rod_kappa_cached_z(
     kb_rest_local: wp.vec3,
     twist_rest: float,
 ) -> wp.vec3:
-    """Geometric rod strain residual for fixed local +Z rods."""
+    """Geometric rod-joint strain residual for fixed local +Z."""
     measure = _measure_rod_bend_twist_z(q_wp, q_wc)
     return _assemble_geometric_rod_kappa_z(q_wp, measure.kb_world, measure.twist, kb_rest_local, twist_rest)
 
@@ -1521,7 +1521,7 @@ def evaluate_rod_bend_twist_force_hessian_z(
     damping_active: bool,
     dt: float,
 ):
-    """Bend/twist torque and Hessian for SolverVBD local +Z rods.
+    """Bend/twist torque and Hessian for SolverVBD local +Z rod joints.
 
     In the fixed rod material basis, local angular operators are diagonal:
     ``[bend_x, bend_y, twist_z]``. Keep them as vec3 row scales in the hot path
@@ -1659,7 +1659,7 @@ def evaluate_rod_stretch_shear_force_hessian(
     damping_active: bool,
     dt: float,
 ):
-    """Rod stretch/shear anchor force, torque, and PSD Gauss-Newton self-Hessian.
+    """Rod-joint stretch/shear anchor force, torque, and PSD Gauss-Newton self-Hessian.
 
     All inputs are parent-material: residual ``u = R_p^T (x_c - x_p) =
     [shear_x, shear_y, stretch_z]``, diagonal ``k_diag = (k_shear, k_shear,
@@ -2814,14 +2814,14 @@ def evaluate_joint_force_hessian(
     """Compute VBD joint force and Hessian contributions for one body.
 
     Supported joint types: ROD, BALL, FIXED, REVOLUTE, PRISMATIC, D6.
-    Rod uses split stretch/shear and bend/twist helpers; other joints use
+    Rod joints use split stretch/shear and bend/twist helpers; other joints use
     projector-based linear/angular evaluators.
 
     Indexing:
         joint_constraint_start[j] is a solver-owned start offset into the per-constraint
         arrays (joint_penalty_k, joint_penalty_kd, joint_material_k, joint_rho,
         and joint_is_hard). Layout per joint type:
-          - ROD: 4 scalars -> [stretch, shear, bend, twist]
+          - ROD:   4 scalars -> [stretch, shear, bend, twist]
           - BALL:  1 scalar  -> [linear]
           - FIXED: 2 scalars -> [linear, angular]
           - REVOLUTE:  3 scalars -> [linear, angular, ang_drive_limit]
@@ -3057,6 +3057,7 @@ def evaluate_joint_force_hessian(
         lin_C0 = joint_C0_lin[joint_index]
         lin_alpha = stab_alpha
 
+    # BALL has no angular structural slot; other non-rod joints do.
     ang_lambda = wp.vec3(0.0)
     ang_C0 = wp.vec3(0.0)
     ang_alpha = float(0.0)
@@ -3641,10 +3642,11 @@ def _reset_joint_history(
 ):
     """Reset immediately available joint solver history.
 
-    The rod Dahl friction state (kappa/sigma/increment: curvature, hysteretic
-    stress, and increment) is left untouched here: an enabled rod rebaselines it
-    from the next pre-step pose, while a disabled rod refreshes it in the
-    end-of-step finalizer. DOF-indexed drive/limit state is reset by the caller.
+    The rod-joint Dahl friction state (kappa/sigma/increment: curvature,
+    hysteretic stress, and increment) is left untouched here: an enabled rod
+    joint rebaselines it from the next pre-step pose, while a disabled rod joint
+    refreshes it in the end-of-step finalizer. DOF-indexed drive/limit state is
+    reset by the caller.
     """
     constraint_start = joint_constraint_start[joint]
     constraint_dim = joint_constraint_dim[joint]
@@ -3793,7 +3795,7 @@ def refresh_body_structural_k(
 ):
     """Accumulate enabled linear-joint stiffness into a caller-zeroed output.
 
-    Uses the first constraint slot for ordinary joints. Rods take
+    Uses the first constraint slot for ordinary joints. Rod joints take
     ``max(stretch, shear)`` so independently authored shear is not ignored.
     """
     joint_id = wp.tid()
@@ -4111,7 +4113,7 @@ def init_rod_rest_bend_twist(
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
 ):
-    """Precompute rod rest angular deformation invariants."""
+    """Precompute rod-joint rest angular deformation invariants."""
     j = wp.tid()
     joint_rod_rest_kb_local[j] = wp.vec3(0.0)
     joint_rod_rest_twist[j] = 0.0
@@ -4340,7 +4342,7 @@ def step_joint_C0_lambda_rho(
 
     jt = joint_type[j]
 
-    # Rod has four structural slots, but AL state is stored as two vec3
+    # Rod joints have four structural slots, but AL state is stored as two vec3
     # blocks: linear = stretch/shear, angular = bend/twist.
     if jt == JointType.ROD:
         stretch_idx = c_start
@@ -4910,7 +4912,7 @@ def compute_rod_dahl_parameters(
 
     On a selected first/reset step, curvature is rebased to the current
     start-of-step pose and the stored stress and curvature increment are
-    cleared. This pre-solve rebaseline covers enabled rods; a disabled rod
+    cleared. This pre-solve rebaseline covers enabled rod joints; a disabled rod joint
     refreshes its history in ``update_rod_dahl_state`` (the end-of-step
     finalizer) instead, so a reset while disabled is applied there.
     """

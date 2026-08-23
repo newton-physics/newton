@@ -19,7 +19,7 @@
 #   - twist profile error: deviation from the analytical target profile in degrees
 #   - bend leakage: transverse centerline motion as percent of cable length
 #
-# Newton's cable joint stores the already-discretized twist stiffness, not a
+# Newton's rod joint stores the already-discretized twist stiffness, not a
 # separate material G field. This example derives that solver input from the
 # mechanical torsion law:
 #

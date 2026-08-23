@@ -101,6 +101,42 @@ not show up in builder-state comparisons or survive past either builder's lifeti
 """
 
 
+def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
+    """Build a collision-only mesh containing each exact vertex position once."""
+    vertices = source.vertices
+    _, first_indices, inverse = np.unique(vertices, axis=0, return_index=True, return_inverse=True)
+    if len(first_indices) == len(vertices):
+        return source
+
+    # Retain first-occurrence order so support-map tie breaking stays unchanged.
+    first_order = np.argsort(first_indices)
+    unique_remap = np.empty(len(first_indices), dtype=np.int32)
+    unique_remap[first_order] = np.arange(len(first_indices), dtype=np.int32)
+    vertex_remap = unique_remap[inverse]
+    collision_mesh = Mesh(
+        vertices=vertices[first_indices[first_order]],
+        indices=vertex_remap[source.indices],
+        compute_inertia=False,
+        is_solid=source.is_solid,
+        maxhullvert=source.maxhullvert,
+        sdf=source.sdf,
+    )
+    collision_mesh.mass = source.mass
+    collision_mesh.com = source.com
+    collision_mesh.inertia = source.inertia
+    collision_mesh.has_inertia = source.has_inertia
+
+    if source._collision_edges is not None:
+        collision_edges = vertex_remap[source._collision_edges]
+        collision_edges = collision_edges[collision_edges[:, 0] != collision_edges[:, 1]]
+        if len(collision_edges) > 0:
+            _, first_edges = np.unique(collision_edges, axis=0, return_index=True)
+            collision_edges = collision_edges[np.sort(first_edges)]
+        collision_mesh._collision_edges = collision_edges
+
+    return collision_mesh
+
+
 @dataclass(frozen=True)
 class _ShapeCollisionFilterBlock:
     """Compact replicated collision-filter block."""
@@ -291,7 +327,7 @@ class ModelBuilder:
         _SHAPE_COLOR_PALETTE[0][2] / 255.0,
     )
     _ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE = (
-        "Omitting body_frame_origin when creating cable rods is deprecated because the implicit default "
+        "Omitting body_frame_origin when creating rods is deprecated because the implicit default "
         "will change from 'start' to 'com' in a future release. Pass body_frame_origin='start' to "
         "preserve the existing start-node body frame, or body_frame_origin='com' to opt into "
         "COM-centered capsule body frames."
@@ -550,9 +586,9 @@ class ModelBuilder:
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to
-        :attr:`gap` when ``None``. Distinct from :attr:`gap` (broad-phase
-        inflation) and :attr:`margin` (contact-surface inflation). Rejected on
-        ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
+        :attr:`gap`, plus :attr:`margin` for hydroelastic shapes, when
+        ``None``. Hydroelastic padding must cover ``margin + gap``. Rejected
+        on ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
         :meth:`~newton.geometry.Mesh.build_sdf` instead."""
 
         def configure_sdf(
@@ -5227,7 +5263,7 @@ class ModelBuilder:
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
     ) -> int:
-        """Add a rod joint to the model.
+        """Adds a rod joint to the model.
 
         Rod joints have split linear stretch/shear material slots plus separate
         angular bend and twist material slots. When both ``shear_stiffness`` and
@@ -5354,7 +5390,7 @@ class ModelBuilder:
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
     ) -> int:
-        """Add a rod joint using the released cable method name.
+        """Deprecated alias for :meth:`add_joint_rod`.
 
         .. deprecated:: 1.6
             Use :meth:`add_joint_rod` instead.
@@ -6062,12 +6098,12 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by cable
+        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by rod
         # joints (never fixed), so they are not collapsed and their ranges stay contiguous; only their
         # indices shift as other bodies/joints are dropped. Cloth/volume ranges address particles and
         # triangles/tets/edges, which fixed-joint collapse never touches, so they are left untouched.
         def _remap_body_id(body_id: int) -> int:
-            # Cable bodies are linked only by non-fixed cable joints, so collapse must never
+            # Cable bodies are linked only by non-fixed rod joints, so collapse must never
             # merge or drop them; a violation would silently corrupt every recorded range.
             assert body_id in body_remap, f"cable body {body_id} was collapsed; cable ranges would be corrupt"
             return body_remap[body_id]
@@ -6080,7 +6116,7 @@ class ModelBuilder:
             if self._cable_joint_end[i] > self._cable_joint_start[i]:
                 first, last = self._cable_joint_start[i], self._cable_joint_end[i] - 1
                 assert first in joint_remap and last in joint_remap, (
-                    f"cable joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
+                    f"rod joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
                 )
                 self._cable_joint_start[i] = joint_remap[first]
                 self._cable_joint_end[i] = joint_remap[last] + 1
@@ -7782,12 +7818,12 @@ class ModelBuilder:
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
-        """Adds a rod composed of capsule bodies connected by cable joints.
+        """Adds a rod composed of capsule bodies connected by rod joints.
 
         Constructs a chain of capsule bodies from the given centerline points and orientations.
         Each segment is a capsule aligned by the corresponding quaternion, and adjacent capsules
-        are connected by cable joints providing split linear stretch/shear and split angular
-        bend/twist degrees of freedom.
+        are connected by rod joints providing separate slots for linear stretch/shear and angular
+        bend/twist.
 
         Args:
             positions: Centerline node positions (segment endpoints) in world space. These are the
@@ -7799,25 +7835,26 @@ class ModelBuilder:
                 orientations are computed automatically to align +Z with each segment direction.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
+            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, defaults to 1.0e5.
-            stretch_damping: Stretch damping [N·s/m] for the cable joints (applied per-joint; not length-normalized). If None,
+            stretch_damping: Stretch damping [N·s/m] for the rod joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
                 ``stretch_stiffness``.
             shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m]
-                (torque per radian). If None, defaults to 0.0.
-            bend_damping: Bend damping [N·m·s/rad] for the cable joints (applied per-joint; not length-normalized). If None,
+            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
+                If None, defaults to 0.0.
+            bend_damping: Bend damping [N·m·s/rad] for the rod joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
-            twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
+            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
                 ``bend_stiffness``.
-            twist_damping: Optional per-joint cable twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
+            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
-            label: Optional label prefix for bodies, shapes, and joints.
+            label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
+                retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
@@ -7894,7 +7931,7 @@ class ModelBuilder:
             )
 
         if num_segments < 2:
-            # A "rod" in this API is defined as multiple capsules coupled by cable joints.
+            # A "rod" in this API is defined as multiple capsules coupled by rod joints.
             # If you want a single capsule, create a body + capsule shape directly.
             raise ValueError(
                 f"add_rod: requires at least 2 segments (got {num_segments}); "
@@ -7934,7 +7971,7 @@ class ModelBuilder:
             rod_art_label = f"{label}_articulation" if label else None
             self.add_articulation(link_joints, label=rod_art_label)
 
-        # For closed loops, add one extra loop-closing cable joint that is intentionally
+        # For closed loops, add one extra loop-closing rod joint that is intentionally
         # *not* part of an articulation (articulations must be trees/forests).
         if closed:
             if not wrap_in_articulation:
@@ -8012,7 +8049,7 @@ class ModelBuilder:
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
-        """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
+        """Adds a rod *graph* (supports junctions) from nodes + edges.
 
         This is a generalization of :meth:`add_rod` to support branching/junction topologies.
 
@@ -8020,7 +8057,7 @@ class ModelBuilder:
 
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
           ``node_positions[v]`` (local +Z points toward ``v``).
-        - Cable joints are created between edge-bodies that share a node, using a spanning-tree
+        - Rod joints are created between edge-bodies that share a node, using a spanning-tree
           traversal so that each body has a single parent when wrapped into an articulation.
 
         Notes:
@@ -8041,21 +8078,22 @@ class ModelBuilder:
                 capsule body oriented so its local +Z points from node ``u`` to node ``v``.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
+            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
             stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
             shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
                 ``stretch_stiffness``.
             shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m].
+            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
                 Defaults to 0.0.
             bend_damping: Bend damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
+            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
                 ``bend_stiffness``.
-            twist_damping: Optional per-joint cable twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
+            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations.
+            label: Optional label prefix for bodies, shapes, joints, and articulations. Generated
+                joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
             quaternions: Optional per-edge orientations in world space. If provided, must have
@@ -10542,6 +10580,51 @@ class ModelBuilder:
                 continue
             margin = self.shape_margin[i]
             gap = self.shape_gap[i]
+            sdf_padding = self.shape_sdf_padding[i]
+            if (
+                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                and sdf_padding is not None
+                and sdf_padding < margin + gap
+                and not math.isclose(sdf_padding, margin + gap, rel_tol=1.0e-9, abs_tol=1.0e-12)
+            ):
+                raise ValueError(
+                    f"Hydroelastic shape {i} requires sdf_padding >= margin + gap "
+                    f"({margin + gap:.6g}), got {sdf_padding:.6g}."
+                )
+            if (
+                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                and self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH)
+            ):
+                shape_src = self.shape_source[i]
+                mesh_sdf = getattr(shape_src, "sdf", None) if shape_src is not None else None
+                if mesh_sdf is not None:
+                    required_sdf_padding = margin + gap
+                    construction_padding = getattr(mesh_sdf, "_construction_padding", None)
+                    if mesh_sdf.texture_data is not None and construction_padding is None:
+                        raise ValueError(
+                            f"Hydroelastic shape {i} has precomputed SDF data with unknown construction padding. "
+                            "Declare the original padding with "
+                            "SDF.create_from_data(construction_padding=...), or rebuild it with "
+                            "Mesh.build_sdf(margin=margin + gap)."
+                        )
+                    if (
+                        construction_padding is not None
+                        and construction_padding < required_sdf_padding
+                        and not math.isclose(
+                            construction_padding,
+                            required_sdf_padding,
+                            rel_tol=1.0e-9,
+                            abs_tol=1.0e-12,
+                        )
+                    ):
+                        raise ValueError(
+                            f"Hydroelastic shape {i} requires SDF construction padding >= margin + gap "
+                            f"({required_sdf_padding:.6g}), but the attached SDF uses "
+                            f"{construction_padding:.6g}. Rebuild it with "
+                            f"Mesh.build_sdf(margin={required_sdf_padding:.6g})."
+                        )
             if gap < 0.0:
                 shapes_with_bad_gap.append(
                     f"{self.shape_label[i] or f'shape_{i}'} (margin={margin:.6g}, gap={gap:.6g})"
@@ -11291,6 +11374,18 @@ class ModelBuilder:
                 )
 
             generated_shape_sources = list(self.shape_source)
+            deduplicated_convex_sources = {}
+            for shape_idx, shape_type in enumerate(self.shape_type):
+                source = generated_shape_sources[shape_idx]
+                if shape_type != GeoType.CONVEX_MESH or not isinstance(source, Mesh):
+                    continue
+                source_identity = id(source)
+                if source_identity in deduplicated_convex_sources:
+                    generated_shape_sources[shape_idx] = deduplicated_convex_sources[source_identity]
+                    continue
+                deduplicated_source = _deduplicate_convex_collision_mesh(source)
+                deduplicated_convex_sources[source_identity] = deduplicated_source
+                generated_shape_sources[shape_idx] = deduplicated_source
             generated_sdf_edge_meshes = []
             unit_box_edge_mesh = None
             for shape_idx, shape_type in enumerate(self.shape_type):
@@ -11672,9 +11767,11 @@ class ModelBuilder:
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
                 sdf_padding = self.shape_sdf_padding[i]
-                # Fall back to shape_gap when sdf_padding is unset (see ShapeConfig.sdf_padding).
-                sdf_gen_margin = sdf_padding if sdf_padding is not None else shape_gap
-                is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
+                is_hydroelastic = bool(
+                    shape_flags & ShapeFlags.HYDROELASTIC and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                )
+                required_sdf_padding = shape_gap + self.shape_margin[i] if is_hydroelastic else shape_gap
+                sdf_gen_margin = sdf_padding if sdf_padding is not None else required_sdf_padding
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
                 cache_key = None
@@ -11694,8 +11791,11 @@ class ModelBuilder:
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
                         sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
+                        # Convex collision geometry is deduplicated before finalization,
+                        # so build and cache its deferred SDF against that same topology.
+                        sdf_source = generated_shape_sources[i] if shape_type == GeoType.CONVEX_MESH else shape_src
                         deferred_key = (
-                            id(shape_src),
+                            id(sdf_source),
                             tuple(shape_scale),
                             tuple(sdf_narrow_band_range),
                             sdf_target_voxel_size,
@@ -11705,7 +11805,7 @@ class ModelBuilder:
                         )
                         mesh_sdf = deferred_mesh_sdf_cache.get(deferred_key)
                         if mesh_sdf is None:
-                            mesh_copy = shape_src.copy()
+                            mesh_copy = sdf_source.copy()
                             mesh_copy.build_sdf(**sdf_kwargs)
                             mesh_sdf = mesh_copy.sdf
                             deferred_mesh_sdf_cache[deferred_key] = mesh_sdf

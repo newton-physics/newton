@@ -1249,7 +1249,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - springs
         - triangles, edges, tetrahedra
         - muscles
-        - distance or cable joints
+        - distance or rod joints
         - bodies with singular inertial properties that are attached to movable bodies
 
         Args:

@@ -124,8 +124,9 @@ Deformables proposal
 across three families:
 
 * **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI``
-  becomes a rod: a chain of capsule bodies joined by cable joints, usable by any solver that
-  supports cable joints. A ``wrap=periodic`` curve also gets a body for the closing segment.
+  becomes a rod: a chain of capsule bodies joined by :attr:`~newton.JointType.ROD` joints,
+  usable by any solver that supports rod joints. A ``wrap=periodic`` curve also gets a body
+  for the closing segment.
 * **Surface / cloth** -- a ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI`` becomes
   cloth: particles with FEM triangles and bending edges. Polygonal faces (such as quads) are
   fan-triangulated on import.

@@ -1619,7 +1619,7 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
 
 
 def _rod_soft_dual_slots_clear_preserved_lambda(test, device):
-    """Soft rod slots should not preserve stale lambda components when recombined."""
+    """Verify soft rod slots clear stale lambda components when recombined."""
     with wp.ScopedDevice(device):
         joint_type = wp.array([int(newton.JointType.ROD)], dtype=wp.int32, device=device)
         joint_enabled = wp.array([True], dtype=bool, device=device)

@@ -4,7 +4,7 @@
 """USD cable / curve-deformable import passes.
 
 Imports linear ``UsdGeom.BasisCurves`` deformables as rods (chains of capsule bodies joined
-by cable joints, usable by any solver that supports them), welding curve-to-curve
+by rod joints, usable by any solver that supports them), welding curve-to-curve
 ``PhysicsAttachment`` junctions into shared rod graphs first, then importing remaining single
 curves. Driven by :func:`.import_usd.parse_usd` via a
 :class:`.import_usd_deformable_utils._DeformableImportContext`.
@@ -278,7 +278,7 @@ def _apply_local_rod_stiffnesses(
     radius: float,
     linear_unit: float,
 ) -> None:
-    """Discretize structural stiffnesses using each joint's dual rest length.
+    """Discretize cable material stiffnesses using each rod joint's dual rest length.
 
     A joint spans half of each adjacent segment, so its length is ``0.5 * (L_parent + L_child)``.
     ``segment_rest_lengths[i]`` is the rest length of the segment body ``bodies[i]``. A curve

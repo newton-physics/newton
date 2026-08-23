@@ -48,6 +48,13 @@ Note that collision detection via :meth:`newton.CollisionPipeline.collide` requi
 Rod joints
 ^^^^^^^^^^
 
+Newton uses *cable* for the modeled object and *rod* for this discrete
+stretch/shear/bend/twist representation. A cable may be assembled from rod
+joints or modeled with another formulation. Cable centerline geometry uses
+``cable`` terminology. Per-segment orientation/twist frames, per-joint
+stiffness, and solver mechanics belong to the rod representation and use
+``rod`` terminology.
+
 :attr:`newton.JointType.ROD` is represented in Newton's joint data model, but
 it is not a conventional generalized-coordinate joint. Its four entries are
 VBD constraint/material slots defined by
