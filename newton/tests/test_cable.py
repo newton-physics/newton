@@ -5269,9 +5269,11 @@ def _cable_legacy_positional_arguments_preserve_binding(test, device):
         inspect.signature(newton.ModelBuilder.add_joint_cable),
         inspect.signature(newton.ModelBuilder.add_joint_rod),
     )
+
     released_stiffness_args = (11.0, 0.1, 22.0, 0.2, 33.0, 0.3, 44.0, 0.4)
     expected_ke = [11.0, 22.0, 33.0, 44.0]
     expected_kd = [0.1, 0.2, 0.3, 0.4]
+
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     child = builder.add_link()
     with warnings.catch_warnings(record=True) as caught:
@@ -5321,10 +5323,14 @@ def _rod_helper_api_deprecates_released_cable_names(test, device):
     """Verify released helper names preserve behavior and name final replacements."""
     start = wp.vec3(0.0, 0.0, 0.0)
     direction = wp.vec3(0.0, 0.0, 1.0)
-    points = newton.rod.generate_straight_points(start, direction, 2.0, 2)
-    quaternions = newton.rod.compute_parallel_transport_quaternions(points)
-    combined = newton.rod.generate_straight_points_and_quaternions(start, direction, 2.0, 2)
-    stiffness = newton.rod.stiffness_from_elastic_moduli(200.0, 0.5, 2.0, poissons_ratio=0.25)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        test.assertIn("CableStiffness", dir(newton.utils))
+        points = newton.rod.generate_straight_points(start, direction, 2.0, 2)
+        quaternions = newton.rod.compute_parallel_transport_quaternions(points)
+        combined = newton.rod.generate_straight_points_and_quaternions(start, direction, 2.0, 2)
+        stiffness = newton.rod.stiffness_from_elastic_moduli(200.0, 0.5, 2.0, poissons_ratio=0.25)
 
     expected_replacements = (
         ("CableStiffness", "newton.rod.RodStiffness"),
