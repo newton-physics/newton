@@ -4379,6 +4379,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if not np.any(changed_bodies):
             return
 
+        old_body_iquat = self.mj_model.body_iquat.copy()
+
         self.mj_model.body_inertia[:] = mjw_body_inertia
         self.mj_model.body_iquat[:] = mjw_body_iquat
 
@@ -4388,6 +4390,40 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.mj_model.body_sameframe[changed_bodies] = int(self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE)
         self.mj_model.body_simple[changed_bodies] = 0
         self.mj_model.dof_simplenum[:] = 0
+
+        self._refit_body_bvh_to_inertial_frame(old_body_iquat, mjw_body_iquat, iquat_changed)
+
+    def _refit_body_bvh_to_inertial_frame(
+        self, old_body_iquat: np.ndarray, new_body_iquat: np.ndarray, iquat_changed: np.ndarray
+    ) -> None:
+        """Re-express each rotated body's midphase BVH boxes in its new inertial frame.
+
+        MuJoCo stores the body midphase BVH in the compile-time inertial frame and
+        ``mj_collideTree`` transforms it by ``ximat = xmat @ iquat`` at runtime. Overwriting
+        ``body_iquat`` after ``spec.compile()`` therefore leaves those boxes expressed in a frame
+        that no longer exists, and the midphase culls geom pairs that genuinely overlap.
+
+        Args:
+            old_body_iquat: Inertial frame orientations before the sync, shape ``(nbody, 4)``.
+            new_body_iquat: Inertial frame orientations after the sync, shape ``(nbody, 4)``.
+            iquat_changed: Boolean mask selecting the bodies whose orientation changed.
+        """
+        rot_old = np.empty(9)
+        rot_new = np.empty(9)
+        for body in np.flatnonzero(iquat_changed):
+            bvh_num = int(self.mj_model.body_bvhnum[body])
+            if bvh_num == 0:
+                continue
+            self._mujoco.mju_quat2Mat(rot_old, old_body_iquat[body])
+            self._mujoco.mju_quat2Mat(rot_new, new_body_iquat[body])
+            # Maps a point from the old inertial frame to the new one.
+            rot = rot_new.reshape(3, 3).T @ rot_old.reshape(3, 3)
+            bvh_adr = int(self.mj_model.body_bvhadr[body])
+            aabb = self.mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num]
+            # A rotated box is not axis-aligned, so its half-extents grow into the enclosing box.
+            self.mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num] = np.hstack(
+                (aabb[:, :3] @ rot.T, aabb[:, 3:] @ np.abs(rot).T)
+            )
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
