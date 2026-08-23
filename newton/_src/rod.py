@@ -168,6 +168,9 @@ def generate_straight_points(
 ) -> list[wp.vec3]:
     """Generate centerline points for a straight rod discretization.
 
+    The returned points form the ``positions`` input for
+    :meth:`newton.ModelBuilder.add_rod`.
+
     Args:
         start: First point in world space [m].
         direction: World-space direction of the rod (need not be normalized).
