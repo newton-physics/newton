@@ -28,6 +28,7 @@ defining generic shape data structures that work across all primitive types.
 """
 
 import enum
+from typing import Any
 
 import warp as wp
 
@@ -37,6 +38,19 @@ from .types import GeoType
 # Near-zero direction components (e.g. from quaternion rotation noise ~1e-14)
 # are treated as non-negative, biasing toward the +1 vertex.
 BOX_SUPPORT_DEADBAND = 1.0e-10
+_CENTERED_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
+
+
+@wp.func_native("""
+#if defined(__CUDA_ARCH__)
+return __frsqrt_rn(value);
+#else
+return 1.0f / sqrtf(value);
+#endif
+""")
+def _support_rsqrt_rn(value: float) -> float:
+    """Return a round-to-nearest reciprocal square root of a positive value."""
+    ...
 
 
 # Is not allowed to share values with GeoType
@@ -102,6 +116,17 @@ class GenericShapeData:
     scale: wp.vec3
     auxiliary: wp.vec3
     center: wp.vec3  # Precomputed local AABB center for convex seed initialization.
+
+
+@wp.func
+def _support_map_box(geom: GenericShapeData, direction: wp.vec3) -> wp.vec3:
+    """Return the support point of a box in its local frame."""
+    direction_scale = wp.max(wp.abs(direction[0]), wp.max(wp.abs(direction[1]), wp.abs(direction[2])))
+    threshold = BOX_SUPPORT_DEADBAND * direction_scale
+    sx = 1.0 if direction[0] >= -threshold else -1.0
+    sy = 1.0 if direction[1] >= -threshold else -1.0
+    sz = 1.0 if direction[2] >= -threshold else -1.0
+    return wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
 
 
 @wp.func
@@ -180,18 +205,13 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         # the non-primary components are zero; any vertex on that face
         # is an equally valid support point, so biasing toward +1 is
         # correct and keeps MPR's initial portal construction stable.
-        threshold = BOX_SUPPORT_DEADBAND * wp.length(direction)
-        sx = 1.0 if direction[0] >= -threshold else -1.0
-        sy = 1.0 if direction[1] >= -threshold else -1.0
-        sz = 1.0 if direction[2] >= -threshold else -1.0
-
-        result = wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
+        result = _support_map_box(geom, direction)
 
     elif geom.shape_type == GeoType.SPHERE:
         radius = geom.scale[0]
         dir_len_sq = wp.length_sq(direction)
         if dir_len_sq > eps:
-            n = wp.normalize(direction)
+            n = direction * _support_rsqrt_rn(dir_len_sq)
         else:
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
@@ -204,7 +224,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         # Sphere part: support in normalized direction
         dir_len_sq = wp.length_sq(direction)
         if dir_len_sq > eps:
-            n = wp.normalize(direction)
+            n = direction * _support_rsqrt_rn(dir_len_sq)
         else:
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
@@ -229,9 +249,11 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
             cdz = c * direction[2]
             denom_sq = adx * adx + bdy * bdy + cdz * cdz
             if denom_sq > eps:
-                denom = wp.sqrt(denom_sq)
+                inv_denom = _support_rsqrt_rn(denom_sq)
                 result = wp.vec3(
-                    (a * a) * direction[0] / denom, (b * b) * direction[1] / denom, (c * c) * direction[2] / denom
+                    (a * a) * direction[0] * inv_denom,
+                    (b * b) * direction[1] * inv_denom,
+                    (c * c) * direction[2] * inv_denom,
                 )
             else:
                 result = wp.vec3(a, 0.0, 0.0)
@@ -249,7 +271,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         if barrel_radius == 0.0:
             # Keep the regular-cylinder path unchanged.
             if dir_xy_len_sq > eps:
-                n_xy = wp.normalize(dir_xy)
+                n_xy = dir_xy * _support_rsqrt_rn(dir_xy_len_sq)
                 lateral_point = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, 0.0)
             else:
                 lateral_point = wp.vec3(radius, 0.0, 0.0)
@@ -354,22 +376,225 @@ def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: 
         result = wp.cw_mul(mesh.points[best_idx], geom.scale)
 
     elif geom.shape_type == GeoType.BOX:
-        threshold = BOX_SUPPORT_DEADBAND * wp.length(direction)
-        sx = 1.0 if direction[0] >= -threshold else -1.0
-        sy = 1.0 if direction[1] >= -threshold else -1.0
-        sz = 1.0 if direction[2] >= -threshold else -1.0
-        result = wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
+        result = _support_map_box(geom, direction)
 
     elif geom.shape_type == GeoType.SPHERE:
         radius = geom.scale[0]
         dir_len_sq = wp.length_sq(direction)
         if dir_len_sq > 1.0e-12:
-            n = wp.normalize(direction)
+            n = direction * _support_rsqrt_rn(dir_len_sq)
         else:
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
 
     return result
+
+
+def create_shape_support_function(support_func: Any, center_ties: bool = False):
+    """Create a support function with built-in shape policies."""
+    fuse_builtin_box_support = support_func is support_map or support_func is support_map_lean
+
+    if center_ties:
+
+        @wp.func
+        def shape_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+            result = wp.vec3(0.0, 0.0, 0.0)
+            if wp.static(fuse_builtin_box_support):
+                if geom.shape_type == GeoType.BOX:
+                    abs_direction = wp.vec3(wp.abs(direction[0]), wp.abs(direction[1]), wp.abs(direction[2]))
+                    result = _support_map_box(geom, direction)
+                    contribution = wp.cw_mul(abs_direction, geom.scale)
+                    threshold = _CENTERED_BOX_SUPPORT_TIE_EPSILON * (
+                        contribution[0] + contribution[1] + contribution[2]
+                    )
+                    if contribution[0] <= threshold:
+                        result[0] = 0.0
+                    if contribution[1] <= threshold:
+                        result[1] = 0.0
+                    if contribution[2] <= threshold:
+                        result[2] = 0.0
+                else:
+                    result = support_func(geom, direction, data_provider)
+            else:
+                result = support_func(geom, direction, data_provider)
+                if geom.shape_type == GeoType.BOX:
+                    contribution = wp.cw_mul(wp.abs(direction), geom.scale)
+                    threshold = _CENTERED_BOX_SUPPORT_TIE_EPSILON * (
+                        contribution[0] + contribution[1] + contribution[2]
+                    )
+                    if contribution[0] <= threshold:
+                        result[0] = 0.0
+                    if contribution[1] <= threshold:
+                        result[1] = 0.0
+                    if contribution[2] <= threshold:
+                        result[2] = 0.0
+            return result
+
+    else:
+
+        @wp.func
+        def shape_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+            result = wp.vec3(0.0, 0.0, 0.0)
+            if wp.static(fuse_builtin_box_support):
+                if geom.shape_type == GeoType.BOX:
+                    result = _support_map_box(geom, direction)
+                else:
+                    result = support_func(geom, direction, data_provider)
+            else:
+                result = support_func(geom, direction, data_provider)
+            return result
+
+    return shape_support
+
+
+@wp.func
+def _shape_center(geom: Any) -> wp.vec3:
+    """Return a local interior-point approximation for a supported shape."""
+    if geom.shape_type == int(GeoType.CONVEX_MESH):
+        mesh = wp.mesh_get(unpack_mesh_ptr(geom.auxiliary))
+        scale = geom.scale
+        first = wp.cw_mul(mesh.points[0], scale)
+        lower = first
+        upper = first
+        for i in range(1, mesh.points.shape[0]):
+            point = wp.cw_mul(mesh.points[i], scale)
+            lower = wp.min(lower, point)
+            upper = wp.max(upper, point)
+        return 0.5 * (lower + upper)
+    return wp.vec3(0.0)
+
+
+@wp.func
+def _adjust_minkowski_center(geom_a: Any, center_b_world: wp.vec3, center_b_to_a: wp.vec3) -> wp.vec3:
+    """Adjust the Minkowski center for shapes that need a local contact seed."""
+    if geom_a.shape_type != int(GeoTypeEx.TRIANGLE) and geom_a.shape_type != int(GeoTypeEx.TRIANGLE_PRISM):
+        return center_b_to_a
+
+    tri_a = wp.vec3(0.0)
+    tri_b = geom_a.scale
+    tri_c = geom_a.auxiliary
+    face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
+    face_normal_length_sq = wp.length_sq(face_normal)
+    projection = closest_point_on_triangle(center_b_world, tri_a, tri_b, tri_c)
+    if face_normal_length_sq < 1.0e-20:
+        return projection - center_b_world
+
+    face_normal_unit = face_normal / wp.sqrt(face_normal_length_sq)
+    signed_plane_distance = wp.dot(center_b_world - tri_a, face_normal_unit)
+    plane_projection = center_b_world - signed_plane_distance * face_normal_unit
+    inside_face = (
+        wp.dot(wp.cross(tri_b - tri_a, plane_projection - tri_a), face_normal) >= 0.0
+        and wp.dot(wp.cross(tri_c - tri_b, plane_projection - tri_b), face_normal) >= 0.0
+        and wp.dot(wp.cross(tri_a - tri_c, plane_projection - tri_c), face_normal) >= 0.0
+    )
+    if inside_face:
+        projection = plane_projection
+        center_b_to_a = -signed_plane_distance * face_normal_unit
+    else:
+        center_b_to_a = projection - center_b_world
+
+    to_centroid = (tri_a + tri_b + tri_c) / 3.0 - projection
+    to_centroid -= wp.dot(to_centroid, face_normal_unit) * face_normal_unit
+    distance_to_centroid = wp.length(to_centroid)
+    if distance_to_centroid > 1.0e-12:
+        nudge_distance = 0.01 * wp.min(distance_to_centroid, wp.abs(signed_plane_distance))
+        center_b_to_a += to_centroid * (nudge_distance / distance_to_centroid)
+    return center_b_to_a
+
+
+@wp.func
+def _minkowski_center_fallback(geom_a: Any, center_b_world: wp.vec3) -> wp.vec3:
+    """Return a nonzero triangle seed when the Minkowski centers coincide."""
+    if geom_a.shape_type != int(GeoTypeEx.TRIANGLE) and geom_a.shape_type != int(GeoTypeEx.TRIANGLE_PRISM):
+        return wp.vec3(0.0)
+
+    tri_a = wp.vec3(0.0)
+    tri_b = geom_a.scale
+    tri_c = geom_a.auxiliary
+    face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
+    face_normal_length_sq = wp.length_sq(face_normal)
+    if face_normal_length_sq < 1.0e-20:
+        return wp.vec3(0.0)
+
+    face_normal /= wp.sqrt(face_normal_length_sq)
+    projection = closest_point_on_triangle(center_b_world, tri_a, tri_b, tri_c)
+    to_centroid = (tri_a + tri_b + tri_c) / 3.0 - projection
+    to_centroid -= wp.dot(to_centroid, face_normal) * face_normal
+    to_centroid_length_sq = wp.length_sq(to_centroid)
+
+    fallback_direction = -face_normal
+    if wp.dot(center_b_world - projection, face_normal) < 0.0:
+        fallback_direction = face_normal
+    if to_centroid_length_sq > 1.0e-20:
+        fallback_direction += 0.01 * to_centroid / wp.sqrt(to_centroid_length_sq)
+    return wp.normalize(fallback_direction) * 1.0e-5
+
+
+@wp.struct
+class MinkowskiCenter:
+    """Store a Minkowski interior point and optional coincident-center fallback."""
+
+    B: wp.vec3
+    BtoA: wp.vec3
+
+
+def create_shape_center_function(use_precomputed_center: bool = False):
+    """Create the common Minkowski-center function used by MPR and GJK.
+
+    The returned function supplies the initial interior point of the
+    Minkowski difference. Most primitives use their local origin. Uncached
+    convex meshes use the center of their scaled AABB, while cached callers
+    use ``geom.center`` and must provide a valid interior-point approximation.
+
+    Triangle-like shape A needs a partner-relative seed. Its center is moved
+    to the point on the physical triangle nearest shape B's center and nudged
+    toward the triangle centroid. This avoids portals collapsing onto one
+    vertex when a large, thin triangle is paired with a much smaller shape.
+
+    Args:
+        use_precomputed_center: Use the center stored in each geometry instead
+            of computing convex-mesh AABB centers.
+
+    Returns:
+        A shape-center function with a ``fallback`` attribute for the
+        coincident-center case.
+    """
+
+    @wp.func
+    def shape_center(
+        geom_a: Any,
+        geom_b: Any,
+        orientation_b: wp.quat,
+        position_b: wp.vec3,
+        data_provider: Any,
+    ) -> MinkowskiCenter:
+        """Compute an interior point of the Minkowski difference.
+
+        Args:
+            geom_a: Shape A geometry data.
+            geom_b: Shape B geometry data.
+            orientation_b: Shape B orientation relative to shape A.
+            position_b: Shape B position relative to shape A.
+            data_provider: Support-map data provider.
+
+        Returns:
+            Centers in the relative frame. ``B`` is shape B's center and
+            ``BtoA`` points from it to the selected center on shape A.
+        """
+        center = MinkowskiCenter()
+        if wp.static(use_precomputed_center):
+            center_a = geom_a.center
+            center_b_local = geom_b.center
+        else:
+            center_a = _shape_center(geom_a)
+            center_b_local = _shape_center(geom_b)
+
+        center.B = position_b + wp.quat_rotate(orientation_b, center_b_local)
+        center.BtoA = _adjust_minkowski_center(geom_a, center.B, center_a - center.B)
+        return center
+
+    shape_center.fallback = _minkowski_center_fallback
+    return shape_center
 
 
 @wp.func
@@ -450,7 +675,8 @@ def closest_point_on_triangle(
     ab_sq = wp.dot(ab, ab)
     ac_sq = wp.dot(ac, ac)
     EPS2 = 1.0e-20
-    if wp.dot(wp.cross(ab, ac), wp.cross(ab, ac)) < EPS2:
+    triangle_normal = wp.cross(ab, ac)
+    if wp.dot(triangle_normal, triangle_normal) < EPS2:
         bc = tri_c - tri_b
         bc_sq = wp.dot(bc, bc)
         if ab_sq >= ac_sq and ab_sq >= bc_sq:

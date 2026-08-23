@@ -949,6 +949,15 @@ add_example_test(
 
 add_example_test(
     TestMPMExamples,
+    name="mpm.example_mpm_granular",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 5, "from_usd": True},
+    use_viewer=True,
+    test_suffix="authored_usd",
+)
+
+add_example_test(
+    TestMPMExamples,
     name="mpm.example_mpm_multi_material",
     devices=cuda_test_devices,
     test_options={"num-frames": 10},
