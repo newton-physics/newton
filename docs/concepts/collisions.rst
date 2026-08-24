@@ -1219,9 +1219,8 @@ For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.C
      - Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
        Default: False.
    * - ``margin_contact_area``
-     - Lower bound on contact area. Hydroelastic stiffness is ``area * k_eff``, but contacts 
-       within the contact margin that are not yet penetrating have zero
-       geometric area. This provides a floor value so they still generate repulsive force. Default: 0.01.
+     - Deprecated area used for speculative-contact activation stiffness.
+       It remains effective during the deprecation period. Default: 0.01.
 
 .. _Shape Configuration:
 
@@ -1321,6 +1320,18 @@ by ``margin_a + margin_b``.
      - Target voxel size for primitive SDF generation. Takes precedence over ``sdf_max_resolution``.
    * - ``sdf_narrow_band_range``
      - SDF narrow band distance range (inner, outer). Default: (-0.1, 0.1).
+   * - ``sdf_padding``
+     - Primitive SDF AABB padding. For hydroelastic shapes this must cover
+       ``margin + gap``. When unset, Newton supplies that required padding.
+
+For mesh-backed hydroelastic shapes, the padding passed to
+:meth:`~Mesh.build_sdf` must likewise be at least ``margin + gap``. Newton
+reports an actionable error when an attached SDF records smaller construction
+padding. When attaching externally precomputed texture data with
+:meth:`~SDF.create_from_data`, pass the original AABB padding through
+``construction_padding``. If that padding is unknown, shape validation rejects
+the SDF because Newton cannot verify that it covers the hydroelastic contact
+band.
 
 The :meth:`~ModelBuilder.ShapeConfig.configure_sdf` helper sets SDF and hydroelastic
 options in one call:
@@ -1821,19 +1832,58 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 
 **How it works:**
 
-1. SDF intersection finds overlapping regions between shapes
-2. Marching cubes extracts the contact iso-surface
-3. Contact points are distributed across the surface area
-4. Optional contact reduction selects representative points
+1. Newton subtracts each shape's margin from its world-space SDF value so the
+   contact calculation uses the margin-inflated surfaces.
+2. Newton defines the pair separation as
+   ``d = (sdf_a - margin_a) + (sdf_b - margin_b)``.
+3. Marching cubes extracts the pressure-balanced contact surface.
+4. Contact points are distributed across the surface area.
+5. Optional contact reduction selects representative points without changing
+   their contact band.
+
+Hydroelastic contacts use the same three margin-and-gap bands described in
+:ref:`margin-and-gap semantics <margin-gap-semantics>`:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Pair separation
+     - Result
+   * - ``d < 0``
+     - Active hydroelastic contact with pressure force.
+   * - ``0 <= d <= gap_a + gap_b``
+     - Speculative contact with no current pressure force.
+   * - ``d > gap_a + gap_b``
+     - No contact.
+
+Contacts in the gap region are speculative. Their separation is nonnegative,
+so they do not produce force in the current state. Newton assigns them a contact
+stiffness using the two materials' hydroelastic stiffness and the deprecated
+``margin_contact_area`` compatibility setting.
+
+To recover the closest equivalent of the earlier geometric-surface behavior,
+set both ``margin=0.0`` and ``gap=0.0`` on the participating shapes. This is a
+behavioral compatibility setting, not a guarantee of identical contact count
+or ordering. Set ``gap`` explicitly: ``gap=None`` inherits
+``builder.rigid_gap``, which is nonzero by default.
+
+The inherited default is ``builder.rigid_gap=0.1``. A nonzero gap asks Newton
+to generate force-free speculative contacts, which still use contact-buffer
+memory and collision-processing time. Set ``gap=0.0`` explicitly when a solver
+does not use speculative contacts or when that extra detection band is not
+needed.
 
 **Hydroelastic stiffness (kh):**
 
-The ``kh`` parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: ``k_eff = 2 * k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
+The ``kh`` parameter on each shape controls area-dependent contact stiffness.
+For a pair, the material slope is the series combination
+``k_eff = k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
 
 **Custom pressure laws:**
 
 The contact patch is the iso-pressure surface ``p_a == p_b``. ``signed_depth``
-follows the SDF sign convention: negative inside the shape, positive outside.
+is the shape-margin-adjusted SDF value and follows the SDF sign convention:
+negative inside the inflated surface, positive outside.
 The default linear law ``p = -kh * signed_depth`` is positive when penetrating
 and continues with negative pressure values just outside the surface. Supply
 ``pressure_func`` and ``pressure_data`` on :class:`~geometry.HydroelasticSDF.Config`
@@ -1878,9 +1928,14 @@ additional gain unless you intentionally want a redundant parameterization: only
 their product affects the resulting pressure.
 When contact reduction is enabled, Newton reduces contacts after evaluating the
 same pressure law on the hydroelastic faces; no separate linear stiffness law is
-applied to reduced penetrating contacts.
+applied to reduced penetrating contacts. The evaluated pressure is stored once
+per buffered face because the pair separation does not contain either shape's
+individual SDF depth. Speculative contacts do not use this stored pressure;
+their activation stiffness uses the declared ``kh`` values and the deprecated
+``margin_contact_area`` compatibility setting.
 
-See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked example.
+See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked
+example.
 
 Contact reduction options for hydroelastic contacts are configured via :class:`~geometry.HydroelasticSDF.Config` (see :ref:`Contact Reduction`).
 

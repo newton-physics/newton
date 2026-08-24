@@ -101,6 +101,42 @@ not show up in builder-state comparisons or survive past either builder's lifeti
 """
 
 
+def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
+    """Build a collision-only mesh containing each exact vertex position once."""
+    vertices = source.vertices
+    _, first_indices, inverse = np.unique(vertices, axis=0, return_index=True, return_inverse=True)
+    if len(first_indices) == len(vertices):
+        return source
+
+    # Retain first-occurrence order so support-map tie breaking stays unchanged.
+    first_order = np.argsort(first_indices)
+    unique_remap = np.empty(len(first_indices), dtype=np.int32)
+    unique_remap[first_order] = np.arange(len(first_indices), dtype=np.int32)
+    vertex_remap = unique_remap[inverse]
+    collision_mesh = Mesh(
+        vertices=vertices[first_indices[first_order]],
+        indices=vertex_remap[source.indices],
+        compute_inertia=False,
+        is_solid=source.is_solid,
+        maxhullvert=source.maxhullvert,
+        sdf=source.sdf,
+    )
+    collision_mesh.mass = source.mass
+    collision_mesh.com = source.com
+    collision_mesh.inertia = source.inertia
+    collision_mesh.has_inertia = source.has_inertia
+
+    if source._collision_edges is not None:
+        collision_edges = vertex_remap[source._collision_edges]
+        collision_edges = collision_edges[collision_edges[:, 0] != collision_edges[:, 1]]
+        if len(collision_edges) > 0:
+            _, first_edges = np.unique(collision_edges, axis=0, return_index=True)
+            collision_edges = collision_edges[np.sort(first_edges)]
+        collision_mesh._collision_edges = collision_edges
+
+    return collision_mesh
+
+
 @dataclass(frozen=True)
 class _ShapeCollisionFilterBlock:
     """Compact replicated collision-filter block."""
@@ -550,9 +586,9 @@ class ModelBuilder:
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to
-        :attr:`gap` when ``None``. Distinct from :attr:`gap` (broad-phase
-        inflation) and :attr:`margin` (contact-surface inflation). Rejected on
-        ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
+        :attr:`gap`, plus :attr:`margin` for hydroelastic shapes, when
+        ``None``. Hydroelastic padding must cover ``margin + gap``. Rejected
+        on ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
         :meth:`~newton.geometry.Mesh.build_sdf` instead."""
 
         def configure_sdf(
@@ -10544,6 +10580,51 @@ class ModelBuilder:
                 continue
             margin = self.shape_margin[i]
             gap = self.shape_gap[i]
+            sdf_padding = self.shape_sdf_padding[i]
+            if (
+                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                and sdf_padding is not None
+                and sdf_padding < margin + gap
+                and not math.isclose(sdf_padding, margin + gap, rel_tol=1.0e-9, abs_tol=1.0e-12)
+            ):
+                raise ValueError(
+                    f"Hydroelastic shape {i} requires sdf_padding >= margin + gap "
+                    f"({margin + gap:.6g}), got {sdf_padding:.6g}."
+                )
+            if (
+                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                and self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH)
+            ):
+                shape_src = self.shape_source[i]
+                mesh_sdf = getattr(shape_src, "sdf", None) if shape_src is not None else None
+                if mesh_sdf is not None:
+                    required_sdf_padding = margin + gap
+                    construction_padding = getattr(mesh_sdf, "_construction_padding", None)
+                    if mesh_sdf.texture_data is not None and construction_padding is None:
+                        raise ValueError(
+                            f"Hydroelastic shape {i} has precomputed SDF data with unknown construction padding. "
+                            "Declare the original padding with "
+                            "SDF.create_from_data(construction_padding=...), or rebuild it with "
+                            "Mesh.build_sdf(margin=margin + gap)."
+                        )
+                    if (
+                        construction_padding is not None
+                        and construction_padding < required_sdf_padding
+                        and not math.isclose(
+                            construction_padding,
+                            required_sdf_padding,
+                            rel_tol=1.0e-9,
+                            abs_tol=1.0e-12,
+                        )
+                    ):
+                        raise ValueError(
+                            f"Hydroelastic shape {i} requires SDF construction padding >= margin + gap "
+                            f"({required_sdf_padding:.6g}), but the attached SDF uses "
+                            f"{construction_padding:.6g}. Rebuild it with "
+                            f"Mesh.build_sdf(margin={required_sdf_padding:.6g})."
+                        )
             if gap < 0.0:
                 shapes_with_bad_gap.append(
                     f"{self.shape_label[i] or f'shape_{i}'} (margin={margin:.6g}, gap={gap:.6g})"
@@ -11293,6 +11374,18 @@ class ModelBuilder:
                 )
 
             generated_shape_sources = list(self.shape_source)
+            deduplicated_convex_sources = {}
+            for shape_idx, shape_type in enumerate(self.shape_type):
+                source = generated_shape_sources[shape_idx]
+                if shape_type != GeoType.CONVEX_MESH or not isinstance(source, Mesh):
+                    continue
+                source_identity = id(source)
+                if source_identity in deduplicated_convex_sources:
+                    generated_shape_sources[shape_idx] = deduplicated_convex_sources[source_identity]
+                    continue
+                deduplicated_source = _deduplicate_convex_collision_mesh(source)
+                deduplicated_convex_sources[source_identity] = deduplicated_source
+                generated_shape_sources[shape_idx] = deduplicated_source
             generated_sdf_edge_meshes = []
             unit_box_edge_mesh = None
             for shape_idx, shape_type in enumerate(self.shape_type):
@@ -11674,9 +11767,11 @@ class ModelBuilder:
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
                 sdf_padding = self.shape_sdf_padding[i]
-                # Fall back to shape_gap when sdf_padding is unset (see ShapeConfig.sdf_padding).
-                sdf_gen_margin = sdf_padding if sdf_padding is not None else shape_gap
-                is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
+                is_hydroelastic = bool(
+                    shape_flags & ShapeFlags.HYDROELASTIC and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                )
+                required_sdf_padding = shape_gap + self.shape_margin[i] if is_hydroelastic else shape_gap
+                sdf_gen_margin = sdf_padding if sdf_padding is not None else required_sdf_padding
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
                 cache_key = None
@@ -11696,8 +11791,11 @@ class ModelBuilder:
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
                         sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
+                        # Convex collision geometry is deduplicated before finalization,
+                        # so build and cache its deferred SDF against that same topology.
+                        sdf_source = generated_shape_sources[i] if shape_type == GeoType.CONVEX_MESH else shape_src
                         deferred_key = (
-                            id(shape_src),
+                            id(sdf_source),
                             tuple(shape_scale),
                             tuple(sdf_narrow_band_range),
                             sdf_target_voxel_size,
@@ -11707,7 +11805,7 @@ class ModelBuilder:
                         )
                         mesh_sdf = deferred_mesh_sdf_cache.get(deferred_key)
                         if mesh_sdf is None:
-                            mesh_copy = shape_src.copy()
+                            mesh_copy = sdf_source.copy()
                             mesh_copy.build_sdf(**sdf_kwargs)
                             mesh_sdf = mesh_copy.sdf
                             deferred_mesh_sdf_cache[deferred_key] = mesh_sdf
