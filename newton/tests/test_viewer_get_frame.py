@@ -466,7 +466,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             texture[:5, :] = 240
             texture[:, :5] = 240
             xforms = wp.array(
-                [wp.transform((0.0, 0.0, 0.0), wp.quat_identity())],
+                [wp.transform((0.13, 0.27, 0.0), wp.quat_identity())],
                 dtype=wp.transform,
                 device=viewer.device,
             )
@@ -521,11 +521,17 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
             shifted_frame = render(2.0e3, newton.Mesh.TextureProjection.WORLD, camera_offset=0.75)
             texture_motion = np.abs(projected_frames[1].astype(np.int16) - shifted_frame.astype(np.int16))
+            object_frame = render(2.0e3, newton.Mesh.TextureProjection.OBJECT)
+            shifted_object_frame = render(2.0e3, newton.Mesh.TextureProjection.OBJECT, camera_offset=0.75)
+            object_texture_motion = np.abs(object_frame.astype(np.int16) - shifted_object_frame.astype(np.int16))
+            world_motion = texture_motion[160:290, 20:380].mean()
+            object_motion = object_texture_motion[160:290, 20:380].mean()
             self.assertGreater(
-                texture_motion[160:290, 20:380].mean(),
+                world_motion,
                 10.0,
                 "world-projected texture moved with the camera instead of remaining anchored",
             )
+            self.assertGreater(world_motion, object_motion + 10.0, "WORLD projection behaved like OBJECT projection")
         finally:
             viewer.close()
 
