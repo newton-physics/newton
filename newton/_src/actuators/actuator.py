@@ -199,7 +199,8 @@ class Actuator:
         """Switch effort computation to implicit mode.
 
         The control law is solved against the predicted end-of-step state
-        before the solver runs.
+        before the solver runs. See :ref:`effort-modes` for details on the
+        computation of effort in the implicit mode, its caveats, and its expected use.
 
         Args:
             response: :class:`~newton.actuators.ResponseOracle` supplying the

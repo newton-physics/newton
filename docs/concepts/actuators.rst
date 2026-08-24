@@ -225,6 +225,8 @@ may omit them: they contain the original module, whose ``torch.nn.LSTM``
 submodule is inspected directly, while ``torch.export`` flattens the network
 into a computation graph that no longer exposes it.
 
+.. _effort-modes:
+
 Effort Modes
 ------------
 
