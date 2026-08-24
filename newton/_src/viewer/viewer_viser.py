@@ -140,7 +140,7 @@ class ViewerViser(ViewerBase):
         self._plot_history_size = plot_history_size
         self._plane_meshes = {}
         self._plane_handles = {}
-        self._plane_geometry_keys = {}  # Cache of (count, widths, lengths) per plane batch name
+        self._plane_geometry_keys = {}  # Cache of (count, widths, lengths, cell_sizes) per plane batch name
 
         super().__init__()
 
@@ -792,7 +792,7 @@ class ViewerViser(ViewerBase):
             lengths.append(length)
             cell_sizes.append(cell_size)
 
-        geometry_key = (len(positions), tuple(widths), tuple(lengths))
+        geometry_key = (len(positions), tuple(widths), tuple(lengths), tuple(cell_sizes))
         existing = self._plane_handles.get(name)
 
         if (
