@@ -112,6 +112,26 @@ class TestViewerViserPlaneFlicker(unittest.TestCase):
         self.assertIs(viewer._plane_handles["/ground_instances"][0], handle)
         np.testing.assert_array_equal(np.asarray(handle.position), np.array([1.0, 2.0, 3.0], dtype=np.float32))
 
+    def test_hidden_plane_toggles_visibility_without_removing_handle(self):
+        """Hide the grid handle in place instead of removing it, so re-showing it is cheap."""
+        viewer, captured = self._make_viser_viewer()
+
+        self._log_plane(viewer, (0.0, 0.0, 0.0))
+        handle = viewer._plane_handles["/ground_instances"][0]
+
+        xform = wp.array([wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transform)
+        viewer.log_instances("/ground_instances", "/ground", xform, None, None, None, hidden=True)
+
+        self.assertFalse(handle.visible)
+        handle.remove.assert_not_called()
+        self.assertIn("/ground_instances", viewer._plane_handles)
+
+        self._log_plane(viewer, (0.0, 0.0, 0.0))
+
+        self.assertEqual(captured["add_grid_calls"], 1)
+        self.assertIs(viewer._plane_handles["/ground_instances"][0], handle)
+        self.assertTrue(handle.visible)
+
     def test_matching_extents_with_different_cell_size_rebuilds_grid(self):
         """Rebuild the grid when a new plane's cell size differs even though its final extents match."""
         viewer, captured = self._make_viser_viewer()

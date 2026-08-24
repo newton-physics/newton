@@ -746,7 +746,7 @@ class ViewerViser(ViewerBase):
         """Render plane instances as viser grids.
 
         Grid handles are cached by name and only recreated when the instance
-        count or extents change; a pose-only update (the common case for a
+        count, extents, or cell sizes change; a pose-only update (the common case for a
         static ground plane logged every frame) just moves the existing
         handles instead of tearing them down and rebuilding, which avoids a
         visible flicker as handles disappear and reappear over the websocket.
