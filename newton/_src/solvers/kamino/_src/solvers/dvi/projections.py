@@ -26,6 +26,22 @@ def project_contact_normal_update(
 
 
 @wp.func
+def project_box_update(
+    lambda_old: float32,
+    velocity: float32,
+    diagonal: float32,
+    regularization: float32,
+    omega: float32,
+    lower: float32,
+    upper: float32,
+) -> float32:
+    """Project one bounded-multiplier update onto ``[lower, upper]``."""
+    if diagonal <= FLOAT32_EPS:
+        return lambda_old
+    return wp.clamp(lambda_old - omega * velocity / (diagonal + regularization), lower, upper)
+
+
+@wp.func
 def project_contact_tangent_update(
     lambda_old: vec2f,
     velocity: vec2f,

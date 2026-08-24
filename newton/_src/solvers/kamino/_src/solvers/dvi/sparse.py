@@ -27,6 +27,7 @@ from .sparse_kernels import (
     _compute_dvi_sparse_solution_vectors,
     _map_active_contacts,
     _map_active_limits,
+    _map_bounded_constraints,
     _set_sparse_bilateral_diagonal,
     _solve_dvi_sparse_inequalities_pgs,
     _sparse_delassus_gemv_rows,
@@ -115,16 +116,37 @@ class SparseDVIPath:
 def _can_use_sparse_colored_inequalities(path: SparseDVIPath) -> bool:
     has_limit_capacity = path.size.max_of_max_limits > 0
     has_contact_capacity = path.size.max_of_max_contacts > 0
+    has_bounded_capacity = path.size.max_of_num_bounded_joint_cts > 0
     limits_ready = not has_limit_capacity or path.limits is not None
     contacts_ready = not has_contact_capacity or path.contacts is not None
     return (
-        path.jacobians is not None and (has_limit_capacity or has_contact_capacity) and limits_ready and contacts_ready
+        path.jacobians is not None
+        and (has_limit_capacity or has_contact_capacity or has_bounded_capacity)
+        and limits_ready
+        and contacts_ready
     )
 
 
 def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) -> None:
     """Map and color active inequalities with the multi-world fast path."""
     state = path.data.state
+    num_joints = path.size.sum_of_num_joints
+    if num_joints > 0 and path.size.max_of_num_bounded_joint_cts > 0:
+        joints = path.model.joints
+        wp.launch(
+            kernel=_map_bounded_constraints,
+            dim=num_joints,
+            inputs=[
+                joints.wid,
+                joints.bid_B,
+                joints.bid_F,
+                joints.bounded_cts_offset,
+                problem.data.bcio,
+                problem.data.iio,
+                state.inequality_bodies,
+            ],
+            device=path.device,
+        )
     limits = path.limits
     if limits is not None and limits.model_max_limits_host > 0:
         wp.launch(
@@ -136,7 +158,8 @@ def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) ->
                 limits.lid,
                 limits.bids,
                 problem.data.lio,
-                problem.data.uio,
+                problem.data.iio,
+                problem.data.nbc,
                 state.limit_indices,
                 state.inequality_bodies,
             ],
@@ -152,9 +175,10 @@ def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) ->
                 contacts.wid,
                 contacts.cid,
                 contacts.bid_AB,
+                problem.data.nbc,
                 problem.data.nl,
                 problem.data.cio,
-                problem.data.uio,
+                problem.data.iio,
                 state.contact_indices,
                 state.inequality_bodies,
             ],
@@ -165,9 +189,10 @@ def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) ->
         kernel=_color_mapped_dvi_inequalities,
         dim=path.size.num_worlds,
         inputs=[
+            problem.data.nbc,
             problem.data.nl,
             problem.data.nc,
-            problem.data.uio,
+            problem.data.iio,
             state.inequality_bodies,
             state.inequality_body_color_masks,
             state.inequality_colors,
@@ -204,19 +229,25 @@ def _launch_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem, blo
             delassus.constraint_jacobian.nzb_values,
             bsm.row_start,
             bsm.col_start,
+            jacobians.friction_constraint_nzb_offsets,
             jacobians.limit_constraint_nzb_offsets,
             jacobians.contact_constraint_nzb_offsets,
             state.limit_indices,
             state.contact_indices,
+            problem.data.nbc,
             problem.data.nl,
             problem.data.nc,
+            problem.data.bcio,
             problem.data.lio,
             problem.data.cio,
-            problem.data.uio,
+            problem.data.iio,
+            problem.data.bcgo,
             problem.data.lcgo,
             problem.data.ccgo,
             problem.data.vio,
             problem.data.mu,
+            problem.data.bound_lower,
+            problem.data.bound_upper,
             problem.data.P,
             problem.data.v_f,
             state.scratch,
@@ -245,7 +276,7 @@ def _solve_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) -> N
     wp.launch(
         kernel=_set_dvi_direct_status_iterations,
         dim=path.size.num_worlds,
-        inputs=[problem.data.nl, problem.data.nc, path.data.config, path.data.status],
+        inputs=[problem.data.nbc, problem.data.nl, problem.data.nc, path.data.config, path.data.status],
         device=path.device,
     )
 
@@ -336,7 +367,7 @@ def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) ->
         raise RuntimeError("Sparse DVI topology is not prepared. Call `SparseDVIPath.prepare()` before solving.")
     wp.launch(
         kernel=_set_sparse_bilateral_diagonal,
-        dim=(path.size.num_worlds, path.size.max_of_num_joint_cts),
+        dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
         inputs=[
             problem.data.njc,
             problem.data.vio,
@@ -422,7 +453,7 @@ def _solve_sparse_bilateral_block(
     state = path.data.state
     wp.launch(
         kernel=_zero_bilateral_lambdas,
-        dim=(path.size.num_worlds, path.size.max_of_num_joint_cts),
+        dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
         inputs=[
             problem.data.njc,
             problem.data.vio,
@@ -433,7 +464,7 @@ def _solve_sparse_bilateral_block(
     _sparse_delassus_matvec_rows_path(path, problem, _SPARSE_DELASSUS_ROWS_JOINTS)
     wp.launch(
         kernel=_build_sparse_bilateral_rhs,
-        dim=(path.size.num_worlds, path.size.max_of_num_joint_cts),
+        dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
         inputs=[
             problem.data.vio,
             problem.data.njc,
@@ -454,7 +485,7 @@ def _solve_sparse_bilateral_block(
         operator.info.dim = full_dim
     wp.launch(
         kernel=_scatter_bilateral_solution,
-        dim=(path.size.num_worlds, path.size.max_of_num_joint_cts),
+        dim=(path.size.num_worlds, path.size.max_of_num_bilateral_joint_cts),
         inputs=[
             problem.data.vio,
             problem.data.njc,
@@ -502,6 +533,7 @@ def _solve_sparse_with_bilateral_direct_block(path: SparseDVIPath, problem: Dual
         kernel=_set_dvi_direct_status_iterations,
         dim=path.size.num_worlds,
         inputs=[
+            problem.data.nbc,
             problem.data.nl,
             problem.data.nc,
             path.data.config,
