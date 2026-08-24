@@ -465,11 +465,6 @@ class TestViewerGLGetFrame(unittest.TestCase):
             texture = np.full((64, 64, 3), (20, 40, 70), dtype=np.uint8)
             texture[:5, :] = 240
             texture[:, :5] = 240
-            xforms = wp.array(
-                [wp.transform((0.13, 0.27, 0.0), wp.quat_identity())],
-                dtype=wp.transform,
-                device=viewer.device,
-            )
             colors = wp.array([(1.0, 1.0, 1.0)], dtype=wp.vec3, device=viewer.device)
             materials = wp.array([(0.5, 0.0, 0.0, 1.0)], dtype=wp.vec4, device=viewer.device)
 
@@ -489,6 +484,11 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     backface_culling=False,
                     texture_scale=(0.5, 0.5),
                     texture_projection=projection,
+                )
+                xforms = wp.array(
+                    [wp.transform((0.13 + camera_offset, 0.27, 0.0), wp.quat_identity())],
+                    dtype=wp.transform,
+                    device=viewer.device,
                 )
                 scales = wp.array([(size, size, 1.0)], dtype=wp.vec3, device=viewer.device)
                 viewer.log_instances(
