@@ -623,6 +623,7 @@ class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
         return builder
 
     def test_each_world_gets_its_own_prefix(self):
+        """Each replicated world's labels are prefixed with its own entry from label_prefixes."""
         scene = ModelBuilder()
         prefixes = [f"/World/envs/env_{index}/Robot" for index in range(3)]
         scene.replicate(self._source(), 3, label_prefixes=prefixes)
@@ -630,11 +631,13 @@ class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
         self.assertEqual(scene.shape_label, [f"{prefix}/box" for prefix in prefixes])
 
     def test_a_none_prefix_leaves_that_world_alone(self):
+        """A None entry in label_prefixes copies that world's labels unprefixed."""
         scene = ModelBuilder()
         scene.replicate(self._source("root"), 2, label_prefixes=["left", None])
 
         self.assertEqual(scene.shape_label, ["left/root/box", "root/box"])
 
     def test_prefix_count_must_match_world_count(self):
+        """label_prefixes must have exactly one entry per replicated world."""
         with self.assertRaises(ValueError):
             ModelBuilder().replicate(self._source("root"), 2, label_prefixes=["only-one"])
