@@ -28,8 +28,6 @@ from newton._src.geometry.soft_contacts_sdf import (
     _shape_frames,
     _soft_feature_aabb_misses_shape,
     eval_shape_sdf,
-    eval_shape_sdf_grad,
-    eval_shape_sdf_lower,
     launch_soft_ef_contacts,
     optimize_edge_sdf,
     optimize_face_sdf,
@@ -3751,65 +3749,6 @@ def test_soft_feature_aabb_cull_boundary(test, device):
     test.assertFalse(_eval_soft_feature_aabb_miss(device, GeoType.PLANE, -0.4, far, far))
 
 
-@wp.kernel
-def _eval_shape_sdf_split_kernel(
-    geo: wp.int32,
-    scale: wp.vec3,
-    x: wp.vec3,
-    sdf_idx: wp.int32,
-    table: wp.array[TextureSDFData],
-    out_full_lower: wp.array[float],
-    out_split_lower: wp.array[float],
-    out_full_grad: wp.array[wp.vec3],
-    out_split_grad: wp.array[wp.vec3],
-):
-    full_lower, _phi, full_grad = eval_shape_sdf(geo, scale, x, sdf_idx, table)
-    out_full_lower[0] = full_lower
-    out_split_lower[0] = eval_shape_sdf_lower(geo, scale, x, sdf_idx, table)
-    out_full_grad[0] = full_grad
-    out_split_grad[0] = eval_shape_sdf_grad(geo, scale, x, sdf_idx, table)
-
-
-def _assert_split_eval_exact(test, device, geo, scale, x, sdf_idx, table):
-    full_lower = wp.zeros(1, dtype=float, device=device)
-    split_lower = wp.zeros(1, dtype=float, device=device)
-    full_grad = wp.zeros(1, dtype=wp.vec3, device=device)
-    split_grad = wp.zeros(1, dtype=wp.vec3, device=device)
-    wp.launch(
-        _eval_shape_sdf_split_kernel,
-        dim=1,
-        inputs=[geo, scale, x, sdf_idx, table],
-        outputs=[full_lower, split_lower, full_grad, split_grad],
-        device=device,
-    )
-    test.assertEqual(full_lower.numpy().tobytes(), split_lower.numpy().tobytes())
-    test.assertEqual(full_grad.numpy().tobytes(), split_grad.numpy().tobytes())
-
-
-def test_eval_shape_sdf_split_analytic_exact(test, device):
-    """Lower-only and gradient-only analytic dispatch preserve the full evaluator's bits."""
-    table = _empty_sdf_table(device)
-    cases = (
-        (GeoType.SPHERE, (0.7, 0.7, 0.7), (0.13, -0.27, 0.41)),
-        (GeoType.BOX, (0.6, 0.4, 0.8), (-0.72, 0.11, 0.35)),
-        (GeoType.CAPSULE, (0.3, 0.9, 0.0), (0.19, -0.22, 1.14)),
-        (GeoType.CYLINDER, (0.45, 0.75, 0.0), (-0.31, 0.28, 0.63)),
-        (GeoType.CONE, (0.5, 0.8, 0.0), (0.24, -0.16, 0.37)),
-        (GeoType.ELLIPSOID, (0.8, 0.45, 0.65), (0.21, -0.32, 0.18)),
-        (GeoType.PLANE, (0.0, 0.0, 0.0), (0.23, -0.17, 0.42)),
-    )
-    for geo, scale, x in cases:
-        _assert_split_eval_exact(
-            test,
-            device,
-            int(geo),
-            wp.vec3(*scale),
-            wp.vec3(*x),
-            -1,
-            table,
-        )
-
-
 def test_optimize_edge_sdf_box(test, device):
     """Golden-section edge optimizer finds the deepest point of phi along the segment."""
     half = (0.5, 0.5, 0.5)
@@ -4195,7 +4134,6 @@ for _name, _fn in (
     ("test_optimize_face_sdf_box", test_optimize_face_sdf_box),
     ("test_optimize_edge_sdf_sphere", test_optimize_edge_sdf_sphere),
     ("test_optimize_face_sdf_sphere", test_optimize_face_sdf_sphere),
-    ("test_eval_shape_sdf_split_analytic_exact", test_eval_shape_sdf_split_analytic_exact),
     ("test_edge_face_passes_box", test_edge_face_passes_box),
     ("test_edge_face_respect_shape_margin", test_edge_face_respect_shape_margin),
     ("test_backward_compat_bit_for_bit", test_backward_compat_bit_for_bit),
@@ -4364,27 +4302,6 @@ def _make_box_mesh_sdf_model(device):
     configure_sdf_for_collision_shapes(builder)
     model = builder.finalize(device=device)
     return model, int(model._shape_sdf_index.numpy()[0])
-
-
-def test_eval_shape_sdf_split_texture_exact(test, device):
-    """Texture lower/gradient-only paths preserve the full evaluator's result bits."""
-    model, sdf_idx = _make_box_mesh_sdf_model(device)
-    test.assertGreaterEqual(sdf_idx, 0)
-    scale = wp.vec3(1.7, 0.8, -1.2)
-    for x in (
-        wp.vec3(0.13, -0.21, 0.34),
-        wp.vec3(0.91, 0.17, -0.28),
-        wp.vec3(-1.24, 0.53, 0.86),
-    ):
-        _assert_split_eval_exact(
-            test,
-            device,
-            int(GeoType.MESH),
-            scale,
-            x,
-            sdf_idx,
-            model._texture_sdf_data,
-        )
 
 
 def test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign(test, device):
@@ -4635,7 +4552,6 @@ for _name, _fn in (
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
 
 for _name, _fn in (
-    ("test_eval_shape_sdf_split_texture_exact", test_eval_shape_sdf_split_texture_exact),
     ("test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign", test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign),
     ("test_full_surface_empty_sdf_descriptor_rejected", test_full_surface_empty_sdf_descriptor_rejected),
     ("test_full_surface_nonuniform_mesh_accurate_distance", test_full_surface_nonuniform_mesh_accurate_distance),

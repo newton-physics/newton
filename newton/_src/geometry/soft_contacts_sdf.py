@@ -31,12 +31,7 @@ from .kernels import (
     sdf_sphere,
     sdf_sphere_grad,
 )
-from .sdf_texture import (
-    TextureSDFData,
-    texture_sample_sdf_grad,
-    texture_sample_sdf_grad_only,
-    texture_sample_sdf_value_only,
-)
+from .sdf_texture import TextureSDFData, texture_sample_sdf_grad
 from .types import Axis, GeoType
 
 # Fixed iteration counts -> data-independent loops -> CUDA-graph-capturable. Passed as kernel args
@@ -139,112 +134,6 @@ def eval_shape_sdf(
 
 
 @wp.func
-def eval_shape_sdf_lower(
-    geo: wp.int32,
-    scale: wp.vec3,
-    x_local: wp.vec3,
-    shape_sdf_index: wp.int32,
-    texture_sdf_table: wp.array[TextureSDFData],
-) -> float:
-    """Return only the conservative SDF lower bound used for search and culling."""
-    if geo == GeoType.SPHERE:
-        return sdf_sphere(x_local, scale[0])
-    if geo == GeoType.BOX:
-        return sdf_box(x_local, scale[0], scale[1], scale[2])
-    if geo == GeoType.CAPSULE:
-        return sdf_capsule(x_local, scale[0], scale[1], int(Axis.Z))
-    if geo == GeoType.CYLINDER:
-        return sdf_cylinder(x_local, scale[0], scale[1], int(Axis.Z), -1.0, scale[2])
-    if geo == GeoType.CONE:
-        return sdf_cone(x_local, scale[0], scale[1], int(Axis.Z))
-    if geo == GeoType.ELLIPSOID:
-        return sdf_ellipsoid(x_local, scale)
-    if geo == GeoType.PLANE:
-        return sdf_plane(x_local, scale[0] * 0.5, scale[1] * 0.5)
-
-    tex = texture_sdf_table[shape_sdf_index]
-    if tex.scale_baked:
-        return texture_sample_sdf_value_only(tex, x_local)
-    dist = texture_sample_sdf_value_only(tex, wp.cw_div(x_local, scale))
-    return dist * wp.min(wp.abs(scale))
-
-
-@wp.func
-def eval_shape_sdf_grad(
-    geo: wp.int32,
-    scale: wp.vec3,
-    x_local: wp.vec3,
-    shape_sdf_index: wp.int32,
-    texture_sdf_table: wp.array[TextureSDFData],
-) -> wp.vec3:
-    """Return only the shape-local SDF gradient used by Frank-Wolfe."""
-    if geo == GeoType.SPHERE:
-        return sdf_sphere_grad(x_local, scale[0])
-    if geo == GeoType.BOX:
-        return sdf_box_grad(x_local, scale[0], scale[1], scale[2])
-    if geo == GeoType.CAPSULE:
-        return sdf_capsule_grad(x_local, scale[0], scale[1], int(Axis.Z))
-    if geo == GeoType.CYLINDER:
-        return sdf_cylinder_grad(x_local, scale[0], scale[1], int(Axis.Z), -1.0, scale[2])
-    if geo == GeoType.CONE:
-        return sdf_cone_grad(x_local, scale[0], scale[1], int(Axis.Z))
-    if geo == GeoType.ELLIPSOID:
-        return sdf_ellipsoid_grad(x_local, scale)
-    if geo == GeoType.PLANE:
-        return wp.vec3(0.0, 0.0, 1.0)
-
-    tex = texture_sdf_table[shape_sdf_index]
-    if tex.scale_baked:
-        return texture_sample_sdf_grad_only(tex, x_local)
-    inv_scale = wp.vec3(1.0 / scale[0], 1.0 / scale[1], 1.0 / scale[2])
-    grad = texture_sample_sdf_grad_only(tex, wp.cw_div(x_local, scale))
-    grad_norm = wp.length(grad)
-    if grad_norm > 0.0:
-        grad = grad / grad_norm
-    scaled_grad = wp.cw_mul(grad, inv_scale)
-    grad_len = wp.length(scaled_grad)
-    if grad_len > 0.0:
-        scaled_grad = scaled_grad / grad_len
-    else:
-        scaled_grad = grad
-    return scaled_grad
-
-
-@wp.func
-def optimize_edge_sdf_gamma(
-    geo: wp.int32,
-    scale: wp.vec3,
-    p: wp.vec3,
-    q: wp.vec3,
-    shape_sdf_index: wp.int32,
-    texture_sdf_table: wp.array[TextureSDFData],
-    n_iter: wp.int32,
-) -> float:
-    """Return the minimizing edge parameter using golden-section search."""
-    inv_phi = float(0.6180339887498949)  # 1 / golden ratio
-    lo = float(0.0)
-    hi = float(1.0)
-    c = hi - (hi - lo) * inv_phi
-    d = lo + (hi - lo) * inv_phi
-    fc = eval_shape_sdf_lower(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
-    fd = eval_shape_sdf_lower(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
-    for _i in range(n_iter):
-        if fc < fd:
-            hi = d
-            d = c
-            fd = fc
-            c = hi - (hi - lo) * inv_phi
-            fc = eval_shape_sdf_lower(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
-        else:
-            lo = c
-            c = d
-            fc = fd
-            d = lo + (hi - lo) * inv_phi
-            fd = eval_shape_sdf_lower(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
-    return 0.5 * (lo + hi)
-
-
-@wp.func
 def optimize_edge_sdf(
     geo: wp.int32,
     scale: wp.vec3,
@@ -257,10 +146,29 @@ def optimize_edge_sdf(
     """argmin_{u in [0,1]} phi((1-u) p + u q) by golden-section search (Macklin sec. 4).
 
     Fixed ``n_iter`` iterations -> graph-capturable. Returns ``(u, x_local, phi, grad)`` at the
-    minimizing point. The face optimizer uses the result-only :func:`optimize_edge_sdf_gamma`
-    variant for its internal line search.
+    minimizing point. Also used as the line search inside :func:`optimize_face_sdf`.
     """
-    u = optimize_edge_sdf_gamma(geo, scale, p, q, shape_sdf_index, texture_sdf_table, n_iter)
+    inv_phi = float(0.6180339887498949)  # 1 / golden ratio
+    lo = float(0.0)
+    hi = float(1.0)
+    c = hi - (hi - lo) * inv_phi
+    d = lo + (hi - lo) * inv_phi
+    fc, _fc_a, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
+    fd, _fd_a, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
+    for _i in range(n_iter):
+        if fc < fd:
+            hi = d
+            d = c
+            fd = fc
+            c = hi - (hi - lo) * inv_phi
+            fc, _fc_a, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
+        else:
+            lo = c
+            c = d
+            fc = fd
+            d = lo + (hi - lo) * inv_phi
+            fd, _fd_a, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
+    u = 0.5 * (lo + hi)
     x = (1.0 - u) * p + u * q
     _phi_l, phi, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
     return u, x, phi, grad
@@ -291,7 +199,7 @@ def optimize_face_sdf(
 
     for _i in range(n_iter):
         x = bary[0] * a + bary[1] * b + bary[2] * c
-        grad = eval_shape_sdf_grad(geo, scale, x, shape_sdf_index, texture_sdf_table)
+        _phi_l, _phi_x, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
         # Frank-Wolfe vertex: argmin_k grad . corner_k (Macklin eq. 4).
         da = wp.dot(grad, a)
         db = wp.dot(grad, b)
@@ -302,7 +210,9 @@ def optimize_face_sdf(
         elif dc <= da and dc <= db:
             s = wp.vec3(0.0, 0.0, 1.0)
         target = s[0] * a + s[1] * b + s[2] * c
-        gamma = optimize_edge_sdf_gamma(geo, scale, x, target, shape_sdf_index, texture_sdf_table, ls_iter)
+        gamma, _lx, _lphi, _lgrad = optimize_edge_sdf(
+            geo, scale, x, target, shape_sdf_index, texture_sdf_table, ls_iter
+        )
         bary = (1.0 - gamma) * bary + gamma * s
 
     x = bary[0] * a + bary[1] * b + bary[2] * c
@@ -540,7 +450,7 @@ def create_soft_face_contacts(
     threshold = margin + s_margin + radius
 
     centroid_s = (a_s + b_s + c_s) / 3.0
-    phi_c = eval_shape_sdf_lower(geo, scale, centroid_s, sdf_idx, texture_sdf_table)
+    phi_c, _phi_c_a, _grad_c = eval_shape_sdf(geo, scale, centroid_s, sdf_idx, texture_sdf_table)
     # Conservative cull: the SDF is ~1-Lipschitz, so the triangle's minimum is >= phi_c minus the
     # farthest centroid-to-point distance, which is always a vertex. circumradius can be smaller than
     # that for non-equilateral triangles (e.g. 3-4-5: R=2.5 vs 2.85) and would drop valid contacts.
@@ -670,7 +580,7 @@ def create_soft_edge_contacts(
     threshold = margin + s_margin + radius
 
     mid_s = 0.5 * (p_s + q_s)
-    phi_m = eval_shape_sdf_lower(geo, scale, mid_s, sdf_idx, texture_sdf_table)
+    phi_m, _phi_m_a, _grad_m = eval_shape_sdf(geo, scale, mid_s, sdf_idx, texture_sdf_table)
     if phi_m > threshold + 0.5 * wp.length(q_s - p_s):
         return
 
