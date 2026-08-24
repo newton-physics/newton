@@ -19,6 +19,7 @@ import newton as nt
 
 from ..core.types import Axis, override
 from ..utils.render import copy_rgb_frame_uint8
+from ..utils.texture import normalize_texture_vec2
 from .camera import Camera
 from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
@@ -963,6 +964,13 @@ class ViewerGL(ViewerBase):
         assert normals is None or isinstance(normals, wp.array)
         assert uvs is None or isinstance(uvs, wp.array)
 
+        texture_scale = normalize_texture_vec2(texture_scale, "texture_scale")
+        texture_translate = normalize_texture_vec2(texture_translate, "texture_translate")
+        texture_rotate = float(texture_rotate)
+        if not np.isfinite(texture_rotate):
+            raise ValueError("texture_rotate must be finite.")
+        texture_projection = nt.Mesh.TextureProjection(texture_projection)
+
         # Route user-supplied names through the active layer (idempotent).
         name = self._qualify(name)
         existing = self.objects.get(name)
@@ -1012,10 +1020,10 @@ class ViewerGL(ViewerBase):
             self.objects[name].update(points, indices, normals, uvs, texture)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
-        self.objects[name].texture_scale = tuple(float(value) for value in texture_scale)
-        self.objects[name].texture_translate = tuple(float(value) for value in texture_translate)
-        self.objects[name].texture_rotate = float(texture_rotate)
-        self.objects[name].texture_projection = nt.Mesh.TextureProjection(texture_projection)
+        self.objects[name].texture_scale = texture_scale
+        self.objects[name].texture_translate = texture_translate
+        self.objects[name].texture_rotate = texture_rotate
+        self.objects[name].texture_projection = texture_projection
 
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))

@@ -79,6 +79,22 @@ class _ViewerMeshProbe(ViewerNull):
 
 
 class TestViewerGeometryBatching(unittest.TestCase):
+    def test_gl_rejects_invalid_texture_mapping_before_logging(self):
+        """Reject malformed GL texture mapping before mutating viewer state."""
+        viewer = ViewerGL.__new__(ViewerGL)
+        points = wp.zeros(3, dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+
+        for mapping, message in (
+            ({"texture_scale": (1.0,)}, "texture_scale"),
+            ({"texture_scale": (1.0, np.nan)}, "texture_scale"),
+            ({"texture_translate": (0.0, 1.0, 2.0)}, "texture_translate"),
+            ({"texture_translate": (0.0, np.inf)}, "texture_translate"),
+            ({"texture_rotate": np.inf}, "texture_rotate"),
+        ):
+            with self.subTest(mapping=mapping), self.assertRaisesRegex(ValueError, message):
+                viewer.log_mesh("/invalid", points, indices, **mapping)
+
     def test_gl_texture_mapping_is_owned_by_gl_geometry_cache(self):
         """Keep projected mapping identity inside the supporting GL backend."""
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)

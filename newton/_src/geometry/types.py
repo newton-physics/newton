@@ -14,7 +14,7 @@ import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
 from ..utils.deprecation import deprecate_nonkeyword_arguments
-from ..utils.texture import compute_texture_hash
+from ..utils.texture import compute_texture_hash, normalize_texture_vec2
 
 if TYPE_CHECKING:
     from ..sim.model import Model
@@ -235,8 +235,8 @@ class Mesh:
         self.color = color
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
-        self._texture_scale = self._normalize_texture_vec2(texture_scale, "texture_scale")
-        self._texture_translate = self._normalize_texture_vec2(texture_translate, "texture_translate")
+        self._texture_scale = normalize_texture_vec2(texture_scale, "texture_scale")
+        self._texture_translate = normalize_texture_vec2(texture_translate, "texture_translate")
         self._texture_rotate = float(texture_rotate)
         if not math.isfinite(self._texture_rotate):
             raise ValueError("texture_rotate must be finite.")
@@ -272,13 +272,6 @@ class Mesh:
             self.inertia = wp.mat33(np.eye(3))
             self.mass = 1.0
             self.com = wp.vec3()
-
-    @staticmethod
-    def _normalize_texture_vec2(value: Vec2, name: str) -> tuple[float, float]:
-        values = np.asarray(value, dtype=np.float64).reshape(-1)
-        if values.size != 2 or not np.all(np.isfinite(values)):
-            raise ValueError(f"{name} must contain two finite values.")
-        return (float(values[0]), float(values[1]))
 
     @staticmethod
     def _normalize_indices(indices: Sequence[int] | np.ndarray) -> np.ndarray:
@@ -1581,7 +1574,7 @@ class Mesh:
 
     @texture_scale.setter
     def texture_scale(self, value: Vec2):
-        self._texture_scale = self._normalize_texture_vec2(value, "texture_scale")
+        self._texture_scale = normalize_texture_vec2(value, "texture_scale")
 
     @property
     def texture_translate(self) -> tuple[float, float]:
@@ -1590,7 +1583,7 @@ class Mesh:
 
     @texture_translate.setter
     def texture_translate(self, value: Vec2):
-        self._texture_translate = self._normalize_texture_vec2(value, "texture_translate")
+        self._texture_translate = normalize_texture_vec2(value, "texture_translate")
 
     @property
     def texture_rotate(self) -> float:
