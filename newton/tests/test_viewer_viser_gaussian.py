@@ -123,6 +123,20 @@ class TestViewerViserGaussian(unittest.TestCase):
         self.assertFalse(handle.visible)
         self.assertEqual(captured["add_calls"], 1)
 
+    def test_log_gaussian_removes_handle_when_asset_becomes_none(self):
+        """An asset that becomes None must not leave a stale point cloud on screen."""
+        viewer, _captured = self._make_viser_viewer()
+        gaussian = _make_test_gaussian()
+
+        viewer.log_gaussian("/probe", gaussian, xform=wp.transformf(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        handle = viewer._scene_handles["/probe"]
+
+        viewer.log_gaussian("/probe", None)
+
+        handle.remove.assert_called_once()
+        self.assertNotIn("/probe", viewer._scene_handles)
+        self.assertNotIn("/probe", viewer._gaussian_splats)
+
     def test_clear_model_drops_gaussian_cache(self):
         """clear_model() must release the Gaussian cache like it does for meshes/instances.
 

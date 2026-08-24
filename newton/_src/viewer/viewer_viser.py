@@ -1361,12 +1361,18 @@ class ViewerViser(ViewerBase):
             return
 
         if gaussian is None or gaussian.count == 0:
+            if name in self._scene_handles:
+                try:
+                    self._scene_handles[name].remove()
+                except Exception:
+                    pass
+                self._scene_handles.pop(name, None)
+            self._gaussian_splats.pop(name, None)
             return
 
-        cache_key = (id(gaussian), gaussian.count)
         cached = self._gaussian_splats.get(name)
 
-        if cached is None or cached["key"] != cache_key:
+        if cached is None or cached["gaussian"] is not gaussian or cached["count"] != gaussian.count:
             centers = self._to_numpy(gaussian.positions).astype(np.float32)
             rotations_xyzw = self._to_numpy(gaussian.rotations).astype(np.float32)
             scales = self._to_numpy(gaussian.scales).astype(np.float32)
@@ -1398,7 +1404,7 @@ class ViewerViser(ViewerBase):
                 opacities=opacities,
             )
             self._scene_handles[name] = handle
-            self._gaussian_splats[name] = {"key": cache_key}
+            self._gaussian_splats[name] = {"gaussian": gaussian, "count": gaussian.count}
 
         handle = self._scene_handles[name]
         handle.visible = True
