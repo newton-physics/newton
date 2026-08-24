@@ -63,7 +63,7 @@ importers = [
 
     # USD core libraries
     "usd-core>=25.5,<26.9 ; platform_machine != 'aarch64' and python_version < '3.14'",
-    "usd-exchange>=3.0.0,<4 ; platform_machine == 'aarch64' and python_version < '3.14'",
+    "usd-exchange>=2.3.0,<4 ; platform_machine == 'aarch64' and python_version < '3.14'",
 
     # Newton USD Schemas
     "newton-usd-schemas>=0.5.0",
