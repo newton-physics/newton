@@ -14,7 +14,10 @@ Read `CODING_GUIDELINES.rst` and `REVIEW_GUIDELINES.rst` from the
 repository root before auditing. They define the canonical coding, API, and
 review policies. This skill performs the final cross-release reconciliation;
 it does not replace pull-request review, and a prior review pass does not make
-any audit phase optional.
+any audit phase optional. In retrospective mode, using the current guides is
+intentional: calibrate the current audit policy against evidence pinned to the
+target tag. Do not claim historical noncompliance unless the requirement also
+existed at that tag.
 
 - **Pre-release**: spot-check while work is still landing on main. No release branch cut. Version string is `X.Y.Z.devN`.
 - **Release-candidate**: readiness review after the release branch is cut. Version string is `X.Y.ZrcN` or head is `release-X.Y`.
@@ -620,7 +623,7 @@ Never pass `--public`. Never file a destination the user did not choose.
 - Towncrier insertion marker: `<!-- towncrier release notes start -->`.
 - CHANGELOG subsection headers: `### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed`.
 - Symbol extraction from entry text: backtick-quoted `newton.X`, `newton.X.Y`, `ClassName.method`, bare `ClassName` (capitalized identifier), bare `snake_case_name()`. The FIRST backtick-quoted symbol in the bullet is usually the primary subject.
-- Migration-guidance regex (Phase 5a ⬆️): case-insensitive search for `use\s+\x60`, `in favor of`, `renamed? to`, `replaced? by`, `switch to`, `migrate to`, `prefer\s+\x60` (where `\x60` matches a backtick).
+- Migration-guidance regex (Phase 5a ⬆️): case-insensitive search for `use\s+\x60`, `in favor of`, `rename(?:d)?(?:\s+\x60[^\x60]+\x60)?\s+to`, `replace(?:d)?(?:\s+\x60[^\x60]+\x60)?\s+by`, `switch to`, `migrate to`, `prefer\s+\x60` (where `\x60` matches a backtick).
 
 ## Failure modes
 
