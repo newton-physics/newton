@@ -173,14 +173,14 @@ vec2 CubicProjection(vec3 position, vec3 normal)
     return normal.z >= 0.0 ? position.xy : vec2(-position.x, position.y);
 }
 
-vec2 TextureCoordinates()
+vec2 TextureCoordinates(vec3 camera_to_fragment)
 {
     vec2 uv = TexCoord;
     int projection_mode = int(TextureOptions.y + 0.5);
     if (projection_mode == 1)
         uv = CubicProjection(LocalPos, LocalNormal);
     else if (projection_mode == 2)
-        uv = CubicProjection(FragPos, Normal);
+        uv = CubicProjection(camera_to_fragment + view_pos, Normal);
 
     float angle = radians(TextureOptions.x);
     float cosine = cos(angle);
@@ -342,7 +342,7 @@ void main()
     vec3 albedo = pow(ObjectColor, vec3(2.2));
     if (texture_enable > 0.5)
     {
-        vec3 tex_color = texture(albedo_map, TextureCoordinates()).rgb;
+        vec3 tex_color = texture(albedo_map, TextureCoordinates(camera_to_fragment)).rgb;
         albedo *= pow(tex_color, vec3(2.2));
     }
 
