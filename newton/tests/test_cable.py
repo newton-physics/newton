@@ -5229,6 +5229,7 @@ def _rod_stiffness_helper_returns_physical_twist(test, device):
             "exactly one",
         ),
         ((E, radius, length), {"poissons_ratio": np.nan}, "poissons_ratio"),
+        ((E, radius, length), {"poissons_ratio": -1.0}, "poissons_ratio"),
         ((E, radius, length), {"poissons_ratio": 0.5}, "poissons_ratio"),
     )
     for args, kwargs, message in invalid_cases:
