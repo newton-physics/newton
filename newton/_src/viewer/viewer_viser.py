@@ -150,6 +150,7 @@ class ViewerViser(ViewerBase):
         self._meshes = {}
         self._instances = {}
         self._scene_handles = {}  # Track viser scene node handles
+        self._gaussian_splats = {}  # Track cached Gaussian splat upload keys, by name
         self._line_segment_counts = {}
         self._line_versions = {}
 
@@ -204,6 +205,7 @@ class ViewerViser(ViewerBase):
             self._scene_handles.pop(name, None)
             self._instances.pop(name, None)
             self._meshes.pop(name, None)
+            self._gaussian_splats.pop(name, None)
             self._line_segment_counts.pop(name, None)
             self._line_versions.pop(name, None)
 
@@ -714,6 +716,24 @@ class ViewerViser(ViewerBase):
         quats_wxyz[:, 2] = quats_xyzw[:, 1]
         quats_wxyz[:, 3] = quats_xyzw[:, 2]
         return quats_wxyz[0] if was_1d else quats_wxyz
+
+    @staticmethod
+    def _quats_xyzw_to_rotmats(quats_xyzw: np.ndarray) -> np.ndarray:
+        """Convert a batch of XYZW quaternions to (N, 3, 3) rotation matrices."""
+        quats_xyzw = np.asarray(quats_xyzw, dtype=np.float32)
+        x, y, z, w = quats_xyzw[:, 0], quats_xyzw[:, 1], quats_xyzw[:, 2], quats_xyzw[:, 3]
+        n = quats_xyzw.shape[0]
+        rot = np.empty((n, 3, 3), dtype=np.float32)
+        rot[:, 0, 0] = 1.0 - 2.0 * (y * y + z * z)
+        rot[:, 0, 1] = 2.0 * (x * y - w * z)
+        rot[:, 0, 2] = 2.0 * (x * z + w * y)
+        rot[:, 1, 0] = 2.0 * (x * y + w * z)
+        rot[:, 1, 1] = 1.0 - 2.0 * (x * x + z * z)
+        rot[:, 1, 2] = 2.0 * (y * z - w * x)
+        rot[:, 2, 0] = 2.0 * (x * z - w * y)
+        rot[:, 2, 1] = 2.0 * (y * z + w * x)
+        rot[:, 2, 2] = 1.0 - 2.0 * (x * x + y * y)
+        return rot
 
     def _remove_plane_handles(self, name: str):
         """Remove any plane-grid handles associated with an instance batch."""
@@ -1312,6 +1332,80 @@ class ViewerViser(ViewerBase):
             point_shape="circle",
         )
         self._scene_handles[name] = handle
+
+    @override
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: newton.Gaussian,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """
+        Log a :class:`newton.Gaussian` splat asset using viser's native Gaussian renderer.
+
+        Note: viser's ``add_gaussian_splats`` is marked experimental upstream and its
+        API may change or be removed in a future viser release.
+
+        Args:
+            name: Unique path/name for the Gaussian splat asset.
+            gaussian: The :class:`newton.Gaussian` asset to visualize.
+            xform: Optional world-space transform applied to the splat asset.
+            hidden: Whether the splat asset should be hidden.
+        """
+        name = self._qualify(name)
+
+        if hidden:
+            if name in self._scene_handles:
+                self._scene_handles[name].visible = False
+            return
+
+        if gaussian is None or gaussian.count == 0:
+            return
+
+        cache_key = (id(gaussian), gaussian.count)
+        cached = self._gaussian_splats.get(name)
+
+        if cached is None or cached["key"] != cache_key:
+            centers = self._to_numpy(gaussian.positions).astype(np.float32)
+            rotations_xyzw = self._to_numpy(gaussian.rotations).astype(np.float32)
+            scales = self._to_numpy(gaussian.scales).astype(np.float32)
+            opacities = self._to_numpy(gaussian.opacities).astype(np.float32).reshape(-1, 1)
+
+            # Local-space covariance per Gaussian: Sigma = R * diag(scale^2) * R^T
+            rot_mats = self._quats_xyzw_to_rotmats(rotations_xyzw)
+            scale_sq = scales * scales
+            covariances = np.einsum("nij,nj,nkj->nik", rot_mats, scale_sq, rot_mats).astype(np.float32)
+
+            sh_coeffs = self._to_numpy(gaussian.sh_coeffs)
+            if sh_coeffs is not None and sh_coeffs.shape[1] >= 3:
+                rgbs = np.clip(0.28209479177387814 * sh_coeffs[:, :3] + 0.5, 0.0, 1.0).astype(np.float32)
+            else:
+                rgbs = np.ones((gaussian.count, 3), dtype=np.float32)
+
+            if cached is not None and name in self._scene_handles:
+                try:
+                    self._scene_handles[name].remove()
+                except Exception:
+                    pass
+
+            handle = self._call_scene_method(
+                self._server.scene.add_gaussian_splats,
+                name=name,
+                centers=centers,
+                covariances=covariances,
+                rgbs=rgbs,
+                opacities=opacities,
+            )
+            self._scene_handles[name] = handle
+            self._gaussian_splats[name] = {"key": cache_key}
+
+        handle = self._scene_handles[name]
+        handle.visible = True
+        if xform is not None:
+            xform_np = np.asarray(xform, dtype=np.float32)
+            handle.position = xform_np[:3]
+            handle.wxyz = self._quats_xyzw_to_wxyz(xform_np[3:7])
 
     @override
     def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
