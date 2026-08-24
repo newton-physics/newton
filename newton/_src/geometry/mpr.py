@@ -35,7 +35,7 @@ from typing import Any
 
 import warp as wp
 
-from .support_function import GeoTypeEx, closest_point_on_triangle, unpack_mesh_ptr
+from .support_function import TRIANGLE_PRISM_EXTRUSION, GeoTypeEx, closest_point_on_triangle, unpack_mesh_ptr
 from .types import GeoType
 
 MPR_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
@@ -273,6 +273,11 @@ def create_support_map_function(support_func: Any):
                 if distance_to_centroid > 1.0e-12:
                     nudge_distance = 0.01 * wp.min(distance_to_centroid, wp.abs(signed_plane_distance))
                     center_b_to_a += to_centroid * (nudge_distance / distance_to_centroid)
+
+                if geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
+                    # A prism has an interior, so seed MPR halfway into its
+                    # artificial extrusion rather than on the physical face.
+                    center_b_to_a -= wp.vec3(0.0, 0.0, 0.5 * TRIANGLE_PRISM_EXTRUSION)
 
             else:
                 center_b_to_a = proj - center_b_world

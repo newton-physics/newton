@@ -53,7 +53,9 @@ from ..geometry.sdf_texture import TextureSDFData
 from ..geometry.support_function import (
     GeoTypeEx,
     SupportMapDataProvider,
+    create_triangle_prism_penetration_refiner,
     extract_shape_data,
+    support_map,
     support_map_lean,
 )
 from ..geometry.types import GeoType
@@ -998,8 +1000,12 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
             gap_b = shape_gap[shape_b]
             gap_sum = gap_a + gap_b
 
-            # Compute and write contacts using GJK/MPR with standard post-processing
-            wp.static(create_compute_gjk_mpr_contacts(writer_func))(
+            wp.static(
+                create_compute_gjk_mpr_contacts(
+                    writer_func,
+                    penetration_refiner=create_triangle_prism_penetration_refiner(support_map),
+                )
+            )(
                 shape_data_a,
                 shape_data_b,
                 quat_a,

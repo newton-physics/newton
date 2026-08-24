@@ -28,6 +28,7 @@ defining generic shape data structures that work across all primitive types.
 """
 
 import enum
+from typing import Any
 
 import warp as wp
 
@@ -37,6 +38,9 @@ from .types import GeoType
 # Near-zero direction components (e.g. from quaternion rotation noise ~1e-14)
 # are treated as non-negative, biasing toward the +1 vertex.
 BOX_SUPPORT_DEADBAND = 1.0e-10
+_CENTERED_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
+TRIANGLE_PRISM_EXTRUSION = 1.0
+"""Depth [m] a triangle is extruded along -Z to give a heightfield cell volume."""
 
 
 # Is not allowed to share values with GeoType
@@ -171,7 +175,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         # always the heightfield's down direction.
         if geom.shape_type == GeoTypeEx.TRIANGLE_PRISM:
             if direction[2] < 0.0:
-                result = result + wp.vec3(0.0, 0.0, -1.0)
+                result = result + wp.vec3(0.0, 0.0, -TRIANGLE_PRISM_EXTRUSION)
     elif geom.shape_type == GeoType.BOX:
         # Use a relative deadband so near-zero direction components
         # (from solver rotation drift ~1e-7) cannot flip the sign
@@ -345,6 +349,109 @@ def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: 
         result = n * radius
 
     return result
+
+
+def create_shape_support_function(support_func: Any, center_ties: bool = False):
+    """Create a support function with built-in shape policies."""
+    if center_ties:
+
+        @wp.func
+        def shape_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+            result = support_func(geom, direction, data_provider)
+            if geom.shape_type == GeoType.BOX:
+                contribution = wp.cw_mul(wp.abs(direction), geom.scale)
+                threshold = _CENTERED_BOX_SUPPORT_TIE_EPSILON * (contribution[0] + contribution[1] + contribution[2])
+                if contribution[0] <= threshold:
+                    result[0] = 0.0
+                if contribution[1] <= threshold:
+                    result[1] = 0.0
+                if contribution[2] <= threshold:
+                    result[2] = 0.0
+            return result
+
+    else:
+
+        @wp.func
+        def shape_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+            return support_func(geom, direction, data_provider)
+
+    return shape_support
+
+
+def create_triangle_prism_penetration_refiner(support_func: Any):
+    """Create physical-surface refinement for triangle-prism collision proxies.
+
+    MPR operates on closed convex proxies, but a proxy may contain artificial
+    faces that are needed only to give it volume. The returned function maps a
+    triangle-prism result back to its physical face.
+
+    Args:
+        support_func: Support function for individual shapes.
+
+    Returns:
+        A function that refines MPR witness points, normal, and penetration.
+    """
+
+    shape_support = create_shape_support_function(support_func, center_ties=True)
+
+    @wp.func
+    def refine_penetration(
+        geom_a: Any,
+        geom_b: Any,
+        orientation_b: wp.quat,
+        position_b: wp.vec3,
+        extend: float,
+        data_provider: Any,
+        point_a: wp.vec3,
+        point_b: wp.vec3,
+        normal: wp.vec3,
+        penetration: float,
+    ) -> tuple[wp.vec3, wp.vec3, wp.vec3, float]:
+        if geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
+            surface_normal = wp.cross(geom_a.scale, geom_a.auxiliary)
+            normal_length_sq = wp.length_sq(surface_normal)
+            if normal_length_sq >= 1.0e-24:
+                surface_normal /= wp.sqrt(normal_length_sq)
+                if surface_normal[2] < 0.0:
+                    surface_normal = -surface_normal
+
+                surface_point_a = shape_support(geom_a, surface_normal, data_provider)
+                direction_b = wp.quat_rotate_inv(orientation_b, -surface_normal)
+                surface_point_b = shape_support(geom_b, direction_b, data_provider)
+                surface_point_b = wp.quat_rotate(orientation_b, surface_point_b) + position_b
+                if extend != 0.0:
+                    offset = surface_normal * extend * 0.5
+                    surface_point_a += offset
+                    surface_point_b -= offset
+                surface_penetration = wp.dot(surface_point_a - surface_point_b, surface_normal)
+
+                # A finite triangle must not use a support point beyond its
+                # footprint. A neighboring heightfield triangle may own that
+                # point, while at the outer boundary there may be no surface.
+                projected_b = surface_point_b - wp.dot(surface_point_b, surface_normal) * surface_normal
+                closest_b = closest_point_on_triangle(
+                    projected_b,
+                    wp.vec3(0.0),
+                    geom_a.scale,
+                    geom_a.auxiliary,
+                )
+                support_on_face = wp.length_sq(projected_b - closest_b) < 1.0e-10
+
+                if not support_on_face:
+                    # A neighboring cell owns the deepest point, so measure this cell's overlap
+                    # at MPR's own witness instead.  The face normal still applies -- the
+                    # surface is what shape B is resting on -- but the depth is only what this
+                    # triangle actually carries.
+                    surface_point_b = point_b
+                    surface_penetration = wp.dot(surface_point_a - point_b, surface_normal)
+                normal = surface_normal
+                penetration = surface_penetration
+                point_b = surface_point_b
+                point_a = point_b + penetration * normal
+
+        return point_a, point_b, normal, penetration
+
+    return refine_penetration
 
 
 @wp.func

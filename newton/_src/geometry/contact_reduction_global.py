@@ -78,7 +78,12 @@ from .contact_reduction import (
     get_spatial_direction_2d,
     project_point_to_plane,
 )
-from .support_function import GeoTypeEx, extract_shape_data
+from .support_function import (
+    GeoTypeEx,
+    create_triangle_prism_penetration_refiner,
+    extract_shape_data,
+    support_map,
+)
 from .types import GeoType
 
 # Fixed beta threshold for contact reduction - small positive value to avoid flickering
@@ -1772,8 +1777,12 @@ def mesh_triangle_contacts_to_reducer_kernel(
         gap_b = shape_gap[shape_b]
         gap_sum = gap_a + gap_b
 
-        # Compute and write contacts using GJK/MPR
-        wp.static(create_compute_gjk_mpr_contacts(write_contact_to_reducer))(
+        wp.static(
+            create_compute_gjk_mpr_contacts(
+                write_contact_to_reducer,
+                penetration_refiner=create_triangle_prism_penetration_refiner(support_map),
+            )
+        )(
             shape_data_a,
             shape_data_b,
             quat_a,

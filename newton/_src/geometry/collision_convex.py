@@ -23,13 +23,29 @@ from .multicontact import create_build_manifold
 from .simplex_solver import create_solve_closest_distance
 
 
-def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_process_contact: Any):
-    """Factory: fused MPR+GJK multi-contact solver with shared support code."""
+def create_solve_convex_multi_contact(
+    support_func: Any,
+    writer_func: Any,
+    post_process_contact: Any,
+    penetration_refiner: Any = None,
+):
+    """Create a fused MPR/GJK multi-contact solver.
+
+    Args:
+        support_func: Support mapping function for individual shapes.
+        writer_func: Function that writes generated contacts.
+        post_process_contact: Function that post-processes generated contacts.
+        penetration_refiner: Optional physical-proxy result refinement function.
+
+    Returns:
+        The specialized contact solver.
+    """
 
     # Create support functions ONCE — shared between MPR and GJK.
     support_funcs = create_support_map_function(support_func)
     solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
+    has_penetration_refiner = penetration_refiner is not None
 
     @wp.func
     def solve_convex_multi_contact(
@@ -76,6 +92,19 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
         )
 
         if collision:
+            if wp.static(has_penetration_refiner):
+                point_a, point_b, normal, penetration = penetration_refiner(
+                    geom_a,
+                    geom_b,
+                    relative_orientation_b,
+                    relative_position_b,
+                    enlarge,
+                    data_provider,
+                    point_a,
+                    point_b,
+                    normal,
+                    penetration,
+                )
             signed_distance = -penetration + enlarge
             # Undo the inflate on the witness points so downstream consumers
             # (manifold builder, contact writer) see true-surface positions.
@@ -135,13 +164,29 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
     return solve_convex_multi_contact
 
 
-def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post_process_contact: Any):
-    """Factory: fused MPR+GJK single-contact solver with shared support code."""
+def create_solve_convex_single_contact(
+    support_func: Any,
+    writer_func: Any,
+    post_process_contact: Any,
+    penetration_refiner: Any = None,
+):
+    """Create a fused MPR/GJK single-contact solver.
+
+    Args:
+        support_func: Support mapping function for individual shapes.
+        writer_func: Function that writes generated contacts.
+        post_process_contact: Function that post-processes generated contacts.
+        penetration_refiner: Optional physical-proxy result refinement function.
+
+    Returns:
+        The specialized contact solver.
+    """
 
     # Create support functions ONCE — shared between MPR and GJK.
     support_funcs = create_support_map_function(support_func)
     solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
+    has_penetration_refiner = penetration_refiner is not None
 
     @wp.func
     def solve_convex_single_contact(
@@ -182,6 +227,19 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
         )
 
         if collision:
+            if wp.static(has_penetration_refiner):
+                point_a, point_b, normal, penetration = penetration_refiner(
+                    geom_a,
+                    geom_b,
+                    relative_orientation_b,
+                    relative_position_b,
+                    enlarge,
+                    data_provider,
+                    point_a,
+                    point_b,
+                    normal,
+                    penetration,
+                )
             signed_distance = -penetration + enlarge
             half_enlarge = enlarge * 0.5
             point_a = point_a - normal * half_enlarge
