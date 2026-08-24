@@ -25,7 +25,6 @@ from .import_usd_deformable_utils import (
     _deformable_body_skip_reason,
     _deformable_collision_enabled,
     _DeformableImportContext,
-    _is_float32_representable,
     _is_ignored_path,
     _read_deformable_element_array,
     _resolve_deformable_density,
@@ -127,11 +126,7 @@ def _warn_legacy_surface_material(path: str, material: dict[str, float] | None) 
 
 
 def _resolve_surface_structural_stiffnesses(
-    material: dict[str, float] | None,
-    thickness: float | None,
-    linear_unit: float,
-    path: str,
-    warned_modes: set[str],
+    material: dict[str, float] | None, thickness: float | None, linear_unit: float
 ) -> tuple[float | None, float | None, float | None] | None:
     """Resolve surface stretch, shear, and bend structural stiffnesses."""
     if material is None or thickness is None:
@@ -141,27 +136,15 @@ def _resolve_surface_structural_stiffnesses(
         stretch = material.get("stretchStiffness")
         shear = material.get("shearStiffness")
         bend = material.get("bendStiffness")
-        resolved = (
+        return (
             None if stretch is None else stretch * thickness,
             None if shear is None else shear * thickness,
             None if bend is None else bend * thickness**3,
         )
-        safe = list(resolved)
-        for index, mode in ((0, "surfaceStretchStiffness"), (2, "surfaceBendStiffness")):
-            value = safe[index]
-            if value is not None and not _is_float32_representable(value):
-                if mode not in warned_modes:
-                    warnings.warn(
-                        f"{path}: resolved physics:{mode}={value:g} is outside Newton's finite float32 "
-                        "range after lowering; leaving Newton's builder default.",
-                        stacklevel=2,
-                    )
-                    warned_modes.add(mode)
-                safe[index] = None
-        return safe[0], safe[1], safe[2]
 
     youngs = material.get("youngsModulus", _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit)
     poissons = material.get("poissonsRatio", _AOUSD_DEFAULT_POISSONS_RATIO)
+    shear_modulus = youngs / (2.0 * (1.0 + poissons))
 
     def resolve(current_name: str, legacy_name: str, derived: float) -> float:
         if current_name in material:
@@ -172,56 +155,14 @@ def _resolve_surface_structural_stiffnesses(
         return derived
 
     plane_stress = 1.0 - poissons**2
-
-    def derive(mode: str, fallback_youngs: float) -> float:
-        if mode == "surfaceStretchStiffness":
-            return fallback_youngs * thickness / plane_stress
-        if mode == "surfaceShearStiffness":
-            fallback_shear = fallback_youngs / (2.0 * (1.0 + poissons))
-            return fallback_shear * thickness
-        return fallback_youngs * thickness**3 / (12.0 * plane_stress)
-
-    def make_safe(mode: str, value: float) -> float | None:
-        if _is_float32_representable(value):
-            return value
-        fallback = derive(mode, youngs)
-        if "youngsModulus" in material and _is_float32_representable(fallback):
-            fallback_message = f"using the material's isotropic fallback ({fallback:g})."
-        else:
-            fallback = derive(mode, _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit)
-            if _is_float32_representable(fallback):
-                fallback_message = f"using the proposal Young's modulus fallback ({fallback:g})."
-            else:
-                fallback = None
-                fallback_message = "leaving Newton's builder default."
-        if mode not in warned_modes:
-            warnings.warn(
-                f"{path}: resolved physics:{mode}={value:g} is outside Newton's finite float32 range "
-                f"after lowering; {fallback_message}",
-                stacklevel=2,
-            )
-            warned_modes.add(mode)
-        return fallback
-
-    stretch = resolve(
-        "surfaceStretchStiffness",
-        "stretchStiffness",
-        derive("surfaceStretchStiffness", youngs),
-    )
-    shear = resolve(
-        "surfaceShearStiffness",
-        "shearStiffness",
-        derive("surfaceShearStiffness", youngs),
-    )
-    bend = resolve(
-        "surfaceBendStiffness",
-        "bendStiffness",
-        derive("surfaceBendStiffness", youngs),
-    )
     return (
-        make_safe("surfaceStretchStiffness", stretch),
-        shear,
-        make_safe("surfaceBendStiffness", bend),
+        resolve("surfaceStretchStiffness", "stretchStiffness", youngs * thickness / plane_stress),
+        resolve("surfaceShearStiffness", "shearStiffness", shear_modulus * thickness),
+        resolve(
+            "surfaceBendStiffness",
+            "bendStiffness",
+            youngs * thickness**3 / (12.0 * plane_stress),
+        ),
     )
 
 
@@ -378,13 +319,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # stretch drives its in-plane mode and shear remains metadata. Keep the area mode
         # at zero: None would inject an unauthored builder default. Missing current modes
         # derive from E, nu, and h; deprecated moduli retain their former conversion.
-        stiffness_warning_modes: set[str] = set()
         structural_stiffnesses = _resolve_surface_structural_stiffnesses(
-            surface_material,
-            face_thicknesses[0],
-            ctx.linear_unit,
-            path,
-            stiffness_warning_modes,
+            surface_material, face_thicknesses[0], ctx.linear_unit
         )
         if structural_stiffnesses is None:
             tri_ke = None
@@ -444,13 +380,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             builder.particle_mass[p0 + point] = mass
 
         for tri_offset, face_thickness in enumerate(face_thicknesses):
-            resolved = _resolve_surface_structural_stiffnesses(
-                surface_material,
-                face_thickness,
-                ctx.linear_unit,
-                path,
-                stiffness_warning_modes,
-            )
+            resolved = _resolve_surface_structural_stiffnesses(surface_material, face_thickness, ctx.linear_unit)
             stretch = builder.default_tri_ke if resolved is None or resolved[0] is None else resolved[0]
             material = builder.tri_materials[t0 + tri_offset]
             builder.tri_materials[t0 + tri_offset] = (
@@ -474,13 +404,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                 edge_thickness = 0.5 * (point_thicknesses[key[0]] + point_thicknesses[key[1]])
             else:
                 edge_thickness = sum(face_thicknesses[index] for index in adjacent_faces) / len(adjacent_faces)
-            resolved = _resolve_surface_structural_stiffnesses(
-                surface_material,
-                edge_thickness,
-                ctx.linear_unit,
-                path,
-                stiffness_warning_modes,
-            )
+            resolved = _resolve_surface_structural_stiffnesses(surface_material, edge_thickness, ctx.linear_unit)
             bend = builder.default_edge_ke if resolved is None or resolved[2] is None else resolved[2]
             properties = builder.edge_bending_properties[edge_offset]
             builder.edge_bending_properties[edge_offset] = (bend, properties[1])

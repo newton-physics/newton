@@ -21,7 +21,7 @@ from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
     _AOUSD_DEFAULT_YOUNGS_MODULUS,
-    _is_float32_representable,
+    _is_usd_float_representable,
     _warn_geometry_authored_material_attrs,
 )
 from ..utils.texture import linear_texture_to_srgb, load_texture
@@ -1853,14 +1853,8 @@ def _should_load_tetmesh_material_for_import(prim: Usd.Prim) -> bool:
     )
 
 
-def _deformable_lame_parameters(
-    youngs: float,
-    poissons: float,
-    path: str,
-    *,
-    fallback_youngs: float | None = None,
-) -> tuple[float, float] | None:
-    """Convert isotropic deformable properties to float32-representable Lamé parameters."""
+def _deformable_lame_parameters(youngs: float, poissons: float, path: str) -> tuple[float, float]:
+    """Convert isotropic deformable properties to Lamé parameters."""
     if poissons == 0.5:
         incompressible_approximation = 0.499
         warnings.warn(
@@ -1870,28 +1864,9 @@ def _deformable_lame_parameters(
         )
         poissons = incompressible_approximation
 
-    def convert(value: float) -> tuple[float, float]:
-        k_mu = value / (2.0 * (1.0 + poissons))
-        k_lambda = value * poissons / ((1.0 + poissons) * (1.0 - 2.0 * poissons))
-        return k_mu, k_lambda
-
-    lame = convert(youngs)
-    if all(_is_float32_representable(value) for value in lame):
-        return lame
-
-    fallback_message = "ignoring the authored elastic moduli."
-    if fallback_youngs is not None and fallback_youngs != youngs:
-        fallback_message = f"using the Young's modulus fallback {fallback_youngs:g}."
-    warnings.warn(
-        f"{path}: physics:youngsModulus={youngs:g} with physics:poissonsRatio={poissons:g} "
-        f"produces Lamé parameters outside Newton's finite float32 range; {fallback_message}",
-        stacklevel=2,
-    )
-
-    if fallback_youngs is None or fallback_youngs == youngs:
-        return None
-    fallback_lame = convert(fallback_youngs)
-    return fallback_lame if all(_is_float32_representable(value) for value in fallback_lame) else None
+    k_mu = youngs / (2.0 * (1.0 + poissons))
+    k_lambda = youngs * poissons / ((1.0 + poissons) * (1.0 - 2.0 * poissons))
+    return k_mu, k_lambda
 
 
 def get_tetmesh(
@@ -2046,8 +2021,17 @@ def _get_tetmesh(
 
         # The unregistered proposal schema cannot inject its sentinel fallback, so apply
         # the documented physical value only when the current material API owns the field.
-        if youngs is not None and float(youngs) == float("-inf"):
-            youngs = None
+        if youngs is not None:
+            authored_youngs = float(youngs)
+            if authored_youngs == -math.inf:
+                youngs = None
+            elif math.isfinite(authored_youngs) and not _is_usd_float_representable(authored_youngs):
+                warnings.warn(
+                    f"{material_prim.GetPath()}: invalid physics:youngsModulus {authored_youngs:g} "
+                    f"(outside the finite USD float range); treating it as unauthored.",
+                    stacklevel=2,
+                )
+                youngs = None
         if youngs is None and is_current_volume_material:
             youngs = _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit
         if poissons is not None:
@@ -2072,28 +2056,19 @@ def _get_tetmesh(
                 if is_current_volume_material:
                     E = _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit
             if E is not None:
-                lame = _deformable_lame_parameters(
-                    E,
-                    nu,
-                    str(material_prim.GetPath()),
-                    fallback_youngs=(
-                        _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit if is_current_volume_material else None
-                    ),
-                )
-                if lame is not None:
-                    k_mu, k_lambda = lame
+                k_mu, k_lambda = _deformable_lame_parameters(E, nu, str(material_prim.GetPath()))
 
         if density_val is not None:
             authored_density = float(density_val)
             # The proposal declares density with a range of (0, inf) and a fallback of 0
             # meaning "ignored": zero falls through to the caller's density precedence
             # (body override, then the builder default) without being an invalid value.
-            if math.isfinite(authored_density) and authored_density > 0.0:
+            if _is_usd_float_representable(authored_density) and authored_density > 0.0:
                 density = authored_density
             elif authored_density != 0.0:
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid volume material density "
-                    f"{authored_density}; expected a finite positive value, ignoring it.",
+                    f"{authored_density}; expected a positive value in the finite USD float range, ignoring it.",
                     stacklevel=2,
                 )
 
@@ -2262,6 +2237,13 @@ def _read_deformable_material(
                 stacklevel=2,
             )
             continue
+        if not _is_usd_float_representable(val):
+            warnings.warn(
+                f"{material_prim.GetPath()}: invalid physics:{name} {val:g} "
+                f"(outside the finite USD float range); treating it as unauthored.",
+                stacklevel=2,
+            )
+            continue
         # Stiffness and Young's modulus accept [0, inf), so an authored zero is preserved.
         # Thickness and density must be strictly positive.
         if name in ("thickness", "surfaceThickness", "curvesThickness", "density"):
@@ -2380,8 +2362,9 @@ def _get_physics_material_density(material_prim) -> float | None:
 
     The proposal reuses the rigid ``UsdPhysicsMaterialAPI`` for deformables, so a
     material applying only the base API still supplies density (the family
-    material APIs extend it). Accepts a finite value greater than zero; zero is
-    the proposal's ignored fallback; other values warn and are ignored.
+    material APIs extend it). Accepts a positive value in the finite USD float
+    range; zero is the proposal's ignored fallback; other values warn and are
+    ignored.
     """
     from pxr import UsdPhysics
 
@@ -2394,12 +2377,12 @@ def _get_physics_material_density(material_prim) -> float | None:
     if value is None:
         return None
     density = float(value)
-    if math.isfinite(density) and density > 0.0:
+    if _is_usd_float_representable(density) and density > 0.0:
         return density
     if density != 0.0:
         warnings.warn(
             f"{material_prim.GetPath()}: invalid physics material density {density}; "
-            f"expected a finite positive value, ignoring it.",
+            f"expected a positive value in the finite USD float range, ignoring it.",
             stacklevel=2,
         )
     return None

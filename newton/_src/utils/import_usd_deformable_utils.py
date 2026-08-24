@@ -34,12 +34,12 @@ _AOUSD_DEFAULT_DENSITY = 1000.0
 _AOUSD_DEFAULT_THICKNESS = 1.0e-3
 _AOUSD_DEFAULT_YOUNGS_MODULUS = 1.0e6
 _AOUSD_DEFAULT_POISSONS_RATIO = 0.3
-_FLOAT32_MAX = float(np.finfo(np.float32).max)
+_USD_FLOAT_MAX = float(np.finfo(np.float32).max)
 
 
-def _is_float32_representable(value: float) -> bool:
-    """Return whether a scalar can be stored as a finite Newton float32 value."""
-    return math.isfinite(value) and abs(value) <= _FLOAT32_MAX
+def _is_usd_float_representable(value: float) -> bool:
+    """Return whether a scalar can be represented by the USD ``float`` type."""
+    return math.isfinite(value) and abs(value) <= _USD_FLOAT_MAX
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +76,7 @@ class _CableMassRun:
     """Newton body indices corresponding to the imported segments."""
 
     element_volumes: tuple[float, ...]
-    """Simulation volume of each imported segment in Newton scene coordinates."""
+    """Simulation volume of each imported segment in cubic stage length units."""
 
     closed: bool
     """Whether the authored curve closes its final point onto its first point."""
@@ -163,7 +163,7 @@ def _read_deformable_element_array(
             stacklevel=2,
         )
         return None
-    if any(not _is_float32_representable(value) for value in values):
+    if any(not _is_usd_float_representable(value) for value in values):
         warnings.warn(
             f"{path}: physics:{name} contains a value outside the finite USD float range; ignoring the array.",
             stacklevel=2,
@@ -506,10 +506,10 @@ class _CurveDeformableRecord:
     closed: bool
     radius: float
     segment_radii: list[float]
-    """Resolved collision radius for each segment in Newton scene coordinates."""
+    """Resolved collision radius for each curve segment in stage length units."""
 
     point_radii: list[float]
-    """Thickness-derived radius for each point in Newton scene coordinates."""
+    """Thickness-derived radius for each curve point in stage length units."""
 
     density: float
     material: dict[str, float] | None = None

@@ -184,12 +184,8 @@ The first release deliberately supports a narrow, predictable set of inputs:
     ``physics:surfaceShearStiffness`` independently; it warns and preserves the value in the
     import results.
   * For volumes, the shared isotropic properties become Lamé parameters. An authored
-    ``physics:poissonsRatio = 0.5`` is approximated as 0.499 with a warning so the parameters
-    remain finite; values in ``(-1, 0.5)`` retain their authored sign.
-  * Every stiffness written to Newton must fit its finite float32 storage. An out-of-range
-    surface or cable mode warns and retries that mode with the material's isotropic fallback,
-    then the proposal's Young's modulus fallback. If neither is representable, that mode keeps
-    Newton's builder default; independently valid modes remain unchanged.
+    ``physics:poissonsRatio = 0.5`` is approximated as 0.499 with a warning to avoid the
+    incompressible singularity; values in ``(-1, 0.5)`` retain their authored sign.
 
   Removed material ``physics:surfaceThickness`` / ``physics:curvesThickness`` attributes remain
   accepted during a deprecation window and supply only a thickness fallback. Move their values to

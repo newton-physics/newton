@@ -191,14 +191,9 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             if volume_material is not None:
                 youngs = volume_material.get("youngsModulus", _AOUSD_DEFAULT_YOUNGS_MODULUS * ctx.linear_unit)
                 poissons = volume_material.get("poissonsRatio", _AOUSD_DEFAULT_POISSONS_RATIO)
-                lame = usd._deformable_lame_parameters(
-                    youngs,
-                    poissons,
-                    path,
-                    fallback_youngs=_AOUSD_DEFAULT_YOUNGS_MODULUS * ctx.linear_unit,
-                )
-                if lame is not None:
-                    add_soft_mesh_kwargs["k_mu"], add_soft_mesh_kwargs["k_lambda"] = lame
+                k_mu, k_lambda = usd._deformable_lame_parameters(youngs, poissons, path)
+                add_soft_mesh_kwargs["k_mu"] = k_mu
+                add_soft_mesh_kwargs["k_lambda"] = k_lambda
         if _world_matrix_reflects(soft_mesh_mat):
             # A reflection flips each tet's orientation (negative rest volume); swap two vertices per
             # tet to restore a positive orientation while keeping the same reflected shape. tet_indices
