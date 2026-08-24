@@ -27,7 +27,7 @@ _DEFERRED_WORKLOAD_MODULES_BEFORE_IMPORT = {name: name in sys.modules for name i
 
 try:
     from benchmark_metrics import SimulationMetrics
-    from simulation import bench_anymal, bench_kamino, bench_mujoco, bench_quadruped_xpbd
+    from simulation import bench_anymal, bench_contacts, bench_kamino, bench_mujoco, bench_quadruped_xpbd
 
     _DEFERRED_WORKLOAD_MODULES_AFTER_METRIC_IMPORT = {name: name in sys.modules for name in _DEFERRED_WORKLOAD_MODULES}
 
@@ -76,6 +76,27 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertFalse(hasattr(bench_mujoco, "Example"))
         self.assertFalse(hasattr(bench_quadruped_xpbd, "Example"))
         self.assertFalse(hasattr(bench_quadruped_xpbd, "newton"))
+
+    def test_convex_benchmark_covers_types_and_scales(self):
+        """Cover selector crossovers, duplicate-heavy hulls, and every convex type."""
+        self.assertEqual(
+            tuple(bench_contacts.FastConvexCollision.params[0]),
+            (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 191)),
+        )
+        self.assertEqual(
+            {shape for pair in bench_contacts.MIXED_CONVEX_PAIR_TYPES for shape in pair},
+            {"sphere", "box", "capsule", "ellipsoid", "cylinder", "cone", "hull"},
+        )
+
+        for vertex_count in bench_contacts.IRREGULAR_ROCK_VERTEX_COUNTS:
+            with self.subTest(vertex_count=vertex_count):
+                mesh = bench_contacts._make_irregular_rock(vertex_count, seed=100)
+                self.assertEqual(len(mesh.vertices), vertex_count)
+                self.assertEqual(len(mesh.indices), 6 * (vertex_count - 2))
+
+        duplicate_mesh = bench_contacts._make_irregular_rock(10, seed=100, triangle_local_vertices=True)
+        self.assertEqual(len(duplicate_mesh.vertices), len(duplicate_mesh.indices))
+        self.assertEqual(len(np.unique(duplicate_mesh.vertices, axis=0)), 10)
 
     def test_fast_kitchen_g1_validates_kitchen_body_count(self):
         """Validate the configured kitchen body count at runtime."""

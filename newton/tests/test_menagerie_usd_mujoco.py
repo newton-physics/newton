@@ -1805,13 +1805,10 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
     num_steps = 20
     fk_enabled = True
     # Menagerie PR #252 corrected the source finger pads from 2e-6 kg to
-    # 0.0035 kg. The pinned USD was generated from the old source and still
-    # authors the old mass on its colliders; the test below tracks that fixture.
+    # 0.0035 kg. The pinned USD is generated from that corrected source, so it
+    # authors physics:mass = 0.00175 on each pad collider and agrees with the
+    # MJCF geom masses; body mass and inertia now compare exactly.
     dynamics_tolerance = 1e-4
-
-    def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
-        # body_mass differs for finger pads (see class docstring).
-        pass
 
     def test_pad_mass_matches_source_scale(self):
         """The pinned MJCF and USD agree on the finger-pad mass scale."""
@@ -1824,9 +1821,6 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
             native_id = self._mj_model.body(body_name).id
             newton_id = self._body_map[native_id]
             pad_masses.append((body_name, newton_mass[newton_id], native_mass[native_id]))
-
-        if all(np.isclose(usd_mass, 2.0e-6) for _, usd_mass, _ in pad_masses):
-            self.skipTest("Pinned USD fixture still authors the pre-Menagerie-#252 finger-pad mass")
 
         for body_name, usd_mass, mjcf_mass in pad_masses:
             np.testing.assert_allclose(

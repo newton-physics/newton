@@ -32,10 +32,12 @@ from newton._src.geometry.soft_contacts_sdf import (
     optimize_face_sdf,
 )
 from newton._src.sim.collide import (
+    _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD,
     CollisionPipeline,
     _build_soft_edge_rigid_contact_pairs,
     _build_soft_face_rigid_contact_pairs,
     _build_soft_particle_rigid_contact_pairs,
+    _compute_generic_convex_pair_work_estimate,
     _compute_per_world_mask_pair_max,
     _compute_per_world_shape_pairs_max,
     _count_soft_particle_rigid_contact_pairs,
@@ -2036,6 +2038,57 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         self.assertEqual(_compute_per_world_mask_pair_max(model, same_mask), 7)
         self.assertEqual(_compute_per_world_mask_pair_max(model, first_mask, second_mask), 9)
 
+    def test_generic_convex_work_estimate_counts_only_routed_pairs(self):
+        """Count only world-compatible pairs routed to generic convex collision."""
+        model = self._make_model(num_worlds=2, shapes_per_world=4)
+        model.shape_type = wp.array(
+            [int(GeoType.CONVEX_MESH), int(GeoType.CONVEX_MESH), int(GeoType.SPHERE), int(GeoType.SPHERE)] * 2,
+            dtype=wp.int32,
+        )
+
+        estimate = _compute_generic_convex_pair_work_estimate(
+            model,
+            broad_phase_mode="sap",
+            shape_pairs_filtered=None,
+            candidate_pair_work_estimate=12,
+        )
+
+        # Each world contributes one hull-hull and four hull-sphere pairs;
+        # sphere-sphere collision uses the analytic path.
+        self.assertEqual(estimate, 10)
+
+    def test_lean_split_threshold_covers_crossover_workload(self):
+        """Split the lean convex path at the 56-world benchmark crossover."""
+        model = self._make_model(num_worlds=56, shapes_per_world=32)
+        model.shape_type = wp.full(model.shape_count, int(GeoType.CONVEX_MESH), dtype=wp.int32)
+
+        estimate = _compute_generic_convex_pair_work_estimate(
+            model,
+            broad_phase_mode="sap",
+            shape_pairs_filtered=None,
+            candidate_pair_work_estimate=100_000,
+        )
+
+        self.assertEqual(estimate, _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD)
+
+    def test_explicit_generic_convex_work_estimate_uses_routed_pairs(self):
+        """Count exact generic convex routes for explicit broad phase pairs."""
+        model = self._make_model(num_worlds=1, shapes_per_world=4)
+        model.shape_type = wp.array(
+            [int(GeoType.CONVEX_MESH), int(GeoType.BOX), int(GeoType.SPHERE), int(GeoType.SPHERE)],
+            dtype=wp.int32,
+        )
+        shape_pairs = wp.array(np.array([[0, 1], [1, 2], [2, 3]], dtype=np.int32), dtype=wp.vec2i)
+
+        estimate = _compute_generic_convex_pair_work_estimate(
+            model,
+            broad_phase_mode="explicit",
+            shape_pairs_filtered=shape_pairs,
+            candidate_pair_work_estimate=3,
+        )
+
+        self.assertEqual(estimate, 1)
+
     def test_mesh_work_buffers_use_category_bounds(self):
         """Size mesh work buffers from exact routed shape categories."""
         builder = newton.ModelBuilder()
@@ -2125,6 +2178,22 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         self.assertEqual(pipeline.narrow_phase.max_mesh_plane_pairs, 0)
         pipeline.collide(state, contacts)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+    def test_nonuniform_world_shape_counts(self):
+        """Sum candidate bounds from each world actual shape count."""
+        world_ids = np.array([0, 0, 1, 1, 1, 1, 1, 3, -1, -1], dtype=np.int32)
+        model = newton.Model()
+        model.shape_count = len(world_ids)
+        model.shape_world = wp.array(world_ids, dtype=wp.int32)
+        model.shape_flags = wp.full(
+            len(world_ids),
+            int(ShapeFlags.COLLIDE_SHAPES),
+            dtype=wp.int32,
+        )
+
+        # Local counts 2, 5, and 1 each include two global shapes; the
+        # dedicated global segment contributes one additional pair.
+        self.assertEqual(_compute_per_world_shape_pairs_max(model), 6 + 21 + 3 + 1)
 
     def test_single_world_matches_global_formula(self):
         """Single world should give the same result as the naive N*(N-1)/2."""
@@ -2489,6 +2558,38 @@ def test_mesh_convex_with_sdf_routes_to_sdf_contact(test, device):
     test.assertGreater(sdf_pair_count, 0)
     test.assertEqual(mesh_convex_pair_count, 0)
     test.assertGreater(contact_count, 0)
+
+
+def test_deferred_convex_sdf_edges_use_deduplicated_topology(test, device):
+    """Finalize deferred convex SDF edges against deduplicated vertices."""
+    convex = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=True, compute_inertia=False)
+    builder = newton.ModelBuilder()
+    shape = builder.add_shape_convex_hull(body=-1, mesh=convex)
+    builder.shape_sdf_max_resolution[shape] = 16
+
+    model = builder.finalize(device=device)
+
+    test.assertGreater(int(model.shape_edge_range.numpy()[shape][1]), 0)
+    test.assertEqual(model._mesh_keep_alive[0].points.shape[0], 8)
+
+
+def test_deferred_sdf_cache_distinguishes_mesh_topology(test, device):
+    """Keep deferred SDFs separate for regular and convex mesh topology."""
+    for regular_first in (True, False):
+        source = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=True, compute_inertia=False)
+        builder = newton.ModelBuilder()
+        add_shapes = (builder.add_shape_mesh, builder.add_shape_convex_hull)
+        if not regular_first:
+            add_shapes = tuple(reversed(add_shapes))
+
+        shapes = [add_shape(body=-1, mesh=source) for add_shape in add_shapes]
+        for shape in shapes:
+            builder.shape_sdf_max_resolution[shape] = 16
+
+        model = builder.finalize(device=device)
+        sdf_indices = model._shape_sdf_index.numpy()
+
+        test.assertNotEqual(int(sdf_indices[shapes[0]]), int(sdf_indices[shapes[1]]))
 
 
 def test_scalar_sdf_texture_routes_to_sdf_contact(test, device):
@@ -3093,43 +3194,27 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
         lambda body: builder.add_shape_box(body, hx=0.4, hy=0.35, hz=0.3),
         lambda body: builder.add_shape_box(body, hx=0.35, hy=0.4, hz=0.3),
     )
-    add_pair(
-        0.0,
-        lambda body: builder.add_shape_cone(body, radius=0.4, half_height=0.4),
-        lambda body: builder.add_shape_cylinder(body, radius=0.4, half_height=0.4),
-    )
-    add_pair(
-        4.0,
-        lambda body: builder.add_shape_capsule(body, radius=0.3, half_height=0.3),
-        lambda body: builder.add_shape_convex_hull(body, mesh=convex),
-    )
-    add_pair(
-        8.0,
-        lambda body: builder.add_shape_sphere(body, radius=0.4),
-        lambda body: builder.add_shape_cone(body, radius=0.4, half_height=0.4),
-    )
     for index in range(7):
         body = builder.add_body(xform=wp.transform(wp.vec3(100.0 + 4.0 * index, 0.0, 0.0)))
         builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25)
 
     replicated_builder = newton.ModelBuilder()
-    replicated_builder.replicate(builder, world_count=32)
-    replicated_builder.add_ground_plane()
+    replicated_builder.replicate(builder, world_count=768)
     model = replicated_builder.finalize(device=device)
     split = newton.CollisionPipeline(
         model,
         broad_phase="sap",
-        shape_pairs_max=8192,
+        shape_pairs_max=_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD,
         deterministic=True,
-        rigid_contact_max=4096,
+        rigid_contact_max=16384,
         verify_buffers=False,
     )
     fused = newton.CollisionPipeline(
         model,
         broad_phase="sap",
-        shape_pairs_max=8192,
+        shape_pairs_max=_SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD,
         deterministic=True,
-        rigid_contact_max=4096,
+        rigid_contact_max=16384,
         verify_buffers=False,
     )
     test.assertTrue(split.narrow_phase.split_gjk_mpr)
@@ -3408,6 +3493,22 @@ add_function_test(
     TestPlanarSDFRouting,
     "test_mesh_convex_with_sdf_routes_to_sdf_contact",
     test_mesh_convex_with_sdf_routes_to_sdf_contact,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_deferred_convex_sdf_edges_use_deduplicated_topology",
+    test_deferred_convex_sdf_edges_use_deduplicated_topology,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_deferred_sdf_cache_distinguishes_mesh_topology",
+    test_deferred_sdf_cache_distinguishes_mesh_topology,
     devices=get_cuda_test_devices(),
     check_output=False,
 )
