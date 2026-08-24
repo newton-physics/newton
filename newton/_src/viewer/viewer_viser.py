@@ -196,6 +196,16 @@ class ViewerViser(ViewerBase):
                 self._remove_plane_handles(plane_name)
         self._plane_meshes = {name: value for name, value in self._plane_meshes.items() if not owns(name)}
 
+        for gaussian_name in list(getattr(self, "_gaussian_splats", {}).keys()):
+            if owns(gaussian_name):
+                handle = self._scene_handles.pop(gaussian_name, None)
+                if handle is not None:
+                    try:
+                        handle.remove()
+                    except Exception:
+                        pass
+                self._gaussian_splats.pop(gaussian_name, None)
+
         for name, handle in list(getattr(self, "_scene_handles", {}).items()):
             if not owns(name):
                 continue
@@ -723,6 +733,7 @@ class ViewerViser(ViewerBase):
     def _quats_xyzw_to_rotmats(quats_xyzw: np.ndarray) -> np.ndarray:
         """Convert a batch of XYZW quaternions to (N, 3, 3) rotation matrices."""
         quats_xyzw = np.asarray(quats_xyzw, dtype=np.float32)
+        quats_xyzw = quats_xyzw / np.maximum(np.linalg.norm(quats_xyzw, axis=1, keepdims=True), 1e-12)
         x, y, z, w = quats_xyzw[:, 0], quats_xyzw[:, 1], quats_xyzw[:, 2], quats_xyzw[:, 3]
         n = quats_xyzw.shape[0]
         rot = np.empty((n, 3, 3), dtype=np.float32)
