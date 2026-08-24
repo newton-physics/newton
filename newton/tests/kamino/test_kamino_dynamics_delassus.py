@@ -510,7 +510,7 @@ class TestDelassusOperator(unittest.TestCase):
         update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
         if self.verbose:
             print("")  # Print a newline for better readability
-            print(f"model.info.num_joint_cts: {model.info.num_joint_cts}")
+            print(f"model.info.num_bilateral_joint_cts: {model.info.num_joint_bilateral_cts}")
             print(f"limits.data.world_max_limits: {limits.data.world_max_limits}")
             print(f"limits.data.world_active_limits: {limits.data.world_active_limits}")
             print(f"contacts.data.world_max_contacts: {detector.contacts.data.world_max_contacts}")

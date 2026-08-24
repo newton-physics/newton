@@ -19,7 +19,8 @@ A more stable `BETA 2` version is planned for release during the summer of 2026.
 It currently supports:
 - Constrained rigid multi-body systems with arbitrary joint topologies (i.e. a kinematic tree is not assumed)
 - A large set of common and advanced bilateral joint constraints
-- Unilateral joint-limit and contact constraints with spatial friction and restitutive impacts
+- Unilateral joint-limit, and contact constraints with spatial friction and restitutive impacts
+- Joint Coulomb friction
 - Fully configurable constraint stabilization that can be specified per constraint subset
 - Hard joint-limit and contact constraints enforced via an advanced Proximal-ADMM forward dynamics solver
 

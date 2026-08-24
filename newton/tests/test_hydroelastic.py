@@ -11,6 +11,7 @@ import warp as wp
 import newton
 from newton._src.geometry.contact_reduction_hydroelastic import (
     FIXED_EXP_NONE,
+    SPECULATIVE_BIN_OFFSET,
     _fixed_mantissa_bits,
     _from_fixed,
     _to_fixed,
@@ -18,6 +19,7 @@ from newton._src.geometry.contact_reduction_hydroelastic import (
 from newton._src.geometry.sdf_hydroelastic import (
     _extract_mc_corner_pair,
     _mc_corner_offset,
+    classify_hydroelastic_contact,
     pack_hydro_voxel_record,
     unpack_hydro_voxel_coords,
     vec8f,
@@ -219,6 +221,213 @@ def test_mc_corner_pair_selection(test, device):
 
 
 # --- Helper functions ---
+
+
+@wp.kernel
+def _classify_hydroelastic_contacts_kernel(
+    pair_separations: wp.array[wp.float32],
+    gap_sum: float,
+    contact_bands: wp.array[wp.int32],
+):
+    tid = wp.tid()
+    contact_bands[tid] = classify_hydroelastic_contact(pair_separations[tid], gap_sum)
+
+
+def test_hydroelastic_contact_band_boundaries(test, device):
+    """Classify exact hydroelastic margin and gap boundaries."""
+    pair_separations = wp.array([-0.01, 0.0, 0.05, 0.1, 0.1001], dtype=wp.float32, device=device)
+    contact_bands = wp.empty(5, dtype=wp.int32, device=device)
+
+    wp.launch(
+        kernel=_classify_hydroelastic_contacts_kernel,
+        dim=5,
+        inputs=[pair_separations, 0.1],
+        outputs=[contact_bands],
+        device=device,
+    )
+
+    np.testing.assert_array_equal(contact_bands.numpy(), np.array([-1, 0, 0, 0, 1], dtype=np.int32))
+
+
+def test_hydroelastic_sdf_padding_covers_margin_and_gap(test, device):
+    """Accept exact and reject insufficient hydroelastic SDF padding."""
+    exact_builder = newton.ModelBuilder()
+    exact_builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        margin=0.2,
+        gap=0.1,
+        sdf_max_resolution=32,
+        sdf_padding=0.3,
+    )
+    exact_builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+
+    test.assertTrue(exact_builder._validate_shapes())
+
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        margin=0.2,
+        gap=0.1,
+        sdf_max_resolution=32,
+        sdf_padding=0.25,
+    )
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+
+    with test.assertRaisesRegex(ValueError, r"sdf_padding >= margin \+ gap"):
+        builder.finalize(device=device)
+
+
+def test_hydroelastic_sdf_padding_validation_can_be_skipped(test, device):
+    """Honor flags that skip hydroelastic shape-padding validation."""
+    skip_options = (
+        {"skip_validation_shapes": True},
+        {"skip_all_validations": True},
+    )
+    for skip_option in skip_options:
+        with test.subTest(**skip_option):
+            builder = newton.ModelBuilder()
+            builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+                is_hydroelastic=True,
+                margin=0.2,
+                gap=0.1,
+                sdf_max_resolution=32,
+                sdf_padding=0.25,
+            )
+            builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+
+            model = builder.finalize(device=device, **skip_option)
+
+            test.assertEqual(model.shape_count, 1)
+
+
+def test_particle_only_hydroelastic_shape_ignores_sdf_padding(test, device):
+    """Allow unused SDF padding when hydroelastic shape collisions are disabled."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(
+        body=-1,
+        hx=0.5,
+        hy=0.5,
+        hz=0.5,
+        cfg=newton.ModelBuilder.ShapeConfig(
+            is_hydroelastic=True,
+            has_shape_collision=False,
+            margin=0.2,
+            gap=0.1,
+            sdf_padding=0.0,
+        ),
+    )
+
+    builder.finalize(device=device)
+
+
+def test_hydroelastic_attached_sdf_requires_padding_metadata(test, device):
+    """Reject hydroelastic texture SDF data with unknown construction padding."""
+    mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    mesh.build_sdf(max_resolution=32, margin=0.3)
+    mesh.sdf = newton.SDF.create_from_data(texture_data=mesh.sdf.texture_data)
+
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(
+        body=-1,
+        mesh=mesh,
+        cfg=newton.ModelBuilder.ShapeConfig(
+            is_hydroelastic=True,
+            margin=0.2,
+            gap=0.1,
+        ),
+    )
+
+    with test.assertRaisesRegex(ValueError, "unknown construction padding"):
+        builder.finalize(device=device)
+
+    skip_options = (
+        {"skip_validation_shapes": True},
+        {"skip_all_validations": True},
+    )
+    for skip_option in skip_options:
+        with test.subTest(**skip_option):
+            builder = newton.ModelBuilder()
+            builder.add_shape_mesh(
+                body=-1,
+                mesh=mesh,
+                cfg=newton.ModelBuilder.ShapeConfig(
+                    is_hydroelastic=True,
+                    margin=0.2,
+                    gap=0.1,
+                ),
+            )
+
+            model = builder.finalize(device=device, **skip_option)
+
+            test.assertEqual(model.shape_count, 1)
+
+
+def test_hydroelastic_attached_sdf_uses_padding_metadata(test, device):
+    """Accept sufficient and reject insufficient declared SDF construction padding."""
+    mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    mesh.build_sdf(max_resolution=32, margin=0.3)
+    source_sdf = mesh.sdf
+    texture_data = source_sdf.texture_data
+
+    for construction_padding, succeeds in ((0.3, True), (0.29, False)):
+        with test.subTest(construction_padding=construction_padding):
+            mesh.sdf = newton.SDF.create_from_data(
+                texture_data=texture_data,
+                construction_padding=construction_padding,
+            )
+            builder = newton.ModelBuilder()
+            body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+            body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.2), wp.quat_identity()))
+            cfg = newton.ModelBuilder.ShapeConfig(
+                is_hydroelastic=True,
+                margin=0.2,
+                gap=0.1,
+            )
+            builder.add_shape_mesh(
+                body=body_a,
+                mesh=mesh,
+                cfg=cfg,
+            )
+            builder.add_shape_mesh(body=body_b, mesh=mesh, cfg=cfg)
+
+            if succeeds:
+                model = builder.finalize(device=device)
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+                contacts = pipeline.contacts()
+
+                pipeline.collide(state, contacts)
+
+                test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+            else:
+                with test.assertRaisesRegex(ValueError, r"construction padding >= margin \+ gap"):
+                    builder.finalize(device=device)
+
+
+def test_sdf_construction_padding_validation(test, device):
+    """Reject negative and non-finite SDF construction padding."""
+    del device
+    for construction_padding in (-0.1, np.nan, np.inf):
+        with test.subTest(construction_padding=construction_padding):
+            with test.assertRaisesRegex(ValueError, "construction_padding must be finite and >= 0"):
+                newton.SDF.create_from_data(construction_padding=construction_padding)
 
 
 def simulate(solver, model, state_0, state_1, control, contacts, collision_pipeline, sim_dt, substeps):
@@ -725,7 +934,7 @@ def _extract_contact_forces(contacts, model, state, shape_pair=None):
     off1 = np.where((b1 != -1)[:, None], body_q[np.maximum(b1, 0), :3], 0.0)
     p0w = p0 + off0
     p1w = p1 + off1
-    depth = np.einsum("ij,ij->i", p0w - p1w, -normals) / 2.0
+    depth = np.einsum("ij,ij->i", p0w - p1w, -normals)
     mask = (stiffness > 0) & (depth < 0)
     if shape_pair is not None:
         pair_mask = (shape0 == shape_pair[0]) & (shape1 == shape_pair[1])
@@ -824,6 +1033,380 @@ def _make_pipelines(model, configs, rigid_contact_maxes=None, deterministic=Fals
         )
         result.append((pipe, pipe.contacts()))
     return result
+
+
+def _build_margin_gap_boxes(device, gaps=(0.03, 0.05)):
+    """Build two hydroelastic boxes with asymmetric margins and gaps."""
+    builder = newton.ModelBuilder()
+    common = {
+        "is_hydroelastic": True,
+        "kh": 1.0e8,
+        "sdf_max_resolution": 64,
+        "sdf_narrow_band_range": (-0.25, 0.25),
+    }
+    cfg_a = newton.ModelBuilder.ShapeConfig(margin=0.05, gap=gaps[0], **common)
+    cfg_b = newton.ModelBuilder.ShapeConfig(
+        margin=0.07, gap=gaps[1], kh=2.0e8, **{k: v for k, v in common.items() if k != "kh"}
+    )
+
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.16), wp.quat_identity()))
+    builder.add_shape_box(body=body_a, hx=0.5, hy=0.5, hz=0.5, cfg=cfg_a)
+    builder.add_shape_box(body=body_b, hx=0.5, hy=0.5, hz=0.5, cfg=cfg_b)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    return model, state, body_b
+
+
+def _get_contact_distances(contacts, model, state):
+    """Return public contact distances reconstructed in world space."""
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    if count == 0:
+        return np.empty(0)
+
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    shape_body = model.shape_body.numpy()
+    body_q = state.body_q.numpy()
+    point0 = contacts.rigid_contact_point0.numpy()[:count]
+    point1 = contacts.rigid_contact_point1.numpy()[:count]
+    normal = contacts.rigid_contact_normal.numpy()[:count]
+    body0 = shape_body[shape0]
+    body1 = shape_body[shape1]
+    offset0 = np.where((body0 != -1)[:, None], body_q[np.maximum(body0, 0), :3], 0.0)
+    offset1 = np.where((body1 != -1)[:, None], body_q[np.maximum(body1, 0), :3], 0.0)
+    return np.einsum("ij,ij->i", point1 + offset1 - point0 - offset0, normal)
+
+
+def test_hydroelastic_pre_prune_writes_contact_fingerprints(test, device):
+    """Write stable fingerprints for every pre-pruned hydroelastic face."""
+    model, state, _ = _build_margin_gap_boxes(device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=True,
+            pre_prune_contacts=True,
+            buffer_fraction=1.0,
+        ),
+    )
+    contacts = pipeline.contacts()
+    reducer = pipeline.hydroelastic_sdf.contact_reduction.reducer
+    unwritten_fingerprint = -1
+    reducer.contact_fingerprints.fill_(unwritten_fingerprint)
+
+    pipeline.collide(state, contacts)
+
+    face_count = int(reducer.contact_count.numpy()[0])
+    test.assertGreater(face_count, 0)
+    fingerprints = reducer.contact_fingerprints.numpy()[1 : face_count + 1]
+    test.assertFalse(np.any(fingerprints == unwritten_fingerprint))
+    test.assertEqual(len(np.unique(fingerprints)), face_count)
+
+
+def test_deterministic_hydroelastic_speculative_contacts(test, device):
+    """Keep speculative contacts deterministic in their separate key range."""
+    model, state, _ = _build_margin_gap_boxes(device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=True,
+            buffer_fraction=1.0,
+        ),
+        deterministic=True,
+    )
+    contacts = pipeline.contacts()
+    reducer = pipeline.hydroelastic_sdf.contact_reduction.reducer
+    contact_fields = (
+        "rigid_contact_point_id",
+        "rigid_contact_shape0",
+        "rigid_contact_shape1",
+        "rigid_contact_point0",
+        "rigid_contact_point1",
+        "rigid_contact_offset0",
+        "rigid_contact_offset1",
+        "rigid_contact_normal",
+        "rigid_contact_margin0",
+        "rigid_contact_margin1",
+        "rigid_contact_tids",
+        "rigid_contact_stiffness",
+        "rigid_contact_damping",
+        "rigid_contact_friction",
+    )
+
+    snapshots = []
+    for _ in range(4):
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreater(count, 0)
+        test.assertTrue(np.all(_get_contact_distances(contacts, model, state) >= 0.0))
+        test.assertTrue(np.all(contacts.rigid_contact_stiffness.numpy()[:count] > 0.0))
+        test.assertEqual(int(reducer.ht_insert_failures.numpy()[0]), 0)
+
+        active_slots = reducer.hashtable.active_slots.numpy()
+        active_count = int(active_slots[reducer.hashtable.capacity])
+        active_keys = reducer.hashtable.keys.numpy()[active_slots[:active_count]]
+        bin_ids = (active_keys >> np.uint64(55)) & np.uint64(0xFF)
+        test.assertTrue(np.all(bin_ids >= SPECULATIVE_BIN_OFFSET))
+
+        snapshots.append((count, tuple(getattr(contacts, name).numpy()[:count].copy() for name in contact_fields)))
+
+    for count, fields in snapshots[1:]:
+        test.assertEqual(count, snapshots[0][0])
+        for name, expected, actual in zip(contact_fields, snapshots[0][1], fields, strict=True):
+            np.testing.assert_array_equal(actual, expected, err_msg=name)
+
+
+def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
+    """Generate penetrating, speculative, and absent hydroelastic contacts."""
+    model, state, body_b = _build_margin_gap_boxes(device)
+    config = HydroelasticSDF.Config(
+        reduce_contacts=reduce_contacts,
+        pre_prune_contacts=reduce_contacts,
+        output_contact_surface=True,
+        buffer_fraction=1.0,
+    )
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=config,
+    )
+    contacts = pipeline.contacts()
+
+    margin_sum = 0.12
+    gap_sum = 0.08
+    voxel_size = max(model._texture_sdf_data.numpy()["voxel_size"][0])
+    tolerance = 2.0 * voxel_size
+
+    cases = (
+        (0.08, -0.04, True),
+        (margin_sum, 0.0, True),
+        (0.16, 0.04, True),
+        (0.24, 0.12, False),
+    )
+    for real_surface_separation, expected_distance, expect_contacts in cases:
+        wp.launch(
+            kernel=_set_body_z_kernel,
+            dim=1,
+            inputs=[state.body_q, body_b, 1.0 + real_surface_separation],
+            device=device,
+        )
+        pipeline.collide(state, contacts)
+        distances = _get_contact_distances(contacts, model, state)
+
+        if not expect_contacts:
+            test.assertEqual(len(distances), 0)
+            continue
+
+        test.assertGreater(
+            len(distances),
+            0,
+            f"Expected contacts at real surface separation {real_surface_separation}",
+        )
+        test.assertTrue(
+            abs(distances.min() - expected_distance) <= tolerance,
+            f"surface separation {real_surface_separation}: expected {expected_distance} +/- {tolerance}, "
+            f"got [{distances.min()}, {distances.max()}]",
+        )
+        test.assertTrue(np.all(distances <= gap_sum + tolerance))
+        stiffness = contacts.rigid_contact_stiffness.numpy()[: len(distances)]
+        test.assertTrue(np.all(stiffness > 0.0))
+        if expected_distance >= 0.0:
+            test.assertTrue(np.all(distances >= -tolerance))
+            if expected_distance > tolerance:
+                test.assertTrue(
+                    np.all(distances >= 0.0),
+                    "Speculative contacts must not move into the penetrating margin region.",
+                )
+            if reduce_contacts and expected_distance > tolerance:
+                reducer = pipeline.hydroelastic_sdf.contact_reduction.reducer
+                active_slots = reducer.hashtable.active_slots.numpy()
+                active_count = int(active_slots[reducer.hashtable.capacity])
+                active_keys = reducer.hashtable.keys.numpy()[active_slots[:active_count]]
+                bin_ids = (active_keys >> np.uint64(55)) & np.uint64(0xFF)
+                test.assertTrue(np.all(bin_ids >= 128), "Speculative contacts must use disjoint reduction keys.")
+
+
+def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_contacts):
+    """Omit positive-separation hydroelastic contacts when both gaps are zero."""
+    model, state, body_b = _build_margin_gap_boxes(device, gaps=(0.0, 0.0))
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=reduce_contacts,
+            pre_prune_contacts=reduce_contacts,
+            buffer_fraction=1.0,
+        ),
+    )
+    contacts = pipeline.contacts()
+
+    # The real surfaces are 0.16 m apart, while the margin-inflated surfaces
+    # are 0.04 m apart. A nonzero gap would generate speculative contacts here.
+    wp.launch(
+        kernel=_set_body_z_kernel,
+        dim=1,
+        inputs=[state.body_q, body_b, 1.16],
+        device=device,
+    )
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+    # Zero gap must not disable normal penetrating hydroelastic contacts.
+    wp.launch(
+        kernel=_set_body_z_kernel,
+        dim=1,
+        inputs=[state.body_q, body_b, 1.08],
+        device=device,
+    )
+    pipeline.collide(state, contacts)
+    distances = _get_contact_distances(contacts, model, state)
+    test.assertGreater(len(distances), 0)
+    test.assertTrue(np.all(distances < 0.0))
+
+
+def test_hydroelastic_margin_contact_area_is_deprecated(test, device, reduce_contacts):
+    """Preserve and warn about a deprecated margin contact area override."""
+    model, state, _ = _build_margin_gap_boxes(device)
+    with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*deprecated"):
+        newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            rigid_contact_max=20000,
+            sdf_hydroelastic_config=HydroelasticSDF.Config(
+                margin_contact_area=1.0e-2,
+                reduce_contacts=reduce_contacts,
+                pre_prune_contacts=reduce_contacts,
+                buffer_fraction=1.0,
+            ),
+        )
+
+    margin_contact_area = 0.02
+    with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*deprecated"):
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            rigid_contact_max=20000,
+            sdf_hydroelastic_config=HydroelasticSDF.Config(
+                margin_contact_area=margin_contact_area,
+                reduce_contacts=reduce_contacts,
+                pre_prune_contacts=reduce_contacts,
+                buffer_fraction=1.0,
+            ),
+        )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    k_eff = 1.0e8 * 2.0e8 / (1.0e8 + 2.0e8)
+    np.testing.assert_allclose(
+        contacts.rigid_contact_stiffness.numpy()[:count],
+        margin_contact_area * k_eff,
+        rtol=1.0e-5,
+    )
+
+
+def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
+    """Keep speculative contacts inactive until they enter the margin band."""
+    model, state_0, body_b = _build_margin_gap_boxes(device)
+    state_1 = model.state()
+    control = model.control()
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=True,
+            buffer_fraction=1.0,
+        ),
+    )
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverMuJoCo(
+        model,
+        use_mujoco_contacts=False,
+        solver="newton",
+        nconmax=20000,
+        njmax=20000,
+    )
+
+    wp.launch(
+        kernel=_set_body_z_kernel,
+        dim=1,
+        inputs=[state_0.body_q, body_b, 1.16],
+        device=device,
+    )
+    pipeline.collide(state_0, contacts)
+    test.assertTrue(np.all(_get_contact_distances(contacts, model, state_0) >= 0.0))
+    solver.step(state_0, state_1, control, contacts, 1.0 / 600.0)
+
+    nacon = int(solver.mjw_data.nacon.numpy()[0])
+    test.assertGreater(nacon, 0)
+    speculative_dist = solver.mjw_data.contact.dist.numpy().reshape(-1)[:nacon]
+    speculative_efc = solver.mjw_data.contact.efc_address.numpy()[:nacon]
+    test.assertTrue(np.all(speculative_dist >= 0.0))
+    test.assertTrue(np.all(speculative_efc == -1))
+
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    stiffness = contacts.rigid_contact_stiffness.numpy()[:contact_count]
+    damping = contacts.rigid_contact_damping.numpy()[:contact_count]
+    tid_to_cid = solver._contact_tid_to_cid.numpy()[:contact_count]
+    solref = solver.mjw_data.contact.solref.numpy().reshape(-1, 2)
+    solimp = solver.mjw_data.contact.solimp.numpy().reshape(-1, 5)
+    for tid, cid in enumerate(tid_to_cid):
+        if cid < 0:
+            continue
+        contact_ke = stiffness[tid] * (1.0 - solimp[cid, 1])
+        if damping[tid] > 0.0:
+            expected_timeconst = 2.0 / damping[tid]
+            expected_dampratio = np.sqrt(1.0 / (expected_timeconst**2 * contact_ke))
+        else:
+            expected_timeconst = np.sqrt(1.0 / contact_ke)
+            expected_dampratio = 1.0
+        np.testing.assert_allclose(
+            solref[cid],
+            (expected_timeconst, expected_dampratio),
+            rtol=1.0e-5,
+        )
+
+    # Move the bodies while retaining the generated speculative contacts. The
+    # MuJoCo Warp fast path must update their separation without regenerating
+    # contact geometry or material data.
+    voxel_size = max(model._texture_sdf_data.numpy()["voxel_size"][0])
+    boundary_tolerance = 2.0 * voxel_size
+    wp.launch(
+        kernel=_set_body_z_kernel,
+        dim=1,
+        inputs=[state_0.body_q, body_b, 1.12 + boundary_tolerance],
+        device=device,
+    )
+    cached_distances = _get_contact_distances(contacts, model, state_0)
+    test.assertTrue(np.all(cached_distances >= 0.0))
+    test.assertTrue(np.any(cached_distances <= 2.0 * boundary_tolerance))
+    solver.step(state_0, state_1, control, contacts, 1.0 / 600.0)
+    test.assertTrue(np.all(solver.mjw_data.contact.efc_address.numpy()[:nacon] == -1))
+
+    wp.launch(
+        kernel=_set_body_z_kernel,
+        dim=1,
+        inputs=[state_0.body_q, body_b, 1.08],
+        device=device,
+    )
+    test.assertTrue(np.any(_get_contact_distances(contacts, model, state_0) < 0.0))
+    solver.step(state_0, state_1, control, contacts, 1.0 / 600.0)
+
+    nacon = int(solver.mjw_data.nacon.numpy()[0])
+    active_efc = solver.mjw_data.contact.efc_address.numpy()[:nacon]
+    active_solref = solver.mjw_data.contact.solref.numpy().reshape(-1, 2)[:nacon]
+    test.assertTrue(np.any(active_efc >= 0))
+    test.assertTrue(np.all(np.isfinite(active_solref)))
+    test.assertTrue(np.all(active_solref[:, 0] > 0.0))
 
 
 def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False, deterministic=False):
@@ -1509,17 +2092,18 @@ def test_translational_friction_invariance(test, device):
             )
 
 
-def test_exported_margin_stiffness_matches_shape_harmonic_mean(test, device):
-    """Verify exported margin stiffness uses the pairwise harmonic mean."""
+def test_exported_margin_stiffness_matches_shape_series_combination(test, device):
+    """Verify exported margin stiffness uses the pairwise series combination."""
     margin_contact_area = 0.0125
-    config = HydroelasticSDF.Config(
-        reduce_contacts=True,
-        pre_prune_contacts=False,
-        anchor_contact=False,
-        margin_contact_area=margin_contact_area,
-        buffer_fraction=1.0,
-        buffer_mult_contact=2,
-    )
+    with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*deprecated"):
+        config = HydroelasticSDF.Config(
+            reduce_contacts=True,
+            pre_prune_contacts=False,
+            anchor_contact=False,
+            margin_contact_area=margin_contact_area,
+            buffer_fraction=1.0,
+            buffer_mult_contact=2,
+        )
     model, _, state_0, _, _, pipeline, _, _ = build_stacked_cubes_scene(
         device=device,
         solver_fn=solvers["xpbd"],
@@ -1566,7 +2150,7 @@ def test_exported_margin_stiffness_matches_shape_harmonic_mean(test, device):
         expected_stiffness,
         rtol=1.0e-5,
         atol=1.0e-3,
-        err_msg="Exported margin stiffness must use the pairwise harmonic mean",
+        err_msg="Exported margin stiffness must use the pairwise series combination",
     )
 
 
@@ -1765,8 +2349,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
         test.assertGreater(len(instance_depths), 0, f"Case {i} should have penetrating contacts (negative depth)")
 
-        # x2 because depth is distance to isosurface; use |depth| for magnitude
-        measured = 2.0 * np.mean(-instance_depths)
+        measured = np.mean(-instance_depths)
         ratio = measured / expected
 
         # We expect a ratio > 1 due to non-uniform pressure distribution.
@@ -1907,7 +2490,16 @@ def test_scalar_sdf_texture_hydroelastic_contacts(test, device):
         if name == "point_id" or name.startswith("shape"):
             np.testing.assert_array_equal(scalar_values, paired_values, err_msg=name)
         else:
-            np.testing.assert_allclose(scalar_values, paired_values, rtol=2.0e-5, atol=2.0e-5, err_msg=name)
+            # Margin-relative pressure evaluation adds one float32 subtraction
+            # before interpolation; normals amplify that small positional delta.
+            tolerance = 5.0e-5 if name == "normal" else 2.0e-5
+            np.testing.assert_allclose(
+                scalar_values,
+                paired_values,
+                rtol=tolerance,
+                atol=tolerance,
+                err_msg=name,
+            )
 
 
 def test_fixed_point_extreme_exponents(test, device):
@@ -2040,6 +2632,124 @@ class TestHydroelastic(unittest.TestCase):
 
 add_function_test(
     TestHydroelastic,
+    "test_hydroelastic_contact_band_boundaries",
+    test_hydroelastic_contact_band_boundaries,
+    devices=["cpu"],
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_sdf_padding_covers_margin_and_gap",
+    test_hydroelastic_sdf_padding_covers_margin_and_gap,
+    devices=["cpu"],
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_sdf_padding_validation_can_be_skipped",
+    test_hydroelastic_sdf_padding_validation_can_be_skipped,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_particle_only_hydroelastic_shape_ignores_sdf_padding",
+    test_particle_only_hydroelastic_shape_ignores_sdf_padding,
+    devices=["cpu"],
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_attached_sdf_requires_padding_metadata",
+    test_hydroelastic_attached_sdf_requires_padding_metadata,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_attached_sdf_uses_padding_metadata",
+    test_hydroelastic_attached_sdf_uses_padding_metadata,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_sdf_construction_padding_validation",
+    test_sdf_construction_padding_validation,
+    devices=["cpu"],
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_pre_prune_writes_contact_fingerprints",
+    test_hydroelastic_pre_prune_writes_contact_fingerprints,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_deterministic_hydroelastic_speculative_contacts",
+    test_deterministic_hydroelastic_speculative_contacts,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_margin_gap_bands_reduced",
+    test_hydroelastic_margin_gap_bands,
+    devices=cuda_devices,
+    reduce_contacts=True,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_margin_gap_bands_unreduced",
+    test_hydroelastic_margin_gap_bands,
+    devices=cuda_devices,
+    reduce_contacts=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_zero_gap_omits_speculative_contacts_reduced",
+    test_hydroelastic_zero_gap_omits_speculative_contacts,
+    devices=cuda_devices,
+    reduce_contacts=True,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_zero_gap_omits_speculative_contacts_unreduced",
+    test_hydroelastic_zero_gap_omits_speculative_contacts,
+    devices=cuda_devices,
+    reduce_contacts=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_margin_contact_area_is_deprecated_reduced",
+    test_hydroelastic_margin_contact_area_is_deprecated,
+    devices=cuda_devices,
+    reduce_contacts=True,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_margin_contact_area_is_deprecated_unreduced",
+    test_hydroelastic_margin_contact_area_is_deprecated,
+    devices=cuda_devices,
+    reduce_contacts=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_mujoco_warp_hydroelastic_speculative_activation",
+    test_mujoco_warp_hydroelastic_speculative_activation,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_stacked_small_primitive_cubes_hydroelastic_mujoco_warp",
     test_stacked_small_primitive_cubes_hydroelastic,
     devices=cuda_devices,
@@ -2166,8 +2876,8 @@ add_function_test(
 )
 add_function_test(
     TestHydroelastic,
-    "test_exported_margin_stiffness_matches_shape_harmonic_mean",
-    test_exported_margin_stiffness_matches_shape_harmonic_mean,
+    "test_exported_margin_stiffness_matches_shape_series_combination",
+    test_exported_margin_stiffness_matches_shape_series_combination,
     devices=cuda_devices,
 )
 

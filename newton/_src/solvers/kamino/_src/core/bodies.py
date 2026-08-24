@@ -262,7 +262,13 @@ class RigidBodiesData:
 
     w_j_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Joint constraint wrench applied to each body (in world coordinates).
+    Bilateral joint constraint wrench applied to each body (in world coordinates) [N, N·m].
+    Shape of ``(num_bodies,)``.
+    """
+
+    w_f_i: wp.array[wp.spatial_vectorf] | None = None
+    """
+    Joint friction wrench applied to each body (in world coordinates) [N, N·m].
     Shape of ``(num_bodies,)``.
     """
 
@@ -291,6 +297,7 @@ class RigidBodiesData:
         self.w_i.zero_()
         self.w_a_i.zero_()
         self.w_j_i.zero_()
+        self.w_f_i.zero_()
         self.w_l_i.zero_()
         self.w_c_i.zero_()
         self.w_e_i.zero_()
@@ -300,6 +307,7 @@ class RigidBodiesData:
         Clears all constraint wrenches, setting them to zeros.
         """
         self.w_j_i.zero_()
+        self.w_f_i.zero_()
         self.w_l_i.zero_()
         self.w_c_i.zero_()
 
@@ -403,6 +411,7 @@ def _update_body_wrenches(
     # Inputs
     state_bodies_w_a_i_in: wp.array[wp.spatial_vectorf],
     state_bodies_w_j_i_in: wp.array[wp.spatial_vectorf],
+    state_bodies_w_f_i_in: wp.array[wp.spatial_vectorf],
     state_bodies_w_l_i_in: wp.array[wp.spatial_vectorf],
     state_bodies_w_c_i_in: wp.array[wp.spatial_vectorf],
     state_bodies_w_e_i_in: wp.array[wp.spatial_vectorf],
@@ -415,12 +424,13 @@ def _update_body_wrenches(
     # Retrieve the model data
     w_a_i = state_bodies_w_a_i_in[bid]
     w_j_i = state_bodies_w_j_i_in[bid]
+    w_f_i = state_bodies_w_f_i_in[bid]
     w_l_i = state_bodies_w_l_i_in[bid]
     w_c_i = state_bodies_w_c_i_in[bid]
     w_e_i = state_bodies_w_e_i_in[bid]
 
     # Compute the total wrench applied to the body
-    w_i = w_a_i + w_j_i + w_l_i + w_c_i + w_e_i
+    w_i = w_a_i + w_j_i + w_f_i + w_l_i + w_c_i + w_e_i
 
     # Store results in the output arrays
     state_bodies_w_i_out[bid] = w_i
@@ -571,6 +581,7 @@ def update_body_wrenches(model: RigidBodiesModel, data: RigidBodiesData):
             # Inputs:
             data.w_a_i,
             data.w_j_i,
+            data.w_f_i,
             data.w_l_i,
             data.w_c_i,
             data.w_e_i,

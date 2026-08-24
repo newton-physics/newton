@@ -91,7 +91,7 @@ def test_frequency_validation_and_ownership(test, device):
         _StubSolver(model, pipeline=other_pipeline)
 
     with test.assertRaisesRegex(ValueError, "requires contact matching"):
-        SolverVBD(model, pipeline=pipeline, rigid_contact_history=True)
+        SolverVBD(model, pipeline=pipeline, rigid_contact_history=True, rigid_compliant_alm=False)
 
     # Non-owning solver: contacts property is None, external contacts pass through.
     plain = _NonOwning(model)
@@ -140,6 +140,7 @@ def test_vbd_rigid_none_refreshes_external_contacts(test, device):
         iterations=1,
         pipeline=pipeline,
         rigid_contact_history=False,
+        rigid_compliant_alm=False,
         collision_frequency_type=[Frequency.NONE, Frequency.NONE],
     )
     state_a, state_b = model.state(), model.state()
@@ -194,6 +195,7 @@ def test_vbd_rigid_iterations_mode(test, device):
             model,
             iterations=3,
             pipeline=pipeline,
+            rigid_compliant_alm=False,
             collision_frequency=[freq, 1],
             collision_frequency_type=[mode, Frequency.NONE],
         )
@@ -234,6 +236,7 @@ def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
         iterations=3,
         pipeline=pipeline,
         rigid_contact_history=False,
+        rigid_compliant_alm=False,
         collision_frequency=[1, 1],
         collision_frequency_type=[Frequency.ITERATIONS, Frequency.NONE],
     )
