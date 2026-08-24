@@ -351,7 +351,6 @@ class TestTrianglePrismSurfacePolicy(unittest.TestCase):
         np.testing.assert_allclose(points_a[:, 2], [0.0], atol=1.0e-6)
         np.testing.assert_allclose(points_b[:, 2], [-depth], atol=1.0e-6)
 
-
     def test_deep_box_exits_the_top_face_without_refinement(self):
         """MPR alone must not settle on the volume the triangle is extruded into.
 

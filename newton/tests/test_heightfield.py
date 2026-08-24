@@ -439,9 +439,7 @@ class TestHeightfield(unittest.TestCase):
                     builder = newton.ModelBuilder()
                     self._add_flat_heightfield(builder)
 
-                    body = builder.add_body(
-                        xform=wp.transform((0.0, 0.0, half[2] - depth), wp.quat_identity())
-                    )
+                    body = builder.add_body(xform=wp.transform((0.0, 0.0, half[2] - depth), wp.quat_identity()))
                     builder.add_shape_box(body=body, hx=half[0], hy=half[1], hz=half[2])
 
                     model = builder.finalize()
