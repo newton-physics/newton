@@ -1782,12 +1782,12 @@ class USDImporter:
         ###
 
         # Initialize the ignore paths as an empty list if it is None
-        # NOTE: This is required by the LoadUsdPhysicsFromRange method
+        # NOTE: This is required by the native physics parser
         if ignore_paths is None:
             ignore_paths = []
 
         # Load the USD file into an object dictionary
-        ret_dict = self.UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=ignore_paths)
+        ret_dict = usd_utils.load_physics_from_range(stage, [root_path], ignore_paths)
 
         # Create a new ModelBuilderKamino if not provided
         if builder is None:

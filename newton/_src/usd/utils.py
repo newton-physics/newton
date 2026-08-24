@@ -2254,6 +2254,30 @@ def _get_surface_deformable_material(
     )
 
 
+def load_physics_from_range(stage, root_paths, exclude_paths=()):
+    """Parse a stage's native physics descriptors, across OpenUSD versions.
+
+    OpenUSD 26.08 renamed ``UsdPhysics.LoadUsdPhysicsFromRange`` to
+    ``UsdPhysics.UsdPhysicsLoadStageFromPrimRange`` and deprecated the old name, so calling
+    it emits a ``DeprecationWarning``. Both spellings take the same arguments and return the
+    same descriptor dict; prefer the new name where it exists.
+
+    Args:
+        stage: The USD stage to parse.
+        root_paths: Roots of the subtrees to parse.
+        exclude_paths: Prim paths whose subtrees should be excluded from the parse.
+
+    Returns:
+        The parser's object-type to descriptor mapping.
+    """
+    from pxr import UsdPhysics
+
+    load = getattr(UsdPhysics, "UsdPhysicsLoadStageFromPrimRange", None)
+    if load is None:
+        load = UsdPhysics.LoadUsdPhysicsFromRange
+    return load(stage, list(root_paths), excludePaths=list(exclude_paths))
+
+
 def _get_physics_material_density(material_prim) -> float | None:
     """Read a bound material's base ``UsdPhysicsMaterialAPI`` density.
 
@@ -2403,11 +2427,7 @@ def get_physics_scenes(
     Returns:
         Physics scenes in parser order.
     """
-    physics_results = UsdPhysics.LoadUsdPhysicsFromRange(
-        stage,
-        [root_path],
-        excludePaths=list(exclude_paths or ()),
-    )
+    physics_results = load_physics_from_range(stage, [root_path], exclude_paths or ())
     return _get_physics_scenes_from_results(stage, physics_results)
 
 

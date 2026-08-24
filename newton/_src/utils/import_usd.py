@@ -644,7 +644,7 @@ def parse_usd(
     has_nonunit_linear_units = not math.isclose(linear_unit, 1.0)
     has_nonunit_mass_units = not math.isclose(mass_unit, 1.0)
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
-    # LoadUsdPhysicsFromRange remains the native rigid/joint descriptor parser, so this
+    # The native rigid/joint descriptor parser remains authoritative, so this
     # pre-pass supplies its deformable exclusions before it runs. The same walk also
     # collects static visual leaves when requested, avoiding a third stage traversal.
     root_prim = stage.GetPrimAtPath(root_path)
@@ -658,7 +658,7 @@ def parse_usd(
     native_exclude_paths = list(
         dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
     )
-    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
+    ret_dict = usd.load_physics_from_range(stage, [root_path], native_exclude_paths)
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
 

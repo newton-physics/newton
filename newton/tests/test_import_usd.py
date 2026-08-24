@@ -32,6 +32,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
+from newton._src.usd import utils as usd_utils
 from newton._src.utils.color import color_linear_to_srgb
 from newton._src.utils.import_usd import _is_uniform_scale
 from newton.math import quat_between_axes
@@ -10547,8 +10548,10 @@ def Xform "Articulation" (
         scene = UsdPhysics.Scene.Define(stage, "/Scene")
         scene.CreateGravityMagnitudeAttr(2.0)
 
-        load_physics = UsdPhysics.LoadUsdPhysicsFromRange
-        with mock.patch.object(UsdPhysics, "LoadUsdPhysicsFromRange", wraps=load_physics) as load_physics_mock:
+        # Patch Newton's compat wrapper rather than the OpenUSD entry point, whose name
+        # differs across OpenUSD versions.
+        load_physics = usd_utils.load_physics_from_range
+        with mock.patch.object(usd_utils, "load_physics_from_range", wraps=load_physics) as load_physics_mock:
             result = newton.ModelBuilder().add_usd(stage)
 
         load_physics_mock.assert_called_once()
@@ -13197,8 +13200,8 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
         first.CreateGravityMagnitudeAttr(2.0)
         second = UsdPhysics.Scene.Define(stage, "/World/SecondScene")
 
-        load_physics = UsdPhysics.LoadUsdPhysicsFromRange
-        with mock.patch.object(UsdPhysics, "LoadUsdPhysicsFromRange", wraps=load_physics) as load_physics_mock:
+        load_physics = usd_utils.load_physics_from_range
+        with mock.patch.object(usd_utils, "load_physics_from_range", wraps=load_physics) as load_physics_mock:
             scenes = usd.get_physics_scenes(stage)
 
         load_physics_mock.assert_called_once()
