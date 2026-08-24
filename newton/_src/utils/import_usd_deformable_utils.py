@@ -47,8 +47,13 @@ class _DeformableElementArray:
     """Validated values authored on deformable simulation-geometry elements."""
 
     values: tuple[float, ...]
+    """Authored scalar values in validated element order."""
+
     element_type: str
+    """AOUSD element-domain token used to interpret the values."""
+
     legacy_implicit_type: bool = False
+    """Whether the element type was inferred from deprecated authoring."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,12 +61,25 @@ class _CableMassRun:
     """Imported segment elements belonging to one authored curve."""
 
     curve_index: int
+    """Index of the owning curve in the authored curve array."""
+
     point_offset: int
+    """Offset of the curve's points in the flattened authored point array."""
+
     point_count: int
+    """Number of authored points belonging to the curve."""
+
     segment_offset: int
+    """Offset of the curve's segments in the flattened authored segment array."""
+
     body_ids: tuple[int, ...]
+    """Newton body indices corresponding to the imported segments."""
+
     element_volumes: tuple[float, ...]
+    """Simulation volume of each imported segment in Newton scene coordinates."""
+
     closed: bool
+    """Whether the authored curve closes its final point onto its first point."""
 
 
 def _read_deformable_element_array(
@@ -488,10 +506,15 @@ class _CurveDeformableRecord:
     closed: bool
     radius: float
     segment_radii: list[float]
+    """Resolved collision radius for each segment in Newton scene coordinates."""
+
     point_radii: list[float]
+    """Thickness-derived radius for each point in Newton scene coordinates."""
+
     density: float
     material: dict[str, float] | None = None
     thicknesses: _DeformableElementArray | None = None
+    """Validated simulation-geometry thickness authoring, if present."""
 
 
 def _cable_segment_quaternions(seg_positions: Sequence[wp.vec3], seg_normals: Sequence[wp.vec3]) -> list[wp.quat]:

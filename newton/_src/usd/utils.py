@@ -21,6 +21,7 @@ from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
     _AOUSD_DEFAULT_YOUNGS_MODULUS,
+    _is_float32_representable,
     _warn_geometry_authored_material_attrs,
 )
 from ..utils.texture import linear_texture_to_srgb, load_texture
@@ -1874,12 +1875,8 @@ def _deformable_lame_parameters(
         k_lambda = value * poissons / ((1.0 + poissons) * (1.0 - 2.0 * poissons))
         return k_mu, k_lambda
 
-    def is_representable(values: tuple[float, float]) -> bool:
-        max_float32 = float(np.finfo(np.float32).max)
-        return all(math.isfinite(value) and abs(value) <= max_float32 for value in values)
-
     lame = convert(youngs)
-    if is_representable(lame):
+    if all(_is_float32_representable(value) for value in lame):
         return lame
 
     fallback_message = "ignoring the authored elastic moduli."
@@ -1894,7 +1891,7 @@ def _deformable_lame_parameters(
     if fallback_youngs is None or fallback_youngs == youngs:
         return None
     fallback_lame = convert(fallback_youngs)
-    return fallback_lame if is_representable(fallback_lame) else None
+    return fallback_lame if all(_is_float32_representable(value) for value in fallback_lame) else None
 
 
 def get_tetmesh(
@@ -1902,7 +1899,6 @@ def get_tetmesh(
     *,
     compat_namespaces: Sequence[str] | None = None,
     _load_custom_attributes: bool = True,
-    _load_material: bool = True,
 ) -> TetMesh:
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
@@ -1958,8 +1954,24 @@ def get_tetmesh(
             canonical-only.
 
     Returns:
-        TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
+        A :class:`newton.TetMesh` with vertex positions and tet connectivity.
     """
+    return _get_tetmesh(
+        prim,
+        compat_namespaces=compat_namespaces,
+        load_custom_attributes=_load_custom_attributes,
+        load_material=True,
+    )
+
+
+def _get_tetmesh(
+    prim: Usd.Prim,
+    *,
+    compat_namespaces: Sequence[str] | None,
+    load_custom_attributes: bool,
+    load_material: bool,
+) -> TetMesh:
+    """Load a TetMesh with importer-specific data controls."""
     from ..geometry.types import TetMesh  # noqa: PLC0415
 
     tet_mesh = UsdGeom.TetMesh(prim)
@@ -1990,19 +2002,19 @@ def get_tetmesh(
     # Volume material moduli (youngsModulus/poissonsRatio/...) belong on the bound material, not the
     # geometry; warn if authored on the TetMesh prim itself so the misplacement is visible to direct
     # get_tetmesh() callers too (add_usd's deformable pass warns separately).
-    if _load_material:
+    if load_material:
         _warn_geometry_authored_material_attrs(
             prim, str(prim.GetPath()), "PhysicsVolumeDeformableMaterialAPI", _read_physics_attr
         )
 
-    material_prim = _find_physics_material_prim(prim) if _load_material else None
+    material_prim = _find_physics_material_prim(prim) if load_material else None
     if compat_namespaces is None:
         # Deprecated legacy default: read vendor namespaces off any bound material, and
         # canonical moduli off materials without the deformable material API. Warn only when
         # that default is load-bearing -- vendor attrs authored, or canonical attrs on an
         # API-less material -- so materials whose reads the default change does not alter
         # (API-applied canonical, render-only) never warn.
-        if _load_material and (
+        if load_material and (
             _material_authors_legacy_deformable_attrs(prim) or _material_authors_unscoped_canonical_attrs(prim)
         ):
             warnings.warn(
@@ -2090,7 +2102,7 @@ def get_tetmesh(
         # density too; a plain rigid-style physics material is a valid source.
         density = _get_physics_material_density(material_prim)
 
-    if not _load_custom_attributes:
+    if not load_custom_attributes:
         return TetMesh(
             vertices=vertices,
             tet_indices=tet_indices,
