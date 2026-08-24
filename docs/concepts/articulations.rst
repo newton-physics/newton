@@ -60,7 +60,11 @@ stiffness, and solver mechanics belong to the rod representation and use
 .. experimental::
 
    :attr:`newton.JointType.ROD`, :meth:`newton.ModelBuilder.add_joint_rod`,
-   and their state and material conventions may change without prior notice.
+   and its ``rest_rotation`` parameter may change without prior notice.
+   The ``rest_positions``, ``rest_quaternions``, and ``rest_straight``
+   parameters of :meth:`newton.ModelBuilder.add_rod`, and the
+   ``rest_node_positions`` and ``rest_quaternions`` parameters of
+   :meth:`newton.ModelBuilder.add_rod_graph`, are also experimental.
    ``JointType.CABLE`` and ``add_joint_cable()`` are deprecated compatibility
    aliases through Newton 1.6.
 

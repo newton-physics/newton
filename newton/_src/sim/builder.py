@@ -7975,7 +7975,7 @@ class ModelBuilder:
                 that for ``N`` segments there are ``N+1`` positions.
             quaternions: Optional per-segment initial material-frame orientations in world space
                 [unitless quaternion]. If None, orientations are inferred from ``positions``.
-            radius: Capsule radius.
+            radius: Capsule radius [m].
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, defaults to 1.0e5.
@@ -8324,7 +8324,7 @@ class ModelBuilder:
             node_positions: Initial junction node positions in world space [m].
             edges: List of (u, v) node index pairs defining rod segments. Each edge creates one
                 capsule body oriented so its local +Z points from node ``u`` to node ``v``.
-            radius: Capsule radius.
+            radius: Capsule radius [m].
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
