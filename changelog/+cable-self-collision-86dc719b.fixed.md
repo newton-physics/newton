@@ -1,0 +1,1 @@
+Fix `ModelBuilder.add_usd()` ignoring cable self-collision settings: `newton:selfCollisionEnabled` on a cable prim and the `enable_self_collisions` argument now both apply, so a cable articulation with self-collision disabled filters collisions between its non-adjacent segments.
