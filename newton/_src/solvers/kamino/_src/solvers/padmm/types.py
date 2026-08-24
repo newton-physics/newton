@@ -142,8 +142,7 @@ class PADMMConfigStruct:
             Must be greater than zero. Defaults to `1e-6`.
         dual_tolerance: The target tolerance on the total dual residual `r_dual`.
             Must be greater than zero. Defaults to `1e-6`.
-        compl_tolerance: The target tolerance on the generalized inequality
-            optimality residual `r_compl` used by the convergence test.
+        compl_tolerance: The target tolerance on the complementarity residual `r_compl`.
             Must be greater than zero. Defaults to `1e-6`.
         restart_tolerance: The tolerance on the total combined primal-dual
             residual `r_comb`, for determining when gradient acceleration should be restarted.
@@ -184,8 +183,7 @@ class PADMMConfigStruct:
 
     compl_tolerance: wp.float32
     """
-    The target tolerance on the generalized inequality optimality residual
-    `r_compl` (`r_c`) used by the convergence test.
+    The target tolerance on the complementarity residual `r_compl` (`r_c`).
     Must be greater than zero. Defaults to `1e-6`.
     """
 
@@ -679,8 +677,7 @@ class PADMMResiduals:
             Shape of ``(sum_of_max_total_cts,)``.
         r_dual: The PADMM dual residual vector, computed as `r_dual := eta * (x - x_p) + rho * (y - y_p)`.
             Shape of ``(sum_of_max_total_cts,)``.
-        r_compl: The PADMM generalized inequality optimality residual vector used
-            by the convergence test. Per-inequality entries are directional
+        r_compl: The PADMM complementarity residual vector. Per-inequality entries are directional
             box-complementarity products for bounded multipliers and inner products
             `x_j.dot(z_j)` for limit and contact constraints.
             Shape of ``(sum_of_max_inequalities,)``.
@@ -716,10 +713,9 @@ class PADMMResiduals:
 
         self.r_compl: wp.array[wp.float32] | None = None
         """
-        The PADMM generalized inequality optimality residual vector used by the
-        convergence test. Per-inequality entries are directional box-complementarity
-        products for bounded multipliers and inner products `x_j.dot(z_j)` for
-        limit and contact constraints.
+        The PADMM complementarity residual vector. Per-inequality entries are directional
+        box-complementarity products for bounded multipliers and inner products `x_j.dot(z_j)`
+        for limit and contact constraints.
         Shape of ``(sum_of_max_inequalities,)``.
         """
 
@@ -830,8 +826,7 @@ class PADMMInfo:
             Shape of ``(num_worlds * max_iters,)``.
         r_dual: History of the total dual residual.
             Shape of ``(num_worlds * max_iters,)``.
-        r_compl: History of the generalized inequality optimality residual used
-            by the PADMM convergence test.
+        r_compl: History of the complementarity residual.
             Shape of ``(num_worlds * max_iters,)``.
         r_comb: History of the total combined primal-dual residual.
             Shape of ``(num_worlds * max_iters,)``.
@@ -989,8 +984,7 @@ class PADMMInfo:
 
         self.r_compl: wp.array[wp.float32] | None = None
         """
-        History of the generalized inequality optimality residual used by the
-        PADMM convergence test.
+        History of the PADMM complementarity residuals.
         Shape of ``(num_worlds * max_iters,)``.
         """
 

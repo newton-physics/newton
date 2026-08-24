@@ -485,10 +485,7 @@ class PADMMSolverConfig:
 
     compl_tolerance: float = 1e-6
     """
-    The target tolerance on the generalized inequality optimality residual
-    `r_compl` used by the PADMM convergence test. For box constraints this
-    residual uses a natural map; for limits and contacts it uses the
-    complementarity inner product.\n
+    The target tolerance on the complementarity residual `r_compl`.\n
     Must be greater than zero. Defaults to `1e-6`.
     """
 

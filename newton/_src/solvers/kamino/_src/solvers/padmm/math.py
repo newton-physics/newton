@@ -409,7 +409,7 @@ def compute_ncp_primal_residual(
     - `|| . ||_inf` is the infinity norm (i.e. maximum absolute value of the vector components)
 
     Notes:
-    - The cone for joint constraints is all of `R^njc`, so projection is a no-op.
+    - The cone for bilateral joint constraints is all of `R^njc`, so projection is a no-op.
     - For bounded-multiplier constraints, the set is the box `C_b := { lambda | lower <= lambda <= upper }`
     - For limit constraints, the cone is defined as `K_l := { lambda | lambda >= 0 }`
     - For contact constraints, the cone is defined as `K_c := { lambda | || lambda ||_2 <= mu * || vn ||_2 }`
@@ -438,7 +438,7 @@ def compute_ncp_primal_residual(
     r_ncp_p = float(0.0)
     r_ncp_p_argmax = wp.int32(-1)
 
-    # NOTE: We skip the bilateral joint constraint reactions are not bounded, the cone is all of R^njc
+    # NOTE: We skip the bilateral joint constraint, as their reactions are not bounded.
 
     for bid in range(nbc):
         # Bounds are stored in preconditioned coordinates, while the residual uses physical reactions.
