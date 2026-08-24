@@ -448,7 +448,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         self.assertEqual(fake_gl.readback_count, 1)
 
     def test_world_projected_texture_keeps_physical_scale_on_large_quads(self):
-        """Keep projected texture density independent of a generic quad's dimensions."""
+        """Keep projected texture scale and position independent of mesh and camera motion."""
         viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
 
         try:
@@ -473,10 +473,11 @@ class TestViewerGLGetFrame(unittest.TestCase):
             colors = wp.array([(1.0, 1.0, 1.0)], dtype=wp.vec3, device=viewer.device)
             materials = wp.array([(0.5, 0.0, 0.0, 1.0)], dtype=wp.vec4, device=viewer.device)
 
-            viewer.set_camera(wp.vec3(8.0, -8.0, 6.0), pitch=0.0, yaw=0.0)
-            viewer.camera.look_at((0.0, 0.0, 0.0))
-
-            def render(size: float, projection: newton.Mesh.TextureProjection) -> float:
+            def render(
+                size: float, projection: newton.Mesh.TextureProjection, camera_offset: float = 0.0
+            ) -> np.ndarray:
+                viewer.set_camera(wp.vec3(8.0 + camera_offset, -8.0, 6.0), pitch=0.0, yaw=0.0)
+                viewer.camera.look_at((camera_offset, 0.0, 0.0))
                 viewer.log_mesh(
                     "/test/projected_quad",
                     points,
@@ -498,11 +499,15 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     colors,
                     materials,
                 )
-                gray = _capture_viewer_frame(viewer).astype(np.float32).mean(axis=2)
+                return _capture_viewer_frame(viewer)
+
+            def edge_density(frame: np.ndarray) -> float:
+                gray = frame.astype(np.float32).mean(axis=2)
                 roi = gray[160:290, 20:380]
                 return float(np.mean(np.abs(np.diff(roi, axis=1)) > 15.0))
 
-            projected_densities = [render(size, newton.Mesh.TextureProjection.WORLD) for size in (2.0e2, 2.0e3)]
+            projected_frames = [render(size, newton.Mesh.TextureProjection.WORLD) for size in (2.0e2, 2.0e3)]
+            projected_densities = [edge_density(frame) for frame in projected_frames]
             for size, density in zip((2.0e2, 2.0e3), projected_densities, strict=True):
                 self.assertGreater(density, 0.05, f"projected texture did not tile on a {size:g} m quad")
             self.assertLess(
@@ -511,8 +516,16 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 "changing quad dimensions changed the projected texture's physical density",
             )
 
-            stretched_density = render(2.0e3, newton.Mesh.TextureProjection.UV)
+            stretched_density = edge_density(render(2.0e3, newton.Mesh.TextureProjection.UV))
             self.assertLess(stretched_density, 0.005, "the control UV mapping unexpectedly tiled the large quad")
+
+            shifted_frame = render(2.0e3, newton.Mesh.TextureProjection.WORLD, camera_offset=0.75)
+            texture_motion = np.abs(projected_frames[1].astype(np.int16) - shifted_frame.astype(np.int16))
+            self.assertGreater(
+                texture_motion[160:290, 20:380].mean(),
+                10.0,
+                "world-projected texture moved with the camera instead of remaining anchored",
+            )
         finally:
             viewer.close()
 
