@@ -6386,7 +6386,7 @@ def _add_cable_spline_holds_rest_shape_impl(test: unittest.TestCase, device):
     state0 = model.state()
     state1 = model.state()
     control = model.control()
-    solver = newton.solvers.SolverVBD(model, iterations=4)
+    solver = newton.solvers.SolverVBD(model, iterations=4, rigid_compliant_alm=True)
 
     q_initial = state0.body_q.numpy().copy()
 
@@ -6506,7 +6506,7 @@ def _add_cable_spline_straight_rest_relaxes_impl(test: unittest.TestCase, device
     rest_dirs /= np.linalg.norm(rest_dirs, axis=1)[:, None]
     test.assertGreater(float((rest_dirs @ rest_dirs[0]).min()), 1.0 - 1.0e-6, "model rest pose is not straight")
 
-    solver = newton.solvers.SolverVBD(model, iterations=4)
+    solver = newton.solvers.SolverVBD(model, iterations=4, rigid_compliant_alm=True)
     state0 = model.state()
     state1 = model.state()
     control = model.control()
