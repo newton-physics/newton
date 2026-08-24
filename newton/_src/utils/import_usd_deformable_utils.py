@@ -27,7 +27,8 @@ if TYPE_CHECKING:
 
     from ..sim.builder import ModelBuilder
 
-# Physical-size fallbacks [m].
+# AOUSD SI fallbacks: density [kg/m^3], thickness [m], Young's modulus [Pa],
+# and dimensionless Poisson's ratio.
 # TODO: evaluate moving these to configurable ModelBuilder defaults (like
 # default_particle_radius) when deformable import leaves its experimental phase.
 _AOUSD_DEFAULT_DENSITY = 1000.0

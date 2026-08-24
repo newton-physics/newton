@@ -55,8 +55,11 @@ class TestUSDDeformableGroups(unittest.TestCase):
             group_range(builder, "cable", "/World/DoesNotExist", "body")
 
     def test_replicated_groups_offset_ranges_per_world(self):
-        """replicate() repeats each group per world with offset ranges and world tags, so
-        a duplicated label resolves only with an explicit world."""
+        """Verify that replicate() offsets every deformable group per world.
+
+        Preserve world tags while repeating groups and require an explicit world to
+        resolve labels duplicated by replication.
+        """
         stage = _deformable_stage()
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
         _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
@@ -77,7 +80,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene.finalize()  # replicated groups do not break finalization
 
     def test_heterogeneous_worlds_keep_world_tags(self):
-        """Worlds holding different deformables each keep their own group and world tag."""
+        """Verify that heterogeneous worlds preserve their group labels and world tags."""
         cloth_stage = _deformable_stage()
         cloth = _add_cloth_mesh(cloth_stage, "/World/Cloth")
         _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")

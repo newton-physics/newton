@@ -502,7 +502,10 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(builder.body_count, 0)
 
     def test_cable_material_without_family_api_is_ignored(self):
-        """A physics-bound material lacking PhysicsCurvesDeformableMaterialAPI is not read as a cable material."""
+        """Verify that a physics-bound material without the curve family API is ignored.
+
+        Require PhysicsCurvesDeformableMaterialAPI before reading cable material values.
+        """
         from pxr import Sdf, UsdShade
 
         stage = _deformable_stage(up_axis="y")
@@ -583,8 +586,11 @@ class TestUSDDeformableCable(unittest.TestCase):
         np.testing.assert_allclose(masses, [2.0, 2.0, 2.0], atol=1e-6)
 
     def test_cable_masses_malformed_length_warns_and_ignored(self):
-        """A physics:masses array whose length != the authored curve points warns and is
-        ignored (density-derived masses are used), never an IndexError."""
+        """Verify that wrong-length point masses warn and use the density fallback.
+
+        Reject arrays sized against only retained curve points or any count other than
+        the authored point count, without raising IndexError.
+        """
         from pxr import Sdf
 
         with self.subTest(malformed="matches_imported_count_only"):
@@ -986,7 +992,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(b1 - b0, 3)
 
     def test_vendor_namespace_material_needs_resolver(self):
-        """Vendor-namespaced (omniphysics:) material is read only with a compat resolver.
+        """Verify that only a compatibility resolver reads omniphysics material attributes.
 
         The base parser targets the canonical ``physics:`` schema as written; the
         omniphysics fallback is opt-in via a schema resolver that declares it
@@ -1020,7 +1026,10 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertAlmostEqual(cable_stretch(builder_compat), 770.0, delta=1.0e-3)
 
     def test_deformable_ignores_generic_physx_namespaces(self):
-        """Deformable material reads only deformable vendor namespaces, not generic PhysX ones."""
+        """Verify that deformable materials ignore generic PhysX namespaces.
+
+        Read only the vendor namespaces declared specifically for deformables.
+        """
 
         def cable_stretch(namespace):
             stage = _deformable_stage(up_axis="y")

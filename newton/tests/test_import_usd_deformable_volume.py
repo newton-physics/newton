@@ -99,11 +99,14 @@ class TestUSDDeformableVolume(unittest.TestCase):
         return builder, result
 
     def test_volume_mass_precedence(self):
-        """Per-prim mass sources resolve in precedence order: physics:masses on the simulation
-        geometry beats a body-mass override; a body-mass override rescales the density-derived
-        distribution proportionally, preserving the volume weighting (proposal:
-        m_p = sum_{e in tau(p)} V_e / T); and PhysicsDeformableBodyAPI.density beats the bound
-        material's density."""
+        """Verify proposal precedence for per-prim volume mass sources.
+
+        Give physics:masses on the simulation geometry precedence over a body-mass
+        override. Rescale the density-derived distribution proportionally for a body-mass
+        override, preserving volume weighting (m_e = m_tot V_e / V_tot, followed by
+        m_p = sum_{e in tau(p)} m_e / T), and give PhysicsDeformableBodyAPI.density
+        precedence over bound-material density.
+        """
         from pxr import Sdf
 
         body_mass = 10.0

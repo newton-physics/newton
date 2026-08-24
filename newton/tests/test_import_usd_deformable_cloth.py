@@ -35,7 +35,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
     """Surface-deformable (cloth) parsing into particles + FEM triangles + bending edges."""
 
     def test_cloth_quad_mesh_is_triangulated(self):
-        """A quad-faced cloth mesh is fan-triangulated on import (n-gons are supported)."""
+        """Verify that import fan-triangulates quad faces to support n-gons."""
         from pxr import UsdGeom
 
         stage = _deformable_stage(up_axis="y")
@@ -58,7 +58,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertAlmostEqual(sum(builder.particle_mass), 8.0, places=6)
 
     def test_cloth_left_handed_orientation_flips_winding(self):
-        """A left-handed cloth mesh flips triangle winding, matching the rigid mesh path."""
+        """Verify that left-handed cloth flips winding like the rigid-mesh path."""
         from pxr import UsdGeom
 
         stage = _deformable_stage(up_axis="y")
@@ -364,10 +364,13 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertAlmostEqual(builder.particle_radius[p0], 0.0005, places=7)
 
     def test_cloth_default_thickness_converts_body_and_base_material_density(self):
-        """A volumetric density resolved from the deformable body API or a base physics
-        material still gets the default-thickness areal conversion. Neither source can
-        author a surface thickness, so without the default the volumetric value would be
-        passed to add_cloth_mesh() as areal density (~500x too heavy at 1000 kg/m^3)."""
+        """Verify default-thickness conversion for body and base-material density.
+
+        Density from either the deformable body API or a base physics material is
+        volumetric. Neither source can author a surface thickness, so without the
+        default that value would be passed to add_cloth_mesh() as areal density
+        (~500x too heavy at 1000 kg/m^3).
+        """
         from pxr import Sdf, UsdShade
 
         stage = _deformable_stage()
@@ -392,10 +395,14 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertAlmostEqual(builder.particle_radius[p0], 0.0005, places=7)
 
     def test_cloth_thickness_density_and_radius(self):
-        """Surface thickness (material attribute, or NewtonMassAPI shell fallback when the
-        material omits it) converts the volumetric material density to an areal density and
-        sets the particle collision radius to half the thickness, while
-        path_cloth_attrs.resolved_density stays the solver-neutral volumetric value."""
+        """Verify that resolved thickness controls cloth mass and collision radius.
+
+        Use simulation-geometry thickness, the NewtonMassAPI shell fallback, or the
+        AOUSD default to convert volumetric material density to areal density. Set the
+        particle collision radius to half the thickness instead of the generic builder
+        default, while keeping path_cloth_attrs.resolved_density solver-neutral and
+        volumetric.
+        """
         from pxr import Sdf
 
         thickness = 0.01
@@ -787,11 +794,13 @@ class TestUSDDeformableCloth(unittest.TestCase):
         builder.finalize()
 
     def test_subset_physics_material_binding_warns(self):
-        """Per-UsdGeomSubset physics material bindings (per-element density, per-edge
-        bendStiffness in the proposal) are not supported: the importer resolves one
-        material for the whole simulation geometry, so a subset binding a physics
-        material warns instead of being dropped silently. Render-only subset bindings
-        and the sim prim's own inherited binding stay silent."""
+        """Verify warnings for physics material bindings on UsdGeomSubsets.
+
+        Per-element density and the proposal's per-edge bendStiffness are not
+        supported: the importer resolves one material for the whole simulation geometry,
+        so a subset physics binding warns instead of being dropped silently. Render-only
+        subset bindings and the simulation prim's inherited binding stay silent.
+        """
         from pxr import Sdf, UsdGeom, UsdShade
 
         stage = _deformable_stage()
@@ -962,10 +971,13 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 self.assertNotEqual(masses, bad)
 
     def test_cloth_scale_bakes_and_reflection_flips_winding(self):
-        """xformOp:scale bakes into the particle positions as the full affine: a non-uniform
-        positive scale scales the vertices without touching winding, and a reflective
-        (negative) scale mirrors the particles (parity preserved) and flips triangle winding,
-        which a rotation+scale decomposition would silently drop."""
+        """Verify full-affine scale baking and reflection-aware cloth winding.
+
+        Bake xformOp:scale into particle positions. A non-uniform positive scale changes
+        vertices without changing winding, while a reflective scale mirrors particles and
+        flips triangle winding while preserving parity. A rotation-and-scale decomposition
+        would silently drop that reflection.
+        """
         from pxr import Gf, UsdGeom
 
         def import_cloth(scale):

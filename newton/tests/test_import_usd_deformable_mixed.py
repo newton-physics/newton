@@ -154,8 +154,10 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertAlmostEqual(builder.tet_materials[volume_tet][0], 3846.153846153846, delta=0.02)
 
     def test_mixed_scene_imports_and_finalizes(self):
-        """The mixed scene builds every family with correct counts, labels, disjoint
-        ranges, materials, and per-cable articulations, and finalizes in one pass."""
+        """Verify that a mixed scene imports and finalizes every family in one pass.
+
+        Check counts, labels, disjoint ranges, materials, and per-cable articulations.
+        """
         builder = newton.ModelBuilder()
         builder.add_usd(_ASSET)
 
@@ -376,7 +378,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
         builder.finalize()
 
     def test_unsupported_rest_and_velocity_fields_warn(self):
-        """Authored rest state and velocities warn per prim but do not block the import."""
+        """Verify that unsupported rest-state and velocity fields warn without blocking import."""
         from pxr import Sdf, UsdGeom
 
         stage = _deformable_stage()
