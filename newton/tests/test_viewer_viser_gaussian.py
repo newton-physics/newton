@@ -205,6 +205,21 @@ class TestViewerViserGaussian(unittest.TestCase):
         self.assertEqual(captured["add_calls"], 2)
         self.assertIsNot(viewer._scene_handles["/probe"], foreign_handle)
 
+    def test_log_gaussian_reuploads_after_another_logger_removes_its_handle_at_same_name(self):
+        """Upload a fresh point cloud when another log_* call removed the handle at the same name."""
+        viewer, captured = self._make_viser_viewer()
+        gaussian = _make_test_gaussian()
+
+        viewer.log_gaussian("/probe", gaussian, xform=wp.transformf(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        self.assertEqual(captured["add_calls"], 1)
+
+        # log_points(name, None, hidden=True) removes the viser node at this name.
+        viewer.log_points("/probe", None, hidden=True)
+
+        viewer.log_gaussian("/probe", gaussian, xform=wp.transformf(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+
+        self.assertEqual(captured["add_calls"], 2)
+
     def test_clear_model_drops_gaussian_cache(self):
         """Release the Gaussian cache and its handle when clear_model() runs.
 

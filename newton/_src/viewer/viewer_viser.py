@@ -678,6 +678,7 @@ class ViewerViser(ViewerBase):
                 self._scene_handles[name].remove()
             except Exception:
                 pass
+            del self._scene_handles[name]
 
         if hidden:
             return
@@ -1286,6 +1287,7 @@ class ViewerViser(ViewerBase):
                 self._scene_handles[name].remove()
             except Exception:
                 pass
+            del self._scene_handles[name]
 
         if hidden:
             return
