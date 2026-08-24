@@ -1931,8 +1931,8 @@ class RendererGL:
             self._edge_shader.update(
                 view_matrix=self._view_matrix,
                 projection_matrix=self._projection_matrix,
+                view_pos=self.camera.pos,
                 edge_color=self._edge_color,
-                light_space_matrix=self._light_space_matrix,
             )
             gl.glEnable(gl.GL_POLYGON_OFFSET_LINE)
             gl.glPolygonOffset(-1.0, -1.0)

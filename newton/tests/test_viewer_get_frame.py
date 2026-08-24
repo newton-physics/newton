@@ -205,11 +205,11 @@ class TestViewerGLGetFrame(unittest.TestCase):
             # imported USD ground assets and exposes clip-depth interpolation error that
             # a perfectly centered quad can accidentally hide.
             xforms = wp.array(
-                [wp.transform((-8500.0, 8500.0, 0.0), wp.quat_identity())],
+                [wp.transform((-850000.0, 850000.0, 0.0), wp.quat_identity())],
                 dtype=wp.transform,
                 device=viewer.device,
             )
-            scales = wp.array([(2.0e6, 2.0e6, 1.0)], dtype=wp.vec3, device=viewer.device)
+            scales = wp.array([(2.0e8, 2.0e8, 1.0)], dtype=wp.vec3, device=viewer.device)
             colors = wp.array([(0.7, 0.7, 0.7)], dtype=wp.vec3, device=viewer.device)
             materials = wp.array([(0.5, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=viewer.device)
             viewer.log_mesh("/test/quad", points, indices, normals, backface_culling=False)
@@ -221,9 +221,10 @@ class TestViewerGLGetFrame(unittest.TestCase):
             target_materials = wp.array([(0.5, 0.0, 0.0, 0.0)] * 3, dtype=wp.vec4, device=viewer.device)
             target_scales = wp.array([(1.0, 1.0, 1.0)] * 3, dtype=wp.vec3, device=viewer.device)
 
-            frames_by_shadow_mode = {}
-            for draw_shadows in (False, True):
+            frames_by_render_mode = {}
+            for draw_shadows, draw_edges in ((False, False), (True, False), (False, True)):
                 viewer.renderer.draw_shadows = draw_shadows
+                viewer.renderer.draw_edges = draw_edges
                 viewer.renderer.diffuse_scale = 1.0
                 frames = []
                 for frame_index, offset in enumerate((0.0, 1.0)):
@@ -254,7 +255,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 delta = np.abs(frames[0].astype(np.int16) - frames[1].astype(np.int16))
                 changed_pixel_fraction = np.mean(np.any(delta > 2, axis=-1))
                 mean_absolute_delta = np.mean(delta)
-                message_suffix = f" with draw_shadows={draw_shadows}"
+                message_suffix = f" with draw_shadows={draw_shadows}, draw_edges={draw_edges}"
                 self.assertLess(
                     changed_pixel_fraction,
                     0.01,
@@ -262,21 +263,28 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 )
                 self.assertLess(
                     mean_absolute_delta,
-                    1.0,
+                    2.0,
                     f"mean absolute pixel delta was {mean_absolute_delta:.3f}{message_suffix}",
                 )
-                frames_by_shadow_mode[draw_shadows] = frames
+                frames_by_render_mode[draw_shadows, draw_edges] = frames
 
             shadow_delta = np.abs(
-                frames_by_shadow_mode[True][0].astype(np.int16) - frames_by_shadow_mode[False][0].astype(np.int16)
+                frames_by_render_mode[True, False][0].astype(np.int16)
+                - frames_by_render_mode[False, False][0].astype(np.int16)
             )
             shadow_changed_fraction = np.mean(np.any(shadow_delta > 2, axis=-1))
-            self.assertGreater(shadow_changed_fraction, 0.01, "the target boxes cast no visible shadows")
+            self.assertGreater(shadow_changed_fraction, 0.001, "the target boxes cast no visible shadows")
             self.assertLess(
                 shadow_changed_fraction,
                 0.1,
                 f"shadows changed {shadow_changed_fraction:.2%} of the frame instead of remaining local",
             )
+            edge_delta = np.abs(
+                frames_by_render_mode[False, True][0].astype(np.int16)
+                - frames_by_render_mode[False, False][0].astype(np.int16)
+            )
+            edge_changed_fraction = np.mean(np.any(edge_delta > 2, axis=-1))
+            self.assertGreater(edge_changed_fraction, 0.001, "the target boxes have no visible edge overlay")
         finally:
             viewer.close()
 

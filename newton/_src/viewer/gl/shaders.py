@@ -289,8 +289,8 @@ vec3 sample_env_map(vec3 dir, float lod)
 
 void main()
 {
+    // This reconstruction also corrects depth before the fragment is committed.
     vec3 camera_to_fragment = ReconstructCameraRelativePosition();
-    vec3 view_position = mat3(view) * camera_to_fragment;
 
     // material properties from vertex shader
     float roughness = clamp(Material.x, 0.0, 1.0);
@@ -395,7 +395,7 @@ void main()
     color += env_spec * metallic;
 
     // fog
-    float dist = length(view_position);
+    float dist = length(camera_to_fragment);
     float fog_start = 20.0;
     float fog_end   = 200.0;
     float fog_factor = clamp((dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
@@ -1026,19 +1026,18 @@ class ShaderEdge(ShaderGL):
         with self:
             self.loc_view = self._get_uniform_location("view")
             self.loc_projection = self._get_uniform_location("projection")
+            self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_edge_color = self._get_uniform_location("edge_color")
-            self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
 
     def update(
         self,
         view_matrix: np.ndarray,
         projection_matrix: np.ndarray,
+        view_pos: tuple[float, float, float],
         edge_color: tuple[float, float, float, float] = (0.05, 0.05, 0.05, 1.0),
-        light_space_matrix: np.ndarray | None = None,
     ):
         with self:
             self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
             self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+            self._gl.glUniform3f(self.loc_view_pos, *view_pos)
             self._gl.glUniform4f(self.loc_edge_color, *edge_color)
-            lsm = light_space_matrix if light_space_matrix is not None else np.eye(4, dtype=np.float32)
-            self._gl.glUniformMatrix4fv(self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(lsm))
