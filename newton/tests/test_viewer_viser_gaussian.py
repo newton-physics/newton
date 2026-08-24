@@ -173,6 +173,38 @@ class TestViewerViserGaussian(unittest.TestCase):
         self.assertNotIn("/probe", viewer._scene_handles)
         self.assertNotIn("/probe", viewer._gaussian_splats)
 
+    def test_log_gaussian_removes_handle_when_asset_becomes_none_even_if_hidden(self):
+        """Remove a stale handle for a None asset regardless of the hidden flag."""
+        viewer, _captured = self._make_viser_viewer()
+        gaussian = _make_test_gaussian()
+
+        viewer.log_gaussian("/probe", gaussian, xform=wp.transformf(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        handle = viewer._scene_handles["/probe"]
+
+        viewer.log_gaussian("/probe", None, hidden=True)
+
+        handle.remove.assert_called_once()
+        self.assertNotIn("/probe", viewer._scene_handles)
+        self.assertNotIn("/probe", viewer._gaussian_splats)
+
+    def test_log_gaussian_reuploads_when_scene_handle_is_reclaimed(self):
+        """Upload a fresh point cloud when the shared scene-handle slot at name was reclaimed elsewhere."""
+        viewer, captured = self._make_viser_viewer()
+        gaussian = _make_test_gaussian()
+
+        viewer.log_gaussian("/probe", gaussian, xform=wp.transformf(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        self.assertEqual(captured["add_calls"], 1)
+
+        # Simulate another log_* call claiming the same name (e.g. log_mesh), which
+        # replaces _scene_handles["/probe"] without touching _gaussian_splats.
+        foreign_handle = Mock()
+        viewer._scene_handles["/probe"] = foreign_handle
+
+        viewer.log_gaussian("/probe", gaussian, xform=wp.transformf(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+
+        self.assertEqual(captured["add_calls"], 2)
+        self.assertIsNot(viewer._scene_handles["/probe"], foreign_handle)
+
     def test_clear_model_drops_gaussian_cache(self):
         """Release the Gaussian cache and its handle when clear_model() runs.
 
