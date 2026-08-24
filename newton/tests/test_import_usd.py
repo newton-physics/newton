@@ -48,7 +48,7 @@ _INVALID_ARTICULATION_DESC = "Warning: Invalid ArticulationDesc descriptor"
 def _expect_jointless_articulation_warning(test):
     """Require the benign jointless-articulation warning on OpenUSD < 26.0.
 
-    ``UsdPhysics.LoadUsdPhysicsFromRange`` in OpenUSD < 26.0 (e.g. the
+    ``UsdPhysics``'s native physics parser in OpenUSD < 26.0 (e.g. the
     ``usd-exchange`` build resolved on ``aarch64``) reports an articulation root
     that has no joints as an invalid ``ArticulationDesc``, which
     :func:`~newton.utils.parse_usd` surfaces as a ``UserWarning``; usd-core
@@ -4898,7 +4898,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
     from pxr import Gf, Sdf, Usd, UsdPhysics
 
     stage = Usd.Stage.Open(file)
-    parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
+    parsed = usd_utils.load_physics_from_range(stage, ["/"])
     # since the key is generated from USD paths we can assume that keys are unique
     body_key_to_idx = dict(zip(model.body_label, range(model.body_count), strict=False))
     shape_key_to_idx = dict(zip(model.shape_label, range(model.shape_count), strict=False))
