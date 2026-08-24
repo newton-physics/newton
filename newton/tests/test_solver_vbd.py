@@ -4323,6 +4323,7 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
 
 
 def _tet_only_elasticity_eligibility_matches_active_materials(test, device):
+    """Enable tet-only elasticity only when triangle and edge stiffness are inactive."""
     vertices = [
         wp.vec3(0.0, 0.0, 0.0),
         wp.vec3(1.0, 0.0, 0.0),
@@ -4376,6 +4377,7 @@ def _tet_only_elasticity_eligibility_matches_active_materials(test, device):
 
 
 def _tet_only_tile_solve_matches_legacy_bits(test, device):
+    """Match the general tile solve bit for bit on a high-valence tet mesh."""
     # The central particle has 17 adjacent tets, exercising a second 16-lane batch.
     vertices = [wp.vec3(0.0, 0.0, 0.0)]
     indices = []
