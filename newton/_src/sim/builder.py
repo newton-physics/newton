@@ -1126,6 +1126,32 @@ class ModelBuilder:
                         yield {"joint": joint_path, "stiffness": prim.GetCustomDataByKey("stiffness")}
         """
 
+        articulation_owner_attribute: str | None = None
+        """Full key of the attribute that assigns each row to an articulation.
+
+        The attribute must use this custom frequency, be assigned to the model,
+        and declare ``references="articulation"``. When provided,
+        :class:`~newton.selection.ArticulationView` automatically exposes every
+        array that uses this frequency.
+        """
+
+        articulation_owner_resolver: Callable[[ModelBuilder], Sequence[int]] | None = None
+        """Optional callback that computes the articulation owner for every row.
+
+        The callback runs before this builder is merged or finalized and its
+        results populate :attr:`articulation_owner_attribute`. This keeps
+        solver-specific ownership logic local to the custom-frequency
+        registration while preserving ordinary reference remapping.
+        """
+
+        label_attribute: str | None = None
+        """Optional full key of a string attribute containing row labels.
+
+        The attribute must use this custom frequency and be assigned to the model.
+        :class:`~newton.selection.ArticulationView` uses it to expose labels for
+        the template articulation.
+        """
+
         def __post_init__(self):
             """Validate frequency naming and callback relationships."""
             if not self.name or ":" in self.name:
@@ -1134,6 +1160,14 @@ class ModelBuilder:
                 raise ValueError(f"namespace must be non-empty and colon-free, got '{self.namespace}'")
             if self.usd_entry_expander is not None and self.usd_prim_filter is None:
                 raise ValueError("usd_entry_expander requires usd_prim_filter")
+            if self.articulation_owner_resolver is not None and self.articulation_owner_attribute is None:
+                raise ValueError("articulation_owner_resolver requires articulation_owner_attribute")
+            for field_name, attribute_key in (
+                ("articulation_owner_attribute", self.articulation_owner_attribute),
+                ("label_attribute", self.label_attribute),
+            ):
+                if attribute_key is not None and not attribute_key:
+                    raise ValueError(f"{field_name} must be non-empty when provided")
 
         @property
         def key(self) -> str:
@@ -1649,6 +1683,8 @@ class ModelBuilder:
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
         """Running counts for custom string frequencies used to size custom attribute arrays."""
+        self._custom_frequency_owner_resolved_counts: dict[str, int] = {}
+        """Row counts covered by the latest custom-frequency owner resolution."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
@@ -1750,6 +1786,9 @@ class ModelBuilder:
         return (
             existing.usd_prim_filter is incoming.usd_prim_filter
             and existing.usd_entry_expander is incoming.usd_entry_expander
+            and existing.articulation_owner_attribute == incoming.articulation_owner_attribute
+            and existing.articulation_owner_resolver is incoming.articulation_owner_resolver
+            and existing.label_attribute == incoming.label_attribute
         )
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
@@ -1866,7 +1905,9 @@ class ModelBuilder:
         if freq_key in self.custom_frequencies:
             existing = self.custom_frequencies[freq_key]
             if not self._custom_frequency_specs_match(existing, freq_obj):
-                raise ValueError(f"Custom frequency '{freq_key}' is already registered with different callbacks.")
+                raise ValueError(
+                    f"Custom frequency '{freq_key}' is already registered with different callbacks or metadata."
+                )
             # Already registered with equivalent callbacks - silently skip
             return
 
@@ -1898,6 +1939,120 @@ class ModelBuilder:
     def get_custom_frequency_keys(self) -> set[str]:
         """Return set of custom frequency keys (string frequencies) defined in this builder."""
         return set(self._custom_frequency_counts.keys())
+
+    @staticmethod
+    def _get_namespaced_attribute(source: Any, key: str) -> Any:
+        """Return an attribute addressed by its colon-delimited key."""
+        value = source
+        for component in key.split(":"):
+            value = getattr(value, component)
+        return value
+
+    def _resolve_custom_frequency_articulation_owners(self) -> None:
+        """Populate declared owner attributes using frequency-local callbacks."""
+        for frequency_key, frequency in self.custom_frequencies.items():
+            resolver = frequency.articulation_owner_resolver
+            if resolver is None:
+                continue
+
+            count = self._custom_frequency_counts.get(frequency_key, 0)
+            if self._custom_frequency_owner_resolved_counts.get(frequency_key) == count:
+                continue
+
+            owner_key = frequency.articulation_owner_attribute
+            assert owner_key is not None
+            owner_attribute = self.custom_attributes.get(owner_key)
+            if owner_attribute is None:
+                raise ValueError(
+                    f"Custom frequency '{frequency_key}' declares unknown articulation owner attribute '{owner_key}'"
+                )
+
+            resolved_owners = list(resolver(self))
+            if len(resolved_owners) != count:
+                raise ValueError(
+                    f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                    f"{len(resolved_owners)} values, expected {count}"
+                )
+            owners = []
+            for row, owner in enumerate(resolved_owners):
+                if not self._is_integer_scalar(owner):
+                    raise ValueError(
+                        f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                        f"non-integer value {owner!r} at row {row}"
+                    )
+                owner_index = int(owner)
+                if owner_index < -1 or owner_index >= self.articulation_count:
+                    raise ValueError(
+                        f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                        f"invalid articulation index {owner_index} at row {row}"
+                    )
+                owners.append(owner_index)
+            owner_attribute.values = owners
+            self._custom_frequency_owner_resolved_counts[frequency_key] = count
+
+    def _finalize_custom_frequency_metadata(self, model: Model, device: Devicelike | None) -> None:
+        """Materialize articulation ownership and label metadata on a model."""
+        for frequency_key, frequency in self.custom_frequencies.items():
+            owner_key = frequency.articulation_owner_attribute
+            if owner_key is not None:
+                owner_attribute = self.custom_attributes.get(owner_key)
+                if owner_attribute is None:
+                    raise ValueError(
+                        f"Custom frequency '{frequency_key}' declares unknown articulation owner attribute "
+                        f"'{owner_key}'"
+                    )
+                if owner_attribute.frequency != frequency_key:
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' uses frequency "
+                        f"'{owner_attribute.frequency}', expected '{frequency_key}'"
+                    )
+                if owner_attribute.assignment != Model.AttributeAssignment.MODEL:
+                    raise ValueError(f"Articulation owner attribute '{owner_key}' must be assigned to Model")
+                if owner_attribute.references != "articulation":
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' must declare references='articulation'"
+                    )
+                if not wp.types.type_is_int(owner_attribute.dtype):
+                    raise ValueError(f"Articulation owner attribute '{owner_key}' must use an integer dtype")
+
+                count = model.custom_frequency_counts.get(frequency_key, 0)
+                if count == 0:
+                    owners = wp.empty(0, dtype=owner_attribute.dtype, device=device)
+                else:
+                    owners = self._get_namespaced_attribute(model, owner_key)
+                    if not isinstance(owners, wp.array) or owners.ndim != 1:
+                        raise ValueError(f"Articulation owner attribute '{owner_key}' must be a 1-D Warp array")
+                    if len(owners) != count:
+                        raise ValueError(
+                            f"Articulation owner attribute '{owner_key}' has {len(owners)} values but "
+                            f"frequency '{frequency_key}' expects {count}"
+                        )
+                    owner_values = owners.numpy()
+                    invalid = np.flatnonzero((owner_values < -1) | (owner_values >= model.articulation_count))
+                    if len(invalid) > 0:
+                        row = int(invalid[0])
+                        raise ValueError(
+                            f"Articulation owner attribute '{owner_key}' contains invalid articulation "
+                            f"index {int(owner_values[row])} at row {row}"
+                        )
+                model.custom_frequency_articulation[frequency_key] = owners
+
+            label_key = frequency.label_attribute
+            if label_key is None:
+                continue
+            label_attribute = self.custom_attributes.get(label_key)
+            if label_attribute is None:
+                raise ValueError(f"Custom frequency '{frequency_key}' declares unknown label attribute '{label_key}'")
+            if label_attribute.frequency != frequency_key:
+                raise ValueError(
+                    f"Label attribute '{label_key}' uses frequency '{label_attribute.frequency}', "
+                    f"expected '{frequency_key}'"
+                )
+            if label_attribute.assignment != Model.AttributeAssignment.MODEL:
+                raise ValueError(f"Label attribute '{label_key}' must be assigned to Model")
+            if label_attribute.dtype is not str:
+                raise ValueError(f"Label attribute '{label_key}' must use dtype=str")
+            model.custom_frequency_label_attributes[frequency_key] = label_key
 
     def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
         """Append values to custom attributes with custom string frequencies.
@@ -3028,7 +3183,9 @@ class ModelBuilder:
         for freq_key, frequency in builder.custom_frequencies.items():
             existing = self.custom_frequencies.get(freq_key)
             if existing is not None and not self._custom_frequency_specs_match(existing, frequency):
-                raise ValueError(f"Custom frequency '{freq_key}' is already registered with different callbacks.")
+                raise ValueError(
+                    f"Custom frequency '{freq_key}' is already registered with different callbacks or metadata."
+                )
 
         for full_key, attr in builder.custom_attributes.items():
             merged = self.custom_attributes.get(full_key)
@@ -4040,6 +4197,11 @@ class ModelBuilder:
         world: int,
         label_prefix: str | None,
     ) -> None:
+        # Resolve source rows before ordinary reference remapping copies them.
+        # Resolve existing destination rows too, since its topology may have
+        # changed since the rows were first added.
+        builder._resolve_custom_frequency_articulation_owners()
+        self._resolve_custom_frequency_articulation_owners()
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
         # Builders allocate MJCF mask-domain IDs independently. Remap every
@@ -4227,6 +4389,11 @@ class ModelBuilder:
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
+            frequency = builder.custom_frequencies.get(freq_key)
+            if frequency is not None and frequency.articulation_owner_resolver is not None:
+                # Source owner values were resolved above and remapped as regular
+                # articulation references, so the merged rows are already current.
+                self._custom_frequency_owner_resolved_counts[freq_key] = offset + builder_count
 
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
             self._add_custom_attribute_model_finalizer(key, finalizer)
@@ -12536,8 +12703,12 @@ class ModelBuilder:
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)
+            self._resolve_custom_frequency_articulation_owners()
+
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
+                m.custom_frequency_counts = dict(self._custom_frequency_counts)
+                self._finalize_custom_frequency_metadata(m, device)
                 m.bvh_build_shapes(
                     m,
                     bvh_constructor=self.default_bvh_cfg.shape_constructor,
@@ -12548,7 +12719,7 @@ class ModelBuilder:
 
             # Resolve authoritative counts for custom frequencies
             # Use incremental _custom_frequency_counts as primary source, with safety fallback
-            custom_frequency_counts: dict[str, int] = {}
+            custom_frequency_counts: dict[str, int] = dict(self._custom_frequency_counts)
             frequency_max_lens: dict[str, int] = {}  # Track max len(values) per frequency as fallback
 
             # First pass: collect max len(values) per frequency as fallback
@@ -12560,10 +12731,7 @@ class ModelBuilder:
 
             # Determine authoritative counts: prefer _custom_frequency_counts, fallback to max lens
             for freq_key, max_len in frequency_max_lens.items():
-                if freq_key in self._custom_frequency_counts:
-                    # Use authoritative incremental counter
-                    custom_frequency_counts[freq_key] = self._custom_frequency_counts[freq_key]
-                else:
+                if freq_key not in custom_frequency_counts:
                     # Safety fallback: use max observed length
                     custom_frequency_counts[freq_key] = max_len
 
@@ -12648,6 +12816,8 @@ class ModelBuilder:
                     custom_attr.namespace,
                     custom_attr.references,
                 )
+
+            self._finalize_custom_frequency_metadata(m, device)
 
             m.bvh_build_shapes(
                 m,

@@ -6977,6 +6977,9 @@ class TestMuJoCoAttributes(unittest.TestCase):
         self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 1)
         self.assertEqual(model.custom_frequency_counts["mujoco:tendon_joint"], 1)
         self.assertEqual(model.mujoco.actuator_target_label[0], "/World/RobotA/fixed_tendon")
+        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:tendon"].numpy(), [0])
+        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:tendon_joint"].numpy(), [0])
+        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), [0])
 
         solver = SolverMuJoCo(model, separate_worlds=False)
         mujoco = SolverMuJoCo._mujoco
