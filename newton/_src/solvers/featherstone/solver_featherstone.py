@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import math
+
 import numpy as np
 import warp as wp
 
@@ -139,7 +141,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         *,
         angular_damping: float = 0.05,
         update_mass_matrix_interval: int = 1,
-        friction_smoothing: float = 1.0,
+        friction_smoothing: float = 1.0e-3,
         use_tile_gemm: bool = False,
         fuse_cholesky: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -149,7 +151,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             model: The model to be simulated.
             angular_damping: Angular damping factor. Defaults to 0.05.
             update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
-            friction_smoothing: The delta value for the Huber norm (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`) used for the friction velocity normalization. Defaults to 1.0.
+            friction_smoothing: Slip speed [m/s] below which friction fades out, passed as ``delta`` to :func:`warp.norm_pseudo_huber`. Friction is ``min(kf * |v_t|, mu * |f_n|)`` scaled by ``|v_t| / sqrt(delta^2 + |v_t|^2)``, so keep it well under the slip speeds in the scene. Must be positive. Defaults to 1.0e-3.
             use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
             deterministic: Opt-in determinism for this solver's atomic-emitting
@@ -157,6 +159,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 ``None`` (default) to inherit the current
                 ``wp.config.deterministic`` mode.
         """
+        if not math.isfinite(friction_smoothing) or friction_smoothing <= 0.0:
+            raise ValueError(f"friction_smoothing must be finite and > 0 (got {friction_smoothing}).")
         super().__init__(model)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         if model.joint_count > 0:
