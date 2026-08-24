@@ -28,6 +28,7 @@ defining generic shape data structures that work across all primitive types.
 """
 
 import enum
+from typing import Any
 
 import warp as wp
 
@@ -37,6 +38,21 @@ from .types import GeoType
 # Near-zero direction components (e.g. from quaternion rotation noise ~1e-14)
 # are treated as non-negative, biasing toward the +1 vertex.
 BOX_SUPPORT_DEADBAND = 1.0e-10
+_CENTERED_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
+TRIANGLE_PRISM_EXTRUSION = 1.0
+"""Depth [m] a triangle is extruded along -Z to give a heightfield cell volume."""
+
+
+@wp.func_native("""
+#if defined(__CUDA_ARCH__)
+return __frsqrt_rn(value);
+#else
+return 1.0f / sqrtf(value);
+#endif
+""")
+def _support_rsqrt_rn(value: float) -> float:
+    """Return a round-to-nearest reciprocal square root of a positive value."""
+    ...
 
 
 # Is not allowed to share values with GeoType
@@ -91,7 +107,7 @@ class GenericShapeData:
       - SPHERE: radius in x
       - CAPSULE: radius in x, half-height in y (axis +Z)
       - ELLIPSOID: semi-axes (x, y, z)
-      - CYLINDER: radius in x, half-height in y (axis +Z)
+      - CYLINDER: end radius in x, half-height in y, barrel radius in z (axis +Z)
       - CONE: radius in x, half-height in y (axis +Z, apex at +Z)
       - PLANE: half-width in x, half-length in y (lies in XY plane at z=0, normal along +Z)
       - TRIANGLE: vertex B-A stored in scale, vertex C-A stored in auxiliary
@@ -101,6 +117,18 @@ class GenericShapeData:
     shape_type: int
     scale: wp.vec3
     auxiliary: wp.vec3
+    center: wp.vec3  # Precomputed local AABB center for convex seed initialization.
+
+
+@wp.func
+def _support_map_box(geom: GenericShapeData, direction: wp.vec3) -> wp.vec3:
+    """Return the support point of a box in its local frame."""
+    direction_scale = wp.max(wp.abs(direction[0]), wp.max(wp.abs(direction[1]), wp.abs(direction[2])))
+    threshold = BOX_SUPPORT_DEADBAND * direction_scale
+    sx = 1.0 if direction[0] >= -threshold else -1.0
+    sy = 1.0 if direction[1] >= -threshold else -1.0
+    sz = 1.0 if direction[2] >= -threshold else -1.0
+    return wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
 
 
 @wp.func
@@ -113,7 +141,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
     - SPHERE: radius in x component
     - CAPSULE: radius in x, half-height in y (axis along +Z)
     - ELLIPSOID: semi-axes in x/y/z
-    - CYLINDER: radius in x, half-height in y (axis along +Z)
+    - CYLINDER: end radius in x, half-height in y, barrel radius in z (axis along +Z)
     - CONE: radius in x, half-height in y (axis along +Z, apex at +Z)
     - PLANE: half-width in x, half-length in y (lies in XY plane at z=0, normal along +Z)
     - CONVEX_MESH: scale contains mesh scale, auxiliary contains packed mesh pointer
@@ -171,7 +199,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         # always the heightfield's down direction.
         if geom.shape_type == GeoTypeEx.TRIANGLE_PRISM:
             if direction[2] < 0.0:
-                result = result + wp.vec3(0.0, 0.0, -1.0)
+                result = result + wp.vec3(0.0, 0.0, -TRIANGLE_PRISM_EXTRUSION)
     elif geom.shape_type == GeoType.BOX:
         # Use a relative deadband so near-zero direction components
         # (from solver rotation drift ~1e-7) cannot flip the sign
@@ -179,18 +207,13 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         # the non-primary components are zero; any vertex on that face
         # is an equally valid support point, so biasing toward +1 is
         # correct and keeps MPR's initial portal construction stable.
-        threshold = BOX_SUPPORT_DEADBAND * wp.length(direction)
-        sx = 1.0 if direction[0] >= -threshold else -1.0
-        sy = 1.0 if direction[1] >= -threshold else -1.0
-        sz = 1.0 if direction[2] >= -threshold else -1.0
-
-        result = wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
+        result = _support_map_box(geom, direction)
 
     elif geom.shape_type == GeoType.SPHERE:
         radius = geom.scale[0]
         dir_len_sq = wp.length_sq(direction)
         if dir_len_sq > eps:
-            n = wp.normalize(direction)
+            n = direction * _support_rsqrt_rn(dir_len_sq)
         else:
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
@@ -203,7 +226,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
         # Sphere part: support in normalized direction
         dir_len_sq = wp.length_sq(direction)
         if dir_len_sq > eps:
-            n = wp.normalize(direction)
+            n = direction * _support_rsqrt_rn(dir_len_sq)
         else:
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
@@ -228,9 +251,11 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
             cdz = c * direction[2]
             denom_sq = adx * adx + bdy * bdy + cdz * cdz
             if denom_sq > eps:
-                denom = wp.sqrt(denom_sq)
+                inv_denom = _support_rsqrt_rn(denom_sq)
                 result = wp.vec3(
-                    (a * a) * direction[0] / denom, (b * b) * direction[1] / denom, (c * c) * direction[2] / denom
+                    (a * a) * direction[0] * inv_denom,
+                    (b * b) * direction[1] * inv_denom,
+                    (c * c) * direction[2] * inv_denom,
                 )
             else:
                 result = wp.vec3(a, 0.0, 0.0)
@@ -240,24 +265,48 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
     elif geom.shape_type == GeoType.CYLINDER:
         radius = geom.scale[0]
         half_height = geom.scale[1]
+        barrel_radius = geom.scale[2]
 
-        # Cylinder support: project direction to XY plane for lateral surface
         dir_xy = wp.vec3(direction[0], direction[1], 0.0)
         dir_xy_len_sq = wp.length_sq(dir_xy)
 
-        if dir_xy_len_sq > eps:
-            n_xy = wp.normalize(dir_xy)
-            lateral_point = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, 0.0)
-        else:
-            lateral_point = wp.vec3(radius, 0.0, 0.0)
+        if barrel_radius == 0.0:
+            # Keep the regular-cylinder path unchanged.
+            if dir_xy_len_sq > eps:
+                n_xy = dir_xy * _support_rsqrt_rn(dir_xy_len_sq)
+                lateral_point = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, 0.0)
+            else:
+                lateral_point = wp.vec3(radius, 0.0, 0.0)
 
-        # Choose between top cap, bottom cap, or lateral surface
-        if direction[2] > 0.0:
-            result = wp.vec3(lateral_point[0], lateral_point[1], half_height)
-        elif direction[2] < 0.0:
-            result = wp.vec3(lateral_point[0], lateral_point[1], -half_height)
+            if direction[2] > 0.0:
+                result = wp.vec3(lateral_point[0], lateral_point[1], half_height)
+            elif direction[2] < 0.0:
+                result = wp.vec3(lateral_point[0], lateral_point[1], -half_height)
+            else:
+                result = lateral_point
         else:
-            result = lateral_point
+            if dir_xy_len_sq > eps:
+                dir_xy_len = wp.sqrt(dir_xy_len_sq)
+                n_xy = dir_xy / dir_xy_len
+            else:
+                dir_xy_len = 0.0
+                n_xy = wp.vec3(1.0, 0.0, 0.0)
+
+            direction_len = wp.sqrt(dir_xy_len_sq + direction[2] * direction[2])
+            support_z = 0.0
+            if direction_len > eps:
+                support_z = wp.clamp(barrel_radius * direction[2] / direction_len, -half_height, half_height)
+
+            barrel_radius_sq = barrel_radius * barrel_radius
+            half_height_sq = half_height * half_height
+            support_z_sq = support_z * support_z
+            end_offset = wp.sqrt(barrel_radius_sq - half_height_sq)
+            support_offset = wp.sqrt(wp.max(barrel_radius_sq - support_z_sq, 0.0))
+            offset_sum = support_offset + end_offset
+            support_radius = radius
+            if offset_sum > eps:
+                support_radius += (half_height_sq - support_z_sq) / offset_sum
+            result = wp.vec3(n_xy[0] * support_radius, n_xy[1] * support_radius, support_z)
 
     elif geom.shape_type == GeoType.CONE:
         radius = geom.scale[0]
@@ -329,22 +378,312 @@ def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: 
         result = wp.cw_mul(mesh.points[best_idx], geom.scale)
 
     elif geom.shape_type == GeoType.BOX:
-        threshold = BOX_SUPPORT_DEADBAND * wp.length(direction)
-        sx = 1.0 if direction[0] >= -threshold else -1.0
-        sy = 1.0 if direction[1] >= -threshold else -1.0
-        sz = 1.0 if direction[2] >= -threshold else -1.0
-        result = wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
+        result = _support_map_box(geom, direction)
 
     elif geom.shape_type == GeoType.SPHERE:
         radius = geom.scale[0]
         dir_len_sq = wp.length_sq(direction)
         if dir_len_sq > 1.0e-12:
-            n = wp.normalize(direction)
+            n = direction * _support_rsqrt_rn(dir_len_sq)
         else:
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
 
     return result
+
+
+def create_shape_support_function(support_func: Any, center_ties: bool = False):
+    """Create a support function with built-in shape policies."""
+    fuse_builtin_box_support = support_func is support_map or support_func is support_map_lean
+
+    if center_ties:
+
+        @wp.func
+        def shape_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+            result = wp.vec3(0.0, 0.0, 0.0)
+            if wp.static(fuse_builtin_box_support):
+                if geom.shape_type == GeoType.BOX:
+                    abs_direction = wp.vec3(wp.abs(direction[0]), wp.abs(direction[1]), wp.abs(direction[2]))
+                    result = _support_map_box(geom, direction)
+                    contribution = wp.cw_mul(abs_direction, geom.scale)
+                    threshold = _CENTERED_BOX_SUPPORT_TIE_EPSILON * (
+                        contribution[0] + contribution[1] + contribution[2]
+                    )
+                    if contribution[0] <= threshold:
+                        result[0] = 0.0
+                    if contribution[1] <= threshold:
+                        result[1] = 0.0
+                    if contribution[2] <= threshold:
+                        result[2] = 0.0
+                else:
+                    result = support_func(geom, direction, data_provider)
+            else:
+                result = support_func(geom, direction, data_provider)
+                if geom.shape_type == GeoType.BOX:
+                    contribution = wp.cw_mul(wp.abs(direction), geom.scale)
+                    threshold = _CENTERED_BOX_SUPPORT_TIE_EPSILON * (
+                        contribution[0] + contribution[1] + contribution[2]
+                    )
+                    if contribution[0] <= threshold:
+                        result[0] = 0.0
+                    if contribution[1] <= threshold:
+                        result[1] = 0.0
+                    if contribution[2] <= threshold:
+                        result[2] = 0.0
+            return result
+
+    else:
+
+        @wp.func
+        def shape_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+            result = wp.vec3(0.0, 0.0, 0.0)
+            if wp.static(fuse_builtin_box_support):
+                if geom.shape_type == GeoType.BOX:
+                    result = _support_map_box(geom, direction)
+                else:
+                    result = support_func(geom, direction, data_provider)
+            else:
+                result = support_func(geom, direction, data_provider)
+            return result
+
+    return shape_support
+
+
+def create_triangle_prism_penetration_refiner(support_func: Any):
+    """Create physical-surface refinement for triangle-prism collision proxies.
+
+    MPR operates on closed convex proxies, but a proxy may contain artificial
+    faces that are needed only to give it volume. The returned function maps a
+    triangle-prism result back to its physical face.
+
+    Args:
+        support_func: Support function for individual shapes.
+
+    Returns:
+        A function that refines MPR witness points, normal, and penetration.
+    """
+
+    shape_support = create_shape_support_function(support_func, center_ties=True)
+
+    @wp.func
+    def refine_penetration(
+        geom_a: Any,
+        geom_b: Any,
+        orientation_b: wp.quat,
+        position_b: wp.vec3,
+        extend: float,
+        data_provider: Any,
+        point_a: wp.vec3,
+        point_b: wp.vec3,
+        normal: wp.vec3,
+        penetration: float,
+    ) -> tuple[wp.vec3, wp.vec3, wp.vec3, float]:
+        if geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
+            surface_normal = wp.cross(geom_a.scale, geom_a.auxiliary)
+            normal_length_sq = wp.length_sq(surface_normal)
+            if normal_length_sq >= 1.0e-24:
+                surface_normal /= wp.sqrt(normal_length_sq)
+                if surface_normal[2] < 0.0:
+                    surface_normal = -surface_normal
+
+                surface_point_a = shape_support(geom_a, surface_normal, data_provider)
+                direction_b = wp.quat_rotate_inv(orientation_b, -surface_normal)
+                surface_point_b = shape_support(geom_b, direction_b, data_provider)
+                surface_point_b = wp.quat_rotate(orientation_b, surface_point_b) + position_b
+                if extend != 0.0:
+                    offset = surface_normal * extend * 0.5
+                    surface_point_a += offset
+                    surface_point_b -= offset
+                surface_penetration = wp.dot(surface_point_a - surface_point_b, surface_normal)
+
+                # A finite triangle must not use a support point beyond its
+                # footprint. A neighboring heightfield triangle may own that
+                # point, while at the outer boundary there may be no surface.
+                projected_b = surface_point_b - wp.dot(surface_point_b, surface_normal) * surface_normal
+                closest_b = closest_point_on_triangle(
+                    projected_b,
+                    wp.vec3(0.0),
+                    geom_a.scale,
+                    geom_a.auxiliary,
+                )
+                support_on_face = wp.length_sq(projected_b - closest_b) < 1.0e-10
+
+                if not support_on_face:
+                    # A neighboring cell owns the deepest point, so measure this cell's overlap
+                    # at MPR's own witness instead.  The face normal still applies -- the
+                    # surface is what shape B is resting on -- but the depth is only what this
+                    # triangle actually carries.
+                    surface_point_b = point_b
+                    surface_penetration = wp.dot(surface_point_a - point_b, surface_normal)
+                normal = surface_normal
+                penetration = surface_penetration
+                point_b = surface_point_b
+                point_a = point_b + penetration * normal
+
+        return point_a, point_b, normal, penetration
+
+    return refine_penetration
+
+
+@wp.func
+def _shape_center(geom: Any) -> wp.vec3:
+    """Return a local interior-point approximation for a supported shape."""
+    if geom.shape_type == int(GeoType.CONVEX_MESH):
+        mesh = wp.mesh_get(unpack_mesh_ptr(geom.auxiliary))
+        scale = geom.scale
+        first = wp.cw_mul(mesh.points[0], scale)
+        lower = first
+        upper = first
+        for i in range(1, mesh.points.shape[0]):
+            point = wp.cw_mul(mesh.points[i], scale)
+            lower = wp.min(lower, point)
+            upper = wp.max(upper, point)
+        return 0.5 * (lower + upper)
+    return wp.vec3(0.0)
+
+
+@wp.func
+def _adjust_minkowski_center(geom_a: Any, center_b_world: wp.vec3, center_b_to_a: wp.vec3) -> wp.vec3:
+    """Adjust the Minkowski center for shapes that need a local contact seed."""
+    if geom_a.shape_type != int(GeoTypeEx.TRIANGLE) and geom_a.shape_type != int(GeoTypeEx.TRIANGLE_PRISM):
+        return center_b_to_a
+
+    tri_a = wp.vec3(0.0)
+    tri_b = geom_a.scale
+    tri_c = geom_a.auxiliary
+    face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
+    face_normal_length_sq = wp.length_sq(face_normal)
+    projection = closest_point_on_triangle(center_b_world, tri_a, tri_b, tri_c)
+    if face_normal_length_sq < 1.0e-20:
+        return projection - center_b_world
+
+    face_normal_unit = face_normal / wp.sqrt(face_normal_length_sq)
+    signed_plane_distance = wp.dot(center_b_world - tri_a, face_normal_unit)
+    plane_projection = center_b_world - signed_plane_distance * face_normal_unit
+    inside_face = (
+        wp.dot(wp.cross(tri_b - tri_a, plane_projection - tri_a), face_normal) >= 0.0
+        and wp.dot(wp.cross(tri_c - tri_b, plane_projection - tri_b), face_normal) >= 0.0
+        and wp.dot(wp.cross(tri_a - tri_c, plane_projection - tri_c), face_normal) >= 0.0
+    )
+    if inside_face:
+        projection = plane_projection
+        center_b_to_a = -signed_plane_distance * face_normal_unit
+    else:
+        center_b_to_a = projection - center_b_world
+
+    to_centroid = (tri_a + tri_b + tri_c) / 3.0 - projection
+    to_centroid -= wp.dot(to_centroid, face_normal_unit) * face_normal_unit
+    distance_to_centroid = wp.length(to_centroid)
+    if distance_to_centroid > 1.0e-12:
+        nudge_distance = 0.01 * wp.min(distance_to_centroid, wp.abs(signed_plane_distance))
+        center_b_to_a += to_centroid * (nudge_distance / distance_to_centroid)
+
+    if geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
+        # MPR reports the face its ray from this seed to the origin exits through, so a seed on
+        # the boundary of shape A decides nothing.  A triangle has no interior and has to be
+        # seeded on its face, but a prism does, and seeding a prism on its top face makes that
+        # ray reverse the moment shape B's center crosses the face: from then on the portal
+        # settles on the extruded bottom and reports a metre of penetration pointing into the
+        # terrain.  Sink the seed to mid-extrusion instead.  The offset is along the extrusion
+        # axis and shorter than the extrusion, so the seed stays inside the prism for any
+        # triangle, however steep.
+        center_b_to_a -= wp.vec3(0.0, 0.0, 0.5 * TRIANGLE_PRISM_EXTRUSION)
+    return center_b_to_a
+
+
+@wp.func
+def _minkowski_center_fallback(geom_a: Any, center_b_world: wp.vec3) -> wp.vec3:
+    """Return a nonzero triangle seed when the Minkowski centers coincide."""
+    if geom_a.shape_type != int(GeoTypeEx.TRIANGLE) and geom_a.shape_type != int(GeoTypeEx.TRIANGLE_PRISM):
+        return wp.vec3(0.0)
+
+    tri_a = wp.vec3(0.0)
+    tri_b = geom_a.scale
+    tri_c = geom_a.auxiliary
+    face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
+    face_normal_length_sq = wp.length_sq(face_normal)
+    if face_normal_length_sq < 1.0e-20:
+        return wp.vec3(0.0)
+
+    face_normal /= wp.sqrt(face_normal_length_sq)
+    projection = closest_point_on_triangle(center_b_world, tri_a, tri_b, tri_c)
+    to_centroid = (tri_a + tri_b + tri_c) / 3.0 - projection
+    to_centroid -= wp.dot(to_centroid, face_normal) * face_normal
+    to_centroid_length_sq = wp.length_sq(to_centroid)
+
+    fallback_direction = -face_normal
+    if wp.dot(center_b_world - projection, face_normal) < 0.0:
+        fallback_direction = face_normal
+    if to_centroid_length_sq > 1.0e-20:
+        fallback_direction += 0.01 * to_centroid / wp.sqrt(to_centroid_length_sq)
+    return wp.normalize(fallback_direction) * 1.0e-5
+
+
+@wp.struct
+class MinkowskiCenter:
+    """Store a Minkowski interior point and optional coincident-center fallback."""
+
+    B: wp.vec3
+    BtoA: wp.vec3
+
+
+def create_shape_center_function(use_precomputed_center: bool = False):
+    """Create the common Minkowski-center function used by MPR and GJK.
+
+    The returned function supplies the initial interior point of the
+    Minkowski difference. Most primitives use their local origin. Uncached
+    convex meshes use the center of their scaled AABB, while cached callers
+    use ``geom.center`` and must provide a valid interior-point approximation.
+
+    Triangle-like shape A needs a partner-relative seed. Its center is moved
+    to the point on the physical triangle nearest shape B's center and nudged
+    toward the triangle centroid. This avoids portals collapsing onto one
+    vertex when a large, thin triangle is paired with a much smaller shape.
+
+    Args:
+        use_precomputed_center: Use the center stored in each geometry instead
+            of computing convex-mesh AABB centers.
+
+    Returns:
+        A shape-center function with a ``fallback`` attribute for the
+        coincident-center case.
+    """
+
+    @wp.func
+    def shape_center(
+        geom_a: Any,
+        geom_b: Any,
+        orientation_b: wp.quat,
+        position_b: wp.vec3,
+        data_provider: Any,
+    ) -> MinkowskiCenter:
+        """Compute an interior point of the Minkowski difference.
+
+        Args:
+            geom_a: Shape A geometry data.
+            geom_b: Shape B geometry data.
+            orientation_b: Shape B orientation relative to shape A.
+            position_b: Shape B position relative to shape A.
+            data_provider: Support-map data provider.
+
+        Returns:
+            Centers in the relative frame. ``B`` is shape B's center and
+            ``BtoA`` points from it to the selected center on shape A.
+        """
+        center = MinkowskiCenter()
+        if wp.static(use_precomputed_center):
+            center_a = geom_a.center
+            center_b_local = geom_b.center
+        else:
+            center_a = _shape_center(geom_a)
+            center_b_local = _shape_center(geom_b)
+
+        center.B = position_b + wp.quat_rotate(orientation_b, center_b_local)
+        center.BtoA = _adjust_minkowski_center(geom_a, center.B, center_a - center.B)
+        return center
+
+    shape_center.fallback = _minkowski_center_fallback
+    return shape_center
 
 
 @wp.func
@@ -385,6 +724,7 @@ def extract_shape_data(
     result.shape_type = shape_types[shape_idx]
     result.scale = scale
     result.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+    result.center = wp.vec3(0.0, 0.0, 0.0)
 
     # For CONVEX_MESH, pack the mesh pointer into auxiliary
     if shape_types[shape_idx] == GeoType.CONVEX_MESH:
@@ -424,7 +764,8 @@ def closest_point_on_triangle(
     ab_sq = wp.dot(ab, ab)
     ac_sq = wp.dot(ac, ac)
     EPS2 = 1.0e-20
-    if wp.dot(wp.cross(ab, ac), wp.cross(ab, ac)) < EPS2:
+    triangle_normal = wp.cross(ab, ac)
+    if wp.dot(triangle_normal, triangle_normal) < EPS2:
         bc = tri_c - tri_b
         bc_sq = wp.dot(bc, bc)
         if ab_sq >= ac_sq and ab_sq >= bc_sq:

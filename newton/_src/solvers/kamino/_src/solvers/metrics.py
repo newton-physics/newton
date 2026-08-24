@@ -75,6 +75,7 @@ A typical example for using this module is:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import warp as wp
 
@@ -243,6 +244,8 @@ class SolutionMetricsData:
     Equivalent to `r_cts_contacts := max_k max(0, -d_k)`, where `d_k` is the
     margin-shifted signed distance stored in the ``w`` component of the contact
     `gapfunc`. Negative `d_k` denotes penetration.
+
+    A NaN contact gap produces a NaN metric and an argmax of `-1`.
 
     Shape of ``(num_worlds,)``.
     """
@@ -551,6 +554,131 @@ def compute_v_plus_sparse(
 
 
 @wp.func
+def _vector_has_nan(dim: wp.int32, vio: wp.int32, vector: wp.array[wp.float32]) -> wp.bool:
+    """Checks whether an active vector segment contains NaN.
+
+    Returns ``True`` if any element in ``vector[vio: vio + dim]`` is NaN.
+    """
+    for i in range(dim):
+        if wp.isnan(vector[vio + i]):
+            return True
+    return False
+
+
+@wp.func
+def _spatial_vector_abs_infnorm(v: wp.spatial_vectorf, dim: wp.int32) -> tuple[wp.float32, wp.int32]:
+    """Returns the infinity norm of the first ``dim`` absolute components and the argmax index.
+
+    Scans the first ``dim`` components once. If any active component is NaN,
+    returns ``(nan, -1)``; otherwise on equal values the earliest index is kept
+    as argmax.
+    """
+    max_val = wp.abs(v[0])
+    argmax = wp.int32(0)
+    has_nan = wp.isnan(v[0])
+    for i in range(1, dim):
+        raw = v[i]
+        if wp.isnan(raw):
+            has_nan = True
+        else:
+            val = wp.abs(raw)
+            if val > max_val:
+                max_val = val
+                argmax = wp.int32(i)
+    if has_nan:
+        return wp.nan, wp.int32(-1)
+    return max_val, argmax
+
+
+@wp.func
+def _vector_segment_abs_infnorm(
+    dim: wp.int32,
+    offset: wp.int32,
+    vector: wp.array[wp.float32],
+) -> tuple[wp.float32, wp.int32]:
+    """Returns the infinity norm of ``abs(vector[offset:offset+dim])`` and the argmax index.
+
+    Scans the segment once. If any active component is NaN, returns ``(nan, -1)``;
+    otherwise on equal values the earliest index is kept as argmax.
+    """
+    max_val = wp.abs(vector[offset])
+    argmax = wp.int32(0)
+    has_nan = wp.isnan(vector[offset])
+    for i in range(1, dim):
+        raw = vector[offset + i]
+        if wp.isnan(raw):
+            has_nan = True
+        else:
+            v = wp.abs(raw)
+            if v > max_val:
+                max_val = v
+                argmax = wp.int32(i)
+    if has_nan:
+        return wp.nan, wp.int32(-1)
+    return max_val, argmax
+
+
+@wp.func
+def _atomic_mark_nan(metric: wp.array[wp.float32], index: wp.int32):
+    """Atomically marks a metric as NaN.
+
+    Once ``metric[index]`` is NaN, it is left unchanged by later calls. Concurrent
+    finite updates from other threads may still race until this write succeeds.
+    """
+    while True:
+        current = metric[index]
+        if wp.isnan(current):
+            return
+        if wp.atomic_cas(metric, index, current, wp.nan) == current:
+            return
+
+
+@wp.func
+def _atomic_max_if_finite(metric: wp.array[wp.float32], index: wp.int32, value: wp.float32) -> wp.float32:
+    """Atomically updates a finite maximum.
+
+    If ``metric[index]`` is already NaN, returns it unchanged and performs no
+    update. Otherwise atomically stores ``max(metric[index], value)``. ``value``
+    is assumed finite; NaN inputs are not propagated here—callers should use
+    :func:`_atomic_mark_nan` instead.
+    """
+    while True:
+        current = metric[index]
+        if wp.isnan(current):
+            return current
+        candidate = wp.max(current, value)
+        previous = wp.atomic_cas(metric, index, current, candidate)
+        if previous == current:
+            return previous
+
+
+@wp.func
+def _atomic_update_metric_max(
+    metric: wp.array[wp.float32],
+    metric_argmax: wp.array[Any],
+    wid: wp.int32,
+    value: wp.float32,
+    argmax_key: Any,
+):
+    """Atomically updates a per-world metric maximum and its argmax key.
+
+    Generic over ``wp.int32`` and ``wp.int64`` argmax keys: ``metric_argmax`` and
+    ``argmax_key`` must use the same concrete type at each call site.
+
+    If ``value`` is NaN, marks ``metric[wid]`` as NaN and sets ``metric_argmax[wid]``
+    to ``-1``. Otherwise atomically stores the finite maximum and, when ``value`` is
+    at least the previous maximum, stores ``argmax_key``.
+    """
+    if wp.isnan(value):
+        _atomic_mark_nan(metric, wid)
+        wp.atomic_exch(metric_argmax, wid, type(argmax_key)(-1))
+    else:
+        previous_max = _atomic_max_if_finite(metric, wid, value)
+        if value >= previous_max:
+            wp.atomic_exch(metric_argmax, wid, argmax_key)
+
+
+@wp.func
 def compute_vector_difference_infnorm(
     dim: wp.int32,
     vio: wp.int32,
@@ -568,17 +696,24 @@ def compute_vector_difference_infnorm(
         y: The second vector.
 
     Returns:
-        Maximum absolute difference and index of the largest component.
+        Maximum absolute difference and index of the largest component. If either
+        input segment contains NaN, returns ``(nan, -1)``.
     """
-    max = float(0.0)
+    max_val = float(0.0)
     argmax = wp.int32(-1)
+    has_nan = wp.bool(False)
     for i in range(dim):
         v_i = vio + i
-        err = wp.abs(x[v_i] - y[v_i])
-        max = wp.max(max, err)
-        if err == max:
-            argmax = i
-    return max, argmax
+        if wp.isnan(x[v_i]) or wp.isnan(y[v_i]):
+            has_nan = True
+        else:
+            err = wp.abs(x[v_i] - y[v_i])
+            max_val = wp.max(max_val, err)
+            if err == max_val:
+                argmax = i
+    if has_nan:
+        return wp.nan, wp.int32(-1)
+    return max_val, argmax
 
 
 ###
@@ -626,19 +761,16 @@ def _compute_eom_residual(
     S_i = wp.skew(omega_i_p)
 
     # Compute the per-body EoM residual over linear and angular parts
-    r_linear_i = wp.abs(m_i * (v_i - v_i_p) - dt * (m_i * g + f_i))
-    r_angular_i = wp.abs(I_i @ (omega_i - omega_i_p) - dt * (tau_i - S_i @ (I_i @ omega_i_p)))
+    r_linear_i = m_i * (v_i - v_i_p) - dt * (m_i * g + f_i)
+    r_angular_i = I_i @ (omega_i - omega_i_p) - dt * (tau_i - S_i @ (I_i @ omega_i_p))
     r_i = wp.spatial_vectorf(*r_linear_i, *r_angular_i)
 
-    # Compute the per-body maximum residual and argmax index
-    r_eom_i = wp.max(r_i)
-    r_eom_argmax_i = wp.int32(wp.argmax(r_i))
+    # Compute the per-body maximum residual and argmax index.
+    r_eom_i, r_eom_argmax_i = _spatial_vector_abs_infnorm(r_i, wp.int32(6))
 
     # Update the per-world maximum residual and argmax index
-    previous_max = wp.atomic_max(metric_r_eom, wid, r_eom_i)
-    if r_eom_i >= previous_max:
-        argmax_key = wp.int64(build_pair_key2(wp.uint32(bid), wp.uint32(r_eom_argmax_i)))
-        wp.atomic_exch(metric_r_eom_argmax, wp.int32(wid), argmax_key)
+    argmax_key = wp.int64(build_pair_key2(wp.uint32(bid), wp.uint32(r_eom_argmax_i)))
+    _atomic_update_metric_max(metric_r_eom, metric_r_eom_argmax, wid, r_eom_i, argmax_key)
 
 
 @wp.kernel
@@ -672,6 +804,8 @@ def _compute_joint_kinematics_residual_dense(
 
     # Retrieve the size and index offset of the joint constraint
     num_cts_j = model_joint_num_kinematic_cts[jid]
+    if num_cts_j == 0:
+        return
     cts_offset_j = model_joint_kinematic_cts_offset_total_cts[jid] - model_info_total_cts_offset[wid]
 
     # Retrieve the world-specific info
@@ -696,16 +830,12 @@ def _compute_joint_kinematics_residual_dense(
             for i in range(6):
                 j_v_j[j] += jacobian_cts_data[mio_j + i] * u_i_B[i]
 
-    # Compute the per-joint kinematics residual and local argmax
-    j_v_j_abs = wp.abs(j_v_j)
-    kin_argmax_local = wp.argmax(j_v_j_abs)
-    r_kinematics_j = j_v_j_abs[kin_argmax_local]
+    # Compute the per-joint kinematics residual and local argmax.
+    r_kinematics_j, kin_argmax_local = _spatial_vector_abs_infnorm(j_v_j, num_cts_j)
 
     # Update the per-world maximum residual and argmax index
-    previous_max = wp.atomic_max(metric_r_kinematics, wid, r_kinematics_j)
-    if r_kinematics_j >= previous_max:
-        argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(cts_offset_j - kgo) + kin_argmax_local))
-        wp.atomic_exch(metric_r_kinematics_argmax, wid, argmax_key)
+    argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(cts_offset_j - kgo) + wp.uint32(kin_argmax_local)))
+    _atomic_update_metric_max(metric_r_kinematics, metric_r_kinematics_argmax, wid, r_kinematics_j, argmax_key)
 
 
 @wp.kernel
@@ -739,6 +869,8 @@ def _compute_joint_kinematics_residual_sparse(
     # Retrieve the size and index offset of the joint constraint
     num_dyn_cts_j = model_joint_num_dynamic_cts[jid]
     num_kin_cts_j = model_joint_num_kinematic_cts[jid]
+    if num_kin_cts_j == 0:
+        return
     kin_cts_offset_j = model_joint_kinematic_cts_offset[jid] - model_info_joint_kinematic_cts_offset[wid]
 
     # Retrieve the starting index for the non-zero blocks for the current joint
@@ -756,16 +888,12 @@ def _compute_joint_kinematics_residual_sparse(
             jac_block = jac_nzb_values[jac_j_nzb_start + num_kin_cts_j + j]
             j_v_j[j] += wp.dot(jac_block, u_i_B)
 
-    # Compute the per-joint kinematics residual and local argmax
-    j_v_j_abs = wp.abs(j_v_j)
-    kin_argmax_local = wp.argmax(j_v_j_abs)
-    r_kinematics_j = j_v_j_abs[kin_argmax_local]
+    # Compute the per-joint kinematics residual and local argmax.
+    r_kinematics_j, kin_argmax_local = _spatial_vector_abs_infnorm(j_v_j, num_kin_cts_j)
 
     # Update the per-world maximum residual and argmax index
-    previous_max = wp.atomic_max(metric_r_kinematics, wid, r_kinematics_j)
-    if r_kinematics_j >= previous_max:
-        argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(kin_cts_offset_j) + kin_argmax_local))
-        wp.atomic_exch(metric_r_kinematics_argmax, wid, argmax_key)
+    argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(kin_cts_offset_j) + wp.uint32(kin_argmax_local)))
+    _atomic_update_metric_max(metric_r_kinematics, metric_r_kinematics_argmax, wid, r_kinematics_j, argmax_key)
 
 
 @wp.kernel
@@ -792,19 +920,13 @@ def _compute_cts_joints_residual(
     r_cts_joints_j = wp.float32(0.0)
     argmax_j = wp.int32(0)
     if num_cts_j > 0:
-        r_cts_joints_j = wp.abs(data_joints_r_j[cio_j])
-        for j in range(1, num_cts_j):
-            v = wp.abs(data_joints_r_j[cio_j + j])
-            if v > r_cts_joints_j:
-                r_cts_joints_j = v
-                argmax_j = wp.int32(j)
+        r_cts_joints_j, argmax_j = _vector_segment_abs_infnorm(num_cts_j, cio_j, data_joints_r_j)
+
+    cio_j_loc = cio_j - model_info_joint_kinematic_cts_offset[wid]
 
     # Update the per-world maximum residual and argmax index
-    previous_max = wp.atomic_max(metric_r_cts_joints, wid, r_cts_joints_j)
-    if r_cts_joints_j >= previous_max:
-        cio_j_loc = cio_j - model_info_joint_kinematic_cts_offset[wid]
-        argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(cio_j_loc + argmax_j)))
-        wp.atomic_exch(metric_r_cts_joints_argmax, wid, argmax_key)
+    argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(cio_j_loc + argmax_j)))
+    _atomic_update_metric_max(metric_r_cts_joints, metric_r_cts_joints_argmax, wid, r_cts_joints_j, argmax_key)
 
 
 @wp.kernel
@@ -838,10 +960,8 @@ def _compute_cts_limits_residual(
     r_cts_limits_l = wp.abs(limit_r_q[lid])
 
     # Update the per-world maximum residual
-    previous_max = wp.atomic_max(metric_r_cts_limits, wid, r_cts_limits_l)
-    if r_cts_limits_l >= previous_max:
-        argmax_key = wp.int64(build_pair_key2(wp.uint32(wlid), wp.uint32(dof)))
-        wp.atomic_exch(metric_r_cts_limits_argmax, wid, argmax_key)
+    argmax_key = wp.int64(build_pair_key2(wp.uint32(wlid), wp.uint32(dof)))
+    _atomic_update_metric_max(metric_r_cts_limits, metric_r_cts_limits_argmax, wid, r_cts_limits_l, argmax_key)
 
 
 @wp.kernel
@@ -871,12 +991,15 @@ def _compute_cts_contacts_residual(
     gapfunc = contact_gapfunc[cid]
 
     # Compute unilateral penetration depth from the margin-shifted signed distance.
-    r_cts_contacts_k = wp.max(0.0, -gapfunc[3])
+    r_cts_contacts_k = wp.where(wp.isnan(gapfunc[3]), wp.nan, wp.max(0.0, -gapfunc[3]))
 
-    # Update the per-world maximum residual and argmax index
-    previous_max = wp.atomic_max(metric_r_cts_contacts, wid, r_cts_contacts_k)
-    if r_cts_contacts_k > 0.0 and r_cts_contacts_k >= previous_max:
-        wp.atomic_exch(metric_r_cts_contacts_argmax, wid, wcid)
+    # Both NaN and positive penetration need to be stored as metrics.
+    if wp.isnan(r_cts_contacts_k) or r_cts_contacts_k > 0.0:
+        # Update the per-world maximum residual and argmax index
+        argmax_key = wcid
+        _atomic_update_metric_max(
+            metric_r_cts_contacts, metric_r_cts_contacts_argmax, wid, r_cts_contacts_k, argmax_key
+        )
 
 
 @wp.kernel
@@ -964,6 +1087,21 @@ def _compute_dual_problem_metrics(
     r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
         njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
     )
+
+    lambdas_has_nan = _vector_has_nan(ncts, vio, solution_lambdas)
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, buffer_v) or _vector_has_nan(nc, cio, problem_mu):
+        r_ncp_p = wp.nan
+        r_ncp_p_argmax = wp.int32(-1)
+        r_ncp_d = wp.nan
+        r_ncp_d_argmax = wp.int32(-1)
+        r_ncp_c = wp.nan
+        r_ncp_c_argmax = wp.int32(-1)
+        r_ncp_natmap = wp.nan
+        r_ncp_natmap_argmax = wp.int32(-1)
+
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, problem_v_f):
+        f_ncp = wp.nan
+        f_ccp = wp.nan
 
     # Store the computed metrics in the output arrays
     metric_r_v_plus[wid] = r_v_plus
@@ -1061,6 +1199,21 @@ def _compute_dual_problem_metrics_sparse(
     r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
         njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
     )
+
+    lambdas_has_nan = _vector_has_nan(ncts, vio, solution_lambdas)
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, buffer_v) or _vector_has_nan(nc, cio, problem_mu):
+        r_ncp_p = wp.nan
+        r_ncp_p_argmax = wp.int32(-1)
+        r_ncp_d = wp.nan
+        r_ncp_d_argmax = wp.int32(-1)
+        r_ncp_c = wp.nan
+        r_ncp_c_argmax = wp.int32(-1)
+        r_ncp_natmap = wp.nan
+        r_ncp_natmap_argmax = wp.int32(-1)
+
+    if lambdas_has_nan or _vector_has_nan(ncts, vio, problem_v_f):
+        f_ncp = wp.nan
+        f_ccp = wp.nan
 
     # Store the computed metrics in the output arrays
     metric_r_v_plus[wid] = r_v_plus

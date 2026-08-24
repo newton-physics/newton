@@ -1614,11 +1614,17 @@ class TestSchemaResolver(unittest.TestCase):
         # Create resolver with Newton priority
         resolver = SchemaResolverManager([SchemaResolverNewton()])
 
-        # there is no authored value, so it should return the default (0)
+        # Nothing is authored, so the resolver falls back to the value it declares for the
+        # attribute. Compare against the schema's own fallback rather than a literal, so that
+        # the two cannot drift apart again.
+        schema_rolling = material.GetAttribute("newton:rollingFriction").Get()
+        schema_torsional = material.GetAttribute("newton:torsionalFriction").Get()
+        self.assertAlmostEqual(schema_rolling, 0.0001)
+        self.assertAlmostEqual(schema_torsional, 0.005)
         rolling = resolver.get_value(material, PrimType.MATERIAL, "mu_rolling")
         torsional = resolver.get_value(material, PrimType.MATERIAL, "mu_torsional")
-        self.assertEqual(rolling, 0.0005)
-        self.assertEqual(torsional, 0.25)
+        self.assertAlmostEqual(rolling, schema_rolling)
+        self.assertAlmostEqual(torsional, schema_torsional)
 
         # an explicit newton value should be used
         material.GetAttribute("newton:rollingFriction").Set(0.1)

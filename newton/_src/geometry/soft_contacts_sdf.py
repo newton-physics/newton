@@ -89,8 +89,8 @@ def eval_shape_sdf(
         p = sdf_capsule(x_local, scale[0], scale[1], int(Axis.Z))
         return p, p, sdf_capsule_grad(x_local, scale[0], scale[1], int(Axis.Z))
     if geo == GeoType.CYLINDER:
-        p = sdf_cylinder(x_local, scale[0], scale[1], int(Axis.Z))
-        return p, p, sdf_cylinder_grad(x_local, scale[0], scale[1], int(Axis.Z))
+        p = sdf_cylinder(x_local, scale[0], scale[1], int(Axis.Z), -1.0, scale[2])
+        return p, p, sdf_cylinder_grad(x_local, scale[0], scale[1], int(Axis.Z), -1.0, scale[2])
     if geo == GeoType.CONE:
         p = sdf_cone(x_local, scale[0], scale[1], int(Axis.Z))
         return p, p, sdf_cone_grad(x_local, scale[0], scale[1], int(Axis.Z))
