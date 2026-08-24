@@ -10,8 +10,10 @@ unittest-parallel command-line script main module
 
 import argparse
 import concurrent.futures  # NVIDIA Modification
+import importlib.metadata
 import multiprocessing
 import os
+import re
 import sys
 import tempfile
 import time
@@ -20,11 +22,34 @@ import warnings
 from contextlib import contextmanager
 from io import StringIO
 
-# Work around a known OpenUSD thread-safety crash in
-# UsdPhysics.LoadUsdPhysicsFromRange for collider-dense assets. OpenUSD reads
-# this once when pxr initializes, so set it before test modules import pxr and
-# preserve any caller-provided override.
-os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
+# Work around a known OpenUSD thread-safety crash in the native physics parser for
+# collider-dense assets: concurrent descriptor appends could race when several colliders
+# shared one rigid body. Fixed in OpenUSD 26.08, so only older runtimes are constrained.
+#
+# OpenUSD reads this once when pxr initializes, so it must be set before test modules import
+# pxr. That rules out reading Usd.GetVersion(), and also rules out importing any newton USD
+# module, since newton_usd_schemas imports pxr at module scope. Distribution metadata gives
+# the runtime version without initializing OpenUSD: usd-core is versioned directly, while
+# usd-exchange bundles its own OpenUSD build and advertises it as a `usd<major><minor>` extra
+# (e.g. `usd2608`). A runtime that cannot be identified is treated as affected, and any
+# caller-provided override is preserved.
+try:
+    _USD_VERSION = tuple(int(part) for part in importlib.metadata.version("usd-core").split(".")[:2])
+except (importlib.metadata.PackageNotFoundError, ValueError):
+    try:
+        _USD_VERSION = next(
+            (int(match.group(1)), int(match.group(2)))
+            for match in (
+                re.fullmatch(r"usd(\d{2})(\d{2})", extra)
+                for extra in importlib.metadata.metadata("usd-exchange").get_all("Provides-Extra") or []
+            )
+            if match
+        )
+    except (importlib.metadata.PackageNotFoundError, StopIteration):
+        _USD_VERSION = (0, 0)
+
+if _USD_VERSION < (26, 8):
+    os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
 
 from newton.tests.unittest_utils import (  # NVIDIA modification
     ParallelJunitTestResult,

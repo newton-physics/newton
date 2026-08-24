@@ -1387,16 +1387,20 @@ Limitations
 -----------
 
 Importing USD files where many (> 30) mesh colliders are under the same rigid body
-can result in a crash in ``UsdPhysics.LoadUsdPhysicsFromRange``.  This is a known
-thread-safety issue in OpenUSD and will be fixed in a future release of
-``usd-core``.  It can be worked around by setting the work concurrency limit to 1
-before ``pxr`` initializes its thread pool.
+can result in a crash in OpenUSD's native physics parser.  This is a known
+thread-safety issue in OpenUSD, **fixed in OpenUSD 26.08**: no workaround is needed
+when the USD runtime is 26.08 or newer, whether it comes from ``usd-core`` or from
+the OpenUSD build bundled in ``usd-exchange``.
+
+Newton still supports older ``usd-core`` releases, so the workaround below remains
+relevant when running against a USD runtime older than 26.08.  It can be applied by
+setting the work concurrency limit to 1 before ``pxr`` initializes its thread pool.
 
 .. note::
 
    Setting the concurrency limit to 1 disables multi-threaded USD processing
    globally and may degrade performance of other OpenUSD workloads in the same
-   process.
+   process.  Prefer upgrading to OpenUSD 26.08 or newer instead.
 
 Choose **one** of the two approaches below — do not combine them.
 ``PXR_WORK_THREAD_LIMIT`` is evaluated once when ``pxr`` is first imported and
