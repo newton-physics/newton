@@ -1268,12 +1268,19 @@ class TestSolverKaminoImpl(unittest.TestCase):
         initial_u_i = single_state_p.u_i.numpy().copy()
         initial_q_j = single_state_p.q_j.numpy().copy()
         initial_dq_j = single_state_p.dq_j.numpy().copy()
+        initial_lambda_kin_j = single_state_p.lambda_kin_j.numpy().copy()
+        initial_lambda_dyn_j = single_state_p.lambda_dyn_j.numpy().copy()
         msg.info(f"[samples]: [single]: [init]: q_i (shape={initial_q_i.shape}):\n{initial_q_i}\n")
         msg.info(f"[samples]: [single]: [init]: u_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
         msg.info(f"[samples]: [single]: [init]: w_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
         msg.info(f"[samples]: [single]: [init]: q_j (shape={initial_q_j.shape}):\n{initial_q_j}\n")
         msg.info(f"[samples]: [single]: [init]: dq_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
-        msg.info(f"[samples]: [single]: [init]: lambda_kin_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
+        msg.info(
+            f"[samples]: [single]: [init]: lambda_kin_j (shape={initial_lambda_kin_j.shape}):\n{initial_lambda_kin_j}\n"
+        )
+        msg.info(
+            f"[samples]: [single]: [init]: lambda_dyn_j (shape={initial_lambda_dyn_j.shape}):\n{initial_lambda_dyn_j}\n"
+        )
 
         # Set a simple control callback that applies control inputs
         # NOTE: We use this to disturb the system from its initial state

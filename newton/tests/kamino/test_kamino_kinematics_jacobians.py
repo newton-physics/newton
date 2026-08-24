@@ -83,7 +83,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print(f"J_dofs_data: shape={jacobians.data.J_dofs_data.shape}")
 
         # Check the allocations of Jacobians
-        model_num_cts = model.size.sum_of_num_bilateral_joint_cts
+        model_num_cts = model.size.sum_of_num_bilateral_joint_cts + model.size.sum_of_num_bounded_joint_cts
         self.assertEqual(jacobians.data.J_dofs_offsets.size, 1)
         self.assertEqual(jacobians.data.J_cts_offsets.size, 1)
         self.assertEqual(jacobians.data.J_dofs_offsets.numpy()[0], 0)
@@ -121,7 +121,11 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print(f"J_cts_data: shape={jacobians.data.J_cts_data.shape}")
 
         # Check the allocations of Jacobians
-        model_num_cts = model.size.sum_of_num_bilateral_joint_cts + limits.model_max_limits_host
+        model_num_cts = (
+            model.size.sum_of_num_bilateral_joint_cts
+            + model.size.sum_of_num_bounded_joint_cts
+            + limits.model_max_limits_host
+        )
         self.assertEqual(jacobians.data.J_dofs_offsets.size, 1)
         self.assertEqual(jacobians.data.J_cts_offsets.size, 1)
         self.assertEqual(jacobians.data.J_dofs_offsets.numpy()[0], 0)
@@ -168,7 +172,11 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print(f"J_cts_data: shape={jacobians.data.J_cts_data.shape}")
 
         # Check the allocations of Jacobians
-        model_num_cts = model.size.sum_of_num_bilateral_joint_cts + 3 * contacts.model_max_contacts_host
+        model_num_cts = (
+            model.size.sum_of_num_bilateral_joint_cts
+            + model.size.sum_of_num_bounded_joint_cts
+            + 3 * contacts.model_max_contacts_host
+        )
         self.assertEqual(jacobians.data.J_dofs_offsets.size, 1)
         self.assertEqual(jacobians.data.J_cts_offsets.size, 1)
         self.assertEqual(jacobians.data.J_dofs_offsets.numpy()[0], 0)
@@ -223,6 +231,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Check the allocations of Jacobians
         model_num_cts = (
             model.size.sum_of_num_bilateral_joint_cts
+            + model.size.sum_of_num_bounded_joint_cts
             + limits.model_max_limits_host
             + 3 * contacts.model_max_contacts_host
         )
@@ -427,6 +436,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         self.assertEqual(
             maxncts,
             model.size.sum_of_num_bilateral_joint_cts
+            + model.size.sum_of_num_bounded_joint_cts
             + limits.model_max_limits_host
             + 3 * contacts.model_max_contacts_host,
         )
@@ -601,7 +611,7 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
             print(f"J_dofs max_nzb (shape={jacobians._J_dofs.bsm.max_nzb.shape}): {jacobians._J_dofs.bsm.max_nzb}")
 
         # Check the allocation of Jacobians
-        model_num_cts = model.size.sum_of_num_bilateral_joint_cts
+        model_num_cts = model.size.sum_of_num_bilateral_joint_cts + model.size.sum_of_num_bounded_joint_cts
         model_num_dofs = model.size.sum_of_num_joint_dofs
         model_num_bodies = model.size.sum_of_num_bodies
         self.assertEqual(jacobians._J_cts.bsm.num_matrices, 1)
@@ -631,7 +641,11 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
             print(f"J_dofs max_nzb (shape={jacobians._J_dofs.bsm.max_nzb.shape}): {jacobians._J_dofs.bsm.max_nzb}")
 
         # Check the allocation of Jacobians
-        model_num_cts = model.size.sum_of_num_bilateral_joint_cts + limits.model_max_limits_host
+        model_num_cts = (
+            model.size.sum_of_num_bilateral_joint_cts
+            + model.size.sum_of_num_bounded_joint_cts
+            + limits.model_max_limits_host
+        )
         model_num_dofs = model.size.sum_of_num_joint_dofs
         model_num_bodies = model.size.sum_of_num_bodies
         self.assertEqual(jacobians._J_cts.bsm.num_matrices, 1)
@@ -662,7 +676,11 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
             print(f"J_dofs max_nzb (shape={jacobians._J_dofs.bsm.max_nzb.shape}): {jacobians._J_dofs.bsm.max_nzb}")
 
         # Check the allocation of Jacobians
-        model_num_cts = model.size.sum_of_num_bilateral_joint_cts + 3 * contacts.model_max_contacts_host
+        model_num_cts = (
+            model.size.sum_of_num_bilateral_joint_cts
+            + model.size.sum_of_num_bounded_joint_cts
+            + 3 * contacts.model_max_contacts_host
+        )
         model_num_dofs = model.size.sum_of_num_joint_dofs
         model_num_bodies = model.size.sum_of_num_bodies
         self.assertEqual(jacobians._J_cts.bsm.num_matrices, 1)
@@ -695,6 +713,7 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
         # Check the allocation of Jacobians
         model_num_cts = (
             model.size.sum_of_num_bilateral_joint_cts
+            + model.size.sum_of_num_bounded_joint_cts
             + limits.model_max_limits_host
             + 3 * contacts.model_max_contacts_host
         )

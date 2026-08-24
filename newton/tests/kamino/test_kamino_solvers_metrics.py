@@ -116,7 +116,7 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         for limit_id in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + limit_id
-            r_ncp_p_i = np.max(r_ncp_p_i, np.abs(lambdas_i[lcio] - np.max(0.0, lambdas_i[lcio])))
+            r_ncp_p_i = max(r_ncp_p_i, np.abs(lambdas_i[lcio] - max(0.0, lambdas_i[lcio])))
 
         def project_to_coulomb_cone(x, mu):
             xt_norm = np.linalg.norm(x[:2])
@@ -147,7 +147,7 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         for lid in range(num_limits[mat_id]):
             v_l = float(v_aug_i[limit_group_offset[mat_id] + lid])
-            v_l -= np.max(0.0, v_l)
+            v_l -= max(0.0, v_l)
             r_l = np.abs(v_l)
             r_ncp_d_i = max(r_ncp_d_i, r_l)
 
@@ -221,7 +221,7 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
             lcio = limit_group_offset[mat_id] + lid
             v_l = v_aug_i[lcio]
             lambda_l = lambdas_i[lcio]
-            lambda_l -= np.max(0.0, lambda_l - v_l)
+            lambda_l -= np.maximum(0.0, lambda_l - v_l)
             lambda_l = np.abs(lambda_l)
             r_vi_natmap_i = max(r_vi_natmap_i, lambda_l)
 

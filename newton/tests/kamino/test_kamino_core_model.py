@@ -1252,12 +1252,14 @@ class TestModelConversions(unittest.TestCase):
         self.assertIs(state_newton_converted.body_qd.ptr, state_kamino_converted.u_i.ptr)
         self.assertIs(state_newton_converted.body_f.ptr, state_kamino_converted.w_i_e.ptr)
         self.assertIs(state_newton_converted.body_f_total.ptr, state_kamino_converted.w_i.ptr)
-        # NOTE: Check that the same arrays because these should be pure references
+        # NOTE: Check that arrays are the same because these should be pure references
         self.assertIs(state_newton_converted.body_q, state_kamino_converted.q_i)
         self.assertIs(state_newton_converted.joint_q, state_kamino_converted.q_j)
         self.assertIs(state_newton_converted.joint_qd, state_kamino_converted.dq_j)
         self.assertIs(state_newton_converted.joint_q_prev, state_kamino_converted.q_j_p)
         self.assertIs(state_newton_converted.joint_lambdas, state_kamino_converted.lambda_kin_j)
+        self.assertIs(state_newton_converted.joint_lambdas_dyn, state_kamino_converted.lambda_dyn_j)
+        self.assertIs(state_newton_converted.joint_lambdas_f, state_kamino_converted.lambda_f_j)
 
     def test_40_control_conversions(self):
         """

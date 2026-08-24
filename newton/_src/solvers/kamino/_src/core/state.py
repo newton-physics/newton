@@ -292,19 +292,37 @@ class StateKamino:
         # If the state contains the Kamino-specific `joint_lambdas` custom attribute,
         # capture a reference to it; otherwise, create a new array for it.
         # The attribute has JOINT_CONSTRAINT frequency and should therefore correspond to joint kinematic constraints.
-        is_joint_lambdas_valid = (
+        if (
             hasattr(state, "joint_lambdas")
             and state.joint_lambdas is not None
             and state.joint_lambdas.shape == (size.sum_of_num_kinematic_joint_cts,)
-        )
-        if is_joint_lambdas_valid:
+        ):
             lambda_kin_j = state.joint_lambdas
         else:
             lambda_kin_j = wp.zeros(shape=(size.sum_of_num_kinematic_joint_cts,), dtype=wp.float32, device=device)
             state.joint_lambdas = lambda_kin_j
 
-        lambda_dyn_j = wp.zeros(shape=(size.sum_of_num_dynamic_joint_cts,), dtype=wp.float32, device=device)
-        lambda_f_j = wp.zeros(shape=(size.sum_of_num_friction_joint_cts,), dtype=wp.float32, device=device)
+        # Retrieve or allocate multipliers for joint dynamic constraints
+        if (
+            hasattr(state, "joint_lambdas_dyn")
+            and state.joint_lambdas_dyn is not None
+            and state.joint_lambdas_dyn.shape == (size.sum_of_num_dynamic_joint_cts,)
+        ):
+            lambda_dyn_j = state.joint_lambdas_dyn
+        else:
+            lambda_dyn_j = wp.zeros(shape=(size.sum_of_num_dynamic_joint_cts,), dtype=wp.float32, device=device)
+            state.joint_lambdas_dyn = lambda_dyn_j
+
+        # Retrieve or allocate multipliers for joint friction constraints
+        if (
+            hasattr(state, "joint_lambdas_f")
+            and state.joint_lambdas_f is not None
+            and state.joint_lambdas_f.shape == (size.sum_of_num_friction_joint_cts,)
+        ):
+            lambda_f_j = state.joint_lambdas_f
+        else:
+            lambda_f_j = wp.zeros(shape=(size.sum_of_num_friction_joint_cts,), dtype=wp.float32, device=device)
+            state.joint_lambdas_f = lambda_f_j
 
         # Optionally initialize the `joint_q_prev` array to match the current `joint_q`
         if initialize_state_prev:
@@ -377,6 +395,8 @@ class StateKamino:
         state_newton.body_f_total = state.w_i.view(dtype=wp.spatial_vectorf)
         state_newton.joint_q_prev = state.q_j_p
         state_newton.joint_lambdas = state.lambda_kin_j
+        state_newton.joint_lambdas_dyn = state.lambda_dyn_j
+        state_newton.joint_lambdas_f = state.lambda_f_j
 
         # Return the new newton.State object
         return state_newton

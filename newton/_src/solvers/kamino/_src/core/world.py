@@ -156,7 +156,7 @@ class WorldDescriptor(Descriptor):
     num_bilateral_joint_cts: int = 0
     """
     The total number of bilateral joint constraints.
-    This is equal to the sum of the constraints of all dynamic joints defined in the world.
+    This is equal to the sum of the kinematic and dynamic constraints of all joints defined in the world.
     """
 
     num_dynamic_joint_cts: int = 0
