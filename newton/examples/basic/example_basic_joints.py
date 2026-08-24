@@ -187,6 +187,9 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=2,
+                rigid_compliant_alm=True,
+                rigid_joint_linear_ke=1.0e6,
+                rigid_joint_angular_ke=1.0e6,
             )
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)

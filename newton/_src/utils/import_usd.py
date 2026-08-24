@@ -16,6 +16,7 @@ import posixpath
 import re
 import warnings
 from dataclasses import dataclass, replace
+from pathlib import PureWindowsPath
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin, urlparse
 
@@ -51,8 +52,10 @@ from ..solvers.mujoco.utils import (
 )
 from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
+from ..usd.particles import find_particle_prims, import_particles
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
+from .color import color_linear_to_srgb
 from .import_usd_deformable_attachments import (
     _deformable_import_attachments,
     _deformable_import_element_collision_filters,
@@ -75,6 +78,12 @@ _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pa
 
 # Stiffness used for a hard joint limit (NewtonJointAPI newton:limitStiffness == +inf).
 _HARD_LIMIT_KE = 1.0e8
+
+# `UsdPreviewSurface`'s schema default for `diffuseColor`. A visual shape whose prim binds no
+# material is given this rather than left for ModelBuilder's per-shape debug palette, which
+# would render an unmaterialed scene in colours the asset never authored. Display-encoded to
+# match the colours that are resolved from a material.
+_UNMATERIALED_VISUAL_COLOR = color_linear_to_srgb((0.18, 0.18, 0.18))
 
 
 def _resolve_newton_limit_ke(
@@ -152,6 +161,37 @@ def _cache_path_for_absolute_usd_reference(url: str) -> str:
     basename = posixpath.basename(parsed.path) or "reference.usd"
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
     return posixpath.join("_external_usd", digest, basename)
+
+
+def _reject_windows_rooted_usd_path(path: str) -> None:
+    """Reject paths with Windows drive, root, or UNC semantics."""
+    windows_path = PureWindowsPath(path)
+    if windows_path.drive or windows_path.root:
+        raise ValueError(f"USD reference path must be relative: {path}")
+
+
+def _normalize_usd_cache_relative_path(path: str) -> str:
+    """Normalize a relative cache path while rejecting POSIX and Windows escapes."""
+    _reject_windows_rooted_usd_path(path)
+
+    normalized = posixpath.normpath(path.replace("\\", "/"))
+    if normalized in {"", ".", ".."} or posixpath.isabs(normalized) or normalized.startswith("../"):
+        raise ValueError(f"USD reference path escapes the target folder: {path}")
+    return normalized
+
+
+def _resolve_usd_cache_path(target_folder_name: str, relative_path: str) -> str:
+    """Return the canonical cache path when it remains beneath the target folder."""
+    normalized = _normalize_usd_cache_relative_path(relative_path)
+    target_root = os.path.realpath(target_folder_name)
+    candidate = os.path.realpath(os.path.join(target_root, *normalized.split("/")))
+    try:
+        common_path = os.path.commonpath((target_root, candidate))
+    except ValueError as exc:
+        raise ValueError(f"USD reference path escapes the target folder: {relative_path}") from exc
+    if os.path.normcase(common_path) != os.path.normcase(target_root):
+        raise ValueError(f"USD reference path escapes the target folder: {relative_path}")
+    return candidate
 
 
 def _is_uniform_scale(scale, rel_tol: float = 1.0e-6) -> bool:
@@ -264,7 +304,7 @@ def parse_usd(
     legacy_margin_gap: bool = False,
     return_deformable_results: bool = False,
 ) -> dict[str, Any]:
-    """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
+    """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
     The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -422,6 +462,35 @@ def parse_usd(
         diagnostic text, not a stable code, and a prim absent from a realized map may still
         appear in the authored metadata.
 
+        ``path_particle_map`` is always returned. It maps each imported
+        ``UsdGeom.Points`` prim carrying ``NewtonPointsDeformableSimAPI`` whose
+        governing ``PhysicsDeformableBodyAPI`` resolves to a
+        ``NewtonMPMSceneAPI`` owner to its half-open ``[start, end)`` builder
+        particle range. These ranges are build-time snapshots and are not
+        updated by later structural builder mutations.
+        Each resolved whole-prim or point-``GeomSubset`` physics material must
+        apply ``NewtonMPMMaterialAPI``, ``PhysicsMaterialAPI``, or
+        ``PhysicsVolumeDeformableMaterialAPI``. MPM elasticity is read from
+        ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. After
+        unit conversion, Young's modulus is in Pa and density is in kg/m^3.
+        Unbound Points use Newton's registered material defaults and
+        ``ModelBuilder.default_shape_cfg`` density. All Points imported by one
+        call must resolve to the same MPM scene; unrelated PhysicsScenes
+        and particle systems are ignored. ``particle_scene_path`` contains the
+        governing ``UsdPhysics.Scene`` prim path, or ``None`` when no particles
+        are imported.
+
+        Particle widths are diameters. Newton converts each radius as
+        ``width / 2`` after applying stage units and the prim's uniform world
+        scale; converted widths and radii are in meters. Authored
+        ``physics:masses`` take precedence over body mass or density, then
+        material density. Density-derived mass uses
+        ``physics:density * width**3``; converted masses are in kilograms.
+        Without widths, it uses ``ModelBuilder.default_particle_radius`` and a
+        support width of twice that radius. Non-uniform scale or shear is
+        rejected because one scalar width cannot preserve a spherical particle
+        under that transform.
+
         The returned mapping has the following entries:
 
         .. list-table::
@@ -441,6 +510,8 @@ def parse_usd(
               - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
             * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+            * - ``"path_particle_map"``
+              - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
             * - ``"path_cable_map"``
               - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``return_deformable_results=True``.
             * - ``"path_cloth_map"``
@@ -473,6 +544,8 @@ def parse_usd(
               - Dictionary of collected per-prim schema attributes (dict)
             * - ``"max_solver_iterations"``
               - The resolved maximum solver iterations (int or None)
+            * - ``"particle_scene_path"``
+              - Governing ``UsdPhysics.Scene`` prim path for imported particle simulation geometry, or ``None`` when no particles are imported
             * - ``"path_body_relative_transform"``
               - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
             * - ``"path_original_body_map"``
@@ -561,12 +634,6 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get mass unit: {e}")
-    if not math.isclose(mass_unit, 1.0):
-        warnings.warn(
-            "USD stages with non-unit mass units are not supported. "
-            f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
-            stacklevel=_external_stacklevel(),
-        )
     linear_unit = 1.0
     try:
         if UsdGeom.StageHasAuthoredMetersPerUnit(stage):
@@ -574,18 +641,14 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get linear unit: {e}")
-    if not math.isclose(linear_unit, 1.0):
-        warnings.warn(
-            "USD stages with non-unit linear units are not supported. "
-            f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
-            stacklevel=_external_stacklevel(),
-        )
-
+    has_nonunit_linear_units = not math.isclose(linear_unit, 1.0)
+    has_nonunit_mass_units = not math.isclose(mass_unit, 1.0)
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
     # LoadUsdPhysicsFromRange remains the native rigid/joint descriptor parser, so this
     # pre-pass supplies its deformable exclusions before it runs. The same walk also
     # collects static visual leaves when requested, avoiding a third stage traversal.
     root_prim = stage.GetPrimAtPath(root_path)
+    particle_prims = find_particle_prims(root_prim, ignore_paths)
     _deformable_prims = _scout_deformable_prims(
         root_prim,
         ignore_paths,
@@ -598,6 +661,49 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
+
+    legacy_rigid_object_types = (
+        UsdPhysics.ObjectType.RigidBody,
+        UsdPhysics.ObjectType.SphereShape,
+        UsdPhysics.ObjectType.CubeShape,
+        UsdPhysics.ObjectType.CapsuleShape,
+        UsdPhysics.ObjectType.CylinderShape,
+        UsdPhysics.ObjectType.ConeShape,
+        UsdPhysics.ObjectType.MeshShape,
+        UsdPhysics.ObjectType.PlaneShape,
+    )
+    has_legacy_rigid_objects = any(kind in ret_dict for kind in legacy_rigid_object_types)
+    has_other_import_candidates = bool(
+        has_legacy_rigid_objects or _deformable_prims.has_candidates() or _deformable_prims.static_visuals
+    )
+    if particle_prims and has_legacy_rigid_objects and (has_nonunit_linear_units or has_nonunit_mass_units):
+        warnings.warn(
+            "Mixed rigid/collider and particle USD content with non-unit metersPerUnit or kilogramsPerUnit uses "
+            "different conversion paths: particles are converted to SI, while the legacy rigid/collider importer "
+            "still expects unit stage metadata. Author mixed stages with both units set to 1.0 until rigid import "
+            "gains complete unit conversion.",
+            stacklevel=_external_stacklevel(),
+        )
+    elif particle_prims and has_other_import_candidates and (has_nonunit_linear_units or has_nonunit_mass_units):
+        warnings.warn(
+            "Mixed particles and other imported USD content with non-unit metersPerUnit or kilogramsPerUnit may "
+            "use different conversion paths: particles are converted to SI, while other import paths may still "
+            "expect unit stage metadata. Author mixed stages with both units set to 1.0.",
+            stacklevel=_external_stacklevel(),
+        )
+    elif not particle_prims:
+        if has_nonunit_mass_units:
+            warnings.warn(
+                "USD stages with non-unit mass units are not supported. "
+                f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
+                stacklevel=_external_stacklevel(),
+            )
+        if has_nonunit_linear_units:
+            warnings.warn(
+                "USD stages with non-unit linear units are not supported. "
+                f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
+                stacklevel=_external_stacklevel(),
+            )
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
@@ -623,6 +729,8 @@ def parse_usd(
     path_shape_scale: dict[str, wp.vec3] = {}
     # mapping from prim path to joint index in ModelBuilder
     path_joint_map: dict[str, int] = {}
+    # Particle ranges are stable build-time snapshots, keyed by authored Points path.
+    path_particle_map: dict[str, tuple[int, int]] = {}
     # Import-internal deformable index maps (not returned): the attachment and collapse passes
     # look up a curve/cloth/soft prim's element indices by path while building. The equivalent
     # per-group index ranges are recorded on the builder/Model registries for callers.
@@ -654,6 +762,7 @@ def parse_usd(
 
     physics_dt = None
     max_solver_iters = None
+    particle_scene_prim = None
 
     visual_shape_cfg = ModelBuilder.ShapeConfig(
         density=0.0,
@@ -696,7 +805,12 @@ def parse_usd(
             if cached_key != key and cached_key in mesh_cache:
                 return mesh_cache[cached_key]
 
-        mesh = usd.get_mesh(prim, load_uvs=load_uvs, load_normals=load_normals)
+        mesh = usd.get_mesh(
+            prim,
+            load_uvs=load_uvs,
+            load_normals=load_normals,
+            load_visual_materials=False,
+        )
         mesh_cache[key] = mesh
         return mesh
 
@@ -1368,6 +1482,12 @@ def parse_usd(
         shape_visual_kwargs = {}
         if material_props.get("opacity") is not None:
             shape_visual_kwargs["opacity"] = material_props["opacity"]
+        # A textured mesh resolves no scalar color on purpose, so the texture is not tinted;
+        # the mesh path gives it white. Geometry that never receives the texture still wants
+        # the neutral, otherwise it falls through to a palette color.
+        carries_texture = material_props.get("texture") is not None and type_name == "mesh"
+        if shape_color is None and not carries_texture and visual_shape_cfg_for_prim.is_visible:
+            shape_color = _UNMATERIALED_VISUAL_COLOR
 
         if path_name not in path_shape_map:
             if type_name == "cube":
@@ -1634,6 +1754,24 @@ def parse_usd(
         else:
             return parent_id, child_id
 
+    def resolve_joint_damping(jp_prim: Usd.Prim) -> tuple[float, float]:
+        """Resolve passive damping for linear and angular DOFs.
+
+        MuJoCo authors SI damping per radian for angular DOFs, while Newton's
+        regular USD damping mapping follows USD's per-degree convention.
+
+        Returns:
+            The linear and angular damping values in Newton units.
+        """
+        for resolver in R.resolvers:
+            for key, angular_scale in (("damping", 1.0 / DegreesToRadian), ("damping_per_rad", 1.0)):
+                damping = resolver.get_value(jp_prim, PrimType.JOINT, key)
+                if damping is not None:
+                    R._collect_on_first_use(resolver, jp_prim)
+                    damping = float(damping)
+                    return damping, damping * angular_scale
+        return default_joint_damping, default_joint_damping
+
     def resolve_dof_params(jp_prim: Usd.Prim, jd: UsdPhysics.JointDesc, is_revolute: bool) -> _DofParams:
         """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
 
@@ -1648,9 +1786,8 @@ def parse_usd(
         friction = R.get_value(
             jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
-        _damping_usd = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose)
-        damping_authored = _damping_usd is not None
-        damping = _damping_usd if damping_authored else default_joint_damping
+        linear_damping, angular_damping = resolve_joint_damping(jp_prim)
+        damping = angular_damping if is_revolute else linear_damping
         velocity_limit = R.get_value(
             jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
         )
@@ -1709,8 +1846,6 @@ def parse_usd(
             limit_upper *= DegreesToRadian
             limit_ke /= DegreesToRadian
             limit_kd /= DegreesToRadian
-            if damping_authored:
-                damping /= DegreesToRadian
             if has_drive:
                 target_pos *= DegreesToRadian
                 target_vel *= DegreesToRadian
@@ -1811,6 +1946,8 @@ def parse_usd(
             else:
                 joint_index = builder.add_joint_prismatic(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
+            _, joint_damping = resolve_joint_damping(joint_prim)
+            joint_params["damping"] = joint_damping
             joint_index = builder.add_joint_ball(**joint_params)
         elif key == UsdPhysics.ObjectType.D6Joint:
             joint_armature = R.get_value(
@@ -1819,11 +1956,7 @@ def parse_usd(
             joint_friction = R.get_value(
                 joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
             )
-            _joint_damping_usd = R.get_value(
-                joint_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
-            )
-            joint_damping_authored = _joint_damping_usd is not None
-            joint_damping = _joint_damping_usd if joint_damping_authored else default_joint_damping
+            joint_linear_damping, joint_angular_damping = resolve_joint_damping(joint_prim)
             joint_velocity_limit = R.get_value(
                 joint_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
@@ -1954,7 +2087,7 @@ def parse_usd(
                             target_vel=target_vel,
                             target_ke=target_ke,
                             target_kd=target_kd,
-                            damping=joint_damping,
+                            damping=joint_linear_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit
@@ -2020,7 +2153,7 @@ def parse_usd(
                             target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
-                            damping=joint_damping / DegreesToRadian if joint_damping_authored else joint_damping,
+                            damping=joint_angular_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit * DegreesToRadian
@@ -2040,15 +2173,11 @@ def parse_usd(
 
             joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
         elif key == UsdPhysics.ObjectType.DistanceJoint:
-            if joint_desc.limit.enabled and joint_desc.minEnabled:
-                min_dist = joint_desc.limit.lower
-            else:
-                min_dist = -1.0  # no limit
-            if joint_desc.limit.enabled and joint_desc.maxEnabled:
-                max_dist = joint_desc.limit.upper
-            else:
-                max_dist = -1.0
-            joint_index = builder.add_joint_distance(**joint_params, min_distance=min_dist, max_distance=max_dist)
+            joint_index = builder.add_joint_distance(
+                **joint_params,
+                min_distance=joint_desc.limit.lower if joint_desc.minEnabled else -1.0,
+                max_distance=joint_desc.limit.upper if joint_desc.maxEnabled else -1.0,
+            )
         else:
             raise NotImplementedError(f"Unsupported joint type {key}")
 
@@ -2428,6 +2557,76 @@ def parse_usd(
         else:
             builder.gravity = gravity_vector
 
+    resolved_mpm_gravity = None
+
+    def _preflight_mpm_scene(scene_prim: Usd.Prim) -> None:
+        """Resolve MPM scene gravity before particle insertion can mutate the builder."""
+        nonlocal resolved_mpm_gravity
+
+        scene_path = str(scene_prim.GetPath())
+        mpm_scene = UsdPhysics.Scene(scene_prim)
+        raw_direction = mpm_scene.GetGravityDirectionAttr().Get()
+        direction_array = np.asarray(raw_direction if raw_direction is not None else (0.0, 0.0, 0.0), dtype=float)
+        if direction_array.shape != (3,) or not np.isfinite(direction_array).all():
+            raise ValueError(
+                f"{scene_path}: physics:gravityDirection must contain three finite values, got {raw_direction!r}."
+            )
+        direction_length = float(np.linalg.norm(direction_array))
+        if direction_length > 0.0:
+            direction_array /= direction_length
+        else:
+            direction_array = -np.asarray(stage_up_axis.to_vec3(), dtype=float)
+
+        raw_magnitude = mpm_scene.GetGravityMagnitudeAttr().Get()
+        try:
+            raw_magnitude = float(raw_magnitude)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"{scene_path}: physics:gravityMagnitude must be a number, got {raw_magnitude!r}."
+            ) from error
+        if math.isnan(raw_magnitude) or raw_magnitude == float("inf"):
+            raise ValueError(
+                f"{scene_path}: physics:gravityMagnitude must be finite or negative for Earth gravity, "
+                f"got {raw_magnitude!r}."
+            )
+        if raw_magnitude < 0.0:
+            magnitude_si = 9.81
+        else:
+            with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+                magnitude_si = float(np.float64(raw_magnitude) * np.float64(linear_unit))
+            if not math.isfinite(magnitude_si) or (raw_magnitude != 0.0 and magnitude_si == 0.0):
+                raise ValueError(
+                    f"{scene_path}: physics:gravityMagnitude does not convert to a finite, representable SI value."
+                )
+
+        mpm_gravity_enabled = R.get_value(
+            scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
+        )
+        gravity_xform = axis_xform if override_root_xform else incoming_world_xform
+        direction = wp.transform_vector(gravity_xform, wp.vec3(*direction_array))
+        gravity = direction * magnitude_si if mpm_gravity_enabled else wp.vec3()
+        if not np.isfinite(np.asarray(gravity, dtype=float)).all():
+            raise ValueError(f"{scene_path}: transformed gravity must contain only finite SI values.")
+        resolved_mpm_gravity = gravity
+
+    path_particle_map, particle_scene_prim = import_particles(
+        builder,
+        root_prim,
+        ignore_paths=ignore_paths,
+        xform_cache=xform_cache,
+        incoming_world_mat=_xform_to_mat44(incoming_world_xform),
+        linear_unit=linear_unit,
+        mass_unit=mass_unit,
+        scene_preflight=_preflight_mpm_scene,
+        particle_prims=particle_prims,
+    )
+    if particle_scene_prim is not None:
+        if resolved_mpm_gravity is None:
+            raise RuntimeError("Particle scene preflight did not resolve gravity.")
+        if builder.current_world >= 0:
+            builder.world_gravity[builder.current_world] = resolved_mpm_gravity
+        else:
+            builder.gravity = resolved_mpm_gravity
     if verbose:
         print(
             f"Scaling PD gains by (joint_drive_gains_scaling / DegreesToRadian) = {joint_drive_gains_scaling / DegreesToRadian}, default scale for joint_drive_gains_scaling=1 is 1.0/DegreesToRadian = {1.0 / DegreesToRadian}"
@@ -3580,6 +3779,9 @@ def parse_usd(
                 shape_ka = shape_contact["ka"]
 
                 shape_color = material_props.get("color")
+                carries_texture = material_props.get("texture") is not None and key == UsdPhysics.ObjectType.MeshShape
+                if shape_color is None and not carries_texture and collider_is_visible:
+                    shape_color = _UNMATERIALED_VISUAL_COLOR
 
                 # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
                 # signal that SDF generation is configured for this shape.
@@ -3868,7 +4070,19 @@ def parse_usd(
                         # as visual-only mesh imports.
                         mesh = _get_mesh_with_visual_material(prim, path_name=path)
                     else:
+                        # Not viewport-drawn, but the viewer still draws these under show_collision /
+                        # show_static. Mutating the shared cache entry is safe: both caches key on the
+                        # prim path, so every consumer resolves the same values.
                         mesh = _get_mesh_cached(prim)
+                        if material_props.get("texture") is not None:
+                            mesh.texture = material_props["texture"]
+                            # A textured material resolves no scalar color, so add_shape()
+                            # would otherwise fall back to its palette and tint the texture.
+                            mesh.color = (1.0, 1.0, 1.0)
+                        if material_props.get("roughness") is not None:
+                            mesh.roughness = material_props["roughness"]
+                        if material_props.get("metallic") is not None:
+                            mesh.metallic = material_props["metallic"]
                     mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,
@@ -3902,7 +4116,7 @@ def parse_usd(
                     builder.shape_material_kh[shape_id] = kh
                     if is_hydroelastic:
                         builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
-                    if not skip_mesh_approximation:
+                    if collider_is_enabled and not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:
                             if has_sdf_api and approximation.lower() != "none":
@@ -5035,6 +5249,7 @@ def parse_usd(
         "path_joint_map": path_joint_map,
         "path_shape_map": path_shape_map,
         "path_shape_scale": path_shape_scale,
+        "path_particle_map": path_particle_map,
         "mass_unit": mass_unit,
         "linear_unit": linear_unit,
         "scene_attributes": scene_attributes,
@@ -5046,6 +5261,7 @@ def parse_usd(
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
+        "particle_scene_path": str(particle_scene_prim.GetPath()) if particle_scene_prim is not None else None,
         "actuator_count": actuator_count,
     }
 
@@ -5254,6 +5470,10 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
 
     Returns:
         File path to the downloaded USD file.
+
+    Raises:
+        ValueError: If a URL is not HTTPS or a referenced asset cannot be
+            localized within the download cache.
     """
 
     import requests
@@ -5295,7 +5515,8 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
         target_folder_name = os.path.join(".usd_cache", f"{base_name}_{timestamp}")
     os.makedirs(target_folder_name, exist_ok=True)
-    target_filename = os.path.join(target_folder_name, base)
+    target_folder_name = os.path.realpath(target_folder_name)
+    target_filename = _resolve_usd_cache_path(target_folder_name, base)
     with open(target_filename, "wb") as f:
         f.write(file)
 
@@ -5322,23 +5543,43 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
 
     def _extract_references(layer_str, parent_url_folder, parent_local_folder):
         """Extract references, queue downloads, and return rewritten layer text."""
-        rewritten_layer_str = layer_str
-        for match in re.finditer(r"references.=.@(.*?)@", layer_str):
-            raw_ref = match.group(1)
-            ref_url = urljoin(parent_url_folder + "/", raw_ref)
+        reference_assignment_pattern = re.compile(
+            r"(?P<prefix>references\s*=\s*)"
+            r"(?P<value>@[^@]*@(?:<[^>]*>)?(?:\s*\([^)]*\))?|\[[^]]*\])",
+            re.DOTALL,
+        )
+        reference_item_pattern = re.compile(r"@(?P<path>[^@]*)@(?P<suffix>(?:<[^>]*>)?(?:\s*\([^)]*\))?)")
+
+        def _prepare_reference(raw_ref):
+            """Return the rewritten path, source URL, and cache-relative path."""
             raw_ref_scheme = urlparse(raw_ref).scheme
             if raw_ref_scheme in {"http", "https"}:
+                ref_url = urljoin(parent_url_folder + "/", raw_ref)
                 _validate_https_usd_url(ref_url)
                 local_path = _cache_path_for_absolute_usd_reference(ref_url)
-                rewritten_layer_str = rewritten_layer_str.replace(f"@{raw_ref}@", f"@{local_path}@")
+                rewritten_ref = local_path
             else:
-                local_path = posixpath.normpath(posixpath.join(parent_local_folder, raw_ref))
-            if posixpath.isabs(local_path) or local_path == ".." or local_path.startswith("../"):
-                print(f"Skipping reference that escapes target folder: {raw_ref}")
-                continue
+                _reject_windows_rooted_usd_path(raw_ref)
+                local_path = _normalize_usd_cache_relative_path(posixpath.join(parent_local_folder, raw_ref))
+                ref_url = urljoin(parent_url_folder + "/", raw_ref.replace("\\", "/"))
+                rewritten_ref = raw_ref
+            return rewritten_ref, ref_url, local_path
+
+        def _rewrite_reference_item(match):
+            """Validate one asset reference and rewrite its cache path when needed."""
+            raw_ref = match.group("path")
+            rewritten_ref, ref_url, local_path = _prepare_reference(raw_ref)
+            _resolve_usd_cache_path(target_folder_name, local_path)
             if ref_url not in downloaded_urls:
                 pending.append((ref_url, local_path))
-        return rewritten_layer_str
+            return f"@{rewritten_ref}@{match.group('suffix')}"
+
+        def _rewrite_reference_assignment(match):
+            """Rewrite asset references without changing other reference-list entries."""
+            rewritten_value = reference_item_pattern.sub(_rewrite_reference_item, match.group("value"))
+            return match.group("prefix") + rewritten_value
+
+        return reference_assignment_pattern.sub(_rewrite_reference_assignment, layer_str)
 
     rewritten_stage_str = _extract_references(stage_str, url_folder, "")
     if rewritten_stage_str != stage_str:
@@ -5346,7 +5587,7 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         stage_str = rewritten_stage_str
 
     if export_usda:
-        usda_filename = os.path.join(target_folder_name, base_name + ".usda")
+        usda_filename = _resolve_usd_cache_path(target_folder_name, base_name + ".usda")
         with open(usda_filename, "w") as f:
             f.write(stage_str)
             print(f"Exported USDA file to {usda_filename}.")
@@ -5364,9 +5605,12 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             downloaded_urls.add(resolved_ref_url)
             file = response.content
             local_dir = posixpath.dirname(local_path)
-            if local_dir:
-                os.makedirs(os.path.join(target_folder_name, local_dir), exist_ok=True)
-            ref_filename = os.path.join(target_folder_name, local_path)
+            try:
+                ref_filename = _resolve_usd_cache_path(target_folder_name, local_path)
+            except ValueError:
+                print(f"Skipping reference that escapes target folder: {local_path}")
+                continue
+            os.makedirs(os.path.dirname(ref_filename), exist_ok=True)
             if not os.path.exists(ref_filename):
                 with open(ref_filename, "wb") as f:
                     f.write(file)
@@ -5384,11 +5628,10 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             if export_usda:
                 ref_base = os.path.basename(ref_filename)
                 ref_base_name = dot.join(ref_base.split(dot)[:-1])
-                usda_filename = (
-                    os.path.join(target_folder_name, local_dir, ref_base_name + ".usda")
-                    if local_dir
-                    else os.path.join(target_folder_name, ref_base_name + ".usda")
+                usda_relative_path = (
+                    posixpath.join(local_dir, ref_base_name + ".usda") if local_dir else ref_base_name + ".usda"
                 )
+                usda_filename = _resolve_usd_cache_path(target_folder_name, usda_relative_path)
                 with open(usda_filename, "w") as f:
                     f.write(ref_stage_str)
                     print(f"Exported USDA file to {usda_filename}.")

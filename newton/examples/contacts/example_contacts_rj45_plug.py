@@ -317,7 +317,7 @@ class Example:
         builder.add_articulation([d6_joint, rev_joint])
 
         cable_points = _load_cable_centerline(stage)
-        cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
+        cable_quats = newton.utils.rod_parallel_transport_quaternions(cable_points)
         bend_stiffness = 1.0e1
 
         rod_bodies, _ = builder.add_rod(
@@ -401,7 +401,7 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
-            rigid_contact_hard=False,
+            rigid_compliant_alm=True,
             rigid_body_contact_buffer_size=256,
         )
 
@@ -479,7 +479,8 @@ class Example:
     def step(self):
         gp = wp.transform_get_translation(self.gizmo_tf)
 
-        picked_body = int(self.viewer.picking.pick_body.numpy()[0])
+        picking = getattr(self.viewer, "picking", None)
+        picked_body = int(picking.pick_body.numpy()[0]) if picking is not None else -1
 
         self._pick_body.assign([picked_body])
         self._pick_target.assign([gp])
@@ -500,7 +501,7 @@ class Example:
                 print(f"[contact overflow] body {label} (idx={i}): {counts[i]} contacts (buffer={buf})")
 
         # Snap gizmo to the plug when the user isn't dragging it.
-        gizmo_active = getattr(self.viewer, "gizmo_is_using", False)
+        gizmo_active = bool(getattr(self.viewer, "gizmo_is_using", False))
         if not gizmo_active:
             plug_tf = self.state_0.body_q.numpy()[self._plug_body]
             if picked_body >= 0:

@@ -22,8 +22,8 @@ from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.checks import assert_builders_equal
 from newton.tests import get_kamino_basics_asset, get_kamino_testing_asset
+from newton.tests.kamino.utils.checks import assert_builders_equal
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 ###
@@ -148,7 +148,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.REVOLUTE)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
@@ -170,7 +170,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.REVOLUTE)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -192,7 +192,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.REVOLUTE)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -215,7 +215,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.PRISMATIC)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
@@ -237,7 +237,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.PRISMATIC)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -259,7 +259,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.PRISMATIC)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -282,7 +282,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.SPHERICAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
@@ -304,7 +304,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.SPHERICAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -330,7 +330,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CYLINDRICAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
@@ -352,7 +352,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CYLINDRICAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -374,7 +374,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CYLINDRICAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -397,7 +397,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.UNIVERSAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
@@ -419,7 +419,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.UNIVERSAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -442,7 +442,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.UNIVERSAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -466,7 +466,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CARTESIAN)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
@@ -489,7 +489,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CARTESIAN)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -512,7 +512,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CARTESIAN)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -539,7 +539,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.REVOLUTE)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -561,7 +561,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.REVOLUTE)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -584,7 +584,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.PRISMATIC)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -606,7 +606,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.PRISMATIC)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -629,7 +629,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CYLINDRICAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -651,7 +651,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CYLINDRICAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -674,7 +674,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.UNIVERSAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -696,7 +696,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.UNIVERSAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -719,7 +719,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CARTESIAN)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -741,7 +741,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CARTESIAN)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -764,7 +764,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.SPHERICAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -786,7 +786,7 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.SPHERICAL)
         self.assertEqual(builder_usd.joints[0][0].wid, 0)
         self.assertEqual(builder_usd.joints[0][0].jid, 0)
-        self.assertEqual(builder_usd.joints[0][0].cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
         self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
@@ -1185,7 +1185,7 @@ class TestUSDImporter(unittest.TestCase):
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 31)
-        self.assertEqual(builder_usd.num_joints, 36)
+        self.assertEqual(builder_usd.num_joints, 37)
         self.assertEqual(builder_usd.num_geoms, 31)
 
     def test_import_model_dr_legs_with_boxes(self):
@@ -1200,7 +1200,7 @@ class TestUSDImporter(unittest.TestCase):
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 31)
-        self.assertEqual(builder_usd.num_joints, 36)
+        self.assertEqual(builder_usd.num_joints, 37)
         self.assertEqual(builder_usd.num_geoms, 3)
 
     def test_import_model_dr_legs_with_meshes_and_boxes(self):
@@ -1215,7 +1215,7 @@ class TestUSDImporter(unittest.TestCase):
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 31)
-        self.assertEqual(builder_usd.num_joints, 36)
+        self.assertEqual(builder_usd.num_joints, 37)
         self.assertEqual(builder_usd.num_geoms, 34)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1257,6 +1257,77 @@ class TestUSDImporter(unittest.TestCase):
         builder_hidden = USDImporter().import_from(stage, load_materials=False, hide_collision_shapes=True)
         self.assertFalse(collider_visible(builder_hidden, "BodyWithVisuals"))
         self.assertTrue(collider_visible(builder_hidden, "BodyWithoutVisuals"))
+
+    def _only_mesh_data(self, builder: ModelBuilderKamino):
+        """Return the ``Mesh`` data of the builder's single mesh shape."""
+        meshes = [shape.data for shape in builder.shapes.values() if hasattr(shape, "data")]
+        self.assertEqual(len(meshes), 1)
+        return meshes[0]
+
+    @staticmethod
+    def _define_mesh_quad(stage, path: str):
+        """Define a unit quad mesh, returning the UsdGeom.Mesh."""
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        xform = UsdGeom.Xform.Define(stage, path)
+        UsdPhysics.RigidBodyAPI.Apply(xform.GetPrim())
+        mass = UsdPhysics.MassAPI.Apply(xform.GetPrim())
+        mass.CreateMassAttr(1.0)
+        mass.CreateDiagonalInertiaAttr(Gf.Vec3f(1.0, 1.0, 1.0))
+
+        mesh = UsdGeom.Mesh.Define(stage, f"{path}/Mesh")
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        mesh.CreatePointsAttr([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(1, 1, 0), Gf.Vec3f(0, 1, 0)])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        mesh.CreateFaceVertexCountsAttr([4])
+        return mesh
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_mesh_with_declared_but_unauthored_normals(self):
+        """Import a mesh whose normals attribute is declared without a value.
+
+        ``CreateNormalsAttr()`` leaves ``IsDefined()`` true while ``Get()`` returns
+        ``None``, so guarding on ``IsDefined()`` alone used to pass ``None`` through to
+        ``Mesh`` and raise ``cannot reshape array of size 1 into shape (3)``.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        mesh = self._define_mesh_quad(stage, "/Body")
+        mesh.CreateNormalsAttr()  # declared, never authored
+        self.assertTrue(mesh.GetNormalsAttr().IsDefined())
+        self.assertIsNone(mesh.GetNormalsAttr().Get())
+
+        builder = USDImporter().import_from(stage, load_materials=False)
+
+        mesh_data = self._only_mesh_data(builder)
+        self.assertIsNone(mesh_data.normals)
+        # The quad is fan-triangulated into two triangles.
+        self.assertEqual(len(mesh_data.indices), 6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_mesh_prefers_primvars_normals(self):
+        """Read normals from ``primvars:normals`` in preference to the mesh attribute."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        mesh = self._define_mesh_quad(stage, "/Body")
+        primvar = UsdGeom.PrimvarsAPI(mesh.GetPrim()).CreatePrimvar(
+            "normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex
+        )
+        primvar.Set([Gf.Vec3f(0, 0, 1)] * 4)
+
+        builder = USDImporter().import_from(stage, load_materials=False)
+
+        normals = self._only_mesh_data(builder).normals
+        self.assertIsNotNone(normals)
+        np.testing.assert_allclose(normals, np.tile([0.0, 0.0, 1.0], (4, 1)), atol=1e-6)
 
 
 class TestUSDKaminoSceneAPIImport(unittest.TestCase):

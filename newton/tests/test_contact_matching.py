@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.contact_match import MATCH_BROKEN, MATCH_NOT_FOUND
+from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -140,6 +140,26 @@ def test_stable_scene_identity_across_three_frames(test, device):
                 expected,
                 err_msg=f"Frame {frame}: match_index must be identity",
             )
+
+
+def test_save_initializes_next_frame_claims(test, device):
+    """Initialize saved claim slots for the next matching frame."""
+    with wp.ScopedDevice(device):
+        model, state = _build_simple_scene(device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+        contacts = pipeline.contacts()
+        matcher = pipeline._contact_matcher
+        test.assertIsNotNone(matcher)
+
+        matcher._prev_claim.fill_(wp.int64(0))
+        count = _collide_once(pipeline, state, contacts)
+        test.assertGreater(count, 0)
+        np.testing.assert_array_equal(
+            matcher._prev_claim.numpy()[:count],
+            np.full(count, int(_CLAIM_SENTINEL), dtype=np.int64),
+        )
+
+        test.assertEqual(_collide_once(pipeline, state, contacts), count)
 
 
 def test_masked_reset_restarts_only_selected_contact_history(test, device):
@@ -432,6 +452,42 @@ def test_contact_report_indices_correct(test, device):
         _collide_once(pipeline, state, contacts)
         test.assertEqual(contacts.rigid_contact_new_count.numpy()[0], 0)
         test.assertEqual(contacts.rigid_contact_broken_count.numpy()[0], 0)
+
+
+def test_save_resets_next_frame_report_flags(test, device):
+    """Reset saved report flags before the next matching frame."""
+    with wp.ScopedDevice(device):
+        model, state = _build_simple_scene(device)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            contact_matching="latest",
+            contact_report=True,
+        )
+        contacts = pipeline.contacts()
+        matcher = pipeline._contact_matcher
+        test.assertIsNotNone(matcher)
+
+        count = _collide_once(pipeline, state, contacts)
+        test.assertGreater(count, 0)
+        matcher._prev_was_matched.fill_(wp.int32(1))
+        matcher.save_sorted_state(
+            sorted_keys=pipeline._contact_sorter.sorted_keys_view,
+            contact_count=contacts.rigid_contact_count,
+            sorted_point0=contacts.rigid_contact_point0,
+            sorted_point1=contacts.rigid_contact_point1,
+            sorted_shape0=contacts.rigid_contact_shape0,
+            sorted_shape1=contacts.rigid_contact_shape1,
+            sorted_normal=contacts.rigid_contact_normal,
+            body_q=state.body_q,
+            shape_body=model.shape_body,
+            device=device,
+        )
+        np.testing.assert_array_equal(matcher._prev_was_matched.numpy()[:count], np.zeros(count, dtype=np.int32))
+
+        test.assertEqual(_collide_once(pipeline, state, contacts), count)
+        test.assertEqual(int(contacts.rigid_contact_new_count.numpy()[0]), 0)
+        test.assertEqual(int(contacts.rigid_contact_broken_count.numpy()[0]), 0)
 
 
 def test_contact_report_broken_indices(test, device):
@@ -819,6 +875,12 @@ add_function_test(
 )
 add_function_test(
     TestContactMatching,
+    "test_save_initializes_next_frame_claims",
+    test_save_initializes_next_frame_claims,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatching,
     "test_masked_reset_restarts_only_selected_contact_history",
     test_masked_reset_restarts_only_selected_contact_history,
     devices=devices,
@@ -851,6 +913,12 @@ add_function_test(
 add_function_test(TestContactMatching, "test_broken_normal_threshold", test_broken_normal_threshold, devices=devices)
 add_function_test(
     TestContactMatching, "test_contact_report_indices_correct", test_contact_report_indices_correct, devices=devices
+)
+add_function_test(
+    TestContactMatching,
+    "test_save_resets_next_frame_report_flags",
+    test_save_resets_next_frame_report_flags,
+    devices=devices,
 )
 add_function_test(
     TestContactMatching, "test_contact_report_broken_indices", test_contact_report_broken_indices, devices=devices

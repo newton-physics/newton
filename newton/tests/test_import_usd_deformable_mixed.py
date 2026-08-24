@@ -475,7 +475,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
             builder.color()
             model = builder.finalize()
 
-            solver = newton.solvers.SolverVBD(model, iterations=10)
+            solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
             state_0, state_1, control = model.state(), model.state(), model.control()
             collision_pipeline = newton.CollisionPipeline(model)
             contacts = collision_pipeline.contacts()
