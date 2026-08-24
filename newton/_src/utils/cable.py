@@ -855,7 +855,20 @@ def cable_spline_shape(
     Returns:
         A :class:`CableSplineShape`. When ``straight_rest_shape=False`` the rest fields alias
         the posed fields.
+
+    Raises:
+        ValueError: If ``closed`` is True and ``twist_total`` is not a multiple of ``2*pi``
+            (a closed frame field cannot carry fractional stored twist), or for the sampling
+            errors raised by the underlying centerline sampler.
     """
+    if closed and twist_total != 0.0:
+        turns = twist_total / (2.0 * math.pi)
+        if abs(turns - round(turns)) > 1.0e-6:
+            raise ValueError(
+                "cable_spline_shape: twist_total must be a multiple of 2*pi for closed cables "
+                f"(got {twist_total} rad = {turns:.4f} turns)"
+            )
+
     points = _cable_spline_points(
         control_points,
         num_segments=num_segments,

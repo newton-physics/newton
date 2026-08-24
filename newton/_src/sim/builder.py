@@ -8568,13 +8568,7 @@ class ModelBuilder:
                 given, if there are too few distinct control points, or if ``closed=True`` and
                 ``twist_total`` is not a multiple of ``2*pi``.
         """
-        if closed and twist_total != 0.0:
-            turns = twist_total / (2.0 * math.pi)
-            if abs(turns - round(turns)) > 1.0e-6:
-                raise ValueError(
-                    "add_cable_spline: twist_total must be a multiple of 2*pi for closed cables "
-                    f"(got {twist_total} rad = {turns:.4f} turns)"
-                )
+        # twist_total / closed validation is enforced by cable_spline_shape (single source).
         shape = cable_spline_shape(
             control_points,
             num_segments=num_segments,
