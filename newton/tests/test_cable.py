@@ -5192,7 +5192,7 @@ def _split_cable_angular_slot_layout(test, device):
 
 
 def _rod_stiffness_helper_returns_physical_twist(test, device):
-    """Verify the canonical helper returns physical stretch, bend, and twist stiffness."""
+    """Verify the rod stiffness helper returns physical values and validates inputs."""
     E = 200.0
     radius = 0.5
     length = 2.0
@@ -5208,12 +5208,58 @@ def _rod_stiffness_helper_returns_physical_twist(test, device):
         [stretch, bend, twist], [E * area / length, E * inertia / length, G * polar_inertia / length]
     )
 
-    with test.assertRaisesRegex(ValueError, "exactly one of poissons_ratio and shear_modulus"):
-        newton.rod.stiffness_from_elastic_moduli(E, radius, length)
-    with test.assertRaisesRegex(ValueError, "exactly one of poissons_ratio and shear_modulus"):
-        newton.rod.stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25, shear_modulus=G)
-    with test.assertRaisesRegex(ValueError, "poissons_ratio"):
-        newton.rod.stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.5)
+    np.testing.assert_allclose(
+        newton.rod.stiffness_from_elastic_moduli(E, radius, length, shear_modulus=G),
+        stiffness,
+    )
+
+    invalid_cases = (
+        ((np.nan, radius, length), {"poissons_ratio": 0.25}, "youngs_modulus"),
+        ((E, np.nan, length), {"poissons_ratio": 0.25}, "radius"),
+        ((E, radius, np.nan), {"poissons_ratio": 0.25}, "segment_length"),
+        ((-1.0, radius, length), {"poissons_ratio": 0.25}, "youngs_modulus"),
+        ((E, 0.0, length), {"poissons_ratio": 0.25}, "radius"),
+        ((E, radius, 0.0), {"poissons_ratio": 0.25}, "segment_length"),
+        ((E, radius, length), {}, "exactly one"),
+        ((E, radius, length), {"shear_modulus": np.nan}, "shear_modulus"),
+        ((E, radius, length), {"shear_modulus": -1.0}, "shear_modulus"),
+        (
+            (E, radius, length),
+            {"poissons_ratio": 0.25, "shear_modulus": G},
+            "exactly one",
+        ),
+        ((E, radius, length), {"poissons_ratio": np.nan}, "poissons_ratio"),
+        ((E, radius, length), {"poissons_ratio": 0.5}, "poissons_ratio"),
+    )
+    for args, kwargs, message in invalid_cases:
+        with test.subTest(args=args, kwargs=kwargs):
+            with test.assertRaisesRegex(ValueError, message):
+                newton.rod.stiffness_from_elastic_moduli(*args, **kwargs)
+
+
+def _rod_geometry_helpers_validate_inputs(test, device):
+    """Verify rod geometry helpers apply twist and reject invalid inputs."""
+    start = wp.vec3(0.0, 0.0, 0.0)
+    direction = wp.vec3(0.0, 0.0, 1.0)
+
+    _, quaternions = newton.rod.generate_straight_points_and_quaternions(
+        start, direction, 1.0, 1, twist_total=0.5 * np.pi
+    )
+    expected = wp.quat_from_axis_angle(direction, 0.5 * np.pi)
+    np.testing.assert_allclose(np.asarray(quaternions[0]), np.asarray(expected))
+
+    invalid_calls = (
+        (newton.rod.generate_straight_points, (start, direction, 1.0, 0), "num_segments"),
+        (newton.rod.generate_straight_points, (start, direction, np.nan, 1), "length"),
+        (newton.rod.generate_straight_points, (start, direction, -1.0, 1), "length"),
+        (newton.rod.generate_straight_points, (start, wp.vec3(0.0), 1.0, 1), "direction"),
+        (newton.rod.compute_parallel_transport_quaternions, ([start],), "length"),
+        (newton.rod.compute_parallel_transport_quaternions, ([start, start],), "duplicate"),
+    )
+    for function, args, message in invalid_calls:
+        with test.subTest(function=function.__name__, args=args):
+            with test.assertRaisesRegex(ValueError, message):
+                function(*args)
 
 
 def _joint_rod_api_deprecates_cable_names(test, device):
@@ -6324,7 +6370,13 @@ add_function_test(
     TestCable,
     "test_rod_stiffness_helper_returns_physical_twist",
     _rod_stiffness_helper_returns_physical_twist,
-    devices=devices,
+    devices=None,
+)
+add_function_test(
+    TestCable,
+    "test_rod_geometry_helpers_validate_inputs",
+    _rod_geometry_helpers_validate_inputs,
+    devices=None,
 )
 add_function_test(
     TestCable,
