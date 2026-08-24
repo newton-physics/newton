@@ -1865,13 +1865,13 @@ class RendererGL:
         light_near = 1.0
         light_far = 1000.0
         camera_pos = np.array(self.camera.pos, dtype=np.float32)
-        light_pos = camera_pos + self._sun_direction * extents
+        light_pos = self._sun_direction * extents
         light_proj = Mat4.orthogonal_projection(-extents, extents, -extents, extents, light_near, light_far)
 
-        light_view = Mat4.look_at(Vec3(*light_pos), Vec3(*camera_pos), Vec3(*self.camera.get_up()))
+        light_view = Mat4.look_at(Vec3(*light_pos), Vec3(0.0, 0.0, 0.0), Vec3(*self.camera.get_up()))
         self._light_space_matrix = np.array(light_proj @ light_view, dtype=np.float32)
 
-        self._shadow_shader.update(self._light_space_matrix)
+        self._shadow_shader.update(self._light_space_matrix, camera_pos)
 
         # render from light's point of view (skip objects that don't cast shadows)
         shadow_objects = {k: v for k, v in objects.items() if getattr(v, "cast_shadow", True)}
@@ -1894,6 +1894,7 @@ class RendererGL:
         self._shape_shader.update(
             view_matrix=self._view_matrix,
             projection_matrix=self._projection_matrix,
+            viewport_size=(self._screen_width, self._screen_height),
             view_pos=self.camera.pos,
             fog_color=self.sky_lower,
             up_axis=self.camera.up_axis,
@@ -1930,8 +1931,8 @@ class RendererGL:
             self._edge_shader.update(
                 view_matrix=self._view_matrix,
                 projection_matrix=self._projection_matrix,
+                view_pos=self.camera.pos,
                 edge_color=self._edge_color,
-                light_space_matrix=self._light_space_matrix,
             )
             gl.glEnable(gl.GL_POLYGON_OFFSET_LINE)
             gl.glPolygonOffset(-1.0, -1.0)
