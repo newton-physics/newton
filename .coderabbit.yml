@@ -1,6 +1,11 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: "en-US"
 early_access: false
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CODING_GUIDELINES.rst"
 reviews:
   profile: "chill"
   request_changes_workflow: false
