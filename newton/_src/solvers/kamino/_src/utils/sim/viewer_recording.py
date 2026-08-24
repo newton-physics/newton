@@ -9,14 +9,15 @@ This monkey-patches a fully-initialized Newton viewer (as returned by
 and stitch them into a video from inside the running viewer session.
 
 After ``enable_recording`` the viewer is wired up but inactive: nothing is
-written to disk until ``viewer.start_clip(...)`` is called. Each call to
-``start_clip`` clears the target folder, resets counters, and records up
-to ``max_frames`` frames before automatically writing the video file.
+written to disk until ``viewer.start_clip(...)`` is called, or the
+``start_clip=True`` is passed to ``enable_recording``. Each call to
+``viewer.start_clip()`` clears the target folder, resets counters, and records
+up to ``max_frames`` frames before automatically writing the video file.
 
 Example usage: (multi-clip mode, one video file per backend triggered by the UI):
 
     viewer, args = newton.examples.init(parser)
-    viewer = enable_recording(viewer, default_video_folder=base_dir)
+    record_video = enable_recording(viewer, default_video_folder=base_dir)
     ...
     # inside the GUI button handler:
     viewer.start_clip(
@@ -31,6 +32,8 @@ Exactly one PNG is captured per ``viewer.should_step()`` call that returns
 True (i.e. per ``simulate()`` step). No PNGs are produced while paused or
 when the render loop runs faster than the simulation.
 """
+
+from __future__ import annotations
 
 import glob
 import os

@@ -313,10 +313,10 @@ class Example:
             self.solver.reset(state=self.state_0, config=reset_config)
             self.solver.reset(state=self.state_1, config=reset_config)
 
-    @staticmethod
-    def _selected_joint_angle(dof_index: int) -> float:
+    def _selected_joint_angle(self, dof_index: int) -> float:
         """Target angle for the actuated joint currently selected by the reset-cycling demo."""
-        return np.pi / 12 if dof_index < 6 and dof_index >= 0 else -np.pi / 12
+        local_index = dof_index % (self.num_actuated_dofs // self.world_count)
+        return np.pi / 12 if local_index < 6 else -np.pi / 12
 
     def _reset_config_base_pose(self):
         R_b = Rotation.from_rotvec(np.pi / 4 * np.array([0, 0, 1]))
