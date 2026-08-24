@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 import unittest
 from unittest.mock import Mock, patch
 
@@ -71,7 +72,7 @@ class TestViewerViserGaussian(unittest.TestCase):
         return viewer, captured
 
     def test_log_gaussian_computes_covariance_and_color(self):
-        """The uploaded covariance/color/opacity data should match the Gaussian's local-space parameters."""
+        """Verify uploaded covariance, color, and opacity data derive from the Gaussian's local-space parameters."""
         viewer, captured = self._make_viser_viewer()
         gaussian = _make_test_gaussian()
 
@@ -94,7 +95,7 @@ class TestViewerViserGaussian(unittest.TestCase):
         assert_np_equal(last["rgbs"], expected_rgb, tol=1e-5)
 
     def test_log_gaussian_uploads_once_and_updates_pose_in_place(self):
-        """A repeated call with the same Gaussian asset should not re-upload the point cloud."""
+        """Reuse the cached upload and move the handle in place when the same Gaussian asset is logged again."""
         viewer, captured = self._make_viser_viewer()
         gaussian = _make_test_gaussian()
 
@@ -102,16 +103,33 @@ class TestViewerViserGaussian(unittest.TestCase):
         self.assertEqual(captured["add_calls"], 1)
         handle = viewer._scene_handles["/probe"]
 
-        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 1.0)
+        half_angle = 0.5
+        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 2.0 * half_angle)
         viewer.log_gaussian("/probe", gaussian, xform=wp.transformf(wp.vec3(4.0, 5.0, 6.0), rot))
 
-        # Same asset (same Gaussian object) -> no second upload, same handle reused.
         self.assertEqual(captured["add_calls"], 1)
         self.assertIs(viewer._scene_handles["/probe"], handle)
         assert_np_equal(np.asarray(handle.position), np.array([4.0, 5.0, 6.0], dtype=np.float32))
+        expected_wxyz = np.array([math.cos(half_angle), 0.0, 0.0, math.sin(half_angle)], dtype=np.float32)
+        assert_np_equal(np.asarray(handle.wxyz), expected_wxyz, tol=1e-5)
+
+    def test_log_gaussian_reuploads_when_asset_is_replaced(self):
+        """Upload a fresh point cloud when a different Gaussian object replaces the one logged at the same name."""
+        viewer, captured = self._make_viser_viewer()
+        gaussian = _make_test_gaussian(seed=0)
+
+        viewer.log_gaussian("/probe", gaussian, xform=wp.transformf(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        self.assertEqual(captured["add_calls"], 1)
+        handle = viewer._scene_handles["/probe"]
+
+        replacement = _make_test_gaussian(seed=1)
+        viewer.log_gaussian("/probe", replacement, xform=wp.transformf(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+
+        self.assertEqual(captured["add_calls"], 2)
+        self.assertIsNot(viewer._scene_handles["/probe"], handle)
 
     def test_log_gaussian_hidden_sets_visible_false(self):
-        """Logging with hidden=True should hide the existing handle without removing it."""
+        """Hide the existing handle, without removing it, when logging with hidden=True."""
         viewer, captured = self._make_viser_viewer()
         gaussian = _make_test_gaussian()
 
@@ -121,10 +139,12 @@ class TestViewerViserGaussian(unittest.TestCase):
         viewer.log_gaussian("/probe", gaussian, hidden=True)
 
         self.assertFalse(handle.visible)
+        handle.remove.assert_not_called()
+        self.assertIn("/probe", viewer._scene_handles)
         self.assertEqual(captured["add_calls"], 1)
 
     def test_log_gaussian_removes_handle_when_asset_becomes_none(self):
-        """An asset that becomes None must not leave a stale point cloud on screen."""
+        """Remove the stale handle when a previously logged asset becomes None."""
         viewer, _captured = self._make_viser_viewer()
         gaussian = _make_test_gaussian()
 
@@ -137,8 +157,24 @@ class TestViewerViserGaussian(unittest.TestCase):
         self.assertNotIn("/probe", viewer._scene_handles)
         self.assertNotIn("/probe", viewer._gaussian_splats)
 
+    def test_log_gaussian_removes_handle_when_asset_has_zero_count(self):
+        """Remove the stale handle when a previously logged asset's point count drops to zero."""
+        viewer, _captured = self._make_viser_viewer()
+        gaussian = _make_test_gaussian()
+
+        viewer.log_gaussian("/probe", gaussian, xform=wp.transformf(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        handle = viewer._scene_handles["/probe"]
+
+        empty_gaussian = Mock(spec=newton.Gaussian)
+        empty_gaussian.count = 0
+        viewer.log_gaussian("/probe", empty_gaussian)
+
+        handle.remove.assert_called_once()
+        self.assertNotIn("/probe", viewer._scene_handles)
+        self.assertNotIn("/probe", viewer._gaussian_splats)
+
     def test_clear_model_drops_gaussian_cache(self):
-        """clear_model() must release the Gaussian cache like it does for meshes/instances.
+        """Release the Gaussian cache and its handle when clear_model() runs.
 
         Regression test: without popping ``_gaussian_splats`` alongside
         ``_scene_handles`` in ``clear_model()``, a stale cache entry could
@@ -151,9 +187,11 @@ class TestViewerViserGaussian(unittest.TestCase):
         viewer.log_gaussian("/probe", gaussian, xform=wp.transformf(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
         self.assertIn("/probe", viewer._gaussian_splats)
         self.assertIn("/probe", viewer._scene_handles)
+        handle = viewer._scene_handles["/probe"]
 
         viewer.clear_model()
 
+        handle.remove.assert_called_once()
         self.assertNotIn("/probe", viewer._gaussian_splats)
         self.assertNotIn("/probe", viewer._scene_handles)
 

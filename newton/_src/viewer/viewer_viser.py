@@ -37,6 +37,7 @@ class ViewerViser(ViewerBase):
     """
 
     _viser_module = None
+    _SH_C0 = 0.28209479177387814
 
     @classmethod
     def _get_viser(cls):
@@ -1337,7 +1338,7 @@ class ViewerViser(ViewerBase):
     def log_gaussian(
         self,
         name: str,
-        gaussian: newton.Gaussian,
+        gaussian: newton.Gaussian | None,
         xform: wp.transformf | None = None,
         hidden: bool = False,
     ):
@@ -1349,8 +1350,10 @@ class ViewerViser(ViewerBase):
 
         Args:
             name: Unique path/name for the Gaussian splat asset.
-            gaussian: The :class:`newton.Gaussian` asset to visualize.
-            xform: Optional world-space transform applied to the splat asset.
+            gaussian: The :class:`newton.Gaussian` asset to visualize, with centers and
+                per-axis scales in meters [m]. ``None`` removes any existing asset at ``name``.
+            xform: Optional world-space transform applied to the splat asset; its
+                translation component is in meters [m].
             hidden: Whether the splat asset should be hidden.
         """
         name = self._qualify(name)
@@ -1385,7 +1388,7 @@ class ViewerViser(ViewerBase):
 
             sh_coeffs = self._to_numpy(gaussian.sh_coeffs)
             if sh_coeffs is not None and sh_coeffs.shape[1] >= 3:
-                rgbs = np.clip(0.28209479177387814 * sh_coeffs[:, :3] + 0.5, 0.0, 1.0).astype(np.float32)
+                rgbs = np.clip(self._SH_C0 * sh_coeffs[:, :3] + 0.5, 0.0, 1.0).astype(np.float32)
             else:
                 rgbs = np.ones((gaussian.count, 3), dtype=np.float32)
 
