@@ -381,7 +381,16 @@ class ViewerGL(ViewerBase):
         # are remapped in set_model() to per-instance render scales (radius, radius, half_height).
         if geo_type == nt.GeoType.CAPSULE:
             geo_scale = (1.0, 1.0)
-        return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src, mirror)
+        geometry_hash = super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src, mirror)
+        texture_mapping = ()
+        if isinstance(geo_src, nt.Mesh) and geo_src.texture is not None:
+            texture_mapping = (
+                geo_src.texture_scale,
+                geo_src.texture_translate,
+                geo_src.texture_rotate,
+                int(geo_src.texture_projection),
+            )
+        return hash((geometry_hash, texture_mapping))
 
     def _invalidate_pbo(self):
         """Invalidate PBO resources, forcing reallocation on next get_frame() call."""
@@ -946,7 +955,7 @@ class ViewerGL(ViewerBase):
             dynamic: Whether mesh topology may change between frames.
             texture_scale: Scale applied to texture coordinates.
             texture_translate: Translation applied to texture coordinates.
-            texture_rotate: Counter-clockwise texture-coordinate rotation in degrees.
+            texture_rotate: OmniPBR-compatible texture-coordinate rotation in degrees.
             texture_projection: Coordinate source from :class:`newton.Mesh.TextureProjection`.
         """
         assert isinstance(points, wp.array)

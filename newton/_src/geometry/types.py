@@ -220,7 +220,7 @@ class Mesh:
             texture: Optional texture path/URL or image data (H, W, C).
             texture_scale: UV scale applied before texture sampling.
             texture_translate: UV translation applied before texture sampling.
-            texture_rotate: Counter-clockwise UV rotation in degrees.
+            texture_rotate: OmniPBR-compatible texture-coordinate rotation in degrees.
             texture_projection: Coordinate source from :class:`Mesh.TextureProjection`.
             sdf: Optional prebuilt SDF object owned by this mesh.
         """
@@ -1582,7 +1582,6 @@ class Mesh:
     @texture_scale.setter
     def texture_scale(self, value: Vec2):
         self._texture_scale = self._normalize_texture_vec2(value, "texture_scale")
-        self._cached_hash = None
 
     @property
     def texture_translate(self) -> tuple[float, float]:
@@ -1592,11 +1591,10 @@ class Mesh:
     @texture_translate.setter
     def texture_translate(self, value: Vec2):
         self._texture_translate = self._normalize_texture_vec2(value, "texture_translate")
-        self._cached_hash = None
 
     @property
     def texture_rotate(self) -> float:
-        """Counter-clockwise UV rotation in degrees."""
+        """OmniPBR-compatible texture-coordinate rotation in degrees."""
         return self._texture_rotate
 
     @texture_rotate.setter
@@ -1605,7 +1603,6 @@ class Mesh:
         if not math.isfinite(value):
             raise ValueError("texture_rotate must be finite.")
         self._texture_rotate = value
-        self._cached_hash = None
 
     @property
     def texture_projection(self) -> TextureProjection:
@@ -1618,7 +1615,6 @@ class Mesh:
             self._texture_projection = self.TextureProjection(value)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid texture_projection: {value!r}.") from exc
-        self._cached_hash = None
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
@@ -1732,10 +1728,6 @@ class Mesh:
                 [
                     np.nan if self._roughness is None else float(self._roughness),
                     np.nan if self._metallic is None else float(self._metallic),
-                    *self._texture_scale,
-                    *self._texture_translate,
-                    self._texture_rotate,
-                    int(self._texture_projection),
                 ],
                 dtype=np.float64,
             )

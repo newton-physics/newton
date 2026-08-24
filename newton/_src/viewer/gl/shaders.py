@@ -167,10 +167,10 @@ vec2 CubicProjection(vec3 position, vec3 normal)
 {
     vec3 dominant = abs(normal);
     if (dominant.x >= dominant.y && dominant.x >= dominant.z)
-        return position.yz;
+        return normal.x >= 0.0 ? position.yz : vec2(-position.y, position.z);
     if (dominant.y >= dominant.z)
-        return position.xz;
-    return position.xy;
+        return normal.y >= 0.0 ? vec2(-position.x, position.z) : position.xz;
+    return normal.z >= 0.0 ? position.xy : vec2(-position.x, position.y);
 }
 
 vec2 TextureCoordinates()
@@ -182,10 +182,11 @@ vec2 TextureCoordinates()
     else if (projection_mode == 2)
         uv = CubicProjection(FragPos, Normal);
 
-    uv *= TextureTransform.xy;
     float angle = radians(TextureOptions.x);
-    uv = mat2(cos(angle), sin(angle), -sin(angle), cos(angle)) * uv;
-    return uv + TextureTransform.zw;
+    float cosine = cos(angle);
+    float sine = sin(angle);
+    uv = vec2(cosine * uv.x + sine * uv.y, -sine * uv.x + cosine * uv.y);
+    return uv * TextureTransform.xy + TextureTransform.zw;
 }
 
 vec2 poissonDisk[16] = vec2[](

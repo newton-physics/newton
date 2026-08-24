@@ -80,6 +80,39 @@ def _make_box_model(device: str | wp.Device):
     return builder.finalize(device=device)
 
 
+def _configure_unlit_textured_viewer(viewer) -> None:
+    renderer = viewer.renderer
+    renderer.draw_sky = False
+    renderer.sky_upper = (0.0, 0.0, 0.0)
+    renderer.sky_lower = (0.0, 0.0, 0.0)
+    renderer.draw_shadows = False
+    renderer.diffuse_scale = 0.0
+    renderer.specular_scale = 0.0
+    renderer.spotlight_enabled = False
+    renderer.ambient_sky = (1.0, 1.0, 1.0)
+    renderer.ambient_ground = (1.0, 1.0, 1.0)
+    renderer.exposure = 1.0
+
+
+def _capture_viewer_frame(viewer) -> np.ndarray:
+    for _ in range(2):
+        viewer.begin_frame(0.0)
+        viewer.end_frame()
+    return viewer.get_frame().numpy()
+
+
+def _make_asymmetric_texture() -> np.ndarray:
+    y, x = np.mgrid[:72, :96]
+    return np.stack(
+        (
+            32 + 192 * ((x // 12 + 2 * (y // 18)) % 2),
+            24 + 208 * ((y // 9) % 2),
+            16 + ((5 * x + 3 * y) % 60) * 4,
+        ),
+        axis=-1,
+    ).astype(np.uint8)
+
+
 class _FakeGL:
     GL_PIXEL_PACK_BUFFER = 0x88EB
     GL_STREAM_READ = 0x88E1
@@ -419,17 +452,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
 
         try:
-            renderer = viewer.renderer
-            renderer.draw_sky = False
-            renderer.sky_upper = (0.0, 0.0, 0.0)
-            renderer.sky_lower = (0.0, 0.0, 0.0)
-            renderer.draw_shadows = False
-            renderer.diffuse_scale = 0.0
-            renderer.specular_scale = 0.0
-            renderer.spotlight_enabled = False
-            renderer.ambient_sky = (1.0, 1.0, 1.0)
-            renderer.ambient_ground = (1.0, 1.0, 1.0)
-            renderer.exposure = 1.0
+            _configure_unlit_textured_viewer(viewer)
 
             points = wp.array(
                 [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)],
@@ -461,6 +484,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     normals,
                     uvs,
                     texture,
+                    hidden=True,
                     backface_culling=False,
                     texture_scale=(0.5, 0.5),
                     texture_projection=projection,
@@ -474,10 +498,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     colors,
                     materials,
                 )
-                for _ in range(2):
-                    viewer.begin_frame(0.0)
-                    viewer.end_frame()
-                gray = viewer.get_frame().numpy().astype(np.float32).mean(axis=2)
+                gray = _capture_viewer_frame(viewer).astype(np.float32).mean(axis=2)
                 roi = gray[160:290, 20:380]
                 return float(np.mean(np.abs(np.diff(roi, axis=1)) > 15.0))
 
@@ -492,6 +513,151 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
             stretched_density = render(2.0e3, newton.Mesh.TextureProjection.UV)
             self.assertLess(stretched_density, 0.005, "the control UV mapping unexpectedly tiled the large quad")
+        finally:
+            viewer.close()
+
+    def test_texture_transform_matches_omnipbr_coordinates(self):
+        """Match OmniPBR rotation, scale, and translation order."""
+        viewer = _make_headless_viewer_gl_or_skip(self, width=320, height=240)
+
+        try:
+            _configure_unlit_textured_viewer(viewer)
+            viewer.set_camera(wp.vec3(0.0, -3.0, 2.5), pitch=0.0, yaw=0.0)
+            viewer.camera.look_at((0.0, 0.0, 0.0))
+
+            points = np.array(
+                [(-1.0, -0.8, 0.0), (1.0, -0.8, 0.0), (1.0, 0.8, 0.0), (-1.0, 0.8, 0.0)],
+                dtype=np.float32,
+            )
+            indices = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32, device=viewer.device)
+            normals = wp.array([(0.0, 0.0, 1.0)] * 4, dtype=wp.vec3, device=viewer.device)
+            source_uvs = np.array([(0.08, 0.13), (1.21, 0.19), (1.14, 1.08), (0.03, 1.02)], dtype=np.float32)
+            texture = _make_asymmetric_texture()
+            xforms = wp.array([wp.transform_identity()], dtype=wp.transform, device=viewer.device)
+            scales = wp.array([(1.0, 1.0, 1.0)], dtype=wp.vec3, device=viewer.device)
+            colors = wp.array([(1.0, 1.0, 1.0)], dtype=wp.vec3, device=viewer.device)
+            materials = wp.array([(0.5, 0.0, 0.0, 1.0)], dtype=wp.vec4, device=viewer.device)
+
+            def render(uvs: np.ndarray, **mapping) -> np.ndarray:
+                viewer.log_mesh(
+                    "/test/texture_transform",
+                    wp.array(points, dtype=wp.vec3, device=viewer.device),
+                    indices,
+                    normals,
+                    wp.array(uvs, dtype=wp.vec2, device=viewer.device),
+                    texture,
+                    hidden=True,
+                    backface_culling=False,
+                    **mapping,
+                )
+                viewer.log_instances(
+                    "/test/texture_transform_instance",
+                    "/test/texture_transform",
+                    xforms,
+                    scales,
+                    colors,
+                    materials,
+                )
+                return _capture_viewer_frame(viewer)
+
+            scale = np.array((0.7, 1.3), dtype=np.float32)
+            translate = np.array((0.13, 0.27), dtype=np.float32)
+            rotate = 37.0
+            actual = render(source_uvs, texture_scale=scale, texture_translate=translate, texture_rotate=rotate)
+
+            angle = np.deg2rad(rotate)
+            cosine, sine = np.cos(angle), np.sin(angle)
+            rotated = np.column_stack(
+                (
+                    cosine * source_uvs[:, 0] + sine * source_uvs[:, 1],
+                    -sine * source_uvs[:, 0] + cosine * source_uvs[:, 1],
+                )
+            )
+            expected_uvs = rotated * scale + translate
+            expected = render(expected_uvs.astype(np.float32))
+
+            visible = np.any(expected > 8, axis=2)
+            self.assertGreater(np.std(expected[visible]), 30.0, "the texture control was not visibly asymmetric")
+            self.assertLess(np.abs(actual.astype(np.int16) - expected.astype(np.int16))[visible].mean(), 2.0)
+        finally:
+            viewer.close()
+
+    def test_cubic_projection_preserves_signed_face_orientation(self):
+        """Preserve the OmniPBR orientation of all six cubic faces."""
+        viewer = _make_headless_viewer_gl_or_skip(self, width=320, height=240)
+
+        try:
+            _configure_unlit_textured_viewer(viewer)
+            viewer.set_camera(wp.vec3(3.0, -4.0, 2.5), pitch=0.0, yaw=0.0)
+            viewer.camera.look_at((0.0, 0.0, 0.0))
+
+            planes = {
+                "x": np.array([(0.0, -0.85, -0.65), (0.0, 0.85, -0.65), (0.0, 0.85, 0.65), (0.0, -0.85, 0.65)]),
+                "y": np.array([(-0.85, 0.0, -0.65), (0.85, 0.0, -0.65), (0.85, 0.0, 0.65), (-0.85, 0.0, 0.65)]),
+                "z": np.array([(-0.85, -0.65, 0.0), (0.85, -0.65, 0.0), (0.85, 0.65, 0.0), (-0.85, 0.65, 0.0)]),
+            }
+            indices = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32, device=viewer.device)
+            texture = _make_asymmetric_texture()
+            xforms = wp.array([wp.transform_identity()], dtype=wp.transform, device=viewer.device)
+            scales = wp.array([(1.0, 1.0, 1.0)], dtype=wp.vec3, device=viewer.device)
+            colors = wp.array([(1.0, 1.0, 1.0)], dtype=wp.vec3, device=viewer.device)
+            materials = wp.array([(0.5, 0.0, 0.0, 1.0)], dtype=wp.vec4, device=viewer.device)
+
+            for axis, sign in (("x", 1), ("x", -1), ("y", 1), ("y", -1), ("z", 1), ("z", -1)):
+                with self.subTest(axis=axis, sign=sign):
+                    points = planes[axis].astype(np.float32)
+                    normal = np.zeros(3, dtype=np.float32)
+                    normal["xyz".index(axis)] = sign
+                    normals = np.tile(normal, (4, 1))
+
+                    if axis == "x":
+                        expected_uvs = np.column_stack((sign * points[:, 1], points[:, 2]))
+                    elif axis == "y":
+                        expected_uvs = np.column_stack((-sign * points[:, 0], points[:, 2]))
+                    else:
+                        expected_uvs = np.column_stack((sign * points[:, 0], points[:, 1]))
+
+                    mesh_args = (
+                        "/test/cubic_projection",
+                        wp.array(points, dtype=wp.vec3, device=viewer.device),
+                        indices,
+                        wp.array(normals, dtype=wp.vec3, device=viewer.device),
+                    )
+                    viewer.log_mesh(
+                        *mesh_args,
+                        wp.zeros(4, dtype=wp.vec2, device=viewer.device),
+                        texture,
+                        hidden=True,
+                        backface_culling=False,
+                        texture_scale=(0.43, 0.61),
+                        texture_translate=(0.2, 0.15),
+                        texture_projection=newton.Mesh.TextureProjection.OBJECT,
+                    )
+                    viewer.log_instances(
+                        "/test/cubic_projection_instance",
+                        "/test/cubic_projection",
+                        xforms,
+                        scales,
+                        colors,
+                        materials,
+                    )
+                    actual = _capture_viewer_frame(viewer)
+                    viewer.log_mesh(
+                        *mesh_args,
+                        wp.array(expected_uvs.astype(np.float32), dtype=wp.vec2, device=viewer.device),
+                        texture,
+                        hidden=True,
+                        backface_culling=False,
+                        texture_scale=(0.43, 0.61),
+                        texture_translate=(0.2, 0.15),
+                    )
+                    expected = _capture_viewer_frame(viewer)
+
+                    visible = np.any(expected > 8, axis=2)
+                    self.assertGreater(
+                        np.std(expected[visible]), 30.0, "the texture control was not visibly asymmetric"
+                    )
+                    self.assertLess(np.abs(actual.astype(np.int16) - expected.astype(np.int16))[visible].mean(), 2.0)
         finally:
             viewer.close()
 

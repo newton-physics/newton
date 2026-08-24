@@ -8,7 +8,7 @@ import warp as wp
 
 import newton
 from newton.tests.unittest_utils import assert_np_equal
-from newton.viewer import ViewerNull
+from newton.viewer import ViewerGL, ViewerNull
 
 
 class _ViewerGeometryBatchingProbe(ViewerNull):
@@ -79,6 +79,28 @@ class _ViewerMeshProbe(ViewerNull):
 
 
 class TestViewerGeometryBatching(unittest.TestCase):
+    def test_gl_texture_mapping_is_owned_by_gl_geometry_cache(self):
+        """Keep projected mapping identity inside the supporting GL backend."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        indices = np.array([0, 1, 2], dtype=np.int32)
+        mesh = newton.Mesh(vertices, indices, compute_inertia=False)
+        mesh.texture = np.full((2, 2, 3), 255, dtype=np.uint8)
+        projected_mesh = mesh.copy()
+        projected_mesh.texture_projection = newton.Mesh.TextureProjection.WORLD
+
+        self.assertEqual(hash(projected_mesh), hash(mesh))
+
+        null_viewer = _ViewerGeometryBatchingProbe()
+        self.assertEqual(
+            null_viewer._hash_geometry(newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, projected_mesh),
+            null_viewer._hash_geometry(newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, mesh),
+        )
+
+        viewer = ViewerGL.__new__(ViewerGL)
+        mesh_hash = viewer._hash_geometry(newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, mesh)
+        projected_mesh_hash = viewer._hash_geometry(newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, projected_mesh)
+        self.assertNotEqual(projected_mesh_hash, mesh_hash)
+
     def test_barrel_cylinder_geometry(self):
         """Verify viewers generate the curved cylinder profile."""
         radius = 0.5

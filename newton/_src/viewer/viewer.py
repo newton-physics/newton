@@ -1765,7 +1765,7 @@ class ViewerBase(ABC):
             dynamic: Whether mesh topology may change between frames.
             texture_scale: Scale applied to texture coordinates.
             texture_translate: Translation applied to texture coordinates.
-            texture_rotate: Counter-clockwise texture-coordinate rotation in degrees.
+            texture_rotate: OmniPBR-compatible texture-coordinate rotation in degrees.
             texture_projection: Coordinate source from :class:`newton.Mesh.TextureProjection`.
         """
         pass

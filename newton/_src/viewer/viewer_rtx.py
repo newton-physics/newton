@@ -1456,6 +1456,10 @@ void main() {
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
+            texture_scale: Accepted for viewer API compatibility; unsupported by this backend.
+            texture_translate: Accepted for viewer API compatibility; unsupported by this backend.
+            texture_rotate: Accepted for viewer API compatibility; unsupported by this backend.
+            texture_projection: Accepted for viewer API compatibility; unsupported by this backend.
         """
         name = self._qualify(name)
 

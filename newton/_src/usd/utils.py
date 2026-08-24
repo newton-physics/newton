@@ -2744,7 +2744,9 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with ``color``, ``metallic``, ``roughness``, ``texture``,
+        ``texture_scale``, ``texture_translate``, ``texture_rotate``, and
+        ``texture_projection``.
     """
     properties = _empty_material_properties()
     if shader is None:
@@ -2965,6 +2967,9 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
 
     This supports assets that author texture references directly on the Material,
     without creating a shader network.
+
+    Returns:
+        Dictionary with scalar surface properties, texture data, and texture-coordinate mapping.
     """
     properties = _empty_material_properties()
     if material is None:

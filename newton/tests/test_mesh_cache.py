@@ -42,13 +42,15 @@ class TestMeshCache(unittest.TestCase):
         mesh.invalidate_cache()
         self.assertNotEqual(hash(mesh), old_hash)
 
-    def test_texture_mapping_is_copied_and_hashed(self):
-        """Texture-coordinate semantics survive copies and distinguish cached prototypes."""
+    def test_texture_mapping_is_copied_without_changing_physics_hash(self):
+        """Copy texture-coordinate settings without changing physical mesh identity."""
         mesh = _make_tet_mesh()
+        physics_hash = hash(mesh)
         mesh.texture_scale = (0.5, 2.0)
         mesh.texture_translate = (0.25, -0.75)
         mesh.texture_rotate = 30.0
         mesh.texture_projection = Mesh.TextureProjection.WORLD
+        self.assertEqual(hash(mesh), physics_hash)
 
         copied = mesh.copy()
         self.assertEqual(copied.texture_scale, mesh.texture_scale)
@@ -58,7 +60,7 @@ class TestMeshCache(unittest.TestCase):
         self.assertEqual(hash(copied), hash(mesh))
 
         copied.texture_projection = Mesh.TextureProjection.OBJECT
-        self.assertNotEqual(hash(copied), hash(mesh))
+        self.assertEqual(hash(copied), hash(mesh))
 
 
 def test_finalize_reuses_cached_mesh(test: TestMeshCache, device):
