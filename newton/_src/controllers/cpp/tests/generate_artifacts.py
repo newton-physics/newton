@@ -96,8 +96,7 @@ def build_model(device) -> newton.Model:
 def build_controller(model, selection, device) -> ControllerJointImpedance:
     return ControllerJointImpedance(
         model,
-        joint_q_idx=selection.q_idx,
-        joint_qd_idx=selection.qd_idx,
+        joint_selection=selection,
         stiffness=wp.array(STIFFNESS, dtype=wp.float32, device=device),
         damping=wp.array(DAMPING, dtype=wp.float32, device=device),
         device=device,
