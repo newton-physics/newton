@@ -5921,11 +5921,19 @@ def _notify_joint_dof_properties_refreshes_rod_structural_k(test, device):
 
     dof0 = int(model.joint_qd_start.numpy()[joint])
     joint_target_ke = model.joint_target_ke.numpy()
-    joint_target_ke[dof0 + 0] = 999.0  # stretch
+    joint_target_ke[dof0 + 0] = 999.0  # stretch, now the larger of the two
     model.joint_target_ke.assign(joint_target_ke)
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     test.assertAlmostEqual(float(solver.body_structural_k.numpy()[body]), 999.0)
+
+    # The summary is max(stretch, shear), so raise shear above stretch to confirm the shear
+    # slot feeds it too -- an edit that left shear stale would be masked while stretch leads.
+    joint_target_ke[dof0 + 1] = 2500.0  # shear
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(float(solver.body_structural_k.numpy()[body]), 2500.0)
 
 
 def _split_cable_parent_hessian_separates_elastic_and_damping_arms(test, device):
