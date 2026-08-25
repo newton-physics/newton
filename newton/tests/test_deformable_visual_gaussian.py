@@ -12,6 +12,7 @@ import warp as wp
 import newton
 from newton.sensors import SensorTiledCamera
 from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.viewer import ViewerNull
 
 
 def _soft_builder():
@@ -44,6 +45,17 @@ def _quat_matrix(quaternion):
         ],
         dtype=np.float32,
     )
+
+
+class _GaussianProbe(ViewerNull):
+    """Record Gaussian assets sent through the ordinary viewer shape path."""
+
+    def __init__(self):
+        super().__init__(num_frames=1)
+        self.calls = []
+
+    def log_gaussian(self, name, gaussian, xform=None, hidden=False):
+        self.calls.append((name, gaussian, hidden))
 
 
 class TestDeformableVisualGaussianBuilder(unittest.TestCase):
@@ -125,6 +137,30 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
                 kind="particle",
                 tet_range=(0, builder.tet_count),
             )
+
+    def test_viewer_omits_static_copy_of_deformable_gaussian(self):
+        """Do not draw an undeformed rest copy through the ordinary shape path."""
+        builder = _soft_builder()
+        ordinary = newton.Gaussian(positions=np.array([[2.0, 0.0, 0.0]], dtype=np.float32))
+        builder.add_shape_gaussian(-1, gaussian=ordinary)
+
+        visual_gaussian = newton.Gaussian(positions=np.array([[0.2, 0.2, 0.2]], dtype=np.float32))
+        builder.add_deformable_visual_gaussian(
+            visual_gaussian,
+            kind="tet",
+            tet_range=(0, builder.tet_count),
+            parent=[0],
+            weights=np.full((1, 4), 0.25, dtype=np.float32),
+        )
+        model = builder.finalize()
+        viewer = _GaussianProbe()
+        viewer.show_gaussians = True
+        viewer.set_model(model)
+
+        viewer.log_state(model.state())
+
+        visible = [gaussian for _name, gaussian, hidden in viewer.calls if not hidden]
+        self.assertEqual(visible, [ordinary])
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

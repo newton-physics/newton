@@ -2346,6 +2346,7 @@ class ViewerBase(ABC):
         shape_display_color = self.model.shape_color.numpy() if self.model.shape_color is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
+        deformable_gaussian_shapes = {visual.shape for visual in getattr(self.model, "deformable_visual_gaussians", ())}
 
         # loop over shapes
         for s in range(shape_count):
@@ -2374,6 +2375,10 @@ class ViewerBase(ABC):
 
             # Gaussians bypass the mesh instancing pipeline; render as point clouds.
             if geo_type == newton.GeoType.GAUSSIAN:
+                # The ordinary shape path only knows the rest asset. Rendering it would
+                # leave a frozen copy behind the camera sensor's deformed Gaussian field.
+                if s in deformable_gaussian_shapes:
+                    continue
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
                     xform = wp.transform_expand(shape_transform[s])
