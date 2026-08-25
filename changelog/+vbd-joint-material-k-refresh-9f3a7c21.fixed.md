@@ -1,0 +1,1 @@
+Fix `SolverVBD.notify_model_changed(JOINT_DOF_PROPERTIES)` to refresh rod stretch/shear/bend/twist material stiffness and REVOLUTE/PRISMATIC/D6 drive/limit stiffness, and the derived per-body structural summary used for contact conditioning. These were frozen at construction, so live `joint_target_ke` edits were silently ignored.
