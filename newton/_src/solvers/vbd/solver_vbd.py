@@ -1029,7 +1029,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._apply_module_options()
         refresh_structural_k = (
             bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
-            and self._integrates_rigid_bodies and self.model.joint_count > 0
+            and self._integrates_rigid_bodies
+            and self.model.joint_count > 0
         )
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()

@@ -5677,7 +5677,10 @@ def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
         """Build a chain at ``bend_stiffness``; if ``retarget_to`` is given, capture the
         step graph first, THEN live-reinit joint_target_ke to it before any replay."""
         model, state0, state1, control, _rod_bodies = _build_cable_chain(
-            device, num_links=num_links, bend_stiffness=bend_stiffness, bend_damping=1.0,
+            device,
+            num_links=num_links,
+            bend_stiffness=bend_stiffness,
+            bend_damping=1.0,
             segment_length=segment_length,
         )
         collision_pipeline = newton.CollisionPipeline(model)
@@ -5719,9 +5722,10 @@ def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
 
             for name, ptr in ptrs_before.items():
                 test.assertEqual(
-                    getattr(solver, name).ptr, ptr,
+                    getattr(solver, name).ptr,
+                    ptr,
                     msg=f"{name} was reallocated by notify_model_changed -- "
-                        "a captured graph would now read stale memory",
+                    "a captured graph would now read stale memory",
                 )
 
         for _ in range(num_steps):
@@ -5741,14 +5745,15 @@ def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
     test.assertFalse(
         np.array_equal(unrefreshed_q, reference_q),
         msg=f"test is vacuous: k_before={k_before} and k_after={k_after} yield identical "
-            "trajectories, so matching the k_after build proves nothing about the refresh",
+        "trajectories, so matching the k_after build proves nothing about the refresh",
     )
 
     np.testing.assert_array_equal(
-        reinit_q, reference_q,
+        reinit_q,
+        reference_q,
         err_msg="a rod chain reinit'd from k_before to k_after via "
-                "notify_model_changed(JOINT_DOF_PROPERTIES) after graph capture should "
-                "reproduce a from-scratch k_after build bit-for-bit",
+        "notify_model_changed(JOINT_DOF_PROPERTIES) after graph capture should "
+        "reproduce a from-scratch k_after build bit-for-bit",
     )
 
 
@@ -5777,7 +5782,8 @@ def _notify_without_joint_dof_properties_leaves_rod_material_k_stale(test, devic
 
     after = solver.joint_material_k.numpy()[start : start + 4]
     np.testing.assert_array_equal(
-        before, after,
+        before,
+        after,
         err_msg="joint_material_k changed without JOINT_DOF_PROPERTIES in the flags",
     )
 
@@ -5796,19 +5802,20 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
-    body_rev = builder.add_link()
-    j_rev = builder.add_joint_revolute(-1, body_rev, target_ke=50.0, limit_ke=10.0)
+    body_revolute = builder.add_link()
+    j_revolute = builder.add_joint_revolute(-1, body_revolute, target_ke=50.0, limit_ke=10.0)
 
-    body_pris = builder.add_link()
-    j_pris = builder.add_joint_prismatic(-1, body_pris, target_ke=60.0, limit_ke=20.0)
+    body_prismatic = builder.add_link()
+    j_prismatic = builder.add_joint_prismatic(-1, body_prismatic, target_ke=60.0, limit_ke=20.0)
 
     body_d6 = builder.add_link()
     j_d6 = builder.add_joint_d6(
-        -1, body_d6,
+        -1,
+        body_d6,
         linear_axes=[JointDofConfig(axis=(1, 0, 0), target_ke=70.0, limit_ke=30.0)],
         angular_axes=[JointDofConfig(axis=(0, 1, 0), target_ke=80.0, limit_ke=40.0)],
     )
-    builder.add_articulation([j_rev, j_pris, j_d6])
+    builder.add_articulation([j_revolute, j_prismatic, j_d6])
     builder.color()
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
@@ -5819,22 +5826,22 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
 
     # Construction-time value: slot 2 is the (only) drive/limit slot for REVOLUTE/PRISMATIC;
     # D6 here has one linear axis (slot 2) and one angular axis (slot 3).
-    test.assertAlmostEqual(material_k_at(j_rev, 2), max(50.0, 10.0))
-    test.assertAlmostEqual(material_k_at(j_pris, 2), max(60.0, 20.0))
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(50.0, 10.0))
+    test.assertAlmostEqual(material_k_at(j_prismatic, 2), max(60.0, 20.0))
     test.assertAlmostEqual(material_k_at(j_d6, 2), max(70.0, 30.0))
     test.assertAlmostEqual(material_k_at(j_d6, 3), max(80.0, 40.0))
 
     joint_target_ke = model.joint_target_ke.numpy()
     joint_qd_start = model.joint_qd_start.numpy()
-    joint_target_ke[joint_qd_start[j_rev]] = 500.0
-    joint_target_ke[joint_qd_start[j_pris]] = 600.0
+    joint_target_ke[joint_qd_start[j_revolute]] = 500.0
+    joint_target_ke[joint_qd_start[j_prismatic]] = 600.0
     joint_target_ke[joint_qd_start[j_d6] + 0] = 700.0  # linear axis
     joint_target_ke[joint_qd_start[j_d6] + 1] = 800.0  # angular axis
     model.joint_target_ke.assign(joint_target_ke)
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
-    test.assertAlmostEqual(material_k_at(j_rev, 2), max(500.0, 10.0))
-    test.assertAlmostEqual(material_k_at(j_pris, 2), max(600.0, 20.0))
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(500.0, 10.0))
+    test.assertAlmostEqual(material_k_at(j_prismatic, 2), max(600.0, 20.0))
     test.assertAlmostEqual(material_k_at(j_d6, 2), max(700.0, 30.0))
     test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 40.0))
 
@@ -5842,15 +5849,15 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     # JOINT_DOF_PROPERTIES, so editing it alone must propagate too. Raise each above the
     # target_ke set above so the maximum switches over to the limit side.
     joint_limit_ke = model.joint_limit_ke.numpy()
-    joint_limit_ke[joint_qd_start[j_rev]] = 5000.0
-    joint_limit_ke[joint_qd_start[j_pris]] = 6000.0
+    joint_limit_ke[joint_qd_start[j_revolute]] = 5000.0
+    joint_limit_ke[joint_qd_start[j_prismatic]] = 6000.0
     joint_limit_ke[joint_qd_start[j_d6] + 0] = 7000.0  # linear axis
     joint_limit_ke[joint_qd_start[j_d6] + 1] = 8000.0  # angular axis
     model.joint_limit_ke.assign(joint_limit_ke)
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
-    test.assertAlmostEqual(material_k_at(j_rev, 2), max(500.0, 5000.0))
-    test.assertAlmostEqual(material_k_at(j_pris, 2), max(600.0, 6000.0))
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(500.0, 5000.0))
+    test.assertAlmostEqual(material_k_at(j_prismatic, 2), max(600.0, 6000.0))
     test.assertAlmostEqual(material_k_at(j_d6, 2), max(700.0, 7000.0))
     test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 8000.0))
 
@@ -5890,7 +5897,8 @@ def _notify_joint_dof_properties_caps_penalty_k_at_ramp_seed(test, device):
     test.assertAlmostEqual(float(material_k[start + 2]), 0.3 * ang_seed)
     test.assertAlmostEqual(float(penalty_k[start + 2]), 0.3 * ang_seed)
     np.testing.assert_array_equal(
-        penalty_k[start : start + 4], penalty_k_min[start : start + 4],
+        penalty_k[start : start + 4],
+        penalty_k_min[start : start + 4],
         err_msg="joint_penalty_k_min must be reseeded to the same values as joint_penalty_k",
     )
 
