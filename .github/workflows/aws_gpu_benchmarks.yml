@@ -149,18 +149,13 @@ jobs:
           # Keep resolution 128 in the shared benchmark for nightly ASV collection.
           NEWTON_ASV_PR_GATE: "1"
         run: |
-          # Gate this PR job on directly measured runtimes only.
-          uvx --with virtualenv asv continuous \
-            --launch-method spawn \
-            --interleave-rounds \
-            --append-samples \
-            --no-only-changed \
-            -e \
-            -b 'Fast\w*\.time_' \
-            -b 'Fast(?!NewtonOverhead)\w*\.track_simulate(\(|$)' \
-            -b 'Fast\w*\.track_(mean|p95)_\w*(time|ms)(\(|$)' \
-            ${{ inputs.base_ref }} \
-            ${{ inputs.ref }}
+          # The PR environment intentionally omits PyTorch: fast DR Legs metrics
+          # disable policy inference, and no selected benchmark imports it.
+          #
+          # Keep representative camera output modes and teleop tail latency;
+          # full ASV collection retains every metric. Interleave rounds across
+          # revisions to control cold-start and ordering bias.
+          python asv/run_pr_benchmarks.py ${{ inputs.base_ref }} ${{ inputs.ref }}
         continue-on-error: true
         id: benchmark
 

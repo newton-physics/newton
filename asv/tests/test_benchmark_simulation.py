@@ -2,18 +2,25 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 import re
+import subprocess
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
 
-BENCHMARK_DIR = Path(__file__).parents[1] / "benchmarks"
+ASV_DIR = Path(__file__).parents[1]
+ROOT = ASV_DIR.parent
+BENCHMARK_DIR = ASV_DIR / "benchmarks"
+sys.path.insert(0, str(ASV_DIR))
 sys.path.insert(0, str(BENCHMARK_DIR))
+
 
 _WARP_CONFIG_FIELDS = ("enable_backward", "log_level")
 _WARP_CONFIG_BEFORE_BENCHMARK_IMPORTS = {name: getattr(wp.config, name) for name in _WARP_CONFIG_FIELDS}
@@ -26,8 +33,18 @@ _DEFERRED_WORKLOAD_MODULES = (
 _DEFERRED_WORKLOAD_MODULES_BEFORE_IMPORT = {name: name in sys.modules for name in _DEFERRED_WORKLOAD_MODULES}
 
 try:
+    from benchmark_config import pr_gate_repeat
     from benchmark_metrics import SimulationMetrics
-    from simulation import bench_anymal, bench_contacts, bench_kamino, bench_mujoco, bench_quadruped_xpbd
+    from run_pr_benchmarks import build_pr_config, load_benchmark_patterns
+    from simulation import (
+        bench_anymal,
+        bench_contacts,
+        bench_kamino,
+        bench_mujoco,
+        bench_quadruped_xpbd,
+        bench_selection,
+        bench_sensor_tiled_camera,
+    )
 
     _DEFERRED_WORKLOAD_MODULES_AFTER_METRIC_IMPORT = {name: name in sys.modules for name in _DEFERRED_WORKLOAD_MODULES}
 
@@ -39,6 +56,49 @@ finally:
 
 
 class TestSimulationBenchmarks(unittest.TestCase):
+    _discovery_cache: ClassVar[dict[bool, list[dict]]] = {}
+
+    @classmethod
+    def _discover_benchmarks(cls, *, pr_gate: bool) -> list[dict]:
+        """Discover the ASV inventory in an isolated process."""
+        if pr_gate not in cls._discovery_cache:
+            script = (
+                "import json; "
+                "import warp as wp; "
+                "wp.get_cuda_device_count = lambda: 1; "
+                "from asv_runner.discovery import disc_benchmarks, update_sys_path; "
+                f"root = {str(BENCHMARK_DIR)!r}; "
+                "update_sys_path(root); "
+                "benchmarks = disc_benchmarks(root); "
+                "data = [{key: getattr(benchmark, key, None) "
+                "for key in ('name', 'params', 'repeat', 'rounds')} "
+                "for benchmark in benchmarks]; "
+                "print('ASV_INVENTORY=' + json.dumps(data))"
+            )
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = ""
+            if pr_gate:
+                env["NEWTON_ASV_PR_GATE"] = "1"
+            else:
+                env.pop("NEWTON_ASV_PR_GATE", None)
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode:
+                raise AssertionError(result.stderr)
+            payload = next(
+                line.removeprefix("ASV_INVENTORY=")
+                for line in result.stdout.splitlines()
+                if line.startswith("ASV_INVENTORY=")
+            )
+            cls._discovery_cache[pr_gate] = json.loads(payload)
+        return cls._discovery_cache[pr_gate]
+
     class _FakeArray:
         def __init__(self, values):
             self.values = np.asarray(values, dtype=np.float32)
@@ -54,6 +114,29 @@ class TestSimulationBenchmarks(unittest.TestCase):
             body_qd=self._FakeArray([[0.0] * 6]),
         )
         return SimpleNamespace(state_0=state)
+
+    def test_asv_runner_resolves_benchmark_support_modules(self):
+        """Resolve shared modules through ASV's isolated import path."""
+        script = (
+            "import importlib; "
+            "from asv_runner.discovery import update_sys_path; "
+            f"update_sys_path({str(BENCHMARK_DIR)!r}); "
+            "importlib.import_module('benchmarks.simulation.bench_cloth'); "
+            "importlib.import_module('benchmarks.simulation.bench_contacts'); "
+            "importlib.import_module('benchmarks.simulation.bench_selection')"
+        )
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        env["NEWTON_ASV_PR_GATE"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=BENCHMARK_DIR.parents[1],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_benchmark_imports_preserve_warp_config(self):
         """Preserve Warp global configuration across benchmark imports."""
@@ -206,38 +289,163 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertGreater(bench_kamino.KpiDRLegs.setup_cache.timeout, config["default_benchmark_timeout"])
 
     def test_aws_benchmark_comparison_gates_only_runtime_metrics(self):
-        """Gate PR comparisons on runtime while retaining dashboard metrics."""
-        workflow_path = BENCHMARK_DIR.parents[1] / ".github" / "workflows" / "aws_gpu_benchmarks.yml"
+        """Gate discovered PR runtimes while retaining dashboard-only metrics."""
+        workflow_path = ROOT / ".github" / "workflows" / "aws_gpu_benchmarks.yml"
         workflow = workflow_path.read_text(encoding="utf-8")
-        patterns = tuple(re.compile(selection) for selection in re.findall(r"-b '([^']+)'", workflow))
-        self.assertTrue(patterns)
+        self.assertIn("python asv/run_pr_benchmarks.py", workflow)
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        inventory = {benchmark["name"]: benchmark for benchmark in self._discover_benchmarks(pr_gate=False)}
 
         blocking_benchmarks = (
-            "simulation.bench_mujoco.FastG1.track_simulate(8192)",
-            "simulation.bench_mujoco.FastG1.track_p95_step_time(8192)",
+            "simulation.bench_mujoco.FastG1.track_simulate",
+            "simulation.bench_mujoco.FastG1.track_p95_step_time",
             "simulation.bench_anymal.FastMetricsExampleAnymalPretrained.track_mean_world_step_time",
-            "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.track_mean_loop_ms('graph')",
+            "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.time_teleop_loop",
+            "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.track_p95_loop_ms",
             "simulation.bench_kamino.FastDRLegs.time_simulate",
-            "simulation.bench_viewer.FastViewerGL.time_rendering_frame('g1', 256)",
+            "simulation.bench_viewer.FastViewerGL.time_rendering_frame",
+            "simulation.bench_mujoco.FastAllegro.track_p95_step_time",
+            "simulation.bench_mujoco.FastAllegro.track_simulate",
+            "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_color_depth",
+            "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_depth_only",
+            "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_color_depth",
+            "simulation.bench_inverse_dynamics.FastInverseDynamics.time_eval_inverse_dynamics_force",
         )
         dashboard_benchmarks = (
-            "simulation.bench_mujoco.FastG1.track_solver_niter_mean(8192)",
-            "simulation.bench_mujoco.FastG1.track_solver_niter_max(8192)",
-            "simulation.bench_mujoco.FastG1.track_simulation_steps_per_second(8192)",
-            "simulation.bench_mujoco.FastG1.track_real_time_factor(8192)",
-            "simulation.bench_mujoco.FastG1.track_steady_state_gpu_memory(8192)",
-            "simulation.bench_mujoco.FastG1.track_sim_dt(8192)",
-            "simulation.bench_mujoco.FastG1.track_sim_substeps(8192)",
-            "simulation.bench_mujoco.FastNewtonOverheadG1.track_simulate(8192)",
-            "simulation.bench_teleop_mujoco.TeleopMuJoCo.track_frame_overrun_pct('graph')",
+            "simulation.bench_mujoco.FastG1.track_solver_niter_mean",
+            "simulation.bench_mujoco.FastG1.track_solver_niter_max",
+            "simulation.bench_mujoco.FastG1.track_simulation_steps_per_second",
+            "simulation.bench_mujoco.FastG1.track_real_time_factor",
+            "simulation.bench_mujoco.FastG1.track_steady_state_gpu_memory",
+            "simulation.bench_mujoco.FastG1.track_sim_dt",
+            "simulation.bench_mujoco.FastG1.track_sim_substeps",
+            "simulation.bench_mujoco.FastNewtonOverheadG1.track_simulate",
+            "simulation.bench_teleop_mujoco.TeleopMuJoCo.track_frame_overrun_pct",
+            "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.track_mean_loop_ms",
+            "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera.time_render_color_only",
+            "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_color_only",
+            "simulation.bench_sensor_tiled_camera.FastSensorTiledCameraPixel.time_render_depth_only",
         )
 
+        for benchmark in blocking_benchmarks + dashboard_benchmarks:
+            self.assertIn(benchmark, inventory)
+        self.assertEqual(inventory["simulation.bench_mujoco.FastG1.track_simulate"]["params"], [["8192"]])
         for benchmark in blocking_benchmarks:
             with self.subTest(benchmark=benchmark):
                 self.assertTrue(any(pattern.search(benchmark) for pattern in patterns), benchmark)
         for benchmark in dashboard_benchmarks:
             with self.subTest(benchmark=benchmark):
                 self.assertFalse(any(pattern.search(benchmark) for pattern in patterns), benchmark)
+
+    def test_pr_gate_caps_repeats_without_dropping_cases(self):
+        """Keep full workloads with three timing samples in the PR gate."""
+        cases = (
+            (bench_quadruped_xpbd.FastExampleQuadrupedXPBD, 10),
+            (bench_selection.FastExampleSelectionCartpoleMuJoCo, 10),
+            (bench_contacts.FastConvexCollision, 5),
+        )
+        for benchmark_cls, full_repeat in cases:
+            with self.subTest(benchmark=benchmark_cls.__name__):
+                self.assertEqual(benchmark_cls.repeat, pr_gate_repeat(full_repeat))
+                with patch.dict("os.environ", {"NEWTON_ASV_PR_GATE": "1"}):
+                    self.assertEqual(pr_gate_repeat(full_repeat), 3)
+                with patch.dict("os.environ", {}, clear=True):
+                    self.assertEqual(pr_gate_repeat(full_repeat), full_repeat)
+
+    def test_fast_allegro_uses_representative_pr_workload(self):
+        """Keep Allegro coverage while reducing duplicated PR sampling."""
+        benchmark = bench_mujoco.FastAllegro()
+        self.assertEqual((benchmark.num_frames, benchmark.samples), (300, 2))
+
+        with (
+            patch.dict("os.environ", {"NEWTON_ASV_PR_GATE": "1"}),
+            patch.object(benchmark, "_collect_metrics", return_value={}) as collect_metrics,
+        ):
+            self.assertEqual(benchmark.setup_cache(), {})
+
+        self.assertEqual((benchmark.num_frames, benchmark.samples), (200, 1))
+        collect_metrics.assert_called_once_with()
+
+    def test_pr_asv_config_only_omits_torch(self):
+        """Derive the PR environment from the full ASV dependency pins."""
+        full_config = json.loads((ROOT / "asv.conf.json").read_text(encoding="utf-8"))
+        pr_config = build_pr_config()
+
+        for config in (full_config, pr_config):
+            commands = config["install_command"]
+            pinned_stack_index = next(i for i, command in enumerate(commands) if "warp-lang==" in command)
+            newton_index = next(i for i, command in enumerate(commands) if "{wheel_file}" in command)
+            self.assertLess(pinned_stack_index, newton_index)
+            self.assertIn("[examples]", commands[newton_index])
+            self.assertNotIn("[dev]", commands[newton_index])
+
+        expected_pr_config = json.loads(json.dumps(full_config))
+        expected_pr_config["env_dir"] = "asv/pr-env"
+        torch_commands = [command for command in expected_pr_config["install_command"] if "torch==" in command]
+        self.assertEqual(len(torch_commands), 1)
+        expected_pr_config["install_command"].remove(torch_commands[0])
+
+        self.assertEqual(pr_config, expected_pr_config)
+        self.assertFalse((ROOT / "asv-pr.conf.json").exists())
+
+    def test_pr_camera_warmup_matches_selected_outputs(self):
+        """Limit camera outputs and fixed repeats to the PR gate."""
+        prefix = "simulation.bench_sensor_tiled_camera.FastSensorTiledCamera"
+        full = {
+            item["name"]: item for item in self._discover_benchmarks(pr_gate=False) if item["name"].startswith(prefix)
+        }
+        gated = {
+            item["name"]: item for item in self._discover_benchmarks(pr_gate=True) if item["name"].startswith(prefix)
+        }
+        self.assertEqual(len(full), 6)
+        self.assertEqual(
+            set(gated),
+            {
+                f"{prefix}.time_render_color_depth",
+                f"{prefix}.time_render_depth_only",
+                f"{prefix}Pixel.time_render_color_depth",
+            },
+        )
+        self.assertEqual({item["repeat"] for item in full.values()}, {0})
+        self.assertEqual({item["repeat"] for item in gated.values()}, {1})
+
+        with patch.dict("os.environ", {"NEWTON_ASV_PR_GATE": "1"}):
+            self.assertFalse(bench_sensor_tiled_camera._pr_gate_skips_output(True, True, ((True, True),)))
+            self.assertTrue(bench_sensor_tiled_camera._pr_gate_skips_output(True, False, ((True, True),)))
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(bench_sensor_tiled_camera._pr_gate_skips_output(True, False, ((True, True),)))
+
+        cases = (
+            (bench_sensor_tiled_camera.FastSensorTiledCamera, ((True, True), (False, True))),
+            (bench_sensor_tiled_camera.FastSensorTiledCameraPixel, ((True, True),)),
+        )
+        for benchmark_cls, expected_modes in cases:
+            with (
+                self.subTest(benchmark=benchmark_cls.__name__),
+                patch.dict("os.environ", {"NEWTON_ASV_PR_GATE": "1"}),
+                patch.object(bench_sensor_tiled_camera, "_TiledCameraSceneRig") as rig_cls,
+                patch.object(bench_sensor_tiled_camera.wp, "synchronize"),
+            ):
+                rig = rig_cls.return_value
+                benchmark_cls().setup(64, 4096, 50)
+
+            self.assertEqual(
+                tuple((call.kwargs["color"], call.kwargs["depth"]) for call in rig.render.call_args_list),
+                expected_modes,
+            )
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch.object(bench_sensor_tiled_camera, "_TiledCameraSceneRig") as rig_cls,
+            patch.object(bench_sensor_tiled_camera.wp, "synchronize"),
+        ):
+            rig = rig_cls.return_value
+            bench_sensor_tiled_camera.FastSensorTiledCameraPixel().setup(64, 4096, 50)
+
+        self.assertEqual(
+            tuple((call.kwargs["color"], call.kwargs["depth"]) for call in rig.render.call_args_list),
+            ((True, True), (True, False), (False, True)),
+        )
 
     def test_anymal_short_horizon_validation(self):
         """Validate short-horizon ANYmal posture and forward progress."""

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Any
 
 import warp as wp
@@ -11,22 +12,52 @@ import warp as wp
 from .base import Clamping
 
 
-@wp.kernel
-def _compute_corner_velocity_kernel(
+@wp.kernel(enable_backward=False)
+def _corner_velocity_kernel(
     saturation_effort: wp.array[float],
     velocity_limit: wp.array[float],
     max_motor_effort: wp.array[float],
     corner_velocity: wp.array[float],
 ):
-    """Find the velocity on the torque-speed curve that intersects max_motor_effort in the second and fourth quadrant."""
+    """Velocity at which the effort-speed envelope reaches ``max_motor_effort``."""
     i = wp.tid()
     sat = saturation_effort[i]
-    vel_lim = velocity_limit[i]
-    max_e = max_motor_effort[i]
+    corner = velocity_limit[i]
     if sat > 0.0:
-        corner_velocity[i] = vel_lim * (1.0 + max_e / sat)
-    else:
-        corner_velocity[i] = vel_lim
+        ratio = max_motor_effort[i] / sat
+        if ratio == ratio:
+            corner = velocity_limit[i] * (1.0 + ratio)
+    corner_velocity[i] = corner
+
+
+@wp.func
+def _evaluate_dc_motor_clamp(
+    value: wp.float64,
+    q: wp.float64,
+    qd: wp.float64,
+    params: wp.array2d[float],
+    i: int,
+    base: int,
+) -> wp.float64:
+    """Implicit-solve entry point; params row is ``[saturation, velocity_limit, max_effort]``.
+
+    Inside the implicit solve ``qd`` is the predicted end-of-step velocity,
+    so the effort-speed envelope is enforced self-consistently.
+    """
+    sat = wp.float64(params[i, base])
+    vel_lim = wp.float64(params[i, base + 1])
+    max_e = wp.float64(params[i, base + 2])
+    # Derived, not stored: a cached corner goes stale when the user retunes.
+    corner = vel_lim
+    if sat > wp.float64(0.0):
+        ratio = max_e / sat
+        if ratio == ratio:
+            corner = vel_lim * (wp.float64(1.0) + ratio)
+
+    vel = wp.clamp(qd, -corner, corner)
+    effort_max = wp.min(sat * (wp.float64(1.0) - vel / vel_lim), max_e)
+    effort_min = wp.max(sat * (wp.float64(-1.0) - vel / vel_lim), -max_e)
+    return wp.clamp(value, effort_min, effort_max)
 
 
 @wp.kernel
@@ -36,7 +67,6 @@ def _clamp_dc_motor_kernel(
     saturation_effort: wp.array[float],
     velocity_limit: wp.array[float],
     max_motor_effort: wp.array[float],
-    corner_velocity: wp.array[float],
     src: wp.array[float],
     dst: wp.array[float],
 ):
@@ -51,7 +81,13 @@ def _clamp_dc_motor_kernel(
     vel_lim = velocity_limit[i]
     max_e = max_motor_effort[i]
 
-    vel = wp.clamp(current_vel[state_idx], -corner_velocity[i], corner_velocity[i])
+    # Derived, not stored: a cached corner goes stale when the user retunes.
+    corner = vel_lim
+    if sat > 0.0:
+        ratio = max_e / sat
+        if ratio == ratio:
+            corner = vel_lim * (1.0 + ratio)
+    vel = wp.clamp(current_vel[state_idx], -corner, corner)
 
     effort_max = wp.min(sat * (1.0 - vel / vel_lim), max_e)
     effort_min = wp.max(sat * (-1.0 - vel / vel_lim), -max_e)
@@ -83,6 +119,9 @@ class ClampingDCMotor(Clamping):
         max_motor_effort = args.get("max_motor_effort", math.inf)
         if max_motor_effort < 0:
             raise ValueError(f"max_motor_effort must be non-negative, got {max_motor_effort}")
+        if math.isinf(sat) and not math.isinf(vel_lim):
+            # sat*(1 - v/v_lim) is inf*0 = NaN at v == v_lim.
+            raise ValueError("saturation_effort must be finite when velocity_limit is finite")
         return {
             "saturation_effort": sat,
             "velocity_limit": vel_lim,
@@ -117,14 +156,47 @@ class ClampingDCMotor(Clamping):
         self.saturation_effort = saturation_effort
         self.velocity_limit = velocity_limit
         self.max_motor_effort = max_motor_effort
-        self.corner_velocity = wp.zeros_like(velocity_limit)
-        wp.launch(
-            kernel=_compute_corner_velocity_kernel,
-            dim=len(velocity_limit),
-            inputs=[saturation_effort, velocity_limit, max_motor_effort],
-            outputs=[self.corner_velocity],
-            device=velocity_limit.device,
+
+    @property
+    def corner_velocity(self) -> wp.array[float]:
+        """Deprecated. Velocity at which the envelope reaches ``max_motor_effort``.
+
+        .. deprecated:: 1.6
+            Kept for compatibility and computed on access from the current
+            parameters. It used to be stored at construction, which went stale
+            when a parameter was retuned, so the clamp now derives it in-kernel
+            and never reads this attribute.
+        """
+        warnings.warn(
+            "ClampingDCMotor.corner_velocity is deprecated and will be removed in a future release. "
+            "The clamp derives the corner velocity from the live parameters instead, so a stored "
+            "copy is no longer used; compute it as velocity_limit * (1 + max_motor_effort / "
+            "saturation_effort) if you need the value.",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        corner = wp.zeros_like(self.velocity_limit)
+        wp.launch(
+            _corner_velocity_kernel,
+            dim=len(self.velocity_limit),
+            inputs=[self.saturation_effort, self.velocity_limit, self.max_motor_effort],
+            outputs=[corner],
+            device=self.velocity_limit.device,
+        )
+        return corner
+
+    evaluate_clamp = _evaluate_dc_motor_clamp
+
+    def param_width(self) -> int:
+        return 3
+
+    def bind_params(self, block: wp.array2d[float]) -> None:
+        block[:, 0].assign(self.saturation_effort)
+        block[:, 1].assign(self.velocity_limit)
+        block[:, 2].assign(self.max_motor_effort)
+        self.saturation_effort = block[:, 0]
+        self.velocity_limit = block[:, 1]
+        self.max_motor_effort = block[:, 2]
 
     def modify_forces(
         self,
@@ -145,7 +217,6 @@ class ClampingDCMotor(Clamping):
                 self.saturation_effort,
                 self.velocity_limit,
                 self.max_motor_effort,
-                self.corner_velocity,
                 src_forces,
             ],
             outputs=[dst_forces],
