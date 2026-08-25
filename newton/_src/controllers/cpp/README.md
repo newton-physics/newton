@@ -14,7 +14,7 @@ side (`newton.controllers.export_controller_graph`) is covered by the Python tes
 from newton.controllers import ControllerJointImpedance, export_controller_graph, select_joints
 
 selection = select_joints(model)
-controller = ControllerJointImpedance(model, joint_q_idx=selection.q_idx, ...)
+controller = ControllerJointImpedance(model, joint_selection=selection, ...)
 inputs, outputs = controller.input(), controller.output()
 
 export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path="joint_impedance")
@@ -23,7 +23,12 @@ export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, p
 This writes `joint_impedance.wrp` and `joint_impedance_modules/`. Both must ship
 together — the modules directory holds the compiled kernels.
 
-Requires CUDA: graph capture is a CUDA feature, and the runtime binds device 0.
+Requires CUDA to load and step a graph: this C++ runtime binds CUDA device 0
+unconditionally and has no CPU code path. Capture itself is not CUDA-specific —
+`export_controller_graph` and `warp.capture_load`/`capture_launch` all work on a
+CPU device from Python — but replaying a *loaded* graph without a Python
+interpreter also needs each kernel's compiled `.o` resolved through Warp's LLVM
+JIT (`warp-clang`), which this runtime does not yet do.
 
 ## Build
 
@@ -73,7 +78,7 @@ along with each size.
 ## Ports bound to a view
 
 A Python port can be bound to a view of a simulation-sized array
-(`inputs.joint_q_des = sim_q_des[selection.q_idx]`). The exported parameter is
+(`inputs.joint_q_des = sim_q_des[indices]`). The exported parameter is
 then that whole array, and the indices travel inside the graph, so the buffer
 you exchange has the simulation's length rather than the controlled-DOF count:
 
