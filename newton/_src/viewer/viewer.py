@@ -41,6 +41,13 @@ _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform", "render_style"
 class LayerRenderStyle:
     """Non-physical appearance override for model geometry in a viewer layer.
 
+    .. experimental::
+
+        Layer appearance overrides are currently implemented by
+        :class:`~newton.viewer.ViewerGL` and may change without prior notice.
+        They apply to model-shape geometry, including Gaussian shapes and SDF
+        collision isomeshes, but not particles or diagnostic line overlays.
+
     Args:
         color: Solid RGB color override, or ``None`` to preserve each shape's
             asset color and texture.
@@ -48,7 +55,10 @@ class LayerRenderStyle:
     """
 
     color: tuple[float, float, float] | None = None
+    """Solid RGB override, or ``None`` to preserve asset colors and textures."""
+
     opacity: float = 1.0
+    """Shape opacity in the range ``[0, 1]``."""
 
     def __post_init__(self) -> None:
         color = self.color
@@ -411,6 +421,11 @@ class ViewerBase(ABC):
     def set_layer_render_style(self, layer_id: str, style: LayerRenderStyle | None) -> None:
         """Set a render-only appearance override for a layer's model geometry.
 
+        .. experimental::
+
+            Layer appearance overrides are currently implemented by
+            :class:`~newton.viewer.ViewerGL` and may change without prior notice.
+
         Viewer backends that support layer styling apply it without changing
         model colors, materials, or simulation state. Pass ``None`` to restore
         the default appearance.
@@ -434,6 +449,11 @@ class ViewerBase(ABC):
     def set_layer_shape_visibility(self, layer_id: str, visibility: Sequence[bool] | None) -> None:
         """Set an explicit model-shape visibility mask for a viewer layer.
 
+        .. experimental::
+
+            Layer shape visibility is currently implemented by
+            :class:`~newton.viewer.ViewerGL` and may change without prior notice.
+
         This is a render-only mechanism. The caller, rather than Newton,
         decides which shapes belong in the layer. Pass ``None`` to show every
         shape allowed by the layer's world filter.
@@ -445,6 +465,8 @@ class ViewerBase(ABC):
         Raises:
             KeyError: If ``layer_id`` is not registered.
             TypeError: If the mask contains non-Boolean values.
+            ValueError: If a model is assigned and the mask length does not
+                match its number of shapes.
         """
         if layer_id not in self._layers:
             raise KeyError(f"Unknown layer: {layer_id}")
@@ -455,7 +477,10 @@ class ViewerBase(ABC):
             if any(not isinstance(value, (bool, np.bool_)) for value in values):
                 raise TypeError("visibility must contain only Boolean values")
             resolved = tuple(bool(value) for value in values)
-        self._layers[layer_id].shape_visibility = resolved
+        layer = self._layers[layer_id]
+        if resolved is not None and layer.model is not None and len(resolved) != layer.model.shape_count:
+            raise ValueError(f"Expected {layer.model.shape_count} shape visibility values, got {len(resolved)}")
+        layer.shape_visibility = resolved
 
     @staticmethod
     def _is_identity_transform(xform: wp.transform) -> bool:
@@ -695,8 +720,9 @@ class ViewerBase(ABC):
         layer._isomesh_cache: dict[int, newton.Mesh | None] = {}
 
         # Gaussian shapes rendered as point clouds (skipped by the mesh instancing pipeline).
-        # Each entry is (name, gaussian, parent_body, shape_xform, world_index, flags, is_static).
-        layer._gaussian_instances: list[tuple[str, newton.Gaussian, int, wp.transform, int, int, bool]] = []
+        # Each entry is
+        # (name, gaussian, parent_body, shape_xform, world_index, flags, is_static, shape_index).
+        layer._gaussian_instances: list[tuple[str, newton.Gaussian, int, wp.transform, int, int, bool, int]] = []
         layer._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
         layer._sdf_isomesh_populated: bool = False
         layer._shape_sdf_index_host: np.ndarray | None = None
@@ -726,7 +752,17 @@ class ViewerBase(ABC):
         Args:
             model: The Newton model to visualize.
         """
-        if self.model is not None:
+        previous_model = self.model
+        if previous_model is not None and model is not previous_model:
+            # A mask identifies shapes in one specific model. Retaining it for
+            # another model can hide unrelated shapes even when counts match.
+            self.layer.shape_visibility = None
+
+        visibility = self.layer.shape_visibility
+        if model is not None and visibility is not None and len(visibility) != model.shape_count:
+            raise ValueError(f"Expected {model.shape_count} shape visibility values, got {len(visibility)}")
+
+        if previous_model is not None:
             self.clear_model()
 
         self.model = model
@@ -1187,10 +1223,13 @@ class ViewerBase(ABC):
         offsets_np = None
         layer_hidden = self._layer_force_hidden()
 
-        for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
+        visibility = self.layer.shape_visibility
+        for gname, gaussian, parent, shape_xform, world_idx, flags, is_static, shape_index in self._gaussian_instances:
             visible = (
                 self._should_show_shape(flags, is_static) and self._should_render_world(world_idx) and not layer_hidden
             )
+            if visibility is not None:
+                visible = visible and visibility[shape_index]
             if not visible or not self.show_gaussians:
                 self.log_gaussian(gname, gaussian, hidden=True)
                 continue
@@ -2411,7 +2450,16 @@ class ViewerBase(ABC):
                     xform = wp.transform_expand(shape_transform[s])
                     gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
                     self._gaussian_instances.append(
-                        (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
+                        (
+                            gname,
+                            geo_src,
+                            int(parent),
+                            xform,
+                            int(shape_world[s]),
+                            int(shape_flags[s]),
+                            parent == -1,
+                            s,
+                        )
                     )
                 continue
 
@@ -2907,8 +2955,12 @@ class ViewerBase(ABC):
 
         # Hide inactive modes, show active mode
         for cached_mode, cached_edges in self._sdf_margin_edge_caches.items():
-            hidden = not visible or cached_mode != mode
             for s in cached_edges:
+                hidden = (
+                    not visible
+                    or cached_mode != mode
+                    or (self.shape_visibility is not None and not self.shape_visibility[s])
+                )
                 name = self._qualify(f"/model/sdf_margin_wf/{cached_mode.value}/{s}")
                 self.log_wireframe_shape(name, None, None, hidden=hidden)
 
@@ -2921,6 +2973,8 @@ class ViewerBase(ABC):
         layer_mat_np = self._transform_to_mat44(self.layer.xform).reshape(4, 4, order="F")
 
         for s, (_vertex_data, body_idx, shape_xf, world_idx) in edge_cache.items():
+            if self.shape_visibility is not None and not self.shape_visibility[s]:
+                continue
             name = self._qualify(f"/model/sdf_margin_wf/{mode.value}/{s}")
             shape_mat = self._transform_to_mat44(shape_xf)
             if body_idx >= 0 and body_q is not None:

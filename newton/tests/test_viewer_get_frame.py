@@ -12,7 +12,7 @@ import warp as wp
 
 import newton
 import newton.viewer
-from newton._src.viewer.gl.opengl import RendererGL
+from newton._src.viewer.gl.opengl import MeshInstancerGL, RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
 
 
@@ -73,10 +73,30 @@ def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64
         raise
 
 
-def _make_box_model(device: str | wp.Device):
+def _make_box_model(
+    device: str | wp.Device,
+    *,
+    position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    color: tuple[float, float, float] = (1.0, 0.0, 0.0),
+):
+    """Build a single-box model for viewer tests."""
     builder = newton.ModelBuilder()
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
-    builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
+    body = builder.add_body(xform=wp.transform(wp.vec3(*position), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.4, hy=0.4, hz=0.4, color=color)
+    return builder.finalize(device=device)
+
+
+def _make_ground_model(device: str | wp.Device):
+    """Build an opaque static receiver beneath translucent test geometry."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(
+        -1,
+        xform=wp.transform((0.0, 0.0, -0.45), wp.quat_identity()),
+        hx=2.0,
+        hy=2.0,
+        hz=0.05,
+        color=(0.65, 0.65, 0.65),
+    )
     return builder.finalize(device=device)
 
 
@@ -119,6 +139,65 @@ class _FakeGL:
             raise RuntimeError("pixel buffer must be bound during readback")
         ctypes.memmove(data, self.pixels.ctypes.data, self.pixels.nbytes)
         self.readback_count += 1
+
+
+class TestViewerGLTransparencyOrdering(unittest.TestCase):
+    def test_translucent_instances_sort_globally_back_to_front(self):
+        """Sort translucent instances globally and use names to break depth ties."""
+        draw_order = []
+
+        def make_instancer(label, centers):
+            instancer = MeshInstancerGL.__new__(MeshInstancerGL)
+            instancer.instance_transform_cuda_buffer = None
+            instancer.hidden = False
+            instancer.translucent_instance_indices = lambda: np.arange(len(centers), dtype=np.int32)
+            instancer.instance_center = lambda index: np.asarray(centers[index], dtype=np.float32)
+            instancer.render_instance = lambda index: draw_order.append((label, index))
+            return instancer
+
+        renderer = RendererGL.__new__(RendererGL)
+        renderer.camera = SimpleNamespace(pos=(0.0, 0.0, 0.0), get_front=lambda: (0.0, 0.0, 1.0))
+        objects = {
+            "near": make_instancer("near", [(0.0, 0.0, 1.0)]),
+            "far-b": make_instancer("far-b", [(0.0, 0.0, 3.0)]),
+            "far-a": make_instancer("far-a", [(0.0, 0.0, 3.0)]),
+            "mixed": make_instancer("mixed", [(0.0, 0.0, 2.0), (0.0, 0.0, 4.0)]),
+        }
+
+        with mock.patch("newton._src.viewer.gl.opengl.check_gl_error"):
+            renderer._draw_translucent_objects(objects)
+
+        self.assertEqual(
+            draw_order,
+            [("mixed", 1), ("far-a", 0), ("far-b", 0), ("mixed", 0), ("near", 0)],
+        )
+
+    def test_instancer_tracks_centers_and_mixed_opacity(self):
+        """Track transformed mesh centers and select only translucent instances."""
+        instancer = MeshInstancerGL.__new__(MeshInstancerGL)
+        instancer.instance_transform_cuda_buffer = None
+        instancer.mesh = SimpleNamespace(local_center=np.array((1.0, 2.0, 3.0), dtype=np.float32))
+        instancer._instance_centers = np.zeros((3, 3), dtype=np.float32)
+        instancer._instance_styles = np.array(
+            [
+                (-1.0, -1.0, -1.0, 1.0),
+                (1.0, 0.0, 0.0, 0.5),
+                (0.0, 0.0, 1.0, 0.0),
+            ],
+            dtype=np.float32,
+        )
+        instancer.active_instances = 3
+        instancer._centers_valid_count = 0
+
+        transforms = np.tile(np.eye(4, dtype=np.float32).reshape(1, 16), (3, 1))
+        transforms[0, 12:15] = (10.0, 20.0, 30.0)
+        transforms[1, (0, 5, 10)] = (2.0, 3.0, 4.0)
+        transforms[1, 12:15] = (-1.0, -2.0, -3.0)
+        instancer._record_host_transforms(transforms, 3)
+
+        np.testing.assert_allclose(instancer._instance_centers[0], (11.0, 22.0, 33.0))
+        np.testing.assert_allclose(instancer._instance_centers[1], (1.0, 4.0, 9.0))
+        np.testing.assert_array_equal(instancer.translucent_instance_indices(), np.array([1]))
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
@@ -180,6 +259,178 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 self.assertEqual(cuda_frame.dtype, wp.uint8)
                 self.assertEqual(cuda_frame.device, cuda_device)
                 self.assertGreater(np.ptp(cuda_frame.numpy()), 0)
+        finally:
+            viewer.close()
+
+    def test_layer_transparency_blends_in_depth_order_without_shadows_or_edges(self):
+        """Blend layer ghosts back-to-front without depth writes, shadows, or opaque edges."""
+        viewer = _make_headless_viewer_gl_or_skip(self, width=192, height=144)
+
+        try:
+            viewer.renderer.draw_sky = False
+            viewer.renderer.sky_upper = (0.0, 0.0, 0.0)
+            viewer.renderer.sky_lower = (0.0, 0.0, 0.0)
+            viewer.renderer.specular_scale = 0.0
+            viewer.renderer.spotlight_enabled = False
+
+            models = {
+                "ground": _make_ground_model(viewer.device),
+                "far": _make_box_model(viewer.device, position=(0.0, 0.18, 0.0)),
+                "near": _make_box_model(viewer.device, position=(0.0, -0.18, 0.0)),
+            }
+            styles = {
+                "far": newton.viewer.LayerRenderStyle(color=(1.0, 0.05, 0.05), opacity=0.45),
+                "near": newton.viewer.LayerRenderStyle(color=(0.05, 0.1, 1.0), opacity=0.45),
+            }
+            for layer_id in ("near", "ground", "far"):
+                viewer.activate(layer_id)
+                viewer.set_model(models[layer_id])
+                if layer_id in styles:
+                    viewer.set_layer_render_style(layer_id, styles[layer_id])
+
+            viewer.set_camera(wp.vec3(3.0, -5.0, 2.5), pitch=0.0, yaw=0.0)
+            viewer.camera.look_at((0.0, 0.0, 0.0))
+
+            def render_frame(*, shadows=False, edges=False, fallback=False):
+                viewer.renderer.draw_shadows = shadows
+                viewer.renderer.draw_edges = edges
+                viewer.begin_frame(0.0)
+                for layer_id in ("near", "ground", "far"):
+                    viewer.activate(layer_id)
+                    viewer.log_state(models[layer_id].state())
+                for name, obj in viewer.objects.items():
+                    if isinstance(obj, MeshInstancerGL):
+                        if "/layers/ground/" in name:
+                            obj.cast_shadow = False
+                            obj.draw_edge = False
+                        if fallback:
+                            obj._supports_base_instance = False
+                viewer.end_frame()
+                return viewer.get_frame().numpy().copy()
+
+            baseline = render_frame()
+            fallback = render_frame(fallback=True)
+            with_shadows = render_frame(shadows=True, fallback=True)
+            with_edges = render_frame(edges=True, fallback=True)
+
+            center = baseline[baseline.shape[0] // 2, baseline.shape[1] // 2]
+            self.assertGreater(center[0], 5, "far red ghost did not contribute at the overlap")
+            self.assertGreater(center[2], 5, "near blue ghost did not contribute at the overlap")
+
+            for label, frame in (
+                ("OpenGL 3.3 fallback", fallback),
+                ("shadow pass", with_shadows),
+                ("edge pass", with_edges),
+            ):
+                delta = np.abs(baseline.astype(np.int16) - frame.astype(np.int16))
+                self.assertLess(np.mean(delta), 0.5, f"{label} changed the translucent render")
+        finally:
+            viewer.close()
+
+    def test_layer_style_propagates_to_capsules_and_gaussian_shapes(self):
+        """Propagate tint, opacity, and visibility to capsule parts and Gaussian splats."""
+        viewer = _make_headless_viewer_gl_or_skip(self)
+
+        try:
+            capsule_builder = newton.ModelBuilder()
+            capsule_body = capsule_builder.add_body()
+            capsule_builder.add_shape_capsule(capsule_body, radius=0.2, half_height=0.4)
+            capsule_model = capsule_builder.finalize(device=viewer.device)
+
+            gaussian_builder = newton.ModelBuilder()
+            gaussian = newton.Gaussian(positions=np.array(((0.0, 0.0, 0.0), (0.2, 0.0, 0.0)), dtype=np.float32))
+            gaussian_builder.add_shape_gaussian(body=-1, gaussian=gaussian)
+            gaussian_model = gaussian_builder.finalize(device=viewer.device)
+
+            models = {"capsule": capsule_model, "gaussian": gaussian_model}
+            style = newton.viewer.LayerRenderStyle(color=(0.2, 0.6, 0.9), opacity=0.35)
+            for layer_id, model in models.items():
+                viewer.activate(layer_id)
+                viewer.set_model(model)
+                if layer_id == "gaussian":
+                    viewer.show_gaussians = True
+                viewer.set_layer_render_style(layer_id, style)
+                viewer.log_state(model.state())
+
+            capsule_objects = [
+                obj
+                for name, obj in viewer.objects.items()
+                if isinstance(obj, MeshInstancerGL) and "/layers/capsule/" in name and "/capsule_" in name
+            ]
+            self.assertEqual(len(capsule_objects), 2)
+            for obj in capsule_objects:
+                expected = np.broadcast_to((0.2, 0.6, 0.9), (obj.active_instances, 3))
+                np.testing.assert_allclose(obj._instance_styles[: obj.active_instances, :3], expected)
+                np.testing.assert_allclose(
+                    obj._instance_styles[: obj.active_instances, 3], np.full(obj.active_instances, 0.35)
+                )
+
+            gaussian_objects = [
+                obj
+                for name, obj in viewer.objects.items()
+                if isinstance(obj, MeshInstancerGL) and "/layers/gaussian/model/gaussians/" in name
+            ]
+            self.assertEqual(len(gaussian_objects), 1)
+            gaussian_obj = gaussian_objects[0]
+            expected = np.broadcast_to((0.2, 0.6, 0.9), (gaussian_obj.active_instances, 3))
+            np.testing.assert_allclose(gaussian_obj._instance_styles[: gaussian_obj.active_instances, :3], expected)
+            np.testing.assert_allclose(
+                gaussian_obj._instance_styles[: gaussian_obj.active_instances, 3],
+                np.full(gaussian_obj.active_instances, 0.35),
+            )
+
+            for layer_id, model in models.items():
+                viewer.set_layer_shape_visibility(layer_id, (False,))
+                viewer.activate(layer_id)
+                viewer.log_state(model.state())
+            for obj in (*capsule_objects, gaussian_obj):
+                np.testing.assert_allclose(
+                    obj._instance_styles[: obj.active_instances, 3], np.zeros(obj.active_instances)
+                )
+        finally:
+            viewer.close()
+
+    def test_layer_style_propagates_to_lazy_sdf_isomeshes(self):
+        """Apply layer tint and opacity when SDF collision isomeshes appear lazily."""
+        viewer = _make_headless_viewer_gl_or_skip(self)
+
+        try:
+            if not viewer.device.is_cuda:
+                self.skipTest("Texture SDF construction requires CUDA")
+
+            builder = newton.ModelBuilder()
+            cfg = newton.ModelBuilder.ShapeConfig()
+            cfg.sdf_max_resolution = 16
+            cfg.is_hydroelastic = True
+            body = builder.add_body()
+            builder.add_shape_box(body, hx=0.3, hy=0.25, hz=0.2, cfg=cfg)
+            model = builder.finalize(device=viewer.device)
+
+            viewer.activate("sdf")
+            viewer.set_model(model)
+            viewer.show_collision = True
+            viewer.set_layer_render_style("sdf", newton.viewer.LayerRenderStyle(color=(0.9, 0.4, 0.1), opacity=0.4))
+            viewer.log_state(model.state())
+
+            self.assertTrue(viewer._sdf_isomesh_instances)
+            sdf_objects = [
+                viewer.objects[batch.name]
+                for batch in viewer._sdf_isomesh_instances.values()
+                if batch.name in viewer.objects
+            ]
+            self.assertTrue(sdf_objects)
+            for obj in sdf_objects:
+                expected = np.broadcast_to((0.9, 0.4, 0.1), (obj.active_instances, 3))
+                np.testing.assert_allclose(obj._instance_styles[: obj.active_instances, :3], expected)
+                np.testing.assert_allclose(
+                    obj._instance_styles[: obj.active_instances, 3], np.full(obj.active_instances, 0.4)
+                )
+
+            viewer.set_layer_shape_visibility("sdf", (False,))
+            for obj in sdf_objects:
+                np.testing.assert_allclose(
+                    obj._instance_styles[: obj.active_instances, 3], np.zeros(obj.active_instances)
+                )
         finally:
             viewer.close()
 

@@ -861,26 +861,66 @@ class ViewerGL(ViewerBase):
                 self.layer.render_style,
                 visibility,
             )
+            complete = self._upload_batch_render_styles(batch, values, key in self._capsule_keys) and complete
 
-            if key in self._capsule_keys:
-                cylinder = self.objects.get(f"{batch.name}/capsule_cylinder")
-                caps = self.objects.get(f"{batch.name}/capsule_caps")
-                if isinstance(cylinder, MeshInstancerGL) and cylinder.active_instances == len(values):
-                    cylinder.update_render_styles(values)
-                else:
-                    complete = False
-                cap_values = np.repeat(values, 2, axis=0)
-                if isinstance(caps, MeshInstancerGL) and caps.active_instances == len(cap_values):
-                    caps.update_render_styles(cap_values)
-                else:
-                    complete = False
-            else:
-                instancer = self.objects.get(batch.name)
-                if isinstance(instancer, MeshInstancerGL) and instancer.active_instances == len(values):
-                    instancer.update_render_styles(values)
-                else:
-                    complete = False
+        for batch in self._sdf_isomesh_instances.values():
+            values = self._resolve_layer_render_style(
+                np.asarray(batch.model_shapes, dtype=np.int32),
+                self.layer.render_style,
+                visibility,
+            )
+            complete = self._upload_batch_render_styles(batch, values, False) and complete
+
+        for gname, _gaussian, _parent, _xform, _world, _flags, _static, shape_index in self._gaussian_instances:
+            instancer = self.objects.get(gname)
+            if not isinstance(instancer, MeshInstancerGL):
+                continue
+            shape_style = self._resolve_layer_render_style(
+                np.asarray([shape_index], dtype=np.int32),
+                self.layer.render_style,
+                visibility,
+            )
+            instancer.update_render_styles(np.repeat(shape_style, instancer.active_instances, axis=0))
         self._render_style_dirty = not complete
+
+    def _upload_batch_render_styles(
+        self,
+        batch: ViewerBase.ShapeInstances,
+        values: np.ndarray,
+        is_capsule: bool,
+    ) -> bool:
+        """Upload resolved styles to one regular or capsule shape batch."""
+        if is_capsule:
+            cylinder = self.objects.get(f"{batch.name}/capsule_cylinder")
+            caps = self.objects.get(f"{batch.name}/capsule_caps")
+            cylinder_ready = isinstance(cylinder, MeshInstancerGL) and cylinder.active_instances == len(values)
+            cap_values = np.repeat(values, 2, axis=0)
+            caps_ready = isinstance(caps, MeshInstancerGL) and caps.active_instances == len(cap_values)
+            if cylinder_ready:
+                cylinder.update_render_styles(values)
+            if caps_ready:
+                caps.update_render_styles(cap_values)
+            return cylinder_ready and caps_ready
+
+        instancer = self.objects.get(batch.name)
+        if not isinstance(instancer, MeshInstancerGL) or instancer.active_instances != len(values):
+            return False
+        instancer.update_render_styles(values)
+        return True
+
+    @override
+    def _populate_sdf_isomesh_instances(self) -> None:
+        """Populate SDF isomesh batches and schedule their GL style upload."""
+        super()._populate_sdf_isomesh_instances()
+        self._render_style_dirty = True
+
+    @override
+    def _log_gaussian_shapes(self, state: nt.State) -> None:
+        """Log Gaussian model shapes and style newly created instancers."""
+        existing = set(self.objects)
+        super()._log_gaussian_shapes(state)
+        if any(name not in existing and name in self.objects for name, *_rest in self._gaussian_instances):
+            self._render_style_dirty = True
 
     @staticmethod
     def _resolve_layer_render_style(
@@ -1502,6 +1542,9 @@ class ViewerGL(ViewerBase):
         instancer = self.objects[name]
         instancer.active_instances = n
         instancer.hidden = False
+        # A Gaussian shape may contain hundreds of thousands of splats. Keep
+        # it as one depth-sorted draw batch instead of issuing one draw per splat.
+        instancer.sort_translucent_instances = False
 
         # Fast-path: skip VBO update when the transform has not changed.
         xform_key: tuple | None = None
@@ -1543,6 +1586,7 @@ class ViewerGL(ViewerBase):
         gl = RendererGL.gl
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, instancer.instance_transform_buffer)
         gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, n * 64, vbo.ctypes.data)
+        instancer._record_host_transforms(vbo, n)
 
         if recreated or not cache["colors_uploaded"]:
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, instancer.instance_color_buffer)

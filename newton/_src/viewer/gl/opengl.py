@@ -241,6 +241,19 @@ class MeshGL:
         else:
             self.vertex_cuda_buffer = None
         self._points = None
+        self._local_center: np.ndarray | None = None
+
+    @property
+    def local_center(self) -> np.ndarray:
+        """Return the cached center of the mesh's local-space bounds."""
+        if self._local_center is None:
+            if self._points is None or len(self._points) == 0:
+                self._local_center = np.zeros(3, dtype=np.float32)
+            else:
+                points = self._points.numpy() if isinstance(self._points, wp.array) else np.asarray(self._points)
+                points = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+                self._local_center = (points.min(axis=0) + points.max(axis=0)) * 0.5
+        return self._local_center
 
     def destroy(self):
         """Clean up OpenGL resources."""
@@ -271,6 +284,7 @@ class MeshGL:
             raise RuntimeError("Number of points does not match")
 
         self._points = points
+        self._local_center = None
 
         # only update indices the first time (no topology changes)
         if self.indices is None:
@@ -666,6 +680,7 @@ class MeshInstancerGL:
     """
 
     def __init__(self, num_instances, mesh):
+        """Create an instanced mesh batch with fixed rendering capacity."""
         self.mesh = mesh
         self.device = mesh.device
         self.hidden = False
@@ -673,6 +688,11 @@ class MeshInstancerGL:
         self.instance_color_buffer = None
         self.instance_material_buffer = None
         self.instance_style_buffer = None
+        self._instance_styles = None
+        self._instance_centers = None
+        self._centers_valid_count = 0
+        self._supports_base_instance = False
+        self.sort_translucent_instances = True
 
         self.instance_transform_cuda_buffer = None
 
@@ -701,6 +721,7 @@ class MeshInstancerGL:
                 pass
 
     def allocate(self, num_instances):
+        """Allocate OpenGL and Warp buffers for ``num_instances`` instances."""
         gl = RendererGL.gl
 
         self.world_xforms = wp.zeros(num_instances, dtype=wp.mat44, device=self.device)
@@ -803,6 +824,9 @@ class MeshInstancerGL:
         host_styles = np.empty((self.num_instances, 4), dtype=np.float32)
         host_styles[:, :3] = -1.0
         host_styles[:, 3] = 1.0
+        self._instance_styles = host_styles.copy()
+        self._instance_centers = np.zeros((self.num_instances, 3), dtype=np.float32)
+        self._centers_valid_count = 0
         gl.glGenBuffers(1, self.instance_style_buffer)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_style_buffer)
         gl.glBufferData(gl.GL_ARRAY_BUFFER, self.instance_style_buffer_size, host_styles.ctypes.data, gl.GL_STATIC_DRAW)
@@ -811,6 +835,14 @@ class MeshInstancerGL:
         gl.glVertexAttribDivisor(9, 1)
 
         gl.glBindVertexArray(0)
+
+        try:
+            gl_info = gl.current_context.get_info()
+            self._supports_base_instance = hasattr(gl, "glDrawElementsInstancedBaseInstance") and (
+                gl_info.have_version(4, 2) or gl_info.have_extension("GL_ARB_base_instance")
+            )
+        except (AttributeError, RuntimeError):
+            self._supports_base_instance = False
 
         # Create CUDA buffer for instance transforms
         if ENABLE_CUDA_INTEROP and self.device.is_cuda:
@@ -827,6 +859,7 @@ class MeshInstancerGL:
         colors: wp.array = None,
         materials: wp.array = None,
     ):
+        """Update transforms and optional appearance arrays from Warp arrays."""
         if transforms is None:
             active_count = 0
         else:
@@ -860,6 +893,7 @@ class MeshInstancerGL:
 
     # helper to update instance transforms from points
     def update_from_points(self, points, widths, colors):
+        """Update point positions, widths, and colors for point instancing."""
         if points is None:
             active = 0
         else:
@@ -889,7 +923,9 @@ class MeshInstancerGL:
 
     # upload to vbo
     def _update_vbo(self, xforms, colors, materials):
+        """Upload instance transforms and optional appearance arrays."""
         gl = RendererGL.gl
+        self._centers_valid_count = 0
 
         if ENABLE_CUDA_INTEROP and self.device.is_cuda:
             vbo_transforms = self._instance_transform_cuda_buffer.map(dtype=wp.mat44, shape=(self.num_instances,))
@@ -899,6 +935,10 @@ class MeshInstancerGL:
             host_transforms = xforms.numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_transforms.nbytes, host_transforms.ctypes.data, gl.GL_DYNAMIC_DRAW)
+            self._record_host_transforms(host_transforms, self.active_instances)
+
+        if ENABLE_CUDA_INTEROP and self.device.is_cuda and self._has_translucent_instances():
+            self._record_host_transforms(xforms.numpy(), self.active_instances)
 
         # update other properties through CPU for now
         if colors is not None:
@@ -928,6 +968,9 @@ class MeshInstancerGL:
             nbytes = count * self.transform_byte_size
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
             gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, nbytes, host_transforms_np.ctypes.data)
+            self._record_host_transforms(host_transforms_np, count)
+        else:
+            self._centers_valid_count = 0
         if colors is not None:
             host_colors = colors.numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color_buffer)
@@ -945,13 +988,50 @@ class MeshInstancerGL:
         gl = RendererGL.gl
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_style_buffer)
         gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, styles.nbytes, styles.ctypes.data)
+        self._instance_styles[: self.active_instances] = styles
+        if self._has_translucent_instances():
+            self._ensure_instance_centers()
 
-    def render(self):
-        gl = RendererGL.gl
-
-        if self.hidden:
+    def _record_host_transforms(self, transforms: np.ndarray, count: int) -> None:
+        """Cache world-space mesh centers from column-major instance matrices."""
+        if count == 0:
+            self._centers_valid_count = 0
             return
+        matrices = np.asarray(transforms, dtype=np.float32).reshape(-1, 16)[:count]
+        local_center = self.mesh.local_center
+        self._instance_centers[:count] = (
+            matrices[:, 12:15]
+            + matrices[:, 0:3] * local_center[0]
+            + matrices[:, 4:7] * local_center[1]
+            + matrices[:, 8:11] * local_center[2]
+        )
+        self._centers_valid_count = count
 
+    def _ensure_instance_centers(self) -> None:
+        """Synchronize instance centers from Warp when no host upload supplied them."""
+        if self._centers_valid_count < self.active_instances:
+            self._record_host_transforms(self.world_xforms.numpy(), self.active_instances)
+
+    def _has_translucent_instances(self) -> bool:
+        """Return whether the active range contains visible translucent instances."""
+        opacity = self._instance_styles[: self.active_instances, 3]
+        return bool(np.any((opacity > 0.0) & (opacity < 1.0)))
+
+    def translucent_instance_indices(self) -> np.ndarray:
+        """Return active instance indices that belong in the translucent pass."""
+        opacity = self._instance_styles[: self.active_instances, 3]
+        return np.flatnonzero((opacity > 0.0) & (opacity < 1.0))
+
+    def instance_center(self, instance_index: int) -> np.ndarray:
+        """Return the world-space bounds center for one active instance."""
+        if not 0 <= instance_index < self.active_instances:
+            raise IndexError(f"Instance index {instance_index} is outside the active range")
+        self._ensure_instance_centers()
+        return self._instance_centers[instance_index]
+
+    def _bind_mesh(self) -> None:
+        """Bind culling, texture, and vertex-array state for a draw call."""
+        gl = RendererGL.gl
         if self.mesh.backface_culling:
             gl.glEnable(gl.GL_CULL_FACE)
         else:
@@ -962,11 +1042,79 @@ class MeshInstancerGL:
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.mesh.texture_id)
         else:
             gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
-
         gl.glBindVertexArray(self.vao)
+
+    def _set_fallback_instance_offset(self, instance_index: int) -> None:
+        """Offset instanced attributes when base-instance drawing is unavailable."""
+        gl = RendererGL.gl
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
+        for column in range(4):
+            offset = instance_index * self.transform_byte_size + column * 16
+            gl.glVertexAttribPointer(
+                3 + column, 4, gl.GL_FLOAT, gl.GL_FALSE, self.transform_byte_size, ctypes.c_void_p(offset)
+            )
+
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color_buffer)
+        gl.glVertexAttribPointer(
+            7,
+            3,
+            gl.GL_FLOAT,
+            gl.GL_FALSE,
+            self.color_byte_size,
+            ctypes.c_void_p(instance_index * self.color_byte_size),
+        )
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
+        gl.glVertexAttribPointer(
+            8,
+            4,
+            gl.GL_FLOAT,
+            gl.GL_FALSE,
+            self.material_byte_size,
+            ctypes.c_void_p(instance_index * self.material_byte_size),
+        )
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_style_buffer)
+        gl.glVertexAttribPointer(
+            9,
+            4,
+            gl.GL_FLOAT,
+            gl.GL_FALSE,
+            self.material_byte_size,
+            ctypes.c_void_p(instance_index * self.material_byte_size),
+        )
+
+    def render(self):
+        """Render every active instance in one instanced draw call."""
+        gl = RendererGL.gl
+
+        if self.hidden or self.active_instances == 0:
+            return
+        self._bind_mesh()
         gl.glDrawElementsInstanced(
             gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.active_instances
         )
+        gl.glBindVertexArray(0)
+
+    def render_instance(self, instance_index: int) -> None:
+        """Render one instance while preserving the batch's normal attribute layout."""
+        instance_index = int(instance_index)
+        if self.hidden or not 0 <= instance_index < self.active_instances:
+            return
+
+        gl = RendererGL.gl
+        self._bind_mesh()
+        if self._supports_base_instance:
+            gl.glDrawElementsInstancedBaseInstance(
+                gl.GL_TRIANGLES,
+                self.mesh.num_indices,
+                gl.GL_UNSIGNED_INT,
+                None,
+                1,
+                instance_index,
+            )
+        else:
+            self._set_fallback_instance_offset(instance_index)
+            gl.glDrawElementsInstanced(gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, 1)
+            self._set_fallback_instance_offset(0)
         gl.glBindVertexArray(0)
 
 
@@ -1952,7 +2100,7 @@ class RendererGL:
         gl.glDepthMask(False)
         self._shape_shader.set_render_pass(1)
         with self._shape_shader:
-            self._draw_objects(objects)
+            self._draw_translucent_objects(objects)
         self._shape_shader.set_render_pass(0)
         gl.glDepthMask(True)
         gl.glDisable(gl.GL_BLEND)
@@ -2066,9 +2214,41 @@ class RendererGL:
         check_gl_error()
 
     def _draw_objects(self, objects):
+        """Draw every renderable object in mapping order."""
         for o in objects.values():
             if hasattr(o, "render"):
                 o.render()
+
+        check_gl_error()
+
+    def _draw_translucent_objects(self, objects) -> None:
+        """Draw translucent mesh instances back-to-front in camera space."""
+        camera_pos = np.asarray(tuple(self.camera.pos), dtype=np.float32)
+        camera_front = np.asarray(tuple(self.camera.get_front()), dtype=np.float32)
+        draw_items = []
+        for name, obj in objects.items():
+            if not isinstance(obj, MeshInstancerGL) or obj.hidden:
+                continue
+            translucent_indices = obj.translucent_instance_indices()
+            if len(translucent_indices) == 0:
+                continue
+            if not getattr(obj, "sort_translucent_instances", True):
+                centers = np.stack([obj.instance_center(int(index)) for index in translucent_indices])
+                delta = centers.mean(axis=0) - camera_pos
+                view_depth = float(np.dot(delta, camera_front))
+                draw_items.append((-view_depth, str(name), -1, None, obj))
+                continue
+            for instance_index in translucent_indices:
+                delta = obj.instance_center(int(instance_index)) - camera_pos
+                view_depth = float(np.dot(delta, camera_front))
+                draw_items.append((-view_depth, str(name), int(instance_index), int(instance_index), obj))
+
+        draw_items.sort(key=lambda item: item[:3])
+        for _depth, _name, _sort_index, instance_index, obj in draw_items:
+            if instance_index is None:
+                obj.render()
+            else:
+                obj.render_instance(instance_index)
 
         check_gl_error()
 

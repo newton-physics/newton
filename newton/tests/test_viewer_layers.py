@@ -177,6 +177,7 @@ class TestViewerLayers(unittest.TestCase):
         self.assertNotIn("shape_visibility", viewer._layer_runtime_fields)
 
     def test_layer_render_style_is_validated_and_owned_by_layer(self):
+        """Validate layer styles and keep their state isolated per layer."""
         viewer = _RecordingViewer()
         viewer.activate("A")
         viewer.activate("B")
@@ -201,8 +202,13 @@ class TestViewerLayers(unittest.TestCase):
             LayerRenderStyle(color=(-1.0, 1.0, 1.0))
         with self.assertRaises(ValueError):
             LayerRenderStyle(color=(0.0, 1.01, 1.0))
+        with self.assertRaises(ValueError):
+            LayerRenderStyle(opacity=np.nan)
+        with self.assertRaises(ValueError):
+            LayerRenderStyle(color=(0.0, np.inf, 1.0))
 
     def test_layer_render_style_applies_explicit_shape_visibility(self):
+        """Resolve caller-supplied model-shape visibility into per-instance opacity."""
         values = ViewerGL._resolve_layer_render_style(
             model_shapes=np.array([0, 2, 4, 1, 3], dtype=np.int32),
             style=LayerRenderStyle(color=(0.2, 0.4, 0.8), opacity=0.25),
@@ -219,6 +225,46 @@ class TestViewerLayers(unittest.TestCase):
         )
         np.testing.assert_allclose(original_colors[:, :3], -1.0)
         np.testing.assert_allclose(original_colors[:, 3], 1.0)
+
+    def test_shape_visibility_validates_assigned_model_length(self):
+        """Reject a shape mask whose length does not match the assigned model."""
+        viewer = _RecordingViewer()
+        viewer.activate("A")
+        viewer.set_model(_build_box_model())
+
+        with self.assertRaisesRegex(ValueError, "Expected 1 shape visibility values, got 2"):
+            viewer.set_layer_shape_visibility("A", (True, False))
+
+        viewer.set_layer_shape_visibility("A", (False,))
+        self.assertEqual(viewer.layers["A"].shape_visibility, (False,))
+
+    def test_shape_visibility_validates_preconfigured_mask_on_model_assignment(self):
+        """Validate a mask configured before its layer receives a model."""
+        viewer = _RecordingViewer()
+        viewer.activate("A")
+        viewer.set_layer_shape_visibility("A", (True, False))
+
+        with self.assertRaisesRegex(ValueError, "Expected 1 shape visibility values, got 2"):
+            viewer.set_model(_build_box_model())
+
+        self.assertIsNone(viewer.model)
+        self.assertEqual(viewer.layers["A"].shape_visibility, (True, False))
+
+    def test_shape_visibility_is_cleared_when_model_is_replaced(self):
+        """Clear model-indexed visibility when a layer receives another model."""
+        viewer = _RecordingViewer()
+        viewer.activate("A")
+        first_model = _build_box_model()
+        viewer.set_model(first_model)
+        viewer.set_layer_shape_visibility("A", (False,))
+
+        viewer.set_model(_build_box_model())
+        self.assertIsNone(viewer.layers["A"].shape_visibility)
+
+        viewer.set_layer_shape_visibility("A", (True,))
+        current_model = viewer.model
+        viewer.set_model(current_model)
+        self.assertEqual(viewer.layers["A"].shape_visibility, (True,))
 
     def test_unseeded_self_attribute_is_viewer_global(self):
         """A self-only attribute should not become accidental layer state."""

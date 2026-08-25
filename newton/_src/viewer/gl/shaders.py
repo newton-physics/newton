@@ -32,7 +32,7 @@ void main()
 shadow_fragment_shader = """
 #version 330 core
 in float Opacity;
-void main() { if (Opacity < 0.999) discard; }
+void main() { if (Opacity < 1.0) discard; }
 """
 
 
@@ -298,8 +298,8 @@ vec3 sample_env_map(vec3 dir, float lod)
 void main()
 {
     if (RenderStyle.a <= 0.0) discard;
-    if (render_pass == 0 && RenderStyle.a < 0.999) discard;
-    if (render_pass == 1 && RenderStyle.a >= 0.999) discard;
+    if (render_pass == 0 && RenderStyle.a < 1.0) discard;
+    if (render_pass == 1 && RenderStyle.a >= 1.0) discard;
     bool has_color_override = RenderStyle.r >= 0.0;
 
     // This reconstruction also corrects depth before the fragment is committed.
@@ -1028,7 +1028,7 @@ in vec4 RenderStyle;
 uniform vec4 edge_color;
 void main()
 {
-    if (RenderStyle.a < 0.999) discard;
+    if (RenderStyle.a < 1.0) discard;
     FragColor = edge_color;
 }
 """
