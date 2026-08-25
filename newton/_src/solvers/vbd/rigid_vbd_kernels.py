@@ -3815,6 +3815,71 @@ def refresh_body_structural_k(
             wp.atomic_max(body_structural_k, child_id, k_linear)
 
 
+@wp.kernel
+def refresh_joint_material_k(
+    joint_type: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_constraint_start: wp.array[wp.int32],
+    joint_target_ke: wp.array[float],
+    joint_limit_ke: wp.array[float],
+    legacy_lin_k_start: float,
+    legacy_ang_k_start: float,
+    joint_material_k: wp.array[float],
+    joint_penalty_k: wp.array[float],
+    joint_penalty_k_min: wp.array[float],
+):
+    """Recompute ``joint_material_k`` from ``joint_target_ke``/``joint_limit_ke`` and reseed
+    ``joint_penalty_k``/``joint_penalty_k_min`` to match (see ``_init_joint_penalty_k`` for
+    the same formulas at construction time).
+
+    Covers ROD (all four material slots) and the drive/limit slot(s) of REVOLUTE, PRISMATIC,
+    and D6. Not covered: BALL, FIXED, and REVOLUTE/PRISMATIC/D6's structural slots, which come
+    from the solver-wide ``rigid_joint_linear_ke``/``rigid_joint_angular_ke`` constants rather
+    than ``joint_target_ke``.
+
+    Args:
+        legacy_lin_k_start: Ramp-cap seed for linear slots [N/m], negative to disable.
+        legacy_ang_k_start: Ramp-cap seed for angular slots [N·m/rad], negative to disable.
+    """
+    joint_id = wp.tid()
+    jt = joint_type[joint_id]
+    c0 = joint_constraint_start[joint_id]
+    dof0 = joint_qd_start[joint_id]
+
+    if jt == JointType.ROD:
+        for s in range(4):  # 0=stretch, 1=shear, 2=bend, 3=twist
+            ke = joint_target_ke[dof0 + s]
+            joint_material_k[c0 + s] = ke
+            seed = legacy_lin_k_start if s < 2 else legacy_ang_k_start
+            seeded = wp.min(seed, ke) if seed >= 0.0 else ke
+            joint_penalty_k[c0 + s] = seeded
+            joint_penalty_k_min[c0 + s] = seeded
+        return
+
+    linear_count = int(0)
+    angular_count = int(0)
+    if jt == JointType.PRISMATIC:
+        linear_count = 1
+    elif jt == JointType.REVOLUTE:
+        angular_count = 1
+    elif jt == JointType.D6:
+        linear_count = joint_dof_dim[joint_id, 0]
+        angular_count = joint_dof_dim[joint_id, 1]
+    else:
+        return  # BALL, FIXED, and anything else: no joint_target_ke-derived slot.
+
+    slot0 = c0 + 2  # drive/limit slots follow the 2 structural slots (see _init_joint_penalty_k)
+    for axis in range(linear_count + angular_count):
+        dof = dof0 + axis
+        seed = legacy_lin_k_start if axis < linear_count else legacy_ang_k_start
+        ke = wp.max(joint_target_ke[dof], joint_limit_ke[dof])
+        seeded = wp.min(seed, ke) if seed >= 0.0 else ke
+        joint_material_k[slot0 + axis] = ke
+        joint_penalty_k[slot0 + axis] = seeded
+        joint_penalty_k_min[slot0 + axis] = seeded
+
+
 # -----------------------------
 # Pre-iteration kernels (once per step)
 # -----------------------------
