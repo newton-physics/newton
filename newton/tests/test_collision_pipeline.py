@@ -5132,11 +5132,11 @@ def test_edge_face_pairs_respect_worlds(test, device):
     test.assertLess(len(face_pairs), n_tris * n_shapes)
     test.assertLess(len(edge_pairs), n_edges * n_shapes)
 
-    if device.is_cuda:
-        # CUDA candidate lists are shape-major, leaving each shape's work in one contiguous run.
-        for pairs in (particle_pairs, edge_pairs, face_pairs):
-            shape_ids = pairs.numpy()[:, 1]
-            test.assertTrue(np.all(shape_ids[:-1] <= shape_ids[1:]))
+    # Candidate lists are shape-major on every device, leaving each shape's work in one
+    # contiguous run (locality/branch coherence on CUDA; deterministic order everywhere).
+    for pairs in (particle_pairs, edge_pairs, face_pairs):
+        shape_ids = pairs.numpy()[:, 1]
+        test.assertTrue(np.all(shape_ids[:-1] <= shape_ids[1:]))
 
 
 add_function_test(

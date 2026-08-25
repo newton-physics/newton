@@ -816,10 +816,14 @@ def _world_compatible_pairs(
     world_count: int,
     device,
     shape_ok: np.ndarray | None = None,
-    group_by_shape: bool = False,
 ) -> wp.array[wp.vec2i]:
     """Emit ``(feature, shape)`` index pairs whose worlds are compatible: same world, or either is
     global (``-1``). ``feature_world[i]`` / ``shape_world[s]`` give each entity's world (-1 == global).
+
+    Pairs are stably sorted by shape index so consecutive candidates process the same shape: on CUDA
+    a warp then reads one shape's transform/scale/SDF data and takes one type-dispatch branch. The
+    order is deterministic on every device; each contact record stores its candidate tid, so
+    downstream mapping does not depend on candidate order.
 
     Worlds are immutable after :meth:`~newton.ModelBuilder.finalize`, so this filtering is safe to
     precompute; mutable per-entity flags (ACTIVE / COLLIDE_PARTICLES) are deliberately left to the
@@ -836,7 +840,7 @@ def _world_compatible_pairs(
         if shape_ok is not None and len(s_idx):
             keep = shape_ok[s_idx.astype(np.intp)]
             f_idx, s_idx = f_idx[keep], s_idx[keep]
-        if group_by_shape and len(s_idx):
+        if len(s_idx):
             order = np.argsort(s_idx, kind="stable")
             f_idx, s_idx = f_idx[order], s_idx[order]
         stacked = np.column_stack((f_idx, s_idx)).astype(np.int32) if len(f_idx) else np.empty((0, 2), np.int32)
@@ -901,7 +905,6 @@ def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]
         model.shape_world.numpy(),
         world_count,
         model.device,
-        group_by_shape=model.device.is_cuda,
     )
 
 
@@ -949,7 +952,6 @@ def _build_soft_face_rigid_contact_pairs(
         world_count,
         device,
         shape_ok=capable_shape_mask,
-        group_by_shape=device.is_cuda,
     )
 
 
@@ -977,7 +979,6 @@ def _build_soft_edge_rigid_contact_pairs(
         world_count,
         device,
         shape_ok=capable_shape_mask,
-        group_by_shape=device.is_cuda,
     )
 
 
