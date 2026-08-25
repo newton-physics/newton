@@ -948,7 +948,7 @@ class RendererGL:
     _fallback_texture = None  # 1x1 white texture bound when no albedo is set (suppresses macOS GL warning)
 
     # Sample count of the multi-sampled framebuffer the scene is rendered into
-    # (see _setup_framebuffer). The window config asks for the same count so the
+    # (see _setup_frame_buffer). The window config asks for the same count so the
     # two agree, but the scene does not depend on it: it is always resolved into
     # a texture that is then drawn to the window.
     MSAA_SAMPLES = 4
@@ -1052,7 +1052,7 @@ class RendererGL:
             )
         except pyglet.window.NoSuchConfigException:
             # Only the window's own buffer loses multi-sampling here, so the
-            # scene keeps its MSAA framebuffer. _setup_framebuffer still turns
+            # scene keeps its MSAA framebuffer. _setup_frame_buffer still turns
             # MSAA off if that framebuffer comes back incomplete.
             print("Warning: Could not get an MSAA window config.")
             self.window = pyglet.window.Window(
