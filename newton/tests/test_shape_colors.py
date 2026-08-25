@@ -11,7 +11,7 @@ import warp as wp
 import newton
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.gl.shaders import _with_shader_define, shape_fragment_shader
-from newton._src.viewer.viewer import MAX_TRIANGLE_OPACITY_GROUPS, Layer
+from newton._src.viewer.viewer import _DEFAULT_LAYER_ID, MAX_TRIANGLE_OPACITY_GROUPS, Layer
 from newton._src.viewer.viewer_gl import ViewerGL, _compute_shape_vbo_xforms
 from newton.viewer import ViewerNull
 
@@ -408,6 +408,70 @@ class TestShapeColors(unittest.TestCase):
         viewer.set_model(model)
 
         self.assertEqual(sorted(batch.transparent for batch in viewer._shape_instances.values()), [False, True])
+
+    def test_viewer_gl_splits_mixed_opacity_instance_batches(self):
+        """Split public GL instance batches across opaque and transparent passes."""
+
+        class FakeMesh:
+            pass
+
+        class FakeMeshInstancer:
+            def __init__(self, num_instances, mesh):
+                self.num_instances = num_instances
+                self.mesh = mesh
+                self.hidden = False
+                self.active_instances = num_instances
+                self.last_xforms = None
+                self.last_opacities = None
+
+            def update_from_transforms(self, xforms, scales, colors, materials, opacities):
+                self.active_instances = 0 if xforms is None else len(xforms)
+                self.last_xforms = None if xforms is None else xforms.numpy().copy()
+                self.last_opacities = None if opacities is None else opacities.numpy().copy()
+
+            def has_transparency(self):
+                return bool(self.last_opacities is not None and np.any(self.last_opacities < 0.999))
+
+        viewer = ViewerGL.__new__(ViewerGL)
+        viewer._layers = {_DEFAULT_LAYER_ID: Layer(_DEFAULT_LAYER_ID)}
+        viewer._active_layer_id = _DEFAULT_LAYER_ID
+        viewer.objects = {"/mesh": FakeMesh()}
+
+        xforms = wp.array(
+            [
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+                wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+                wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()),
+            ],
+            dtype=wp.transform,
+            device="cpu",
+        )
+        scales = wp.array([wp.vec3(1.0)] * 3, dtype=wp.vec3, device="cpu")
+        colors = wp.array([wp.vec3(0.5)] * 3, dtype=wp.vec3, device="cpu")
+        materials = wp.array([wp.vec4(0.5)] * 3, dtype=wp.vec4, device="cpu")
+        opacities = wp.array([1.0, 0.5, 1.0], dtype=wp.float32, device="cpu")
+
+        with (
+            patch("newton._src.viewer.viewer_gl.MeshGL", FakeMesh),
+            patch("newton._src.viewer.viewer_gl.MeshInstancerGL", FakeMeshInstancer),
+        ):
+            viewer.log_instances("/instances", "/mesh", xforms, scales, colors, materials, opacities=opacities)
+
+        opaque = viewer.objects["/instances"]
+        transparent = viewer.objects["/instances/__transparent__"]
+        np.testing.assert_allclose(opaque.last_xforms[:, 0], [0.0, 2.0])
+        np.testing.assert_allclose(opaque.last_opacities, [1.0, 1.0])
+        np.testing.assert_allclose(transparent.last_xforms[:, 0], [1.0])
+        np.testing.assert_allclose(transparent.last_opacities, [0.5])
+        self.assertFalse(opaque.hidden)
+        self.assertFalse(transparent.hidden)
+
+        renderer = RendererGL.__new__(RendererGL)
+        opaque_objects, transparent_objects = renderer._split_transparent_objects(
+            {"opaque": opaque, "transparent": transparent}, scene_has_transparency=True
+        )
+        self.assertEqual(opaque_objects, {"opaque": opaque})
+        self.assertEqual(transparent_objects, [("transparent", transparent)])
 
     def test_viewer_gl_opacity_kernel_sets_dirty_and_regroup_flags(self):
         """Flag opacity changes and opaque-threshold crossings on the device."""

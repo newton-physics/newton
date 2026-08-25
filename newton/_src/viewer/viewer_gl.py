@@ -48,6 +48,7 @@ _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
 # ui.dpi_scale`` so the sidebar keeps a constant visual size on HiDPI
 # displays — see :meth:`ViewerGL._dpi_scale`.
 _SIDEBAR_WIDTH_PX: float = 300.0
+_TRANSPARENT_INSTANCER_SUFFIX = "/__transparent__"
 
 
 @wp.kernel
@@ -996,6 +997,51 @@ class ViewerGL(ViewerBase):
                 m = float(metallic)
             self.objects[name].material = (r, m, c, t)
 
+    def _update_mesh_instancer(
+        self,
+        name: str,
+        mesh: MeshGL,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
+        opacities: wp.array[wp.float32] | None,
+        hidden: bool,
+    ) -> None:
+        """Create or update one homogeneous GL instance batch."""
+        instancer = self.objects.get(name, None)
+        transform_count = len(xforms) if xforms is not None else 0
+        resized = False
+
+        if instancer is None:
+            capacity = max(transform_count, 1)
+            instancer = MeshInstancerGL(capacity, mesh)
+            self.objects[name] = instancer
+            resized = True
+        elif transform_count > instancer.num_instances:
+            new_capacity = max(transform_count, instancer.num_instances * 2)
+            old = instancer
+            instancer = MeshInstancerGL(new_capacity, mesh)
+            self.objects[name] = instancer
+            del old
+            resized = True
+
+        if resized or not hidden:
+            instancer.update_from_transforms(xforms, scales, colors, materials, opacities)
+
+        instancer.hidden = hidden
+
+    @staticmethod
+    def _select_instance_subset(
+        values: wp.array[Any] | None, indices: np.ndarray, count: int, label: str
+    ) -> wp.array[Any] | None:
+        """Copy selected instance values to a compact array on the source device."""
+        if values is None:
+            return None
+        if len(values) != count:
+            raise ValueError(f"Number of {label} must match number of transforms")
+        return wp.array(values.numpy()[indices], dtype=values.dtype, device=values.device)
+
     @override
     def log_instances(
         self,
@@ -1035,28 +1081,55 @@ class ViewerGL(ViewerBase):
         if not isinstance(self.objects[mesh], MeshGL):
             raise RuntimeError(f"Path {mesh} is not a Mesh object")
 
-        instancer = self.objects.get(name, None)
         transform_count = len(xforms) if xforms is not None else 0
-        resized = False
+        transparent_name = f"{name}{_TRANSPARENT_INSTANCER_SUFFIX}"
+        transparent_instancer = self.objects.get(transparent_name)
 
-        if instancer is None:
-            capacity = max(transform_count, 1)
-            instancer = MeshInstancerGL(capacity, self.objects[mesh])
-            self.objects[name] = instancer
-            resized = True
-        elif transform_count > instancer.num_instances:
-            new_capacity = max(transform_count, instancer.num_instances * 2)
-            old = instancer
-            instancer = MeshInstancerGL(new_capacity, self.objects[mesh])
-            self.objects[name] = instancer
-            del old
-            resized = True
+        if not hidden and transform_count > 0 and opacities is not None:
+            if len(opacities) != transform_count:
+                raise ValueError("Number of opacities must match number of transforms")
 
-        needs_update = resized or not hidden
-        if needs_update:
-            self.objects[name].update_from_transforms(xforms, scales, colors, materials, opacities)
+            host_opacities = np.clip(opacities.numpy().reshape(-1), 0.0, 1.0)
+            transparent_mask = host_opacities < OPAQUE_OPACITY_THRESHOLD
+            if np.any(transparent_mask) and not np.all(transparent_mask):
+                opaque_indices = np.flatnonzero(~transparent_mask)
+                transparent_indices = np.flatnonzero(transparent_mask)
 
-        self.objects[name].hidden = hidden
+                opaque_values = [
+                    self._select_instance_subset(values, opaque_indices, transform_count, label)
+                    for values, label in (
+                        (xforms, "transforms"),
+                        (scales, "scales"),
+                        (colors, "colors"),
+                        (materials, "materials"),
+                        (opacities, "opacities"),
+                    )
+                ]
+                transparent_values = [
+                    self._select_instance_subset(values, transparent_indices, transform_count, label)
+                    for values, label in (
+                        (xforms, "transforms"),
+                        (scales, "scales"),
+                        (colors, "colors"),
+                        (materials, "materials"),
+                        (opacities, "opacities"),
+                    )
+                ]
+
+                self._update_mesh_instancer(name, self.objects[mesh], *opaque_values, hidden=False)
+                self._update_mesh_instancer(
+                    transparent_name,
+                    self.objects[mesh],
+                    *transparent_values,
+                    hidden=False,
+                )
+                return
+
+        self._update_mesh_instancer(
+            name, self.objects[mesh], xforms, scales, colors, materials, opacities, hidden=hidden
+        )
+        if isinstance(transparent_instancer, MeshInstancerGL):
+            transparent_instancer.hidden = True
 
     @override
     def log_capsules(
