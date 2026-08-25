@@ -5,11 +5,12 @@
 KAMINO: Core Module
 """
 
+from .bodies import compute_body_acceleration, reset_body_acceleration
 from .builder import ModelBuilderKamino
 from .control import ControlKamino
 from .data import DataKamino
 from .model import ModelKamino
-from .state import StateKamino, compute_body_acceleration, reset_body_acceleration
+from .state import StateKamino
 
 ###
 # Module interface

@@ -6,10 +6,12 @@ Kamino: A physics back-end for Newton for constrained multi-body body simulation
 """
 
 from .core.bodies import (
+    compute_body_acceleration,
     convert_base_origin_to_com,
     convert_body_com_to_origin,
     convert_body_origin_to_com,
     convert_geom_offset_origin_to_com,
+    reset_body_acceleration,
 )
 from .core.control import ControlKamino
 from .core.conversions import (
@@ -22,7 +24,7 @@ from .core.conversions import (
 )
 from .core.joints import JOINT_QMAX, JOINT_QMIN, JointActuationType
 from .core.model import ModelKamino
-from .core.state import StateKamino, compute_body_acceleration, reset_body_acceleration
+from .core.state import StateKamino
 from .geometry.contacts import (
     ContactsKamino,
     convert_contacts_kamino_to_newton,
