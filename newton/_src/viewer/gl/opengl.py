@@ -226,6 +226,8 @@ class MeshGL:
         gl.glVertexAttrib4f(5, 0.0, 0.0, 1.0, 0.0)
         #   column 3  (0,0,0,1)
         gl.glVertexAttrib4f(6, 0.0, 0.0, 0.0, 1.0)
+        # Negative RGB preserves the original asset color; alpha remains opaque.
+        gl.glVertexAttrib4f(9, -1.0, -1.0, -1.0, 1.0)
 
         gl.glBindVertexArray(0)
 
@@ -670,6 +672,7 @@ class MeshInstancerGL:
         self.instance_transform_buffer = None
         self.instance_color_buffer = None
         self.instance_material_buffer = None
+        self.instance_style_buffer = None
 
         self.instance_transform_cuda_buffer = None
 
@@ -692,6 +695,7 @@ class MeshInstancerGL:
                 gl.glDeleteBuffers(1, self.instance_transform_buffer)
                 gl.glDeleteBuffers(1, self.instance_color_buffer)
                 gl.glDeleteBuffers(1, self.instance_material_buffer)
+                gl.glDeleteBuffers(1, self.instance_style_buffer)
             except Exception:
                 # Ignore any errors during interpreter shutdown
                 pass
@@ -705,6 +709,7 @@ class MeshInstancerGL:
         self.instance_transform_buffer = gl.GLuint()
         self.instance_color_buffer = gl.GLuint()
         self.instance_material_buffer = gl.GLuint()
+        self.instance_style_buffer = gl.GLuint()
         self.num_instances = num_instances
 
         gl.glGenVertexArrays(1, self.vao)
@@ -751,6 +756,7 @@ class MeshInstancerGL:
         self.instance_transform_buffer_size = self.transform_byte_size * self.num_instances
         self.instance_color_buffer_size = self.color_byte_size * self.num_instances
         self.instance_material_buffer_size = self.material_byte_size * self.num_instances
+        self.instance_style_buffer_size = self.material_byte_size * self.num_instances
 
         # ------------------------
         # transform buffer
@@ -791,6 +797,18 @@ class MeshInstancerGL:
         gl.glVertexAttribPointer(8, 4, gl.GL_FLOAT, gl.GL_FALSE, self.material_byte_size, ctypes.c_void_p(0))
         gl.glEnableVertexAttribArray(8)
         gl.glVertexAttribDivisor(8, 1)
+
+        # ------------------------
+        # non-physical render style (RGB multiplier + opacity)
+        host_styles = np.empty((self.num_instances, 4), dtype=np.float32)
+        host_styles[:, :3] = -1.0
+        host_styles[:, 3] = 1.0
+        gl.glGenBuffers(1, self.instance_style_buffer)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_style_buffer)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, self.instance_style_buffer_size, host_styles.ctypes.data, gl.GL_STATIC_DRAW)
+        gl.glVertexAttribPointer(9, 4, gl.GL_FLOAT, gl.GL_FALSE, self.material_byte_size, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(9)
+        gl.glVertexAttribDivisor(9, 1)
 
         gl.glBindVertexArray(0)
 
@@ -918,6 +936,15 @@ class MeshInstancerGL:
             host_materials = materials.numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW)
+
+    def update_render_styles(self, styles: np.ndarray) -> None:
+        """Upload per-instance RGB multipliers and opacities without touching model colors."""
+        styles = np.ascontiguousarray(styles, dtype=np.float32)
+        if styles.shape != (self.active_instances, 4):
+            raise ValueError(f"Expected render styles with shape ({self.active_instances}, 4), got {styles.shape}.")
+        gl = RendererGL.gl
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_style_buffer)
+        gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, styles.nbytes, styles.ctypes.data)
 
     def render(self):
         gl = RendererGL.gl
@@ -1917,6 +1944,18 @@ class RendererGL:
 
         with self._shape_shader:
             self._draw_objects(objects)
+
+        # Translucent geometry is blended after opaque geometry. It depth-tests
+        # against opaque geometry but does not write depth itself.
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+        gl.glDepthMask(False)
+        self._shape_shader.set_render_pass(1)
+        with self._shape_shader:
+            self._draw_objects(objects)
+        self._shape_shader.set_render_pass(0)
+        gl.glDepthMask(True)
+        gl.glDisable(gl.GL_BLEND)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 

@@ -4,13 +4,14 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import numpy as np
 import warp as wp
 
 import newton
 from newton._src.viewer.viewer import ViewerBase
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_viser import ViewerViser
-from newton.viewer import ViewerNull
+from newton.viewer import LayerRenderStyle, ViewerGL, ViewerNull
 
 
 class _RecordingViewer(ViewerNull):
@@ -172,6 +173,52 @@ class TestViewerLayers(unittest.TestCase):
         self.assertNotIn("layer_id", viewer._layer_runtime_fields)
         self.assertNotIn("visible", viewer._layer_runtime_fields)
         self.assertNotIn("xform", viewer._layer_runtime_fields)
+        self.assertNotIn("render_style", viewer._layer_runtime_fields)
+        self.assertNotIn("shape_visibility", viewer._layer_runtime_fields)
+
+    def test_layer_render_style_is_validated_and_owned_by_layer(self):
+        viewer = _RecordingViewer()
+        viewer.activate("A")
+        viewer.activate("B")
+
+        style = LayerRenderStyle(color=(0.2, 0.4, 0.8), opacity=0.25)
+        viewer.set_layer_render_style("A", style)
+        viewer.set_layer_shape_visibility("A", (True, False))
+
+        self.assertEqual(viewer.layers["A"].render_style, style)
+        self.assertEqual(viewer.layers["A"].shape_visibility, (True, False))
+        self.assertIsNone(viewer.layers["B"].shape_visibility)
+        self.assertEqual(viewer.layers["B"].render_style, LayerRenderStyle())
+        with self.assertRaises(KeyError):
+            viewer.set_layer_render_style("missing", style)
+        with self.assertRaises(TypeError):
+            viewer.set_layer_render_style("A", object())
+        with self.assertRaises(TypeError):
+            viewer.set_layer_shape_visibility("A", (1, 0))
+        with self.assertRaises(ValueError):
+            LayerRenderStyle(opacity=1.01)
+        with self.assertRaises(ValueError):
+            LayerRenderStyle(color=(-1.0, 1.0, 1.0))
+        with self.assertRaises(ValueError):
+            LayerRenderStyle(color=(0.0, 1.01, 1.0))
+
+    def test_layer_render_style_applies_explicit_shape_visibility(self):
+        values = ViewerGL._resolve_layer_render_style(
+            model_shapes=np.array([0, 2, 4, 1, 3], dtype=np.int32),
+            style=LayerRenderStyle(color=(0.2, 0.4, 0.8), opacity=0.25),
+            visibility=(False, True, True, False, True),
+        )
+
+        np.testing.assert_allclose(values[:, :3], np.array([[0.2, 0.4, 0.8]] * 5), atol=1.0e-6)
+        np.testing.assert_allclose(values[:, 3], np.array([0.0, 0.25, 0.25, 0.25, 0.0]), atol=1.0e-6)
+
+        original_colors = ViewerGL._resolve_layer_render_style(
+            model_shapes=np.array([0, 1], dtype=np.int32),
+            style=LayerRenderStyle(),
+            visibility=None,
+        )
+        np.testing.assert_allclose(original_colors[:, :3], -1.0)
+        np.testing.assert_allclose(original_colors[:, 3], 1.0)
 
     def test_unseeded_self_attribute_is_viewer_global(self):
         """A self-only attribute should not become accidental layer state."""

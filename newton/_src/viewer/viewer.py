@@ -9,6 +9,7 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -33,7 +34,35 @@ from .kernels import (
 _DEFAULT_LAYER_ID = "__default__"
 
 #: Fields that configure a layer itself rather than model/runtime state.
-_LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
+_LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform", "render_style", "shape_visibility"))
+
+
+@dataclass(frozen=True)
+class LayerRenderStyle:
+    """Non-physical appearance override for model geometry in a viewer layer.
+
+    Args:
+        color: Solid RGB color override, or ``None`` to preserve each shape's
+            asset color and texture.
+        opacity: Shape opacity in the range ``[0, 1]``.
+    """
+
+    color: tuple[float, float, float] | None = None
+    opacity: float = 1.0
+
+    def __post_init__(self) -> None:
+        color = self.color
+        if color is not None:
+            if len(color) != 3:
+                raise ValueError("color must contain exactly three values")
+            color = tuple(float(value) for value in color)
+            if any(not np.isfinite(value) or not 0.0 <= value <= 1.0 for value in color):
+                raise ValueError("color values must be finite and in the range [0, 1]")
+        opacity = float(self.opacity)
+        if not np.isfinite(opacity) or not 0.0 <= opacity <= 1.0:
+            raise ValueError("opacity must be finite and in the range [0, 1]")
+        object.__setattr__(self, "color", color)
+        object.__setattr__(self, "opacity", opacity)
 
 
 class Layer:
@@ -69,6 +98,8 @@ class Layer:
         self.layer_id = layer_id
         self.visible = True
         self.xform: wp.transform = wp.transform_identity()
+        self.render_style = LayerRenderStyle()
+        self.shape_visibility: tuple[bool, ...] | None = None
 
     @property
     def name_prefix(self) -> str:
@@ -376,6 +407,55 @@ class ViewerBase(ABC):
         elif not isinstance(xform, wp.transform):
             raise TypeError(type_error)
         self._layers[layer_id].xform = xform
+
+    def set_layer_render_style(self, layer_id: str, style: LayerRenderStyle | None) -> None:
+        """Set a render-only appearance override for a layer's model geometry.
+
+        Viewer backends that support layer styling apply it without changing
+        model colors, materials, or simulation state. Pass ``None`` to restore
+        the default appearance.
+
+        Args:
+            layer_id: Identifier of the layer to style.
+            style: Appearance override, or ``None`` for the default.
+
+        Raises:
+            KeyError: If ``layer_id`` is not registered.
+            TypeError: If ``style`` is not a :class:`LayerRenderStyle`.
+        """
+        if layer_id not in self._layers:
+            raise KeyError(f"Unknown layer: {layer_id}")
+        if style is None:
+            style = LayerRenderStyle()
+        elif not isinstance(style, LayerRenderStyle):
+            raise TypeError("style must be a LayerRenderStyle or None")
+        self._layers[layer_id].render_style = style
+
+    def set_layer_shape_visibility(self, layer_id: str, visibility: Sequence[bool] | None) -> None:
+        """Set an explicit model-shape visibility mask for a viewer layer.
+
+        This is a render-only mechanism. The caller, rather than Newton,
+        decides which shapes belong in the layer. Pass ``None`` to show every
+        shape allowed by the layer's world filter.
+
+        Args:
+            layer_id: Identifier of the layer to update.
+            visibility: One Boolean per model shape, or ``None``.
+
+        Raises:
+            KeyError: If ``layer_id`` is not registered.
+            TypeError: If the mask contains non-Boolean values.
+        """
+        if layer_id not in self._layers:
+            raise KeyError(f"Unknown layer: {layer_id}")
+        if visibility is None:
+            resolved = None
+        else:
+            values = tuple(visibility)
+            if any(not isinstance(value, (bool, np.bool_)) for value in values):
+                raise TypeError("visibility must contain only Boolean values")
+            resolved = tuple(bool(value) for value in values)
+        self._layers[layer_id].shape_visibility = resolved
 
     @staticmethod
     def _is_identity_transform(xform: wp.transform) -> bool:

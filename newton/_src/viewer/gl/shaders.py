@@ -14,22 +14,25 @@ layout (location = 3) in vec4 aInstanceTransform0;
 layout (location = 4) in vec4 aInstanceTransform1;
 layout (location = 5) in vec4 aInstanceTransform2;
 layout (location = 6) in vec4 aInstanceTransform3;
+layout (location = 9) in vec4 aRenderStyle;
 
 uniform mat4 light_space_matrix;
 uniform vec3 render_origin;
+out float Opacity;
 
 void main()
 {
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
     vec3 render_position = mat3(transform) * aPos + transform[3].xyz - render_origin;
     gl_Position = light_space_matrix * vec4(render_position, 1.0);
+    Opacity = aRenderStyle.a;
 }
 """
 
 shadow_fragment_shader = """
 #version 330 core
-
-void main() { }
+in float Opacity;
+void main() { if (Opacity < 0.999) discard; }
 """
 
 
@@ -50,6 +53,7 @@ layout (location = 7) in vec3 aObjectColor;
 
 // material properties
 layout (location = 8) in vec4 aMaterial;
+layout (location = 9) in vec4 aRenderStyle;
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -60,6 +64,7 @@ out vec3 LocalPos;
 out vec2 TexCoord;
 out vec3 ObjectColor;
 out vec4 Material;
+out vec4 RenderStyle;
 
 void main()
 {
@@ -83,6 +88,7 @@ void main()
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
     Material = aMaterial;
+    RenderStyle = aRenderStyle;
 }
 """
 
@@ -95,6 +101,7 @@ in vec3 LocalPos;
 in vec2 TexCoord;
 in vec3 ObjectColor;
 in vec4 Material;
+in vec4 RenderStyle;
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -121,6 +128,7 @@ uniform float specular_scale;
 uniform bool spotlight_enabled;
 uniform float shadow_extents;
 uniform float exposure;
+uniform int render_pass;
 
 const float PI = 3.14159265359;
 
@@ -289,18 +297,24 @@ vec3 sample_env_map(vec3 dir, float lod)
 
 void main()
 {
+    if (RenderStyle.a <= 0.0) discard;
+    if (render_pass == 0 && RenderStyle.a < 0.999) discard;
+    if (render_pass == 1 && RenderStyle.a >= 0.999) discard;
+    bool has_color_override = RenderStyle.r >= 0.0;
+
     // This reconstruction also corrects depth before the fragment is committed.
     vec3 camera_to_fragment = ReconstructCameraRelativePosition();
 
     // material properties from vertex shader
-    float roughness = clamp(Material.x, 0.0, 1.0);
-    float metallic = clamp(Material.y, 0.0, 1.0);
-    float checker_enable = Material.z;
-    float texture_enable = Material.w;
+    float roughness = has_color_override ? 0.65 : clamp(Material.x, 0.0, 1.0);
+    float metallic = has_color_override ? 0.0 : clamp(Material.y, 0.0, 1.0);
+    float checker_enable = has_color_override ? 0.0 : Material.z;
+    float texture_enable = has_color_override ? 0.0 : Material.w;
     float checker_scale = 1.0;
 
     // convert to linear space
-    vec3 albedo = pow(ObjectColor, vec3(2.2));
+    vec3 surface_color = has_color_override ? RenderStyle.rgb : ObjectColor;
+    vec3 albedo = pow(surface_color, vec3(2.2));
     if (texture_enable > 0.5)
     {
         vec3 tex_color = texture(albedo_map, TexCoord).rgb;
@@ -410,7 +424,7 @@ void main()
     // gamma correction (sRGB)
     color = pow(color, vec3(1.0 / 2.2));
 
-    FragColor = vec4(color, 1.0);
+    FragColor = vec4(color, RenderStyle.a);
 }
 """
 
@@ -575,6 +589,7 @@ class ShaderShape(ShaderGL):
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
+            self.loc_render_pass = self._get_uniform_location("render_pass")
 
     def update(
         self,
@@ -626,6 +641,7 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
             self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
             self._gl.glUniform1f(self.loc_exposure, exposure)
+            self._gl.glUniform1i(self.loc_render_pass, 0)
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)
@@ -649,6 +665,11 @@ class ShaderShape(ShaderGL):
                 self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
             self._gl.glUniform1i(self.loc_env_map, 2)
             self._gl.glUniform1f(self.loc_env_intensity, float(env_intensity))
+
+    def set_render_pass(self, render_pass: int) -> None:
+        """Select opaque (zero) or translucent (one) fragment filtering."""
+        with self:
+            self._gl.glUniform1i(self.loc_render_pass, int(render_pass))
 
 
 class ShaderSky(ShaderGL):
@@ -1003,9 +1024,11 @@ class ShaderArrow(ShaderGL):
 edge_fragment_shader = """
 #version 330 core
 out vec4 FragColor;
+in vec4 RenderStyle;
 uniform vec4 edge_color;
 void main()
 {
+    if (RenderStyle.a < 0.999) discard;
     FragColor = edge_color;
 }
 """

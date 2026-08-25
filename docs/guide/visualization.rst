@@ -225,6 +225,39 @@ The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``
 
     viewer.register_ui_callback(my_ui, position="side")
 
+**Layer appearance:**
+
+Named viewer layers can carry independent render-only appearance settings.
+This is useful when several simulations share one view and need distinct colors
+or translucent geometry. The style doesn't change model materials or physics.
+
+.. code-block:: python
+
+    import numpy as np
+    from newton.viewer import LayerRenderStyle
+
+    viewer.activate("candidate")
+    viewer.set_model(model)
+    viewer.set_layer_render_style(
+        "candidate",
+        LayerRenderStyle(
+            color=(0.3, 0.7, 1.0),
+            opacity=0.3,
+        ),
+    )
+
+    visibility = np.ones(model.shape_count, dtype=bool)
+    visibility[fixture_shape_indices] = False
+    viewer.set_layer_shape_visibility("candidate", visibility)
+
+Shape visibility is explicit: the application decides which model shapes to
+include, and Newton applies the supplied Boolean mask without interpreting body
+types or scene roles. Passing ``None`` restores visibility for every shape
+allowed by the layer's world filter.
+
+Setting ``color`` replaces asset colors, textures, and checker patterns with a
+single shaded color. Leaving it as ``None`` preserves the model's appearance.
+
 Viewer controls:
 
 .. list-table:: ViewerGL Controls
