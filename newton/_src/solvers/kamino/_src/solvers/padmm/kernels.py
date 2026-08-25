@@ -24,6 +24,7 @@ from ..common import (
     warmstart_limit_constraints as _warmstart_limit_constraints,
 )
 from .math import (
+    compute_box_complementarity_residual,
     compute_cwise_vec_div,
     compute_cwise_vec_mul,
     compute_desaxce_corrections,
@@ -615,52 +616,73 @@ def _compute_projection_argument(
 @wp.kernel
 def _project_to_feasible_cone(
     # Inputs:
+    problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
     problem_nc: wp.array[wp.int32],
+    problem_bcio: wp.array[wp.int32],
     problem_cio: wp.array[wp.int32],
+    problem_bcgo: wp.array[wp.int32],
     problem_lcgo: wp.array[wp.int32],
     problem_ccgo: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
     problem_mu: wp.array[wp.float32],
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
     solver_status: wp.array[PADMMStatus],
     # Outputs:
     solver_y: wp.array[wp.float32],
 ):
-    # Retrieve the thread index as the unilateral entity index
-    wid, uid = wp.tid()
+    # Retrieve the thread index as the inequality entity index
+    wid, iid = wp.tid()
 
     # Retrieve the solver status
     status = solver_status[wid]
 
-    # Retrieve the number of active limits and contacts in the world
+    # Retrieve the number of active bounded-multiplier, limit, and contact entities in the world
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
 
     # Skip if row index exceed the problem size or if the solver has already converged
-    if uid >= (nl + nc) or status.converged > 0:
+    if iid >= (nbc + nl + nc) or status.converged > 0:
         return
 
     # Retrieve the index offset of the vector block of the world
     vio = problem_vio[wid]
 
+    # Check if the thread should handle a bound
+    if nbc > 0 and iid < nbc:
+        # Retrieve the bound constraint group offset of the world
+        bcgo = problem_bcgo[wid]
+        # Compute the constraint index offset of the bound element
+        bcio_j = vio + bcgo + iid
+        # Compute the bound index offset
+        bio = problem_bcio[wid] + iid
+        # Project to the box bounds
+        solver_y[bcio_j] = wp.clamp(
+            solver_y[bcio_j],
+            problem_bound_lower[bio],
+            problem_bound_upper[bio],
+        )
+
     # Check if the thread should handle a limit
-    if nl > 0 and uid < nl:
+    elif nl > 0 and iid < nbc + nl:
         # Retrieve the limit constraint group offset of the world
         lcgo = problem_lcgo[wid]
         # Compute the constraint index offset of the limit element
-        lcio_j = vio + lcgo + uid
+        lcio_j = vio + lcgo + iid - nbc
         # Project to the non-negative orthant
         solver_y[lcio_j] = wp.max(solver_y[lcio_j], 0.0)
 
     # Check if the thread should handle a contact
-    elif nc > 0 and uid >= nl:
+    elif nc > 0 and iid >= nbc + nl:
         # Retrieve the contact index offset of the world
         cio = problem_cio[wid]
         # Retrieve the limit constraint group offset of the world
         ccgo = problem_ccgo[wid]
-        # Compute the index of the contact element in the unilaterals array
+        # Compute the index of the contact element in the inequalities array
         # NOTE: We need to subtract the number of active limits
-        cid = uid - nl
+        cid = iid - nbc - nl
         # Compute the index offset of the contact constraint
         ccio_j = vio + ccgo + 3 * cid
         # Capture a 3D vector
@@ -776,14 +798,18 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
     def _project_dual_convergence_accel(
         # Inputs:
         problem_dim: wp.array[wp.int32],
+        problem_nbc: wp.array[wp.int32],
         problem_nl: wp.array[wp.int32],
         problem_nc: wp.array[wp.int32],
+        problem_bcio: wp.array[wp.int32],
         problem_cio: wp.array[wp.int32],
+        problem_bcgo: wp.array[wp.int32],
         problem_lcgo: wp.array[wp.int32],
         problem_ccgo: wp.array[wp.int32],
         problem_vio: wp.array[wp.int32],
-        problem_uio: wp.array[wp.int32],
         problem_mu: wp.array[wp.float32],
+        problem_bound_lower: wp.array[wp.float32],
+        problem_bound_upper: wp.array[wp.float32],
         problem_P: wp.array[wp.float32],
         solver_config: wp.array[PADMMConfigStruct],
         solver_penalty: wp.array[PADMMPenalty],
@@ -835,9 +861,11 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                 solver_state_a_p_out[wid] = solver_state_a[wid]
             return
 
+        nbc = problem_nbc[wid]
         nl = problem_nl[wid]
         nc = problem_nc[wid]
         lcgo = problem_lcgo[wid]
+        bcgo = problem_bcgo[wid]
         ccgo = problem_ccgo[wid]
         cio = problem_cio[wid]
         pen = solver_penalty[wid]
@@ -908,7 +936,14 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                     x = solver_state_x[thread_offset]
                     z_p = solver_state_z_hat_in[thread_offset]
                     y = x - inv_rho * z_p
-                    if nl > 0 and local_id >= lcgo and local_id < lcgo + nl:
+                    if nbc > 0 and local_id >= bcgo and local_id < bcgo + nbc:
+                        bio = problem_bcio[wid] + local_id - bcgo
+                        y = wp.clamp(
+                            y,
+                            problem_bound_lower[bio],
+                            problem_bound_upper[bio],
+                        )
+                    elif nl > 0 and local_id >= lcgo and local_id < lcgo + nl:
                         y = wp.max(y, 0.0)
 
                     x_p = solver_state_x_p[thread_offset]
@@ -932,7 +967,16 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                     r_dy_local += r_dy * r_dy
                     r_dz_local += r_dz * r_dz
 
-                    if nl > 0 and local_id >= lcgo and local_id < lcgo + nl:
+                    if nbc > 0 and local_id >= bcgo and local_id < bcgo + nbc:
+                        bio = problem_bcio[wid] + local_id - bcgo
+                        r_box = compute_box_complementarity_residual(
+                            x,
+                            z,
+                            problem_bound_lower[bio],
+                            problem_bound_upper[bio],
+                        )
+                        r_c_local = wp.max(r_c_local, wp.abs(r_box))
+                    elif nl > 0 and local_id >= lcgo and local_id < lcgo + nl:
                         r_c_local = wp.max(r_c_local, wp.abs(x * z))
 
         # Reduce per-thread residual contributions to world-level metrics.
@@ -1061,64 +1105,84 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
 @wp.kernel
 def _compute_complementarity_residuals(
     # Inputs:
+    problem_nbc: wp.array[wp.int32],
     problem_nl: wp.array[wp.int32],
     problem_nc: wp.array[wp.int32],
     problem_vio: wp.array[wp.int32],
-    problem_uio: wp.array[wp.int32],
+    problem_bcio: wp.array[wp.int32],
+    problem_iio: wp.array[wp.int32],
+    problem_bcgo: wp.array[wp.int32],
     problem_lcgo: wp.array[wp.int32],
     problem_ccgo: wp.array[wp.int32],
     solver_status: wp.array[PADMMStatus],
     solver_x: wp.array[wp.float32],
     solver_z: wp.array[wp.float32],
+    problem_bound_lower: wp.array[wp.float32],
+    problem_bound_upper: wp.array[wp.float32],
     # Outputs:
     solver_r_c: wp.array[wp.float32],
 ):
-    # Retrieve the thread index as the unilateral entity index
-    wid, uid = wp.tid()
+    # Retrieve the thread index as the inequality entity index
+    wid, iid = wp.tid()
 
     # Retrieve the solver status
     status = solver_status[wid]
 
-    # Retrieve the number of active limits and contacts in the world
+    # Retrieve the number of active inequality entities in the world
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
 
     # Skip if row index exceed the problem size or if the solver has already converged
-    if uid >= (nl + nc) or status.converged > 0:
+    if iid >= (nbc + nl + nc) or status.converged > 0:
         return
 
-    # Retrieve the index offsets of the unilateral elements
-    uio = problem_uio[wid]
+    # Retrieve the index offsets of the inequality elements
+    iio = problem_iio[wid]
 
     # Retrieve the index offset of the vector block of the world
     vio = problem_vio[wid]
 
     # Compute the index offset of the vector block of the world
-    uio_u = uio + uid
+    iio_i = iio + iid
 
+    # Check if the thread should handle a bounded-multiplier constraint.
+    if nbc > 0 and iid < nbc:
+        # Retrieve the bound constraint group offset of the world
+        bcgo = problem_bcgo[wid]
+        # Compute the constraint index offset of the bound element
+        bcio_j = vio + bcgo + iid
+        # Compute the bound index offset
+        bio = problem_bcio[wid] + iid
+        # Compute directional complementarity with the lower and upper box faces
+        solver_r_c[iio_i] = compute_box_complementarity_residual(
+            solver_x[bcio_j],
+            solver_z[bcio_j],
+            problem_bound_lower[bio],
+            problem_bound_upper[bio],
+        )
     # Check if the thread should handle a limit
-    if nl > 0 and uid < nl:
+    elif nl > 0 and iid < nbc + nl:
         # Retrieve the limit constraint group offset of the world
         lcgo = problem_lcgo[wid]
         # Compute the constraint index offset of the limit element
-        lcio_j = vio + lcgo + uid
+        lcio_j = vio + lcgo + iid - nbc
         # Compute the scalar product of the primal and dual variables
-        solver_r_c[uio_u] = solver_x[lcio_j] * solver_z[lcio_j]
+        solver_r_c[iio_i] = solver_x[lcio_j] * solver_z[lcio_j]
 
     # Check if the thread should handle a contact
-    elif nc > 0 and uid >= nl:
+    elif nc > 0 and iid >= nbc + nl:
         # Retrieve the limit constraint group offset of the world
         ccgo = problem_ccgo[wid]
-        # Compute the index of the contact element in the unilaterals array
-        # NOTE: We need to subtract the number of active limits
-        cid = uid - nl
+        # Compute the index of the contact element in the inequalities array
+        cid = iid - nbc - nl
         # Compute the index offset of the contact constraint
         ccio_j = vio + ccgo + 3 * cid
         # Capture 3D vectors
         x_c = wp.vec3f(solver_x[ccio_j], solver_x[ccio_j + 1], solver_x[ccio_j + 2])
         z_c = wp.vec3f(solver_z[ccio_j], solver_z[ccio_j + 1], solver_z[ccio_j + 2])
         # Compute the inner product of the primal and dual variables
-        solver_r_c[uio_u] = wp.dot(x_c, z_c)
+        solver_r_c[iio_i] = wp.dot(x_c, z_c)
 
 
 @wp.func
@@ -1156,16 +1220,17 @@ def mul_mask(mask: Any, value: Any):
 
 
 @functools.cache
-def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_u_max: int):
+def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_compl_max: int):
     num_tiles_cts = (n_cts_max + tile_size - 1) // tile_size
-    num_tiles_u = (n_u_max + tile_size - 1) // tile_size
+    num_tiles_i = (n_compl_max + tile_size - 1) // tile_size
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _compute_infnorm_residuals(
         # Inputs:
+        problem_nbc: wp.array[wp.int32],
         problem_nl: wp.array[wp.int32],
         problem_nc: wp.array[wp.int32],
-        problem_uio: wp.array[wp.int32],
+        problem_iio: wp.array[wp.int32],
         problem_dim: wp.array[wp.int32],
         problem_vio: wp.array[wp.int32],
         solver_config: wp.array[PADMMConfigStruct],
@@ -1192,6 +1257,7 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_u_m
         status.iterations += 1
 
         # Capture the size of the residuals arrays
+        nbc = problem_nbc[wid]
         nl = problem_nl[wid]
         nc = problem_nc[wid]
         ncts = problem_dim[wid]
@@ -1199,9 +1265,9 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_u_m
         # Retrieve the solver configurations
         config = solver_config[wid]
 
-        # Retrieve the index offsets of the vector block and unilateral elements
+        # Retrieve the index offsets of the vector block and inequality elements
         vio = problem_vio[wid]
-        uio = problem_uio[wid]
+        iio = problem_iio[wid]
 
         # Extract the solver tolerances
         eps_p = config.primal_tolerance
@@ -1249,31 +1315,31 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_u_m
             r_p_max = wp.tile_max(r_p_max_acc)[0]
             r_d_max = wp.tile_max(r_d_max_acc)[0]
 
-        # Compute the infinity-norm of the complementarity residuals
-        nu = nl + nc
+        # Compute the infinity-norm of the complementarity residuals.
+        ni = nbc + nl + nc
         r_c_max = wp.float32(0.0)
-        if wp.static(num_tiles_u > 1):
-            r_c_max_acc = wp.tile_zeros(num_tiles_u, dtype=wp.float32, storage="shared")
-        for tile_id in range(num_tiles_u):
-            u_id_tile = tile_id * tile_size
-            if u_id_tile >= nu:
+        if wp.static(num_tiles_i > 1):
+            r_c_max_acc = wp.tile_zeros(num_tiles_i, dtype=wp.float32, storage="shared")
+        for tile_id in range(num_tiles_i):
+            i_id_tile = tile_id * tile_size
+            if i_id_tile >= ni:
                 break
-            uio_tile = uio + u_id_tile
+            iio_tile = iio + i_id_tile
 
             # Mask out extra entries in case of heterogenous worlds
-            need_mask = u_id_tile > nu - tile_size
+            need_mask = i_id_tile > ni - tile_size
             if need_mask:
-                mask = wp.tile_map(less_than_op, wp.tile_arange(tile_size, dtype=wp.int32), nu - u_id_tile)
+                mask = wp.tile_map(less_than_op, wp.tile_arange(tile_size, dtype=wp.int32), ni - i_id_tile)
 
-            tile = wp.tile_load(solver_r_c, shape=tile_size, offset=uio_tile)
+            tile = wp.tile_load(solver_r_c, shape=tile_size, offset=iio_tile)
             tile = wp.tile_map(wp.abs, tile)
             if need_mask:
                 tile = wp.tile_map(mul_mask, mask, tile)
-            if wp.static(num_tiles_u > 1):
+            if wp.static(num_tiles_i > 1):
                 r_c_max_acc[tile_id] = wp.tile_max(tile)[0]
             else:
                 r_c_max = wp.tile_max(tile)[0]
-        if wp.static(num_tiles_u > 1):
+        if wp.static(num_tiles_i > 1):
             r_c_max = wp.tile_max(r_c_max_acc)[0]
 
         if tid == 0:
@@ -1320,9 +1386,12 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
     @wp.kernel
     def _collect_solver_convergence_info(
         # Inputs:
+        problem_nbc: wp.array[wp.int32],
         problem_nl: wp.array[wp.int32],
         problem_nc: wp.array[wp.int32],
+        problem_bcio: wp.array[wp.int32],
         problem_cio: wp.array[wp.int32],
+        problem_bcgo: wp.array[wp.int32],
         problem_lcgo: wp.array[wp.int32],
         problem_ccgo: wp.array[wp.int32],
         problem_dim: wp.array[wp.int32],
@@ -1332,6 +1401,8 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         problem_v_f: wp.array[wp.float32],
         problem_D: wp.array[wp.float32],
         problem_P: wp.array[wp.float32],
+        problem_bound_lower: wp.array[wp.float32],
+        problem_bound_upper: wp.array[wp.float32],
         solver_state_sigma: wp.array[wp.vec2f],
         solver_state_s: wp.array[wp.float32],
         solver_state_x: wp.array[wp.float32],
@@ -1377,10 +1448,13 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         wid = wp.tid()
 
         # Retrieve the world-specific data
+        nbc = problem_nbc[wid]
         nl = problem_nl[wid]
         nc = problem_nc[wid]
         ncts = problem_dim[wid]
+        bcio = problem_bcio[wid]
         cio = problem_cio[wid]
+        bcgo = problem_bcgo[wid]
         lcgo = problem_lcgo[wid]
         ccgo = problem_ccgo[wid]
         vio = problem_vio[wid]
@@ -1394,7 +1468,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         iter = status.iterations - 1
 
         # Compute additional info
-        njc = ncts - (nl + 3 * nc)
+        njc = ncts - (nbc + nl + 3 * nc)
 
         # Compute and store the norms of the current solution state
         norm_s = compute_l2_norm(ncts, vio, solver_state_s)
@@ -1425,20 +1499,62 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         # Compute the augmented post-event constraint-space velocity as: v_aug = v_plus + s
         compute_vector_sum(ncts, vio, solver_info_v_plus, solver_info_s, solver_info_v_aug)
 
-        # Compute the NCP primal residual as: r_p := || lambda - proj_K(lambda) ||_inf
-        r_ncp_p, _ = compute_ncp_primal_residual(nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_lambdas)
+        # Compute the NCP primal residual as: r_p := || lambda - proj_C(lambda) ||_inf
+        r_ncp_p, _ = compute_ncp_primal_residual(
+            nbc,
+            nl,
+            nc,
+            vio,
+            bcio,
+            bcgo,
+            lcgo,
+            ccgo,
+            cio,
+            problem_mu,
+            problem_bound_lower,
+            problem_bound_upper,
+            problem_P,
+            solver_info_lambdas,
+        )
 
         # Compute the NCP dual residual as: r_d := || v_plus + s - proj_dual_K(v_plus + s)  ||_inf
         r_ncp_d, _ = compute_ncp_dual_residual(njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug)
 
-        # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
+        # Compute generalized complementarity for boxes, limits, and contacts.
         r_ncp_c, _ = compute_ncp_complementarity_residual(
-            nl, nc, vio, lcgo, ccgo, solver_info_v_aug, solver_info_lambdas
+            nbc,
+            nl,
+            nc,
+            vio,
+            bcio,
+            bcgo,
+            lcgo,
+            ccgo,
+            problem_bound_lower,
+            problem_bound_upper,
+            problem_P,
+            solver_info_v_aug,
+            solver_info_lambdas,
         )
 
-        # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
+        # Compute the natural-map residual as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
         r_ncp_natmap, _ = compute_ncp_natural_map_residual(
-            njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
+            njc,
+            nbc,
+            nl,
+            nc,
+            vio,
+            bcio,
+            bcgo,
+            lcgo,
+            ccgo,
+            cio,
+            problem_mu,
+            problem_bound_lower,
+            problem_bound_upper,
+            problem_P,
+            solver_info_v_aug,
+            solver_info_lambdas,
         )
 
         # Compute the iterate residuals, or reuse the accelerated solver status
@@ -1506,9 +1622,12 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
     @wp.kernel
     def _collect_solver_convergence_info_sparse(
         # Inputs:
+        problem_nbc: wp.array[wp.int32],
         problem_nl: wp.array[wp.int32],
         problem_nc: wp.array[wp.int32],
+        problem_bcio: wp.array[wp.int32],
         problem_cio: wp.array[wp.int32],
+        problem_bcgo: wp.array[wp.int32],
         problem_lcgo: wp.array[wp.int32],
         problem_ccgo: wp.array[wp.int32],
         problem_dim: wp.array[wp.int32],
@@ -1516,6 +1635,8 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
         problem_mu: wp.array[wp.float32],
         problem_v_f: wp.array[wp.float32],
         problem_P: wp.array[wp.float32],
+        problem_bound_lower: wp.array[wp.float32],
+        problem_bound_upper: wp.array[wp.float32],
         solver_state_s: wp.array[wp.float32],
         solver_state_x: wp.array[wp.float32],
         solver_state_x_p: wp.array[wp.float32],
@@ -1560,10 +1681,13 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
         wid = wp.tid()
 
         # Retrieve the world-specific data
+        nbc = problem_nbc[wid]
         nl = problem_nl[wid]
         nc = problem_nc[wid]
         ncts = problem_dim[wid]
+        bcio = problem_bcio[wid]
         cio = problem_cio[wid]
+        bcgo = problem_bcgo[wid]
         lcgo = problem_lcgo[wid]
         ccgo = problem_ccgo[wid]
         vio = problem_vio[wid]
@@ -1575,7 +1699,7 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
         iter = status.iterations - 1
 
         # Compute additional info
-        njc = ncts - (nl + 3 * nc)
+        njc = ncts - (nbc + nl + 3 * nc)
 
         # Compute and store the norms of the current solution state
         norm_s = compute_l2_norm(ncts, vio, solver_state_s)
@@ -1606,20 +1730,62 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
         # Compute the augmented post-event constraint-space velocity as: v_aug = v_plus + s
         compute_vector_sum(ncts, vio, solver_info_v_plus, solver_info_s, solver_info_v_aug)
 
-        # Compute the NCP primal residual as: r_p := || lambda - proj_K(lambda) ||_inf
-        r_ncp_p, _ = compute_ncp_primal_residual(nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_lambdas)
+        # Compute the NCP primal residual as: r_p := || lambda - proj_C(lambda) ||_inf
+        r_ncp_p, _ = compute_ncp_primal_residual(
+            nbc,
+            nl,
+            nc,
+            vio,
+            bcio,
+            bcgo,
+            lcgo,
+            ccgo,
+            cio,
+            problem_mu,
+            problem_bound_lower,
+            problem_bound_upper,
+            problem_P,
+            solver_info_lambdas,
+        )
 
         # Compute the NCP dual residual as: r_d := || v_plus + s - proj_dual_K(v_plus + s)  ||_inf
         r_ncp_d, _ = compute_ncp_dual_residual(njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug)
 
-        # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
+        # Compute generalized complementarity for boxes, limits, and contacts.
         r_ncp_c, _ = compute_ncp_complementarity_residual(
-            nl, nc, vio, lcgo, ccgo, solver_info_v_aug, solver_info_lambdas
+            nbc,
+            nl,
+            nc,
+            vio,
+            bcio,
+            bcgo,
+            lcgo,
+            ccgo,
+            problem_bound_lower,
+            problem_bound_upper,
+            problem_P,
+            solver_info_v_aug,
+            solver_info_lambdas,
         )
 
-        # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
+        # Compute the natural-map residual as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
         r_ncp_natmap, _ = compute_ncp_natural_map_residual(
-            njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
+            njc,
+            nbc,
+            nl,
+            nc,
+            vio,
+            bcio,
+            bcgo,
+            lcgo,
+            ccgo,
+            cio,
+            problem_mu,
+            problem_bound_lower,
+            problem_bound_upper,
+            problem_P,
+            solver_info_v_aug,
+            solver_info_lambdas,
         )
 
         # Compute the iterate residuals, or reuse the accelerated solver status

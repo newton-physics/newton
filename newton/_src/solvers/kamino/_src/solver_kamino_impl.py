@@ -851,7 +851,9 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(self._data.joints.q_j, state_in.q_j)
         wp.copy(self._data.joints.q_j_p, state_in.q_j_p)
         wp.copy(self._data.joints.dq_j, state_in.dq_j)
-        wp.copy(self._data.joints.lambda_j, state_in.lambda_j)
+        wp.copy(self._data.joints.lambda_kin_j, state_in.lambda_kin_j)
+        wp.copy(self._data.joints.lambda_dyn_j, state_in.lambda_dyn_j)
+        wp.copy(self._data.joints.lambda_f_j, state_in.lambda_f_j)
         # Alias read-only control inputs
         self._data.joints.tau_j = control_in.tau_j
         self._data.joints.q_j_ref = control_in.q_j_ref
@@ -871,7 +873,9 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(state_out.q_j, self._data.joints.q_j)
         wp.copy(state_out.q_j_p, self._data.joints.q_j_p)
         wp.copy(state_out.dq_j, self._data.joints.dq_j)
-        wp.copy(state_out.lambda_j, self._data.joints.lambda_j)
+        wp.copy(state_out.lambda_kin_j, self._data.joints.lambda_kin_j)
+        wp.copy(state_out.lambda_dyn_j, self._data.joints.lambda_dyn_j)
+        wp.copy(state_out.lambda_f_j, self._data.joints.lambda_f_j)
 
     ###
     # Internals - Reset Operations

@@ -113,8 +113,8 @@ class SolverKamino(SolverBase, CouplingInterface):
     under-/overactuation, joint-limits, hard frictional contacts and restitutive impacts.
 
     Forward dynamics are formulated as a Nonlinear Complementarity Problem (NCP)
-    over bilateral kinematic joint constraints and unilateral joint-limit and
-    contact constraints. The default PADMM backend solves this problem with
+    over bilateral kinematic joint constraints, bounded-multiplier constraints, and unilateral joint-limit
+    and contact constraints. The default PADMM backend solves this problem with
     Proximal ADMM. An opt-in DVI backend uses projected iterations with a direct
     bilateral block solve.
 
@@ -1414,6 +1414,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
         massless_body = violations[self._kamino.StructuralUpdateViolation.MASSLESS]
+        friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
@@ -1429,6 +1430,13 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise RuntimeError(
                 f"Changing the existence of a joint limit for DoF {dof} "
                 f"is not supported; recreate SolverKamino to apply the change."
+            )
+
+        if friction_joint != sentinel:
+            joint = int(friction_joint)
+            raise RuntimeError(
+                f"Changing joint friction row topology for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
             )
 
         if actuation_joint != sentinel:
