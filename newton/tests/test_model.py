@@ -434,6 +434,69 @@ class TestModelMesh(unittest.TestCase):
         shape_source_ptr = model.shape_source_ptr.numpy()
         self.assertEqual(shape_source_ptr[0], shape_source_ptr[1])
 
+    def test_finalize_deduplicates_convex_collision_vertices(self):
+        """Deduplicate exact convex vertices in the finalized collision mesh."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        indices = np.arange(6, dtype=np.int32)
+        mesh = newton.Mesh(vertices, indices, compute_inertia=False)
+        mesh._build_collision_edges(
+            lower_angle_threshold_rad=0.0,
+            upper_angle_threshold_rad=np.pi,
+            enable_box_absorption=False,
+            enable_inward_filter=False,
+            sign_method="normal",
+            half_normal=0.0,
+            half_lateral=0.0,
+        )
+        # Exercise defensive remapping of cached edges from duplicate source vertices.
+        mesh._collision_edges = np.concatenate(
+            (mesh._collision_edges, np.array([[3, 0], [3, 1]], dtype=np.int32)),
+            axis=0,
+        )
+
+        builder = ModelBuilder()
+        builder.add_shape_convex_hull(body=-1, mesh=mesh)
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_array_equal(mesh.vertices, vertices)
+        self.assertIs(model.shape_source[0], mesh)
+        self.assertEqual(len(model._mesh_keep_alive), 1)
+        collision_mesh = model._mesh_keep_alive[0]
+        np.testing.assert_array_equal(
+            collision_mesh.points.numpy(),
+            np.array(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=np.float32,
+            ),
+        )
+        np.testing.assert_array_equal(
+            collision_mesh.indices.numpy(),
+            np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+        )
+        edge_start, edge_count = model.shape_edge_range.numpy()[0]
+        collision_edges = model.mesh_edge_indices.numpy()[edge_start : edge_start + edge_count]
+        np.testing.assert_array_equal(
+            collision_edges,
+            np.array([[0, 1], [1, 2], [0, 2], [2, 3], [0, 3]], dtype=np.int32),
+        )
+        self.assertTrue(np.all(collision_edges[:, 0] != collision_edges[:, 1]))
+        self.assertEqual(len(np.unique(collision_edges, axis=0)), len(collision_edges))
+
     def test_finalize_does_not_deduplicate_different_mesh_layouts(self):
         vertices_a = np.array(
             [

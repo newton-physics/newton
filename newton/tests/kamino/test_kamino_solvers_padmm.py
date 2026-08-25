@@ -154,11 +154,11 @@ def check_padmm_solution(
         error_dual_abs_inf = np.linalg.norm(v_plus_true - v_plus_wp_np[w], ord=np.inf)
 
         # Extract solver status
-        converged = True if status[w][0] == 1 else False
-        iterations = status[w][1]
-        r_p = status[w][2]
-        r_d = status[w][3]
-        r_c = status[w][4]
+        converged = bool(status[w]["converged"])
+        iterations = status[w]["iterations"]
+        r_p = status[w]["r_p"]
+        r_d = status[w]["r_d"]
+        r_c = status[w]["r_c"]
 
         # Optionally print relevant solver data
         if verbose:
@@ -324,7 +324,7 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool
 
     nw = solver.size.num_worlds
     status = solver.data.status.numpy()
-    iterations = [status[w][1] for w in range(nw)]
+    iterations = [status[w]["iterations"] for w in range(nw)]
     offsets_np = solver.data.info.offsets.numpy()
     num_rho_updates_np = extract_info_vectors(offsets_np, solver.data.info.num_rho_updates.numpy(), iterations)
     norm_s_np = extract_info_vectors(offsets_np, solver.data.info.norm_s.numpy(), iterations)

@@ -11,6 +11,9 @@ from ...core.math import FLOAT32_EPS
 from ...core.types import vec6f
 from .kernels import _FUSED_INEQUALITY_BLOCK, _sync_threads
 from .projections import (
+    project_box_update as _project_box_update,
+)
+from .projections import (
     project_contact_normal_update as _project_contact_normal_update,
 )
 from .projections import (
@@ -134,6 +137,36 @@ def _sparse_delassus_gemv_rows(
 
 
 @wp.kernel
+def _map_bounded_constraints(
+    joint_wid: wp.array[int32],
+    joint_bid_B: wp.array[int32],
+    joint_bid_F: wp.array[int32],
+    joint_bounded_cts_offset: wp.array[int32],
+    problem_bcio: wp.array[int32],
+    problem_uio: wp.array[int32],
+    # Outputs:
+    inequality_bodies: wp.array[wp.vec2i],
+):
+    """Map every joint's bounded-multiplier rows into the unified inequality topology.
+
+    Friction-row topology is static, but ``inequality_bodies`` is reset every
+    step alongside the dynamic limit/contact mappings, so this must be relaunched
+    every step too rather than only once at solver finalization.
+    """
+    jid = wp.tid()
+    start = joint_bounded_cts_offset[jid]
+    end = joint_bounded_cts_offset[jid + 1]
+    if end <= start:
+        return
+    wid = joint_wid[jid]
+    bcio = problem_bcio[wid]
+    uio = problem_uio[wid]
+    pair = wp.vec2i(joint_bid_B[jid], joint_bid_F[jid])
+    for row in range(start, end):
+        inequality_bodies[uio + (row - bcio)] = pair
+
+
+@wp.kernel
 def _map_active_limits(
     limits_model_active: wp.array[int32],
     limits_wid: wp.array[int32],
@@ -141,6 +174,7 @@ def _map_active_limits(
     limits_bids: wp.array[wp.vec2i],
     problem_lio: wp.array[int32],
     problem_uio: wp.array[int32],
+    problem_nbc: wp.array[int32],
     limit_indices: wp.array[int32],
     inequality_bodies: wp.array[wp.vec2i],
 ):
@@ -150,7 +184,7 @@ def _map_active_limits(
         wid = limits_wid[limit_id]
         lid = limits_lid[limit_id]
         limit_indices[problem_lio[wid] + lid] = limit_id
-        inequality_bodies[problem_uio[wid] + lid] = limits_bids[limit_id]
+        inequality_bodies[problem_uio[wid] + problem_nbc[wid] + lid] = limits_bids[limit_id]
 
 
 @wp.kernel
@@ -159,6 +193,7 @@ def _map_active_contacts(
     contacts_wid: wp.array[int32],
     contacts_cid: wp.array[int32],
     contacts_bid_AB: wp.array[wp.vec2i],
+    problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_cio: wp.array[int32],
     problem_uio: wp.array[int32],
@@ -171,7 +206,7 @@ def _map_active_contacts(
         wid = contacts_wid[contact_id]
         cid = contacts_cid[contact_id]
         contact_indices[problem_cio[wid] + cid] = contact_id
-        inequality_bodies[problem_uio[wid] + problem_nl[wid] + cid] = contacts_bid_AB[contact_id]
+        inequality_bodies[problem_uio[wid] + problem_nbc[wid] + problem_nl[wid] + cid] = contacts_bid_AB[contact_id]
 
 
 @wp.func_native("""
@@ -191,6 +226,7 @@ def _lowest_set_color(mask: wp.int64) -> wp.int32:
 
 @wp.kernel
 def _color_mapped_dvi_inequalities(
+    problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
     problem_uio: wp.array[int32],
@@ -208,7 +244,7 @@ def _color_mapped_dvi_inequalities(
     pass emits compact color ranges shared by dense and sparse PGS.
     """
     wid = wp.tid()
-    nu = problem_nl[wid] + problem_nc[wid]
+    nu = problem_nbc[wid] + problem_nl[wid] + problem_nc[wid]
     uio = problem_uio[wid]
     num_colors = int32(0)
     for uid in range(nu):
@@ -264,19 +300,25 @@ def _solve_dvi_sparse_inequalities_pgs(
     jacobian_nzb_values: wp.array[vec6f],
     bsm_row_start: wp.array[int32],
     bsm_col_start: wp.array[int32],
+    friction_nzb_offsets: wp.array[wp.vec2i],
     limit_nzb_offsets: wp.array[int32],
     contact_nzb_offsets: wp.array[int32],
     limit_indices: wp.array[int32],
     contact_indices: wp.array[int32],
+    problem_nbc: wp.array[int32],
     problem_nl: wp.array[int32],
     problem_nc: wp.array[int32],
+    problem_bcio: wp.array[int32],
     problem_lio: wp.array[int32],
     problem_cio: wp.array[int32],
     problem_uio: wp.array[int32],
+    problem_bcgo: wp.array[int32],
     problem_lcgo: wp.array[int32],
     problem_ccgo: wp.array[int32],
     problem_vio: wp.array[int32],
     problem_mu: wp.array[float32],
+    problem_bound_lower: wp.array[float32],
+    problem_bound_upper: wp.array[float32],
     problem_P: wp.array[float32],
     problem_v_f: wp.array[float32],
     problem_diag: wp.array[float32],
@@ -297,15 +339,18 @@ def _solve_dvi_sparse_inequalities_pgs(
     cfg = solver_config[wid]
     if block_iteration >= int32(0) and block_iteration >= cfg.max_alternating_iterations:
         return
+    nbc = problem_nbc[wid]
     nl = problem_nl[wid]
     nc = problem_nc[wid]
-    nu = nl + nc
+    nu = nbc + nl + nc
     if nu == 0:
         return
+    bcio = problem_bcio[wid]
     lio = problem_lio[wid]
     cio = problem_cio[wid]
     uio = problem_uio[wid]
     schedule_offset = uio + wid
+    bcgo = problem_bcgo[wid]
     lcgo = problem_lcgo[wid]
     ccgo = problem_ccgo[wid]
     vio = problem_vio[wid]
@@ -333,18 +378,70 @@ def _solve_dvi_sparse_inequalities_pgs(
                 color_slot = color_start + lane
                 while color_slot < color_end:
                     uid = inequality_ids_by_color[uio + color_slot]
+                    if uid < nbc:
+                        # Friction-row topology is static, so unlike limits/contacts it
+                        # always has valid Jacobian offsets and needs no active-set lookup.
+                        if phase == int32(0):
+                            bid = bcio + uid
+                            row = bcgo + uid
+                            vec_idx = vio + row
+                            offsets = friction_nzb_offsets[bid]
+                            bound_value = eta[row_start + row] * solution_lambdas[vec_idx]
+                            nzb_idx_f = offsets[0]
+                            if nzb_idx_f >= int32(0) and nzb_idx_f < matrix_end and bsm_nzb_coords[nzb_idx_f, 0] == row:
+                                block = bsm_nzb_values[nzb_idx_f]
+                                x_idx_base = col_start + bsm_nzb_coords[nzb_idx_f, 1]
+                                for j in range(6):
+                                    bound_value += block[j] * body_space[x_idx_base + j]
+                            else:
+                                nzb_idx_f = int32(-1)
+                            nzb_idx_b = offsets[1]
+                            if nzb_idx_b >= int32(0) and nzb_idx_b < matrix_end and bsm_nzb_coords[nzb_idx_b, 0] == row:
+                                block = bsm_nzb_values[nzb_idx_b]
+                                x_idx_base = col_start + bsm_nzb_coords[nzb_idx_b, 1]
+                                for j in range(6):
+                                    bound_value += block[j] * body_space[x_idx_base + j]
+                            else:
+                                nzb_idx_b = int32(-1)
+                            bound_value += problem_v_f[vec_idx]
+                            P_bound = problem_P[vec_idx]
+                            diagonal_raw = wp.abs(problem_diag[vec_idx]) * P_bound * P_bound
+                            lambda_bound_old = solution_lambdas[vec_idx]
+                            lambda_bound_new = _project_box_update(
+                                lambda_bound_old,
+                                bound_value,
+                                diagonal_raw,
+                                cfg.regularization,
+                                cfg.omega,
+                                problem_bound_lower[bid],
+                                problem_bound_upper[bid],
+                            )
+                            bound_delta_body = P_bound * (lambda_bound_new - lambda_bound_old)
+                            solution_lambdas[vec_idx] = lambda_bound_new
+                            if nzb_idx_f >= int32(0):
+                                x_idx_base = col_start + bsm_nzb_coords[nzb_idx_f, 1]
+                                jacobian_row = jacobian_nzb_values[nzb_idx_f]
+                                for j in range(6):
+                                    body_space[x_idx_base + j] += jacobian_row[j] * bound_delta_body
+                            if nzb_idx_b >= int32(0):
+                                x_idx_base = col_start + bsm_nzb_coords[nzb_idx_b, 1]
+                                jacobian_row = jacobian_nzb_values[nzb_idx_b]
+                                for j in range(6):
+                                    body_space[x_idx_base + j] += jacobian_row[j] * bound_delta_body
+                        color_slot += threads_per_world
+                        continue
                     # An inequality without mapped topology has no Jacobian offsets
                     # to read, so it is skipped rather than dereferenced.
                     mapped_id = int32(-1)
-                    if uid < nl:
-                        mapped_id = limit_indices[lio + uid]
+                    if uid < nbc + nl:
+                        mapped_id = limit_indices[lio + (uid - nbc)]
                     else:
-                        mapped_id = contact_indices[cio + uid - nl]
+                        mapped_id = contact_indices[cio + uid - nbc - nl]
                     if mapped_id >= int32(0):
-                        if uid < nl:
+                        if uid < nbc + nl:
                             if phase == int32(0):
                                 limit_id = mapped_id
-                                row = lcgo + uid
+                                row = lcgo + (uid - nbc)
                                 vec_idx = vio + row
                                 nzb_offset = limit_nzb_offsets[limit_id]
                                 limit_value = eta[row_start + row] * solution_lambdas[vec_idx]
@@ -376,7 +473,7 @@ def _solve_dvi_sparse_inequalities_pgs(
                                         for j in range(6):
                                             body_space[x_idx_base + j] += jacobian_row[j] * limit_delta_body
                         else:
-                            cid = uid - nl
+                            cid = uid - nbc - nl
                             row = ccgo + int32(3) * cid
                             vec_idx = vio + row
                             contact_id = mapped_id

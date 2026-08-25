@@ -202,6 +202,7 @@ class ViewerGL(ViewerBase):
         headless: bool = False,
         paused: bool = False,
         plot_history_size: int = 250,
+        num_frames: int | None = None,
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -214,11 +215,20 @@ class ViewerGL(ViewerBase):
             paused: Start the viewer in paused mode.
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
+            num_frames: Number of frames to render in headless mode before
+                :meth:`is_running` returns False. If None, headless rendering
+                is unbounded; if 0, no frames are rendered. Ignored in
+                windowed mode.
         """
         if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
             raise TypeError("plot_history_size must be an integer")
         if plot_history_size <= 0:
             raise ValueError("plot_history_size must be > 0")
+        if num_frames is not None:
+            if not isinstance(num_frames, int) or isinstance(num_frames, bool):
+                raise TypeError("num_frames must be an integer or None")
+            if num_frames < 0:
+                raise ValueError("num_frames must be >= 0")
 
         # Rolling buffers for log_scalar() time-series plots.
         self._scalar_buffers: dict[str, collections.deque] = {}
@@ -254,6 +264,12 @@ class ViewerGL(ViewerBase):
         self._paused = paused
         self._step_requested = False
         self._reset_callback: Callable[[], None] | None = None
+
+        # Headless has no window-close event, so a frame budget is the only
+        # termination signal available to is_running().
+        self._headless = headless
+        self.num_frames = num_frames
+        self._frame_count = 0
 
         self.renderer.register_key_press(self.on_key_press)
         self.renderer.register_key_release(self.on_key_release)
@@ -1702,6 +1718,7 @@ class ViewerGL(ViewerBase):
         whether an exit was requested and early-out before touching GL if so.
         """
         self._update()
+        self._frame_count += 1
 
     @override
     def apply_forces(self, state: nt.State):
@@ -1861,10 +1878,18 @@ class ViewerGL(ViewerBase):
         """
         Check if the viewer is still running.
 
+        In headless mode the viewer stops once ``num_frames`` is reached. In
+        windowed mode it keeps running until the user closes the window,
+        ignoring ``num_frames`` so the window does not disappear unexpectedly.
+
         Returns:
-            bool: True if the window is open, False if closed.
+            bool: True if the viewer should keep rendering, False otherwise.
         """
-        return not self.renderer.has_exit()
+        if self.renderer.has_exit():
+            return False
+        if self._headless and self.num_frames is not None:
+            return self._frame_count < self.num_frames
+        return True
 
     @override
     def is_paused(self) -> bool:

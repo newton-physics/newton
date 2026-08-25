@@ -240,7 +240,7 @@ class Example:
             margin=0.0,
             gap=0.01,
         )
-        points, quats = newton.utils.create_straight_cable_points_and_quaternions(
+        points, quats = newton.utils.rod_straight_points_and_quaternions(
             start=CABLE_CENTER - wp.vec3(0.5 * CABLE_LENGTH, 0.0, 0.0),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=CABLE_LENGTH,
