@@ -10,7 +10,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.controllers import ControllerJointImpedance, select_joints
+from newton._src.controllers.joint_selection import select_joints
+from newton.controllers import ControllerJointImpedance
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -499,11 +500,10 @@ class TestSelectJoints(unittest.TestCase):
         device = wp.get_device()
         builder, revolute_joints = _build_floating_base_fleet()
         model = builder.finalize(device=device)
-        selection = select_joints(model, joints=revolute_joints)
 
         ctrl = ControllerJointImpedance(
             model,
-            joint_selection=selection,
+            joints=revolute_joints,
             stiffness=_gains(3, 1.0, device),
             damping=_gains(3, 0.0, device),
             use_gravity_compensation=False,
@@ -513,14 +513,14 @@ class TestSelectJoints(unittest.TestCase):
         )
         ins, outs = ctrl.input(), ctrl.output()
         sim_f = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
-        outs.joint_f = sim_f[selection.qd_start]
+        outs.joint_f = sim_f[ctrl.qd_start]
         ins.joint_q_des = _flat([1.0, 1.0, 1.0], device)
         ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
         written = sim_f.numpy()
-        np.testing.assert_allclose(written[selection.qd_start.numpy()], [1.0, 1.0, 1.0], atol=1e-4)
+        np.testing.assert_allclose(written[ctrl.qd_start.numpy()], [1.0, 1.0, 1.0], atol=1e-4)
         # The free base's six DOFs must be untouched.
-        untouched = np.setdiff1d(np.arange(model.joint_dof_count), selection.qd_start.numpy())
+        untouched = np.setdiff1d(np.arange(model.joint_dof_count), ctrl.qd_start.numpy())
         np.testing.assert_allclose(written[untouched], 0.0, atol=1e-6)
 
 

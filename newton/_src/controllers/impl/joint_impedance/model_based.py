@@ -14,6 +14,7 @@ Gravity and Coriolis compensation use :func:`newton.eval_inverse_dynamics_passiv
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import numpy as np
@@ -25,7 +26,7 @@ from newton._src.sim.inverse_dynamics import eval_inverse_dynamics_passive
 from newton._src.sim.model import Model
 
 from ...controller import ControllerBase
-from ...joint_selection import JointSelection
+from ...joint_selection import select_joints
 from ...utils import _validate_array
 from ._common import _gather_mass_matrix_blocks_kernel, _read_port
 from .model_free import ControllerJointImpedanceModelFree
@@ -42,10 +43,16 @@ class ControllerJointImpedance(ControllerBase):
     ``model`` is borrowed, not owned — it is never written to, and changes to
     it are visible to the controller immediately.
 
-    **Joint selection.** Build ``joint_selection`` with
-    :func:`~newton.controllers.select_joints`. It locates each selected
-    joint's starting coordinate/DOF index in the model — one entry per joint,
-    not per DOF — and is not part of the control interface.
+    **Joint selection.** ``articulations`` and ``joints`` select the
+    controlled joints, following :ref:`label-matching`: each is a list of
+    model indices and/or label patterns (or a single pattern), matched
+    against :attr:`~newton.Model.articulation_label` and the leaf component
+    of :attr:`~newton.Model.joint_label` respectively. The constructor
+    resolves them to each selected joint's starting coordinate/DOF index in
+    the model — one entry per joint, not per DOF — and validates the result.
+    :attr:`q_start` and :attr:`qd_start` expose the resolved indices
+    afterward, e.g. to gather/scatter a compact port against a
+    simulation-sized array.
 
     **Ports.** Most arrays passed in and out are **compact**: one entry per
     controlled DOF — robot 0's DOFs first, then robot 1's — rather than one
@@ -54,7 +61,7 @@ class ControllerJointImpedance(ControllerBase):
     uncontrolled joints too. A compact port may be bound to a plain array, or to
     an indexed view of a simulation-sized array::
 
-        outputs.joint_f = control.joint_f[selection.qd_start]  # scatter to the sim
+        outputs.joint_f = control.joint_f[controller.qd_start]  # scatter to the sim
 
     Each articulation in ``model`` is one robot. Only joints spanning a single
     coordinate and a single DOF can be controlled, since the PD error term
@@ -85,9 +92,13 @@ class ControllerJointImpedance(ControllerBase):
         model: :class:`~newton.Model` whose articulations are the robots.
             Articulations may mix controlled single-DOF joints with
             uncontrolled joints of any type.
-        joint_selection: :class:`~newton.controllers.JointSelection` addressing
-            the controlled DOFs, grouped by robot. Typically
-            ``select_joints(model, ...)``.
+        articulations: Articulation indices or label patterns to control, as a
+            list or as a single pattern. ``None`` selects every articulation
+            in ``model``.
+        joints: Model joint indices or label patterns to control within the
+            selected articulations, as a list or as a single pattern. ``None``
+            selects every eligible joint (at least one coordinate and one
+            DOF) of each selected articulation.
         stiffness: Position-error gain Kp, shape [total_controlled_dofs]. Units
             depend on ``use_inertia_decoupling``: [1/s²] when enabled, since
             the PD term is then an acceleration premultiplied by M(q);
@@ -138,7 +149,8 @@ class ControllerJointImpedance(ControllerBase):
         self,
         model: Model,
         *,
-        joint_selection: JointSelection,
+        articulations: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
+        joints: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
         stiffness: wp.array[wp.float32] | None,
         damping: wp.array[wp.float32] | None,
         use_gravity_compensation: bool = True,
@@ -174,8 +186,7 @@ class ControllerJointImpedance(ControllerBase):
         self._coord_count = int(model.joint_coord_count)
         self._dof_count = int(model.joint_dof_count)
 
-        if not isinstance(joint_selection, JointSelection):
-            raise TypeError(f"joint_selection must be a JointSelection, got {type(joint_selection).__name__}.")
+        joint_selection = select_joints(model, articulations=articulations, joints=joints)
         joint_q_idx = joint_selection.q_start
         joint_qd_idx = joint_selection.qd_start
 
@@ -426,6 +437,24 @@ class ControllerJointImpedance(ControllerBase):
     def total_controlled_dofs(self) -> int:
         """Total controlled-DOF count across all robots, the length of every compact port."""
         return self._total_controlled_dofs
+
+    @property
+    def q_start(self) -> wp.array[wp.int32]:
+        """Model coordinate index of each controlled joint, shape [total_controlled_dofs].
+
+        Use to gather or scatter a compact port against a simulation-sized
+        coordinate array, e.g. ``model.joint_q[controller.q_start]``.
+        """
+        return self._q_idx
+
+    @property
+    def qd_start(self) -> wp.array[wp.int32]:
+        """Model DOF index of each controlled joint, shape [total_controlled_dofs].
+
+        Use to scatter a compact port into a simulation-sized array, e.g.
+        ``control.joint_f[controller.qd_start]``.
+        """
+        return self._qd_idx
 
     @property
     def device(self):

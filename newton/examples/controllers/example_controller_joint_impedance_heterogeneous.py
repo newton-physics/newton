@@ -31,7 +31,7 @@ import newton
 import newton.examples
 import newton.solvers
 from newton import JointTargetMode
-from newton.controllers import ControllerJointImpedance, select_joints
+from newton.controllers import ControllerJointImpedance
 
 # ---------------------------------------------------------------------------
 # Robot geometry
@@ -152,15 +152,12 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
 
         # ---- Impedance controller --------------------------------------------
-        # select_joints resolves every joint of both articulations into the
-        # matched coordinate/DOF index pair the controller needs. Here the two
-        # spaces coincide since all joints are 1-DOF. The controller reads its
-        # FK and dynamics terms from the same model the solver simulates.
-        selection = select_joints(self.model)
-
+        # articulations/joints default to every joint of both articulations.
+        # Here the coordinate and DOF spaces coincide since all joints are
+        # 1-DOF. The controller reads its FK and dynamics terms from the same
+        # model the solver simulates.
         self.controller = ControllerJointImpedance(
             self.model,
-            joint_selection=selection,
             stiffness=wp.array(KP, dtype=wp.float32, device=self.device),
             damping=wp.array(KD, dtype=wp.float32, device=self.device),
             use_gravity_compensation=True,
@@ -173,7 +170,7 @@ class Example:
         self._output = self.controller.output()
         # The controller's torque output is compact (one entry per controlled
         # DOF); an indexed view scatters it straight into the sim control buffer.
-        self._output.joint_f = self.control.joint_f[selection.qd_start]
+        self._output.joint_f = self.control.joint_f[self.controller.qd_start]
 
         # Bind live sim arrays before capture so the graph records the correct
         # buffer addresses. state_0 holds the current frame result after

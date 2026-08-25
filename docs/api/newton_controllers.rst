@@ -10,9 +10,6 @@ This module provides standalone controllers that compute signals
 for the robot to track. Each controller is a concrete
 subclass of :class:`ControllerBase`.
 
-:func:`select_joints` resolves which joints of a :class:`~newton.Model` a
-controller acts on, returning the :class:`JointSelection` index pair.
-
 .. experimental::
 
 .. py:module:: newton.controllers
@@ -27,12 +24,3 @@ controller acts on, returning the :class:`JointSelection` index pair.
    ControllerBase
    ControllerJointImpedance
    ControllerJointImpedanceModelFree
-   JointSelection
-
-.. rubric:: Functions
-
-.. autosummary::
-   :toctree: _generated
-   :signatures: long
-
-   select_joints

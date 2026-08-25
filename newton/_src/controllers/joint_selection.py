@@ -1,14 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-""":func:`select_joints` and its result type — a helper for computing the
-:class:`JointSelection` that :class:`~newton.controllers.ControllerJointImpedance`
-requires.
+""":func:`select_joints` and its result type — an internal helper used by
+:class:`~newton.controllers.ControllerJointImpedance` to resolve its
+``articulations``/``joints`` constructor arguments into index arrays.
 
 :func:`select_joints` is a pure helper: it does not construct a controller
 itself. It only resolves a set of joints against a :class:`~newton.Model` into
-the :class:`JointSelection` the controller's ``joint_selection`` argument
-expects.
+the :class:`JointSelection` the controller builds internally.
 """
 
 from __future__ import annotations
@@ -114,27 +113,13 @@ def select_joints(
     Returns:
         The matched starting coordinate/DOF index pair for each selected
         joint, in the grouped-by-robot layout
-        :class:`~newton.controllers.ControllerJointImpedance` expects for its
-        ``joint_selection`` argument.
+        :class:`~newton.controllers.ControllerJointImpedance` builds
+        internally from its ``articulations``/``joints`` arguments.
 
     Raises:
         ValueError: If the model has no articulations, an entry of
             ``articulations`` or ``joints`` matches nothing, or the selection
             resolves to zero joints.
-
-    Example:
-        .. code-block:: python
-
-            selection = select_joints(model, joints=["shoulder", "elbow", "wrist"])
-            controller = ControllerJointImpedance(
-                model,
-                joint_selection=selection,
-                stiffness=kp,
-                damping=kd,
-            )
-            outputs = controller.output()
-            # Scatter the compact torque command straight into the simulation.
-            outputs.joint_f = control.joint_f[selection.qd_start]
     """
     if model.articulation_count == 0:
         raise ValueError("model contains no articulations; nothing can be controlled.")
