@@ -12,8 +12,7 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino._src.core.joints import JOINT_TAUMAX
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-
-newton.use_coord_layout_targets = True
+from newton.tests.kamino import setup_tests, test_context
 
 _BODY_MASS = 1.0
 _BODY_INERTIA = 1.0
@@ -220,6 +219,11 @@ def _step(
 
 
 class TestSolverKaminoJointEffortLimit(unittest.TestCase):
+    def setUp(self):
+        """Initialize the shared public Kamino test context."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+
     def test_pack_separate_axes_for_each_constraint_type(self):
         """Pack dynamic, effort, and friction rows in ascending local-axis order."""
         solver = SolverKamino(_build_three_axis_constraint_topology(), _config("padmm"))
@@ -450,4 +454,5 @@ class TestSolverKaminoJointEffortLimit(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    setup_tests()
     unittest.main(verbosity=2)
