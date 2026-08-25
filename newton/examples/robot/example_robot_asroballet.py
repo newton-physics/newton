@@ -31,7 +31,6 @@ import newton.examples
 import newton.utils
 from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 
-ASROBALLET_ASSET_REF = "91bdc2ddda3a51118bf400371bc945c499203828"
 ASROBALLET_SCENE_PATH = Path("mjcf") / "scene_floating_ball.xml"
 ASROBALLET_VIRTUAL_BALL_JOINT_SCENE_PATH = Path("mjcf") / "scene.xml"
 ASROBALLET_VELOCITY_POLICY_PATH = Path("rl_policies") / "velocity_tracking.onnx"
@@ -53,10 +52,7 @@ MESH_MAX_HULL_VERTICES = 1024
 
 def download_asroballet_assets() -> Path:
     """Download the asRoBallet model and policies at their pinned revision."""
-    return newton.utils.download_asset(
-        "asroballet",
-        ref=ASROBALLET_ASSET_REF,
-    )
+    return newton.utils.download_asset("asroballet")
 
 
 def resolve_asroballet_model_path(asset_root: Path, virtual_ball_joint: bool) -> str:
