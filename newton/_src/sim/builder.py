@@ -10433,27 +10433,33 @@ class ModelBuilder:
             ValueError: If any validation check fails.
         """
         if self.joint_count > 0:
-            articulation_children = {}
-            body_articulations = {}
+            articulation_to_child_bodies = {}
+            child_body_to_articulations = {}
             for joint_idx, articulation_idx in enumerate(self.joint_articulation):
-                if articulation_idx >= 0:
-                    child = self.joint_child[joint_idx]
-                    articulation_children.setdefault(articulation_idx, set()).add(child)
-                    body_articulations.setdefault(child, set()).add(articulation_idx)
+                if articulation_idx < 0:
+                    continue
+
+                child = self.joint_child[joint_idx]
+                if articulation_idx not in articulation_to_child_bodies:
+                    articulation_to_child_bodies[articulation_idx] = set()
+                articulation_to_child_bodies[articulation_idx].add(child)
+                if child not in child_body_to_articulations:
+                    child_body_to_articulations[child] = set()
+                child_body_to_articulations[child].add(articulation_idx)
 
             for joint_idx, articulation_idx in enumerate(self.joint_articulation):
                 if articulation_idx < 0:
                     continue
 
                 parent = self.joint_parent[joint_idx]
-                if parent == -1 or parent in articulation_children[articulation_idx]:
+                if parent == -1 or parent in articulation_to_child_bodies[articulation_idx]:
                     continue
 
                 # Let structural validation report malformed body references.
                 if parent < -1 or parent >= self.body_count:
                     continue
 
-                parent_articulations = body_articulations.get(parent)
+                parent_articulations = child_body_to_articulations.get(parent)
                 if not parent_articulations:
                     continue
 

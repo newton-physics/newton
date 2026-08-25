@@ -32,7 +32,13 @@ class TestCustomAttributes(unittest.TestCase):
         self.device = wp.get_device()
 
     def _add_test_robot(self, builder: ModelBuilder, add_articulation: bool = True) -> dict[str, int]:
-        """Build a simple 2-bar linkage robot without custom attributes."""
+        """Build a simple 2-bar linkage robot without custom attributes.
+
+        Args:
+            builder: Model builder that receives the robot.
+            add_articulation: Whether to register the fixture joints in an articulation. If False, the joints remain
+                unregistered for later composition.
+        """
         base = builder.add_link(xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()), mass=1.0)
         builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
 

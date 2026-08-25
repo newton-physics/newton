@@ -882,7 +882,7 @@ USD import preserves joints outside authored articulations without emitting an a
 
 **Validation and finalization**
 
-By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` for non-root orphan joints. Loop-closing joints and standalone world-root joints pass this check. To proceed with another orphan topology, skip this validation explicitly:
+By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` for joints that connect separate articulations and for non-root orphan joints. Loop-closing joints and standalone world-root joints pass this check. To proceed with either unsupported topology, set ``skip_validation_joints=True`` explicitly:
 
 .. testsetup:: articulation-orphan-joints
 
