@@ -609,3 +609,35 @@ add_function_test(
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
+    """Per-world label prefixes on the batched replication path."""
+
+    @staticmethod
+    def _source(root: str = "") -> ModelBuilder:
+        """A two-link prototype whose labels are relative to ``root`` (empty names the root)."""
+        builder = ModelBuilder()
+        body = builder.add_link(xform=wp.transform(), label=root)
+        builder.add_shape_box(body=body, label=f"{root}/box" if root else "box")
+        return builder
+
+    def test_each_world_gets_its_own_prefix(self):
+        """Each replicated world's labels are prefixed with its own entry from label_prefixes."""
+        scene = ModelBuilder()
+        prefixes = [f"/World/envs/env_{index}/Robot" for index in range(3)]
+        scene.replicate(self._source(), 3, label_prefixes=prefixes)
+
+        self.assertEqual(scene.shape_label, [f"{prefix}/box" for prefix in prefixes])
+
+    def test_a_none_prefix_leaves_that_world_alone(self):
+        """A None entry in label_prefixes copies that world's labels unprefixed."""
+        scene = ModelBuilder()
+        scene.replicate(self._source("root"), 2, label_prefixes=["left", None])
+
+        self.assertEqual(scene.shape_label, ["left/root/box", "root/box"])
+
+    def test_prefix_count_must_match_world_count(self):
+        """label_prefixes must have exactly one entry per replicated world."""
+        with self.assertRaises(ValueError):
+            ModelBuilder().replicate(self._source("root"), 2, label_prefixes=["only-one"])
