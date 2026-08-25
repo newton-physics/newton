@@ -682,7 +682,35 @@ class RenderContext:
 
         for shape in model.shape_source:
             if isinstance(shape, Mesh):
-                texture_data_ids.append(_texture_id(shape.texture, shape.texture_hash))
+                if shape.texture is not None and load_textures:
+                    if shape.texture_hash not in texture_hashes:
+                        pixels = load_texture(shape.texture)
+                        if pixels is None:
+                            raise ValueError(f"Failed to load texture: {shape.texture}")
+
+                        # Normalize texture to ensure a consistent channel layout and dtype
+                        pixels = normalize_texture(pixels, require_channels=True)
+                        if pixels.dtype != np.uint8:
+                            pixels = pixels.astype(np.uint8, copy=False)
+
+                        texture_hashes[shape.texture_hash] = len(self.__texture_data)
+
+                        data = TextureData()
+                        data.texture = wp.Texture2D(
+                            pixels,
+                            filter_mode=wp.TextureFilterMode.LINEAR,
+                            address_mode=wp.TextureAddressMode.WRAP,
+                            normalized_coords=True,
+                            dtype=wp.uint8,
+                            num_channels=4,
+                            device=self.device,
+                        )
+                        data.repeat = wp.vec2f(1.0, 1.0)
+                        self.__texture_data.append(data)
+
+                    texture_data_ids.append(texture_hashes[shape.texture_hash])
+                else:
+                    texture_data_ids.append(-1)
 
                 if shape.uvs is not None or shape.normals is not None:
                     if shape not in mesh_hashes:
