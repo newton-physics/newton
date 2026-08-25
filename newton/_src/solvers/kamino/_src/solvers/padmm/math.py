@@ -12,6 +12,7 @@ import warp as wp
 ###
 
 __all__ = [
+    "compute_box_complementarity_residual",
     "compute_cwise_vec_div",
     "compute_cwise_vec_mul",
     "compute_desaxce_corrections",
@@ -102,6 +103,21 @@ def project_to_coulomb_dual_cone(x: wp.vec3f, mu: wp.float32) -> wp.vec3f:
         y[1] = yts * x[1]
         y[2] = mu * ys
     return y
+
+
+@wp.func
+def compute_box_complementarity_residual(
+    lambda_value: wp.float32,
+    velocity: wp.float32,
+    lower: wp.float32,
+    upper: wp.float32,
+) -> wp.float32:
+    """Compute directional complementarity for a box-constrained multiplier.
+
+    Positive velocity complements the lower face and negative velocity
+    complements the upper face.
+    """
+    return (lambda_value - lower) * wp.max(velocity, 0.0) + (upper - lambda_value) * wp.max(-velocity, 0.0)
 
 
 ###
@@ -370,35 +386,48 @@ def compute_desaxce_corrections(
 
 @wp.func
 def compute_ncp_primal_residual(
+    nbc: wp.int32,
     nl: wp.int32,
     nc: wp.int32,
     vio: wp.int32,
+    bcio: wp.int32,
+    bcgo: wp.int32,
     lcgo: wp.int32,
     ccgo: wp.int32,
     cio: wp.int32,
     mu: wp.array[wp.float32],
+    bound_lower: wp.array[wp.float32],
+    bound_upper: wp.array[wp.float32],
+    P: wp.array[wp.float32],
     lambdas: wp.array[wp.float32],
 ) -> tuple[wp.float32, wp.int32]:
     """
-    Computes the NCP primal residual as: `r_p := || lambda - proj_K(lambda) ||_inf`, where:
+    Computes the NCP primal residual as: `r_p := || lambda - proj_C(lambda) ||_inf`, where:
     - `lambda` is the vector of constraint reactions (i.e. impulses)
-    - `proj_K()` is the projection operator onto the cone `K`
-    - `K` is the total cone defined by the unilateral constraints such as limits and contacts
+    - `proj_C()` is the projection operator onto the feasible set `C`
+    - `C` is the product of bounded-multiplier boxes, unilateral limit cones, and Coulomb friction cones
     - `|| . ||_inf` is the infinity norm (i.e. maximum absolute value of the vector components)
 
     Notes:
-    - The cone for joint constraints is all of `R^njc`, so projection is a no-op.
+    - The cone for bilateral joint constraints is all of `R^njc`, so projection is a no-op.
+    - For bounded-multiplier constraints, the set is the box `C_b := { lambda | lower <= lambda <= upper }`
     - For limit constraints, the cone is defined as `K_l := { lambda | lambda >= 0 }`
     - For contact constraints, the cone is defined as `K_c := { lambda | || lambda ||_2 <= mu * || vn ||_2 }`
 
     Args:
+        nbc: The number of active bounded-multiplier constraints.
         nl: The number of active limit constraints.
         nc: The number of active contact constraints.
         vio: The vector index offset (i.e. start index) for the constraints.
+        bcio: The bounded-multiplier index offset (i.e. start index).
+        bcgo: The bounded-multiplier constraint group offset (i.e. start index).
         lcgo: The limit constraint group offset (i.e. start index).
         ccgo: The contact constraint group offset (i.e. start index).
         cio: The contact index offset (i.e. start index) for the contacts.
         mu: The array of friction coefficients for each contact.
+        bound_lower: The lower bounds in preconditioned coordinates.
+        bound_upper: The upper bounds in preconditioned coordinates.
+        P: The dual-problem diagonal preconditioner.
         lambdas: The array of constraint reactions (i.e. impulses).
 
     Returns:
@@ -409,7 +438,20 @@ def compute_ncp_primal_residual(
     r_ncp_p = float(0.0)
     r_ncp_p_argmax = wp.int32(-1)
 
-    # NOTE: We skip the joint constraint reactions are not bounded, the cone is all of R^njc
+    # NOTE: We skip the bilateral joint constraint, as their reactions are not bounded.
+
+    for bid in range(nbc):
+        # Bounds are stored in preconditioned coordinates, while the residual uses physical reactions.
+        bcio_b = bcio + bid
+        bcio_v = vio + bcgo + bid
+        lower = P[bcio_v] * bound_lower[bcio_b]
+        upper = P[bcio_v] * bound_upper[bcio_b]
+        # Compute the primal residual for the bounded-multiplier constraints
+        lambda_b = lambdas[bcio_v]
+        r_b = wp.abs(lambda_b - wp.clamp(lambda_b, lower, upper))
+        r_ncp_p = wp.max(r_ncp_p, r_b)
+        if r_ncp_p == r_b:
+            r_ncp_p_argmax = bid
 
     for lid in range(nl):
         # Compute the limit constraint index offset
@@ -457,16 +499,21 @@ def compute_ncp_dual_residual(
     - `v_plus` is the post-event constraint-space velocities
     - `s` is the De Saxce correction vector
     - `proj_K^*()` is the projection operator onto the dual cone `K^*`
-    - `K^*` is the dual of the total cone defined by the unilateral constraints such as limits and contacts
+    - `K^*` is the dual of the total cone defined by unilateral limit and contact constraints
     - `|| . ||_inf` is the infinity norm (i.e. maximum absolute value of the vector components)
 
     Notes:
     - The dual cone for joint constraints is the origin point x=0.
     - For limit constraints, the cone is defined as `K_l := { lambda | lambda >= 0 }`
     - For contact constraints, the cone is defined as `K_c := { lambda | || lambda ||_2 <= mu * || vn ||_2 }`
+    - Bounded-multiplier constraints contribute no term. Their box is bounded on both sides, so its
+      recession cone is the origin and the admissible set for `v_aug` is all of `R`. Box optimality is
+      certified instead by the primal and complementarity residuals, which together are equivalent to
+      the box KKT conditions: see :func:`compute_ncp_primal_residual` and
+      :func:`compute_box_complementarity_residual`.
 
     Args:
-        njc: The number of joint constraints.
+        njc: The number of bilateral joint constraints.
         nl: The number of active limit constraints.
         nc: The number of active contact constraints.
         vio: The vector index offset (i.e. start index) for the constraints.
@@ -528,28 +575,39 @@ def compute_ncp_dual_residual(
 
 @wp.func
 def compute_ncp_complementarity_residual(
+    nbc: wp.int32,
     nl: wp.int32,
     nc: wp.int32,
     vio: wp.int32,
+    bcio: wp.int32,
+    bcgo: wp.int32,
     lcgo: wp.int32,
     ccgo: wp.int32,
+    bound_lower: wp.array[wp.float32],
+    bound_upper: wp.array[wp.float32],
+    P: wp.array[wp.float32],
     v_aug: wp.array[wp.float32],
     lambdas: wp.array[wp.float32],
 ) -> tuple[wp.float32, wp.int32]:
     """
-    Computes the NCP complementarity residual as `r_c := || lambda.dot(v_plus + s) ||_inf`
+    Computes the generalized NCP complementarity residual.
 
-    Satisfaction of the complementarity condition `lambda _|_ (v_plus + s))` is measured
-    using the per-constraint entity inner product, i.e. per limit and per contact. Thus,
-    for each limit constraint `k`, we compute `v_k * lambda_k` and for each contact
-    constraint `k`, we compute `v_k.dot(lambda_k)`.
+    For each bounded multiplier, directional products measure complementarity
+    with the lower and upper box faces. For each limit, the residual is
+    `v_k * lambda_k`, and for each contact it is `v_k.dot(lambda_k)`.
 
     Args:
+        nbc: The number of active bounded-multiplier constraints.
         nl: The number of active limit constraints.
         nc: The number of active contact constraints.
         vio: The vector index offset (i.e. start index) for the constraints.
+        bcio: The bounded-multiplier index offset (i.e. start index).
+        bcgo: The bounded-multiplier constraint group offset (i.e. start index).
         lcgo: The limit constraint group offset (i.e. start index).
         ccgo: The contact constraint group offset (i.e. start index).
+        bound_lower: The lower bounds in preconditioned coordinates.
+        bound_upper: The upper bounds in preconditioned coordinates.
+        P: The dual-problem diagonal preconditioner.
         v_aug: The array of augmented constraint velocities.
         lambdas: The array of constraint reactions (i.e. impulses).
 
@@ -560,6 +618,16 @@ def compute_ncp_complementarity_residual(
     # Initialize the complementarity residual
     r_ncp_c = float(0.0)
     r_ncp_c_argmax = wp.int32(-1)
+
+    for bid in range(nbc):
+        bcio_b = bcio + bid
+        bcio_v = vio + bcgo + bid
+        lower = P[bcio_v] * bound_lower[bcio_b]
+        upper = P[bcio_v] * bound_upper[bcio_b]
+        r_b = wp.abs(compute_box_complementarity_residual(lambdas[bcio_v], v_aug[bcio_v], lower, upper))
+        r_ncp_c = wp.max(r_ncp_c, r_b)
+        if r_ncp_c == r_b:
+            r_ncp_c_argmax = bid
 
     for lid in range(nl):
         # Compute the limit constraint index offset
@@ -590,33 +658,50 @@ def compute_ncp_complementarity_residual(
 @wp.func
 def compute_ncp_natural_map_residual(
     njc: wp.int32,
+    nbc: wp.int32,
     nl: wp.int32,
     nc: wp.int32,
     vio: wp.int32,
+    bcio: wp.int32,
+    bcgo: wp.int32,
     lcgo: wp.int32,
     ccgo: wp.int32,
     cio: wp.int32,
     mu: wp.array[wp.float32],
+    bound_lower: wp.array[wp.float32],
+    bound_upper: wp.array[wp.float32],
+    P: wp.array[wp.float32],
     v_aug: wp.array[wp.float32],
     lambdas: wp.array[wp.float32],
 ) -> tuple[wp.float32, wp.int32]:
     """
-    Computes the natural-map residuals as: `r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf`
+    Computes the natural-map residual as: `r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf`,
+    where `C` is the product of bounded-multiplier box constraints, unilateral limit cones, and
+    Coulomb friction cones.
 
     Notes:
-    - For joint constraints, the cone is all of `R^njc`, so the natural-map residual is `abs(v_aug)`.
+    - For bilateral joint constraints, the cone is all of `R^njc`, so the natural-map residual is `abs(v_aug)`.
+    - For bounded-multiplier constraints, the feasible set is the box
+      `C_b := { lambda | lower <= lambda <= upper }`, so the natural-map residual is
+      `abs(lambda - clamp(lambda - v_aug, lower, upper))`.
     - For limit constraints, the cone is defined as `K_l := { lambda | lambda >= 0 }`.
     - For contact constraints, the cone is defined as `K_c := { lambda | || lambda ||_2 <= mu * || vn ||_2 }`.
 
     Args:
-        njc: The number of joint constraints.
+        njc: The number of bilateral joint constraints.
+        nbc: The number of active bounded-multiplier constraints.
         nl: The number of active limit constraints.
         nc: The number of active contact constraints.
         vio: The vector index offset (i.e. start index) for the constraints.
+        bcio: The bounded-multiplier constraint index offset (i.e. start index).
+        bcgo: The bounded-multiplier constraint group offset (i.e. start index).
         lcgo: The limit constraint group offset (i.e. start index).
         ccgo: The contact constraint group offset (i.e. start index).
         cio: The contact index offset (i.e. start index) for the contacts.
         mu: The array of friction coefficients for each contact.
+        bound_lower: The lower bounds in preconditioned coordinates.
+        bound_upper: The upper bounds in preconditioned coordinates.
+        P: The dual-problem diagonal preconditioner.
         v_aug: The array of augmented constraint velocities.
         lambdas: The array of constraint reactions (i.e. impulses).
 
@@ -636,6 +721,18 @@ def compute_ncp_natural_map_residual(
         r_ncp_natmap = wp.max(r_ncp_natmap, r_j)
         if r_ncp_natmap == r_j:
             r_ncp_natmap_argmax = jid
+
+    for bid in range(nbc):
+        # Bounds are stored in preconditioned coordinates, while the residual uses physical reactions.
+        bcio_b = bcio + bid
+        bcio_v = vio + bcgo + bid
+        lower = P[bcio_v] * bound_lower[bcio_b]
+        upper = P[bcio_v] * bound_upper[bcio_b]
+        lambda_b = lambdas[bcio_v]
+        r_b = wp.abs(lambda_b - wp.clamp(lambda_b - v_aug[bcio_v], lower, upper))
+        r_ncp_natmap = wp.max(r_ncp_natmap, r_b)
+        if r_ncp_natmap == r_b:
+            r_ncp_natmap_argmax = bid
 
     for lid in range(nl):
         # Compute the limit constraint index offset

@@ -58,7 +58,7 @@ class StateKamino:
     - Wrenches (forces + torques) are denoted by ``w``
     - Constraint forces are denoted by ``lambda`` since they are effectively Lagrange multipliers
     - Subscripts ``_i`` denote body-indexed quantities, e.g. :attr:`q_i`, :attr:`u_i`, :attr:`w_i`.
-    - Subscripts ``_j`` denote joint-indexed quantities, e.g. :attr:`q_j`, :attr:`dq_j`, :attr:`lambda_j`.
+    - Subscripts ``_j`` denote joint-indexed quantities, e.g. :attr:`q_j`, :attr:`dq_j`, :attr:`lambda_kin_j`.
     """
 
     ###
@@ -111,10 +111,22 @@ class StateKamino:
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
-    lambda_j: wp.array[wp.float32] | None = None
+    lambda_kin_j: wp.array[wp.float32] | None = None
     """
-    Array of generalized joint constraint forces.
-    Shape of ``(sum_of_num_joint_cts,)``.
+    Array of generalized joint kinematic constraint forces [N or N·m].
+    Shape of ``(sum_of_num_kinematic_joint_cts,)``.
+    """
+
+    lambda_dyn_j: wp.array[wp.float32] | None = None
+    """
+    Array of generalized joint dynamic constraint forces [N or N·m].
+    Shape of ``(sum_of_num_dynamic_joint_cts,)``.
+    """
+
+    lambda_f_j: wp.array[wp.float32] | None = None
+    """
+    Array of generalized joint Coulomb friction constraint forces [N or N·m].
+    Shape of ``(sum_of_num_friction_joint_cts,)``.
     """
 
     ###
@@ -156,7 +168,9 @@ class StateKamino:
         wp.copy(self.q_j, other.q_j)
         wp.copy(self.q_j_p, other.q_j_p)
         wp.copy(self.dq_j, other.dq_j)
-        wp.copy(self.lambda_j, other.lambda_j)
+        wp.copy(self.lambda_kin_j, other.lambda_kin_j)
+        wp.copy(self.lambda_dyn_j, other.lambda_dyn_j)
+        wp.copy(self.lambda_f_j, other.lambda_f_j)
 
     def convert_to_body_com_state(
         self,
@@ -277,16 +291,38 @@ class StateKamino:
 
         # If the state contains the Kamino-specific `joint_lambdas` custom attribute,
         # capture a reference to it; otherwise, create a new array for it.
-        is_joint_lambdas_valid = (
+        # The attribute has JOINT_CONSTRAINT frequency and should therefore correspond to joint kinematic constraints.
+        if (
             hasattr(state, "joint_lambdas")
             and state.joint_lambdas is not None
-            and state.joint_lambdas.shape == (size.sum_of_num_joint_cts,)
-        )
-        if is_joint_lambdas_valid:
-            joint_lambdas = state.joint_lambdas
+            and state.joint_lambdas.shape == (size.sum_of_num_kinematic_joint_cts,)
+        ):
+            lambda_kin_j = state.joint_lambdas
         else:
-            joint_lambdas = wp.zeros(shape=(size.sum_of_num_joint_cts,), dtype=wp.float32, device=device)
-            state.joint_lambdas = joint_lambdas
+            lambda_kin_j = wp.zeros(shape=(size.sum_of_num_kinematic_joint_cts,), dtype=wp.float32, device=device)
+            state.joint_lambdas = lambda_kin_j
+
+        # Retrieve or allocate multipliers for joint dynamic constraints
+        if (
+            hasattr(state, "joint_lambdas_dyn")
+            and state.joint_lambdas_dyn is not None
+            and state.joint_lambdas_dyn.shape == (size.sum_of_num_dynamic_joint_cts,)
+        ):
+            lambda_dyn_j = state.joint_lambdas_dyn
+        else:
+            lambda_dyn_j = wp.zeros(shape=(size.sum_of_num_dynamic_joint_cts,), dtype=wp.float32, device=device)
+            state.joint_lambdas_dyn = lambda_dyn_j
+
+        # Retrieve or allocate multipliers for joint friction constraints
+        if (
+            hasattr(state, "joint_lambdas_f")
+            and state.joint_lambdas_f is not None
+            and state.joint_lambdas_f.shape == (size.sum_of_num_friction_joint_cts,)
+        ):
+            lambda_f_j = state.joint_lambdas_f
+        else:
+            lambda_f_j = wp.zeros(shape=(size.sum_of_num_friction_joint_cts,), dtype=wp.float32, device=device)
+            state.joint_lambdas_f = lambda_f_j
 
         # Optionally initialize the `joint_q_prev` array to match the current `joint_q`
         if initialize_state_prev:
@@ -301,7 +337,9 @@ class StateKamino:
             q_j=state.joint_q,
             q_j_p=joint_q_prev,
             dq_j=state.joint_qd,
-            lambda_j=joint_lambdas,
+            lambda_kin_j=lambda_kin_j,
+            lambda_dyn_j=lambda_dyn_j,
+            lambda_f_j=lambda_f_j,
         )
 
         # Optionally convert body poses to CoM frame
@@ -356,7 +394,9 @@ class StateKamino:
         # Add Kamino-specific custom attributes to the newton.State object
         state_newton.body_f_total = state.w_i.view(dtype=wp.spatial_vectorf)
         state_newton.joint_q_prev = state.q_j_p
-        state_newton.joint_lambdas = state.lambda_j
+        state_newton.joint_lambdas = state.lambda_kin_j
+        state_newton.joint_lambdas_dyn = state.lambda_dyn_j
+        state_newton.joint_lambdas_f = state.lambda_f_j
 
         # Return the new newton.State object
         return state_newton
