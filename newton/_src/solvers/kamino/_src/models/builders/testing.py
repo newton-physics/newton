@@ -149,6 +149,7 @@ def build_unary_revolute_joint_test(
     ground: bool = True,
     dynamic: bool = False,
     implicit_pd: bool = False,
+    friction: float = 0.0,
     world_index: int = 0,
 ) -> ModelBuilderKamino:
     """
@@ -168,6 +169,7 @@ def build_unary_revolute_joint_test(
         ground: Whether to include a ground plane in the world.
         dynamic: Whether to enable dynamic properties for the joint.
         implicit_pd: Whether to enable implicit PD control for the joint.
+        friction: The Coulomb friction torque limit on the joint.
         world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
@@ -202,6 +204,7 @@ def build_unary_revolute_joint_test(
         q_j_max=[0.25 * math.pi] if limits else None,
         a_j=0.1 if dynamic else None,
         b_j=0.01 if dynamic else None,
+        f_j=friction,
         k_p_j=10.0 if implicit_pd else None,
         k_d_j=0.01 if implicit_pd else None,
         world_index=world_index,

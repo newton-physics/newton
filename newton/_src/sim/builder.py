@@ -2621,6 +2621,7 @@ class ModelBuilder:
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
         *,
         xforms: Sequence[Transform] | None = None,
+        label_prefixes: Sequence[str | None] | None = None,
         source_path_prefix: str | None = None,
         destination_path_prefixes: Sequence[str] | None = None,
     ):
@@ -2657,6 +2658,11 @@ class ModelBuilder:
                 Defaults to (0.0, 0.0, 0.0).
             xforms: Optional sequence of transforms, one per replicated world.
                 When provided, its length must equal ``world_count``.
+            label_prefixes: Optional prefix prepended to all labels from the source builder,
+                one per replicated world, applied as :meth:`add_builder` applies its
+                ``label_prefix``. Labels are joined with ``/``. A ``None`` entry leaves that
+                world's labels as they are in ``builder``; an empty source label remains
+                unlabeled.
             source_path_prefix: Source namespace to replace in imported deformable
                 visual paths. Must be passed with ``destination_path_prefixes``.
             destination_path_prefixes: Destination namespace for each replicated
@@ -2675,6 +2681,10 @@ class ModelBuilder:
             xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
         elif len(xforms) != world_count:
             raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
+        if label_prefixes is None:
+            label_prefixes = [None] * world_count
+        elif len(label_prefixes) != world_count:
+            raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
 
         if (source_path_prefix is None) != (destination_path_prefixes is None):
             raise ValueError("source_path_prefix and destination_path_prefixes must be passed together")
@@ -2690,7 +2700,7 @@ class ModelBuilder:
 
         base_world = self.world_count
         worlds = list(range(base_world, base_world + world_count))
-        self._merge_builder_copies(builder, worlds, xforms, [None] * world_count, path_prefixes)
+        self._merge_builder_copies(builder, worlds, xforms, label_prefixes, path_prefixes)
 
         self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
         self.world_count += world_count
@@ -2968,7 +2978,8 @@ class ModelBuilder:
             elif attr.endswith("_label"):
                 for label_prefix in label_prefixes:
                     if label_prefix:
-                        destination.extend(f"{label_prefix}/{label}" if label else label for label in source)
+                        rooted = label_prefix + "/"
+                        destination.extend([rooted + label if label else label for label in source])
                     else:
                         destination.extend(source)
             elif spec.references in {Model.AttributeFrequency.WORLD, "world"}:

@@ -66,7 +66,6 @@ from ..utils.heightfield import HeightfieldData, get_triangle_shape_from_heightf
 from .collision_core import (
     create_compute_gjk_mpr_contacts,
     get_triangle_shape_from_mesh,
-    post_process_triangle_contact,
 )
 from .contact_data import ContactData, compute_contact_approach_speed
 from .contact_reduction import (
@@ -80,7 +79,12 @@ from .contact_reduction import (
     get_spatial_direction_2d,
     project_point_to_plane,
 )
-from .support_function import GeoTypeEx, extract_shape_data
+from .support_function import (
+    GeoTypeEx,
+    create_triangle_prism_penetration_refiner,
+    extract_shape_data,
+    support_map,
+)
 from .types import GeoType
 
 # Fixed beta threshold for contact reduction - small positive value to avoid flickering
@@ -2384,7 +2388,8 @@ def mesh_triangle_contacts_to_reducer_kernel(
 
         wp.static(
             create_compute_gjk_mpr_contacts(
-                write_contact_to_reducer, post_process_contact=post_process_triangle_contact
+                write_contact_to_reducer,
+                penetration_refiner=create_triangle_prism_penetration_refiner(support_map),
             )
         )(
             shape_data_a,

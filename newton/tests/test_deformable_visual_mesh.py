@@ -1219,6 +1219,31 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         source_mesh = template.finalize().deformable_visual_meshes[0]
         self.assertEqual(source_mesh.graphics_path, "/World/envs/env_0/Object/Skin")
 
+    def test_replicate_combines_label_and_visual_path_prefixes(self):
+        """Prefix model labels while replacing deformable visual USD namespaces."""
+        stage = self._stage()
+        self._add_volume_visual(stage, "/World/envs/env_0/Object")
+        template = self._import(stage)
+        marker = template.add_body(label="marker")
+        template.add_shape_box(marker, label="marker_box")
+
+        scene = newton.ModelBuilder()
+        scene.replicate(
+            template,
+            2,
+            label_prefixes=["left", "right"],
+            source_path_prefix="/World/envs/env_0",
+            destination_path_prefixes=["/World/envs/env_4", "/World/envs/env_9"],
+        )
+        model = scene.finalize()
+
+        self.assertEqual(scene.body_label, ["left/marker", "right/marker"])
+        self.assertEqual(scene.shape_label, ["left/marker_box", "right/marker_box"])
+        self.assertEqual(
+            [mesh.graphics_path for mesh in model.deformable_visual_meshes],
+            ["/World/envs/env_4/Object/Skin", "/World/envs/env_9/Object/Skin"],
+        )
+
     def test_replicate_rejects_visual_paths_outside_source_namespace(self):
         """Reject source-prefix lookalikes instead of retaining stale ownership paths."""
         stage = self._stage()

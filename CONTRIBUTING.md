@@ -8,9 +8,9 @@ Please refer to [the contribution guidelines](https://github.com/newton-physics/
 
 # Contributing to Newton
 
-Newton welcomes contributions from the community. In order to avoid any surprises and to increase the chance of contributions being merged, we encourage contributors to communicate their plans proactively by opening a GitHub Issue or starting a Discussion in the corresponding repository.
+Newton welcomes contributions from the community. In order to avoid any surprises and to increase the chance of contributions being merged, we encourage contributors to communicate their plans proactively by opening a GitHub Issue or starting a Discussion in the corresponding repository. Keep each pull request focused on a single feature or bug fix, and write clear, concise commit messages.
 
-Please also refer to the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html).
+Use the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html) for environment setup and development workflows. Code and public API changes must follow the [source code and public API guidelines](CODING_GUIDELINES.rst).
 
 There are several ways to participate in the Newton community:
 
@@ -37,7 +37,7 @@ There are several ways to participate in the Newton community:
 ## Fixing a Bug
 
 * Ensure that the bug report issue has no assignee yet. If the issue is assigned and there is no linked PR, you're welcome to ask about the current status by commenting on the issue.
-* Write a fix and regression unit test for the bug following the [style guide](https://newton-physics.github.io/newton/latest/guide/development.html#style-guide).
+* Write a fix and regression unit test for the bug following the [source code guidelines](CODING_GUIDELINES.rst).
 * Open a new pull request for the fix and test.
 * Write a description of the bug and the fix.
 * Mention related issues in the description: E.g. if the patch fixes Issue \#33, write Fixes \#33.
@@ -46,7 +46,7 @@ There are several ways to participate in the Newton community:
 
 ## Improving Performance
 
-* Write an optimization that improves an existing or new benchmark following the [style guide](https://newton-physics.github.io/newton/latest/guide/development.html#style-guide).
+* Write an optimization that improves an existing or new benchmark following the [source code guidelines](CODING_GUIDELINES.rst).
 * Open a new pull request with the optimization, and the benchmark, if applicable.
 * Write a description of the performance optimization.
 * Mention related issues in the description: E.g. if the optimization addresses Issue \#42, write Addresses \#42.
@@ -60,7 +60,7 @@ There are several ways to participate in the Newton community:
   * detail technical specifications;
   * and list changes or additions to the Newton API.
 * Wait for feedback from [Project Members](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#project-members) before proceeding.
-* Implement the feature following the [style guide](https://newton-physics.github.io/newton/latest/guide/development.html#style-guide).
+* Implement the feature following the [source code guidelines](CODING_GUIDELINES.rst).
 * Add comprehensive testing and benchmarking for the new feature.
 * Ensure all existing tests pass and that existing benchmarks do not regress.
 * Update or add documentation for the new feature.

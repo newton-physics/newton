@@ -3249,6 +3249,7 @@ def _rigid_contact_reset_lifecycle(test, device):
 
 
 def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
+    """Verify zero Dahl defaults and rejection of the removed compatibility option."""
     del device
 
     builder = newton.ModelBuilder()
@@ -3260,12 +3261,13 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.0)
     test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 0.0)
 
+    with test.assertRaisesRegex(TypeError, "dahl_defaults_enabled"):
+        newton.solvers.SolverVBD.register_custom_attributes(newton.ModelBuilder(), dahl_defaults_enabled=True)
+
 
 def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        newton.solvers.SolverVBD.register_custom_attributes(builder)
+    newton.solvers.SolverVBD.register_custom_attributes(builder)
 
     parent = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
     child = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))

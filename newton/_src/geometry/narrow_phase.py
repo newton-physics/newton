@@ -22,7 +22,6 @@ from ..geometry.collision_core import (
     mesh_vs_convex_midphase,
     post_process_axial_on_discrete_contact,
     post_process_minkowski_only,
-    post_process_triangle_contact,
 )
 from ..geometry.collision_primitive import (
     _collide_plane_capsule_contacts,
@@ -70,6 +69,7 @@ from ..geometry.simplex_solver import create_solve_closest_distance
 from ..geometry.support_function import (
     GenericShapeData,
     SupportMapDataProvider,
+    create_triangle_prism_penetration_refiner,
     extract_shape_data,
     support_map,
     support_map_lean,
@@ -1646,7 +1646,12 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
             gap_b = shape_gap[shape_b]
             gap_sum = gap_a + gap_b
 
-            wp.static(create_compute_gjk_mpr_contacts(writer_func, post_process_contact=post_process_triangle_contact))(
+            wp.static(
+                create_compute_gjk_mpr_contacts(
+                    writer_func,
+                    penetration_refiner=create_triangle_prism_penetration_refiner(support_map),
+                )
+            )(
                 shape_data_a,
                 shape_data_b,
                 quat_a,

@@ -38,7 +38,8 @@ class SizeKamino:
     Notes:
     - The sums are used for memory allocations.
     - The maximums are used to define 2D thread shapes: (num_worlds, max_of_max_XXX)
-    - Where `XXX` is the maximum number of limits, contacts, unilaterals, or constraints in any world.
+    - Where `XXX` is the maximum number of bounded-multiplier, limits, contacts, inequalities,
+      or constraints in any world.
     """
 
     num_worlds: int = 0
@@ -158,11 +159,11 @@ class SizeKamino:
     max_of_num_fk_actuated_joint_dofs: int = 0
     """The maximum number of actuated joint DoFs, for FK actuation types, in any world."""
 
-    sum_of_num_joint_cts: int = 0
-    """The total number of joint constraints in the model across all worlds."""
+    sum_of_num_bilateral_joint_cts: int = 0
+    """The total number of bilateral joint constraints in the model across all worlds."""
 
-    max_of_num_joint_cts: int = 0
-    """The maximum number of joint constraints in any world."""
+    max_of_num_bilateral_joint_cts: int = 0
+    """The maximum number of bilateral joint constraints in any world."""
 
     sum_of_num_dynamic_joint_cts: int = 0
     """The total number of dynamic joint constraints in the model across all worlds."""
@@ -176,6 +177,18 @@ class SizeKamino:
     max_of_num_kinematic_joint_cts: int = 0
     """The maximum number of kinematic joint constraints in any world."""
 
+    sum_of_num_bounded_joint_cts: int = 0
+    """The total number of bounded-multiplier constraint rows across all worlds."""
+
+    max_of_num_bounded_joint_cts: int = 0
+    """The maximum number of bounded-multiplier constraint rows in any world."""
+
+    sum_of_num_friction_joint_cts: int = 0
+    """The total number of Coulomb joint friction constraint rows across all worlds."""
+
+    max_of_num_friction_joint_cts: int = 0
+    """The maximum number of Coulomb joint friction constraint rows in any world."""
+
     sum_of_max_limits: int = 0
     """The total maximum number of limits allocated for the model across all worlds."""
 
@@ -188,11 +201,11 @@ class SizeKamino:
     max_of_max_contacts: int = 0
     """The maximum number of active contacts of any world."""
 
-    sum_of_max_unilaterals: int = 0
-    """The maximum number of active unilateral entities, i.e. joint-limits and contacts."""
+    sum_of_max_inequalities: int = 0
+    """The total maximum number of bounded-multiplier, limit, and contact entities across all worlds."""
 
-    max_of_max_unilaterals: int = 0
-    """The maximum number of active unilaterals of any world."""
+    max_of_max_inequalities: int = 0
+    """The maximum number of bounded-multiplier, limit, and contact entities in any world."""
 
     sum_of_max_total_cts: int = 0
     """The total maximum number of active constraints allocated for the model across all worlds."""
@@ -218,12 +231,14 @@ class SizeKamino:
             ("num_passive_joint_dofs", "sum_of_num_passive_joint_dofs", "max_of_num_passive_joint_dofs"),
             ("num_actuated_joint_coords", "sum_of_num_actuated_joint_coords", "max_of_num_actuated_joint_coords"),
             ("num_actuated_joint_dofs", "sum_of_num_actuated_joint_dofs", "max_of_num_actuated_joint_dofs"),
-            ("num_joint_cts", "sum_of_num_joint_cts", "max_of_num_joint_cts"),
+            ("num_bilateral_joint_cts", "sum_of_num_bilateral_joint_cts", "max_of_num_bilateral_joint_cts"),
             ("num_dynamic_joint_cts", "sum_of_num_dynamic_joint_cts", "max_of_num_dynamic_joint_cts"),
             ("num_kinematic_joint_cts", "sum_of_num_kinematic_joint_cts", "max_of_num_kinematic_joint_cts"),
+            ("num_bounded_joint_cts", "sum_of_num_bounded_joint_cts", "max_of_num_bounded_joint_cts"),
+            ("num_friction_joint_cts", "sum_of_num_friction_joint_cts", "max_of_num_friction_joint_cts"),
             ("max_limits", "sum_of_max_limits", "max_of_max_limits"),
             ("max_contacts", "sum_of_max_contacts", "max_of_max_contacts"),
-            ("max_unilaterals", "sum_of_max_unilaterals", "max_of_max_unilaterals"),
+            ("max_inequalities", "sum_of_max_inequalities", "max_of_max_inequalities"),
             ("max_total_cts", "sum_of_max_total_cts", "max_of_max_total_cts"),
         ]
 
