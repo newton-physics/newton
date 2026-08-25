@@ -5,4 +5,5 @@ DOF. An articulation may be left uncontrolled, in which case it occupies no slot
 and is masked out of the forward kinematics and dynamics evaluations. Mistakes
 that previously produced silently wrong torques now raise — a joint belonging to
 no articulation, the same DOF addressed twice, or a write to a port whose
-feature is disabled. `device` and `requires_grad` must match the model's.
+feature is disabled. `device` and `requires_grad` are no longer constructor
+arguments; both are taken from `model` directly.

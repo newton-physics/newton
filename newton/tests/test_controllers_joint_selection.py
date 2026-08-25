@@ -509,7 +509,6 @@ class TestSelectJoints(unittest.TestCase):
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
             use_inertia_decoupling=False,
-            device=device,
         )
         ins, outs = ctrl.input(), ctrl.output()
         sim_f = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)

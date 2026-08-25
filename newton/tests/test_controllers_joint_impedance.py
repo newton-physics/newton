@@ -714,7 +714,6 @@ class TestControllerJointImpedance(unittest.TestCase):
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
             use_inertia_decoupling=use_inertia,
-            device=device,
         )
 
     def _run(self, ctrl, *, q_sim, qd_sim, q_des, qd_des, device):
@@ -755,11 +754,15 @@ class TestControllerJointImpedance(unittest.TestCase):
         ctrl = self._make_ctrl(device)
         self.assertTrue(ctrl.is_graphable())
 
-    def test_device_none_resolves_to_default_device(self):
-        """Verify omitting ``device`` uses the default device rather than always raising."""
+    def test_device_and_requires_grad_derived_from_model(self):
+        """Verify device and requires_grad come from the model, with no constructor override.
+
+        Neither is a constructor argument: both would otherwise be redundant
+        sources of truth the caller must keep in sync with the model.
+        """
         device = wp.get_device()
-        model = _build_single_prismatic().finalize(device=device)
-        with wp.ScopedDevice(device):
+        model = _build_single_prismatic().finalize(device=device, requires_grad=True)
+        with wp.ScopedDevice("cpu" if device.is_cuda else device):
             ctrl = ControllerJointImpedance(
                 model,
                 stiffness=_gains(1, 1.0, device),
@@ -769,6 +772,7 @@ class TestControllerJointImpedance(unittest.TestCase):
                 use_inertia_decoupling=False,
             )
         self.assertEqual(ctrl.device, device)
+        self.assertTrue(ctrl.requires_grad)
 
     def test_ball_joint_uncontrolled_allowed(self):
         """Verify a multi-DOF ball joint is allowed as long as it is not controlled."""
@@ -785,7 +789,6 @@ class TestControllerJointImpedance(unittest.TestCase):
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
             use_inertia_decoupling=False,
-            device=device,
         )
         self.assertIsNotNone(ctrl)
         # Full-model state: identity ball-joint quaternion (x, y, z, w) followed
@@ -821,7 +824,6 @@ class TestControllerJointImpedance(unittest.TestCase):
                 damping=_gains(1, 0.0, device),
                 use_gravity_compensation=False,
                 use_coriolis_compensation=False,
-                device=device,
             )
 
     def test_fixed_joint_allowed(self):
@@ -853,7 +855,6 @@ class TestControllerJointImpedance(unittest.TestCase):
             damping=_gains(1, 1.0, device),
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
-            device=device,
         )
         self.assertIsNotNone(ctrl)
 
@@ -870,7 +871,6 @@ class TestControllerJointImpedance(unittest.TestCase):
                 use_gravity_compensation=False,
                 use_coriolis_compensation=False,
                 use_inertia_decoupling=False,
-                device=device,
             )
 
     def test_joint_outside_any_articulation_raises(self):
@@ -895,7 +895,6 @@ class TestControllerJointImpedance(unittest.TestCase):
                 use_gravity_compensation=False,
                 use_coriolis_compensation=False,
                 use_inertia_decoupling=False,
-                device=device,
             )
 
     def test_single_axis_d6_is_controllable(self):
@@ -917,7 +916,6 @@ class TestControllerJointImpedance(unittest.TestCase):
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
             use_inertia_decoupling=False,
-            device=device,
         )
         ins, outs = controller.input(), controller.output()
         ins.joint_q_des.assign(np.array([1.0], dtype=np.float32))
@@ -935,7 +933,6 @@ class TestControllerJointImpedance(unittest.TestCase):
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
             use_inertia_decoupling=False,
-            device=device,
         )
         tau = self._run(
             ctrl, q_sim=[0.0, 0.0, 0.0], qd_sim=[0.0, 0.0, 0.0], q_des=[1.0, 0.0, 2.0], qd_des=[0.0] * 3, device=device
@@ -967,7 +964,6 @@ class TestControllerJointImpedance(unittest.TestCase):
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
             use_inertia_decoupling=False,
-            device=device,
         )
         self.assertEqual(ctrl.total_controlled_dofs, 3)
         np.testing.assert_array_equal(ctrl._controlled_dofs_per_robot.numpy(), [2, 1])
@@ -1013,7 +1009,6 @@ class TestControllerJointImpedance(unittest.TestCase):
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
             use_inertia_decoupling=True,
-            device=device,
         )
         # The controlled robot is model robot 1 but packed robot 0.
         np.testing.assert_array_equal(ctrl._model_robot_index.numpy(), [1])
@@ -1034,7 +1029,6 @@ class TestControllerJointImpedance(unittest.TestCase):
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
             use_inertia_decoupling=False,
-            device=device,
         )
         # Only the controlled robot is carried: the uncontrolled one occupies no slot.
         np.testing.assert_array_equal(ctrl._controlled_dofs_per_robot.numpy(), [1])
@@ -1063,7 +1057,6 @@ class TestControllerJointImpedance(unittest.TestCase):
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
             use_inertia_decoupling=False,
-            device=device,
         )
         ins, outs = ctrl.input(), ctrl.output()
         # Non-identity ball-joint quaternion (x, y, z, w) at coordinate slot

@@ -163,7 +163,6 @@ class Example:
             use_gravity_compensation=True,
             use_coriolis_compensation=False,
             use_inertia_decoupling=True,
-            device=self.device,
         )
 
         self._input = self.controller.input()

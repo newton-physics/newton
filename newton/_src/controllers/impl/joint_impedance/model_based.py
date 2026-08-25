@@ -15,7 +15,6 @@ Gravity and Coriolis compensation use :func:`newton.eval_inverse_dynamics_passiv
 from __future__ import annotations
 
 import re
-from typing import Any
 
 import numpy as np
 import warp as wp
@@ -91,7 +90,9 @@ class ControllerJointImpedance(ControllerBase):
     Args:
         model: :class:`~newton.Model` whose articulations are the robots.
             Articulations may mix controlled single-DOF joints with
-            uncontrolled joints of any type.
+            uncontrolled joints of any type. The controller's device and
+            ``requires_grad`` are taken from ``model``; every other array
+            argument (``stiffness``, ``damping``) must match both.
         articulations: Articulation indices or label patterns to control, as a
             list or as a single pattern. ``None`` selects every articulation
             in ``model``.
@@ -112,9 +113,6 @@ class ControllerJointImpedance(ControllerBase):
         use_inertia_decoupling: Premultiply the PD term by M(q).
         has_qdd_feedforward: Accept a desired-acceleration feedforward via
             ``inputs.joint_qdd``.
-        device: Warp device. Must match ``model.device``.
-        requires_grad: Whether internal buffers need gradient support. Must
-            match ``model.requires_grad``.
     """
 
     class Inputs:
@@ -157,8 +155,6 @@ class ControllerJointImpedance(ControllerBase):
         use_coriolis_compensation: bool = True,
         use_inertia_decoupling: bool = True,
         has_qdd_feedforward: bool = False,
-        device: Any = None,
-        requires_grad: bool = False,
     ):
         if not isinstance(model, Model):
             raise TypeError(f"model must be a newton.Model, got {type(model).__name__}.")
@@ -166,13 +162,8 @@ class ControllerJointImpedance(ControllerBase):
         if model_robot_count < 1:
             raise ValueError("model has no articulations.")
 
-        self._device = wp.get_device(device)
-        if model.device != self._device:
-            raise ValueError(f"model.device is {model.device}, but device resolves to {self._device}.")
-        if model.requires_grad != requires_grad:
-            raise ValueError(f"model.requires_grad is {model.requires_grad}, and requires_grad is {requires_grad}")
-
-        self._requires_grad = requires_grad
+        self._device = model.device
+        self._requires_grad = model.requires_grad
         self._use_gravity = bool(use_gravity_compensation)
         self._use_coriolis = bool(use_coriolis_compensation)
         self._use_inertia = bool(use_inertia_decoupling)
@@ -182,7 +173,7 @@ class ControllerJointImpedance(ControllerBase):
         self._damping_is_live = damping is None
 
         self._model = model
-        self._model_state = model.state(requires_grad=requires_grad)
+        self._model_state = model.state(requires_grad=self._requires_grad)
         self._coord_count = int(model.joint_coord_count)
         self._dof_count = int(model.joint_dof_count)
 
@@ -342,13 +333,13 @@ class ControllerJointImpedance(ControllerBase):
                 (model_robot_count, model_max_dofs, model_max_dofs),
                 dtype=wp.float32,
                 device=self._device,
-                requires_grad=requires_grad,
+                requires_grad=self._requires_grad,
             )
             self._controlled_mass_matrix = wp.zeros(
                 (controlled_robot_count, max_controlled_dofs, max_controlled_dofs),
                 dtype=wp.float32,
                 device=self._device,
-                requires_grad=requires_grad,
+                requires_grad=self._requires_grad,
             )
             self._local_dof_idx = wp.array(
                 self._compute_local_dof_idx(
@@ -361,11 +352,11 @@ class ControllerJointImpedance(ControllerBase):
             )
         if self._use_gravity:
             self._gravity_flat = wp.zeros(
-                self._dof_count, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+                self._dof_count, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad
             )
         if self._use_coriolis:
             self._coriolis_flat = wp.zeros(
-                self._dof_count, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+                self._dof_count, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad
             )
 
         self._model_free = ControllerJointImpedanceModelFree(
@@ -377,7 +368,7 @@ class ControllerJointImpedance(ControllerBase):
             use_inertia_decoupling=use_inertia_decoupling,
             has_qdd_feedforward=has_qdd_feedforward,
             device=self._device,
-            requires_grad=requires_grad,
+            requires_grad=self._requires_grad,
         )
 
         # Pre-wired dynamics fields forwarded to ModelFree each step. These are
