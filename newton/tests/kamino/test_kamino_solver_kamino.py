@@ -262,7 +262,7 @@ def assert_states_close_masked(
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
-        for attr in cts_attributes:
+        for attr, offset in cts_attributes:
             np.testing.assert_allclose(
                 getattr(state, attr).numpy()[offset[wid] : offset[wid + 1]],
                 getattr(state_ref, attr).numpy()[offset[wid] : offset[wid + 1]],
@@ -276,7 +276,7 @@ def assert_states_close_masked(
                 state_ref.q_j.numpy()[coords_offset[wid] : coords_offset[wid + 1]],
                 rtol=rtol,
                 atol=atol,
-                err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
+                err_msg=f"\nWorld wid={wid}: attribute `q_j_p` mismatch:\n",
             )
 
 
@@ -1311,7 +1311,10 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_w_i = single_state_n.w_i.numpy().copy()
         final_q_j = single_state_n.q_j.numpy().copy()
         final_dq_j = single_state_n.dq_j.numpy().copy()
-        final_lambda_j = single_state_n.lambda_j.numpy().copy()
+        final_lambda_kin_j = single_state_n.lambda_kin_j.numpy().copy()
+        final_lambda_dyn_j = single_state_n.lambda_dyn_j.numpy().copy()
+        final_lambda_f_j = single_state_n.lambda_f_j.numpy().copy()
+        final_lambda_tau_j = single_state_n.lambda_tau_j.numpy().copy()
         msg.info(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
         msg.info(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
         msg.info(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
@@ -1323,9 +1326,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(
             f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
         )
-        msg.info(
-            f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n"
-        )
+        msg.info(f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n")
         msg.info(
             f"[samples]: [single]: [final]: lambda_tau_j (shape={final_lambda_tau_j.shape}):\n{final_lambda_tau_j}\n"
         )
@@ -1519,10 +1520,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
         msg.info(
             f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
-        )  
-        msg.info(
-            f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n"
         )
+        msg.info(f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n")
         msg.info(
             f"[samples]: [single]: [final]: lambda_tau_j (shape={final_lambda_tau_j.shape}):\n{final_lambda_tau_j}\n"
         )

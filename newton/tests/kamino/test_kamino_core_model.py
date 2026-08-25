@@ -1260,6 +1260,7 @@ class TestModelConversions(unittest.TestCase):
         self.assertIs(state_newton_converted.joint_lambdas, state_kamino_converted.lambda_kin_j)
         self.assertIs(state_newton_converted.joint_lambdas_dyn, state_kamino_converted.lambda_dyn_j)
         self.assertIs(state_newton_converted.joint_lambdas_f, state_kamino_converted.lambda_f_j)
+        self.assertIs(state_newton_converted.joint_lambdas_tau, state_kamino_converted.lambda_tau_j)
 
     def test_40_control_conversions(self):
         """

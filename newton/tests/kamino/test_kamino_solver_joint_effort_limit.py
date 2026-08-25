@@ -346,6 +346,11 @@ class TestSolverKaminoJointEffortLimit(unittest.TestCase):
                     delta=2.0e-4,
                 )
                 self.assertAlmostEqual(
+                    float(state_out.joint_lambdas_tau.numpy()[0]),
+                    effort_limit,
+                    delta=2.0e-4,
+                )
+                self.assertAlmostEqual(
                     float(solver._solver_kamino.data.bodies.w_a_i.numpy()[0, 4]),
                     effort_limit,
                     delta=2.0e-4,
