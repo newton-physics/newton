@@ -292,7 +292,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Gate discovered PR runtimes while retaining dashboard-only metrics."""
         workflow_path = ROOT / ".github" / "workflows" / "aws_gpu_benchmarks.yml"
         workflow = workflow_path.read_text(encoding="utf-8")
-        self.assertIn("python asv/run_pr_benchmarks.py", workflow)
+        self.assertIn("uv run --no-project asv/run_pr_benchmarks.py", workflow)
         patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
         inventory = {benchmark["name"]: benchmark for benchmark in self._discover_benchmarks(pr_gate=False)}
 

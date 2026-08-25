@@ -155,7 +155,7 @@ jobs:
           # Keep representative camera output modes and teleop tail latency;
           # full ASV collection retains every metric. Interleave rounds across
           # revisions to control cold-start and ordering bias.
-          python asv/run_pr_benchmarks.py ${{ inputs.base_ref }} ${{ inputs.ref }}
+          uv run --no-project asv/run_pr_benchmarks.py ${{ inputs.base_ref }} ${{ inputs.ref }}
         continue-on-error: true
         id: benchmark
 

@@ -12,6 +12,54 @@ import warp as wp
 from .base import Controller, _masked_zero_1d
 
 
+@wp.func
+def _pid_evaluate_force(
+    q: wp.float64,
+    qd: wp.float64,
+    target_q: wp.float64,
+    target_qd: wp.float64,
+    feedforward: wp.float64,
+    params: wp.array2d[float],
+    i: wp.int32,
+) -> wp.float64:
+    """PD force law over ``params[i] = [kp, kd, const_eff]``, where
+    ``const_eff = const_effort + ki * integral`` is folded in per step by
+    :meth:`ControllerPID.prepare_implicit`.
+    """
+    kp = wp.float64(params[i, 0])
+    kd = wp.float64(params[i, 1])
+    const_eff = wp.float64(params[i, 2])
+    return const_eff + feedforward + kp * (target_q - q) + kd * (target_qd - qd)
+
+
+@wp.kernel(enable_backward=False)
+def _pid_prepare_kernel(
+    positions: wp.array[float],
+    target_pos: wp.array[float],
+    pos_indices: wp.array[wp.uint32],
+    target_pos_indices: wp.array[wp.uint32],
+    ki: wp.array[float],
+    integral_max: wp.array[float],
+    const_effort: wp.array[float],
+    integral_prev: wp.array[float],
+    dt: float,
+    params: wp.array2d[float],
+    next_integral: wp.array[float],
+):
+    """Advance the integral and fold ``ki*integral`` into the constant column.
+
+    Uses the current-step error with anti-windup clamping.
+    """
+    i = wp.tid()
+    e_q = target_pos[target_pos_indices[i]] - positions[pos_indices[i]]
+    integral = wp.clamp(integral_prev[i] + e_q * dt, -integral_max[i], integral_max[i])
+    const_e = float(0.0)
+    if const_effort:
+        const_e = const_effort[i]
+    params[i, 2] = const_e + ki[i] * integral
+    next_integral[i] = integral
+
+
 @wp.kernel
 def _pid_effort_kernel(
     current_pos: wp.array[float],
@@ -68,6 +116,9 @@ class ControllerPID(Controller):
                + ki * integral(target_pos - current_pos) + kd * (target_vel - current_vel)
 
     Maintains an integral term with anti-windup clamping.
+
+    Implicit actuation folds the integral term into a per-step constant (see
+    :meth:`prepare_implicit`); the rest solves as :class:`ControllerPD`.
     """
 
     @dataclass
@@ -151,6 +202,7 @@ class ControllerPID(Controller):
         self.integral_max = integral_max
         self.const_effort = const_effort
         self._next_integral: wp.array[float] | None = None
+        self._param_pack: wp.array2d[float] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         self._next_integral = wp.zeros(num_actuators, dtype=wp.float32, device=device)
@@ -160,6 +212,65 @@ class ControllerPID(Controller):
 
     def is_graphable(self) -> bool:
         return True
+
+    evaluate_force = _pid_evaluate_force
+
+    def bind_params(self) -> wp.array2d[float]:
+        # Same pack every time; a new one would also strand prepare_implicit().
+        if self._param_pack is not None:
+            return self._param_pack
+        pack = wp.zeros(
+            (len(self.kp), 3),
+            dtype=float,
+            device=self.kp.device,
+            requires_grad=self.kp.requires_grad,
+        )
+        pack[:, 0].assign(self.kp)
+        pack[:, 1].assign(self.kd)
+        self.kp = pack[:, 0]
+        self.kd = pack[:, 1]
+        self._param_pack = pack
+        return pack
+
+    def prepare_implicit(
+        self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        ctrl_state: ControllerPID.State | None,
+        dt: float,
+        inv_mass: wp.array[float] | None = None,
+        device: wp.Device | None = None,
+    ) -> None:
+        """Fold ``ki*integral`` into the pack's constant column.
+
+        Advances the integral with the current-step error and anti-windup
+        clamping. The implicit solve then holds that contribution constant.
+        """
+        if ctrl_state is None:
+            raise RuntimeError("Implicit ControllerPID requires controller state (integral)")
+        wp.launch(
+            _pid_prepare_kernel,
+            dim=len(self._next_integral),
+            inputs=[
+                positions,
+                target_pos,
+                pos_indices,
+                target_pos_indices,
+                self.ki,
+                self.integral_max,
+                self.const_effort,
+                ctrl_state.integral,
+                float(dt),
+            ],
+            outputs=[self._param_pack, self._next_integral],
+            device=device or self.kp.device,
+        )
 
     def state(self, num_actuators: int, device: wp.Device) -> ControllerPID.State:
         return ControllerPID.State(
