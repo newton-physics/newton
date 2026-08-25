@@ -99,6 +99,7 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     wp.synchronize()
     w_a_i_dense_np = data.bodies.w_a_i.numpy().copy()
     w_j_i_dense_np = data.bodies.w_j_i.numpy().copy()
+    w_f_i_dense_np = data.bodies.w_f_i.numpy().copy()
     w_l_i_dense_np = data.bodies.w_l_i.numpy().copy()
     w_c_i_dense_np = data.bodies.w_c_i.numpy().copy()
 
@@ -120,6 +121,7 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     wp.synchronize()
     w_a_i_sparse_np = data.bodies.w_a_i.numpy().copy()
     w_j_i_sparse_np = data.bodies.w_j_i.numpy().copy()
+    w_f_i_sparse_np = data.bodies.w_f_i.numpy().copy()
     w_l_i_sparse_np = data.bodies.w_l_i.numpy().copy()
     w_c_i_sparse_np = data.bodies.w_c_i.numpy().copy()
 
@@ -128,12 +130,14 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
 
     # Extract the number of bodies and constraints for each world
     num_bodies_np = model.info.num_bodies.numpy().astype(int).tolist()
-    num_joint_cts_np = model.info.num_joint_cts.numpy().astype(int).tolist()
+    num_bilateral_joint_cts_np = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
+    num_friction_joint_cts_np = model.info.num_joint_bounded_cts.numpy().astype(int).tolist()
     num_limit_cts_np = data.info.num_limit_cts.numpy().astype(int).tolist()
     num_contact_cts_np = data.info.num_contact_cts.numpy().astype(int).tolist()
     num_total_cts_np = data.info.num_total_cts.numpy().astype(int).tolist()
     msg.info("num_bodies_np: %s", num_bodies_np)
-    msg.info("num_joint_cts_np: %s", num_joint_cts_np)
+    msg.info("num_bilateral_joint_cts_np: %s", num_bilateral_joint_cts_np)
+    msg.info("num_friction_joint_cts_np: %s", num_friction_joint_cts_np)
     msg.info("num_limit_cts_np: %s", num_limit_cts_np)
     msg.info("num_contact_cts_np: %s", num_contact_cts_np)
     msg.info("num_total_cts_np: %s\n", num_total_cts_np)
@@ -157,27 +161,34 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     inv_dt_np = model.time.inv_dt.numpy().tolist()
     w_a_i_ref_np = [np.zeros((num_bodies_np[w], 6), dtype=np.float32) for w in range(model.size.num_worlds)]
     w_j_i_ref_np = [np.zeros((num_bodies_np[w], 6), dtype=np.float32) for w in range(model.size.num_worlds)]
+    w_f_i_ref_np = [np.zeros((num_bodies_np[w], 6), dtype=np.float32) for w in range(model.size.num_worlds)]
     w_l_i_ref_np = [np.zeros((num_bodies_np[w], 6), dtype=np.float32) for w in range(model.size.num_worlds)]
     w_c_i_ref_np = [np.zeros((num_bodies_np[w], 6), dtype=np.float32) for w in range(model.size.num_worlds)]
     for w in range(model.size.num_worlds):
-        joint_cts_start_w = 0
-        joint_cts_end_w = num_joint_cts_np[w]
-        limit_cts_start_w = joint_cts_end_w
+        joint_bilateral_cts_start_w = 0
+        joint_cts_end_w = num_bilateral_joint_cts_np[w]
+        friction_cts_start_w = joint_cts_end_w
+        friction_cts_end_w = friction_cts_start_w + num_friction_joint_cts_np[w]
+        limit_cts_start_w = friction_cts_end_w
         limit_cts_end_w = limit_cts_start_w + num_limit_cts_np[w]
         contact_cts_start_w = limit_cts_end_w
         contact_cts_end_w = contact_cts_start_w + num_contact_cts_np[w]
-        J_cts_j = J_cts_dense[w][joint_cts_start_w:joint_cts_end_w, :]
+        J_cts_j = J_cts_dense[w][joint_bilateral_cts_start_w:joint_cts_end_w, :]
+        J_cts_f = J_cts_dense[w][friction_cts_start_w:friction_cts_end_w, :]
         J_cts_l = J_cts_dense[w][limit_cts_start_w:limit_cts_end_w, :]
         J_cts_c = J_cts_dense[w][contact_cts_start_w:contact_cts_end_w, :]
-        lambdas_j = lambdas_np[w][joint_cts_start_w:joint_cts_end_w]
+        lambdas_j = lambdas_np[w][joint_bilateral_cts_start_w:joint_cts_end_w]
+        lambdas_f = lambdas_np[w][friction_cts_start_w:friction_cts_end_w]
         lambdas_l = lambdas_np[w][limit_cts_start_w:limit_cts_end_w]
         lambdas_c = lambdas_np[w][contact_cts_start_w:contact_cts_end_w]
         w_a_i_ref_np[w][:, :] = (J_dofs_dense[w].T @ tau_j_np[w]).reshape(num_bodies_np[w], 6)
         w_j_i_ref_np[w][:, :] = inv_dt_np[w] * (J_cts_j.T @ lambdas_j).reshape(num_bodies_np[w], 6)
+        w_f_i_ref_np[w][:, :] = inv_dt_np[w] * (J_cts_f.T @ lambdas_f).reshape(num_bodies_np[w], 6)
         w_l_i_ref_np[w][:, :] = inv_dt_np[w] * (J_cts_l.T @ lambdas_l).reshape(num_bodies_np[w], 6)
         w_c_i_ref_np[w][:, :] = inv_dt_np[w] * (J_cts_c.T @ lambdas_c).reshape(num_bodies_np[w], 6)
     w_a_i_ref_np = wp.array(np.concatenate(w_a_i_ref_np, axis=0), device="cpu")
     w_j_i_ref_np = wp.array(np.concatenate(w_j_i_ref_np, axis=0), device="cpu")
+    w_f_i_ref_np = wp.array(np.concatenate(w_f_i_ref_np, axis=0), device="cpu")
     w_l_i_ref_np = wp.array(np.concatenate(w_l_i_ref_np, axis=0), device="cpu")
     w_c_i_ref_np = wp.array(np.concatenate(w_c_i_ref_np, axis=0), device="cpu")
 
@@ -188,6 +199,9 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     msg.info("w_j_i_ref_np:\n%s", w_j_i_ref_np)
     msg.info("w_j_i_dense_np:\n%s", w_j_i_dense_np)
     msg.info("w_j_i_sparse_np:\n%s\n", w_j_i_sparse_np)
+    msg.info("w_f_i_ref_np:\n%s", w_f_i_ref_np)
+    msg.info("w_f_i_dense_np:\n%s", w_f_i_dense_np)
+    msg.info("w_f_i_sparse_np:\n%s\n", w_f_i_sparse_np)
     msg.info("w_l_i_ref_np:\n%s", w_l_i_ref_np)
     msg.info("w_l_i_dense_np:\n%s", w_l_i_dense_np)
     msg.info("w_l_i_sparse_np:\n%s\n", w_l_i_sparse_np)
@@ -203,12 +217,14 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     # Check that the wrenches computed using the dense Jacobians match the reference wrenches
     np.testing.assert_allclose(w_a_i_dense_np, w_a_i_ref_np, rtol=test_wrench_rtol, atol=test_wrench_atol)
     np.testing.assert_allclose(w_j_i_dense_np, w_j_i_ref_np, rtol=test_wrench_rtol, atol=test_wrench_atol)
+    np.testing.assert_allclose(w_f_i_dense_np, w_f_i_ref_np, rtol=test_wrench_rtol, atol=test_wrench_atol)
     np.testing.assert_allclose(w_l_i_dense_np, w_l_i_ref_np, rtol=test_wrench_rtol, atol=test_wrench_atol)
     np.testing.assert_allclose(w_c_i_dense_np, w_c_i_ref_np, rtol=test_wrench_rtol, atol=test_wrench_atol)
 
     # Check that the wrenches computed using the dense and sparse Jacobians are close
     np.testing.assert_allclose(w_a_i_sparse_np, w_a_i_dense_np, rtol=test_wrench_rtol, atol=test_wrench_atol)
     np.testing.assert_allclose(w_j_i_sparse_np, w_j_i_dense_np, rtol=test_wrench_rtol, atol=test_wrench_atol)
+    np.testing.assert_allclose(w_f_i_sparse_np, w_f_i_dense_np, rtol=test_wrench_rtol, atol=test_wrench_atol)
     np.testing.assert_allclose(w_l_i_sparse_np, w_l_i_dense_np, rtol=test_wrench_rtol, atol=test_wrench_atol)
     np.testing.assert_allclose(w_c_i_sparse_np, w_c_i_dense_np, rtol=test_wrench_rtol, atol=test_wrench_atol)
 

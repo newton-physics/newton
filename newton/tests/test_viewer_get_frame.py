@@ -183,6 +183,111 @@ class TestViewerGLGetFrame(unittest.TestCase):
         finally:
             viewer.close()
 
+    def test_large_quad_is_stable_under_parallel_camera_translation(self):
+        """Keep a large uniform quad stable while translating the camera parallel to it."""
+        viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+
+        try:
+            viewer.renderer.draw_sky = False
+            viewer.renderer.sky_upper = (0.0, 0.0, 0.0)
+            viewer.renderer.sky_lower = (0.0, 0.0, 0.0)
+            viewer.renderer.specular_scale = 0.0
+            viewer.renderer.spotlight_enabled = False
+
+            points = wp.array(
+                [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)],
+                dtype=wp.vec3,
+                device=viewer.device,
+            )
+            indices = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32, device=viewer.device)
+            normals = wp.array([(0.0, 0.0, 1.0)] * 4, dtype=wp.vec3, device=viewer.device)
+            # Deliberately offset the giant triangle pair from the camera. This mirrors
+            # imported USD ground assets and exposes clip-depth interpolation error that
+            # a perfectly centered quad can accidentally hide.
+            xforms = wp.array(
+                [wp.transform((-850000.0, 850000.0, 0.0), wp.quat_identity())],
+                dtype=wp.transform,
+                device=viewer.device,
+            )
+            scales = wp.array([(2.0e8, 2.0e8, 1.0)], dtype=wp.vec3, device=viewer.device)
+            colors = wp.array([(0.7, 0.7, 0.7)], dtype=wp.vec3, device=viewer.device)
+            materials = wp.array([(0.5, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=viewer.device)
+            viewer.log_mesh("/test/quad", points, indices, normals, backface_culling=False)
+            viewer.log_instances("/test/ground", "/test/quad", xforms, scales, colors, materials)
+            viewer.log_geo("/test/box", newton.GeoType.BOX, (0.6, 0.6, 1.5), 0.0, True, hidden=True)
+            target_colors = wp.array(
+                [(0.9, 0.1, 0.1), (0.1, 0.9, 0.1), (0.1, 0.1, 0.9)], dtype=wp.vec3, device=viewer.device
+            )
+            target_materials = wp.array([(0.5, 0.0, 0.0, 0.0)] * 3, dtype=wp.vec4, device=viewer.device)
+            target_scales = wp.array([(1.0, 1.0, 1.0)] * 3, dtype=wp.vec3, device=viewer.device)
+
+            frames_by_render_mode = {}
+            for draw_shadows, draw_edges in ((False, False), (True, False), (False, True)):
+                viewer.renderer.draw_shadows = draw_shadows
+                viewer.renderer.draw_edges = draw_edges
+                viewer.renderer.diffuse_scale = 1.0
+                frames = []
+                for frame_index, offset in enumerate((0.0, 1.0)):
+                    target_xforms = wp.array(
+                        [
+                            wp.transform((offset, -1.0, 3.0), wp.quat_identity()),
+                            wp.transform((offset, 0.0, 3.0), wp.quat_identity()),
+                            wp.transform((offset, 1.0, 3.0), wp.quat_identity()),
+                        ],
+                        dtype=wp.transform,
+                        device=viewer.device,
+                    )
+                    viewer.log_instances(
+                        "/test/targets",
+                        "/test/box",
+                        target_xforms,
+                        target_scales,
+                        target_colors,
+                        target_materials,
+                    )
+                    viewer.set_camera(wp.vec3(offset + 8.0, -8.0, 6.0), pitch=0.0, yaw=0.0)
+                    viewer.camera.look_at((offset, 0.0, 0.0))
+                    for _ in range(2):
+                        viewer.begin_frame(float(frame_index))
+                        viewer.end_frame()
+                    frames.append(viewer.get_frame().numpy().copy())
+
+                delta = np.abs(frames[0].astype(np.int16) - frames[1].astype(np.int16))
+                changed_pixel_fraction = np.mean(np.any(delta > 2, axis=-1))
+                mean_absolute_delta = np.mean(delta)
+                message_suffix = f" with draw_shadows={draw_shadows}, draw_edges={draw_edges}"
+                self.assertLess(
+                    changed_pixel_fraction,
+                    0.01,
+                    f"camera translation changed {changed_pixel_fraction:.2%} of pixels{message_suffix}",
+                )
+                self.assertLess(
+                    mean_absolute_delta,
+                    2.0,
+                    f"mean absolute pixel delta was {mean_absolute_delta:.3f}{message_suffix}",
+                )
+                frames_by_render_mode[draw_shadows, draw_edges] = frames
+
+            shadow_delta = np.abs(
+                frames_by_render_mode[True, False][0].astype(np.int16)
+                - frames_by_render_mode[False, False][0].astype(np.int16)
+            )
+            shadow_changed_fraction = np.mean(np.any(shadow_delta > 2, axis=-1))
+            self.assertGreater(shadow_changed_fraction, 0.001, "the target boxes cast no visible shadows")
+            self.assertLess(
+                shadow_changed_fraction,
+                0.1,
+                f"shadows changed {shadow_changed_fraction:.2%} of the frame instead of remaining local",
+            )
+            edge_delta = np.abs(
+                frames_by_render_mode[False, True][0].astype(np.int16)
+                - frames_by_render_mode[False, False][0].astype(np.int16)
+            )
+            edge_changed_fraction = np.mean(np.any(edge_delta > 2, axis=-1))
+            self.assertGreater(edge_changed_fraction, 0.001, "the target boxes have no visible edge overlay")
+        finally:
+            viewer.close()
+
     def test_headless_capture_main_image_frame(self):
         """Verify get_frame captures a main image rendered headlessly."""
         viewer = _make_headless_viewer_gl_or_skip(self)
