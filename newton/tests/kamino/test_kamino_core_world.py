@@ -151,7 +151,8 @@ class TestJointDescriptor(unittest.TestCase):
         self.assertEqual(joint.is_unary, True)
         self.assertEqual(joint.dynamic_cts_axes(), [])
 
-    def test_01_actuated_revolute_joint_with_effort_dynamics(self):
+    def test_01_actuated_revolute_joint_with_armature_and_damping(self):
+        """Verify armature and damping allocate a dynamic revolute row."""
         joint = JointDescriptor(
             name="test_joint_revolute_dynamic",
             dof_type=JointDoFType.REVOLUTE,

@@ -1097,8 +1097,8 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
 
     def _refresh_combined_regularization(self, op) -> wp.array[wp.float32]:
         # Mirror BlockSparseMatrixFreeDelassusOperator.update()'s regularization step (eta plus
-        # armature and effort_rho_a) without assembling any Jacobian copy. Uses the raw Jacobian's
-        # row_start.
+        # armature inv_m_j and effort inv_rho_a) without assembling any Jacobian copy. Uses the raw
+        # Jacobian's row_start.
         if op._combined_regularization is None:
             return op._eta
 
@@ -1132,15 +1132,15 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
                     ],
                     device=device,
                 )
-            if model.size.sum_of_num_effort_cts > 0:
+            if model.size.sum_of_num_effort_joint_cts > 0:
                 wp.launch(
                     _add_effort_regularization_sparse,
-                    dim=(op.num_matrices, model.size.max_of_num_effort_cts),
+                    dim=(op.num_matrices, model.size.max_of_num_effort_joint_cts),
                     inputs=[
-                        model.info.num_effort_cts,
+                        model.info.num_joint_effort_cts,
                         model.info.joint_effort_cts_offset,
-                        model.info.bounded_cts_group_offset,
-                        model.info.num_friction_cts,
+                        model.info.joint_bounded_cts_group_offset,
+                        model.info.num_joint_friction_cts,
                         row_start,
                         data.joints.inv_rho_a,
                         op._combined_regularization,
@@ -1162,15 +1162,15 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
                     ],
                     device=device,
                 )
-            if model.size.sum_of_num_effort_cts > 0:
+            if model.size.sum_of_num_effort_joint_cts > 0:
                 wp.launch(
                     _add_effort_regularization_preconditioned_sparse,
-                    dim=(op.num_matrices, model.size.max_of_num_effort_cts),
+                    dim=(op.num_matrices, model.size.max_of_num_effort_joint_cts),
                     inputs=[
-                        model.info.num_effort_cts,
+                        model.info.num_joint_effort_cts,
                         model.info.joint_effort_cts_offset,
-                        model.info.bounded_cts_group_offset,
-                        model.info.num_friction_cts,
+                        model.info.joint_bounded_cts_group_offset,
+                        model.info.num_joint_friction_cts,
                         data.joints.inv_rho_a,
                         row_start,
                         op._preconditioner,

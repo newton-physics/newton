@@ -131,7 +131,7 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     # Extract the number of bodies and constraints for each world
     num_bodies_np = model.info.num_bodies.numpy().astype(int).tolist()
     num_bilateral_joint_cts_np = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
-    num_friction_joint_cts_np = model.info.num_joint_bounded_cts.numpy().astype(int).tolist()
+    num_friction_joint_cts_np = model.info.num_joint_friction_cts.numpy().astype(int).tolist()
     num_effort_joint_cts_np = model.info.num_joint_effort_cts.numpy().astype(int).tolist()
     num_limit_cts_np = data.info.num_limit_cts.numpy().astype(int).tolist()
     num_contact_cts_np = data.info.num_contact_cts.numpy().astype(int).tolist()
@@ -173,7 +173,7 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
         friction_cts_end_w = friction_cts_start_w + num_friction_joint_cts_np[w]
         effort_cts_start_w = friction_cts_end_w
         effort_cts_end_w = effort_cts_start_w + num_effort_joint_cts_np[w]
-        limit_cts_start_w = friction_cts_end_w
+        limit_cts_start_w = effort_cts_end_w
         limit_cts_end_w = limit_cts_start_w + num_limit_cts_np[w]
         contact_cts_start_w = limit_cts_end_w
         contact_cts_end_w = contact_cts_start_w + num_contact_cts_np[w]

@@ -122,7 +122,8 @@ def _generate_random_control_inputs(
     for dof in range(num_dofs_j):
         # Compute the DoF index in the global DoF vector
         joint_dof_index = dofs_start + dof
-        if model_joints_act_type_dof[joint_dof_index] != JointActuationType.FORCE:
+        act_type = model_joints_act_type_dof[joint_dof_index]
+        if act_type != JointActuationType.FORCE and act_type != JointActuationType.POSITION_VELOCITY_FORCE:
             continue
 
         # Retrieve the maximum limit of the generalized actuator forces

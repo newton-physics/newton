@@ -1737,7 +1737,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         """Stores the diagonal of the Delassus matrix in the given array.
 
         Note:
-            This uses the diagonal of the pure Delassus matrix, without any regularization or
+            This includes armature and effort compliance regularization, but excludes ``eta`` and
             preconditioning.
 
         Args:

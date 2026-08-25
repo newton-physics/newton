@@ -119,7 +119,7 @@ def warmstart_joint_constraints(
     effort_cts_row_start_j = joint_effort_cts_offset_total_cts[jid]
 
     # Convert cached forces to preconditioned impulses.
-    # These constraints do not cache a post-event velocity.
+    # Dynamic and kinematic rows do not cache a post-event velocity.
     for j in range(num_dynamic_cts_j):
         P_j = problem_P[dyn_cts_row_start_j + j]
         lambda_j = (dt / P_j) * joint_lambda_dyn_j[joint_dyn_cts_start + j]
@@ -132,6 +132,7 @@ def warmstart_joint_constraints(
         x_0[kin_cts_row_start_j + j] = lambda_j
         y_0[kin_cts_row_start_j + j] = lambda_j
         z_0[kin_cts_row_start_j + j] = 0.0
+    # Bounded rows initialize from the DoF velocity along their constraint axis.
     for j in range(num_friction_cts_j):
         P_j = problem_P[friction_cts_row_start_j + j]
         lambda_j = (dt / P_j) * joint_lambda_f_j[joint_friction_cts_start + j]

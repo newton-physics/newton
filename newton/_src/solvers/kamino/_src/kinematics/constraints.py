@@ -188,7 +188,7 @@ def make_unilateral_constraints_info(
     world_nbc = model.info.num_joint_bounded_cts.numpy().tolist()
     world_nfc = model.info.num_joint_friction_cts.numpy().tolist()
     world_max_inequalities: list[int] = [
-        nbc + nl + nc for nbc, nl, nc in zip(world_nbc, world_maxnl, world_maxnc, strict=False)
+        nbc + nl + nc for nbc, nl, nc in zip(world_nbc, world_maxnl, world_maxnc, strict=True)
     ]
     model.size.sum_of_max_inequalities = sum(world_max_inequalities)
     model.size.max_of_max_inequalities = max(world_max_inequalities)
@@ -202,7 +202,7 @@ def make_unilateral_constraints_info(
     joints_world = model.joints.wid.numpy().tolist()
     world_maxncts = [
         njc + nbc + maxnl + maxnc
-        for njc, nbc, maxnl, maxnc in zip(world_njc, world_nbc, world_maxnlc, world_maxncc, strict=False)
+        for njc, nbc, maxnl, maxnc in zip(world_njc, world_nbc, world_maxnlc, world_maxncc, strict=True)
     ]
     model.size.sum_of_max_total_cts = sum(world_maxncts)
     model.size.max_of_max_total_cts = max(world_maxncts)

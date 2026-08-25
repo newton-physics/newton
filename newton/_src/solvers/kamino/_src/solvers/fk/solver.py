@@ -215,7 +215,11 @@ class ForwardKinematicsSolver:
         joints_act_type_prev = resolved_act_type.numpy()
         joint_dof_start = self.model.joints.dofs_offset.numpy()
         joint_act_type_dof = self.model.joints.act_type_dof.numpy()
+        base_joint_ids_input = self.model.info.base_joint_index.numpy().tolist()
+        base_joint_id_set = {joint_id for joint_id in base_joint_ids_input if joint_id >= 0}
         for joint in range(self.model.size.sum_of_num_joints):
+            if joint in base_joint_id_set:
+                continue
             dof_actuation = joint_act_type_dof[joint_dof_start[joint] : joint_dof_start[joint + 1]]
             passive = dof_actuation == JointActuationType.PASSIVE
             if np.any(passive) and not np.all(passive):
@@ -270,7 +274,6 @@ class ForwardKinematicsSolver:
         actuated_coords_map = []  # Map of new actuated coordinates to these in the model or to the base coordinates
         actuated_dofs_map = []  # Map of new actuated dofs to these in the model or to the base dofs
         base_joint_ids = self.num_worlds * [-1]  # Base joint id per world
-        base_joint_ids_input = self.model.info.base_joint_index.numpy().tolist()
         base_body_ids_input = self.model.info.base_body_index.numpy().tolist()
         for base_joint_id in base_joint_ids_input:
             if base_joint_id >= 0:

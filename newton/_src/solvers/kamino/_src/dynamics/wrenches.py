@@ -833,6 +833,7 @@ def compute_constraint_body_wrenches_dense(
         )
 
     if model.size.sum_of_num_effort_joint_cts > 0:
+        # Joint-DoF wrenches own zeroing `w_a_i` and must run before this accumulation.
         wp.launch(
             _compute_joint_effort_cts_body_wrenches_dense,
             dim=model.size.sum_of_num_joints,
@@ -960,6 +961,7 @@ def compute_constraint_body_wrenches_sparse(
         data.bodies.w_c_i.zero_()
 
     # Then compute the body wrenches resulting from the current active constraints
+    # Joint-DoF wrenches own zeroing `w_a_i` and must run before this accumulation.
     wp.launch(
         _compute_cts_body_wrenches_sparse,
         dim=(model.size.num_worlds, jacobians._J_cts.bsm.max_of_num_nzb),

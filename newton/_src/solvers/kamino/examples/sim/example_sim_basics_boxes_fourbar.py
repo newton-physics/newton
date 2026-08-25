@@ -206,7 +206,8 @@ class Example:
             # UsdPhysics schema does not support these properties yet
             if implicit_pd:
                 for joint in self.builder.all_joints:
-                    for axis in joint.dynamic_cts_axes():
+                    axes = sorted(set(joint.dynamic_cts_axes()) | set(joint.effort_cts_axes()))
+                    for axis in axes:
                         joint.a_j[axis] = 0.1
                         joint.b_j[axis] = 0.001
         else:

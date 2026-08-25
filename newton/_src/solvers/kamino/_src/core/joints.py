@@ -2689,7 +2689,8 @@ class JointsData:
 
     inv_rho_a: wp.array[wp.float32] | None = None
     """
-    Inverse implicit-actuator compliance of each effort-limited row.
+    Inverse implicit-actuator compliance of each effort-limited row
+    [1/(N·s), 1/(N·m·s)].
 
     ``inv_rho_a := 1 / rho_a`` with ``rho_a = dt * k_d_j`` for
     ``VELOCITY`` actuation and ``rho_a = dt * k_d_j + dt^2 * k_p_j``
@@ -2701,7 +2702,7 @@ class JointsData:
 
     dq_b_a: wp.array[wp.float32] | None = None
     """
-    Velocity bias of each effort-limited implicit-PD actuator row.
+    Velocity bias of each effort-limited implicit-PD actuator row [m/s, rad/s].
 
     ``dq_b_a := c_a / rho_a`` with ``c_a`` including the explicit command,
     feed-forward command, and implicit PD contribution for the selected axis.
@@ -2711,10 +2712,10 @@ class JointsData:
 
     bound_a: wp.array[wp.float32] | None = None
     """
-    Impulse bound of each effort-limited implicit-PD actuator row.
+    Impulse bound of each effort-limited implicit-PD actuator row [N·s, N·m·s].
 
-    ``bound_a := dt * tau_j_max`` when the DoF participates in implicit PD
-    and ``tau_j_max`` is finite, otherwise ``FLOAT32_MAX``.
+    ``bound_a := dt * tau_j_max``. Effort rows are allocated only when the
+    DoF participates in implicit PD with a finite ``tau_j_max``.
 
     Shape of ``(sum_of_num_effort_cts,)``.
     """

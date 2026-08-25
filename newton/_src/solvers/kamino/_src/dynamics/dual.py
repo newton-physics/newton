@@ -618,6 +618,8 @@ def _build_joint_friction_bounds(
     model_joints_num_friction_cts: wp.array[wp.int32],
     model_joints_friction_cts_offset: wp.array[wp.int32],
     model_joints_friction_cts_axis: wp.array[wp.int32],
+    model_info_joint_friction_cts_offset: wp.array[wp.int32],
+    model_info_joint_bounded_cts_offset: wp.array[wp.int32],
     model_joints_f_j: wp.array[wp.float32],
     # Outputs:
     problem_bound_lower: wp.array[wp.float32],
@@ -625,12 +627,15 @@ def _build_joint_friction_bounds(
 ):
     """Build per-row Coulomb joint friction impulse bounds."""
     jid = wp.tid()
+    wid = model_joints_wid[jid]
     num_rows = model_joints_num_friction_cts[jid]
     dof_start = model_joints_dofs_offset[jid]
-    row_start = model_joints_friction_cts_offset[jid]
-    dt = model_time_dt[model_joints_wid[jid]]
+    friction_start = model_joints_friction_cts_offset[jid]
+    friction_cts_offset_world = friction_start - model_info_joint_friction_cts_offset[wid]
+    row_start = model_info_joint_bounded_cts_offset[wid] + friction_cts_offset_world
+    dt = model_time_dt[wid]
     for j in range(num_rows):
-        axis = model_joints_friction_cts_axis[row_start + j]
+        axis = model_joints_friction_cts_axis[friction_start + j]
         bound = dt * model_joints_f_j[dof_start + axis]
         problem_bound_lower[row_start + j] = -bound
         problem_bound_upper[row_start + j] = bound
@@ -666,28 +671,17 @@ def _build_joint_effort_bounds(
 @wp.kernel
 def _build_joint_effort_bias(
     # Inputs:
-    model_joints_wid: wp.array[wp.int32],
     model_joints_num_effort_cts: wp.array[wp.int32],
     model_joints_effort_cts_offset: wp.array[wp.int32],
-    model_info_num_friction_cts: wp.array[wp.int32],
-    model_info_joint_effort_cts_offset: wp.array[wp.int32],
-    model_info_total_cts_offset: wp.array[wp.int32],
-    model_info_bounded_cts_group_offset: wp.array[wp.int32],
+    model_joints_effort_cts_offset_total_cts: wp.array[wp.int32],
     data_joints_dq_b_a: wp.array[wp.float32],
     # Outputs:
     problem_v_b: wp.array[wp.float32],
 ):
     """Scatter precomputed effort-row velocity biases into the dual problem."""
     jid = wp.tid()
-    wid = model_joints_wid[jid]
     effort_start = model_joints_effort_cts_offset[jid]
-    effort_cts_offset_world = effort_start - model_info_joint_effort_cts_offset[wid]
-    row_start = (
-        model_info_total_cts_offset[wid]
-        + model_info_bounded_cts_group_offset[wid]
-        + model_info_num_friction_cts[wid]
-        + effort_cts_offset_world
-    )
+    row_start = model_joints_effort_cts_offset_total_cts[jid]
     num_rows = model_joints_num_effort_cts[jid]
     for j in range(num_rows):
         problem_v_b[row_start + j] = -data_joints_dq_b_a[effort_start + j]
@@ -1743,6 +1737,8 @@ class DualProblem:
                         model.joints.num_friction_cts,
                         model.joints.friction_cts_offset,
                         model.joints.friction_cts_axis,
+                        model.info.joint_friction_cts_offset,
+                        model.info.joint_bounded_cts_offset,
                         model.joints.f_j,
                         # Outputs:
                         self._data.bound_lower,
@@ -1774,13 +1770,9 @@ class DualProblem:
                     dim=model.size.sum_of_num_joints,
                     inputs=[
                         # Inputs:
-                        model.joints.wid,
                         model.joints.num_effort_cts,
                         model.joints.effort_cts_offset,
-                        model.info.num_joint_friction_cts,
-                        model.info.joint_effort_cts_offset,
-                        model.info.total_cts_offset,
-                        model.info.joint_bounded_cts_group_offset,
+                        model.joints.effort_cts_offset_total_cts,
                         data.joints.dq_b_a,
                         # Outputs:
                         self._data.v_b,
