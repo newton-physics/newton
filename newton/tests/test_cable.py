@@ -5660,7 +5660,7 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
 
 
 def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
-    """A live rod stiffness edit, applied after graph capture, must match a from-scratch build.
+    """Verify a live rod stiffness edit applied after graph capture matches a from-scratch build.
 
     Same geometry both sides, so this isolates the stiffness path; trajectories must be
     bit-for-bit equal.
@@ -5676,7 +5676,7 @@ def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
     def build_and_run(bend_stiffness, retarget_to=None):
         """Build a chain at ``bend_stiffness``; if ``retarget_to`` is given, capture the
         step graph first, THEN live-reinit joint_target_ke to it before any replay."""
-        model, state0, state1, control, rod_bodies = _build_cable_chain(
+        model, state0, state1, control, _rod_bodies = _build_cable_chain(
             device, num_links=num_links, bend_stiffness=bend_stiffness, bend_damping=1.0,
             segment_length=segment_length,
         )
@@ -5753,8 +5753,10 @@ def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
 
 
 def _notify_without_joint_dof_properties_leaves_rod_material_k_stale(test, device):
-    """``notify_model_changed`` must gate the rod material-k refresh on ``JOINT_DOF_PROPERTIES``,
-    not fire on an unrelated flag (``BODY_PROPERTIES``)."""
+    """Verify the rod material-k refresh is gated on ``JOINT_DOF_PROPERTIES``.
+
+    An unrelated flag (``BODY_PROPERTIES``) must not trigger it.
+    """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
     joint = builder.add_joint_rod(-1, body, bend_stiffness=10.0, twist_stiffness=3.0)
@@ -5786,8 +5788,11 @@ def _notify_without_joint_dof_properties_leaves_rod_material_k_stale(test, devic
 
 
 def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
-    """REVOLUTE/PRISMATIC/D6's drive/limit slot must refresh to ``max(target_ke, limit_ke)``
-    after a live ``joint_target_ke`` edit and ``notify_model_changed(JOINT_DOF_PROPERTIES)``."""
+    """Verify REVOLUTE/PRISMATIC/D6 drive/limit slots refresh to ``max(target_ke, limit_ke)``.
+
+    Both inputs to that maximum are covered by ``JOINT_DOF_PROPERTIES``, so editing either
+    ``joint_target_ke`` or ``joint_limit_ke`` alone must propagate.
+    """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
@@ -5834,18 +5839,27 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 40.0))
 
     # joint_limit_ke is the other half of the slot's max() and is likewise covered by
-    # JOINT_DOF_PROPERTIES, so editing it alone must propagate too.
+    # JOINT_DOF_PROPERTIES, so editing it alone must propagate too. Raise each above the
+    # target_ke set above so the maximum switches over to the limit side.
     joint_limit_ke = model.joint_limit_ke.numpy()
-    joint_limit_ke[joint_qd_start[j_rev]] = 5000.0  # now exceeds target_ke
+    joint_limit_ke[joint_qd_start[j_rev]] = 5000.0
+    joint_limit_ke[joint_qd_start[j_pris]] = 6000.0
+    joint_limit_ke[joint_qd_start[j_d6] + 0] = 7000.0  # linear axis
+    joint_limit_ke[joint_qd_start[j_d6] + 1] = 8000.0  # angular axis
     model.joint_limit_ke.assign(joint_limit_ke)
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     test.assertAlmostEqual(material_k_at(j_rev, 2), max(500.0, 5000.0))
+    test.assertAlmostEqual(material_k_at(j_pris, 2), max(600.0, 6000.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 2), max(700.0, 7000.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 8000.0))
 
 
 def _notify_joint_dof_properties_caps_penalty_k_at_ramp_seed(test, device):
-    """With legacy AVBD ramping enabled, a refreshed ``joint_penalty_k`` must be capped at the
-    ramp seed while ``joint_material_k`` keeps the raw stiffness (see ``_penalty_k_init``)."""
+    """Verify a refreshed ``joint_penalty_k`` is capped at the legacy AVBD ramp seed.
+
+    ``joint_material_k`` keeps the raw stiffness either way (see ``_penalty_k_init``).
+    """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
     joint = builder.add_joint_rod(-1, body, stretch_stiffness=100.0, bend_stiffness=10.0)
@@ -5882,8 +5896,11 @@ def _notify_joint_dof_properties_caps_penalty_k_at_ramp_seed(test, device):
 
 
 def _notify_joint_dof_properties_refreshes_rod_structural_k(test, device):
-    """A ROD stretch/shear edit under ``JOINT_DOF_PROPERTIES`` must also refresh
-    ``body_structural_k`` (derived from ``joint_material_k``'s stretch/shear slots)."""
+    """Verify a ROD stretch/shear edit also refreshes ``body_structural_k``.
+
+    That summary is derived from ``joint_material_k``'s stretch/shear slots, so it would
+    otherwise go stale behind a ``JOINT_DOF_PROPERTIES`` refresh.
+    """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
     joint = builder.add_joint_rod(-1, body, stretch_stiffness=100.0, bend_stiffness=10.0)
