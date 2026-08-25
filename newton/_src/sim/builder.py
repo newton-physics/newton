@@ -1533,9 +1533,19 @@ class ModelBuilder:
         # arrays: rod-backed curves use bodies/joints, triangle surfaces use
         # particles/triangles/edges, and tetrahedral volumes use particles/tets.
         self.curve_label: list[str] = []
-        """Labels of rod-backed curve groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`curve_world`."""
+        """Labels of rod-backed curve groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`curve_world`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
         self.curve_world: list[int] = []
-        """World index corresponding to each entry in :attr:`curve_label`."""
+        """World index corresponding to each entry in :attr:`curve_label`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
         self._curve_body_start: list[int] = []
         """Inclusive body-range start of each curve group."""
         self._curve_body_end: list[int] = []
@@ -1548,9 +1558,19 @@ class ModelBuilder:
         """Nesting depth for private curve-group recording suppression."""
 
         self.surface_label: list[str] = []
-        """Labels of triangle surface groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`surface_world`."""
+        """Labels of triangle surface groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`surface_world`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
         self.surface_world: list[int] = []
-        """World index corresponding to each entry in :attr:`surface_label`."""
+        """World index corresponding to each entry in :attr:`surface_label`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
         self._surface_particle_start: list[int] = []
         """Inclusive particle-range start of each surface group."""
         self._surface_particle_end: list[int] = []
@@ -1565,9 +1585,19 @@ class ModelBuilder:
         """Exclusive edge-range end of each surface group."""
 
         self.volume_label: list[str] = []
-        """Labels of tetrahedral volume groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`volume_world`."""
+        """Labels of tetrahedral volume groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`volume_world`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
         self.volume_world: list[int] = []
-        """World index corresponding to each entry in :attr:`volume_label`."""
+        """World index corresponding to each entry in :attr:`volume_label`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
         self._volume_particle_start: list[int] = []
         """Inclusive particle-range start of each volume group."""
         self._volume_particle_end: list[int] = []
