@@ -18,7 +18,7 @@ layout (location = 9) in vec4 aRenderStyle;
 
 uniform mat4 light_space_matrix;
 uniform vec3 render_origin;
-out float Opacity;
+flat out float Opacity;
 
 void main()
 {
@@ -31,7 +31,7 @@ void main()
 
 shadow_fragment_shader = """
 #version 330 core
-in float Opacity;
+flat in float Opacity;
 void main() { if (Opacity < 1.0) discard; }
 """
 
@@ -64,7 +64,7 @@ out vec3 LocalPos;
 out vec2 TexCoord;
 out vec3 ObjectColor;
 out vec4 Material;
-out vec4 RenderStyle;
+flat out vec4 RenderStyle;
 
 void main()
 {
@@ -101,7 +101,7 @@ in vec3 LocalPos;
 in vec2 TexCoord;
 in vec3 ObjectColor;
 in vec4 Material;
-in vec4 RenderStyle;
+flat in vec4 RenderStyle;
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -1024,7 +1024,7 @@ class ShaderArrow(ShaderGL):
 edge_fragment_shader = """
 #version 330 core
 out vec4 FragColor;
-in vec4 RenderStyle;
+flat in vec4 RenderStyle;
 uniform vec4 edge_color;
 void main()
 {

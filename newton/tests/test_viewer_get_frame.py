@@ -536,6 +536,38 @@ class TestViewerGLGetFrame(unittest.TestCase):
             )
             edge_changed_fraction = np.mean(np.any(edge_delta > 2, axis=-1))
             self.assertGreater(edge_changed_fraction, 0.001, "the target boxes have no visible edge overlay")
+
+            # Render the same quad from close range at a large world coordinate.
+            # Render style is constant per instance and must not be perspective-
+            # interpolated: doing so produces striped/discarded fragments on the
+            # very large triangles used by imported ground and table meshes.
+            large_origin = (10_000_000.0, 10_000_000.0, 0.0)
+            viewer.log_instances(
+                "/test/ground",
+                "/test/quad",
+                wp.array(
+                    [wp.transform(large_origin, wp.quat_identity())],
+                    dtype=wp.transform,
+                    device=viewer.device,
+                ),
+                scales,
+                colors,
+                materials,
+            )
+            viewer.renderer.draw_shadows = False
+            viewer.renderer.draw_edges = False
+            viewer.set_camera(wp.vec3(10_000_010.0, 9_999_990.0, 10.0), pitch=0.0, yaw=0.0)
+            viewer.camera.look_at(large_origin)
+            for frame_index in range(2):
+                viewer.begin_frame(float(frame_index))
+                viewer.end_frame()
+            close_frame = viewer.get_frame().numpy()
+            filled_fraction = np.mean(np.any(close_frame > 8, axis=-1))
+            self.assertGreater(
+                filled_fraction,
+                0.99,
+                f"constant instance style left {1.0 - filled_fraction:.2%} of the large surface unrendered",
+            )
         finally:
             viewer.close()
 
