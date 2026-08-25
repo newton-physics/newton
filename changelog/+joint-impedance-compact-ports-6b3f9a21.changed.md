@@ -5,8 +5,12 @@ whole-model `inputs.joint_q` and `inputs.joint_qd` to evaluate the dynamics from
 Ports accept a `wp.indexedarray` view, so a gather or scatter is expressed at the
 bind site.
 
-`ControllerJointImpedance` takes a finalized `newton.Model` and a
-`JointSelection` instead of a `ModelBuilder` and `default_dof_indices`. Buffers
+`ControllerJointImpedance` takes a finalized `newton.Model` and
+`articulations`/`joints` arguments selecting the controlled joints, instead of
+a `ModelBuilder` and `default_dof_indices`. Each accepts model indices and/or
+label patterns — a glob, a compiled regular expression, or a list of either —
+following the same label-matching rules as the rest of Newton; omitting
+`joints` controls every eligible joint of each selected articulation. Buffers
 are sized to the robots actually controlled, so `inputs.mass_matrix` is
 `[controlled_robot_count, max_controlled_dofs, max_controlled_dofs]`. The
 counts are renamed to say what they count: `robot_count`, `dofs_per_robot`,
@@ -16,7 +20,6 @@ counts are renamed to say what they count: `robot_count`, `dofs_per_robot`,
 ```python
 # Was: ControllerJointImpedance(builder=builder, default_dof_indices=idx, ...)
 #      outputs.joint_f = control.joint_f
-selection = select_joints(model)
-controller = ControllerJointImpedance(model, joint_selection=selection, ...)
-outputs.joint_f = control.joint_f[selection.qd_start]
+controller = ControllerJointImpedance(model, joints=["shoulder", "elbow"], ...)
+outputs.joint_f = control.joint_f[controller.qd_start]
 ```
