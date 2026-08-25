@@ -6,6 +6,7 @@ on:
       - opened
       - reopened
       - ready_for_review
+      - synchronize
 
 permissions:
   pull-requests: write
@@ -16,7 +17,7 @@ jobs:
       github.repository == 'newton-physics/newton' &&
       github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
@@ -31,63 +32,115 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const author = pr.user.login;
+            const action = context.payload.action;
 
             if (author.endsWith('[bot]')) {
               core.info(`Skipping bot author: ${author}`);
               return;
             }
 
-            const { data: issue } = await github.rest.issues.get({
-              owner,
-              repo,
-              issue_number: pr.number,
-            });
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const maxAttempts = action === 'synchronize' ? 1 : 4;
+            const delayMs = 45000;
 
-            if (issue.assignees?.length > 0) {
-              core.info(`PR #${pr.number} already has assignee(s).`);
-              return;
+            async function hasAssignees() {
+              const { data: issue } = await github.rest.issues.get({
+                owner,
+                repo,
+                issue_number: pr.number,
+              });
+              return issue.assignees?.length > 0;
             }
 
-            try {
-              // PR participants may be assignable without repository-wide access.
-              await github.request(
-                'GET /repos/{owner}/{repo}/issues/{issue_number}/assignees/{assignee}',
-                {
-                  owner,
-                  repo,
-                  issue_number: pr.number,
-                  assignee: author,
-                }
-              );
-            } catch (error) {
-              if (error.status === 404) {
-                core.warning(
-                  `Author ${author} is not assignable on PR #${pr.number}; skipping.`
+            async function isAssignable() {
+              try {
+                await github.request(
+                  'GET /repos/{owner}/{repo}/issues/{issue_number}/assignees/{assignee}',
+                  {
+                    owner,
+                    repo,
+                    issue_number: pr.number,
+                    assignee: author,
+                  }
                 );
-                return;
+                return true;
+              } catch (error) {
+                if (error.status === 404) {
+                  return false;
+                }
+                throw error;
               }
-              throw error;
             }
 
-            try {
+            async function tryAssign() {
               const { data } = await github.rest.issues.addAssignees({
                 owner,
                 repo,
                 issue_number: pr.number,
                 assignees: [author],
               });
+              return data.assignees?.some((a) => a.login === author);
+            }
 
-              const assigned = data.assignees?.some((a) => a.login === author);
-              if (!assigned) {
-                core.warning(
-                  `addAssignees did not add ${author} to PR #${pr.number}; author may not be assignable.`
-                );
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              if (await hasAssignees()) {
+                core.info(`PR #${pr.number} already has assignee(s).`);
                 return;
               }
 
-              core.info(`Assigned PR #${pr.number} to ${author}`);
-            } catch (error) {
-              core.warning(
-                `Could not assign ${author} on PR #${pr.number}: ${error.message}`
-              );
+              const assignable = await isAssignable();
+              if (!assignable) {
+                core.info(
+                  `Attempt ${attempt}/${maxAttempts}: assignability preflight returned 404 for ${author}; trying addAssignees anyway.`
+                );
+              }
+
+              try {
+                const assigned = await tryAssign();
+                if (assigned) {
+                  core.info(
+                    `Assigned PR #${pr.number} to ${author} on attempt ${attempt}.`
+                  );
+                  return;
+                }
+
+                core.warning(
+                  `Attempt ${attempt}/${maxAttempts}: addAssignees did not add ${author} to PR #${pr.number}.`
+                );
+              } catch (error) {
+                core.warning(
+                  `Attempt ${attempt}/${maxAttempts}: addAssignees failed for ${author} on PR #${pr.number}: ${error.message}`
+                );
+              }
+
+              if (attempt < maxAttempts) {
+                await sleep(delayMs);
+              }
             }
+
+            if (action !== 'synchronize') {
+              const marker = '<!-- auto-assign-pr-creator -->';
+              const { data: comments } = await github.rest.issues.listComments({
+                owner,
+                repo,
+                issue_number: pr.number,
+                per_page: 100,
+              });
+              const alreadyNotified = comments.some(
+                (comment) =>
+                  comment.user?.type === 'Bot' && comment.body?.includes(marker)
+              );
+
+              if (!alreadyNotified) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr.number,
+                  body: `${marker}\nAuto-assign could not assign @${author} as assignee. A maintainer may need to assign manually.`,
+                });
+              }
+            }
+
+            core.warning(
+              `Could not assign ${author} to PR #${pr.number} after ${maxAttempts} attempt(s).`
+            );
