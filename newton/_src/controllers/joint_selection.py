@@ -28,36 +28,25 @@ from ..utils.selection import get_name_from_label, match_labels
 class JointSelection:
     """Index arrays addressing a set of controlled joints in a :class:`~newton.Model`.
 
-    Returned by :func:`select_joints`. Each controlled DOF carries both a
-    coordinate index into :attr:`~newton.State.joint_q` and a DOF index into
-    :attr:`~newton.State.joint_qd`, since the two spaces differ once any
-    uncontrolled joint upstream spans more coordinates than DOFs.
-
-    :func:`select_joints` addresses each selected joint by a single entry —
-    its *starting* coordinate index and starting DOF index, not one entry per
-    coordinate or DOF. That fully addresses a joint spanning exactly one
-    coordinate and one DOF (Revolute, Prismatic); for any other joint the
-    entry only reaches its first coordinate/DOF, and it is the controller,
-    not :func:`select_joints`, that checks whether the joint is actually
-    controllable. A joint with zero coordinates and zero DOFs (Fixed) has no
-    starting index to give and contributes no entry at all.
+    Returned by :func:`select_joints`. Each entry is a controlled joint's
+    *starting* coordinate index into :attr:`~newton.State.joint_q` and
+    starting DOF index into :attr:`~newton.State.joint_qd` — not one entry
+    per coordinate or DOF. To find a joint's end instead, use the model's own
+    start arrays: ``model.joint_q_start[j + 1]`` (and
+    ``model.joint_qd_start[j + 1]``) give the exclusive end of joint ``j``'s
+    coordinate (DOF) span.
 
     Controlled DOFs are grouped by robot, matching the ``(robot 0's
-    indices first, then robot 1's, ...)`` layout
-    :class:`~newton.controllers.ControllerJointImpedance` requires. Within a
-    robot the order follows the ``joints`` argument when one is given,
+    indices first, then robot 1's, ...)`` layout.
+    Within a robot the order follows the ``joints`` argument when one is given,
     and model joint index otherwise.
-
-    Both arrays are ``int32`` so they can be used directly as Warp indexed-view
-    subscripts (``sim_array[selection.qd_idx]``), which is how ports are bound
-    to simulation-sized arrays.
     """
 
-    q_idx: wp.array[wp.int32]
-    """Model coordinate index of each controlled DOF, shape [controlled_dof_count]."""
+    q_start: wp.array[wp.int32]
+    """Model starting coordinate index of each selected joint, shape [selected_joint_count]."""
 
-    qd_idx: wp.array[wp.int32]
-    """Model DOF index of each controlled DOF, shape [controlled_dof_count]."""
+    qd_start: wp.array[wp.int32]
+    """Model starting DOF index of each selected joint, shape [selected_joint_count]."""
 
 
 def _resolve_joint_entry(
@@ -86,7 +75,7 @@ def select_joints(
     articulations: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
     joints: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
 ) -> JointSelection:
-    """Resolve a set of joints to control into the index arrays a controller needs.
+    """Resolve a set of joints to control into the starting index arrays a controller needs.
 
     Integers match exactly. ``articulations`` patterns are matched against the
     full :attr:`~newton.Model.articulation_label` following
@@ -112,18 +101,19 @@ def select_joints(
             twice.
         joints: Model joint indices or label patterns to control within the
             selected articulations, as a list or as a single pattern. ``None``
-            selects every joint of each selected articulation that has at
-            least one coordinate and one DOF — a joint with neither (Fixed)
-            is skipped, since it has no starting coordinate/DOF index to
-            address; explicitly naming one contributes no entry either. Every
-            other selected joint contributes exactly one entry, its starting
-            coordinate/DOF index; whether that joint is otherwise
-            controllable is checked by the controller, not here. Duplicates
-            are collapsed, as they are for ``articulations``.
+            records the starting coordinate/DOF index of every joint with at
+            least one coordinate and one DOF in each selected articulation —
+            a joint with neither (Fixed) is skipped, since it has no starting
+            index to give (explicitly naming one contributes no entry either).
+            Every other selected joint contributes exactly one entry, its
+            starting coordinate/DOF index — not one entry per coordinate or
+            DOF — and whether that joint is otherwise controllable is checked
+            by the controller, not here. Duplicates are collapsed, as they
+            are for ``articulations``.
 
     Returns:
-        The matched coordinate/DOF index pair addressing the selected DOFs, in
-        the grouped-by-robot layout
+        The matched starting coordinate/DOF index pair for each selected
+        joint, in the grouped-by-robot layout
         :class:`~newton.controllers.ControllerJointImpedance` expects for its
         ``joint_selection`` argument.
 
@@ -144,7 +134,7 @@ def select_joints(
             )
             outputs = controller.output()
             # Scatter the compact torque command straight into the simulation.
-            outputs.joint_f = control.joint_f[selection.qd_idx]
+            outputs.joint_f = control.joint_f[selection.qd_start]
     """
     if model.articulation_count == 0:
         raise ValueError("model contains no articulations; nothing can be controlled.")
@@ -197,8 +187,8 @@ def select_joints(
             for art, j in _resolve_joint_entry(entry, joint_names, joint_to_art, selected_arts_set):
                 robot_joints_by_art[art].append(j)
 
-    q_idx_chunks: list[np.ndarray] = []
-    qd_idx_chunks: list[np.ndarray] = []
+    q_start_chunks: list[np.ndarray] = []
+    qd_start_chunks: list[np.ndarray] = []
     for art in selected_arts:
         # A joint named twice — repeated in ``joints``, or matched by both an
         # index and a label — would otherwise be controlled twice, aliasing two
@@ -216,14 +206,14 @@ def select_joints(
         robot_joints = robot_joints[has_coord_and_dof]
         if robot_joints.size == 0:
             continue
-        q_idx_chunks.append(q_start[robot_joints])
-        qd_idx_chunks.append(qd_start[robot_joints])
+        q_start_chunks.append(q_start[robot_joints])
+        qd_start_chunks.append(qd_start[robot_joints])
 
-    if not q_idx_chunks:
+    if not q_start_chunks:
         raise ValueError("selection resolved to zero controlled joints.")
 
     device = model.device
     return JointSelection(
-        q_idx=wp.array(np.concatenate(q_idx_chunks), dtype=wp.int32, device=device),
-        qd_idx=wp.array(np.concatenate(qd_idx_chunks), dtype=wp.int32, device=device),
+        q_start=wp.array(np.concatenate(q_start_chunks), dtype=wp.int32, device=device),
+        qd_start=wp.array(np.concatenate(qd_start_chunks), dtype=wp.int32, device=device),
     )

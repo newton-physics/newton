@@ -54,7 +54,7 @@ class ControllerJointImpedance(ControllerBase):
     uncontrolled joints too. A compact port may be bound to a plain array, or to
     an indexed view of a simulation-sized array::
 
-        outputs.joint_f = control.joint_f[selection.qd_idx]  # scatter to the sim
+        outputs.joint_f = control.joint_f[selection.qd_start]  # scatter to the sim
 
     Each articulation in ``model`` is one robot. Only joints spanning a single
     coordinate and a single DOF can be controlled, since the PD error term
@@ -176,33 +176,33 @@ class ControllerJointImpedance(ControllerBase):
 
         if not isinstance(joint_selection, JointSelection):
             raise TypeError(f"joint_selection must be a JointSelection, got {type(joint_selection).__name__}.")
-        joint_q_idx = joint_selection.q_idx
-        joint_qd_idx = joint_selection.qd_idx
+        joint_q_idx = joint_selection.q_start
+        joint_qd_idx = joint_selection.qd_start
 
         # ------------------------------------------------------------------
         # Validation of the two model-space index arrays. Everything else the
         # controller takes is compact and validated by the inner controller.
         # ------------------------------------------------------------------
-        # joint_selection.q_idx defines the controlled-DOF count, so it is
-        # checked against its own length; joint_selection.qd_idx must then
+        # joint_selection.q_start defines the controlled-DOF count, so it is
+        # checked against its own length; joint_selection.qd_start must then
         # match that count exactly, which is where a length mismatch between
         # the two is caught. Checked before ``.size`` is read below, since a
         # non-array would otherwise fail there with an unhelpful AttributeError.
         if not isinstance(joint_q_idx, wp.array):
-            raise TypeError(f"joint_selection.q_idx must be a wp.array, got {type(joint_q_idx).__name__}.")
+            raise TypeError(f"joint_selection.q_start must be a wp.array, got {type(joint_q_idx).__name__}.")
         _validate_array(
             array=joint_q_idx,
-            name="joint_selection.q_idx",
+            name="joint_selection.q_start",
             dtype=wp.int32,
             shape=(joint_q_idx.size,),
             device=self._device,
         )
         total_controlled_dofs = int(joint_q_idx.size)
         if total_controlled_dofs < 1:
-            raise ValueError("joint_selection.q_idx is empty; there is nothing to control.")
+            raise ValueError("joint_selection.q_start is empty; there is nothing to control.")
         _validate_array(
             array=joint_qd_idx,
-            name="joint_selection.qd_idx",
+            name="joint_selection.qd_start",
             dtype=wp.int32,
             shape=(total_controlled_dofs,),
             device=self._device,
@@ -211,8 +211,8 @@ class ControllerJointImpedance(ControllerBase):
         q_idx_np = joint_q_idx.numpy()
         qd_idx_np = joint_qd_idx.numpy()
         for name, idx_np, limit, space in (
-            ("joint_selection.q_idx", q_idx_np, self._coord_count, "coordinate"),
-            ("joint_selection.qd_idx", qd_idx_np, self._dof_count, "DOF"),
+            ("joint_selection.q_start", q_idx_np, self._coord_count, "coordinate"),
+            ("joint_selection.qd_start", qd_idx_np, self._dof_count, "DOF"),
         ):
             if idx_np.min() < 0 or idx_np.max() >= limit:
                 raise ValueError(
@@ -221,18 +221,18 @@ class ControllerJointImpedance(ControllerBase):
                 )
 
         # A repeated DOF would give two controlled slots the same simulation DOF,
-        # so a scatter through ``control.joint_f[selection.qd_idx]`` would have
-        # them overwrite each other. Checking joint_selection.qd_idx alone
+        # so a scatter through ``control.joint_f[selection.qd_start]`` would have
+        # them overwrite each other. Checking joint_selection.qd_start alone
         # covers both arrays, since the pairing check below forces the two to
         # agree.
         if np.unique(qd_idx_np).size != qd_idx_np.size:
             duplicate = int(np.bincount(qd_idx_np).argmax())
             raise ValueError(
-                f"joint_selection.qd_idx contains DOF {duplicate} more than once; two controlled slots "
+                f"joint_selection.qd_start contains DOF {duplicate} more than once; two controlled slots "
                 f"cannot map to the same simulation DOF."
             )
 
-        # Each pair (q_idx[i], qd_idx[i]) must land on the same model joint,
+        # Each pair (q_start[i], qd_start[i]) must land on the same model joint,
         # which is what catches a joint_selection whose two arrays were built
         # swapped or mismatched.
         owning_joint = np.searchsorted(model.joint_q_start.numpy(), q_idx_np, side="right") - 1
@@ -240,7 +240,7 @@ class ControllerJointImpedance(ControllerBase):
         if not np.array_equal(owning_joint, owning_joint_qd):
             mismatched = int(np.flatnonzero(owning_joint != owning_joint_qd)[0])
             raise ValueError(
-                f"joint_selection.q_idx and joint_selection.qd_idx disagree at entry {mismatched}: "
+                f"joint_selection.q_start and joint_selection.qd_start disagree at entry {mismatched}: "
                 f"coordinate {int(q_idx_np[mismatched])} belongs to joint {int(owning_joint[mismatched])} "
                 f"but DOF {int(qd_idx_np[mismatched])} belongs to joint {int(owning_joint_qd[mismatched])}. "
                 f"Did you swap the two arrays?"
@@ -279,7 +279,7 @@ class ControllerJointImpedance(ControllerBase):
         # extraction below slices on exactly that assumption.
         if np.any(np.diff(owning_robot) < 0):
             raise ValueError(
-                "joint_selection.q_idx/qd_idx must be grouped by robot (robot 0's DOFs first, "
+                "joint_selection.q_start/qd_start must be grouped by robot (robot 0's DOFs first, "
                 f"then robot 1's, ...); got robot order {owning_robot.tolist()}."
             )
 
@@ -309,7 +309,7 @@ class ControllerJointImpedance(ControllerBase):
         self._controlled_dofs_per_robot = controlled_dofs_per_robot
         # Copied rather than aliased: the robot packing, local-DOF tables, and
         # masks above are derived once from a host snapshot of these arrays, so
-        # a caller mutating joint_selection.q_idx/qd_idx after construction must
+        # a caller mutating joint_selection.q_start/qd_start after construction must
         # not change what the live indexed views below read from.
         self._q_idx = wp.clone(joint_q_idx)
         self._qd_idx = wp.clone(joint_qd_idx)
@@ -388,7 +388,7 @@ class ControllerJointImpedance(ControllerBase):
     ) -> np.ndarray:
         """Return, for each (controlled robot, padded slot), the DOF's index within that robot.
 
-        ``joint_selection.qd_idx`` is in the model's DOF numbering, but
+        ``joint_selection.qd_start`` is in the model's DOF numbering, but
         :func:`~newton.eval_mass_matrix` indexes each robot's block by
         DOF-within-that-robot, so the two differ by where the robot's DOFs start
         in the model.

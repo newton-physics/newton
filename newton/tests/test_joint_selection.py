@@ -130,19 +130,19 @@ class TestSelectJoints(unittest.TestCase):
         device = wp.get_device()
         model = _build_ball_then_revolute()[0].finalize(device=device)
         selection = select_joints(model)
-        np.testing.assert_array_equal(selection.q_idx.numpy(), [0, 4])
-        np.testing.assert_array_equal(selection.qd_idx.numpy(), [0, 3])
+        np.testing.assert_array_equal(selection.q_start.numpy(), [0, 4])
+        np.testing.assert_array_equal(selection.qd_start.numpy(), [0, 3])
 
     def test_returns_int32_arrays(self):
         """Verify both index arrays are int32 so they work as Warp indexed-view subscripts."""
         device = wp.get_device()
         model = _build_single_prismatic().finalize(device=device)
         selection = select_joints(model)
-        self.assertEqual(selection.q_idx.dtype, wp.int32)
-        self.assertEqual(selection.qd_idx.dtype, wp.int32)
+        self.assertEqual(selection.q_start.dtype, wp.int32)
+        self.assertEqual(selection.qd_start.dtype, wp.int32)
         # Directly usable as a subscript — this is the documented binding idiom.
         sim = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
-        self.assertEqual(sim[selection.qd_idx].size, 1)
+        self.assertEqual(sim[selection.qd_start].size, 1)
 
     def test_coordinate_and_dof_indices_differ_with_ball_joint(self):
         """Verify the two index spaces diverge once a multi-coordinate joint is present."""
@@ -150,16 +150,16 @@ class TestSelectJoints(unittest.TestCase):
         builder, _j_ball, j_rev = _build_ball_then_revolute()
         model = builder.finalize(device=device)
         selection = select_joints(model, joints=[j_rev])
-        np.testing.assert_array_equal(selection.q_idx.numpy(), [4])  # after the 4-coordinate quaternion
-        np.testing.assert_array_equal(selection.qd_idx.numpy(), [3])  # after the 3-DOF angular velocity
+        np.testing.assert_array_equal(selection.q_start.numpy(), [4])  # after the 4-coordinate quaternion
+        np.testing.assert_array_equal(selection.qd_start.numpy(), [3])  # after the 3-DOF angular velocity
 
     def test_heterogeneous_two_robots(self):
         """Verify select_joints concatenates controlled DOFs per articulation for a mixed fleet."""
         device = wp.get_device()
         model = _build_two_robot_mixed().finalize(device=device)
         selection = select_joints(model)
-        self.assertEqual(selection.q_idx.numpy().size, 3)
-        self.assertEqual(selection.qd_idx.numpy().size, 3)
+        self.assertEqual(selection.q_start.numpy().size, 3)
+        self.assertEqual(selection.qd_start.numpy().size, 3)
 
     def test_explicit_non_scalar_joint_passed_through(self):
         """Verify select_joints does not itself validate joint type, deferring to the controller."""
@@ -175,7 +175,7 @@ class TestSelectJoints(unittest.TestCase):
         builder.add_articulation([j_ball], label="robot")
         model = builder.finalize(device=device)
         selection = select_joints(model, joints=[j_ball])
-        np.testing.assert_array_equal(selection.q_idx.numpy(), [0])
+        np.testing.assert_array_equal(selection.q_start.numpy(), [0])
 
     def test_fixed_only_articulation_raises_instead_of_out_of_range_index(self):
         """Verify a model whose only joint is Fixed raises a clear error rather than an invalid index.
@@ -223,8 +223,8 @@ class TestSelectJoints(unittest.TestCase):
         builder.add_articulation([j_fixed, j_rev], label="robot")
         model = builder.finalize(device=device)
         selection = select_joints(model)
-        np.testing.assert_array_equal(selection.q_idx.numpy(), [model.joint_q_start.numpy()[j_rev]])
-        np.testing.assert_array_equal(selection.qd_idx.numpy(), [model.joint_qd_start.numpy()[j_rev]])
+        np.testing.assert_array_equal(selection.q_start.numpy(), [model.joint_q_start.numpy()[j_rev]])
+        np.testing.assert_array_equal(selection.qd_start.numpy(), [model.joint_qd_start.numpy()[j_rev]])
         # Explicitly naming the Fixed joint contributes no entry either.
         with self.assertRaises(ValueError):
             select_joints(model, joints=[j_fixed])
@@ -233,15 +233,15 @@ class TestSelectJoints(unittest.TestCase):
         """Verify a glob pattern selects every articulation whose label matches."""
         device = wp.get_device()
         model = _build_two_robot_mixed().finalize(device=device)
-        matched = select_joints(model, articulations="robot*").qd_idx.numpy()
-        np.testing.assert_array_equal(matched, select_joints(model).qd_idx.numpy())
+        matched = select_joints(model, articulations="robot*").qd_start.numpy()
+        np.testing.assert_array_equal(matched, select_joints(model).qd_start.numpy())
 
     def test_articulation_selected_by_label(self):
         """Verify select_joints resolves an articulation label to its indices."""
         device = wp.get_device()
         model = _build_two_robot_mixed().finalize(device=device)
         selection = select_joints(model, articulations=["robot1"])
-        self.assertEqual(selection.q_idx.numpy().size, 1)
+        self.assertEqual(selection.q_start.numpy().size, 1)
 
     def test_duplicate_articulations_deduplicated(self):
         """Verify naming one articulation twice does not select its joints twice.
@@ -253,9 +253,9 @@ class TestSelectJoints(unittest.TestCase):
         model = _build_two_robot_mixed().finalize(device=device)
         by_index_twice = select_joints(model, articulations=[0, 0])
         by_index_and_label = select_joints(model, articulations=[0, "robot0"])
-        expected = select_joints(model, articulations=[0]).q_idx.numpy()
-        np.testing.assert_array_equal(by_index_twice.q_idx.numpy(), expected)
-        np.testing.assert_array_equal(by_index_and_label.q_idx.numpy(), expected)
+        expected = select_joints(model, articulations=[0]).q_start.numpy()
+        np.testing.assert_array_equal(by_index_twice.q_start.numpy(), expected)
+        np.testing.assert_array_equal(by_index_and_label.q_start.numpy(), expected)
 
     def test_joint_selected_by_label(self):
         """Verify select_joints resolves a joint label to its index within the selected articulation."""
@@ -282,7 +282,7 @@ class TestSelectJoints(unittest.TestCase):
         builder.add_articulation([j_shoulder, j_elbow], label="robot")
         model = builder.finalize(device=device)
         selection = select_joints(model, joints=["shoulder"])
-        np.testing.assert_array_equal(selection.q_idx.numpy(), [0])
+        np.testing.assert_array_equal(selection.q_start.numpy(), [0])
 
     def test_joint_label_selects_every_match(self):
         """Verify a joint label matching two joints in one articulation selects both."""
@@ -309,7 +309,7 @@ class TestSelectJoints(unittest.TestCase):
         builder.add_articulation([j0, j1], label="robot")
         model = builder.finalize(device=device)
         selection = select_joints(model, joints=["finger"])
-        self.assertEqual(selection.q_idx.numpy().size, 2)
+        self.assertEqual(selection.q_start.numpy().size, 2)
 
     def test_joint_glob_pattern_matches_leaf_name_across_prefixed_fleet(self):
         """Verify a glob joint pattern matches by leaf name despite an add_builder label prefix.
@@ -335,7 +335,7 @@ class TestSelectJoints(unittest.TestCase):
         builder.add_builder(sub, label_prefix="robot_1")
         model = builder.finalize(device=device)
         selection = select_joints(model, joints=["should*"])
-        self.assertEqual(selection.q_idx.numpy().size, 2)
+        self.assertEqual(selection.q_start.numpy().size, 2)
 
     def test_joint_regex_pattern_matches_leaf_name_across_prefixed_fleet(self):
         """Verify a compiled regex joint pattern matches by leaf name despite an add_builder label prefix.
@@ -361,7 +361,42 @@ class TestSelectJoints(unittest.TestCase):
         builder.add_builder(sub, label_prefix="robot_1")
         model = builder.finalize(device=device)
         selection = select_joints(model, joints=[re.compile("should.r")])
-        self.assertEqual(selection.q_idx.numpy().size, 2)
+        self.assertEqual(selection.q_start.numpy().size, 2)
+
+    def test_articulation_glob_pattern_matches_full_label_across_prefixed_fleet(self):
+        """Verify an articulation glob pattern matches the full label, prefix included.
+
+        Unlike ``joints``, whose patterns match the leaf name, ``articulations``
+        patterns are matched against the full :attr:`~newton.Model.articulation_label`
+        following :ref:`label-matching` — so a pattern must account for the
+        prefix ``add_builder(..., label_prefix=...)`` adds, rather than
+        matching the leaf name alone.
+        """
+        device = wp.get_device()
+        sub = newton.ModelBuilder()
+        link = sub.add_link()
+        j = sub.add_joint_revolute(
+            parent=-1,
+            child=link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            label="shoulder",
+        )
+        sub.add_articulation([j], label="arm")
+        builder = newton.ModelBuilder()
+        builder.add_builder(sub, label_prefix="robot_0")
+        builder.add_builder(sub, label_prefix="robot_1")
+        model = builder.finalize(device=device)
+
+        # A pattern matching only the leaf name does not match the full,
+        # prefixed label ("robot_0/arm", "robot_1/arm").
+        with self.assertRaises(ValueError):
+            select_joints(model, articulations=["arm"])
+
+        # A pattern that accounts for the prefix matches both robots.
+        selection = select_joints(model, articulations=["*arm"])
+        self.assertEqual(selection.q_start.numpy().size, 2)
 
     def test_articulation_label_matches_nothing_raises(self):
         """Verify select_joints raises when an articulation label matches nothing."""
@@ -407,7 +442,7 @@ class TestSelectJoints(unittest.TestCase):
             select_joints(model, joints=[0])  # joint 0 is the loose joint
         # The articulated joint still resolves correctly.
         selection = select_joints(model, joints=[j_controlled])
-        np.testing.assert_array_equal(selection.q_idx.numpy(), [model.joint_q_start.numpy()[j_controlled]])
+        np.testing.assert_array_equal(selection.q_start.numpy(), [model.joint_q_start.numpy()[j_controlled]])
 
     def test_joint_between_articulations_raises(self):
         """Verify select_joints raises when a joint between two articulations belongs to no articulation.
@@ -431,7 +466,7 @@ class TestSelectJoints(unittest.TestCase):
             select_joints(model, joints=[1])  # joint 1 is the loose joint
         # Both articulated joints still resolve correctly.
         selection = select_joints(model, joints=[j0, j1])
-        np.testing.assert_array_equal(selection.q_idx.numpy(), model.joint_q_start.numpy()[[j0, j1]])
+        np.testing.assert_array_equal(selection.q_start.numpy(), model.joint_q_start.numpy()[[j0, j1]])
 
     def test_joint_after_every_articulation_raises(self):
         """Verify select_joints raises when a joint after every articulation belongs to no articulation.
@@ -452,7 +487,7 @@ class TestSelectJoints(unittest.TestCase):
             select_joints(model, joints=[1])  # joint 1 is the trailing loose joint
         # The articulated joint still resolves correctly.
         selection = select_joints(model, joints=[j0])
-        np.testing.assert_array_equal(selection.q_idx.numpy(), [model.joint_q_start.numpy()[j0]])
+        np.testing.assert_array_equal(selection.q_start.numpy(), [model.joint_q_start.numpy()[j0]])
 
     def test_selection_drives_controller_end_to_end(self):
         """Verify a select_joints result wires into a controller and reaches the simulation.
@@ -478,14 +513,14 @@ class TestSelectJoints(unittest.TestCase):
         )
         ins, outs = ctrl.input(), ctrl.output()
         sim_f = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
-        outs.joint_f = sim_f[selection.qd_idx]
+        outs.joint_f = sim_f[selection.qd_start]
         ins.joint_q_des = _flat([1.0, 1.0, 1.0], device)
         ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
         written = sim_f.numpy()
-        np.testing.assert_allclose(written[selection.qd_idx.numpy()], [1.0, 1.0, 1.0], atol=1e-4)
+        np.testing.assert_allclose(written[selection.qd_start.numpy()], [1.0, 1.0, 1.0], atol=1e-4)
         # The free base's six DOFs must be untouched.
-        untouched = np.setdiff1d(np.arange(model.joint_dof_count), selection.qd_idx.numpy())
+        untouched = np.setdiff1d(np.arange(model.joint_dof_count), selection.qd_start.numpy())
         np.testing.assert_allclose(written[untouched], 0.0, atol=1e-6)
 
 

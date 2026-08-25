@@ -167,7 +167,7 @@ class Example:
         self._output = self.controller.output()
         # The controller's torque output is compact (one entry per controlled
         # DOF); an indexed view scatters it straight into the sim control buffer.
-        self._output.joint_f = self.control.joint_f[selection.qd_idx]
+        self._output.joint_f = self.control.joint_f[selection.qd_start]
 
         # Bind live sim arrays before capture so the graph records the correct
         # buffer addresses. state_0 holds the current frame result after

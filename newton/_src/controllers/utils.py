@@ -55,5 +55,5 @@ def _validate_array(
         hint = ""
         if allow_indexed:
             # Only ports can be bound to a view, so only they get the hint.
-            hint = " To bind a simulation-sized array, pass a view: sim_array[selection.qd_idx]."
+            hint = " To bind a simulation-sized array, pass a view: sim_array[selection.qd_start]."
         raise ValueError(f"{name} must have shape {shape}, got {tuple(array.shape)}.{hint}")

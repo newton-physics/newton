@@ -789,8 +789,8 @@ class TestControllerJointImpedance(unittest.TestCase):
         ctrl = ControllerJointImpedance(
             model,
             joint_selection=JointSelection(
-                q_idx=_idx([model.joint_q_start.numpy()[j_rev]], device),
-                qd_idx=_idx([model.joint_qd_start.numpy()[j_rev]], device),
+                q_start=_idx([model.joint_q_start.numpy()[j_rev]], device),
+                qd_start=_idx([model.joint_qd_start.numpy()[j_rev]], device),
             ),
             stiffness=_gains(1, 5.0, device),
             damping=_gains(1, 0.0, device),
@@ -829,7 +829,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_selection=JointSelection(q_idx=_idx([0, 1, 2], device), qd_idx=_idx([0, 1, 2], device)),
+                joint_selection=JointSelection(q_start=_idx([0, 1, 2], device), qd_start=_idx([0, 1, 2], device)),
                 stiffness=_gains(3, 1.0, device),
                 damping=_gains(3, 0.0, device),
                 use_gravity_compensation=False,
@@ -872,13 +872,13 @@ class TestControllerJointImpedance(unittest.TestCase):
         self.assertIsNotNone(ctrl)
 
     def test_mismatched_index_lengths_raise(self):
-        """Verify joint_q_idx and joint_qd_idx of different lengths raise."""
+        """Verify joint_q_start and joint_qd_start of different lengths raise."""
         device = wp.get_device()
         model = _build_two_robot_mixed().finalize(device=device)
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_selection=JointSelection(q_idx=_idx([0, 1, 2], device), qd_idx=_idx([0, 1], device)),
+                joint_selection=JointSelection(q_start=_idx([0, 1, 2], device), qd_start=_idx([0, 1], device)),
                 stiffness=_gains(3, 1.0, device),
                 damping=_gains(3, 0.0, device),
                 use_gravity_compensation=False,
@@ -906,7 +906,7 @@ class TestControllerJointImpedance(unittest.TestCase):
             ControllerJointImpedance(
                 model,
                 joint_selection=JointSelection(
-                    q_idx=_idx([q_start[j_rev]], device), qd_idx=_idx([qd_start[j_rev] - 1], device)
+                    q_start=_idx([q_start[j_rev]], device), qd_start=_idx([qd_start[j_rev] - 1], device)
                 ),
                 stiffness=_gains(1, 1.0, device),
                 damping=_gains(1, 0.0, device),
@@ -923,7 +923,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_selection=JointSelection(q_idx=_idx([99], device), qd_idx=_idx([0], device)),
+                joint_selection=JointSelection(q_start=_idx([99], device), qd_start=_idx([0], device)),
                 stiffness=_gains(1, 1.0, device),
                 damping=_gains(1, 0.0, device),
                 use_gravity_compensation=False,
@@ -948,7 +948,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_selection=JointSelection(q_idx=_idx([0], device), qd_idx=_idx([0], device)),
+                joint_selection=JointSelection(q_start=_idx([0], device), qd_start=_idx([0], device)),
                 stiffness=_gains(1, 1.0, device),
                 damping=_gains(1, 0.0, device),
                 use_gravity_compensation=False,
@@ -964,7 +964,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_selection=JointSelection(q_idx=_idx([0, 0], device), qd_idx=_idx([0, 0], device)),
+                joint_selection=JointSelection(q_start=_idx([0, 0], device), qd_start=_idx([0, 0], device)),
                 stiffness=_gains(2, 1.0, device),
                 damping=_gains(2, 0.0, device),
                 use_gravity_compensation=False,
@@ -987,7 +987,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         model = builder.finalize(device=device)
         controller = ControllerJointImpedance(
             model,
-            joint_selection=JointSelection(q_idx=_idx([0], device), qd_idx=_idx([0], device)),
+            joint_selection=JointSelection(q_start=_idx([0], device), qd_start=_idx([0], device)),
             stiffness=_gains(1, 5.0, device),
             damping=_gains(1, 0.0, device),
             use_gravity_compensation=False,
@@ -1021,7 +1021,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
-                joint_selection=JointSelection(q_idx=interleaved, qd_idx=interleaved),
+                joint_selection=JointSelection(q_start=interleaved, qd_start=interleaved),
                 stiffness=_gains(4, 1.0, device),
                 damping=_gains(4, 0.0, device),
                 use_gravity_compensation=False,
@@ -1064,7 +1064,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         model = builder.finalize(device=device)
         selection = select_joints(model, joints=revolute_joints)
         # Coordinate and DOF indices must genuinely differ, or this proves nothing.
-        self.assertFalse(np.array_equal(selection.q_idx.numpy(), selection.qd_idx.numpy()))
+        self.assertFalse(np.array_equal(selection.q_start.numpy(), selection.qd_start.numpy()))
 
         ctrl = ControllerJointImpedance(
             model,
@@ -1082,11 +1082,11 @@ class TestControllerJointImpedance(unittest.TestCase):
         ins, outs = ctrl.input(), ctrl.output()
         ins.joint_q_des = _flat([1.0, 2.0, 3.0], device)
         sim_f = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
-        outs.joint_f = sim_f[selection.qd_idx]
+        outs.joint_f = sim_f[selection.qd_start]
         ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
         expected = np.zeros(model.joint_dof_count, dtype=np.float32)
-        expected[selection.qd_idx.numpy()] = [5.0, 10.0, 15.0]
+        expected[selection.qd_start.numpy()] = [5.0, 10.0, 15.0]
         np.testing.assert_allclose(sim_f.numpy(), expected, atol=1e-4)
 
     def test_inertia_decoupling_uses_the_controlled_robots_own_block(self):
@@ -1168,7 +1168,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         ctrl = ControllerJointImpedance(
             model,
             joint_selection=JointSelection(
-                q_idx=_idx([q_start[j_arm]], device), qd_idx=_idx([qd_start[j_arm]], device)
+                q_start=_idx([q_start[j_arm]], device), qd_start=_idx([qd_start[j_arm]], device)
             ),
             stiffness=_gains(1, 0.0, device),
             damping=_gains(1, 0.0, device),
@@ -1206,8 +1206,8 @@ class TestControllerJointImpedance(unittest.TestCase):
             ControllerJointImpedance(
                 model,
                 joint_selection=JointSelection(
-                    q_idx=wp.zeros(1, dtype=wp.uint32, device=device),
-                    qd_idx=wp.zeros(1, dtype=wp.uint32, device=device),
+                    q_start=wp.zeros(1, dtype=wp.uint32, device=device),
+                    qd_start=wp.zeros(1, dtype=wp.uint32, device=device),
                 ),
                 stiffness=_gains(1, 1.0, device),
                 damping=_gains(1, 0.0, device),
@@ -1218,7 +1218,7 @@ class TestControllerJointImpedance(unittest.TestCase):
             )
 
     def test_mutating_caller_index_arrays_after_construction_has_no_effect(self):
-        """Verify mutating joint_q_idx/joint_qd_idx after construction does not redirect the controller.
+        """Verify mutating joint_q_start/joint_qd_start after construction does not redirect the controller.
 
         The robot packing, local-DOF tables, and masks are derived once from
         the arrays' contents at construction time. If the controller kept a
@@ -1250,11 +1250,11 @@ class TestControllerJointImpedance(unittest.TestCase):
         model = builder.finalize(device=device)
 
         # Controller is built to control robot 0's coordinate/DOF (index 0).
-        joint_q_idx = wp.array([0], dtype=wp.int32, device=device)
-        joint_qd_idx = wp.array([0], dtype=wp.int32, device=device)
+        joint_q_start = wp.array([0], dtype=wp.int32, device=device)
+        joint_qd_start = wp.array([0], dtype=wp.int32, device=device)
         ctrl = ControllerJointImpedance(
             model,
-            joint_selection=JointSelection(q_idx=joint_q_idx, qd_idx=joint_qd_idx),
+            joint_selection=JointSelection(q_start=joint_q_start, qd_start=joint_qd_start),
             stiffness=wp.array([5.0], dtype=wp.float32, device=device),
             damping=wp.array([0.0], dtype=wp.float32, device=device),
             use_gravity_compensation=False,
@@ -1266,8 +1266,8 @@ class TestControllerJointImpedance(unittest.TestCase):
         # Redirect the caller's own arrays at robot 1's coordinate/DOF (index 1)
         # after construction. If the controller kept a live reference instead
         # of a private copy, this would change which robot it reads from.
-        joint_q_idx.assign([1])
-        joint_qd_idx.assign([1])
+        joint_q_start.assign([1])
+        joint_qd_start.assign([1])
 
         inputs = ctrl.input()
         inputs.joint_q = wp.array([0.0, 10.0], dtype=wp.float32, device=device)  # robot 0 at 0.0, robot 1 at 10.0

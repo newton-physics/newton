@@ -18,5 +18,5 @@ counts are renamed to say what they count: `robot_count`, `dofs_per_robot`,
 #      outputs.joint_f = control.joint_f
 selection = select_joints(model)
 controller = ControllerJointImpedance(model, joint_selection=selection, ...)
-outputs.joint_f = control.joint_f[selection.qd_idx]
+outputs.joint_f = control.joint_f[selection.qd_start]
 ```
