@@ -43,9 +43,9 @@ class ControllerJointImpedance(ControllerBase):
     it are visible to the controller immediately.
 
     **Joint selection.** Build ``joint_selection`` with
-    :func:`~newton.controllers.select_joints`. It locates the controlled DOFs
-    in the model — one coordinate index and one DOF index per DOF — and is not
-    part of the control interface.
+    :func:`~newton.controllers.select_joints`. It locates each selected
+    joint's starting coordinate/DOF index in the model — one entry per joint,
+    not per DOF — and is not part of the control interface.
 
     **Ports.** Most arrays passed in and out are **compact**: one entry per
     controlled DOF — robot 0's DOFs first, then robot 1's — rather than one
