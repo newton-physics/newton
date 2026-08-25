@@ -414,6 +414,47 @@ For example, a custom controller needs to implement
 :meth:`~newton.ModelBuilder.add_actuator` or USD schemas) to constructor
 parameters, filling in defaults where needed.
 
+A custom controller works in the explicit mode with the methods above. To also
+support the implicit mode it provides three more things, because the solve
+evaluates the control law inside its own kernel rather than calling
+:meth:`~Controller.compute`:
+
+* :attr:`~Controller.evaluate_force` — a ``@wp.func`` holding the control law.
+  The solve calls it at the predicted state, so it must read every parameter it
+  needs from one packed row rather than from the controller's own arrays.
+* :meth:`~Controller.bind_params` — packs those parameters into an
+  ``(num_actuators, P)`` array and re-points the controller's public arrays at
+  its columns, so later writes stay visible to the solve.
+* :meth:`~Controller.prepare_implicit` — optional, called once per step before
+  the solve. Use it for parameters that depend on the current state, such as a
+  PID integral term or a network linearization. Controllers with fixed
+  parameters do not override it.
+
+.. code-block:: python
+   :caption: Adding implicit support to ``MyController``.
+
+   @wp.func
+   def _my_force(q: wp.float64, qd: wp.float64, target_q: wp.float64,
+                 target_qd: wp.float64, feedforward: wp.float64,
+                 params: wp.array2d[float], i: wp.int32) -> wp.float64:
+       return wp.float64(params[i, 0]) * (target_q - q)
+
+   class MyController(Controller):
+       evaluate_force = _my_force
+
+       def bind_params(self):
+           pack = wp.zeros((len(self.gain), 1), dtype=float, device=self.gain.device)
+           pack[:, 0].assign(self.gain)
+           self.gain = pack[:, 0]   # writes to self.gain now reach the solve
+           return pack
+
+Returning ``None`` from :meth:`~Controller.bind_params` declares that this
+configuration cannot be solved implicitly.
+:meth:`~newton.actuators.Actuator.set_effort_mode_implicit` then raises
+``NotImplementedError`` rather than falling back silently, as it does for a
+Torch-backed neural checkpoint. Leaving
+:attr:`~Controller.evaluate_force` as ``None`` raises the same error.
+
 Similarly, a custom clamping stage subclasses :class:`Clamping` and implements
 :meth:`~Clamping.modify_forces` (which reads effort from a source buffer and writes bounded effort to a destination buffer).
 
