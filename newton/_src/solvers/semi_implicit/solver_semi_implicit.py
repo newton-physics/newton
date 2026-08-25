@@ -43,7 +43,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
 
     Joint limitations:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
-          CABLE joints are not supported.
+          ROD joints are not supported.
         - :attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
           are supported.

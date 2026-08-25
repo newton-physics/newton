@@ -12,6 +12,10 @@ from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
 from newton._src.solvers.kamino._src.models.builders.basics import build_box_on_plane, build_boxes_hinged
+from newton._src.solvers.kamino._src.models.builders.testing import (
+    build_free_joint_test,
+    build_unary_revolute_joint_test,
+)
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.padmm.types import PADMMData
@@ -56,11 +60,16 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
         problem.data.cio.numpy(), problem.data.mu.numpy().astype(np.float64), problem.delassus.info.dim.numpy()
     )
 
-    num_joint_cts = problem.data.njc.numpy()
+    num_bilateral_joint_cts = problem.data.njc.numpy()
+    num_bounded_joint_cts = problem.data.nbc.numpy()
     num_contacts = problem.data.nc.numpy()
     num_limits = problem.data.nl.numpy()
+    bounded_cts_offset = problem.data.bcio.numpy()
+    joint_bounded_cts_group_offset = problem.data.bcgo.numpy()
     contact_group_offset = problem.data.ccgo.numpy()
     limit_group_offset = problem.data.lcgo.numpy()
+    bound_lower = problem.data.bound_lower.numpy().astype(np.float64)
+    bound_upper = problem.data.bound_upper.numpy().astype(np.float64)
 
     for mat_id in range(num_matrices):
         D_i = D[mat_id]
@@ -98,11 +107,20 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
         v_aug_i = v_plus_true_i + s_i
         output["v_aug"].append(v_aug_i)
 
-        # Compute the NCP primal residual as: r_p := || lambda - proj_K(lambda) ||_inf
+        # Compute the NCP primal residual as: r_p := || lambda - proj_C(lambda) ||_inf
         r_ncp_p_i = 0.0
+        for bounded_id in range(num_bounded_joint_cts[mat_id]):
+            bound_idx = bounded_cts_offset[mat_id] + bounded_id
+            vector_idx = joint_bounded_cts_group_offset[mat_id] + bounded_id
+            lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
+            upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
+            lambda_b = lambdas_i[vector_idx]
+            r_b = np.abs(lambda_b - np.clip(lambda_b, lower, upper))
+            r_ncp_p_i = max(r_ncp_p_i, r_b)
+
         for limit_id in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + limit_id
-            r_ncp_p_i = np.max(r_ncp_p_i, np.abs(lambdas_i[lcio] - np.max(0.0, lambdas_i[lcio])))
+            r_ncp_p_i = max(r_ncp_p_i, np.abs(lambdas_i[lcio] - max(0.0, lambdas_i[lcio])))
 
         def project_to_coulomb_cone(x, mu):
             xt_norm = np.linalg.norm(x[:2])
@@ -126,14 +144,14 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         # Compute the NCP dual residual as: r_d := || v_plus + s - proj_dual_K(v_plus + s)  ||_inf
         r_ncp_d_i = 0.0
-        for jid in range(num_joint_cts[mat_id]):
+        for jid in range(num_bilateral_joint_cts[mat_id]):
             v_j = v_aug_i[jid]
             r_j = np.abs(v_j)
             r_ncp_d_i = max(r_ncp_d_i, r_j)
 
         for lid in range(num_limits[mat_id]):
             v_l = float(v_aug_i[limit_group_offset[mat_id] + lid])
-            v_l -= np.max(0.0, v_l)
+            v_l -= max(0.0, v_l)
             r_l = np.abs(v_l)
             r_ncp_d_i = max(r_ncp_d_i, r_l)
 
@@ -162,8 +180,19 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         output["r_ncp_d"].append(r_ncp_d_i)
 
-        # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
+        # Compute generalized complementarity for boxes, limits, and contacts.
         r_ncp_c_i = 0.0
+        for bounded_id in range(num_bounded_joint_cts[mat_id]):
+            bound_idx = bounded_cts_offset[mat_id] + bounded_id
+            vector_idx = joint_bounded_cts_group_offset[mat_id] + bounded_id
+            lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
+            upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
+            velocity = v_aug_i[vector_idx]
+            lambda_value = lambdas_i[vector_idx]
+            r_b = (lambda_value - lower) * max(velocity, 0.0)
+            r_b += (upper - lambda_value) * max(-velocity, 0.0)
+            r_ncp_c_i = max(r_ncp_c_i, np.abs(r_b))
+
         for lid in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + lid
             v_l = v_aug_i[lcio]
@@ -179,16 +208,24 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
             r_ncp_c_i = max(r_ncp_c_i, r_c)
         output["r_ncp_c"].append(r_ncp_c_i)
 
-        # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
+        # Compute the natural-map residuals as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
         r_vi_natmap_i = 0.0
-        for jid in range(num_joint_cts[mat_id]):
+        for jid in range(num_bilateral_joint_cts[mat_id]):
             r_vi_natmap_i = max(r_vi_natmap_i, np.abs(v_aug_i[jid]))
+        for bounded_id in range(num_bounded_joint_cts[mat_id]):
+            bound_idx = bounded_cts_offset[mat_id] + bounded_id
+            vector_idx = joint_bounded_cts_group_offset[mat_id] + bounded_id
+            lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
+            upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
+            lambda_b = lambdas_i[vector_idx]
+            r_b = np.abs(lambda_b - np.clip(lambda_b - v_aug_i[vector_idx], lower, upper))
+            r_vi_natmap_i = max(r_vi_natmap_i, r_b)
 
         for lid in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + lid
             v_l = v_aug_i[lcio]
             lambda_l = lambdas_i[lcio]
-            lambda_l -= np.max(0.0, lambda_l - v_l)
+            lambda_l -= np.maximum(0.0, lambda_l - v_l)
             lambda_l = np.abs(lambda_l)
             r_vi_natmap_i = max(r_vi_natmap_i, lambda_l)
 
@@ -877,6 +914,7 @@ class TestSolverMetrics(unittest.TestCase):
         np.testing.assert_array_equal(argmax, [-1, -1])
 
     def test_08_contact_residual_mixed_signed_distances(self):
+        """Report the largest penetration per world."""
         residual, argmax = self._evaluate_contact_residuals(
             [
                 (0, 0, 0.5),
@@ -889,6 +927,226 @@ class TestSolverMetrics(unittest.TestCase):
 
         np.testing.assert_allclose(residual, [0.1, 0.4])
         np.testing.assert_array_equal(argmax, [1, 2])
+
+    def test_09_contact_residual_nan(self):
+        """Propagate a NaN contact gap into the contact metric."""
+        residual, argmax = self._evaluate_contact_residuals([(0, 0, np.nan), (1, 0, -0.2)])
+
+        self.assertTrue(np.isnan(residual[0]))
+        self.assertAlmostEqual(residual[1], 0.2)
+        np.testing.assert_array_equal(argmax, [-1, 0])
+
+    def test_10_joint_residual_nan(self):
+        """Propagate a NaN joint residual into the joint constraint metric."""
+        test = TestSetup(
+            builder_fn=build_boxes_hinged,
+            max_world_contacts=8,
+            gravity=False,
+            perturb=False,
+            device=self.default_device,
+        )
+        test.build()
+        metrics = SolutionMetrics(model=test.model)
+        residuals = test.data.joints.r_j.numpy()
+        joint_offset = test.model.joints.kinematic_cts_offset.numpy()[0]
+        residuals[joint_offset] = np.nan
+        test.data.joints.r_j.assign(residuals)
+        metrics.reset()
+        metrics._evaluate_constraint_violations_perf(test.model, test.data)
+        self.assertTrue(np.isnan(metrics.data.r_cts_joints.numpy()[0]))
+
+    def test_11_limit_residual_nan(self):
+        """Propagate a NaN limit residual into the limit constraint metric."""
+        test = TestSetup(
+            builder_fn=build_unary_revolute_joint_test,
+            max_world_contacts=1,
+            gravity=False,
+            perturb=False,
+            device=self.default_device,
+        )
+        test.build()
+        metrics = SolutionMetrics(model=test.model)
+        residuals = test.limits.data.r_q.numpy()
+        residuals[0] = np.nan
+        wids = test.limits.data.wid.numpy()
+        lids = test.limits.data.lid.numpy()
+        dofs = test.limits.data.dof.numpy()
+        wids[0] = 0
+        lids[0] = 0
+        dofs[0] = 0
+        test.limits.data.model_active_limits.assign(np.array([1], dtype=np.int32))
+        test.limits.data.r_q.assign(residuals)
+        test.limits.data.wid.assign(wids)
+        test.limits.data.lid.assign(lids)
+        test.limits.data.dof.assign(dofs)
+        metrics.reset()
+        metrics._evaluate_constraint_violations_perf(test.model, test.data, limits=test.limits)
+        self.assertTrue(np.isnan(metrics.data.r_cts_limits.numpy()[0]))
+
+    def test_12_primal_residual_nan_dense_and_sparse(self):
+        """Propagate a NaN body velocity into dense and sparse primal metrics."""
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                test = TestSetup(
+                    builder_fn=build_boxes_hinged,
+                    max_world_contacts=8,
+                    gravity=False,
+                    perturb=False,
+                    device=self.default_device,
+                    sparse=sparse,
+                )
+                test.build()
+                metrics = SolutionMetrics(model=test.model)
+                velocities = test.data.bodies.u_i.numpy()
+                bid_follower = test.model.joints.bid_F.numpy()[0]
+                velocities[bid_follower, 0] = np.nan
+                test.data.bodies.u_i.assign(velocities)
+                metrics.reset()
+                metrics._evaluate_primal_problem_perf(test.model, test.data, test.state_p, test.jacobians)
+
+                self.assertTrue(np.isnan(metrics.data.r_eom.numpy()[0]))
+                self.assertTrue(np.isnan(metrics.data.r_kinematics.numpy()[0]))
+
+    def test_13_free_joint_kinematics_residual_dense_and_sparse(self):
+        """Leave kinematics metrics unset for a FREE joint."""
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                test = TestSetup(
+                    builder_fn=build_free_joint_test,
+                    max_world_contacts=1,
+                    gravity=False,
+                    perturb=False,
+                    device=self.default_device,
+                    sparse=sparse,
+                )
+                test.build()
+                metrics = SolutionMetrics(model=test.model)
+
+                metrics.reset()
+                metrics._evaluate_primal_problem_perf(test.model, test.data, test.state_p, test.jacobians)
+
+                np.testing.assert_array_equal(metrics.data.r_kinematics.numpy(), [0.0])
+                np.testing.assert_array_equal(metrics.data.r_kinematics_argmax.numpy(), [-1])
+
+    def test_14_dual_residual_nan_dense_and_sparse(self):
+        """Propagate a NaN solution multiplier into dual analysis metrics."""
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                test = TestSetup(
+                    builder_fn=build_box_on_plane,
+                    max_world_contacts=4,
+                    gravity=False,
+                    perturb=False,
+                    device=self.default_device,
+                    sparse=sparse,
+                )
+                test.build()
+                metrics = SolutionMetrics(model=test.model)
+                with wp.ScopedDevice(test.model.device):
+                    sigma = wp.zeros(test.model.size.num_worlds, dtype=wp.vec2f)
+                    lambdas = wp.zeros(test.model.size.sum_of_max_total_cts, dtype=wp.float32)
+                    v_plus = wp.zeros(test.model.size.sum_of_max_total_cts, dtype=wp.float32)
+                lambda_values = lambdas.numpy()
+                vio = test.problem.data.vio.numpy()[0]
+                lambda_values[vio + test.problem.data.ccgo.numpy()[0]] = np.nan
+                lambdas.assign(lambda_values)
+
+                metrics.reset()
+                metrics._evaluate_dual_problem_perf(sigma, lambdas, v_plus, test.problem)
+
+                for metric_name in (
+                    "r_v_plus",
+                    "r_ncp_primal",
+                    "r_ncp_dual",
+                    "r_ncp_compl",
+                    "r_vi_natmap",
+                    "f_ncp",
+                    "f_ccp",
+                ):
+                    self.assertTrue(
+                        np.isnan(getattr(metrics.data, metric_name).numpy()[0]),
+                        msg=f"{metric_name} did not propagate NaN",
+                    )
+
+    def test_15_dual_metric_input_nan(self):
+        """Propagate NaN dual inputs through their affected analysis metrics."""
+        for sparse in (False, True):
+            for input_name in ("v_plus", "v_f", "mu"):
+                with self.subTest(sparse=sparse, input_name=input_name):
+                    test = TestSetup(
+                        builder_fn=build_box_on_plane,
+                        max_world_contacts=4,
+                        gravity=False,
+                        perturb=False,
+                        device=self.default_device,
+                        sparse=sparse,
+                    )
+                    test.build()
+                    metrics = SolutionMetrics(model=test.model)
+                    with wp.ScopedDevice(test.model.device):
+                        sigma = wp.zeros(test.model.size.num_worlds, dtype=wp.vec2f)
+                        lambdas = wp.zeros(test.model.size.sum_of_max_total_cts, dtype=wp.float32)
+                        v_plus = wp.zeros(test.model.size.sum_of_max_total_cts, dtype=wp.float32)
+                    vio = test.problem.data.vio.numpy()[0]
+                    contact_offset = test.problem.data.ccgo.numpy()[0]
+
+                    if input_name == "v_plus":
+                        values = v_plus.numpy()
+                        values[vio + contact_offset] = np.nan
+                        v_plus.assign(values)
+                    elif input_name == "v_f":
+                        values = test.problem.data.v_f.numpy()
+                        values[vio + contact_offset] = np.nan
+                        test.problem.data.v_f.assign(values)
+                    else:
+                        values = test.problem.data.mu.numpy()
+                        values[test.problem.data.cio.numpy()[0]] = np.nan
+                        test.problem.data.mu.assign(values)
+
+                    metrics.reset()
+                    metrics._evaluate_dual_problem_perf(sigma, lambdas, v_plus, test.problem)
+                    if input_name == "mu":
+                        self.assertTrue(np.isfinite(metrics.data.r_v_plus.numpy()[0]))
+                    else:
+                        self.assertTrue(np.isnan(metrics.data.r_v_plus.numpy()[0]))
+
+                    if input_name != "v_plus":
+                        for metric_name in ("r_ncp_primal", "r_ncp_dual", "r_ncp_compl", "r_vi_natmap"):
+                            self.assertTrue(
+                                np.isnan(getattr(metrics.data, metric_name).numpy()[0]),
+                                msg=f"{metric_name} did not propagate {input_name} NaN",
+                            )
+
+                    if input_name == "v_f":
+                        for metric_name in ("f_ncp", "f_ccp"):
+                            self.assertTrue(
+                                np.isnan(getattr(metrics.data, metric_name).numpy()[0]),
+                                msg=f"{metric_name} did not propagate v_f NaN",
+                            )
+
+    def test_16_metrics_reset_clears_nan(self):
+        """Clear a reported NaN before evaluating a finite joint residual."""
+        test = TestSetup(
+            builder_fn=build_boxes_hinged,
+            max_world_contacts=8,
+            gravity=False,
+            perturb=False,
+            device=self.default_device,
+        )
+        test.build()
+        metrics = SolutionMetrics(model=test.model)
+        residuals = test.data.joints.r_j.numpy()
+        residuals[test.model.joints.kinematic_cts_offset.numpy()[0]] = np.nan
+        test.data.joints.r_j.assign(residuals)
+        metrics.reset()
+        metrics._evaluate_constraint_violations_perf(test.model, test.data)
+        self.assertTrue(np.isnan(metrics.data.r_cts_joints.numpy()[0]))
+
+        residuals.fill(0.0)
+        test.data.joints.r_j.assign(residuals)
+        metrics.reset()
+        metrics._evaluate_constraint_violations_perf(test.model, test.data)
+        self.assertTrue(np.isfinite(metrics.data.r_cts_joints.numpy()[0]))
 
 
 ###

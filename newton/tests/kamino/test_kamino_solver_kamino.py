@@ -148,7 +148,9 @@ def assert_states_equal(testcase: unittest.TestCase, state_0: StateKamino, state
     np.testing.assert_array_equal(state_0.q_j.numpy(), state_1.q_j.numpy())
     np.testing.assert_array_equal(state_0.q_j_p.numpy(), state_1.q_j_p.numpy())
     np.testing.assert_array_equal(state_0.dq_j.numpy(), state_1.dq_j.numpy())
-    np.testing.assert_array_equal(state_0.lambda_j.numpy(), state_1.lambda_j.numpy())
+    np.testing.assert_array_equal(state_0.lambda_kin_j.numpy(), state_1.lambda_kin_j.numpy())
+    np.testing.assert_array_equal(state_0.lambda_dyn_j.numpy(), state_1.lambda_dyn_j.numpy())
+    np.testing.assert_array_equal(state_0.lambda_f_j.numpy(), state_1.lambda_f_j.numpy())
 
 
 def assert_states_close(testcase: unittest.TestCase, state_0: StateKamino, state_1: StateKamino):
@@ -160,7 +162,9 @@ def assert_states_close(testcase: unittest.TestCase, state_0: StateKamino, state
     np.testing.assert_allclose(state_0.q_j.numpy(), state_1.q_j.numpy(), rtol=rtol, atol=atol)
     np.testing.assert_allclose(state_0.q_j_p.numpy(), state_1.q_j_p.numpy(), rtol=rtol, atol=atol)
     np.testing.assert_allclose(state_0.dq_j.numpy(), state_1.dq_j.numpy(), rtol=rtol, atol=atol)
-    np.testing.assert_allclose(state_0.lambda_j.numpy(), state_1.lambda_j.numpy(), rtol=rtol, atol=atol)
+    np.testing.assert_allclose(state_0.lambda_kin_j.numpy(), state_1.lambda_kin_j.numpy(), rtol=rtol, atol=atol)
+    np.testing.assert_allclose(state_0.lambda_dyn_j.numpy(), state_1.lambda_dyn_j.numpy(), rtol=rtol, atol=atol)
+    np.testing.assert_allclose(state_0.lambda_f_j.numpy(), state_1.lambda_f_j.numpy(), rtol=rtol, atol=atol)
 
 
 def assert_states_close_masked(
@@ -185,13 +189,19 @@ def assert_states_close_masked(
         world_mask: Per-world boolean mask.
         positions: Whether to compare position attributes, i.e. q_i, q_j, q_j_p (skipped if False).
         velocities: Whether to compare velocity attributes, i.e. u_i, dq_j (skipped if False).
-        forces: Whether to compare force attributes, i.e. w_i, w_i_e, lambda_j (skipped if False).
+        forces: Whether to compare force attributes, i.e. w_i, w_i_e, lambda_kin_j, lambda_dyn_j, lambda_f_j (skipped if False).
         match_q_j_p_with_q_j: Whether to compare q_j_p against q_j in the reference (instead of q_j_p).
     """
     bodies_offset = model.info.bodies_offset.numpy()
     coords_offset = np.array([*model.info.joint_coords_offset.numpy(), model.size.sum_of_num_joint_coords])
     dofs_offset = np.array([*model.info.joint_dofs_offset.numpy(), model.size.sum_of_num_joint_dofs])
-    cts_offset = np.array([*model.info.joint_cts_offset.numpy(), model.size.sum_of_num_joint_cts])
+    kin_cts_offset = np.array(
+        [*model.info.joint_kinematic_cts_offset.numpy(), model.size.sum_of_num_kinematic_joint_cts]
+    )
+    dyn_cts_offset = np.array([*model.info.joint_dynamic_cts_offset.numpy(), model.size.sum_of_num_dynamic_joint_cts])
+    friction_cts_offset = np.array(
+        [*model.info.joint_friction_cts_offset.numpy(), model.size.sum_of_num_friction_joint_cts]
+    )
     world_mask_np = world_mask.numpy()
 
     # List state attributes to compare
@@ -209,7 +219,9 @@ def assert_states_close_masked(
         dof_attributes.append("dq_j")
     if forces:
         body_attributes.extend(["w_i", "w_i_e"])
-        cts_attributes.append("lambda_j")
+        cts_attributes.extend(
+            [("lambda_kin_j", kin_cts_offset), ("lambda_dyn_j", dyn_cts_offset), ("lambda_f_j", friction_cts_offset)]
+        )
 
     for wid in range(model.size.num_worlds):
         # Select reference state based on world mask
@@ -242,21 +254,21 @@ def assert_states_close_masked(
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
-        for attr in cts_attributes:
+        for attr, offset in cts_attributes:
             np.testing.assert_allclose(
-                getattr(state, attr).numpy()[cts_offset[wid] : cts_offset[wid + 1]],
-                getattr(state_ref, attr).numpy()[cts_offset[wid] : cts_offset[wid + 1]],
+                getattr(state, attr).numpy()[offset[wid] : offset[wid + 1]],
+                getattr(state_ref, attr).numpy()[offset[wid] : offset[wid + 1]],
                 rtol=rtol,
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
         if positions and match_q_j_p_with_q_j:
             np.testing.assert_allclose(
-                state.q_j_p.numpy()[cts_offset[wid] : cts_offset[wid + 1]],
-                state_ref.q_j.numpy()[cts_offset[wid] : cts_offset[wid + 1]],
+                state.q_j_p.numpy()[coords_offset[wid] : coords_offset[wid + 1]],
+                state_ref.q_j.numpy()[coords_offset[wid] : coords_offset[wid + 1]],
                 rtol=rtol,
                 atol=atol,
-                err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
+                err_msg=f"\nWorld wid={wid}: attribute `q_j_p` mismatch:\n",
             )
 
 
@@ -275,7 +287,7 @@ def check_body_and_joint_state_consistency(
     np.testing.assert_equal(joint_u.shape[0], model.size.sum_of_num_joint_dofs)
 
     # Create a model data, and evaluate joint data given provided body states
-    data = model.data(unilateral_cts=False, device=model.device)
+    data = model.data(device=model.device)
     wp.copy(data.bodies.q_i, body_q)
     wp.copy(data.bodies.u_i, body_u)
     compute_joints_data(model=model, data=data, q_j_p=joint_q, correction=JointCorrectionMode.CONTINUOUS)
@@ -1237,7 +1249,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[single]: [init]: single_state_p.w_i:\n{single_state_p.w_i}\n\n")
         msg.info(f"[single]: [init]: single_state_p.q_j:\n{single_state_p.q_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.dq_j:\n{single_state_p.dq_j}\n\n")
-        msg.info(f"[single]: [init]: single_state_p.lambda_j:\n{single_state_p.lambda_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_kin_j:\n{single_state_p.lambda_kin_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_dyn_j:\n{single_state_p.lambda_dyn_j}\n\n")
 
         # Create simulator and check if the initial state is consistent with the contents of the builder
         single_solver = SolverKaminoImpl(model=single_model)
@@ -1255,12 +1268,19 @@ class TestSolverKaminoImpl(unittest.TestCase):
         initial_u_i = single_state_p.u_i.numpy().copy()
         initial_q_j = single_state_p.q_j.numpy().copy()
         initial_dq_j = single_state_p.dq_j.numpy().copy()
+        initial_lambda_kin_j = single_state_p.lambda_kin_j.numpy().copy()
+        initial_lambda_dyn_j = single_state_p.lambda_dyn_j.numpy().copy()
         msg.info(f"[samples]: [single]: [init]: q_i (shape={initial_q_i.shape}):\n{initial_q_i}\n")
         msg.info(f"[samples]: [single]: [init]: u_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
         msg.info(f"[samples]: [single]: [init]: w_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
         msg.info(f"[samples]: [single]: [init]: q_j (shape={initial_q_j.shape}):\n{initial_q_j}\n")
         msg.info(f"[samples]: [single]: [init]: dq_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
-        msg.info(f"[samples]: [single]: [init]: lambda_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
+        msg.info(
+            f"[samples]: [single]: [init]: lambda_kin_j (shape={initial_lambda_kin_j.shape}):\n{initial_lambda_kin_j}\n"
+        )
+        msg.info(
+            f"[samples]: [single]: [init]: lambda_dyn_j (shape={initial_lambda_dyn_j.shape}):\n{initial_lambda_dyn_j}\n"
+        )
 
         # Set a simple control callback that applies control inputs
         # NOTE: We use this to disturb the system from its initial state
@@ -1282,13 +1302,19 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_w_i = single_state_n.w_i.numpy().copy()
         final_q_j = single_state_n.q_j.numpy().copy()
         final_dq_j = single_state_n.dq_j.numpy().copy()
-        final_lambda_j = single_state_n.lambda_j.numpy().copy()
+        final_lambda_kin_j = single_state_n.lambda_kin_j.numpy().copy()
+        final_lambda_dyn_j = single_state_n.lambda_dyn_j.numpy().copy()
         msg.info(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
         msg.info(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
         msg.info(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
         msg.info(f"[samples]: [single]: [final]: q_j (shape={final_q_j.shape}):\n{final_q_j}\n")
         msg.info(f"[samples]: [single]: [final]: dq_j (shape={final_dq_j.shape}):\n{final_dq_j}\n")
-        msg.info(f"[samples]: [single]: [final]: lambda_j (shape={final_lambda_j.shape}):\n{final_lambda_j}\n")
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_kin_j (shape={final_lambda_kin_j.shape}):\n{final_lambda_kin_j}\n"
+        )
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
+        )
 
         # Tile the collected states for comparison against the multi-instance simulator
         multi_init_q_i = np.tile(initial_q_i, (num_worlds, 1))
@@ -1414,7 +1440,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[single]: [init]: single_state_p.w_i:\n{single_state_p.w_i}\n\n")
         msg.info(f"[single]: [init]: single_state_p.q_j:\n{single_state_p.q_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.dq_j:\n{single_state_p.dq_j}\n\n")
-        msg.info(f"[single]: [init]: single_state_p.lambda_j:\n{single_state_p.lambda_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_kin_j:\n{single_state_p.lambda_kin_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_dyn_j:\n{single_state_p.lambda_dyn_j}\n\n")
 
         # Create a contacts container for the single-instance system
         _, single_world_max_contacts = single_builder.compute_required_contact_capacity(max_contacts_per_pair=16)
@@ -1441,7 +1468,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[samples]: [single]: [init]: w_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
         msg.info(f"[samples]: [single]: [init]: q_j (shape={initial_q_j.shape}):\n{initial_q_j}\n")
         msg.info(f"[samples]: [single]: [init]: dq_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
-        msg.info(f"[samples]: [single]: [init]: lambda_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
+        msg.info(f"[samples]: [single]: [init]: lambda_kin_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
 
         # Set a simple control callback that applies control inputs
         # NOTE: We use this to disturb the system from its initial state
@@ -1463,13 +1490,19 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_w_i = single_state_n.w_i.numpy().copy()
         final_q_j = single_state_n.q_j.numpy().copy()
         final_dq_j = single_state_n.dq_j.numpy().copy()
-        final_lambda_j = single_state_n.lambda_j.numpy().copy()
+        final_lambda_kin_j = single_state_n.lambda_kin_j.numpy().copy()
+        final_lambda_dyn_j = single_state_n.lambda_dyn_j.numpy().copy()
         msg.info(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
         msg.info(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
         msg.info(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
         msg.info(f"[samples]: [single]: [final]: q_j (shape={final_q_j.shape}):\n{final_q_j}\n")
         msg.info(f"[samples]: [single]: [final]: dq_j (shape={final_dq_j.shape}):\n{final_dq_j}\n")
-        msg.info(f"[samples]: [single]: [final]: lambda_j (shape={final_lambda_j.shape}):\n{final_lambda_j}\n")
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_kin_j (shape={final_lambda_kin_j.shape}):\n{final_lambda_kin_j}\n"
+        )
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
+        )
 
         # Tile the collected states for comparison against the multi-instance simulator
         multi_init_q_i = np.tile(initial_q_i, (num_worlds, 1))

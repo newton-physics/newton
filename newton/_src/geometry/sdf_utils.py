@@ -194,6 +194,7 @@ class SDF:
         block_coords: np.ndarray | Sequence[wp.vec3us] | None = None,
         texture_data: "TextureSDFData | None" = None,
         shape_margin: float = 0.0,
+        construction_padding: float | None = None,
         _coarse_texture: wp.Texture3D | None = None,
         _subgrid_texture: wp.Texture3D | None = None,
         _internal: bool = False,
@@ -208,6 +209,7 @@ class SDF:
         self.block_coords = block_coords
         self.texture_data = texture_data
         self.shape_margin = shape_margin
+        self._construction_padding = construction_padding
         # Keep texture references alive to prevent GC
         self._coarse_texture = _coarse_texture
         self._subgrid_texture = _subgrid_texture
@@ -558,6 +560,7 @@ class SDF:
             block_coords=[],
             texture_data=texture_data,
             shape_margin=shape_margin,
+            construction_padding=margin,
             _coarse_texture=coarse_texture,
             _subgrid_texture=subgrid_texture,
             _internal=True,
@@ -577,8 +580,36 @@ class SDF:
         scale_baked: bool = False,
         shape_margin: float = 0.0,
         texture_data: "TextureSDFData | None" = None,
+        construction_padding: float | None = None,
     ) -> "SDF":
-        """Create an SDF from precomputed runtime resources."""
+        """Create an SDF from precomputed runtime resources.
+
+        Args:
+            sparse_volume: Sparse narrow-band SDF volume.
+            coarse_volume: Coarse background SDF volume.
+            block_coords: Sparse-volume block coordinates.
+            center: Shared SDF extent center [m].
+            half_extents: Shared SDF extent half extents [m].
+            background_value: Value [m] identifying unallocated sparse voxels.
+            scale_baked: Whether shape scale is already baked into the SDF.
+            shape_margin: Shape margin offset [m] subtracted from sampled SDF values.
+            texture_data: Precomputed texture SDF runtime data.
+            construction_padding: AABB padding [m] used when constructing
+                ``texture_data``. Hydroelastic shape validation uses this value
+                to verify that the SDF covers the shape's margin and gap. Leave
+                as ``None`` when the construction padding is unknown.
+
+        Returns:
+            A validated :class:`SDF` runtime handle.
+
+        Raises:
+            ValueError: If ``construction_padding`` is negative or non-finite.
+        """
+        if construction_padding is not None:
+            construction_padding = float(construction_padding)
+            if not np.isfinite(construction_padding) or construction_padding < 0.0:
+                raise ValueError(f"construction_padding must be finite and >= 0, got {construction_padding}.")
+
         sdf_data = create_empty_sdf_data()
         if sparse_volume is not None:
             sdf_data.sparse_sdf_ptr = sparse_volume.id
@@ -602,6 +633,9 @@ class SDF:
             block_coords=block_coords,
             shape_margin=shape_margin,
             texture_data=texture_data,
+            construction_padding=construction_padding,
+            _coarse_texture=texture_data.coarse_texture if texture_data is not None else None,
+            _subgrid_texture=texture_data.subgrid_texture if texture_data is not None else None,
             _internal=True,
         )
         sdf.validate()

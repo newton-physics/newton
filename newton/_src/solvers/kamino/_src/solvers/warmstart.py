@@ -288,7 +288,6 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position(
 @wp.kernel
 def _warmstart_contacts_from_geom_pair_net_force(
     # Inputs - Common:
-    scaling: wp.float32,
     body_q_i: wp.array[wp.transformf],
     body_u_i: wp.array[wp.spatial_vectorf],
     # Inputs - Previous:
@@ -371,7 +370,7 @@ def _warmstart_contacts_from_geom_pair_net_force(
     # as the normal velocity should always be non-negative in the local
     # contact frame, and positive if the solver computes an opening contact
     # thus, for warm-starting we only need to consider the tangential velocity
-    target_velocity = scaling * wp.transpose(R_k_target) @ (v_Bk - v_Ak)
+    target_velocity = wp.transpose(R_k_target) @ (v_Bk - v_Ak)
     target_velocity.z = wp.max(target_velocity.z, 0.0)
 
     # Iterate through all old contacts with the same key and accumulate net body-com wrench
@@ -409,7 +408,7 @@ def _warmstart_contacts_from_geom_pair_net_force(
     # Project to the new contact frame and local
     # friction cone to obtain the contact reaction
     target_reaction = wp.transpose(R_k_target) @ contact_force_uniform_new
-    target_reaction = scaling * project_to_coulomb_cone(target_reaction, target_mu)
+    target_reaction = project_to_coulomb_cone(target_reaction, target_mu)
 
     # Store the new contact reaction and velocity
     # NOTE: These will remain zero if no matching contact is found
@@ -421,7 +420,6 @@ def _warmstart_contacts_from_geom_pair_net_force(
 def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup(
     # Inputs - Common:
     tolerance: wp.float32,
-    scaling: wp.float32,
     time_dt: wp.array[wp.float32],
     body_q_i: wp.array[wp.transformf],
     body_u_i: wp.array[wp.spatial_vectorf],
@@ -554,7 +552,7 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
         # as the normal velocity should always be non-negative in the local
         # contact frame, and positive if the solver computes an opening contact
         # thus, for warm-starting we only need to consider the tangential velocity
-        target_velocity = scaling * wp.transpose(R_k_target) @ (v_Bk - v_Ak)
+        target_velocity = wp.transpose(R_k_target) @ (v_Bk - v_Ak)
         target_velocity.z = wp.max(target_velocity.z, 0.0)
 
         # Iterate through all old contacts with the same key and accumulate net body-com wrench
@@ -592,7 +590,7 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
         # Project to the new contact frame and local
         # friction cone to obtain the contact reaction
         target_reaction = wp.transpose(R_k_target) @ contact_force_uniform_new
-        target_reaction = scaling * project_to_coulomb_cone(target_reaction, target_mu)
+        target_reaction = project_to_coulomb_cone(target_reaction, target_mu)
 
     # Store the new contact reaction and velocity
     # NOTE: These will remain zero if no matching contact is found
@@ -734,7 +732,6 @@ def warmstart_contacts_from_geom_pair_net_force(
     sorter: KeySorter,
     cache: ContactsKaminoData,
     contacts: ContactsKaminoData,
-    scaling: wp.float32 | None = None,
 ):
     """
     Warm-starts contacts by matching geom-pair keys and contact point positions.
@@ -746,10 +743,6 @@ def warmstart_contacts_from_geom_pair_net_force(
         cache: The cached contacts data from the previous simulation step.
         contacts: The current contacts data to be warm-started.
     """
-    # Define scaling for warm-started reactions and velocities
-    if scaling is None:
-        scaling = wp.float32(1.0)
-
     # First sort the keys of cached contacts to facilitate binary search
     sorter.sort(num_active_keys=cache.model_active_contacts, keys=cache.key)
 
@@ -759,7 +752,6 @@ def warmstart_contacts_from_geom_pair_net_force(
         dim=contacts.model_max_contacts_host,
         inputs=[
             # Inputs - Common:
-            scaling,
             data.bodies.q_i,
             data.bodies.u_i,
             # Inputs - Previous:
@@ -791,7 +783,6 @@ def warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_back
     cache: ContactsKaminoData,
     contacts: ContactsKaminoData,
     tolerance: wp.float32 | None = None,
-    scaling: wp.float32 | None = None,
 ):
     """
     Warm-starts contacts by matching geom-pair keys and contact point positions.
@@ -806,9 +797,6 @@ def warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_back
     # Define tolerance for matching contact points based on distance after accounting for body motion
     if tolerance is None:
         tolerance = wp.float32(1e-5)
-    # Define scaling for warm-started reactions and velocities
-    if scaling is None:
-        scaling = wp.float32(1.0)
 
     # First sort the keys of cached contacts to facilitate binary search
     sorter.sort(num_active_keys=cache.model_active_contacts, keys=cache.key)
@@ -820,7 +808,6 @@ def warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_back
         inputs=[
             # Inputs - Common:
             tolerance,
-            scaling,
             model.time.dt,
             data.bodies.q_i,
             data.bodies.u_i,
@@ -1052,7 +1039,6 @@ class WarmstarterContacts:
         contacts: ContactsKamino | None = None,
         method: Method = Method.KEY_AND_POSITION,
         tolerance: float = 1e-5,
-        scaling: float = 1.0,
     ):
         """
         Initializes the contacts warmstarter using the allocations of the provided contacts container.
@@ -1063,14 +1049,10 @@ class WarmstarterContacts:
             tolerance: The tolerance used for matching contact point positions.
                 Must be a floating-point value specified in meters, and within the range `[0, +inf)`.
                 Setting this to `0.0` requires exact position matches, effectively disabling position-based matching.
-            scaling: The scaling factor applied to warm-started reactions and velocities.
-                Must be a floating-point value specified in the range `[0, 1.0)`.
-                Setting this to `0.0` effectively disables warm-starting.
         """
         # Store the specified warm-starting configurations
         self._method: WarmstarterContacts.Method = method
         self._tolerance: wp.float32 = wp.float32(tolerance)
-        self._scaling: wp.float32 = wp.float32(scaling)
 
         # Set the device to use as that of the provided contacts container
         self._device: wp.DeviceLike = contacts.device if contacts is not None else None
@@ -1167,7 +1149,6 @@ class WarmstarterContacts:
                     sorter=self._sorter,
                     cache=self._cache,
                     contacts=contacts.data,
-                    scaling=self._scaling,
                 )
 
             case WarmstarterContacts.Method.GEOM_PAIR_NET_WRENCH:
@@ -1181,7 +1162,6 @@ class WarmstarterContacts:
                     cache=self._cache,
                     contacts=contacts.data,
                     tolerance=self._tolerance,
-                    scaling=self._scaling,
                 )
 
             case WarmstarterContacts.Method.KEY_AND_POSITION_WITH_NET_WRENCH_BACKUP:

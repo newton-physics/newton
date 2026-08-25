@@ -19,7 +19,7 @@
 #   - twist profile error: deviation from the analytical target profile in degrees
 #   - bend leakage: transverse centerline motion as percent of cable length
 #
-# Newton's cable joint stores the already-discretized twist stiffness, not a
+# Newton's rod joint stores the already-discretized twist stiffness, not a
 # separate material G field. This example derives that solver input from the
 # mechanical torsion law:
 #
@@ -130,7 +130,7 @@ class Example:
             self.stretch_stiffness,
             self.bend_stiffness,
             self.twist_stiffness,
-        ) = newton.utils.create_cable_stiffness_from_elastic_moduli(
+        ) = newton.utils.rod_stiffness_from_elastic_moduli(
             self.YOUNGS_MODULUS,
             self.CABLE_RADIUS,
             self.SEGMENT_LENGTH,
@@ -145,13 +145,13 @@ class Example:
         self.polar_inertia = 0.5 * math.pi * self.CABLE_RADIUS**4
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        points = newton.utils.create_straight_cable_points(
+        points = newton.utils.cable_straight_points(
             start=wp.vec3(-0.5 * self.cable_length, 0.0, 0.45),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=self.cable_length,
             num_segments=self.NUM_ELEMENTS,
         )
-        quats = newton.utils.create_parallel_transport_cable_quaternions(points)
+        quats = newton.utils.rod_parallel_transport_quaternions(points)
 
         bodies, _joints = builder.add_rod(
             positions=points,
@@ -265,7 +265,7 @@ class Example:
                 if shear_modulus_in is not None
                 else {"poissons_ratio": poissons_ratio}
             )
-            _stretch, _bend, twist = newton.utils.create_cable_stiffness_from_elastic_moduli(
+            _stretch, _bend, twist = newton.utils.rod_stiffness_from_elastic_moduli(
                 youngs_modulus,
                 radius,
                 segment_length,
