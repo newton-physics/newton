@@ -21,6 +21,7 @@ def _build_revolute(
     *,
     dynamic: bool = False,
     limited: bool = False,
+    friction: float | None = None,
     actuator_mode: newton.JointTargetMode = newton.JointTargetMode.NONE,
     body_com: wp.vec3f | None = None,
     shape_materials: tuple[tuple[float, float], ...] | None = None,
@@ -78,6 +79,7 @@ def _build_revolute(
         limit_lower=-1.0 if limited else None,
         limit_upper=1.0 if limited else None,
         armature=1.0 if dynamic else 0.0,
+        friction=friction,
         damping=0.0,
         target_ke=0.0,
         target_kd=0.0,
@@ -546,6 +548,27 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         model.joint_target_ke.assign([np.float32(2.0)])
 
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_joint_friction_value_edit_is_allowed(self):
+        """Allow friction edits when bounded rows were allocated at construction."""
+        model = _build_revolute(friction=1.0)
+        solver = SolverKamino(model, SolverKamino.Config(dynamics_solver="padmm"))
+        model.joint_friction.assign([2.0])
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        self.assertEqual(float(solver._model_kamino.joints.f_j.numpy()[0]), 2.0)
+
+        model.joint_friction.assign([0.0])
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        self.assertEqual(float(solver._model_kamino.joints.f_j.numpy()[0]), 0.0)
+
+    def test_enabling_joint_friction_raises(self):
+        """Reject enabling friction when no bounded rows were allocated."""
+        model = _build_revolute(friction=0.0)
+        solver = SolverKamino(model, SolverKamino.Config(dynamics_solver="padmm"))
+        model.joint_friction.assign([1.0])
+
+        with self.assertRaisesRegex(RuntimeError, "friction row topology"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_limit_finiteness_change_raises(self):
         """Limit capacity changes require solver recreation."""
