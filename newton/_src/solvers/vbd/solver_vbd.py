@@ -1771,7 +1771,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     @override
     @classmethod
-    def register_custom_attributes(cls, builder: ModelBuilder, *, dahl_defaults_enabled: bool = False) -> None:
+    def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
@@ -1787,32 +1787,14 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Args:
             builder: Model builder to register attributes on.
-            dahl_defaults_enabled: Deprecated compatibility mode. When True, Dahl parameters
-                default to positive values instead of zero.
-
-                .. deprecated:: 1.5
-                    The compatibility mode will be removed; author positive Dahl
-                    values explicitly when Dahl rod friction is desired.
         """
-        dahl_eps_default = 0.5 if dahl_defaults_enabled else 0.0
-        dahl_tau_default = 1.0 if dahl_defaults_enabled else 0.0
-        if dahl_defaults_enabled:
-            warnings.warn(
-                "SolverVBD.register_custom_attributes(dahl_defaults_enabled=True) is deprecated "
-                "and the compatibility mode will be removed in a future release. Explicitly author "
-                "positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
-                "Dahl rod friction.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
-                default=dahl_eps_default,
+                default=0.0,
                 namespace="vbd",
             )
         )
@@ -1822,7 +1804,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
-                default=dahl_tau_default,
+                default=0.0,
                 namespace="vbd",
             )
         )

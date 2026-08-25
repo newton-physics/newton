@@ -3249,6 +3249,7 @@ def _rigid_contact_reset_lifecycle(test, device):
 
 
 def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
+    """Register VBD custom attributes with disabled Dahl friction defaults."""
     del device
 
     builder = newton.ModelBuilder()
@@ -3259,6 +3260,9 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     test.assertEqual(builder.custom_attributes["vbd:joint_is_hard"].default, 1)
     test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.0)
     test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 0.0)
+
+    with test.assertRaisesRegex(TypeError, "unexpected keyword argument 'dahl_defaults_enabled'"):
+        newton.solvers.SolverVBD.register_custom_attributes(newton.ModelBuilder(), dahl_defaults_enabled=True)
 
 
 def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
