@@ -5,13 +5,16 @@
 # Example Controllers — Heterogeneous Joint Impedance
 #
 # Demonstrates ControllerJointImpedance on a mixed fleet:
-#   Robot A — 3-DOF revolute chain (triple pendulum), left side
-#   Robot B — 1-DOF revolute pendulum, right side
+#   Robot A — 3-DOF revolute chain (triple pendulum)
+#   Robot B — 1-DOF revolute pendulum, side by side with robot A
 #
-# Robot A tracks a sinusoidal target with staggered joint phases.
-# Robot B holds upright at q=0.
+# Joints rotate about an axis perpendicular to gravity, so as each robot
+# moves away from hanging straight down, gravity applies real torque the
+# controller must compensate for. Robot A tracks a sinusoidal target with
+# staggered joint phases; robot B rotates continuously, passing through the
+# high-torque horizontal pose every revolution.
 # Both robots use model-based impedance (gravity compensation + inertia
-# decoupling computed internally from their respective Newton models).
+# decoupling computed internally by the controller from the sim model).
 #
 # The two robots have different DOF counts, exercising the heterogeneous
 # per-robot DOF layout and the indexed-view scatter into the sim.
@@ -36,6 +39,7 @@ from newton.controllers import ControllerJointImpedance, select_joints
 
 LINK_LEN_A = 0.25  # length of each link in robot A [m]
 LINK_LEN_B = 0.45  # length of robot B's single link [m]
+MOUNT_HEIGHT = 0.9  # height of each robot's first joint above the ground [m]
 DOFS_A = 3
 DOFS_B = 1
 TOTAL_DOFS = DOFS_A + DOFS_B  # = 4
@@ -44,10 +48,14 @@ TOTAL_DOFS = DOFS_A + DOFS_B  # = 4
 KP = np.array([200.0, 200.0, 200.0, 200.0], dtype=np.float32)
 KD = np.array([20.0, 20.0, 20.0, 20.0], dtype=np.float32)
 
-# Sinusoidal target for robot A: each joint offset by π/3
+# Sinusoidal target for robot A: each joint offset by π/3. Joint 0 also gets
+# a constant 180° offset, holding the base link opposite its hanging-down
+# equilibrium — gravity pulls it back toward q=0, so holding it near π takes
+# continuous torque.
 TARGET_AMP = 0.4  # [rad]
 TARGET_FREQ = 0.4  # [Hz]
 PHASE_A = [0.0, math.pi / 3, 2 * math.pi / 3]
+JOINT_OFFSET_A = [math.pi, 0.0, 0.0]  # [rad]
 
 # Continuous rotation for robot B
 ROT_SPEED_B = 1.5  # [rad/s]
@@ -58,27 +66,33 @@ ROT_SPEED_B = 1.5  # [rad/s]
 # ---------------------------------------------------------------------------
 
 
-def _add_revolute_chain(builder, n_links, link_len, x_offset, label):
+def _add_revolute_chain(builder, n_links, link_len, y_offset, label):
     """Add an n-link revolute pendulum chain to builder.
 
-    Joints rotate about the Z axis. The first joint is anchored at
-    (x_offset, 0, 0). Each link hangs downward along -Y.
+    Joints rotate about the X axis, so the chain swings in the Y-Z plane
+    (Z is up, gravity points along -Z) — a rotation axis perpendicular to
+    gravity is what lets gravity apply real torque at the joint. The first
+    joint is anchored at (0, y_offset, 0). At q=0 each link hangs straight
+    down along -Z (gravity's own direction), the zero-torque equilibrium;
+    away from q=0 gravity's moment arm grows, peaking at q=±π/2 (horizontal).
     """
     joints = []
     prev_body = -1
     for i in range(n_links):
         body = builder.add_link()
 
-        # Pivot location: world origin for first link, bottom of previous link otherwise.
+        # Pivot location: mounted above the ground for the first link (so the
+        # chain hanging near q=0 stays clear of the floor), bottom of the
+        # previous link otherwise.
         if i == 0:
-            parent_xform = wp.transform(wp.vec3(x_offset, 0.0, 0.0), wp.quat_identity())
+            parent_xform = wp.transform(wp.vec3(0.0, y_offset, MOUNT_HEIGHT), wp.quat_identity())
         else:
-            parent_xform = wp.transform(wp.vec3(0.0, -link_len, 0.0), wp.quat_identity())
+            parent_xform = wp.transform(wp.vec3(0.0, 0.0, -link_len), wp.quat_identity())
 
         j = builder.add_joint_revolute(
             parent=prev_body,
             child=body,
-            axis=wp.vec3(0.0, 0.0, 1.0),
+            axis=wp.vec3(1.0, 0.0, 0.0),
             parent_xform=parent_xform,
             child_xform=wp.transform_identity(),
         )
@@ -87,10 +101,10 @@ def _add_revolute_chain(builder, n_links, link_len, x_offset, label):
         # Thin box as the link rod, centred at half the link length below the pivot
         builder.add_shape_box(
             body=body,
-            xform=wp.transform(wp.vec3(0.0, -link_len * 0.5, 0.0), wp.quat_identity()),
+            xform=wp.transform(wp.vec3(0.0, 0.0, -link_len * 0.5), wp.quat_identity()),
             hx=0.02,
-            hy=link_len * 0.5,
-            hz=0.02,
+            hy=0.02,
+            hz=link_len * 0.5,
         )
 
         prev_body = body
@@ -118,27 +132,18 @@ class Example:
         self.viewer = viewer
         self.device = wp.get_device()
 
-        # ---- Controller model ------------------------------------------------
-        # Both articulations in one model so ControllerJointImpedance can
-        # derive per-robot DOF counts and run FK/dynamics for both.
-        ctrl_builder = newton.ModelBuilder()
-        _add_revolute_chain(ctrl_builder, DOFS_A, LINK_LEN_A, x_offset=-0.5, label="robot_a")
-        _add_revolute_chain(ctrl_builder, DOFS_B, LINK_LEN_B, x_offset=+0.5, label="robot_b")
-        ctrl_model = ctrl_builder.finalize(device=self.device)
-
         # ---- Physics scene ---------------------------------------------------
-        # Identical topology to ctrl_builder, with effort-control mode.
-        scene = newton.ModelBuilder()
-        _add_revolute_chain(scene, DOFS_A, LINK_LEN_A, x_offset=-0.5, label="robot_a")
-        _add_revolute_chain(scene, DOFS_B, LINK_LEN_B, x_offset=+0.5, label="robot_b")
-        scene.add_ground_plane()
+        builder = newton.ModelBuilder()
+        _add_revolute_chain(builder, DOFS_A, LINK_LEN_A, y_offset=-0.5, label="robot_a")
+        _add_revolute_chain(builder, DOFS_B, LINK_LEN_B, y_offset=+0.5, label="robot_b")
+        builder.add_ground_plane()
 
         for i in range(TOTAL_DOFS):
-            scene.joint_target_ke[i] = 0.0
-            scene.joint_target_kd[i] = 0.0
-            scene.joint_target_mode[i] = int(JointTargetMode.EFFORT)
+            builder.joint_target_ke[i] = 0.0
+            builder.joint_target_kd[i] = 0.0
+            builder.joint_target_mode[i] = int(JointTargetMode.EFFORT)
 
-        self.model = scene.finalize()
+        self.model = builder.finalize(device=self.device)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -149,11 +154,12 @@ class Example:
         # ---- Impedance controller --------------------------------------------
         # select_joints resolves every joint of both articulations into the
         # matched coordinate/DOF index pair the controller needs. Here the two
-        # spaces coincide since all joints are 1-DOF.
-        selection = select_joints(ctrl_model)
+        # spaces coincide since all joints are 1-DOF. The controller reads its
+        # FK and dynamics terms from the same model the solver simulates.
+        selection = select_joints(self.model)
 
         self.controller = ControllerJointImpedance(
-            ctrl_model,
+            self.model,
             joint_selection=selection,
             stiffness=wp.array(KP, dtype=wp.float32, device=self.device),
             damping=wp.array(KD, dtype=wp.float32, device=self.device),
@@ -196,7 +202,7 @@ class Example:
         # Update targets on the CPU — cannot be graph-captured.
         q_des = np.zeros(TOTAL_DOFS, dtype=np.float32)
         for k, phase in enumerate(PHASE_A):
-            q_des[k] = TARGET_AMP * math.sin(2 * math.pi * TARGET_FREQ * self.sim_time + phase)
+            q_des[k] = JOINT_OFFSET_A[k] + TARGET_AMP * math.sin(2 * math.pi * TARGET_FREQ * self.sim_time + phase)
         q_des[3] = ROT_SPEED_B * self.sim_time  # robot B rotates continuously
         self._input.joint_q_des.assign(q_des)
 
@@ -226,8 +232,12 @@ class Example:
             err_msg=f"Robot B not tracking target: q={joint_q[3]:.3f}, expected={expected_b:.3f}",
         )
 
-        # Robot A (DOF indices 0..2) should be within the sinusoidal amplitude range.
-        assert np.all(np.abs(joint_q[:3]) <= TARGET_AMP + 0.3), f"Robot A joints out of expected range: {joint_q[:3]}"
+        # Robot A (DOF indices 0..2) should be within the sinusoidal amplitude range
+        # around each joint's constant offset.
+        offset_a = np.array(JOINT_OFFSET_A, dtype=np.float32)
+        assert np.all(np.abs(joint_q[:3] - offset_a) <= TARGET_AMP + 0.3), (
+            f"Robot A joints out of expected range: {joint_q[:3]}"
+        )
 
 
 if __name__ == "__main__":
