@@ -58,7 +58,7 @@ class Example:
         builder.add_ground_plane()
 
         # Create the model from the builder
-        self.model = builder.finalize(skip_validation_joints=True)
+        self.model = builder.finalize()
 
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)

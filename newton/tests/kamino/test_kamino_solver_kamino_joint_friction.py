@@ -365,20 +365,6 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         solver.step(state_in, model.state(), control=None, contacts=None, dt=DT)
         np.testing.assert_array_equal(sparse_jacobians._J_cts.bsm.dims.numpy()[:, 0], expected_rows)
 
-    def test_spin_down(self):
-        """Match linear spin-down and settle without creep absent a dynamic row.
-
-        Sets a revolute joint with zero gravity to an initial velocity and verifies that it spins down linearly.
-        Test covers armatures with and without a dynamic joint constraint.
-        The accelerated / non-accelerated PADMM since their implementation use their own specialized kernels.
-        """
-        for config_name, config_factory in _KAMINO_CONFIGS:
-            use_acceleration_options = (True, False) if config_name in _PADMM_CONFIG_NAMES else (False,)
-            for use_acceleration in use_acceleration_options:
-                config = config_factory()
-                config.padmm.use_acceleration = use_acceleration
-                _run_spin_down_test(self, config_name, config)
-
     def test_hold_and_breakaway(self):
         """Hold below the friction limit and break away above it.
 
@@ -461,6 +447,27 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         v_aug_metrics = float(metrics._buffer_v.numpy()[row])
         expected_metrics = abs(lambda_solution - np.clip(lambda_solution - v_aug_metrics, lower, upper))
         self.assertAlmostEqual(float(metrics.data.r_vi_natmap.numpy()[0]), expected_metrics, places=6)
+
+
+class TestSolverKaminoJointFrictionSpinDown(unittest.TestCase):
+    def setUp(self):
+        """Initialize the shared public Kamino test context."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+
+    def test_spin_down(self):
+        """Match linear spin-down and settle without creep absent a dynamic row.
+
+        Sets a revolute joint with zero gravity to an initial velocity and verifies that it spins down linearly.
+        Test covers armatures with and without a dynamic joint constraint.
+        The accelerated / non-accelerated PADMM since their implementation use their own specialized kernels.
+        """
+        for config_name, config_factory in _KAMINO_CONFIGS:
+            use_acceleration_options = (True, False) if config_name in _PADMM_CONFIG_NAMES else (False,)
+            for use_acceleration in use_acceleration_options:
+                config = config_factory()
+                config.padmm.use_acceleration = use_acceleration
+                _run_spin_down_test(self, config_name, config)
 
 
 if __name__ == "__main__":
