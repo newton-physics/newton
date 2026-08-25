@@ -74,13 +74,13 @@ class Example:
         for i, bend_stiffness in enumerate(self.BEND_STIFFNESS_VALUES):
             y_pos = (i - (self.num_cables - 1) * 0.5) * self.Y_SEPARATION
             start = wp.vec3(0.0, y_pos, 0.0)
-            points = newton.rod.generate_straight_points(
+            points = newton.utils.rod_generate_straight_points(
                 start=start,
                 direction=wp.vec3(1.0, 0.0, 0.0),
                 length=self.cable_length,
                 num_segments=self.NUM_ELEMENTS,
             )
-            quats = newton.rod.compute_parallel_transport_quaternions(points)
+            quats = newton.utils.rod_compute_parallel_transport_quaternions(points)
 
             # Twist != bend exercises the split stiffness path while the applied
             # load remains pure bending.

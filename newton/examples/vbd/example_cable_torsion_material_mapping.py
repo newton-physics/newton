@@ -130,7 +130,7 @@ class Example:
             self.stretch_stiffness,
             self.bend_stiffness,
             self.twist_stiffness,
-        ) = newton.rod.stiffness_from_elastic_moduli(
+        ) = newton.utils.rod_compute_stiffness_from_elastic_moduli(
             self.YOUNGS_MODULUS,
             self.CABLE_RADIUS,
             self.SEGMENT_LENGTH,
@@ -145,13 +145,13 @@ class Example:
         self.polar_inertia = 0.5 * math.pi * self.CABLE_RADIUS**4
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        points = newton.rod.generate_straight_points(
+        points = newton.utils.rod_generate_straight_points(
             start=wp.vec3(-0.5 * self.cable_length, 0.0, 0.45),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=self.cable_length,
             num_segments=self.NUM_ELEMENTS,
         )
-        quats = newton.rod.compute_parallel_transport_quaternions(points)
+        quats = newton.utils.rod_compute_parallel_transport_quaternions(points)
 
         bodies, _joints = builder.add_rod(
             positions=points,
@@ -265,7 +265,7 @@ class Example:
                 if shear_modulus_in is not None
                 else {"poissons_ratio": poissons_ratio}
             )
-            _stretch, _bend, twist = newton.rod.stiffness_from_elastic_moduli(
+            _stretch, _bend, twist = newton.utils.rod_compute_stiffness_from_elastic_moduli(
                 youngs_modulus,
                 radius,
                 segment_length,

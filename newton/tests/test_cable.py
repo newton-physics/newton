@@ -309,7 +309,7 @@ def _make_straight_cable_along_x(num_elements: int, segment_length: float, z_hei
     """
     length = float(num_elements * segment_length)
     start = wp.vec3(-0.5 * length, 0.0, float(z_height))
-    return newton.rod.generate_straight_points_and_quaternions(
+    return newton.utils.rod_generate_straight_points_and_quaternions(
         start=start,
         direction=wp.vec3(1.0, 0.0, 0.0),
         length=length,
@@ -326,7 +326,7 @@ def _make_straight_cable_along_y(num_elements: int, segment_length: float, z_hei
     """
     length = float(num_elements * segment_length)
     start = wp.vec3(0.0, -0.5 * length, float(z_height))
-    return newton.rod.generate_straight_points_and_quaternions(
+    return newton.utils.rod_generate_straight_points_and_quaternions(
         start=start,
         direction=wp.vec3(0.0, 1.0, 0.0),
         length=length,
@@ -417,7 +417,7 @@ def _build_cable_loop(device, num_links: int = 6):
         y = radius * wp.sin(angle)
         points.append(wp.vec3(x, y, z_height))
 
-    edge_q = newton.rod.compute_parallel_transport_quaternions(points, twist_total=0.0)
+    edge_q = newton.utils.rod_compute_parallel_transport_quaternions(points, twist_total=0.0)
 
     _rod_bodies, _rod_joints = builder.add_rod(
         positions=points,
@@ -1811,7 +1811,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.rod.generate_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_generate_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -1937,7 +1937,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.rod.generate_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_generate_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2218,7 +2218,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.rod.generate_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_generate_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2344,7 +2344,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.rod.generate_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_generate_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2489,7 +2489,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.rod.generate_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_generate_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2642,7 +2642,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
     cable_width = 2.0 * rod_radius
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.rod.generate_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_generate_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2774,7 +2774,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.rod.generate_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_generate_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -2935,7 +2935,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.rod.generate_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_generate_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -3077,7 +3077,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.rod.generate_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_generate_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
@@ -3581,7 +3581,7 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
     z0 = 0.5
     theta = np.linspace(0.0, 2.0 * np.pi, num_segments + 1, endpoint=True)
     points = [wp.vec3(float(radius * np.cos(t)), float(radius * np.sin(t)), float(z0)) for t in theta]
-    quats = newton.rod.compute_parallel_transport_quaternions(points)
+    quats = newton.utils.rod_compute_parallel_transport_quaternions(points)
 
     # Avoid list[Vec3] invariance issues in static checking.
     points_any: list[Any] = points
@@ -4126,7 +4126,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
     attach_offset = anchor_radius + rod_radius
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -attach_offset)
 
-    rod_points, rod_quats = newton.rod.generate_straight_points_and_quaternions(
+    rod_points, rod_quats = newton.utils.rod_generate_straight_points_and_quaternions(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements) * segment_length,
@@ -5196,8 +5196,8 @@ def _rod_stiffness_helper_returns_physical_twist(test, device):
     E = 200.0
     radius = 0.5
     length = 2.0
-    stiffness = newton.rod.stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25)
-    test.assertIs(type(stiffness), newton.rod.RodStiffness)
+    stiffness = newton.utils.rod_compute_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25)
+    test.assertIs(type(stiffness), newton.utils.RodStiffness)
     stretch, bend, twist = stiffness
 
     area = np.pi * radius * radius
@@ -5209,7 +5209,7 @@ def _rod_stiffness_helper_returns_physical_twist(test, device):
     )
 
     np.testing.assert_allclose(
-        newton.rod.stiffness_from_elastic_moduli(E, radius, length, shear_modulus=G),
+        newton.utils.rod_compute_stiffness_from_elastic_moduli(E, radius, length, shear_modulus=G),
         stiffness,
     )
 
@@ -5235,7 +5235,7 @@ def _rod_stiffness_helper_returns_physical_twist(test, device):
     for args, kwargs, message in invalid_cases:
         with test.subTest(args=args, kwargs=kwargs):
             with test.assertRaisesRegex(ValueError, message):
-                newton.rod.stiffness_from_elastic_moduli(*args, **kwargs)
+                newton.utils.rod_compute_stiffness_from_elastic_moduli(*args, **kwargs)
 
 
 def _rod_geometry_helpers_validate_inputs(test, device):
@@ -5243,19 +5243,19 @@ def _rod_geometry_helpers_validate_inputs(test, device):
     start = wp.vec3(0.0, 0.0, 0.0)
     direction = wp.vec3(0.0, 0.0, 1.0)
 
-    _, quaternions = newton.rod.generate_straight_points_and_quaternions(
+    _, quaternions = newton.utils.rod_generate_straight_points_and_quaternions(
         start, direction, 1.0, 1, twist_total=0.5 * np.pi
     )
     expected = wp.quat_from_axis_angle(direction, 0.5 * np.pi)
     np.testing.assert_allclose(np.asarray(quaternions[0]), np.asarray(expected))
 
     invalid_calls = (
-        (newton.rod.generate_straight_points, (start, direction, 1.0, 0), "num_segments"),
-        (newton.rod.generate_straight_points, (start, direction, np.nan, 1), "length"),
-        (newton.rod.generate_straight_points, (start, direction, -1.0, 1), "length"),
-        (newton.rod.generate_straight_points, (start, wp.vec3(0.0), 1.0, 1), "direction"),
-        (newton.rod.compute_parallel_transport_quaternions, ([start],), "length"),
-        (newton.rod.compute_parallel_transport_quaternions, ([start, start],), "duplicate"),
+        (newton.utils.rod_generate_straight_points, (start, direction, 1.0, 0), "num_segments"),
+        (newton.utils.rod_generate_straight_points, (start, direction, np.nan, 1), "length"),
+        (newton.utils.rod_generate_straight_points, (start, direction, -1.0, 1), "length"),
+        (newton.utils.rod_generate_straight_points, (start, wp.vec3(0.0), 1.0, 1), "direction"),
+        (newton.utils.rod_compute_parallel_transport_quaternions, ([start],), "length"),
+        (newton.utils.rod_compute_parallel_transport_quaternions, ([start, start],), "duplicate"),
     )
     for function, args, message in invalid_calls:
         with test.subTest(function=function.__name__, args=args):
@@ -5374,18 +5374,18 @@ def _rod_helper_api_deprecates_released_cable_names(test, device):
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         test.assertIn("CableStiffness", dir(newton.utils))
-        points = newton.rod.generate_straight_points(start, direction, 2.0, 2)
-        quaternions = newton.rod.compute_parallel_transport_quaternions(points)
-        combined = newton.rod.generate_straight_points_and_quaternions(start, direction, 2.0, 2)
-        stiffness = newton.rod.stiffness_from_elastic_moduli(200.0, 0.5, 2.0, poissons_ratio=0.25)
+        points = newton.utils.rod_generate_straight_points(start, direction, 2.0, 2)
+        quaternions = newton.utils.rod_compute_parallel_transport_quaternions(points)
+        combined = newton.utils.rod_generate_straight_points_and_quaternions(start, direction, 2.0, 2)
+        stiffness = newton.utils.rod_compute_stiffness_from_elastic_moduli(200.0, 0.5, 2.0, poissons_ratio=0.25)
 
     expected_replacements = (
-        ("CableStiffness", "newton.rod.RodStiffness"),
-        ("create_straight_cable_points", "newton.rod.generate_straight_points"),
-        ("create_parallel_transport_cable_quaternions", "newton.rod.compute_parallel_transport_quaternions"),
-        ("create_straight_cable_points_and_quaternions", "newton.rod.generate_straight_points_and_quaternions"),
-        ("create_cable_stiffness_from_elastic_moduli", "newton.rod.stiffness_from_elastic_moduli"),
-        ("create_cable_stiffness_from_elastic_moduli", "newton.rod.stiffness_from_elastic_moduli"),
+        ("CableStiffness", "newton.utils.RodStiffness"),
+        ("create_straight_cable_points", "newton.utils.rod_generate_straight_points"),
+        ("create_parallel_transport_cable_quaternions", "newton.utils.rod_compute_parallel_transport_quaternions"),
+        ("create_straight_cable_points_and_quaternions", "newton.utils.rod_generate_straight_points_and_quaternions"),
+        ("create_cable_stiffness_from_elastic_moduli", "newton.utils.rod_compute_stiffness_from_elastic_moduli"),
+        ("create_cable_stiffness_from_elastic_moduli", "newton.utils.rod_compute_stiffness_from_elastic_moduli"),
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", DeprecationWarning)
@@ -5408,14 +5408,14 @@ def _rod_helper_api_deprecates_released_cable_names(test, device):
         test.assertIn(replacement, str(warning.message))
         test.assertEqual(warning.filename, __file__)
 
-    test.assertIs(old_type, newton.rod.RodStiffness)
+    test.assertIs(old_type, newton.utils.RodStiffness)
     np.testing.assert_allclose(np.asarray(old_points), np.asarray(points))
     np.testing.assert_allclose(np.asarray(old_quaternions), np.asarray(quaternions))
     np.testing.assert_allclose(np.asarray(old_combined[0]), np.asarray(combined[0]))
     np.testing.assert_allclose(np.asarray(old_combined[1]), np.asarray(combined[1]))
     test.assertIs(type(old_pair), tuple)
     np.testing.assert_allclose(old_pair, stiffness[:2])
-    test.assertIsInstance(old_complete, newton.rod.RodStiffness)
+    test.assertIsInstance(old_complete, newton.utils.RodStiffness)
     np.testing.assert_allclose(old_complete, stiffness)
 
 
@@ -5724,7 +5724,7 @@ def _split_cable_material_force_law_matches_ei_gj(test, device):
     poissons_ratio = 0.25
     angle = 0.031
 
-    _stretch, bend_stiffness, twist_stiffness = newton.rod.stiffness_from_elastic_moduli(
+    _stretch, bend_stiffness, twist_stiffness = newton.utils.rod_compute_stiffness_from_elastic_moduli(
         youngs_modulus,
         radius,
         segment_length,
@@ -5857,13 +5857,13 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverVBD.register_custom_attributes(builder)
 
-    points = newton.rod.generate_straight_points(
+    points = newton.utils.rod_generate_straight_points(
         start=wp.vec3(0.0, 0.0, 0.0),
         direction=wp.vec3(1.0, 0.0, 0.0),
         length=cable_length,
         num_segments=num_segments,
     )
-    quats = newton.rod.compute_parallel_transport_quaternions(points)
+    quats = newton.utils.rod_compute_parallel_transport_quaternions(points)
     rod_bodies, _rod_joints = builder.add_rod(
         positions=points,
         quaternions=quats,
