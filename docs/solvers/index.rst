@@ -326,7 +326,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes| :sup:`2`
      - |no|
      - |yes|
-     - |yes| :sup:`4`
+     - |yes| :sup:`5`
      - |no|
    * - :attr:`~newton.Model.joint_effort_limit`
      - |no|
@@ -364,7 +364,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes| :sup:`2`
      - |yes|
      - |yes|
-     - |yes| :sup:`4`
+     - |yes| :sup:`5`
      - |yes|
    * - :attr:`~newton.Model.joint_target_mode`
      - |no|
@@ -405,13 +405,14 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
    * - Mimic constraints
      - |no|
      - |no|
-     - |no|
      - |yes| :sup:`3`
+     - |yes| :sup:`4`
      - |no|
      - |no|
 
-| :sup:`3` MuJoCo supports mimic relationships between REVOLUTE, PRISMATIC, and D6 joints. Multi-axis D6 relationships produce one equality constraint per axis.
-| :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
+| :sup:`3` XPBD enforces joint-owned mimic relationships between REVOLUTE, PRISMATIC, and D6 joints. The deprecated sparse mimic constraints are not supported.
+| :sup:`4` MuJoCo supports mimic relationships between REVOLUTE, PRISMATIC, and D6 joints. Multi-axis D6 relationships produce one equality constraint per axis.
+| :sup:`5` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 
 
 

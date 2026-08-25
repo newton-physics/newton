@@ -6,7 +6,7 @@ import warnings
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, ModelFlags, State
+from ...sim import Contacts, Control, JointType, Model, ModelFlags, State
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from . import kernels, restitution_kernels
@@ -23,6 +23,7 @@ from .kernels import (
     copy_kinematic_body_state_kernel,
     solve_body_contact_positions,
     solve_body_joints,
+    solve_joint_mimics,
     solve_particle_particle_contacts,
     solve_particle_shape_contacts,
     # solve_simple_body_joints,
@@ -96,7 +97,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
-        - Equality and mimic constraints are not supported.
+        - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
+          Equality constraints and the deprecated sparse mimic constraints are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -198,6 +200,25 @@ class SolverXPBD(SolverBase, CouplingInterface):
         self._rigid_restitution_enabled = False
         self._refresh_rigid_restitution_enabled()
         self._compute_body_velocity_from_position_delta = False
+
+        joint_mimic_joint = model.joint_mimic_joint.numpy()
+        joint_type = model.joint_type.numpy()
+        supported_mimic_types = {int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)}
+        mimic_followers = [follower for follower, reference in enumerate(joint_mimic_joint) if reference >= 0]
+        supported_mimic_followers = [
+            follower
+            for follower in mimic_followers
+            if int(joint_type[follower]) in supported_mimic_types
+            and int(joint_type[joint_mimic_joint[follower]]) in supported_mimic_types
+        ]
+        self._has_joint_mimics = bool(supported_mimic_followers)
+        unsupported_mimic_followers = sorted(set(mimic_followers) - set(supported_mimic_followers))
+        if unsupported_mimic_followers:
+            warnings.warn(
+                "SolverXPBD ignores joint-owned mimic relationships unless both joints are PRISMATIC, "
+                f"REVOLUTE, or D6; unsupported follower joint indices: {unsupported_mimic_followers}.",
+                stacklevel=2,
+            )
 
         self._init_kinematic_state()
 
@@ -840,6 +861,34 @@ class SolverXPBD(SolverBase, CouplingInterface):
                             outputs=[body_deltas, joint_impulse],
                             device=model.device,
                         )
+
+                        if self._has_joint_mimics:
+                            wp.launch(
+                                kernel=solve_joint_mimics,
+                                dim=model.joint_count,
+                                inputs=[
+                                    body_q,
+                                    model.body_com,
+                                    self.body_inv_mass_effective,
+                                    self.body_inv_inertia_effective,
+                                    model.joint_type,
+                                    model.joint_enabled,
+                                    model.joint_parent,
+                                    model.joint_child,
+                                    model.joint_X_p,
+                                    model.joint_X_c,
+                                    model.joint_qd_start,
+                                    model.joint_dof_dim,
+                                    model.joint_axis,
+                                    model.joint_mimic_joint,
+                                    model.joint_mimic_coeffs,
+                                    self.joint_angular_relaxation,
+                                    self.joint_linear_relaxation,
+                                    dt,
+                                ],
+                                outputs=[body_deltas, joint_impulse],
+                                device=model.device,
+                            )
 
                         body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
