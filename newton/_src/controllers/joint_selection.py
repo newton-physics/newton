@@ -33,6 +33,15 @@ class JointSelection:
     :attr:`~newton.State.joint_qd`, since the two spaces differ once any
     uncontrolled joint upstream spans more coordinates than DOFs.
 
+    :func:`select_joints` addresses each selected joint by a single entry —
+    its *starting* coordinate index and starting DOF index, not one entry per
+    coordinate or DOF. That fully addresses a joint spanning exactly one
+    coordinate and one DOF (Revolute, Prismatic); for any other joint the
+    entry only reaches its first coordinate/DOF, and it is the controller,
+    not :func:`select_joints`, that checks whether the joint is actually
+    controllable. A joint with zero coordinates and zero DOFs (Fixed) has no
+    starting index to give and contributes no entry at all.
+
     Controlled DOFs are grouped by robot, matching the ``(robot 0's
     indices first, then robot 1's, ...)`` layout
     :class:`~newton.controllers.ControllerJointImpedance` requires. Within a
@@ -103,9 +112,14 @@ def select_joints(
             twice.
         joints: Model joint indices or label patterns to control within the
             selected articulations, as a list or as a single pattern. ``None``
-            selects every joint of each selected articulation. Whether each
-            selected joint is controllable is checked by the controller, not
-            here. Duplicates are collapsed, as they are for ``articulations``.
+            selects every joint of each selected articulation that has at
+            least one coordinate and one DOF — a joint with neither (Fixed)
+            is skipped, since it has no starting coordinate/DOF index to
+            address; explicitly naming one contributes no entry either. Every
+            other selected joint contributes exactly one entry, its starting
+            coordinate/DOF index; whether that joint is otherwise
+            controllable is checked by the controller, not here. Duplicates
+            are collapsed, as they are for ``articulations``.
 
     Returns:
         The matched coordinate/DOF index pair addressing the selected DOFs, in
@@ -174,9 +188,7 @@ def select_joints(
         for art in selected_arts:
             robot_joints_by_art[art] = np.arange(art_start[art], art_end[art]).tolist()
     else:
-        # Maps a joint index to its owning articulation, so a joint's art can be
-        # looked up directly instead of scanning ``selected_arts`` per joint.
-        joint_to_art = np.searchsorted(art_end, np.arange(model.joint_count), side="right")
+        joint_to_art = model.joint_articulation.numpy()
         selected_arts_set = set(selected_arts)
         # Match against leaf names, not full labels, so a pattern like "shoulder"
         # selects that joint on every robot regardless of its add_builder prefix.
@@ -192,6 +204,16 @@ def select_joints(
         # index and a label — would otherwise be controlled twice, aliasing two
         # controlled slots onto one simulation DOF. Order is preserved.
         robot_joints = np.asarray(list(dict.fromkeys(robot_joints_by_art[art])), dtype=np.int64)
+        # A joint with zero coordinates and zero DOFs (Fixed) has no starting
+        # index of its own: q_start/qd_start alias the next joint's, or run
+        # past the end of the model's arrays entirely if it is the last
+        # joint. q_start/qd_start carry a trailing sentinel (length
+        # joint_count + 1), so q_start[j + 1] - q_start[j] is that joint's
+        # coordinate count without a separate end array.
+        has_coord_and_dof = (q_start[robot_joints + 1] > q_start[robot_joints]) & (
+            qd_start[robot_joints + 1] > qd_start[robot_joints]
+        )
+        robot_joints = robot_joints[has_coord_and_dof]
         if robot_joints.size == 0:
             continue
         q_idx_chunks.append(q_start[robot_joints])

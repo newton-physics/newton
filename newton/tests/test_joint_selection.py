@@ -177,6 +177,58 @@ class TestSelectJoints(unittest.TestCase):
         selection = select_joints(model, joints=[j_ball])
         np.testing.assert_array_equal(selection.q_idx.numpy(), [0])
 
+    def test_fixed_only_articulation_raises_instead_of_out_of_range_index(self):
+        """Verify a model whose only joint is Fixed raises a clear error rather than an invalid index.
+
+        A Fixed joint spans zero coordinates and zero DOFs, so it has no
+        starting index of its own to give: naively taking its
+        ``joint_q_start``/``joint_qd_start`` would point past the end of
+        (here, empty) coordinate and DOF arrays.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        base = builder.add_link()
+        j_fixed = builder.add_joint_fixed(
+            parent=-1,
+            child=base,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j_fixed], label="fixed_robot")
+        model = builder.finalize(device=device)
+        self.assertEqual(model.joint_coord_count, 0)
+        self.assertEqual(model.joint_dof_count, 0)
+        with self.assertRaises(ValueError):
+            select_joints(model)
+
+    def test_fixed_joint_excluded_from_default_selection(self):
+        """Verify a Fixed joint contributes no entry, while its articulated sibling still does."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        base = builder.add_link()
+        arm = builder.add_link()
+        j_fixed = builder.add_joint_fixed(
+            parent=-1,
+            child=base,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        j_rev = builder.add_joint_revolute(
+            parent=base,
+            child=arm,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j_fixed, j_rev], label="robot")
+        model = builder.finalize(device=device)
+        selection = select_joints(model)
+        np.testing.assert_array_equal(selection.q_idx.numpy(), [model.joint_q_start.numpy()[j_rev]])
+        np.testing.assert_array_equal(selection.qd_idx.numpy(), [model.joint_qd_start.numpy()[j_rev]])
+        # Explicitly naming the Fixed joint contributes no entry either.
+        with self.assertRaises(ValueError):
+            select_joints(model, joints=[j_fixed])
+
     def test_articulation_glob_pattern_selects_every_match(self):
         """Verify a glob pattern selects every articulation whose label matches."""
         device = wp.get_device()
@@ -331,6 +383,76 @@ class TestSelectJoints(unittest.TestCase):
         model = _build_single_prismatic().finalize(device=device)
         with self.assertRaises(ValueError):
             select_joints(model, joints=[99])
+
+    def test_joint_outside_any_articulation_raises(self):
+        """Verify select_joints raises when a joint before every articulation belongs to no articulation.
+
+        A joint left out of every articulation has no owning articulation at
+        all, as opposed to one outside the *selected* articulations. Both
+        must raise, but only this case can be silently resolved incorrectly if the
+        owning articulation is inferred from articulation boundaries instead
+        of read from :attr:`~newton.Model.joint_articulation`.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        loose = builder.add_link()
+        # A world-root joint left out of every articulation, so it is never
+        # reached by the per-robot FK and dynamics evaluations.
+        builder.add_joint_revolute(parent=-1, child=loose, axis=wp.vec3(0.0, 0.0, 1.0))
+        controlled = builder.add_link()
+        j_controlled = builder.add_joint_revolute(parent=-1, child=controlled, axis=wp.vec3(0.0, 0.0, 1.0))
+        builder.add_articulation([j_controlled], label="robot")
+        model = builder.finalize(device=device)
+        with self.assertRaises(ValueError):
+            select_joints(model, joints=[0])  # joint 0 is the loose joint
+        # The articulated joint still resolves correctly.
+        selection = select_joints(model, joints=[j_controlled])
+        np.testing.assert_array_equal(selection.q_idx.numpy(), [model.joint_q_start.numpy()[j_controlled]])
+
+    def test_joint_between_articulations_raises(self):
+        """Verify select_joints raises when a joint between two articulations belongs to no articulation.
+
+        Boundary-inferred ownership would attribute this joint to whichever
+        articulation starts right after it; reading it from
+        :attr:`~newton.Model.joint_articulation` catches it instead.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        l0 = builder.add_link()
+        j0 = builder.add_joint_revolute(parent=-1, child=l0, axis=wp.vec3(0.0, 0.0, 1.0))
+        builder.add_articulation([j0], label="robot0")
+        loose = builder.add_link()
+        builder.add_joint_revolute(parent=-1, child=loose, axis=wp.vec3(0.0, 0.0, 1.0))
+        l1 = builder.add_link()
+        j1 = builder.add_joint_revolute(parent=-1, child=l1, axis=wp.vec3(0.0, 0.0, 1.0))
+        builder.add_articulation([j1], label="robot1")
+        model = builder.finalize(device=device)
+        with self.assertRaises(ValueError):
+            select_joints(model, joints=[1])  # joint 1 is the loose joint
+        # Both articulated joints still resolve correctly.
+        selection = select_joints(model, joints=[j0, j1])
+        np.testing.assert_array_equal(selection.q_idx.numpy(), model.joint_q_start.numpy()[[j0, j1]])
+
+    def test_joint_after_every_articulation_raises(self):
+        """Verify select_joints raises when a joint after every articulation belongs to no articulation.
+
+        Boundary-inferred ownership has no articulation start after this
+        joint to attribute it to, so this case would previously slip through
+        as unmatched rather than raising for the right reason.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        l0 = builder.add_link()
+        j0 = builder.add_joint_revolute(parent=-1, child=l0, axis=wp.vec3(0.0, 0.0, 1.0))
+        builder.add_articulation([j0], label="robot")
+        loose = builder.add_link()
+        builder.add_joint_revolute(parent=-1, child=loose, axis=wp.vec3(0.0, 0.0, 1.0))
+        model = builder.finalize(device=device)
+        with self.assertRaises(ValueError):
+            select_joints(model, joints=[1])  # joint 1 is the trailing loose joint
+        # The articulated joint still resolves correctly.
+        selection = select_joints(model, joints=[j0])
+        np.testing.assert_array_equal(selection.q_idx.numpy(), [model.joint_q_start.numpy()[j0]])
 
     def test_selection_drives_controller_end_to_end(self):
         """Verify a select_joints result wires into a controller and reaches the simulation.
