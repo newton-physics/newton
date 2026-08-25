@@ -1840,6 +1840,129 @@ def test_xpbd_aligned_box_stack_remains_stable(test, device):
     )
 
 
+def _run_xpbd_mimic(model, initial_q):
+    """Run a zero-gravity mimic solve and return reconstructed joint coordinates."""
+    model.joint_q.assign(np.asarray(initial_q, dtype=np.float32))
+    model.joint_qd.zero_()
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+    solver = newton.solvers.SolverXPBD(
+        model,
+        iterations=128,
+        joint_linear_relaxation=1.0,
+        joint_angular_relaxation=1.0,
+        angular_damping=0.0,
+    )
+    solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+
+    joint_q = wp.empty_like(model.joint_q)
+    joint_qd = wp.empty_like(model.joint_qd)
+    newton.eval_ik(model, state_out, joint_q, joint_qd)
+    return joint_q.numpy()
+
+
+def test_xpbd_mimic_couples_compatible_scalar_joint_types(test, device):
+    """Enforce a mimic relationship between compatible scalar joint types."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body_0 = builder.add_link()
+    body_1 = builder.add_link()
+    builder.add_shape_box(body_0, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(body_1, hx=0.1, hy=0.1, hz=0.1)
+    reference = builder.add_joint_revolute(-1, body_0, axis=newton.Axis.Z)
+    follower = builder.add_joint_prismatic(body_0, body_1, axis=newton.Axis.X)
+    builder.add_articulation([reference, follower])
+    offset = 0.1
+    multiplier = -1.5
+    builder.set_joint_mimic(follower, reference, (offset, multiplier))
+    model = builder.finalize(device=device)
+
+    initial_reference = 0.35
+    joint_q = _run_xpbd_mimic(model, [initial_reference, 0.8])
+
+    test.assertNotAlmostEqual(float(joint_q[reference]), initial_reference, places=4)
+    test.assertAlmostEqual(float(joint_q[follower]), offset + multiplier * float(joint_q[reference]), delta=2.0e-3)
+
+
+def test_xpbd_mimic_applies_to_each_d6_coordinate(test, device):
+    """Enforce a multi-DOF D6 mimic relationship componentwise."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body_0 = builder.add_link()
+    body_1 = builder.add_link()
+    builder.add_shape_box(body_0, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(body_1, hx=0.1, hy=0.1, hz=0.1)
+    axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+    reference = builder.add_joint_d6(
+        -1,
+        body_0,
+        linear_axes=[axis(newton.Axis.X)],
+        angular_axes=[axis(newton.Axis.Z)],
+    )
+    follower = builder.add_joint_d6(
+        body_0,
+        body_1,
+        linear_axes=[axis(newton.Axis.X)],
+        angular_axes=[axis(newton.Axis.Z)],
+    )
+    builder.add_articulation([reference, follower])
+    offset = -0.1
+    multiplier = 1.5
+    builder.set_joint_mimic(follower, reference, (offset, multiplier))
+    model = builder.finalize(device=device)
+
+    joint_q = _run_xpbd_mimic(model, [0.2, 0.3, 0.8, -0.6])
+    reference_slice = slice(model.joint_q_start.numpy()[reference], model.joint_q_start.numpy()[reference + 1])
+    follower_slice = slice(model.joint_q_start.numpy()[follower], model.joint_q_start.numpy()[follower + 1])
+    np.testing.assert_allclose(joint_q[follower_slice], offset + multiplier * joint_q[reference_slice], atol=2.0e-3)
+
+
+def test_xpbd_mimic_applies_to_compound_d6_rotations(test, device):
+    """Enforce mimic relationships for two- and three-axis D6 rotations."""
+    for axes in ((newton.Axis.X, newton.Axis.Y), (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)):
+        with test.subTest(axis_count=len(axes)):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body_0 = builder.add_link()
+            body_1 = builder.add_link()
+            builder.add_shape_box(body_0, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_shape_box(body_1, hx=0.1, hy=0.1, hz=0.1)
+            axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+            reference = builder.add_joint_d6(-1, body_0, angular_axes=[axis(value) for value in axes])
+            follower = builder.add_joint_d6(body_0, body_1, angular_axes=[axis(value) for value in axes])
+            builder.add_articulation([reference, follower])
+            offset = 0.05
+            multiplier = -0.8
+            builder.set_joint_mimic(follower, reference, (offset, multiplier))
+            model = builder.finalize(device=device)
+
+            axis_count = len(axes)
+            initial_q = [0.2, -0.15, 0.1][:axis_count] + [-0.5, 0.35, -0.25][:axis_count]
+            joint_q = _run_xpbd_mimic(model, initial_q)
+            joint_q_start = model.joint_q_start.numpy()
+            reference_slice = slice(joint_q_start[reference], joint_q_start[reference + 1])
+            follower_slice = slice(joint_q_start[follower], joint_q_start[follower + 1])
+            np.testing.assert_allclose(
+                joint_q[follower_slice], offset + multiplier * joint_q[reference_slice], atol=2.0e-3
+            )
+
+
+def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
+    """Warn when XPBD cannot enforce a joint-owned mimic relationship."""
+    builder = newton.ModelBuilder()
+    body_0 = builder.add_link()
+    body_1 = builder.add_link()
+    builder.add_shape_box(body_0, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(body_1, hx=0.1, hy=0.1, hz=0.1)
+    reference = builder.add_joint_ball(-1, body_0)
+    follower = builder.add_joint_ball(body_0, body_1)
+    builder.add_articulation([reference, follower])
+    builder.set_joint_mimic(follower, reference)
+    model = builder.finalize(device=device)
+
+    with test.assertWarnsRegex(UserWarning, "unsupported follower joint indices"):
+        newton.solvers.SolverXPBD(model)
+
+
 devices = get_test_devices()
 
 
@@ -2048,6 +2171,38 @@ add_function_test(
     TestSolverXPBD,
     "test_xpbd_aligned_box_stack_remains_stable",
     test_xpbd_aligned_box_stack_remains_stable,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_mimic_couples_compatible_scalar_joint_types",
+    test_xpbd_mimic_couples_compatible_scalar_joint_types,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_mimic_applies_to_each_d6_coordinate",
+    test_xpbd_mimic_applies_to_each_d6_coordinate,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_mimic_applies_to_compound_d6_rotations",
+    test_xpbd_mimic_applies_to_compound_d6_rotations,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_mimic_warns_for_unsupported_joint_types",
+    test_xpbd_mimic_warns_for_unsupported_joint_types,
     devices=devices,
     check_output=False,
 )

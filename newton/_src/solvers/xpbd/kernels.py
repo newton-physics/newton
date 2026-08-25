@@ -13,6 +13,12 @@ from ...math import (
     velocity_at_point,
 )
 from ...sim import BodyFlags, JointType
+from ...sim.articulation import (
+    invert_2d_rotational_dofs,
+    invert_3d_rotational_dofs,
+    transform_2d_rotational_axes,
+    transform_3d_rotational_axes,
+)
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 
 
@@ -2042,6 +2048,286 @@ def solve_body_joints(
     # measured from the child COM).
     if joint_impulse:
         wp.atomic_add(joint_impulse, tid, wp.spatial_vector(lin_delta_c, ang_delta_c))
+
+
+@wp.func
+def _joint_mimic_coordinate_and_gradients(
+    joint: int,
+    component: int,
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_axis: wp.array[wp.vec3],
+):
+    """Return one joint coordinate and its parent/child maximal-coordinate gradients."""
+    type = joint_type[joint]
+    parent = joint_parent[joint]
+    child = joint_child[joint]
+
+    X_wp = joint_X_p[joint]
+    pose_p = X_wp
+    if parent >= 0:
+        pose_p = body_q[parent]
+        X_wp = pose_p * X_wp
+    pose_c = body_q[child]
+    X_wc = pose_c * joint_X_c[joint]
+
+    q_p = wp.transform_get_rotation(X_wp)
+    q_c = wp.transform_get_rotation(X_wc)
+    rel_q = wp.quat_inverse(q_p) * q_c
+    x_err = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
+    x_err_p = wp.quat_rotate_inv(q_p, x_err)
+
+    qd_start = joint_qd_start[joint]
+    lin_axis_count = joint_dof_dim[joint, 0]
+    ang_axis_count = joint_dof_dim[joint, 1]
+
+    coordinate = float(0.0)
+    linear_axis = wp.vec3(0.0)
+    angular_covector = wp.vec3(0.0)
+
+    if type == JointType.PRISMATIC:
+        axis = joint_axis[qd_start]
+        coordinate = wp.dot(x_err_p, axis)
+        linear_axis = wp.quat_rotate(q_p, axis)
+    elif type == JointType.REVOLUTE:
+        axis = joint_axis[qd_start]
+        coordinate = wp.quat_twist_angle_signed(axis, rel_q)
+        angular_covector = wp.quat_rotate(q_p, axis)
+    elif type == JointType.D6:
+        if component < lin_axis_count:
+            axis = joint_axis[qd_start + component]
+            coordinate = wp.dot(x_err_p, axis)
+            linear_axis = wp.quat_rotate(q_p, axis)
+        else:
+            angular_component = component - lin_axis_count
+            angular_start = qd_start + lin_axis_count
+            local_covector = wp.vec3(0.0)
+            if ang_axis_count == 1:
+                axis = joint_axis[angular_start]
+                coordinate = wp.quat_twist_angle_signed(axis, rel_q)
+                local_covector[0] = axis[0]
+                local_covector[1] = axis[1]
+                local_covector[2] = axis[2]
+            elif ang_axis_count == 2:
+                axis_0 = joint_axis[angular_start + 0]
+                axis_1 = joint_axis[angular_start + 1]
+                coordinates_2, _unused_velocities_2 = invert_2d_rotational_dofs(axis_0, axis_1, q_p, q_c, wp.vec3(0.0))
+                coordinate = coordinates_2[angular_component]
+                axis_0_q, axis_1_q = transform_2d_rotational_axes(axis_0, axis_1, coordinates_2[0])
+                if angular_component == 0:
+                    local_covector[0] = axis_0_q[0]
+                    local_covector[1] = axis_0_q[1]
+                    local_covector[2] = axis_0_q[2]
+                else:
+                    local_covector[0] = axis_1_q[0]
+                    local_covector[1] = axis_1_q[1]
+                    local_covector[2] = axis_1_q[2]
+            elif ang_axis_count == 3:
+                axis_0 = joint_axis[angular_start + 0]
+                axis_1 = joint_axis[angular_start + 1]
+                axis_2 = joint_axis[angular_start + 2]
+                coordinates_3, _unused_velocities_3 = invert_3d_rotational_dofs(
+                    axis_0, axis_1, axis_2, q_p, q_c, wp.vec3(0.0)
+                )
+                coordinate = coordinates_3[angular_component]
+                axis_0_q, axis_1_q, axis_2_q = transform_3d_rotational_axes(
+                    axis_0, axis_1, axis_2, coordinates_3[0], coordinates_3[1]
+                )
+                if angular_component == 0:
+                    local_covector[0] = axis_0_q[0]
+                    local_covector[1] = axis_0_q[1]
+                    local_covector[2] = axis_0_q[2]
+                elif angular_component == 1:
+                    local_covector[0] = axis_1_q[0]
+                    local_covector[1] = axis_1_q[1]
+                    local_covector[2] = axis_1_q[2]
+                else:
+                    local_covector[0] = axis_2_q[0]
+                    local_covector[1] = axis_2_q[1]
+                    local_covector[2] = axis_2_q[2]
+            angular_covector = wp.quat_rotate(q_p, local_covector)
+
+    r_p = wp.vec3(0.0)
+    if parent >= 0:
+        r_p = wp.transform_get_translation(X_wp) - wp.transform_point(pose_p, body_com[parent])
+    r_c = wp.transform_get_translation(X_wc) - wp.transform_point(pose_c, body_com[child])
+
+    gradient_parent = wp.spatial_vector(-linear_axis, -wp.cross(r_p, linear_axis) - angular_covector)
+    gradient_child = wp.spatial_vector(linear_axis, wp.cross(r_c, linear_axis) + angular_covector)
+    return coordinate, gradient_parent, gradient_child
+
+
+@wp.func
+def _joint_mimic_effective_mass(
+    body: int,
+    gradient: wp.spatial_vector,
+    body_q: wp.array[wp.transform],
+    body_inv_m: wp.array[float],
+    body_inv_I: wp.array[wp.mat33],
+):
+    """Return the inverse effective mass for one maximal-coordinate gradient."""
+    if body < 0:
+        return float(0.0)
+    linear = wp.spatial_top(gradient)
+    angular = wp.spatial_bottom(gradient)
+    body_rotation = wp.transform_get_rotation(body_q[body])
+    angular_body = wp.quat_rotate_inv(body_rotation, angular)
+    return body_inv_m[body] * wp.length_sq(linear) + wp.dot(angular_body, body_inv_I[body] * angular_body)
+
+
+@wp.kernel
+def solve_joint_mimics(
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_inv_m: wp.array[float],
+    body_inv_I: wp.array[wp.mat33],
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_axis: wp.array[wp.vec3],
+    joint_mimic_joint: wp.array[int],
+    joint_mimic_coeffs: wp.array[wp.vec2],
+    angular_relaxation: float,
+    linear_relaxation: float,
+    dt: float,
+    deltas: wp.array[wp.spatial_vector],
+    joint_impulse: wp.array[wp.spatial_vector],
+):
+    """Solve joint-owned mimic relationships as coupled maximal-coordinate constraints."""
+    follower = wp.tid()
+    reference = joint_mimic_joint[follower]
+    if reference < 0 or not joint_enabled[follower] or not joint_enabled[reference]:
+        return
+
+    follower_type = joint_type[follower]
+    reference_type = joint_type[reference]
+    follower_supported = (
+        follower_type == JointType.PRISMATIC or follower_type == JointType.REVOLUTE or follower_type == JointType.D6
+    )
+    reference_supported = (
+        reference_type == JointType.PRISMATIC or reference_type == JointType.REVOLUTE or reference_type == JointType.D6
+    )
+    if not follower_supported or not reference_supported:
+        return
+
+    follower_parent = joint_parent[follower]
+    follower_child = joint_child[follower]
+    reference_parent = joint_parent[reference]
+    reference_child = joint_child[reference]
+    coordinate_count = joint_dof_dim[follower, 0] + joint_dof_dim[follower, 1]
+    follower_linear_count = joint_dof_dim[follower, 0]
+    coeffs = joint_mimic_coeffs[follower]
+    offset = coeffs[0]
+    multiplier = coeffs[1]
+
+    for component in range(6):
+        if component >= coordinate_count:
+            continue
+
+        follower_q, follower_parent_gradient, follower_child_gradient = _joint_mimic_coordinate_and_gradients(
+            follower,
+            component,
+            body_q,
+            body_com,
+            joint_type,
+            joint_parent,
+            joint_child,
+            joint_X_p,
+            joint_X_c,
+            joint_qd_start,
+            joint_dof_dim,
+            joint_axis,
+        )
+        reference_q, reference_parent_gradient, reference_child_gradient = _joint_mimic_coordinate_and_gradients(
+            reference,
+            component,
+            body_q,
+            body_com,
+            joint_type,
+            joint_parent,
+            joint_child,
+            joint_X_p,
+            joint_X_c,
+            joint_qd_start,
+            joint_dof_dim,
+            joint_axis,
+        )
+
+        error = follower_q - offset - multiplier * reference_q
+        if component >= follower_linear_count:
+            error = wp.atan2(wp.sin(error), wp.cos(error))
+
+        gradient_0 = follower_parent_gradient
+        gradient_1 = follower_child_gradient
+        gradient_2 = reference_parent_gradient * -multiplier
+        gradient_3 = reference_child_gradient * -multiplier
+        impulse_reference_child = gradient_3
+
+        body_0 = follower_parent
+        body_1 = follower_child
+        body_2 = reference_parent
+        body_3 = reference_child
+
+        # A serial pair shares the reference child with the follower parent.
+        # Merge equal body indices before computing effective mass so the cross
+        # terms of the combined maximal-coordinate gradient are retained.
+        if body_1 >= 0 and body_1 == body_0:
+            gradient_0 += gradient_1
+            body_1 = -1
+        if body_2 >= 0:
+            if body_2 == body_0:
+                gradient_0 += gradient_2
+                body_2 = -1
+            elif body_2 == body_1:
+                gradient_1 += gradient_2
+                body_2 = -1
+        if body_3 >= 0:
+            if body_3 == body_0:
+                gradient_0 += gradient_3
+                body_3 = -1
+            elif body_3 == body_1:
+                gradient_1 += gradient_3
+                body_3 = -1
+            elif body_3 == body_2:
+                gradient_2 += gradient_3
+                body_3 = -1
+
+        effective_mass = _joint_mimic_effective_mass(body_0, gradient_0, body_q, body_inv_m, body_inv_I)
+        effective_mass += _joint_mimic_effective_mass(body_1, gradient_1, body_q, body_inv_m, body_inv_I)
+        effective_mass += _joint_mimic_effective_mass(body_2, gradient_2, body_q, body_inv_m, body_inv_I)
+        effective_mass += _joint_mimic_effective_mass(body_3, gradient_3, body_q, body_inv_m, body_inv_I)
+        if effective_mass == 0.0:
+            continue
+
+        relaxation = linear_relaxation
+        if component >= follower_linear_count:
+            relaxation = angular_relaxation
+        delta_lambda = -error / (dt * effective_mass) * relaxation
+
+        if body_0 >= 0:
+            wp.atomic_add(deltas, body_0, gradient_0 * delta_lambda)
+        if body_1 >= 0:
+            wp.atomic_add(deltas, body_1, gradient_1 * delta_lambda)
+        if body_2 >= 0:
+            wp.atomic_add(deltas, body_2, gradient_2 * delta_lambda)
+        if body_3 >= 0:
+            wp.atomic_add(deltas, body_3, gradient_3 * delta_lambda)
+
+        if joint_impulse:
+            wp.atomic_add(joint_impulse, follower, follower_child_gradient * delta_lambda)
+            wp.atomic_add(joint_impulse, reference, impulse_reference_child * delta_lambda)
 
 
 @wp.func
