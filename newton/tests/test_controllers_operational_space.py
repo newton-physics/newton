@@ -7,9 +7,11 @@ Math kernels are tested standalone first, independent of any Controller class,
 following the pattern in ``test_jacobian_mass_matrix.py``. Controller-level
 tests are added once the surrounding ``Controller`` classes exist.
 
-Each test launches the two kernels directly, with no shared launch helper, so
-what's being computed and checked is visible in the test itself rather than
-behind an indirection.
+Kernel launches are written out directly in each test rather than behind a
+shared helper whenever the launch itself has real per-test configuration
+(index arrays, gains, ...) worth seeing. A launch is only factored out when
+it's a single kernel with no derived arguments (e.g. ``_pose_error``), so the
+helper hides nothing beyond boilerplate.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import newton
 from newton._src.controllers.impl.operational_space._common import (
     _invert_spd_block_kernel,
     _operational_space_mass_matrix_inverse_kernel,
+    _pose_error_kernel,
     _shift_jacobian_to_tool_kernel,
     _tool_pose_and_twist_kernel,
 )
@@ -166,7 +169,7 @@ def test_operational_space_mass_matrix_matches_numpy(test, device):
     mass_matrix = newton.eval_mass_matrix(model, state)
     jacobian_com_world = newton.eval_jacobian(model, state)
 
-    # Shift the Jacobian to the tool point (the Chunk 1 kernel).
+    # Shift the Jacobian to the tool point.
     max_dofs = model.max_dofs_per_articulation
     jacobian_tool_world = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
     wp.launch(
@@ -412,6 +415,61 @@ def test_tool_twist_angular_part_matches_body(test, device):
     np.testing.assert_allclose(tool_twist_world.numpy()[0][3:], body_twist_com_world[3:], atol=1e-6)
 
 
+def _pose_error(current_pos, current_quat, desired_pos, desired_quat, device):
+    """Launch _pose_error_kernel for a single robot and return the 6D error as numpy."""
+    current = wp.array([wp.transform(wp.vec3(*current_pos), current_quat)], dtype=wp.transform, device=device)
+    desired = wp.array([wp.transform(wp.vec3(*desired_pos), desired_quat)], dtype=wp.transform, device=device)
+    pose_error_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(_pose_error_kernel, dim=1, inputs=[current, desired], outputs=[pose_error_world], device=device)
+    return pose_error_world.numpy()[0]
+
+
+def test_pose_error_is_zero_when_poses_match(test, device):
+    """Identical current and desired poses give exactly zero error, including at the near-identity singularity."""
+    quat = wp.quat_from_axis_angle(wp.vec3(0.3, 0.6, -0.2), 1.1)
+    error = _pose_error((1.0, -2.0, 0.5), quat, (1.0, -2.0, 0.5), quat, device)
+    np.testing.assert_allclose(error, np.zeros(6), atol=1e-7)
+
+
+def test_pose_error_position_is_desired_minus_current(test, device):
+    """The position half of the error is a plain desired-minus-current difference, independent of orientation."""
+    quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4)
+    error = _pose_error((1.0, 2.0, 3.0), quat, (1.5, 2.0, 2.0), quat, device)
+    np.testing.assert_allclose(error[:3], [0.5, 0.0, -1.0], atol=1e-6)
+    np.testing.assert_allclose(error[3:], [0.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_pose_error_orientation_matches_known_rotations(test, device):
+    """The orientation error is the axis-angle rotation that carries current onto desired.
+
+    Each case gives (current axis-angle, desired axis-angle, expected error
+    axis-angle), hand-computed rather than derived from the kernel itself:
+
+    - 90-degree case: identity to a 90-degree turn about Z gives exactly that turn.
+    - Small-angle case: exercises the near-identity Taylor-expansion branch,
+      rather than the general atan2 branch.
+    - Reversed case: swapping current and desired negates the error, checking
+      the sign convention isn't accidentally symmetric.
+    - Large-angle case: 170 degrees stays well short of the axis-undefined
+      180-degree singularity, but exercises the general branch away from zero.
+    """
+    identity = wp.quat_identity()
+    ninety_about_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2)
+    ten_deg_about_x = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(np.deg2rad(10.0)))
+    one_seventy_about_y = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(np.deg2rad(170.0)))
+
+    cases = [
+        (identity, ninety_about_z, [0.0, 0.0, np.pi / 2]),
+        (identity, ten_deg_about_x, [np.deg2rad(10.0), 0.0, 0.0]),
+        (ninety_about_z, identity, [0.0, 0.0, -np.pi / 2]),
+        (identity, one_seventy_about_y, [0.0, np.deg2rad(170.0), 0.0]),
+    ]
+    for current_quat, desired_quat, expected_orientation_error in cases:
+        error = _pose_error((0.0, 0.0, 0.0), current_quat, (0.0, 0.0, 0.0), desired_quat, device)
+        np.testing.assert_allclose(error[:3], [0.0, 0.0, 0.0], atol=1e-6)
+        np.testing.assert_allclose(error[3:], expected_orientation_error, atol=1e-5)
+
+
 class TestOperationalSpaceKernels(unittest.TestCase):
     pass
 
@@ -450,6 +508,24 @@ add_function_test(
     TestOperationalSpaceKernels,
     "test_tool_twist_angular_part_matches_body",
     test_tool_twist_angular_part_matches_body,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_pose_error_is_zero_when_poses_match",
+    test_pose_error_is_zero_when_poses_match,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_pose_error_position_is_desired_minus_current",
+    test_pose_error_position_is_desired_minus_current,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_pose_error_orientation_matches_known_rotations",
+    test_pose_error_orientation_matches_known_rotations,
     devices=devices,
 )
 

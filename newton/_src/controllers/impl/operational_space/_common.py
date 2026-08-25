@@ -121,6 +121,19 @@ def _shift_jacobian_to_tool_kernel(
 # symmetric positive-definite, so _invert_spd_block_kernel below is used
 # twice: once to invert M (block_dim = each robot's controlled-DOF count),
 # once to invert Lambda^-1 (block_dim = 6, the fixed task dimension).
+#
+# TODO(operational-space controller): Lambda^-1 = J M^-1 J^T only has rank
+# min(6, controlled_dof_count). For a robot with fewer than 6 controlled
+# DOFs, it is genuinely singular, not just ill-conditioned — the Cholesky
+# pivot floor in _invert_spd_block_kernel keeps that from producing NaN, but
+# it produces a huge, physically meaningless Lambda entry along the
+# uncontrollable directions instead (verified empirically: eigenvalues up to
+# ~1e8 for a 2-DOF arm, ~1e6 for a 5-DOF arm, vs. O(1-100) for 6+ DOF).
+# ControllerOperationalSpace(ModelFree) should raise at construction when
+# use_inertia_decoupling=True (full, non-partial) and a robot's
+# controlled-DOF count < 6, matching ControllerJointImpedance's pattern of
+# validating configuration up front rather than letting it misbehave silently
+# at runtime.
 # ---------------------------------------------------------------------------
 
 
@@ -214,3 +227,73 @@ def _operational_space_mass_matrix_inverse_kernel(
                 * jacobian_tool_world[robot_idx, col, b]
             )
     operational_space_mass_matrix_inv[robot_idx, row, col] = total
+
+
+# ---------------------------------------------------------------------------
+# Task-space pose error: how far the tool is from where it should be.
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _pose_error_kernel(
+    coordinate_change_world_from_tool: wp.array[wp.transform],  # (robot_count,) current world pose of the tool frame
+    coordinate_change_world_from_desired_tool: wp.array[
+        wp.transform
+    ],  # (robot_count,) desired world pose of the tool frame
+    # outputs
+    pose_error_world: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) (position error, orientation error) in world coords: desired minus current
+):
+    """Task-space pose error, ``(desired_position - current_position, orientation_error)``.
+
+    The position error is a plain vector difference, in world coordinates.
+
+    The orientation error is the axis-angle rotation that would carry the
+    current tool orientation to the desired one, in world coordinates: rotate
+    the current orientation by ``angle`` about ``axis`` and it lands on the
+    desired orientation. It shrinks to zero exactly when the two orientations
+    agree, matching the position error's "desired minus current" sign so both
+    halves of the 6D error can be driven to zero by the same kind of
+    proportional term.
+
+    Derivation: with quaternions written so ``q * p`` composes like Warp's
+    ``transform *`` (apply ``p`` first, then ``q``), the rotation that "undoes
+    current, then applies desired" is ``quat_error = q_desired * q_current^-1``.
+    Its axis-angle form is exactly that carrying rotation. Extracting it
+    inlines Warp's own ``quat_to_axis_angle`` formula
+    (``newton/native/quat.h``) rather than calling it directly, because that
+    builtin divides by the quaternion's vector-part norm with no guard — it
+    returns NaN once the two orientations are close enough that the norm
+    underflows, which is exactly the common steady-state case for a pose
+    tracker. The small-angle branch below is quat_error's first-order Taylor
+    expansion instead: for a unit quaternion near identity,
+    ``quat_error ~= (1, half_angle * axis)``, so ``2 * vector_part ~= angle *
+    axis`` directly, with no division at all.
+    """
+    robot_idx = wp.tid()
+
+    coordinate_change_world_from_current_tool = coordinate_change_world_from_tool[robot_idx]
+    position_error_world = wp.transform_get_translation(
+        coordinate_change_world_from_desired_tool[robot_idx]
+    ) - wp.transform_get_translation(coordinate_change_world_from_current_tool)
+
+    quat_current = wp.transform_get_rotation(coordinate_change_world_from_current_tool)
+    quat_desired = wp.transform_get_rotation(coordinate_change_world_from_desired_tool[robot_idx])
+    quat_error = quat_desired * wp.quat_inverse(quat_current)
+    # Every unit quaternion has two equally valid representations, q and -q;
+    # picking the one with a non-negative scalar part is what keeps the
+    # extracted angle in [0, pi] (the shorter of the two possible rotations)
+    # instead of occasionally reporting the longer way around.
+    if quat_error[3] < 0.0:
+        quat_error = -quat_error
+
+    quat_error_vector = wp.vec3(quat_error[0], quat_error[1], quat_error[2])
+    quat_error_vector_norm = wp.length(quat_error_vector)
+    if quat_error_vector_norm > 1.0e-8:
+        angle = 2.0 * wp.atan2(quat_error_vector_norm, quat_error[3])
+        orientation_error_world = (quat_error_vector / quat_error_vector_norm) * angle
+    else:
+        orientation_error_world = 2.0 * quat_error_vector
+
+    pose_error_world[robot_idx] = wp.spatial_vector(position_error_world, orientation_error_world)
