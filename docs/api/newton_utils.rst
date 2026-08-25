@@ -26,6 +26,7 @@ newton.utils
    :signatures: long
 
    bourke_color_map
+   cable_generate_straight_points
    color_graph
    color_linear_to_srgb
    color_srgb_to_linear
@@ -39,7 +40,6 @@ newton.utils
    remesh_mesh
    rod_compute_parallel_transport_quaternions
    rod_compute_stiffness_from_elastic_moduli
-   rod_generate_straight_points
    rod_generate_straight_points_and_quaternions
    run_benchmark
    solidify_mesh
@@ -61,6 +61,6 @@ newton.utils
    * - ``create_parallel_transport_cable_quaternions``
      - Deprecated in 1.6; use newton.utils.rod_compute_parallel_transport_quaternions instead.
    * - ``create_straight_cable_points``
-     - Deprecated in 1.6; use newton.utils.rod_generate_straight_points instead.
+     - Deprecated in 1.6; use newton.utils.cable_generate_straight_points instead.
    * - ``create_straight_cable_points_and_quaternions``
      - Deprecated in 1.6; use newton.utils.rod_generate_straight_points_and_quaternions instead.

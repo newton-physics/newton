@@ -73,13 +73,13 @@ __all__ += [
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
     RodStiffness,
+    cable_generate_straight_points,
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
     create_straight_cable_points,
     create_straight_cable_points_and_quaternions,
     rod_compute_parallel_transport_quaternions,
     rod_compute_stiffness_from_elastic_moduli,
-    rod_generate_straight_points,
     rod_generate_straight_points_and_quaternions,
 )
 
@@ -89,13 +89,13 @@ if TYPE_CHECKING:
 __all__ += [
     "CableStiffness",
     "RodStiffness",
+    "cable_generate_straight_points",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
     "create_straight_cable_points",
     "create_straight_cable_points_and_quaternions",
     "rod_compute_parallel_transport_quaternions",
     "rod_compute_stiffness_from_elastic_moduli",
-    "rod_generate_straight_points",
     "rod_generate_straight_points_and_quaternions",
 ]
 
@@ -113,7 +113,7 @@ __deprecated_symbols__ = {
     "create_parallel_transport_cable_quaternions": (
         "Deprecated in 1.6; use newton.utils.rod_compute_parallel_transport_quaternions instead."
     ),
-    "create_straight_cable_points": "Deprecated in 1.6; use newton.utils.rod_generate_straight_points instead.",
+    "create_straight_cable_points": "Deprecated in 1.6; use newton.utils.cable_generate_straight_points instead.",
     "create_straight_cable_points_and_quaternions": (
         "Deprecated in 1.6; use newton.utils.rod_generate_straight_points_and_quaternions instead."
     ),

@@ -5238,7 +5238,7 @@ def _rod_stiffness_helper_returns_physical_twist(test, device):
                 newton.utils.rod_compute_stiffness_from_elastic_moduli(*args, **kwargs)
 
 
-def _rod_geometry_helpers_validate_inputs(test, device):
+def _cable_and_rod_geometry_helpers_validate_inputs(test, device):
     """Verify rod geometry helpers apply twist and reject invalid inputs."""
     start = wp.vec3(0.0, 0.0, 0.0)
     direction = wp.vec3(0.0, 0.0, 1.0)
@@ -5250,10 +5250,10 @@ def _rod_geometry_helpers_validate_inputs(test, device):
     np.testing.assert_allclose(np.asarray(quaternions[0]), np.asarray(expected))
 
     invalid_calls = (
-        (newton.utils.rod_generate_straight_points, (start, direction, 1.0, 0), "num_segments"),
-        (newton.utils.rod_generate_straight_points, (start, direction, np.nan, 1), "length"),
-        (newton.utils.rod_generate_straight_points, (start, direction, -1.0, 1), "length"),
-        (newton.utils.rod_generate_straight_points, (start, wp.vec3(0.0), 1.0, 1), "direction"),
+        (newton.utils.cable_generate_straight_points, (start, direction, 1.0, 0), "num_segments"),
+        (newton.utils.cable_generate_straight_points, (start, direction, np.nan, 1), "length"),
+        (newton.utils.cable_generate_straight_points, (start, direction, -1.0, 1), "length"),
+        (newton.utils.cable_generate_straight_points, (start, wp.vec3(0.0), 1.0, 1), "direction"),
         (newton.utils.rod_compute_parallel_transport_quaternions, ([start],), "length"),
         (newton.utils.rod_compute_parallel_transport_quaternions, ([start, start],), "duplicate"),
     )
@@ -5366,7 +5366,7 @@ def _cable_legacy_positional_arguments_preserve_binding(test, device):
     np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
 
 
-def _rod_helper_api_deprecates_released_cable_names(test, device):
+def _cable_and_rod_helper_api_deprecates_released_names(test, device):
     """Verify released helper names preserve behavior and name final replacements."""
     start = wp.vec3(0.0, 0.0, 0.0)
     direction = wp.vec3(0.0, 0.0, 1.0)
@@ -5374,14 +5374,14 @@ def _rod_helper_api_deprecates_released_cable_names(test, device):
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         test.assertIn("CableStiffness", dir(newton.utils))
-        points = newton.utils.rod_generate_straight_points(start, direction, 2.0, 2)
+        points = newton.utils.cable_generate_straight_points(start, direction, 2.0, 2)
         quaternions = newton.utils.rod_compute_parallel_transport_quaternions(points)
         combined = newton.utils.rod_generate_straight_points_and_quaternions(start, direction, 2.0, 2)
         stiffness = newton.utils.rod_compute_stiffness_from_elastic_moduli(200.0, 0.5, 2.0, poissons_ratio=0.25)
 
     expected_replacements = (
         ("CableStiffness", "newton.utils.RodStiffness"),
-        ("create_straight_cable_points", "newton.utils.rod_generate_straight_points"),
+        ("create_straight_cable_points", "newton.utils.cable_generate_straight_points"),
         ("create_parallel_transport_cable_quaternions", "newton.utils.rod_compute_parallel_transport_quaternions"),
         ("create_straight_cable_points_and_quaternions", "newton.utils.rod_generate_straight_points_and_quaternions"),
         ("create_cable_stiffness_from_elastic_moduli", "newton.utils.rod_compute_stiffness_from_elastic_moduli"),
@@ -5857,7 +5857,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverVBD.register_custom_attributes(builder)
 
-    points = newton.utils.rod_generate_straight_points(
+    points = newton.utils.cable_generate_straight_points(
         start=wp.vec3(0.0, 0.0, 0.0),
         direction=wp.vec3(1.0, 0.0, 0.0),
         length=cable_length,
@@ -6375,8 +6375,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_rod_geometry_helpers_validate_inputs",
-    _rod_geometry_helpers_validate_inputs,
+    "test_cable_and_rod_geometry_helpers_validate_inputs",
+    _cable_and_rod_geometry_helpers_validate_inputs,
     devices=None,
 )
 add_function_test(
@@ -6393,8 +6393,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_rod_helper_api_deprecates_released_cable_names",
-    _rod_helper_api_deprecates_released_cable_names,
+    "test_cable_and_rod_helper_api_deprecates_released_names",
+    _cable_and_rod_helper_api_deprecates_released_names,
     devices=None,
 )
 add_function_test(

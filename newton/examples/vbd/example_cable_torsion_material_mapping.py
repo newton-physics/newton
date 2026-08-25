@@ -145,7 +145,7 @@ class Example:
         self.polar_inertia = 0.5 * math.pi * self.CABLE_RADIUS**4
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        points = newton.utils.rod_generate_straight_points(
+        points = newton.utils.cable_generate_straight_points(
             start=wp.vec3(-0.5 * self.cable_length, 0.0, 0.45),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=self.cable_length,

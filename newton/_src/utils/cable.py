@@ -153,22 +153,23 @@ def rod_compute_stiffness_from_elastic_moduli(
     return RodStiffness(stretch=stretch, bend=bend, twist=shear * polar_inertia / L)
 
 
-def rod_generate_straight_points(
+def cable_generate_straight_points(
     start: wp.vec3,
     direction: wp.vec3,
     length: float,
     num_segments: int,
 ) -> list[wp.vec3]:
-    """Generate centerline points for a straight rod discretization.
+    """Generate discretized centerline points for a straight cable.
 
-    The returned points form the ``positions`` input for
-    :meth:`newton.ModelBuilder.add_rod`.
+    The returned points may be passed as the ``positions`` input to
+    :meth:`newton.ModelBuilder.add_rod` or used to initialize another
+    discretized cable representation.
 
     Args:
         start: First point in world space [m].
-        direction: World-space direction of the rod (need not be normalized).
-        length: Total length of the rod [m].
-        num_segments: Number of rod segments. The number of points is
+        direction: World-space direction of the cable (need not be normalized).
+        length: Total cable length [m].
+        num_segments: Number of centerline segments. The number of points is
             ``num_segments + 1``.
 
     Returns:
@@ -268,7 +269,7 @@ def rod_generate_straight_points_and_quaternions(
     The returned values form the ``positions`` and ``quaternions`` inputs for
     :meth:`newton.ModelBuilder.add_rod`.
 
-    This combines :func:`newton.utils.rod_generate_straight_points` with
+    This combines :func:`newton.utils.cable_generate_straight_points` with
     :func:`newton.utils.rod_compute_parallel_transport_quaternions`.
 
     Args:
@@ -287,7 +288,7 @@ def rod_generate_straight_points_and_quaternions(
         ValueError: If centerline generation or frame computation receives an
             invalid input.
     """
-    points = rod_generate_straight_points(
+    points = cable_generate_straight_points(
         start=start,
         direction=direction,
         length=length,
@@ -424,15 +425,15 @@ def create_straight_cable_points(
     """Generate straight cable points using the released helper name.
 
     .. deprecated:: 1.6
-        Use :func:`newton.utils.rod_generate_straight_points`.
+        Use :func:`newton.utils.cable_generate_straight_points`.
     """
     warnings.warn(
         "newton.utils.create_straight_cable_points() is deprecated in Newton 1.6; "
-        "use newton.utils.rod_generate_straight_points() instead.",
+        "use newton.utils.cable_generate_straight_points() instead.",
         DeprecationWarning,
         stacklevel=2,
     )
-    return rod_generate_straight_points(start, direction, length, num_segments)
+    return cable_generate_straight_points(start, direction, length, num_segments)
 
 
 def create_straight_cable_points_and_quaternions(

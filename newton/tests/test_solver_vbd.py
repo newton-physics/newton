@@ -3487,7 +3487,7 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True, rigid_c
     direction = wp.vec3(float(math.cos(yaw)), float(math.sin(yaw)), 0.0)
     center = wp.vec3(0.0, 0.0, radius + 0.05)
     start = center - 0.5 * length * direction
-    points = newton.utils.rod_generate_straight_points(
+    points = newton.utils.cable_generate_straight_points(
         start=start, direction=direction, length=length, num_segments=num_segments
     )
     quaternions = newton.utils.rod_compute_parallel_transport_quaternions(points, twist_total=0.0)

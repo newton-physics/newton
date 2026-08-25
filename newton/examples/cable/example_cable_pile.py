@@ -131,7 +131,7 @@ class Example:
 
                 cable_length = float(self.cable_length)
                 start0 = start - 0.5 * cable_length * dir_vec
-                pts = newton.utils.rod_generate_straight_points(
+                pts = newton.utils.cable_generate_straight_points(
                     start=start0,
                     direction=dir_vec,
                     length=cable_length,
