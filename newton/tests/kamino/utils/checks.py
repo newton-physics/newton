@@ -701,6 +701,7 @@ def assert_model_joints_equal(
                 "friction_cts_offset",
                 "friction_cts_offset_total_cts",
                 "effort_cts_offset",
+                "effort_cts_offset_total_cts",
             ]
         )
     if excluded:
