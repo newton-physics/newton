@@ -197,7 +197,53 @@ class TestViewerGLTransparencyOrdering(unittest.TestCase):
 
         np.testing.assert_allclose(instancer._instance_centers[0], (11.0, 22.0, 33.0))
         np.testing.assert_allclose(instancer._instance_centers[1], (1.0, 4.0, 9.0))
+        np.testing.assert_array_equal(instancer.opaque_instance_indices(), np.array([0]))
         np.testing.assert_array_equal(instancer.translucent_instance_indices(), np.array([1]))
+
+    def test_opaque_pass_skips_translucent_and_hidden_instances(self):
+        """Keep ghosts out of opaque, shadow, and edge-style draw submissions."""
+        draw_order = []
+        instancer = MeshInstancerGL.__new__(MeshInstancerGL)
+        instancer.instance_transform_cuda_buffer = None
+        instancer.hidden = False
+        instancer.active_instances = 3
+        instancer._instance_styles = np.array(
+            [
+                (-1.0, -1.0, -1.0, 1.0),
+                (1.0, 0.0, 0.0, 0.5),
+                (0.0, 0.0, 1.0, 0.0),
+            ],
+            dtype=np.float32,
+        )
+        instancer.render = lambda: draw_order.append("batch")
+        instancer.render_instance = draw_order.append
+        other = SimpleNamespace(render=lambda: draw_order.append("other"))
+        renderer = RendererGL.__new__(RendererGL)
+
+        with mock.patch("newton._src.viewer.gl.opengl.check_gl_error"):
+            renderer._draw_opaque_objects({"mixed": instancer, "other": other})
+
+        self.assertEqual(draw_order, [0, "other"])
+
+        opaque_instancer = MeshInstancerGL.__new__(MeshInstancerGL)
+        opaque_instancer.instance_transform_cuda_buffer = None
+        opaque_instancer.hidden = False
+        opaque_instancer.active_instances = 3
+        opaque_instancer._instance_styles = np.array(
+            [(-1.0, -1.0, -1.0, 1.0)] * 3,
+            dtype=np.float32,
+        )
+        opaque_instancer.render = lambda: draw_order.append("batch")
+        opaque_instancer.render_instance = draw_order.append
+        draw_order.clear()
+        with mock.patch("newton._src.viewer.gl.opengl.check_gl_error"):
+            renderer._draw_opaque_objects({"opaque": opaque_instancer})
+        self.assertEqual(draw_order, ["batch"])
+
+        # Reuse the cached partition until the active instance range changes.
+        self.assertIs(opaque_instancer.opaque_instance_indices(), opaque_instancer.opaque_instance_indices())
+        opaque_instancer.active_instances = 2
+        np.testing.assert_array_equal(opaque_instancer.opaque_instance_indices(), np.array([0, 1]))
 
 
 class TestViewerGLGetFrame(unittest.TestCase):

@@ -691,6 +691,11 @@ class MeshInstancerGL:
         self._instance_styles = None
         self._instance_centers = None
         self._centers_valid_count = 0
+        self._render_style_version = 0
+        self._style_partition_version = -1
+        self._style_partition_active_count = -1
+        self._cached_opaque_indices = np.empty(0, dtype=np.intp)
+        self._cached_translucent_indices = np.empty(0, dtype=np.intp)
         self._supports_base_instance = False
         self.sort_translucent_instances = True
 
@@ -820,11 +825,12 @@ class MeshInstancerGL:
         gl.glVertexAttribDivisor(8, 1)
 
         # ------------------------
-        # non-physical render style (RGB multiplier + opacity)
+        # non-physical render style (solid RGB override + opacity)
         host_styles = np.empty((self.num_instances, 4), dtype=np.float32)
         host_styles[:, :3] = -1.0
         host_styles[:, 3] = 1.0
         self._instance_styles = host_styles.copy()
+        self._render_style_version += 1
         self._instance_centers = np.zeros((self.num_instances, 3), dtype=np.float32)
         self._centers_valid_count = 0
         gl.glGenBuffers(1, self.instance_style_buffer)
@@ -989,6 +995,7 @@ class MeshInstancerGL:
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_style_buffer)
         gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, styles.nbytes, styles.ctypes.data)
         self._instance_styles[: self.active_instances] = styles
+        self._render_style_version += 1
         if self._has_translucent_instances():
             self._ensure_instance_centers()
 
@@ -1014,13 +1021,32 @@ class MeshInstancerGL:
 
     def _has_translucent_instances(self) -> bool:
         """Return whether the active range contains visible translucent instances."""
-        opacity = self._instance_styles[: self.active_instances, 3]
-        return bool(np.any((opacity > 0.0) & (opacity < 1.0)))
+        _, translucent_indices = self._render_style_partitions()
+        return len(translucent_indices) > 0
+
+    def _render_style_partitions(self) -> tuple[np.ndarray, np.ndarray]:
+        """Cache opaque/translucent partitions until styles or the active range change."""
+        style_version = getattr(self, "_render_style_version", 0)
+        if (
+            getattr(self, "_style_partition_version", -1) != style_version
+            or getattr(self, "_style_partition_active_count", -1) != self.active_instances
+        ):
+            opacity = self._instance_styles[: self.active_instances, 3]
+            self._cached_opaque_indices = np.flatnonzero(opacity >= 1.0)
+            self._cached_translucent_indices = np.flatnonzero((opacity > 0.0) & (opacity < 1.0))
+            self._style_partition_version = style_version
+            self._style_partition_active_count = self.active_instances
+        return self._cached_opaque_indices, self._cached_translucent_indices
 
     def translucent_instance_indices(self) -> np.ndarray:
         """Return active instance indices that belong in the translucent pass."""
-        opacity = self._instance_styles[: self.active_instances, 3]
-        return np.flatnonzero((opacity > 0.0) & (opacity < 1.0))
+        _, translucent_indices = self._render_style_partitions()
+        return translucent_indices
+
+    def opaque_instance_indices(self) -> np.ndarray:
+        """Return active instance indices that belong in opaque-only passes."""
+        opaque_indices, _ = self._render_style_partitions()
+        return opaque_indices
 
     def instance_center(self, instance_index: int) -> np.ndarray:
         """Return the world-space bounds center for one active instance."""
@@ -1093,6 +1119,17 @@ class MeshInstancerGL:
             gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.active_instances
         )
         gl.glBindVertexArray(0)
+
+    def render_opaque(self) -> None:
+        """Render only fully opaque instances, retaining the batched fast path."""
+        if self.hidden or self.active_instances == 0:
+            return
+        opaque_indices = self.opaque_instance_indices()
+        if len(opaque_indices) == self.active_instances:
+            self.render()
+            return
+        for instance_index in opaque_indices:
+            self.render_instance(int(instance_index))
 
     def render_instance(self, instance_index: int) -> None:
         """Render one instance while preserving the batch's normal attribute layout."""
@@ -2051,7 +2088,7 @@ class RendererGL:
         # render from light's point of view (skip objects that don't cast shadows)
         shadow_objects = {k: v for k, v in objects.items() if getattr(v, "cast_shadow", True)}
         with self._shadow_shader:
-            self._draw_objects(shadow_objects)
+            self._draw_opaque_objects(shadow_objects)
 
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
@@ -2091,19 +2128,22 @@ class RendererGL:
         )
 
         with self._shape_shader:
-            self._draw_objects(objects)
+            self._draw_opaque_objects(objects)
 
         # Translucent geometry is blended after opaque geometry. It depth-tests
-        # against opaque geometry but does not write depth itself.
-        gl.glEnable(gl.GL_BLEND)
-        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
-        gl.glDepthMask(False)
-        self._shape_shader.set_render_pass(1)
-        with self._shape_shader:
-            self._draw_translucent_objects(objects)
-        self._shape_shader.set_render_pass(0)
-        gl.glDepthMask(True)
-        gl.glDisable(gl.GL_BLEND)
+        # against opaque geometry but does not write depth itself. Avoid changing
+        # GL state or issuing another pass when every instance is opaque.
+        translucent_draw_items = self._translucent_draw_items(objects)
+        if translucent_draw_items:
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+            gl.glDepthMask(False)
+            self._shape_shader.set_render_pass(1)
+            with self._shape_shader:
+                self._draw_translucent_items(translucent_draw_items)
+            self._shape_shader.set_render_pass(0)
+            gl.glDepthMask(True)
+            gl.glDisable(gl.GL_BLEND)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 
@@ -2125,7 +2165,7 @@ class RendererGL:
             gl.glPolygonOffset(-1.0, -1.0)
             gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
             with self._edge_shader:
-                self._draw_objects(edge_objects)
+                self._draw_opaque_objects(edge_objects)
             gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
             gl.glDisable(gl.GL_POLYGON_OFFSET_LINE)
 
@@ -2213,16 +2253,18 @@ class RendererGL:
         gl.glDisable(gl.GL_BLEND)
         check_gl_error()
 
-    def _draw_objects(self, objects):
-        """Draw every renderable object in mapping order."""
+    def _draw_opaque_objects(self, objects) -> None:
+        """Draw fully opaque geometry and skip translucent or hidden instances."""
         for o in objects.values():
-            if hasattr(o, "render"):
+            if isinstance(o, MeshInstancerGL):
+                o.render_opaque()
+            elif hasattr(o, "render"):
                 o.render()
 
         check_gl_error()
 
-    def _draw_translucent_objects(self, objects) -> None:
-        """Draw translucent mesh instances back-to-front in camera space."""
+    def _translucent_draw_items(self, objects) -> list[tuple[float, str, int, int | None, MeshInstancerGL]]:
+        """Collect translucent mesh instances in back-to-front camera order."""
         camera_pos = np.asarray(tuple(self.camera.pos), dtype=np.float32)
         camera_front = np.asarray(tuple(self.camera.get_front()), dtype=np.float32)
         draw_items = []
@@ -2244,6 +2286,10 @@ class RendererGL:
                 draw_items.append((-view_depth, str(name), int(instance_index), int(instance_index), obj))
 
         draw_items.sort(key=lambda item: item[:3])
+        return draw_items
+
+    def _draw_translucent_items(self, draw_items) -> None:
+        """Draw previously sorted translucent mesh instances."""
         for _depth, _name, _sort_index, instance_index, obj in draw_items:
             if instance_index is None:
                 obj.render()
@@ -2251,6 +2297,10 @@ class RendererGL:
                 obj.render_instance(instance_index)
 
         check_gl_error()
+
+    def _draw_translucent_objects(self, objects) -> None:
+        """Draw translucent mesh instances back-to-front in camera space."""
+        self._draw_translucent_items(self._translucent_draw_items(objects))
 
     def _draw_sky(self):
         gl = RendererGL.gl
