@@ -2372,6 +2372,7 @@ def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, r
         iterations=1,
         integrate_with_external_rigid_solver=False,
         rigid_body_particle_contact_buffer_size=buffer_size,
+        rigid_compliant_alm=True,
     )
     state_in = model.state()
     state_out = model.state()
