@@ -1,1 +1,1 @@
-Keep deeply penetrating heightfield contacts on the physical surface instead of the internal triangle-prism skirt.
+Resolve deep heightfield contacts against the cell's physical surface instead of the volume the cell is extruded into, which reported about a metre of penetration with a normal pointing into the terrain once a collider's center passed below the surface.

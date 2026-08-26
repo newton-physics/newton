@@ -11,6 +11,20 @@ import warp as wp
 from .base import Clamping
 
 
+@wp.func
+def _evaluate_max_effort_clamp(
+    value: wp.float64,
+    q: wp.float64,
+    qd: wp.float64,
+    params: wp.array2d[float],
+    i: int,
+    base: int,
+) -> wp.float64:
+    """Implicit-solve entry point; params row is ``[max_effort]``."""
+    limit = wp.float64(params[i, base])
+    return wp.clamp(value, -limit, limit)
+
+
 @wp.kernel
 def _box_clamp_kernel(
     max_effort: wp.array[float],
@@ -42,6 +56,15 @@ class ClampingMaxEffort(Clamping):
             max_effort: Per-actuator effort limits [N or N·m]. Shape ``(N,)``.
         """
         self.max_effort = max_effort
+
+    evaluate_clamp = _evaluate_max_effort_clamp
+
+    def param_width(self) -> int:
+        return 1
+
+    def bind_params(self, block: wp.array2d[float]) -> None:
+        block[:, 0].assign(self.max_effort)
+        self.max_effort = block[:, 0]
 
     def modify_forces(
         self,
