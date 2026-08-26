@@ -1470,6 +1470,9 @@ class ViewerViser(ViewerBase):
             xform_np = np.asarray(xform, dtype=np.float32)
             handle.position = xform_np[:3]
             handle.wxyz = self._quats_xyzw_to_wxyz(xform_np[3:7])
+        else:
+            handle.position = (0.0, 0.0, 0.0)
+            handle.wxyz = (1.0, 0.0, 0.0, 0.0)
 
     @override
     def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
