@@ -344,40 +344,45 @@ def _task_space_pd_kernel(
 
 
 @wp.kernel
-def _apply_operational_space_mass_matrix_kernel(
-    operational_space_mass_matrix: wp.array3d[float],  # (robot_count, 6, 6) Lambda, from _invert_spd_block_kernel
-    desired_task_acceleration_world: wp.array[
-        wp.spatial_vector
-    ],  # (robot_count,) from _task_space_pd_kernel, units [1/s^2]
+def _apply_spatial_matrix_kernel(
+    matrix: wp.array3d[float],  # (robot_count, 6, 6) e.g. Lambda (from _invert_spd_block_kernel) or a selection matrix
+    vector: wp.array[wp.spatial_vector],  # (robot_count,) e.g. a desired task-space acceleration, or a wrench
     # outputs
-    task_space_force_world: wp.array[
-        wp.spatial_vector
-    ],  # (robot_count,) = operational_space_mass_matrix @ desired_task_acceleration_world
+    result: wp.array[wp.spatial_vector],  # (robot_count,) = matrix @ vector
 ):
-    """Inertial decoupling: convert a desired task-space acceleration into the task-space force that produces it.
+    """Multiply a 6x6 task-space matrix by a task-space vector, ``result = matrix @ vector``.
 
-    ``F = Lambda @ x_ddot_des``, the operational-space analogue of ``F =
-    m*a``. Skipping this kernel entirely (using ``desired_task_acceleration_world``
-    directly as the force) is the task-space-impedance alternative, which
-    ignores the tool's effective inertia — the same ``use_inertia_decoupling``
-    choice :class:`ControllerJointImpedanceModelFree` offers at the joint level.
+    Two unrelated uses share this kernel because the operation is identical:
 
-    Lambda is stored as a plain ``(robot_count, 6, 6)`` float array — not a
-    ``wp.spatial_matrix`` array — because :func:`_invert_spd_block_kernel`
-    also produces the joint-space mass-matrix inverse, whose block size
-    varies per robot and can exceed 6; a fixed-size ``spatial_matrix`` only
-    fits Lambda's always-exactly-6x6 case. This kernel loads Lambda into a
-    local ``wp.spatial_matrix`` so it can use Warp's built-in
-    matrix-vector product rather than a hand-rolled accumulation loop.
+    - **Inertial decoupling**: ``matrix = Lambda`` (the operational-space mass
+      matrix), ``vector`` a desired task-space acceleration, ``result`` the
+      task-space force that produces it — the operational-space analogue of
+      ``F = m*a``. Skipping this step entirely (using the acceleration
+      directly as the force) is the task-space-impedance alternative, which
+      ignores the tool's effective inertia — the same ``use_inertia_decoupling``
+      choice :class:`ControllerJointImpedanceModelFree` offers at the joint level.
+    - **Selection masking**: ``matrix`` a world-frame selection matrix (from
+      :func:`_rotate_selection_matrix_kernel`), ``vector`` a candidate
+      task-space force or wrench, ``result`` its component along the
+      selected axes only.
+
+    ``matrix`` is stored as a plain ``(robot_count, 6, 6)`` float array — not
+    a ``wp.spatial_matrix`` array — because Lambda comes from
+    :func:`_invert_spd_block_kernel`, which also produces the joint-space
+    mass-matrix inverse, whose block size varies per robot and can exceed 6;
+    a fixed-size ``spatial_matrix`` only fits Lambda's always-exactly-6x6
+    case. This kernel loads ``matrix`` into a local ``wp.spatial_matrix`` so
+    it can use Warp's built-in matrix-vector product rather than a
+    hand-rolled accumulation loop.
     """
     robot_idx = wp.tid()
 
-    lambda_matrix = wp.spatial_matrix()
+    local_matrix = wp.spatial_matrix()
     for row in range(6):
         for col in range(6):
-            lambda_matrix[row, col] = operational_space_mass_matrix[robot_idx, row, col]
+            local_matrix[row, col] = matrix[robot_idx, row, col]
 
-    task_space_force_world[robot_idx] = lambda_matrix * desired_task_acceleration_world[robot_idx]
+    result[robot_idx] = local_matrix * vector[robot_idx]
 
 
 @wp.kernel
@@ -534,3 +539,104 @@ def _null_space_projector_kernel(
     for k in range(6):
         total += jacobian_tool_world[robot_idx, k, row] * jacobian_pinv_transpose[robot_idx, k, col]
     null_space_projector[robot_idx, row, col] = identity_entry - total
+
+
+# ---------------------------------------------------------------------------
+# Motion/force selection and contact-wrench control.
+#
+# Which of the 6 task axes are motion-controlled vs. force-controlled is
+# naturally a tool-local choice (e.g. "force-control along the insertion
+# axis" for a peg-in-hole task should track the tool's current orientation,
+# not stay fixed in world), so the selection weights are rotated into world
+# coordinates every step from a fixed tool-local specification.
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _rotate_selection_matrix_kernel(
+    coordinate_change_world_from_tool: wp.array[wp.transform],  # (robot_count,) world pose of the tool frame
+    selection_axes_tool: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) diagonal selection weight per axis (0/1, or any scalar weight), tool-local: (linear x,y,z, angular x,y,z)
+    # outputs
+    selection_matrix_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, 6) block-diagonal; the linear-angular cross blocks are always zero
+):
+    """Rotate a tool-local diagonal selection into a world-frame selection matrix.
+
+    A rotation only mixes the 3 linear axes among themselves, and separately
+    the 3 angular axes among themselves, so the world-frame result stays
+    block-diagonal — it is generally no longer itself diagonal (unless the
+    tool-local weights within a block are all equal), which is why it has to
+    be represented as a full 6x6 matrix rather than another diagonal/vector.
+    """
+    robot_idx = wp.tid()
+    axes = selection_axes_tool[robot_idx]
+    quat_world_from_tool = wp.transform_get_rotation(coordinate_change_world_from_tool[robot_idx])
+
+    rotation_col_x = wp.quat_rotate(quat_world_from_tool, wp.vec3(1.0, 0.0, 0.0))
+    rotation_col_y = wp.quat_rotate(quat_world_from_tool, wp.vec3(0.0, 1.0, 0.0))
+    rotation_col_z = wp.quat_rotate(quat_world_from_tool, wp.vec3(0.0, 0.0, 1.0))
+    rotation = wp.matrix_from_cols(rotation_col_x, rotation_col_y, rotation_col_z)
+    rotation_transpose = wp.transpose(rotation)
+
+    linear_diag = wp.mat33(axes[0], 0.0, 0.0, 0.0, axes[1], 0.0, 0.0, 0.0, axes[2])
+    angular_diag = wp.mat33(axes[3], 0.0, 0.0, 0.0, axes[4], 0.0, 0.0, 0.0, axes[5])
+    linear_block_world = rotation * linear_diag * rotation_transpose
+    angular_block_world = rotation * angular_diag * rotation_transpose
+
+    for row in range(3):
+        for col in range(3):
+            selection_matrix_world[robot_idx, row, col] = linear_block_world[row, col]
+            selection_matrix_world[robot_idx, row + 3, col + 3] = angular_block_world[row, col]
+            selection_matrix_world[robot_idx, row, col + 3] = 0.0
+            selection_matrix_world[robot_idx, row + 3, col] = 0.0
+
+
+@wp.kernel
+def _closed_loop_wrench_command_kernel(
+    desired_wrench_world: wp.array[wp.spatial_vector],  # (robot_count,) desired contact wrench (force, moment), world coords
+    measured_wrench_world: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) measured contact wrench (force, moment), world coords, e.g. from a 6-axis force/torque sensor
+    stiffness: wp.array[wp.spatial_vector],  # (robot_count,) per-axis proportional gain Kp
+    # outputs
+    wrench_command_world: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) closed-loop wrench command, desired + Kp .* (desired - measured)
+):
+    """Closed-loop contact-wrench command, ``desired + Kp .* (desired - measured)``.
+
+    Same law as :func:`_task_space_pd_kernel`'s proportional term, applied
+    uniformly across all 6 wrench axes — this assumes the full wrench
+    (force and moment) is measurable, e.g. from a 6-axis force/torque sensor.
+    """
+    robot_idx = wp.tid()
+    desired = desired_wrench_world[robot_idx]
+    measured = measured_wrench_world[robot_idx]
+    proportional_gain = stiffness[robot_idx]
+
+    result = wp.spatial_vector()
+    for axis in range(6):
+        wrench_error = desired[axis] - measured[axis]
+        result[axis] = desired[axis] + proportional_gain[axis] * wrench_error
+    wrench_command_world[robot_idx] = result
+
+
+@wp.kernel
+def _add_spatial_vector_kernel(
+    term: wp.array[wp.spatial_vector],  # (robot_count,) task-space contribution to accumulate
+    total: wp.array[wp.spatial_vector],  # (robot_count,) running total; read and written (total += term)
+):
+    """Accumulate one task-space contribution into a running total.
+
+    Mirrors ``_add_term_kernel`` in ``joint_impedance/_common.py``: summing
+    the motion and force task-space contributions this way, before a single
+    final :func:`_jacobian_transpose_force_kernel` call, is equivalent to
+    mapping each to joint torques separately and summing those, since the
+    Jacobian-transpose map is linear — and needs only one force-mapping
+    kernel launch instead of two.
+    """
+    robot_idx = wp.tid()
+    total[robot_idx] = total[robot_idx] + term[robot_idx]

@@ -23,14 +23,17 @@ import warp as wp
 
 import newton
 from newton._src.controllers.impl.operational_space._common import (
+    _add_spatial_vector_kernel,
     _apply_mass_matrix_inv_on_right_kernel,
-    _apply_operational_space_mass_matrix_kernel,
+    _apply_spatial_matrix_kernel,
+    _closed_loop_wrench_command_kernel,
     _invert_spd_block_kernel,
     _jacobian_times_jacobian_transpose_kernel,
     _jacobian_transpose_force_kernel,
     _null_space_projector_kernel,
     _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
+    _rotate_selection_matrix_kernel,
     _shift_jacobian_to_tool_kernel,
     _task_matrix_times_jacobian_kernel,
     _task_space_pd_kernel,
@@ -561,27 +564,29 @@ def test_task_space_pd_matches_formula(test, device):
     np.testing.assert_allclose(desired_task_acceleration_world.numpy()[0], expected, atol=1e-6)
 
 
-def test_apply_operational_space_mass_matrix_matches_matvec(test, device):
-    """The inertial-decoupling kernel computes Lambda @ desired_task_acceleration_world."""
-    rng = np.random.default_rng(seed=1)
-    lambda_np = rng.standard_normal((6, 6)).astype(np.float32)
-    acceleration_np = rng.standard_normal(6).astype(np.float32)
+def test_apply_spatial_matrix_matches_matvec(test, device):
+    """The shared 6x6-matrix-times-spatial-vector kernel computes matrix @ vector.
 
-    operational_space_mass_matrix = wp.array(lambda_np.reshape(1, 6, 6), dtype=float, device=device)
-    desired_task_acceleration_world = wp.array(
-        [wp.spatial_vector(*acceleration_np.tolist())], dtype=wp.spatial_vector, device=device
-    )
-    task_space_force_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    Used for inertial decoupling (Lambda @ acceleration) and for selection
+    masking (selection_matrix @ force) alike, since it's the same operation.
+    """
+    rng = np.random.default_rng(seed=1)
+    matrix_np = rng.standard_normal((6, 6)).astype(np.float32)
+    vector_np = rng.standard_normal(6).astype(np.float32)
+
+    matrix = wp.array(matrix_np.reshape(1, 6, 6), dtype=float, device=device)
+    vector = wp.array([wp.spatial_vector(*vector_np.tolist())], dtype=wp.spatial_vector, device=device)
+    result = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
-        _apply_operational_space_mass_matrix_kernel,
+        _apply_spatial_matrix_kernel,
         dim=1,
-        inputs=[operational_space_mass_matrix, desired_task_acceleration_world],
-        outputs=[task_space_force_world],
+        inputs=[matrix, vector],
+        outputs=[result],
         device=device,
     )
 
-    expected = lambda_np @ acceleration_np
-    np.testing.assert_allclose(task_space_force_world.numpy()[0], expected, atol=1e-4)
+    expected = matrix_np @ vector_np
+    np.testing.assert_allclose(result.numpy()[0], expected, atol=1e-4)
 
 
 def test_jacobian_transpose_force_matches_matvec(test, device):
@@ -819,6 +824,79 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
     test.assertGreater(np.abs(moore_penrose_response).max(), 0.1)
 
 
+def test_rotate_selection_matrix_matches_numpy(test, device):
+    """The rotated selection matrix is block-diagonal, each block R @ diag(axes) @ R^T, cross-blocks zero."""
+    quat = wp.quat_from_axis_angle(wp.vec3(0.3, -0.6, 0.2), 1.1)
+    coordinate_change_world_from_tool = wp.array(
+        [wp.transform(wp.vec3(0.0, 0.0, 0.0), quat)], dtype=wp.transform, device=device
+    )
+    # Select only the local x linear axis and the local y,z angular axes.
+    linear_axes_np = np.array([1.0, 0.0, 0.0])
+    angular_axes_np = np.array([0.0, 1.0, 1.0])
+    selection_axes_tool = wp.array(
+        [wp.spatial_vector(*linear_axes_np.tolist(), *angular_axes_np.tolist())],
+        dtype=wp.spatial_vector,
+        device=device,
+    )
+
+    selection_matrix_world = wp.zeros((1, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _rotate_selection_matrix_kernel,
+        dim=1,
+        inputs=[coordinate_change_world_from_tool, selection_axes_tool],
+        outputs=[selection_matrix_world],
+        device=device,
+    )
+
+    rotation_np = np.array(wp.quat_to_matrix(quat)).reshape(3, 3)
+    expected_linear_block = rotation_np @ np.diag(linear_axes_np) @ rotation_np.T
+    expected_angular_block = rotation_np @ np.diag(angular_axes_np) @ rotation_np.T
+
+    result = selection_matrix_world.numpy()[0]
+    np.testing.assert_allclose(result[0:3, 0:3], expected_linear_block, atol=1e-5)
+    np.testing.assert_allclose(result[3:6, 3:6], expected_angular_block, atol=1e-5)
+    np.testing.assert_allclose(result[0:3, 3:6], np.zeros((3, 3)))
+    np.testing.assert_allclose(result[3:6, 0:3], np.zeros((3, 3)))
+
+
+def test_closed_loop_wrench_command_matches_formula(test, device):
+    """The full wrench (force and moment) gets closed-loop feedback, desired + Kp .* (desired - measured)."""
+    desired_wrench_world = wp.array(
+        [wp.spatial_vector(10.0, -5.0, 2.0, 1.0, -0.5, 0.25)], dtype=wp.spatial_vector, device=device
+    )
+    measured_wrench_world = wp.array(
+        [wp.spatial_vector(8.0, -6.0, 2.5, 0.8, -0.6, 0.1)], dtype=wp.spatial_vector, device=device
+    )
+    stiffness = wp.array([wp.spatial_vector(2.0, 3.0, 1.0, 0.5, 0.5, 0.5)], dtype=wp.spatial_vector, device=device)
+
+    wrench_command_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(
+        _closed_loop_wrench_command_kernel,
+        dim=1,
+        inputs=[desired_wrench_world, measured_wrench_world, stiffness],
+        outputs=[wrench_command_world],
+        device=device,
+    )
+
+    desired_np = np.array([10.0, -5.0, 2.0, 1.0, -0.5, 0.25])
+    measured_np = np.array([8.0, -6.0, 2.5, 0.8, -0.6, 0.1])
+    kp_np = np.array([2.0, 3.0, 1.0, 0.5, 0.5, 0.5])
+    expected = desired_np + kp_np * (desired_np - measured_np)
+
+    np.testing.assert_allclose(wrench_command_world.numpy()[0], expected, atol=1e-5)
+
+
+def test_add_spatial_vector_accumulates(test, device):
+    """total[i] = total[i] + term[i], not a plain overwrite."""
+    total = wp.array([wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)], dtype=wp.spatial_vector, device=device)
+    term = wp.array([wp.spatial_vector(0.5, -1.0, 0.0, 2.0, 0.0, -3.0)], dtype=wp.spatial_vector, device=device)
+
+    wp.launch(_add_spatial_vector_kernel, dim=1, inputs=[term], outputs=[total], device=device)
+
+    expected = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) + np.array([0.5, -1.0, 0.0, 2.0, 0.0, -3.0])
+    np.testing.assert_allclose(total.numpy()[0], expected, atol=1e-6)
+
+
 class TestOperationalSpaceKernels(unittest.TestCase):
     pass
 
@@ -885,8 +963,8 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_apply_operational_space_mass_matrix_matches_matvec",
-    test_apply_operational_space_mass_matrix_matches_matvec,
+    "test_apply_spatial_matrix_matches_matvec",
+    test_apply_spatial_matrix_matches_matvec,
     devices=devices,
 )
 add_function_test(
@@ -905,6 +983,24 @@ add_function_test(
     TestOperationalSpaceKernels,
     "test_null_space_projector_zeroes_task_response_only_when_dynamically_consistent",
     test_null_space_projector_zeroes_task_response_only_when_dynamically_consistent,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_rotate_selection_matrix_matches_numpy",
+    test_rotate_selection_matrix_matches_numpy,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_closed_loop_wrench_command_matches_formula",
+    test_closed_loop_wrench_command_matches_formula,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_add_spatial_vector_accumulates",
+    test_add_spatial_vector_accumulates,
     devices=devices,
 )
 
