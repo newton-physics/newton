@@ -1037,6 +1037,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
         if flags & ModelFlags.JOINT_DOF_PROPERTIES and self._integrates_rigid_bodies and self.model.joint_count > 0:
+            if self.rigid_compliant_alm:
+                self._validate_compliant_joint_dof_materials()
             # Must run before _refresh_structural_k() below: that summary reads
             # joint_material_k as an input, so a stale material_k here would
             # produce a stale body_structural_k that is harder to spot.

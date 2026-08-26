@@ -5883,6 +5883,39 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     test.assertAlmostEqual(material_k_at(j_d6, 2), max(700.0, 7000.0))
     test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 8000.0))
 
+    # A target_ke edit the limit still dominates must leave the slot at the limit value.
+    joint_target_ke[joint_qd_start[j_revolute]] = 100.0  # below limit_ke of 5000
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(100.0, 5000.0))
+
+
+def _notify_joint_dof_properties_validates_compliant_materials(test, device):
+    """Verify a live edit to invalid coefficients is rejected under compliant ALM.
+
+    The constructor validates these arrays, so the refresh path must too -- otherwise a live
+    edit would slip non-finite or negative values straight into ``joint_material_k``.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link()
+    joint = builder.add_joint_rod(-1, body, bend_stiffness=10.0)
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+
+    dof0 = int(model.joint_qd_start.numpy()[joint])
+    start = int(solver.joint_constraint_start.numpy()[joint])
+
+    for bad_value in (float("inf"), float("nan"), -1.0):
+        joint_target_ke = model.joint_target_ke.numpy()
+        joint_target_ke[dof0 + 2] = bad_value
+        model.joint_target_ke.assign(joint_target_ke)
+        with test.assertRaises(ValueError):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        test.assertAlmostEqual(float(solver.joint_material_k.numpy()[start + 2]), 10.0)
+
 
 def _notify_joint_dof_properties_refreshes_rod_penalty_kd(test, device):
     """Verify a live rod damping edit reaches the solve and matches a from-scratch build.
@@ -6661,6 +6694,12 @@ add_function_test(
     TestCable,
     "test_notify_joint_dof_properties_refreshes_drive_limit_material_k",
     _notify_joint_dof_properties_refreshes_drive_limit_material_k,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_validates_compliant_materials",
+    _notify_joint_dof_properties_validates_compliant_materials,
     devices=devices,
 )
 add_function_test(
