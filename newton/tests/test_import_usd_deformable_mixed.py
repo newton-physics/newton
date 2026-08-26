@@ -99,6 +99,24 @@ class TestUSDDeformableMixed(unittest.TestCase):
                 result = builder.add_usd(stage, return_deformable_results=True)
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["resolved_density"], 600.0)
 
+    def test_non_numeric_physics_material_density_warns_and_uses_fallback(self):
+        """Warn and use the proposal density when a base material density is non-numeric."""
+        from pxr import Sdf, UsdPhysics, UsdShade
+
+        stage = _deformable_stage()
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        material = UsdShade.Material.Define(stage, "/World/Mat")
+        material.GetPrim().CreateAttribute("physics:density", Sdf.ValueTypeNames.Token).Set("bad")
+        UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+        UsdShade.MaterialBindingAPI.Apply(cloth.GetPrim()).Bind(material, materialPurpose="physics")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, r"/World/Mat.*physics:density.*numeric"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+
+        self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["resolved_density"], 1000.0)
+        self.assertTrue(all(math.isfinite(float(mass)) and mass > 0.0 for mass in builder.particle_mass))
+
     def test_proposal_deformables_use_final_density_fallback(self):
         """Use 1000 kg/m^3 only for proposal-marked deformables without a density."""
         stage = _deformable_stage()
@@ -337,6 +355,23 @@ class TestUSDDeformableMixed(unittest.TestCase):
                         self.assertGreaterEqual(len(invalid), 1)
                         self.assertTrue(all("/World/Cloth" in message for message in invalid))
                     self.assertTrue(all(math.isfinite(float(mass)) and mass > 0.0 for mass in builder.particle_mass))
+
+    def test_non_numeric_body_mass_and_density_warn_and_use_fallbacks(self):
+        """Warn and preserve finite masses for non-numeric body overrides."""
+        from pxr import Sdf
+
+        for attr_name in ("mass", "density"):
+            with self.subTest(attribute=attr_name):
+                stage = _deformable_stage()
+                cloth = _add_cloth_mesh(stage, "/World/Cloth")
+                cloth.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+                cloth.GetPrim().CreateAttribute(f"physics:{attr_name}", Sdf.ValueTypeNames.Token).Set("bad")
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, rf"/World/Cloth.*physics:{attr_name}.*numeric"):
+                    builder.add_usd(stage)
+
+                self.assertTrue(all(math.isfinite(float(mass)) and mass > 0.0 for mass in builder.particle_mass))
 
     def test_disabled_body_collision_geometry_stays_static(self):
         """A physics:bodyEnabled=false deformable is not simulated, but by rigid-body

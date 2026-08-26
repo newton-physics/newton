@@ -776,6 +776,25 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertTrue(any("invalid physics:curvesStretchStiffness" in message for message in messages))
         self.assertTrue(all(math.isfinite(value) for value in builder.joint_target_ke))
 
+    def test_non_numeric_material_scalar_warns_and_uses_fallback(self):
+        """Warn and derive cable stiffness when a material scalar is non-numeric."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        curves = _add_cable_curve(
+            stage,
+            "/World/Cable",
+            [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)],
+        )
+        material = _bind_deformable_material(stage, curves.GetPrim(), "/World/Mat")
+        material.GetPrim().CreateAttribute("physics:youngsModulus", Sdf.ValueTypeNames.Token).Set("bad")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, r"/World/Mat.*physics:youngsModulus.*numeric"):
+            builder.add_usd(stage)
+
+        self.assertTrue(all(math.isfinite(value) and value > 0.0 for value in builder.joint_target_ke))
+
     def test_cable_density_segment_mass_is_cylinder_not_capsule(self):
         """A density-derived cable segment gets the cylinder mass m = rho*pi*r^2*L per segment
         (so mass scales with density and segment length), not add_rod's capsule mass whose

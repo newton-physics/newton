@@ -375,6 +375,28 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertAlmostEqual(k_mu, 384615.3846153846, delta=1.0)
         self.assertAlmostEqual(k_lambda, 576923.0769230769, delta=1.0)
 
+    def test_get_tetmesh_rejects_non_numeric_material_scalars(self):
+        """Warn and use proposal fallbacks for non-numeric material scalars."""
+        from pxr import Sdf, UsdShade
+
+        expected_mu = 384615.3846153846
+        expected_lambda = 576923.0769230769
+        for attr_name in ("youngsModulus", "poissonsRatio", "density"):
+            with self.subTest(attribute=attr_name):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                material = UsdShade.Material.Define(stage, "/World/Mat")
+                material.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableMaterialAPI")
+                material.GetPrim().CreateAttribute(f"physics:{attr_name}", Sdf.ValueTypeNames.Token).Set("bad")
+                UsdShade.MaterialBindingAPI.Apply(tet.GetPrim()).Bind(material, materialPurpose="physics")
+
+                with self.assertWarnsRegex(UserWarning, rf"/World/Mat.*physics:{attr_name}.*numeric"):
+                    tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+                self.assertAlmostEqual(tetmesh.k_mu[0], expected_mu, delta=1.0)
+                self.assertAlmostEqual(tetmesh.k_lambda[0], expected_lambda, delta=1.0)
+                self.assertIsNone(tetmesh.density)
+
     def test_unbound_volume_material_uses_builder_elasticity_defaults(self):
         """Preserve builder elasticity defaults when no volume material is bound."""
         stage = _deformable_stage()

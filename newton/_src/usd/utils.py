@@ -1973,6 +1973,8 @@ def _get_tetmesh(
     k_mu = None
     k_lambda = None
     density = None
+    density_val = None
+    raw_density = None
 
     # Volume material moduli (youngsModulus/poissonsRatio/...) belong on the bound material, not the
     # geometry; warn if authored on the TetMesh prim itself so the misplacement is visible to direct
@@ -2015,14 +2017,19 @@ def _get_tetmesh(
         linear_unit = 1.0
         if UsdGeom.StageHasAuthoredMetersPerUnit(prim.GetStage()):
             linear_unit = float(UsdGeom.GetStageMetersPerUnit(prim.GetStage()))
-        youngs = _read_physics_attr(material_prim, "youngsModulus", compat_namespaces)
-        poissons = _read_physics_attr(material_prim, "poissonsRatio", compat_namespaces)
-        density_val = _read_physics_attr(material_prim, "density", compat_namespaces)
+        youngs = _coerce_deformable_float(
+            _read_physics_attr(material_prim, "youngsModulus", compat_namespaces), material_prim, "youngsModulus"
+        )
+        poissons = _coerce_deformable_float(
+            _read_physics_attr(material_prim, "poissonsRatio", compat_namespaces), material_prim, "poissonsRatio"
+        )
+        raw_density = _read_physics_attr(material_prim, "density", compat_namespaces)
+        density_val = _coerce_deformable_float(raw_density, material_prim, "density")
 
         # The unregistered proposal schema cannot inject its sentinel fallback, so apply
         # the documented physical value only when the current material API owns the field.
         if youngs is not None:
-            authored_youngs = float(youngs)
+            authored_youngs = youngs
             if authored_youngs == -math.inf:
                 youngs = None
             elif math.isfinite(authored_youngs) and not _is_usd_float_representable(authored_youngs):
@@ -2035,7 +2042,7 @@ def _get_tetmesh(
         if youngs is None and is_current_volume_material:
             youngs = _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit
         if poissons is not None:
-            nu = float(poissons)
+            nu = poissons
             if not math.isfinite(nu) or not (-1.0 < nu <= 0.5):
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid physics:poissonsRatio {nu:g} "
@@ -2044,8 +2051,8 @@ def _get_tetmesh(
                 )
                 poissons = None
         if youngs is not None:
-            E = float(youngs)
-            nu = _AOUSD_DEFAULT_POISSONS_RATIO if poissons is None else float(poissons)
+            E = youngs
+            nu = _AOUSD_DEFAULT_POISSONS_RATIO if poissons is None else poissons
             if not (math.isfinite(E) and E >= 0.0):
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid physics:youngsModulus {E:g} "
@@ -2059,7 +2066,7 @@ def _get_tetmesh(
                 k_mu, k_lambda = _deformable_lame_parameters(E, nu, str(material_prim.GetPath()))
 
         if density_val is not None:
-            authored_density = float(density_val)
+            authored_density = density_val
             # The proposal declares density with a range of (0, inf) and a fallback of 0
             # meaning "ignored": zero falls through to the caller's density precedence
             # (body override, then the builder default) without being an invalid value.
@@ -2072,7 +2079,7 @@ def _get_tetmesh(
                     stacklevel=2,
                 )
 
-    if density is None:
+    if density is None and raw_density is None:
         # The base UsdPhysicsMaterialAPI (which the family APIs extend) supplies
         # density too; a plain rigid-style physics material is a valid source.
         density = _get_physics_material_density(material_prim)
@@ -2198,6 +2205,26 @@ def _read_physics_attr(prim: Usd.Prim, name: str, compat_namespaces: Sequence[st
     return None
 
 
+def _coerce_deformable_float(value: Any, prim: Usd.Prim, name: str) -> float | None:
+    """Return a numeric deformable scalar or warn and treat it as unauthored."""
+    if value is None:
+        return None
+    if isinstance(value, (bool, str, bytes)):
+        result = None
+    else:
+        try:
+            result = float(value)
+        except (TypeError, ValueError, OverflowError):
+            result = None
+    if result is None:
+        warnings.warn(
+            f"{prim.GetPath()}: invalid physics:{name} {value!r} (expected a numeric scalar); "
+            "treating it as unauthored.",
+            stacklevel=2,
+        )
+    return result
+
+
 def _read_deformable_material(
     prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any], api_schema: str, attr_names: Sequence[str]
 ) -> dict[str, float] | None:
@@ -2223,9 +2250,9 @@ def _read_deformable_material(
     out: dict[str, float] = {}
     for name in attr_names:
         val = read_attr(material_prim, name)
+        val = _coerce_deformable_float(val, material_prim, name)
         if val is None:
             continue
-        val = float(val)
         has_negative_infinity_sentinel = name not in ("density", "poissonsRatio")
         if val == -math.inf and has_negative_infinity_sentinel:
             continue  # schema "simulator default" sentinel
@@ -2374,9 +2401,9 @@ def _get_physics_material_density(material_prim) -> float | None:
         return None
     attr = material_prim.GetAttribute("physics:density")
     value = attr.Get() if attr else None
-    if value is None:
+    density = _coerce_deformable_float(value, material_prim, "density")
+    if density is None:
         return None
-    density = float(value)
     if _is_usd_float_representable(density) and density > 0.0:
         return density
     if density != 0.0:
@@ -2462,9 +2489,9 @@ def _get_deformable_body_overrides(
 
     def read_override(name: str) -> float | None:
         raw_value = read_attr(body_prim, name)
-        if raw_value is None:
+        value = _coerce_deformable_float(raw_value, body_prim, name)
+        if value is None:
             return None
-        value = float(raw_value)
         if value == 0.0:
             return None
         if math.isfinite(value) and value > 0.0:
