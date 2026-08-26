@@ -375,6 +375,10 @@ def parse_mjcf(
     # Register the MuJoCo custom attributes needed to preserve imported model
     # properties. The operation is idempotent.
     SolverMuJoCo.register_custom_attributes(builder)
+    # Avoid replicating and allocating high-level DC-motor arrays for the
+    # overwhelmingly common case where the MJCF contains no DC motors.
+    if any(True for _ in root.iter("dcmotor")):
+        SolverMuJoCo._register_dcmotor_custom_attributes(builder)
     # Bit 1 in one MJCF file may describe different shapes than bit 1 in
     # another. Give every add_mjcf() call a domain so those equal numbers are
     # not mistaken for one shared collision rule. The domain is only a source
@@ -3336,6 +3340,13 @@ def parse_mjcf(
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
+            elif actuator_type == "dcmotor":
+                # SolverMuJoCo applies MuJoCo's native DC-motor shortcut from
+                # the high-level parameters preserved by custom attributes.
+                gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+
             elif actuator_type == "general":
                 gainprm_str = merged_attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
                 biasprm_str = merged_attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
@@ -3376,6 +3387,8 @@ def parse_mjcf(
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.POSITION)
             elif actuator_type == "velocity":
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.VELOCITY)
+            elif actuator_type == "dcmotor":
+                ctrl_type_val = int(SolverMuJoCo.CtrlType.DCMOTOR)
             else:
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.GENERAL)
 
