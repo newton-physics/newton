@@ -279,6 +279,7 @@ def create_compute_gjk_mpr_contacts(
     writer_func: Any,
     post_process_contact: Any = post_process_axial_on_discrete_contact,
     support_func: Any = None,
+    penetration_refiner: Any = None,
 ):
     """
     Factory function to create a compute_gjk_mpr_contacts function with a specific writer function.
@@ -287,6 +288,7 @@ def create_compute_gjk_mpr_contacts(
         writer_func: Function to write contact data (signature: (ContactData, writer_data) -> None)
         post_process_contact: Function to post-process contact data
         support_func: Support mapping function (defaults to support_map)
+        penetration_refiner: Optional physical-proxy result refinement function.
 
     Returns:
         A compute_gjk_mpr_contacts function with the writer function baked in
@@ -360,7 +362,14 @@ def create_compute_gjk_mpr_contacts(
         contact_template.sort_sub_key = sort_sub_key
 
         if wp.static(ENABLE_MULTI_CONTACT):
-            wp.static(create_solve_convex_multi_contact(support_func, writer_func, post_process_contact))(
+            wp.static(
+                create_solve_convex_multi_contact(
+                    support_func,
+                    writer_func,
+                    post_process_contact,
+                    penetration_refiner,
+                )
+            )(
                 shape_a_data,
                 shape_b_data,
                 rot_a,
@@ -377,7 +386,14 @@ def create_compute_gjk_mpr_contacts(
                 contact_template,
             )
         else:
-            wp.static(create_solve_convex_single_contact(support_func, writer_func, post_process_contact))(
+            wp.static(
+                create_solve_convex_single_contact(
+                    support_func,
+                    writer_func,
+                    post_process_contact,
+                    penetration_refiner,
+                )
+            )(
                 shape_a_data,
                 shape_b_data,
                 rot_a,
