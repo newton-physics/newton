@@ -8,11 +8,25 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry import particle_surface_sparse_kernels as sparse_kernels
 from newton.geometry import ParticleSurface, extract_particle_surface
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 _TEST_MAX_GRID_CELLS = 250_000
+
+
+@wp.kernel
+def _address_large_candidate_voxel_slots(addresses: wp.array[wp.vec2i]):
+    addresses[0] = sparse_kernels._candidate_voxel_bit_address(1 << 22, 0)
+    addresses[1] = sparse_kernels._candidate_voxel_bit_address((1 << 23) - 1, 511)
+
+
+def test_large_candidate_voxel_slots(test, device):
+    addresses = wp.empty(2, dtype=wp.vec2i, device=device)
+    wp.launch(_address_large_candidate_voxel_slots, dim=1, inputs=[addresses], device=device)
+
+    np.testing.assert_array_equal(addresses.numpy(), [[1 << 26, 0], [(1 << 27) - 1, 31]])
 
 
 def _make_sphere_particles(n=3000, seed=42, device=None):
@@ -1398,6 +1412,12 @@ devices = get_test_devices(mode="basic")
 
 add_function_test(TestParticleSurface, "test_one_shot", test_one_shot, devices=devices)
 add_function_test(TestParticleSurface, "test_reusable_context", test_reusable_context, devices=devices)
+add_function_test(
+    TestParticleSurface,
+    "test_large_candidate_voxel_slots",
+    test_large_candidate_voxel_slots,
+    devices=devices,
+)
 add_function_test(TestParticleSurface, "test_multi_world_mesh", test_multi_world_mesh, devices=devices)
 add_function_test(
     TestParticleSurface,

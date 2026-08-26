@@ -108,15 +108,22 @@ def _leaf_coordinate_hash_key(key: wp.vec3i) -> wp.uint64:
 
 
 @wp.func
-def _candidate_voxel_slot_hash(keys: wp.array[wp.uint64], coordinate: wp.vec3i) -> int:
+def _candidate_voxel_bit_address(leaf: int, local_slot: int) -> wp.vec2i:
+    # Address words directly because flattening leaf * 512 can overflow int32.
+    return wp.vec2i(leaf * 16 + (local_slot >> 5), local_slot & 31)
+
+
+@wp.func
+def _candidate_voxel_bit_address_hash(keys: wp.array[wp.uint64], coordinate: wp.vec3i) -> wp.vec2i:
     key = _leaf_key(coordinate)
     if not _leaf_coordinate_in_range(key):
-        return -1
+        return wp.vec2i(-1, 0)
     leaf = hashtable_find(_leaf_coordinate_hash_key(key), keys)
     if leaf < 0:
-        return -1
+        return wp.vec2i(-1, 0)
     local = coordinate - _TILE_SIZE * key
-    return leaf * 512 + local[0] * 64 + local[1] * 8 + local[2]
+    local_slot = local[0] * 64 + local[1] * 8 + local[2]
+    return _candidate_voxel_bit_address(leaf, local_slot)
 
 
 @wp.func
@@ -747,8 +754,14 @@ def dilate_topology_axis_hash(
             for offset in range(-radius, radius + 1):
                 neighbor = coordinate
                 neighbor[axis] += offset
-                source_slot = _candidate_voxel_slot_hash(keys, neighbor)
-                if source_slot >= 0 and (source_slot >> 5) < source.shape[0] and _bit_is_set(source, source_slot):
+                source_address = _candidate_voxel_bit_address_hash(keys, neighbor)
+                source_word = source_address[0]
+                source_bit = source_address[1]
+                if (
+                    source_word >= 0
+                    and source_word < source.shape[0]
+                    and (source[source_word] & wp.uint32(1 << source_bit)) != wp.uint32(0)
+                ):
                     occupied = wp.int32(1)
             if occupied != 0:
                 output_bits |= wp.uint32(1 << bit)
@@ -774,7 +787,8 @@ def emit_topology_voxels_hash(
         active_leaf = source_slot // 512
         local_slot = source_slot - active_leaf * 512
         leaf = active_slots[active_leaf]
-        if _bit_is_set(occupancy, leaf * 512 + local_slot):
+        address = _candidate_voxel_bit_address(leaf, local_slot)
+        if (occupancy[address[0]] & wp.uint32(1 << address[1])) != wp.uint32(0):
             output = int(wp.atomic_add(point_count, 0, wp.uint32(1)))
             if output >= points.shape[0]:
                 wp.atomic_or(status, 0, wp.uint32(1))

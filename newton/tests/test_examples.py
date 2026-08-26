@@ -980,7 +980,9 @@ add_example_test(
         "num-frames": 10,
         "voxel-size": 0.15,
         "surface-voxel-size": 0.075,
+        "surface-max-grid-cells": 4_000_000,
         "particles-per-cell": 1,
+        "world-count": 2,
     },
     use_viewer=True,
 )

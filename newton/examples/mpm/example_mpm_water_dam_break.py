@@ -20,6 +20,8 @@ def _project_inside_tank(
     positions: wp.array[wp.vec3],
     velocities: wp.array[wp.vec3],
     particle_flags: wp.array[wp.int32],
+    particle_world: wp.array[wp.int32],
+    world_offsets: wp.array[wp.vec3],
     half_extents: wp.vec3,
     floor_height: float,
     projection_threshold: float,
@@ -28,7 +30,12 @@ def _project_inside_tank(
     if (particle_flags[i] & newton.ParticleFlags.ACTIVE) == 0:
         return
 
-    pos = positions[i]
+    world = particle_world[i]
+    offset = wp.vec3(0.0)
+    if world >= 0:
+        offset = world_offsets[world]
+
+    pos = positions[i] - offset
     vel = velocities[i]
     min_x = -half_extents[0] - projection_threshold
     max_x = half_extents[0] + projection_threshold
@@ -52,7 +59,7 @@ def _project_inside_tank(
         pos[2] = min_z
         vel[2] = wp.max(vel[2], 0.0)
 
-    positions[i] = pos
+    positions[i] = pos + offset
     velocities[i] = vel
 
 
@@ -66,14 +73,34 @@ class Example:
         self.viewer = viewer
 
         self.tank_extents = np.asarray(args.tank_extents, dtype=np.float32)
+        self.world_count = args.world_count
+        if self.world_count <= 0:
+            raise ValueError("world_count must be positive")
 
-        builder = newton.ModelBuilder()
-        SolverImplicitMPM.register_custom_attributes(builder)
-        self.initial_water_max_x, self.particle_spacing = self._emit_water(builder, args)
-        self._add_tank(builder, args)
+        world_builder = newton.ModelBuilder()
+        SolverImplicitMPM.register_custom_attributes(world_builder)
+        self.initial_water_max_x, self.particle_spacing = self._emit_water(world_builder, args)
+        self._add_tank(world_builder, args)
+
+        world_gap = max(0.5, 4.0 * args.voxel_size)
+        world_spacing = (
+            2.0 * (self.tank_extents[0] + args.wall_thickness) + world_gap,
+            2.0 * (self.tank_extents[1] + args.wall_thickness) + world_gap,
+            0.0,
+        )
+        if self.world_count > 1:
+            builder = newton.ModelBuilder()
+            builder.replicate(world_builder, world_count=self.world_count, spacing=world_spacing)
+            self.world_offsets_np = newton.utils.compute_world_offsets(
+                self.world_count, world_spacing, world_builder.up_axis
+            )
+        else:
+            builder = world_builder
+            self.world_offsets_np = np.zeros((1, 3), dtype=np.float32)
 
         self.model = builder.finalize()
         self.model.set_gravity(args.gravity)
+        self.world_offsets = wp.array(self.world_offsets_np, dtype=wp.vec3, device=self.model.device)
 
         self.model.mpm.friction.fill_(args.friction)
         self.model.mpm.tensile_yield_ratio.fill_(args.tensile_yield_ratio)
@@ -87,6 +114,7 @@ class Example:
         mpm_config.strain_basis = args.strain_basis
         mpm_config.collider_basis = args.collider_basis
         mpm_config.velocity_basis = args.velocity_basis
+        mpm_config.separate_worlds = self.world_count > 1
         self.solver = SolverImplicitMPM(self.model, config=mpm_config)
 
         self.projection_threshold = (
@@ -95,7 +123,7 @@ class Example:
         self.floor_height = -args.wall_thickness
         if self.projection_threshold < 0.0:
             raise ValueError("projection_threshold must be non-negative")
-        self.solver.setup_collider(collider_projection_threshold=[self.projection_threshold])
+        self.solver.setup_collider(collider_projection_threshold=[self.projection_threshold] * self.world_count)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -108,9 +136,12 @@ class Example:
             if args.surface_kernel_radius is not None
             else max(3.0 * self.particle_spacing, 1.5 * surface_voxel_size)
         )
+        surface_max_grid_cells = (
+            args.surface_max_grid_cells if args.surface_max_grid_cells is not None else 4_000_000 * self.world_count
+        )
         self.surface = self.solver.create_particle_surface(
             voxel_size=surface_voxel_size,
-            max_grid_cells=args.surface_max_grid_cells,
+            max_grid_cells=surface_max_grid_cells,
             kernel_radius=surface_kernel_radius,
             threshold=args.surface_threshold,
             smooth_lambda=args.surface_smoothing,
@@ -138,9 +169,17 @@ class Example:
         self._empty_surface_normals = wp.empty(0, dtype=wp.vec3, device=self.model.device)
 
         self.viewer.set_model(self.model)
+        # The worlds are physically separated so the combined extracted mesh
+        # can be rendered directly without a second vertex-packing pass.
+        self.viewer.set_world_offsets((0.0, 0.0, 0.0))
         self.viewer.show_visual = False
         self.viewer.show_particles = args.show_particles
-        self.viewer.set_camera(pos=wp.vec3(5.0, -6.0, 4.0), pitch=-20.0, yaw=130.0)
+        camera_scale = max(1.0, np.sqrt(self.world_count))
+        self.viewer.set_camera(
+            pos=wp.vec3(5.0 * camera_scale, -6.0 * camera_scale, 4.0 * camera_scale),
+            pitch=-20.0,
+            yaw=130.0,
+        )
         self._capture_surface_extraction()
 
     def _extract_surface(self) -> newton.geometry.ParticleSurface.ExtractionMesh:
@@ -203,6 +242,8 @@ class Example:
                     self.state_1.particle_q,
                     self.state_1.particle_qd,
                     self.model.particle_flags,
+                    self.model.particle_world,
+                    self.world_offsets,
                     wp.vec3(self.tank_extents),
                     self.floor_height,
                     self.projection_threshold,
@@ -250,20 +291,33 @@ class Example:
 
     def test_final(self):
         positions = self.state_0.particle_q.numpy()
+        particle_world = self.model.particle_world.numpy()
+        particle_world = np.maximum(particle_world, 0)
+        local_positions = positions - self.world_offsets_np[particle_world]
         hx, hy, _hz = self.tank_extents
         tolerance = 2.0 * self.solver.voxel_size
         inside_tank = (
-            (positions[:, 0] > -hx - tolerance)
-            & (positions[:, 0] < hx + tolerance)
-            & (np.abs(positions[:, 1]) < hy + tolerance)
-            & (positions[:, 2] > -tolerance)
+            (local_positions[:, 0] > -hx - tolerance)
+            & (local_positions[:, 0] < hx + tolerance)
+            & (np.abs(local_positions[:, 1]) < hy + tolerance)
+            & (local_positions[:, 2] > -tolerance)
         )
         if not np.all(inside_tank):
             raise ValueError(f"{np.count_nonzero(~inside_tank)} water particles escaped the tank")
-        if self.sim_time >= 0.5 and np.max(positions[:, 0]) < self.initial_water_max_x + 0.1:
-            raise ValueError("The water column did not spread after release")
+        if self.sim_time >= 0.5:
+            stalled_worlds = [
+                world
+                for world in range(self.world_count)
+                if np.max(local_positions[particle_world == world, 0]) < self.initial_water_max_x + 0.1
+            ]
+            if stalled_worlds:
+                raise ValueError(f"The water column did not spread in worlds {stalled_worlds}")
         if self.surface_triangle_count == 0:
             raise ValueError("Water surface extraction produced no triangles")
+        index_world_offsets = self.surface_mesh.index_world_offsets.numpy()
+        empty_worlds = np.flatnonzero(np.diff(index_world_offsets) == 0).tolist()
+        if empty_worlds:
+            raise ValueError(f"Water surface extraction produced no triangles in worlds {empty_worlds}")
 
     @staticmethod
     def _emit_water(builder: newton.ModelBuilder, args) -> tuple[float, float]:
@@ -428,6 +482,7 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
         parser.add_argument("--fps", type=float, default=60.0)
         parser.add_argument("--substeps", type=int, default=2)
         parser.add_argument("--gravity", type=float, nargs=3, default=[0.0, 0.0, -10.0])
@@ -473,8 +528,8 @@ class Example:
         parser.add_argument(
             "--surface-max-grid-cells",
             type=int,
-            default=4_000_000,
-            help="Maximum logical surface-grid cell count",
+            default=None,
+            help="Maximum logical surface-grid cell count (default: 4,000,000 per world)",
         )
         parser.add_argument(
             "--surface-kernel-radius",
