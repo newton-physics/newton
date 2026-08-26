@@ -594,6 +594,9 @@ For convenience, :meth:`~newton.ModelBuilder.add_custom_values_batch` appends mu
        {"myns:item_id": 101, "myns:item_value": 3.0},
    ])
 
+Here, a *row* is one indexed element of a custom frequency: the values at that
+index across every attribute using the frequency describe the same entity.
+
 **Validation:** All attributes sharing a custom frequency must have the same count at ``finalize()`` time. This catches synchronization bugs early.
 
 Articulation-Scoped Custom Frequencies
@@ -605,11 +608,12 @@ or control attribute using that frequency without adding frequency-specific logi
 to the view.
 
 Set :attr:`~newton.ModelBuilder.CustomFrequency.articulation_owner_attribute` to
-the full key of an integer owner attribute. The owner attribute must use the same
-custom frequency, be assigned to :class:`~newton.Model`, and declare
-``references="articulation"``. An optional
+the full key ``<frequency>_articulation`` of an integer owner attribute. The owner
+attribute must use the same custom frequency, be assigned to
+:class:`~newton.Model`, and declare ``references="articulation"``. An optional
 :attr:`~newton.ModelBuilder.CustomFrequency.label_attribute` identifies a string
-attribute containing row labels.
+attribute named ``<frequency>_label`` containing row labels. Builder merging and
+replication apply their label prefixes to this declared label attribute.
 
 When owners can be derived from other model data, set
 :attr:`~newton.ModelBuilder.CustomFrequency.articulation_owner_resolver` instead

@@ -1645,6 +1645,22 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="freq1", namespace="ns"))  # Should not raise
         self.assertEqual(len(builder.custom_frequencies), baseline + 3)
 
+    def test_custom_frequency_metadata_names_follow_convention(self):
+        """Reject owner and label attributes that do not follow the frequency naming convention."""
+        with self.assertRaisesRegex(ValueError, "test:item_articulation"):
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                articulation_owner_attribute="test:owner",
+            )
+
+        with self.assertRaisesRegex(ValueError, "test:item_label"):
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                label_attribute="test:label",
+            )
+
     def test_custom_frequency_validation_inconsistent_counts(self):
         """Test that inconsistent counts for same custom frequency are handled gracefully with warnings."""
         builder = ModelBuilder()
@@ -2075,6 +2091,10 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertEqual(view.custom_frequency_labels["test:item"], ["item"])
         np.testing.assert_array_equal(model.custom_frequency_articulation["test:item"].numpy(), [0, 1, 2, 3])
         np.testing.assert_array_equal(model.test.item_joint.numpy(), [0, 1, 2, 3])
+        self.assertEqual(
+            model.test.item_label,
+            ["left/tool/item", "right/tool/item", "left/tool/item", "right/tool/item"],
+        )
         np.testing.assert_allclose(view.get_attribute("test.item_value", model).numpy(), 42.0)
         np.testing.assert_allclose(view.get_attribute("test.item_control", control).numpy(), 3.0)
 

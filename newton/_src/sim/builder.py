@@ -1129,6 +1129,7 @@ class ModelBuilder:
         articulation_owner_attribute: str | None = None
         """Full key of the attribute that assigns each row to an articulation.
 
+        The key must be named ``<frequency>_articulation``.
         The attribute must use this custom frequency, be assigned to the model,
         and declare ``references="articulation"``. When provided,
         :class:`~newton.selection.ArticulationView` automatically exposes every
@@ -1141,15 +1142,19 @@ class ModelBuilder:
         The callback runs before this builder is merged or finalized and its
         results populate :attr:`articulation_owner_attribute`. This keeps
         solver-specific ownership logic local to the custom-frequency
-        registration while preserving ordinary reference remapping.
+        registration while preserving ordinary reference remapping. Rows whose
+        ownership was already remapped by a merge are preserved when later rows
+        are appended and resolved.
         """
 
         label_attribute: str | None = None
         """Optional full key of a string attribute containing row labels.
 
+        The key must be named ``<frequency>_label``.
         The attribute must use this custom frequency and be assigned to the model.
         :class:`~newton.selection.ArticulationView` uses it to expose labels for
-        the template articulation.
+        the template articulation. Builder merging applies ``label_prefix`` to
+        these values like other entity labels.
         """
 
         def __post_init__(self):
@@ -1162,12 +1167,19 @@ class ModelBuilder:
                 raise ValueError("usd_entry_expander requires usd_prim_filter")
             if self.articulation_owner_resolver is not None and self.articulation_owner_attribute is None:
                 raise ValueError("articulation_owner_resolver requires articulation_owner_attribute")
-            for field_name, attribute_key in (
-                ("articulation_owner_attribute", self.articulation_owner_attribute),
-                ("label_attribute", self.label_attribute),
+            for field_name, attribute_key, expected_key in (
+                (
+                    "articulation_owner_attribute",
+                    self.articulation_owner_attribute,
+                    f"{self.key}_articulation",
+                ),
+                ("label_attribute", self.label_attribute, f"{self.key}_label"),
             ):
-                if attribute_key is not None and not attribute_key:
-                    raise ValueError(f"{field_name} must be non-empty when provided")
+                if attribute_key is not None and attribute_key != expected_key:
+                    raise ValueError(
+                        f"{field_name} for custom frequency '{self.key}' must be '{expected_key}', "
+                        f"got '{attribute_key}'"
+                    )
 
         @property
         def key(self) -> str:
@@ -1956,8 +1968,14 @@ class ModelBuilder:
                 continue
 
             count = self._custom_frequency_counts.get(frequency_key, 0)
-            if self._custom_frequency_owner_resolved_counts.get(frequency_key) == count:
+            resolved_count = self._custom_frequency_owner_resolved_counts.get(frequency_key, 0)
+            if resolved_count == count:
                 continue
+            if resolved_count > count:
+                raise RuntimeError(
+                    f"Custom frequency '{frequency_key}' has {count} rows but tracks "
+                    f"{resolved_count} resolved owner rows"
+                )
 
             owner_key = frequency.articulation_owner_attribute
             assert owner_key is not None
@@ -1973,8 +1991,18 @@ class ModelBuilder:
                     f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
                     f"{len(resolved_owners)} values, expected {count}"
                 )
-            owners = []
-            for row, owner in enumerate(resolved_owners):
+            if resolved_count > 0:
+                if not isinstance(owner_attribute.values, list) or len(owner_attribute.values) < resolved_count:
+                    value_count = len(owner_attribute.values) if owner_attribute.values is not None else 0
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' has {value_count} values but "
+                        f"{resolved_count} merged rows must be preserved"
+                    )
+                owners = list(owner_attribute.values[:resolved_count])
+            else:
+                owners = []
+            for row in range(resolved_count, count):
+                owner = resolved_owners[row]
                 if not self._is_integer_scalar(owner):
                     raise ValueError(
                         f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
@@ -4382,15 +4410,37 @@ class ModelBuilder:
             else:
                 merged.values.update({index_offset + idx: value for idx, value in attr.values.items()})
 
-        if label_prefix and builder._equality_constraint_count > 0:
-            label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
-            if label_attr is not None and label_attr.values:
-                start = self._equality_constraint_count
-                for i in range(start, start + builder._equality_constraint_count):
-                    if i < len(label_attr.values):
-                        label = label_attr.values[i]
-                        if label:
-                            label_attr.values[i] = f"{label_prefix}/{label}"
+        if label_prefix:
+            for frequency_key, frequency in builder.custom_frequencies.items():
+                label_key = frequency.label_attribute
+                if label_key is None:
+                    continue
+                source_label_attribute = builder.custom_attributes.get(label_key)
+                if source_label_attribute is None or source_label_attribute.frequency != frequency_key:
+                    continue
+                label_attribute = self.custom_attributes.get(label_key)
+                if (
+                    label_attribute is None
+                    or not isinstance(label_attribute.values, list)
+                    or not label_attribute.values
+                ):
+                    continue
+                start = custom_frequency_offsets.get(frequency_key, 0)
+                count = builder._custom_frequency_counts.get(frequency_key, 0)
+                for row in range(start, min(start + count, len(label_attribute.values))):
+                    label = label_attribute.values[row]
+                    if label:
+                        label_attribute.values[row] = f"{label_prefix}/{label}"
+
+            if builder._equality_constraint_count > 0:
+                label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
+                if label_attr is not None and label_attr.values:
+                    start = self._equality_constraint_count
+                    for i in range(start, start + builder._equality_constraint_count):
+                        if i < len(label_attr.values):
+                            label = label_attr.values[i]
+                            if label:
+                                label_attr.values[i] = f"{label_prefix}/{label}"
 
         for freq_key, freq_obj in builder.custom_frequencies.items():
             if freq_key not in self.custom_frequencies:

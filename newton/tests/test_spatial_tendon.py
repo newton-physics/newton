@@ -7,6 +7,7 @@ import warnings
 import numpy as np
 
 import newton
+from newton.selection import ArticulationView
 from newton.solvers import SolverMuJoCo
 
 
@@ -384,6 +385,14 @@ class TestMujocoSpatialTendon(unittest.TestCase):
         self.assertEqual(wrap_type[2], 0)  # site
         self.assertEqual(wrap_type[3], 0)  # site
         self.assertAlmostEqual(wrap_prm[1], 2.0)  # pulley divisor
+
+        np.testing.assert_array_equal(mujoco_attrs.tendon_wrap_articulation.numpy(), [0, 0, 0, 0])
+        view = ArticulationView(model, "*")
+        self.assertEqual(view.custom_frequency_counts["mujoco:tendon_wrap"], 4)
+        np.testing.assert_array_equal(
+            view.get_attribute("mujoco.tendon_wrap_type", model).numpy(),
+            [[[0, 2, 0, 0]]],
+        )
 
     def test_spatial_tendon_site_geom_disambiguation(self):
         """Verify that sites and geoms sharing the same name are correctly disambiguated."""

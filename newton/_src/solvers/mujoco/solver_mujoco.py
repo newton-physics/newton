@@ -799,10 +799,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _resolve_mujoco_tendon_wrap_owners(builder: ModelBuilder) -> list[int]:
         """Resolve the articulation owner of every spatial-tendon wrap row."""
         shape_owners = SolverMuJoCo._shape_owners(builder)
-        return [
+        wrap_owners = [
             shape_owners[int(shape_idx)] if 0 <= int(shape_idx) < len(shape_owners) else -1
             for shape_idx in SolverMuJoCo._dense_custom_attribute_values(builder, "mujoco:tendon_wrap_shape")
         ]
+        wrap_addresses = SolverMuJoCo._dense_custom_attribute_values(builder, "mujoco:tendon_wrap_adr")
+        wrap_counts = SolverMuJoCo._dense_custom_attribute_values(builder, "mujoco:tendon_wrap_num")
+
+        for wrap_address, wrap_count in zip(wrap_addresses, wrap_counts, strict=True):
+            start = int(wrap_address)
+            end = start + int(wrap_count)
+            if start < 0 or end > len(wrap_owners):
+                continue
+            owners = {owner for owner in wrap_owners[start:end] if owner >= 0}
+            if len(owners) == 1:
+                owner = owners.pop()
+                for wrap_idx in range(start, end):
+                    if wrap_owners[wrap_idx] < 0:
+                        wrap_owners[wrap_idx] = owner
+        return wrap_owners
 
     @staticmethod
     def _resolve_mujoco_tendon_owners(builder: ModelBuilder) -> list[int]:

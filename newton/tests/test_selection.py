@@ -1710,6 +1710,22 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
         view.set_attribute("mujoco.ctrl", control, values)
         assert_np_equal(view.get_attribute("mujoco.ctrl", control).numpy(), values)
 
+    def test_actuator_owners_survive_merge_followed_by_import(self):
+        """Preserve remapped actuator owners when later imports append rows."""
+        robot = newton.ModelBuilder()
+        robot.add_mjcf(self.ACTUATOR_MJCF)
+
+        world = newton.ModelBuilder()
+        world.add_builder(robot, label_prefix="a")
+        world.add_builder(robot, label_prefix="b")
+        world.add_mjcf(self.ACTUATOR_MJCF)
+
+        scene = newton.ModelBuilder()
+        scene.replicate(world, world_count=2)
+        model = scene.finalize()
+
+        assert_np_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), np.arange(6))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
