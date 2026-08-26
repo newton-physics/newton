@@ -38,6 +38,9 @@ __all__ = ["ParticleSurface", "extract_particle_surface"]
 
 _MESH_SMOOTH_SHRINK_PER_VOXEL = 0.15
 _MIN_DENSITY_MARCHING_THRESHOLD = 0.01
+_REBUILDABLE_FINE_LEAF_CELL_RATIO = 16
+_REBUILDABLE_LOWER_LEAF_RATIO = 64
+_REBUILDABLE_UPPER_LOWER_RATIO = 64
 
 # ---------------------------------------------------------------------------
 # ParticleSurface context
@@ -203,7 +206,6 @@ class _ParticleSurfaceSparseWorkspace(_ParticleSurfaceWorkspaceBase):
         self.topology_voxel_mask = wp.zeros(1, dtype=wp.int32, device=self.device)
         self.topology_voxel_count = wp.zeros(1, dtype=wp.uint32, device=self.device)
         self.rebuild_status = wp.zeros(5, dtype=wp.uint32, device=self.device)
-
         corner_offsets = wp.MarchingCubes.CUBE_CORNER_OFFSETS
         edge_offsets: list[tuple[int, int, int]] = []
         edge_axes: list[int] = []
@@ -251,8 +253,12 @@ class _ParticleSurfaceSparseWorkspace(_ParticleSurfaceWorkspaceBase):
             raise ValueError("max_grid_cells must be positive")
         max_tiles = max((max_grid_cells + 511) // 512, 1)
         self.max_grid_cells = max_tiles * 512
+        max_leaf_nodes, max_lower_nodes, max_upper_nodes = self._topology_node_capacities(
+            self.max_grid_cells,
+            _REBUILDABLE_FINE_LEAF_CELL_RATIO,
+        )
         dummy_points = wp.zeros(1, dtype=wp.vec3i, device=self.device)
-        self.leaf_hash = HashTable(self.max_grid_cells, device=self.device)
+        self.leaf_hash = HashTable(max_leaf_nodes, device=self.device)
         self.volume = wp.Volume.allocate_by_voxels(
             dummy_points,
             voxel_size=self.voxel_size,
@@ -260,9 +266,9 @@ class _ParticleSurfaceSparseWorkspace(_ParticleSurfaceWorkspaceBase):
             device=self.device,
             rebuildable=True,
             max_active_voxels=self.max_grid_cells,
-            max_leaf_nodes=self.max_grid_cells,
-            max_lower_nodes=max_tiles,
-            max_upper_nodes=max_tiles,
+            max_leaf_nodes=max_leaf_nodes,
+            max_lower_nodes=max_lower_nodes,
+            max_upper_nodes=max_upper_nodes,
             status=self.rebuild_status[4:5],
         )
         self.leaf_ijk = wp.empty(self.leaf_hash.capacity, dtype=wp.vec3i, device=self.device)
@@ -276,6 +282,18 @@ class _ParticleSurfaceSparseWorkspace(_ParticleSurfaceWorkspaceBase):
         self.voxel_ijk = wp.empty(self.max_grid_cells, dtype=wp.vec3i, device=self.device)
         self.max_grid_nodes = self.max_grid_cells
         self._allocate_field_and_mesh(self.max_grid_nodes, self.max_grid_cells, allocate_mesh=True)
+
+    def _topology_node_capacities(self, max_grid_cells: int, leaf_cell_ratio: int) -> tuple[int, int, int]:
+        max_leaf_nodes = max((max_grid_cells + leaf_cell_ratio - 1) // leaf_cell_ratio, 1)
+        max_lower_nodes = max(
+            (max_leaf_nodes + _REBUILDABLE_LOWER_LEAF_RATIO - 1) // _REBUILDABLE_LOWER_LEAF_RATIO,
+            64 * self.world_count,
+        )
+        max_upper_nodes = max(
+            (max_lower_nodes + _REBUILDABLE_UPPER_LOWER_RATIO - 1) // _REBUILDABLE_UPPER_LOWER_RATIO,
+            64 * self.world_count,
+        )
+        return max_leaf_nodes, max_lower_nodes, max_upper_nodes
 
     def _allocate_field_and_mesh(self, node_count: int, cell_count: int, *, allocate_mesh: bool) -> None:
         self.max_grid_nodes = int(node_count)
@@ -1109,7 +1127,9 @@ class ParticleSurface:
         max_grid_cells: Maximum active sparse-grid cell count across all worlds.
             When set, extraction uses preallocated, graph-capturable buffers.
             When ``None``, each extraction uses tight sparse field and mesh
-            allocations.
+            allocations. Rebuildable topology-node capacities assume spatially
+            coherent surface bands; highly scattered fields can exhaust them
+            before reaching this cell count.
         world_count: Number of independent particle worlds to extract.
         kernel_radius: Search radius for neighbor queries [m].
             Defaults to ``3 * voxel_size``.
@@ -1183,6 +1203,7 @@ class ParticleSurface:
         When using preallocated storage, inspect :attr:`per_world_status`
         before consuming results; a nonzero entry means the sparse field may
         be incomplete because its capacity was exceeded.
+
         """
 
         volume: wp.Volume
@@ -2418,7 +2439,10 @@ def extract_particle_surface(
         voxel_size: Edge length of each grid voxel [m].
         max_grid_cells: Maximum active sparse-grid cell count across all worlds.
             When set, extraction uses graph-capturable preallocated buffers.
-            When ``None``, it uses tight sparse allocations.
+            When ``None``, it uses tight sparse allocations. Rebuildable
+            topology-node capacities assume spatially coherent surface bands;
+            highly scattered fields can exhaust them before reaching this cell
+            count.
         kernel_radius: Search radius [m].  Defaults to ``3 * voxel_size``.
         threshold: Isosurface level.
         smooth_lambda: Position smoothing blend factor [0, 1].

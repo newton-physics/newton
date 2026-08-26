@@ -398,7 +398,6 @@ def test_rebuildable_topology_scratch_is_fixed(test, device):
     spread = wp.array([[-5.0, 0.0, 0.0], [0.0, 0.0, 0.0], [5.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
     surface._extract(spread, radii, compute_mesh=False)
 
-    test.assertGreaterEqual(initial_hash_capacity, surface._workspace.max_grid_cells)
     test.assertEqual(leaf_hash.capacity, initial_hash_capacity)
     test.assertEqual(surface._workspace.topology_occupancy.shape[0], 16 * initial_hash_capacity)
     test.assertEqual(surface._workspace.topology_voxels.shape[0], initial_topology_capacity)

@@ -137,7 +137,9 @@ class Example:
             else max(3.0 * self.particle_spacing, 1.5 * surface_voxel_size)
         )
         surface_max_grid_cells = (
-            args.surface_max_grid_cells if args.surface_max_grid_cells is not None else 4_000_000 * self.world_count
+            args.surface_max_grid_cells
+            if args.surface_max_grid_cells is not None
+            else 4_000_000 * self.world_count
         )
         self.surface = self.solver.create_particle_surface(
             voxel_size=surface_voxel_size,
