@@ -2611,6 +2611,16 @@ class Gaussian:
         """Sorting mode, Gaussian.SortingMode."""
         return self._sorting_mode
 
+    @property
+    def bvh(self) -> wp.Bvh | None:
+        """The finalized Warp BVH over the Gaussians, or ``None`` before :meth:`finalize`.
+
+        Mirrors the scene shape BVH exposed as :attr:`~newton.Model.bvh_shapes`.
+        Use :meth:`bvh_refit` to update it in place after the finalized
+        :class:`Data` arrays change.
+        """
+        return self.warp_bvh
+
     def _find_sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
         c = self._sh_coeffs.shape[1]
@@ -2660,6 +2670,35 @@ class Gaussian:
             self.warp_bvh = wp.Bvh(lowers, uppers, constructor=bvh_constructor)
             self.warp_data.bvh_id = self.warp_bvh.id
         return self.warp_data
+
+    def bvh_refit(self) -> None:
+        """Refit the Gaussian :attr:`bvh` in place for the current finalized data.
+
+        Recomputes per-Gaussian bounds from the finalized GPU data and refits
+        the BVH in place, keeping its existing topology. Call this after
+        mutating the finalized :class:`Data` arrays (e.g. ``transforms`` or
+        ``scales``) on the device so the acceleration structure tracks the
+        moved Gaussians. Structural changes (a different Gaussian count)
+        require a full rebuild via :meth:`finalize` instead.
+
+        This mirrors :meth:`~newton.Model.bvh_refit_shapes` for the scene
+        shape BVH.
+
+        Raises:
+            RuntimeError: If :meth:`finalize` has not been called yet.
+        """
+        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+
+        if self.warp_bvh is None or self.warp_data is None:
+            raise RuntimeError("Gaussian.bvh_refit() requires Gaussian.finalize() to have been called first.")
+
+        with wp.ScopedDevice(self.warp_bvh.device):
+            wp.launch(
+                kernel=compute_gaussian_bvh_bounds,
+                dim=self.count,
+                inputs=[self.warp_data, self.warp_bvh.lowers, self.warp_bvh.uppers],
+            )
+            self.warp_bvh.refit()
 
     # ---- Factory methods -----------------------------------------------------
 
