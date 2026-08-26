@@ -533,6 +533,129 @@ class TestModelConversions(unittest.TestCase):
             self.assertEqual(model_kamino.info.base_joint_index.numpy().tolist(), [-1])
             self.assertTrue(model_kamino.info.has_world_without_base_body)
 
+    def test_06a_model_conversions_group_incompatible_pairs_excluded(self):
+        """Newton's collision-group incompatibility must be baked into `geoms.excluded_pairs`,
+        since group membership is not checked during Kamino's broadphase.
+        """
+        builder: ModelBuilder = ModelBuilder()
+        builder.begin_world()
+        body_a = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        body_b = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        shape_a = builder.add_shape_sphere(body=body_a, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=1))
+        shape_b = builder.add_shape_sphere(body=body_b, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=2))
+        builder.end_world()
+
+        model_kamino: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        excluded = {tuple(sorted(pair)) for pair in model_kamino.geoms.excluded_pairs.numpy().tolist()}
+        self.assertEqual(model_kamino.geoms.num_excluded_pairs, 1)
+        self.assertEqual(excluded, {tuple(sorted((shape_a, shape_b)))})
+
+    def test_06b_model_conversions_group_compatible_pairs_not_excluded(self):
+        """Shapes with compatible collision groups must not appear in `geoms.excluded_pairs`."""
+        builder: ModelBuilder = ModelBuilder()
+        builder.begin_world()
+        body_a = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        body_b = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        builder.add_shape_sphere(body=body_a, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=1))
+        builder.add_shape_sphere(body=body_b, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=1))
+        builder.end_world()
+
+        model_kamino: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        self.assertEqual(model_kamino.geoms.num_excluded_pairs, 0)
+
+    def test_06c_model_conversions_group_exclusion_negative_group_self_pairs_excluded(self):
+        """Two shapes sharing the same negative collision-group id must be excluded."""
+        builder: ModelBuilder = ModelBuilder()
+        builder.begin_world()
+        body_a = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        body_b = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        shape_a = builder.add_shape_sphere(body=body_a, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=-1))
+        shape_b = builder.add_shape_sphere(body=body_b, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=-1))
+        builder.end_world()
+
+        model_kamino: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        excluded = {tuple(sorted(pair)) for pair in model_kamino.geoms.excluded_pairs.numpy().tolist()}
+        self.assertEqual(model_kamino.geoms.num_excluded_pairs, 1)
+        self.assertEqual(excluded, {tuple(sorted((shape_a, shape_b)))})
+
+    def test_06d_model_conversions_group_exclusion_respects_world_boundaries(self):
+        """Group-incompatible shapes in different (non-global) worlds must never
+        be added to `geoms.excluded_pairs`.
+        """
+        builder: ModelBuilder = ModelBuilder()
+        builder.begin_world()
+        body_a = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        builder.add_shape_sphere(body=body_a, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=1))
+        builder.end_world()
+        builder.begin_world()
+        body_b = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        builder.add_shape_sphere(body=body_b, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=2))
+        builder.end_world()
+
+        model_kamino: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        self.assertEqual(model_kamino.geoms.num_excluded_pairs, 0)
+
+    def test_06e_model_conversions_group_exclusion_global_shape_not_duplicated(self):
+        """A global (world -1) shape incompatible with per-world shapes must be
+        excluded against each world's shape exactly once."""
+        builder: ModelBuilder = ModelBuilder()
+        world_shapes = []
+        for _ in range(2):
+            builder.begin_world()
+            body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+            world_shapes.append(
+                builder.add_shape_sphere(body=body, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=1))
+            )
+            builder.end_world()
+        global_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        global_shape = builder.add_shape_sphere(
+            body=global_body, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=2)
+        )
+
+        model_kamino: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        excluded = {tuple(sorted(pair)) for pair in model_kamino.geoms.excluded_pairs.numpy().tolist()}
+        self.assertEqual(model_kamino.geoms.num_excluded_pairs, 2)
+        self.assertEqual(
+            excluded,
+            {tuple(sorted((world_shapes[0], global_shape))), tuple(sorted((world_shapes[1], global_shape)))},
+        )
+
+    def test_06f_model_conversions_group_exclusion_global_shape_not_duplicated(self):
+        """A global (world -1) shape incompatible with per-world shapes must be
+        excluded against each world's shape exactly once."""
+        builder: ModelBuilder = ModelBuilder()
+        world_shapes = []
+        global_shapes = []
+        global_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        global_shapes.append(
+            builder.add_shape_sphere(body=global_body, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=2))
+        )
+        for _ in range(2):
+            builder.begin_world()
+            body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+            world_shapes.append(
+                builder.add_shape_sphere(body=body, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=1))
+            )
+            builder.end_world()
+        global_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        global_shapes.append(
+            builder.add_shape_sphere(body=global_body, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=2))
+        )
+
+        model_kamino: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        excluded = [tuple(sorted(pair)) for pair in model_kamino.geoms.excluded_pairs.numpy().tolist()]
+        self.assertEqual(model_kamino.geoms.num_excluded_pairs, 4)
+        self.assertEqual(
+            excluded,
+            sorted(
+                [
+                    tuple(sorted((world_shape, global_shape)))
+                    for world_shape in world_shapes
+                    for global_shape in global_shapes
+                ]
+            ),
+        )
+
     def test_10_model_conversions_arbitrary_axis(self):
         """
         Test that Newton→Kamino conversion succeeds for a revolute joint
