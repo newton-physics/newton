@@ -394,6 +394,36 @@ class TestMujocoSpatialTendon(unittest.TestCase):
             [[[0, 2, 0, 0]]],
         )
 
+    def test_spatial_tendon_pulley_preserves_world_site_owner(self):
+        """Verify that pulley ownership does not propagate to a world site."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco model="spatial_tendon_world_site">
+  <option timestep="0.002" gravity="0 0 0"/>
+
+  <worldbody>
+    <site name="world_site" pos="0.2 0 0.5"/>
+    <body name="base" pos="0 0 0.5">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.02 0.1"/>
+      <site name="body_site" pos="0.1 0 0"/>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <spatial name="pulley_t">
+      <site site="body_site"/>
+      <pulley divisor="2"/>
+      <site site="world_site"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.mujoco.tendon_wrap_articulation.numpy(), [0, 0, -1])
+
     def test_spatial_tendon_site_geom_disambiguation(self):
         """Verify that sites and geoms sharing the same name are correctly disambiguated."""
         mjcf = """<?xml version="1.0" ?>
