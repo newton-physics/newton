@@ -14,17 +14,25 @@ about the body's COM point, expressed in world-frame coordinates,
 per-articulation-local link/DOF indexing — to the tool point, still
 expressed in world-frame coordinates.
 
-Every transform variable is named ``coordinate_change_TARGET_from_SOURCE``:
-given a point's coordinates in the SOURCE frame, it produces that same
-point's coordinates in the TARGET frame. Equivalently, its translation is the
-SOURCE frame's origin, expressed in the TARGET frame — so
-``coordinate_change_world_from_body``'s translation is directly the body's
-position in world coordinates, with no inversion needed. Warp's ``*``
-composes transforms as ``(A * B)(p) = A(B(p))`` (right operand applied
-first), so this naming makes a chain of transforms cancel visibly, left to
-right: ``coordinate_change_world_from_body * coordinate_change_body_from_tool
-== coordinate_change_world_from_tool`` — the adjacent ``body``s are the frame
-the right transform's output and the left transform's input agree on.
+A transform that is actively being *composed* with another is named
+``coordinate_change_TARGET_from_SOURCE``: given a point's coordinates in the
+SOURCE frame, it produces that same point's coordinates in the TARGET frame.
+Equivalently, its translation is the SOURCE frame's origin, expressed in the
+TARGET frame — so ``coordinate_change_world_from_body``'s translation is
+directly the body's position in world coordinates, with no inversion needed.
+Warp's ``*`` composes transforms as ``(A * B)(p) = A(B(p))`` (right operand
+applied first), so this naming makes a chain of transforms cancel visibly,
+left to right: ``coordinate_change_world_from_body *
+coordinate_change_body_from_tool == tool_pose_world`` — the adjacent
+``body``s are the frame the right transform's output and the left
+transform's input agree on.
+
+Once a transform is just data — the result of a composition, not itself
+being multiplied against anything else — it's named like any other
+frame-tagged quantity instead: ``tool_pose_world`` (the composition's
+result above), matching ``tool_twist_world`` right next to it. The
+``coordinate_change_*`` naming only earns its keep where a chain is actually
+being built.
 """
 
 from __future__ import annotations
@@ -48,7 +56,7 @@ def _tool_pose_and_twist_kernel(
     tool_body: wp.array[wp.int32],  # (robot_count,) -> body index of each robot's tool site
     coordinate_change_body_from_tool: wp.array[wp.transform],  # (robot_count,) tool site's body-local transform
     # outputs
-    coordinate_change_world_from_tool: wp.array[wp.transform],  # (robot_count,) world pose of the tool frame
+    tool_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the tool frame
     tool_twist_world: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) twist about the tool point, in world coords (v_tool, w)
@@ -56,11 +64,9 @@ def _tool_pose_and_twist_kernel(
     robot_idx = wp.tid()
     tool_body_idx = tool_body[robot_idx]
     coordinate_change_world_from_body = body_q[tool_body_idx]
-    coordinate_change_world_from_tool[robot_idx] = (
-        coordinate_change_world_from_body * coordinate_change_body_from_tool[robot_idx]
-    )
+    tool_pose_world[robot_idx] = coordinate_change_world_from_body * coordinate_change_body_from_tool[robot_idx]
 
-    tool_point_world = wp.transform_get_translation(coordinate_change_world_from_tool[robot_idx])
+    tool_point_world = wp.transform_get_translation(tool_pose_world[robot_idx])
     body_com_world = wp.transform_point(coordinate_change_world_from_body, body_com_body[tool_body_idx])
     com_to_tool_offset_world = tool_point_world - body_com_world
     # Angular velocity is the same everywhere on a rigid body, so only the
@@ -93,8 +99,8 @@ def _shift_jacobian_to_tool_kernel(
 
     tool_body_idx = tool_body[robot_idx]
     coordinate_change_world_from_body = body_q[tool_body_idx]
-    coordinate_change_world_from_tool = coordinate_change_world_from_body * coordinate_change_body_from_tool[robot_idx]
-    tool_point_world = wp.transform_get_translation(coordinate_change_world_from_tool)
+    tool_pose_world = coordinate_change_world_from_body * coordinate_change_body_from_tool[robot_idx]
+    tool_point_world = wp.transform_get_translation(tool_pose_world)
     body_com_world = wp.transform_point(coordinate_change_world_from_body, body_com_body[tool_body_idx])
     com_to_tool_offset_world = tool_point_world - body_com_world
 
@@ -236,10 +242,8 @@ def _operational_space_mass_matrix_inverse_kernel(
 
 @wp.kernel
 def _pose_error_kernel(
-    coordinate_change_world_from_tool: wp.array[wp.transform],  # (robot_count,) current world pose of the tool frame
-    coordinate_change_world_from_desired_tool: wp.array[
-        wp.transform
-    ],  # (robot_count,) desired world pose of the tool frame
+    tool_pose_world: wp.array[wp.transform],  # (robot_count,) current world pose of the tool frame
+    desired_tool_pose_world: wp.array[wp.transform],  # (robot_count,) desired world pose of the tool frame
     # outputs
     pose_error_world: wp.array[
         wp.spatial_vector
@@ -273,13 +277,13 @@ def _pose_error_kernel(
     """
     robot_idx = wp.tid()
 
-    coordinate_change_world_from_current_tool = coordinate_change_world_from_tool[robot_idx]
+    current_tool_pose_world = tool_pose_world[robot_idx]
     position_error_world = wp.transform_get_translation(
-        coordinate_change_world_from_desired_tool[robot_idx]
-    ) - wp.transform_get_translation(coordinate_change_world_from_current_tool)
+        desired_tool_pose_world[robot_idx]
+    ) - wp.transform_get_translation(current_tool_pose_world)
 
-    quat_current = wp.transform_get_rotation(coordinate_change_world_from_current_tool)
-    quat_desired = wp.transform_get_rotation(coordinate_change_world_from_desired_tool[robot_idx])
+    quat_current = wp.transform_get_rotation(current_tool_pose_world)
+    quat_desired = wp.transform_get_rotation(desired_tool_pose_world[robot_idx])
     quat_error = quat_desired * wp.quat_inverse(quat_current)
     # Every unit quaternion has two equally valid representations, q and -q;
     # picking the one with a non-negative scalar part is what keeps the
@@ -567,7 +571,7 @@ def _null_space_projector_kernel(
 
 @wp.kernel
 def _rotate_selection_matrix_kernel(
-    coordinate_change_world_from_tool: wp.array[wp.transform],  # (robot_count,) world pose of the tool frame
+    tool_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the tool frame
     selection_axes_tool: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) diagonal selection weight per axis (0/1, or any scalar weight), tool-local: (linear x,y,z, angular x,y,z)
@@ -586,7 +590,7 @@ def _rotate_selection_matrix_kernel(
     """
     robot_idx = wp.tid()
     axes = selection_axes_tool[robot_idx]
-    quat_world_from_tool = wp.transform_get_rotation(coordinate_change_world_from_tool[robot_idx])
+    quat_world_from_tool = wp.transform_get_rotation(tool_pose_world[robot_idx])
 
     rotation_col_x = wp.quat_rotate(quat_world_from_tool, wp.vec3(1.0, 0.0, 0.0))
     rotation_col_y = wp.quat_rotate(quat_world_from_tool, wp.vec3(0.0, 1.0, 0.0))

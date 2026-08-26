@@ -119,7 +119,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         construction.
         """
 
-        coordinate_change_world_from_tool: wp.array[wp.transform] | wp.indexedarray[wp.transform]
+        tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
         """Current world pose of the tool frame, shape [controlled_robot_count]."""
         tool_twist_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
         """Current tool twist (linear, angular) in world coordinates [m/s, rad/s], shape [controlled_robot_count]."""
@@ -127,7 +127,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         """Tool-point Jacobian in world coordinates, shape [controlled_robot_count, 6, max_controlled_dofs]."""
         mass_matrix: wp.array3d[wp.float32] | wp.indexedarray(dtype=wp.float32, ndim=3) | None
         """Joint-space mass matrix over the controlled DOFs, shape [controlled_robot_count, max_controlled_dofs, max_controlled_dofs]; a robot with fewer than ``max_controlled_dofs`` DOFs leaves the trailing rows and columns unread. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
-        coordinate_change_world_from_desired_tool: wp.array[wp.transform] | wp.indexedarray[wp.transform]
+        desired_tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
         """Desired world pose of the tool frame, shape [controlled_robot_count]."""
         desired_twist_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
         """Desired tool twist (linear, angular) in world coordinates [m/s, rad/s], shape [controlled_robot_count]."""
@@ -375,7 +375,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         d, rg, n = self._device, self._requires_grad, self._controlled_robot_count
 
         inputs = ControllerOperationalSpaceModelFree.Inputs()
-        inputs.coordinate_change_world_from_tool = wp.zeros(n, dtype=wp.transform, device=d, requires_grad=rg)
+        inputs.tool_pose_world = wp.zeros(n, dtype=wp.transform, device=d, requires_grad=rg)
         inputs.tool_twist_world = wp.zeros(n, dtype=wp.spatial_vector, device=d, requires_grad=rg)
         inputs.jacobian_tool_world = wp.zeros(
             (n, 6, self._max_controlled_dofs), dtype=wp.float32, device=d, requires_grad=rg
@@ -387,7 +387,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             if self._use_inertia
             else None
         )
-        inputs.coordinate_change_world_from_desired_tool = wp.zeros(n, dtype=wp.transform, device=d, requires_grad=rg)
+        inputs.desired_tool_pose_world = wp.zeros(n, dtype=wp.transform, device=d, requires_grad=rg)
         inputs.desired_twist_world = wp.zeros(n, dtype=wp.spatial_vector, device=d, requires_grad=rg)
         inputs.motion_stiffness = (
             wp.zeros(n, dtype=wp.spatial_vector, device=d, requires_grad=rg) if self._stiffness_baked is None else None
@@ -441,15 +441,15 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         # same graph-capture-safe port machinery outputs.joint_f uses below.
         for port, name, dtype, buf in (
             (
-                inputs.coordinate_change_world_from_tool,
-                "inputs.coordinate_change_world_from_tool",
+                inputs.tool_pose_world,
+                "inputs.tool_pose_world",
                 wp.transform,
                 self._pose_buf,
             ),
             (inputs.tool_twist_world, "inputs.tool_twist_world", wp.spatial_vector, self._twist_buf),
             (
-                inputs.coordinate_change_world_from_desired_tool,
-                "inputs.coordinate_change_world_from_desired_tool",
+                inputs.desired_tool_pose_world,
+                "inputs.desired_tool_pose_world",
                 wp.transform,
                 self._desired_pose_buf,
             ),

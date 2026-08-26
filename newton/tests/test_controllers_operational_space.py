@@ -306,7 +306,7 @@ def test_tool_pose_matches_body_and_site_composition(test, device):
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
     # Preallocate outputs and launch the kernel under test.
-    coordinate_change_world_from_tool = wp.zeros(1, dtype=wp.transform, device=device)
+    tool_pose_world = wp.zeros(1, dtype=wp.transform, device=device)
     tool_twist_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _tool_pose_and_twist_kernel,
@@ -318,7 +318,7 @@ def test_tool_pose_matches_body_and_site_composition(test, device):
             wp.array([tool_body], dtype=wp.int32, device=device),
             wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
         ],
-        outputs=[coordinate_change_world_from_tool, tool_twist_world],
+        outputs=[tool_pose_world, tool_twist_world],
         device=device,
     )
 
@@ -326,7 +326,7 @@ def test_tool_pose_matches_body_and_site_composition(test, device):
     coordinate_change_world_from_body = wp.transform(*state.body_q.numpy()[tool_body])
     expected = coordinate_change_world_from_body * coordinate_change_body_from_tool
 
-    np.testing.assert_allclose(coordinate_change_world_from_tool.numpy()[0], np.array(expected), atol=1e-6)
+    np.testing.assert_allclose(tool_pose_world.numpy()[0], np.array(expected), atol=1e-6)
 
 
 def test_jacobian_tool_shift_matches_twist(test, device):
@@ -357,13 +357,13 @@ def test_jacobian_tool_shift_matches_twist(test, device):
     )
 
     # Ground truth: the tool twist computed directly from state.body_qd.
-    coordinate_change_world_from_tool = wp.zeros(1, dtype=wp.transform, device=device)
+    tool_pose_world = wp.zeros(1, dtype=wp.transform, device=device)
     tool_twist_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _tool_pose_and_twist_kernel,
         dim=1,
         inputs=[state.body_q, state.body_qd, model.body_com, tool_body_arr, coordinate_change_body_from_tool_arr],
-        outputs=[coordinate_change_world_from_tool, tool_twist_world],
+        outputs=[tool_pose_world, tool_twist_world],
         device=device,
     )
 
@@ -457,7 +457,7 @@ def test_tool_twist_angular_part_matches_body(test, device):
     body_twist_com_world = state.body_qd.numpy()[tool_body]
 
     # Preallocate outputs and launch the kernel under test.
-    coordinate_change_world_from_tool = wp.zeros(1, dtype=wp.transform, device=device)
+    tool_pose_world = wp.zeros(1, dtype=wp.transform, device=device)
     tool_twist_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _tool_pose_and_twist_kernel,
@@ -469,7 +469,7 @@ def test_tool_twist_angular_part_matches_body(test, device):
             wp.array([tool_body], dtype=wp.int32, device=device),
             wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
         ],
-        outputs=[coordinate_change_world_from_tool, tool_twist_world],
+        outputs=[tool_pose_world, tool_twist_world],
         device=device,
     )
 
@@ -828,9 +828,7 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
 def test_rotate_selection_matrix_matches_numpy(test, device):
     """The rotated selection matrix is block-diagonal, each block R @ diag(axes) @ R^T, cross-blocks zero."""
     quat = wp.quat_from_axis_angle(wp.vec3(0.3, -0.6, 0.2), 1.1)
-    coordinate_change_world_from_tool = wp.array(
-        [wp.transform(wp.vec3(0.0, 0.0, 0.0), quat)], dtype=wp.transform, device=device
-    )
+    tool_pose_world = wp.array([wp.transform(wp.vec3(0.0, 0.0, 0.0), quat)], dtype=wp.transform, device=device)
     # Select only the local x linear axis and the local y,z angular axes.
     linear_axes_np = np.array([1.0, 0.0, 0.0])
     angular_axes_np = np.array([0.0, 1.0, 1.0])
@@ -844,7 +842,7 @@ def test_rotate_selection_matrix_matches_numpy(test, device):
     wp.launch(
         _rotate_selection_matrix_kernel,
         dim=1,
-        inputs=[coordinate_change_world_from_tool, selection_axes_tool],
+        inputs=[tool_pose_world, selection_axes_tool],
         outputs=[selection_matrix_world],
         device=device,
     )
@@ -1025,9 +1023,9 @@ def _run_model_free(
 ):
     """Run one step on a ControllerOperationalSpaceModelFree and return the compact torque array."""
     ins = ctrl.input()
-    ins.coordinate_change_world_from_tool = _poses(current_poses, device)
+    ins.tool_pose_world = _poses(current_poses, device)
     ins.tool_twist_world = _twists(current_twists, device)
-    ins.coordinate_change_world_from_desired_tool = _poses(desired_poses, device)
+    ins.desired_tool_pose_world = _poses(desired_poses, device)
     ins.desired_twist_world = _twists(desired_twists, device)
     ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
     if mass_matrix is not None:
@@ -1172,9 +1170,9 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
 
         ins = ctrl.input()
-        ins.coordinate_change_world_from_tool = _poses([current_pose], device)
+        ins.tool_pose_world = _poses([current_pose], device)
         ins.tool_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
-        ins.coordinate_change_world_from_desired_tool = _poses([desired_pose], device)
+        ins.desired_tool_pose_world = _poses([desired_pose], device)
         ins.desired_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.motion_stiffness = wp.array(
@@ -1198,9 +1196,9 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
 
         ins = ctrl.input()
-        ins.coordinate_change_world_from_tool = _poses([current_pose], device)
+        ins.tool_pose_world = _poses([current_pose], device)
         ins.tool_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
-        ins.coordinate_change_world_from_desired_tool = _poses([desired_pose], device)
+        ins.desired_tool_pose_world = _poses([desired_pose], device)
         ins.desired_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
 
@@ -1220,8 +1218,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
     def test_transform_and_spatial_vector_inputs_accept_indexed_views(self):
         """Every input port, not just outputs.joint_f, may be bound to an indexed view of a larger array.
 
-        Binds coordinate_change_world_from_tool, tool_twist_world,
-        coordinate_change_world_from_desired_tool, desired_twist_world, and
+        Binds tool_pose_world, tool_twist_world,
+        desired_tool_pose_world, desired_twist_world, and
         motion_stiffness/motion_damping (live) to views selecting robot 1 out
         of a larger 3-robot simulation-sized array, and checks the result
         matches a plain-array run with the same values.
@@ -1258,9 +1256,9 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         sim_damping = wp.array([wp.spatial_vector(*kd_vec)] * 3, dtype=wp.spatial_vector, device=device)
 
         ins = ctrl.input()
-        ins.coordinate_change_world_from_tool = sim_pose[selection]
+        ins.tool_pose_world = sim_pose[selection]
         ins.tool_twist_world = sim_twist[selection]
-        ins.coordinate_change_world_from_desired_tool = sim_desired_pose[selection]
+        ins.desired_tool_pose_world = sim_desired_pose[selection]
         ins.desired_twist_world = sim_desired_twist[selection]
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.motion_stiffness = sim_stiffness[selection]
