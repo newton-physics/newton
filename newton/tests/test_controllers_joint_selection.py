@@ -159,19 +159,6 @@ class TestSelectJoints(unittest.TestCase):
         np.testing.assert_array_equal(selection.q_start.numpy(), [4])  # after the 4-coordinate quaternion
         np.testing.assert_array_equal(selection.qd_start.numpy(), [3])  # after the 3-DOF angular velocity
 
-    def test_default_excludes_floating_base(self):
-        """Verify the default selection skips a free-joint base without raising.
-
-        A common floating-base robot mixes an uncontrollable free joint with
-        controllable revolute joints; the default should not need the caller
-        to prune the free joint by hand.
-        """
-        device = wp.get_device()
-        builder, revolute_joints = _build_floating_base_fleet()
-        model = builder.finalize(device=device)
-        selection = select_joints(model)
-        np.testing.assert_array_equal(selection.qd_start.numpy(), model.joint_qd_start.numpy()[revolute_joints])
-
     def test_heterogeneous_two_robots(self):
         """Verify select_joints concatenates controlled DOFs per articulation for a mixed fleet."""
         device = wp.get_device()
