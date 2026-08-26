@@ -5819,7 +5819,10 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     """Verify REVOLUTE/PRISMATIC/D6 drive/limit slots refresh to ``max(target_ke, limit_ke)``.
 
     Both inputs to that maximum are covered by ``JOINT_DOF_PROPERTIES``, so editing either
-    ``joint_target_ke`` or ``joint_limit_ke`` alone must propagate.
+    ``joint_target_ke`` or ``joint_limit_ke`` alone must propagate. Built on the legacy AVBD
+    path because it is the only formulation that reads these cached slots -- compliant ALM
+    gathers the same coefficients live from the model each solve (see
+    ``_gather_joint_axis_drive_limit``) and needs no notification.
     """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     JointDofConfig = newton.ModelBuilder.JointDofConfig
@@ -5840,7 +5843,7 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     builder.add_articulation([j_revolute, j_prismatic, j_d6])
     builder.color()
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
 
     def material_k_at(joint, slot_offset):
         start = int(solver.joint_constraint_start.numpy()[joint])

@@ -164,12 +164,13 @@ class SolverVBD(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
           for REVOLUTE, PRISMATIC, D6 (as drives), and ROD (as stretch, shear,
           bend, and twist stiffness and damping).
-          VBD interprets ``kd`` as absolute damping in physical units. Both are live-updatable
-          via :meth:`notify_model_changed` with
-          :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`: ``joint_target_ke`` for ROD (all four
-          slots) and the drive/limit slot(s) of REVOLUTE, PRISMATIC, and D6, and
-          ``joint_target_kd`` for ROD. Other joint types' drive damping is read live at step
-          time and needs no notification.
+          VBD interprets ``kd`` as absolute damping in physical units. ROD values are cached in
+          solver-owned buffers at construction; after editing them call
+          :meth:`notify_model_changed` with
+          :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` to refresh that cache. REVOLUTE,
+          PRISMATIC, and D6 drive/limit coefficients are gathered live from the model on every
+          solve and need no notification -- except on the deprecated legacy AVBD path, whose
+          cached penalty state the same flag refreshes.
         - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints.
@@ -1499,8 +1500,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             (joint_penalty_k, joint_penalty_k_min, joint_material_k, joint_rho,
             joint_penalty_kd, joint_is_hard) tuple:
               - joint_penalty_k:       mutable legacy solver penalty per constraint scalar.
-              - joint_penalty_k_min:   frozen floor for the mutable legacy solver penalty.
-              - joint_material_k:      frozen material stiffness (= slot-specific ke).
+              - joint_penalty_k_min:   floor for the mutable legacy solver penalty; refreshed
+                                       by ``notify_model_changed(JOINT_DOF_PROPERTIES)``.
+              - joint_material_k:      material stiffness (= slot-specific ke); refreshed
+                                       by ``notify_model_changed(JOINT_DOF_PROPERTIES)``.
               - joint_rho:             zeroed solver-owned storage; compliant ALM fills
                                        structural slots automatically each step.
               - joint_penalty_kd:      damping coefficient per constraint scalar.
@@ -1748,9 +1751,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Refresh ``joint_target_ke``/``joint_target_kd``-derived material stiffness and damping.
 
         Stiffness covers ROD and the drive/limit slot(s) of REVOLUTE, PRISMATIC, and D6; its
-        penalty and floor are reseeded alongside. Not covered: BALL, FIXED, and
-        REVOLUTE/PRISMATIC/D6's structural slots, which come from the solver-wide
-        ``rigid_joint_linear_ke``/``rigid_joint_angular_ke`` constants.
+        penalty and floor are reseeded alongside. Only legacy AVBD reads those non-ROD slots --
+        compliant ALM gathers the same coefficients live from the model each solve. Not covered:
+        BALL, FIXED, and REVOLUTE/PRISMATIC/D6's structural slots, which come from the
+        solver-wide ``rigid_joint_linear_ke``/``rigid_joint_angular_ke`` constants.
 
         Damping is ROD-only -- other joint types read drive damping live from
         ``joint_target_kd`` at step time rather than caching it here.

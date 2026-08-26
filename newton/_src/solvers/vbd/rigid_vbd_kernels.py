@@ -3837,9 +3837,11 @@ def refresh_joint_material_params(
     time).
 
     Stiffness covers ROD (all four material slots) and the drive/limit slot(s) of REVOLUTE,
-    PRISMATIC, and D6. Not covered: BALL, FIXED, and REVOLUTE/PRISMATIC/D6's structural slots,
-    which come from the solver-wide ``rigid_joint_linear_ke``/``rigid_joint_angular_ke``
-    constants rather than ``joint_target_ke``.
+    PRISMATIC, and D6. Only legacy AVBD reads those non-ROD slots; compliant ALM gathers the
+    same coefficients live from the model each solve (see ``_gather_joint_axis_drive_limit``).
+    Not covered: BALL, FIXED, and REVOLUTE/PRISMATIC/D6's structural slots, which come from the
+    solver-wide ``rigid_joint_linear_ke``/``rigid_joint_angular_ke`` constants rather than
+    ``joint_target_ke``.
 
     Damping is ROD-only: other joint types' ``joint_penalty_kd`` slots hold the solver-wide
     ``rigid_joint_{linear,angular}_kd`` constants or zero, and their drive damping is read
