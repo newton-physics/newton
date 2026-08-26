@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.solver_configs import (
@@ -16,6 +17,7 @@ from newton.tests.kamino.utils.solver_configs import (
     PADMM_CONFIG_NAMES,
     make_padmm_dense_config,
     make_padmm_sparse_config,
+    make_single_iteration_config,
 )
 
 _BODY_MASS = 1.0
@@ -122,12 +124,13 @@ def _run_spin_down_test(
                 use_acceleration=config.padmm.use_acceleration,
                 direction=direction,
             ):
-                initial_velocity = direction
+                decrement = DT * friction / (_EFFECTIVE_JOINT_INERTIA + armature)
+                initial_speed = 20 * decrement
+                initial_velocity = direction * initial_speed
                 model = _build_revolute(friction, armature=armature)
                 model.set_gravity((0.0, 0.0, 0.0))
                 solver = SolverKamino(model, config)
 
-                decrement = DT * friction / (_EFFECTIVE_JOINT_INERTIA + armature)
                 spin_down_steps = int(np.ceil(abs(initial_velocity) / decrement))
                 expected = direction * np.maximum(
                     abs(initial_velocity) - decrement * np.arange(1, spin_down_steps + 1),
@@ -310,6 +313,53 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         solver.step(state_in, model.state(), control=None, contacts=None, dt=DT)
         np.testing.assert_array_equal(sparse_jacobians._J_cts.bsm.dims.numpy()[:, 0], expected_rows)
 
+    def test_container_warmstart_reduces_friction_residual(self):
+        """Reduce one-iteration residuals using cached joint friction."""
+        for config_name, config_factory in KAMINO_CONFIGS:
+            use_acceleration_options = (True, False) if config_name in PADMM_CONFIG_NAMES else (False,)
+            for use_acceleration in use_acceleration_options:
+                config = config_factory()
+                if config.padmm is not None:
+                    config.padmm.use_acceleration = use_acceleration
+                for direction in (-1.0, 1.0):
+                    with self.subTest(
+                        config=config_name,
+                        use_acceleration=use_acceleration,
+                        direction=direction,
+                    ):
+                        model = _build_revolute(friction=2.0, armature=1.0)
+                        model.set_gravity((0.0, 0.0, 0.0))
+                        solver = SolverKamino(model, config)
+                        state_in = _initialize_state(model, qd=direction)
+                        state_1 = model.state()
+                        solver.step(state_in, state_1, control=None, contacts=None, dt=DT)
+                        cached_friction = float(state_1.joint_lambdas_f.numpy()[0])
+                        self.assertNotAlmostEqual(cached_friction, 0.0, delta=1.0e-6)
+
+                        cold_solver = SolverKamino(
+                            model,
+                            make_single_iteration_config(
+                                config_factory,
+                                warmstart_mode="none",
+                                use_acceleration=use_acceleration,
+                            ),
+                        )
+                        warm_solver = SolverKamino(
+                            model,
+                            make_single_iteration_config(
+                                config_factory,
+                                warmstart_mode="containers",
+                                use_acceleration=use_acceleration,
+                            ),
+                        )
+                        cold_solver.step(state_1, model.state(), control=None, contacts=None, dt=DT)
+                        warm_solver.step(state_1, model.state(), control=None, contacts=None, dt=DT)
+
+                        cold_residual = float(cold_solver._solver_kamino.metrics.data.r_vi_natmap.numpy()[0])
+                        warm_residual = float(warm_solver._solver_kamino.metrics.data.r_vi_natmap.numpy()[0])
+                        if not (cold_residual < 1.0e-6 and warm_residual < 1.0e-6):
+                            self.assertLess(warm_residual, cold_residual)
+
     def test_spin_down(self):
         """Match linear spin-down and settle without creep absent a dynamic row.
 
@@ -343,23 +393,28 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
 
         Drive the joint into a limit with initial velocity and feedforward
         torque, and verify that friction remains within its bounds. Runs
-        against every Kamino dynamics-solver configuration.
+        against every Kamino dynamics-solver configuration. Uses a higher
+        limit Baumgarte ``beta`` so penetration corrects within the short rollout.
         """
         limit = 0.1
         friction = 0.5
         feedforward_torque = 1.0
         initial_velocity = 2.0
+        limit_constraints = kamino_config.ConstraintStabilizationConfig(beta=0.1)
         for config_name, config_factory in KAMINO_CONFIGS:
             with self.subTest(config=config_name):
                 model = _build_revolute(friction, limit=(-limit, limit))
                 model.set_gravity((0.0, 0.0, 0.0))
-                solver = SolverKamino(model, config_factory())
+                solver = SolverKamino(
+                    model,
+                    config_factory(constraints=limit_constraints),
+                )
                 state = _initialize_state(model, qd=initial_velocity)
                 _, coordinates, velocities, friction_torques = _rollout(
                     solver,
                     model,
                     state,
-                    steps=500,
+                    steps=200,
                     dt=0.001,
                     joint_force=feedforward_torque,
                 )

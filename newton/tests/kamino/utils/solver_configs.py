@@ -3,7 +3,7 @@
 
 """Common SolverKamino configuration presets for integration tests."""
 
-from typing import Any
+from typing import Any, Literal
 
 import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
@@ -15,7 +15,35 @@ __all__ = [
     "make_dvi_sparse_config",
     "make_padmm_dense_config",
     "make_padmm_sparse_config",
+    "make_single_iteration_config",
 ]
+
+
+def make_single_iteration_config(
+    config_factory,
+    *,
+    warmstart_mode: Literal["none", "containers"],
+    use_acceleration: bool,
+) -> SolverKamino.Config:
+    """Create a configuration that exposes the warm-start benefit after one iteration."""
+    config = config_factory(compute_solution_metrics=True)
+    if config.dynamics_solver == "padmm":
+        config.padmm = kamino_config.PADMMSolverConfig(
+            max_iterations=1,
+            primal_tolerance=0.0,
+            dual_tolerance=0.0,
+            compl_tolerance=0.0,
+            use_acceleration=use_acceleration,
+            warmstart_mode=warmstart_mode,
+        )
+    else:
+        config.dvi = kamino_config.DVISolverConfig(
+            max_alternating_iterations=1,
+            inequality_sweeps_per_iteration=1,
+            tolerance=0.0,
+            warmstart_mode=warmstart_mode,
+        )
+    return config
 
 
 def make_padmm_dense_config(**kwargs: Any) -> SolverKamino.Config:

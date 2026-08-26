@@ -10,7 +10,7 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
-from newton.tests.kamino.utils.solver_configs import KAMINO_CONFIGS, PADMM_CONFIG_NAMES
+from newton.tests.kamino.utils.solver_configs import KAMINO_CONFIGS, PADMM_CONFIG_NAMES, make_single_iteration_config
 
 _BODY_MASS = 1.0
 _BODY_INERTIA = 1.0
@@ -163,6 +163,54 @@ class TestSolverKaminoJointEffortLimit(unittest.TestCase):
                                 expected_velocity,
                                 delta=3.0e-4,
                             )
+
+    def test_container_warmstart_reduces_effort_residual(self):
+        """Reduce one-iteration residuals using cached implicit-PD effort."""
+        effort_limit = 1.0
+        target_ke = 100.0
+        for config_name, config_factory in KAMINO_CONFIGS:
+            use_acceleration_options = (True, False) if config_name in PADMM_CONFIG_NAMES else (False,)
+            for use_acceleration in use_acceleration_options:
+                config = config_factory()
+                if config.padmm is not None:
+                    config.padmm.use_acceleration = use_acceleration
+                for direction in (-1.0, 1.0):
+                    with self.subTest(
+                        config=config_name,
+                        use_acceleration=use_acceleration,
+                        direction=direction,
+                    ):
+                        model = _build_revolute(effort_limit, target_ke=target_ke, armature=1.0)
+                        solver = SolverKamino(model, config)
+                        control = model.control()
+                        control.joint_target_q.assign([direction])
+                        state_1 = _step(solver, model, control)
+                        cached_effort = float(state_1.joint_lambdas_tau.numpy()[0])
+                        self.assertNotAlmostEqual(cached_effort, 0.0, delta=1.0e-6)
+
+                        cold_solver = SolverKamino(
+                            model,
+                            make_single_iteration_config(
+                                config_factory,
+                                warmstart_mode="none",
+                                use_acceleration=use_acceleration,
+                            ),
+                        )
+                        warm_solver = SolverKamino(
+                            model,
+                            make_single_iteration_config(
+                                config_factory,
+                                warmstart_mode="containers",
+                                use_acceleration=use_acceleration,
+                            ),
+                        )
+                        cold_solver.step(state_1, model.state(), control=control, contacts=None, dt=DT)
+                        warm_solver.step(state_1, model.state(), control=control, contacts=None, dt=DT)
+
+                        cold_residual = float(cold_solver._solver_kamino.metrics.data.r_vi_natmap.numpy()[0])
+                        warm_residual = float(warm_solver._solver_kamino.metrics.data.r_vi_natmap.numpy()[0])
+                        if not (cold_residual < 1.0e-6 and warm_residual < 1.0e-6):
+                            self.assertLess(warm_residual, cold_residual)
 
 
 if __name__ == "__main__":
