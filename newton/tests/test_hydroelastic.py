@@ -331,7 +331,7 @@ def test_hydroelastic_attached_sdf_requires_padding_metadata(test, device):
         compute_uvs=False,
         compute_inertia=False,
     )
-    mesh.build_sdf(max_resolution=32, margin=0.3)
+    mesh.build_sdf(device=device, max_resolution=32, margin=0.3)
     mesh.sdf = newton.SDF.create_from_data(texture_data=mesh.sdf.texture_data)
 
     builder = newton.ModelBuilder()
@@ -381,7 +381,7 @@ def test_hydroelastic_attached_sdf_uses_padding_metadata(test, device):
         compute_uvs=False,
         compute_inertia=False,
     )
-    mesh.build_sdf(max_resolution=32, margin=0.3)
+    mesh.build_sdf(device=device, max_resolution=32, margin=0.3)
     source_sdf = mesh.sdf
     texture_data = source_sdf.texture_data
 
