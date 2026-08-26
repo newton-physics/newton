@@ -24,6 +24,7 @@ import tempfile
 import unittest
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 import newton.tests.unittest_utils
@@ -621,6 +622,21 @@ add_example_test(
 
 class TestRobotExamples(unittest.TestCase):
     pass
+
+
+class TestAsRoBalletExample(unittest.TestCase):
+    @unittest.skipUnless(_HAS_ONNX_RUNTIME, "asRoBallet example requires ONNX support")
+    def test_interactive_velocity_command(self):
+        """Verify keyboard and GUI commands share configured limits."""
+        from newton.examples.robot.example_robot_asroballet import interactive_velocity_command  # noqa: PLC0415
+
+        class Viewer:
+            def is_key_down(self, key):
+                return key in {"i", "j", "u"}
+
+        command = interactive_velocity_command(Viewer(), np.array([0.4, -0.8, 0.7]))
+
+        np.testing.assert_allclose(command, [0.5, -0.3, 1.0])
 
 
 add_example_test(

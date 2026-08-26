@@ -76,6 +76,15 @@ def keyboard_velocity_command(viewer) -> np.ndarray:
     )
 
 
+def interactive_velocity_command(viewer, gui_command: np.ndarray | None = None) -> np.ndarray:
+    """Combine held keyboard and GUI controls into one body-relative command."""
+    if gui_command is None:
+        gui_command = np.zeros(3, dtype=np.float64)
+    command = keyboard_velocity_command(viewer) + gui_command
+    limits = np.array([KEYBOARD_LINEAR_SPEED, KEYBOARD_LINEAR_SPEED, KEYBOARD_YAW_RATE])
+    return np.clip(command, -limits, limits)
+
+
 def should_use_keyboard_control(viewer_name: str, headless: bool, fixed_command: np.ndarray) -> bool:
     """Return whether a run should accept interactive keyboard commands."""
     return viewer_name in {"gl", "rtx"} and not headless and not np.any(fixed_command)
@@ -567,6 +576,7 @@ class _AsRoBalletController:
         self.control_decimation = 5
         self.sim_time = 0.0
         self.viewer = viewer
+        self.gui_velocity_command = np.zeros(3, dtype=np.float64)
 
         builder = build_asroballet_builder(model_path, virtual_ball_joint)
         _, self.elbow_ctrl_indices = configure_asroballet_downward_arm_pose(builder)
@@ -614,6 +624,52 @@ class _AsRoBalletController:
 
     def after_simulate(self):
         pass
+
+    def gui(self, ui):
+        """Draw press-and-hold motion controls and keyboard help."""
+        ui.text("Motion Controls")
+        ui.text("Hold a button or its keyboard shortcut.")
+        ui.text("Forward/back: I / K")
+        ui.text("Left/right: J / L")
+        ui.text("Turn left/right: U / O")
+        ui.separator()
+
+        interactive = getattr(self, "keyboard_control", False)
+        ui.begin_disabled(not interactive)
+
+        ui.button("Forward [I]##asroballet_forward")
+        forward = ui.is_item_active()
+        ui.same_line()
+        ui.button("Backward [K]##asroballet_backward")
+        backward = ui.is_item_active()
+
+        ui.button("Left [J]##asroballet_left")
+        left = ui.is_item_active()
+        ui.same_line()
+        ui.button("Right [L]##asroballet_right")
+        right = ui.is_item_active()
+
+        ui.button("Turn Left [U]##asroballet_turn_left")
+        turn_left = ui.is_item_active()
+        ui.same_line()
+        ui.button("Turn Right [O]##asroballet_turn_right")
+        turn_right = ui.is_item_active()
+
+        ui.end_disabled()
+
+        self.gui_velocity_command[:] = [
+            KEYBOARD_LINEAR_SPEED * (forward - backward),
+            KEYBOARD_LINEAR_SPEED * (left - right),
+            KEYBOARD_YAW_RATE * (turn_left - turn_right),
+        ]
+        if not interactive:
+            self.gui_velocity_command.fill(0.0)
+            ui.text("Fixed CLI command active; interactive controls are disabled.")
+
+        command = getattr(self, "velocity_command", np.zeros(3))
+        ui.separator()
+        ui.text(f"Command: vx={command[0]:+.2f}, vy={command[1]:+.2f} m/s")
+        ui.text(f"Yaw rate: {command[2]:+.2f} rad/s")
 
     def step(self):
         self.update_command()
@@ -732,7 +788,7 @@ class _LqrController(_AsRoBalletController):
         if not self.keyboard_control:
             return
 
-        target_command = keyboard_velocity_command(self.viewer)
+        target_command = interactive_velocity_command(self.viewer, self.gui_velocity_command)
         max_delta = self.frame_dt * np.array(
             [KEYBOARD_LINEAR_ACCELERATION, KEYBOARD_LINEAR_ACCELERATION, KEYBOARD_YAW_ACCELERATION],
             dtype=np.float64,
@@ -1233,7 +1289,7 @@ class _PolicyController(_AsRoBalletController):
         if not self.keyboard_control:
             return
 
-        self.velocity_command = keyboard_velocity_command(self.viewer)
+        self.velocity_command = interactive_velocity_command(self.viewer, self.gui_velocity_command)
         self.command.assign([wp.vec3(*self.velocity_command)])
         if np.any(self.velocity_command):
             self.station_mode = False
@@ -1342,6 +1398,9 @@ class Example:
 
     def render(self):
         self._controller.render()
+
+    def gui(self, ui):
+        self._controller.gui(ui)
 
     def test_final(self):
         self._controller.test_final()
