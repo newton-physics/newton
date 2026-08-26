@@ -2082,6 +2082,55 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         view.set_attribute("test.item_control", control, values)
         np.testing.assert_allclose(view.get_attribute("test.item_control", control).numpy(), values)
 
+    def test_custom_frequency_articulation_view_handles_sparse_rows(self):
+        """Expose non-contiguous rows owned by one articulation."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(parent=-1, child=body)
+        builder.add_articulation([joint], label="robot")
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                articulation_owner_attribute="test:item_articulation",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_articulation",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.int32,
+                references="articulation",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.float32,
+            )
+        )
+
+        for owner, value in ((0, 10.0), (-1, 20.0), (0, 30.0)):
+            builder.add_custom_values(
+                **{
+                    "test:item_articulation": owner,
+                    "test:item_value": value,
+                }
+            )
+
+        model = builder.finalize(device=self.device)
+        view = ArticulationView(model, "robot")
+
+        self.assertEqual(view.custom_frequency_counts["test:item"], 2)
+        self.assertEqual(view.frequency_layouts["test:item"].value_count, 3)
+        np.testing.assert_allclose(view.get_attribute("test.item_value", model).numpy(), [[[10.0, 30.0]]])
+
+        view.set_attribute("test.item_value", model, np.array([[[11.0, 31.0]]], dtype=np.float32))
+        np.testing.assert_allclose(model.test.item_value.numpy(), [11.0, 20.0, 31.0])
+
     def test_world_frequency_merge_add_world(self):
         """Test that WORLD-frequency attributes are correctly indexed when using add_world()."""
         sub = ModelBuilder()

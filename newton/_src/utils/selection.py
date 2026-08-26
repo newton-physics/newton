@@ -1051,6 +1051,8 @@ class ArticulationView:
             template_rows = articulation_rows[0][0]
             offset = template_rows[0]
             selected_indices = [row - offset for row in template_rows]
+            # The addressable extent includes gaps between selected rows.
+            value_extent = template_rows[-1] - offset + 1
             starts = [[rows[0] for rows in world_rows] for world_rows in articulation_rows]
 
             if count_per_world > 1:
@@ -1065,7 +1067,7 @@ class ArticulationView:
                     )
                 inner_stride = inner_strides[0]
             else:
-                inner_stride = value_count
+                inner_stride = value_extent
 
             if world_count > 1:
                 outer_strides = [starts[world][0] - starts[world - 1][0] for world in range(1, world_count)]
@@ -1091,7 +1093,7 @@ class ArticulationView:
                 offset,
                 outer_stride,
                 inner_stride,
-                value_count,
+                value_extent,
                 selected_indices,
                 self.device,
             )

@@ -6609,6 +6609,25 @@ class TestMuJoCoConversion(unittest.TestCase):
 
 
 class TestMuJoCoAttributes(unittest.TestCase):
+    def test_unresolved_usd_site_actuator_has_no_owner(self):
+        """Leave an unresolved USD site actuator unowned."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body)
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([joint])
+        builder.add_custom_values(
+            **{
+                "mujoco:actuator_trnid": wp.vec2i(0, -1),
+                "mujoco:actuator_trntype": int(SolverMuJoCo.TrnType.SITE),
+                "mujoco:actuator_target_label": "/World/missing_site",
+            }
+        )
+
+        self.assertEqual(SolverMuJoCo._shape_owners(builder), [0])
+        self.assertEqual(SolverMuJoCo._resolve_mujoco_actuator_owners(builder), [-1])
+
     def test_custom_attributes_from_code(self):
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)

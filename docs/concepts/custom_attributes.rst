@@ -912,4 +912,8 @@ Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a cust
 ArticulationView Limitations
 ----------------------------
 
-Custom frequency attributes are generally not accessible via :class:`~newton.selection.ArticulationView` because they represent entity types that aren't tied to articulation structure. The one exception is the ``mujoco:tendon`` frequency, which is supported. For per-articulation data, use enum frequencies like ``ARTICULATION``, ``JOINT``, or ``BODY``.
+Custom frequency attributes are accessible through :class:`~newton.selection.ArticulationView`
+only when their frequency declares articulation ownership. MuJoCo declares ownership for
+its actuator, tendon, tendon-joint, and tendon-wrap frequencies. Unscoped custom frequencies
+remain unavailable because their rows are not tied to the articulation structure. For other
+per-articulation data, use enum frequencies such as ``ARTICULATION``, ``JOINT``, or ``BODY``.

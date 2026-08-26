@@ -857,6 +857,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 for row in range(builder.joint_dof_count)
             ]
 
+        label_owner_sources = []
+        for labels, label_owners in (
+            (dof_labels, dof_owners),
+            (builder.joint_label, joint_owners),
+            (tendon_labels, tendon_owners),
+            (builder.shape_label, shape_owners),
+            (builder.body_label, body_owners),
+        ):
+            label_indices = {}
+            for label_idx, label in enumerate(labels):
+                label_indices.setdefault(label, label_idx)
+            label_owner_sources.append((label_indices, label_owners))
+
         owners = []
         for transmission, raw_transmission_type, raw_target_label in zip(
             transmissions, transmission_types, target_labels, strict=True
@@ -870,17 +883,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if target_label:
                 # USD actuator rows may be visited before their target and retain a
                 # provisional transmission type. The scene path is authoritative.
-                label_owner_sources = (
-                    (dof_labels, dof_owners),
-                    (builder.joint_label, joint_owners),
-                    (tendon_labels, tendon_owners),
-                    (builder.shape_label, shape_owners),
-                    (builder.body_label, body_owners),
-                )
-                for labels, label_owners in label_owner_sources:
-                    try:
-                        label_idx = labels.index(target_label)
-                    except ValueError:
+                for label_indices, label_owners in label_owner_sources:
+                    label_idx = label_indices.get(target_label)
+                    if label_idx is None:
                         continue
                     owner = label_owners[label_idx] if label_idx < len(label_owners) else -1
                     break
@@ -896,7 +901,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 elif transmission_type == int(SolverMuJoCo.TrnType.BODY):
                     owner = body_owners[target_idx] if 0 <= target_idx < len(body_owners) else -1
                 elif transmission_type == int(SolverMuJoCo.TrnType.SITE):
-                    owner = shape_owners[target_idx] if 0 <= target_idx < len(shape_owners) else -1
+                    # USD site rows use zero as a sentinel and must resolve by label.
+                    if not target_label:
+                        owner = shape_owners[target_idx] if 0 <= target_idx < len(shape_owners) else -1
                 elif transmission_type == int(SolverMuJoCo.TrnType.SLIDERCRANK):
                     slider_owners = {
                         shape_owners[shape_idx]
