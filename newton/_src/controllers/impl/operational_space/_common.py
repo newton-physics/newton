@@ -391,28 +391,32 @@ def _jacobian_transpose_force_kernel(
         float
     ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, in world coords
     task_space_force_world: wp.array[wp.spatial_vector],  # (robot_count,) task-space force/wrench to map to joints
-    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    robot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> owning robot
+    slot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> column within that robot's Jacobian
     # outputs
-    joint_torque: wp.array2d[float],  # (robot_count, max_dofs) = jacobian_tool_world^T @ task_space_force_world
+    joint_torque: wp.array[float],  # (total_controlled_dofs,) compact = jacobian_tool_world^T @ task_space_force_world
 ):
-    """Map a task-space force to joint torques, ``tau = J^T @ F``.
+    """Map a task-space force to joint torques, ``tau = J^T @ F``, straight into the compact per-DOF layout.
 
-    Columns at or past ``dof_count[robot_idx]`` are left unwritten — they are
-    padding, not part of any robot's controlled-DOF set. Row ``dof_idx`` of
-    ``J^T`` is column ``dof_idx`` of ``J``, which is exactly what
+    Row ``dof`` of ``J^T`` is column ``slot_of_dof[dof]`` of robot
+    ``robot_of_dof[dof]``'s Jacobian, which is exactly what
     :func:`_shift_jacobian_to_tool_kernel` produced one spatial-vector column
     at a time — loading it back into a ``wp.spatial_vector`` here lets this
     kernel use Warp's built-in dot product instead of a hand-rolled sum.
+    ``robot_of_dof``/``slot_of_dof`` are the same compact-DOF lookup tables
+    :func:`_block_matrix_vector_multiply_kernel` (``controllers/impl/_common.py``)
+    uses, so no padding columns are ever read: every compact index is a real,
+    controlled DOF.
     """
-    robot_idx, dof_idx = wp.tid()
-    if dof_idx >= dof_count[robot_idx]:
-        return
+    dof = wp.tid()
+    robot = robot_of_dof[dof]
+    slot = slot_of_dof[dof]
 
     jacobian_column = wp.spatial_vector()
     for row in range(6):
-        jacobian_column[row] = jacobian_tool_world[robot_idx, row, dof_idx]
+        jacobian_column[row] = jacobian_tool_world[robot, row, slot]
 
-    joint_torque[robot_idx, dof_idx] = wp.dot(jacobian_column, task_space_force_world[robot_idx])
+    joint_torque[dof] = wp.dot(jacobian_column, task_space_force_world[robot])
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,7 @@ from newton._src.controllers.impl.operational_space._common import (
     _task_space_pd_kernel,
     _tool_pose_and_twist_kernel,
 )
+from newton._src.controllers.impl.operational_space.model_free import ControllerOperationalSpaceModelFree
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
@@ -589,15 +590,16 @@ def test_apply_spatial_matrix_matches_matvec(test, device):
 
 
 def test_jacobian_transpose_force_matches_matvec(test, device):
-    """The force-mapping kernel computes jacobian_tool_world^T @ force, and leaves padding columns untouched.
+    """The force-mapping kernel computes jacobian_tool_world^T @ force, straight into the compact per-DOF layout.
 
-    Two robots with different controlled-DOF counts (3 and 5, both padded to
-    max_dofs=5) check that a robot's padding columns are never read from or
-    written to, only its own dof_count columns.
+    Two robots with different controlled-DOF counts (3 and 5, Jacobian
+    padded to max_dofs=5) check that a robot's padding columns are never
+    read — only ``robot_of_dof``/``slot_of_dof``-addressed compact DOFs are.
     """
     rng = np.random.default_rng(seed=2)
     dof_counts = [3, 5]
     max_dofs = 5
+    total_controlled_dofs = sum(dof_counts)
 
     jacobian_np = np.zeros((2, 6, max_dofs), dtype=np.float32)
     force_np = rng.standard_normal((2, 6)).astype(np.float32)
@@ -610,23 +612,23 @@ def test_jacobian_transpose_force_matches_matvec(test, device):
         dtype=wp.spatial_vector,
         device=device,
     )
-    dof_count = wp.array(dof_counts, dtype=wp.int32, device=device)
-    # Poison the output with a sentinel so an accidental write to a padding
-    # column (instead of just leaving it alone) would be caught below.
-    joint_torque = wp.full((2, max_dofs), value=-999.0, dtype=float, device=device)
+    # Compact-DOF lookup tables: robot 0's 3 DOFs first, then robot 1's 5.
+    robot_of_dof = wp.array([0, 0, 0, 1, 1, 1, 1, 1], dtype=wp.int32, device=device)
+    slot_of_dof = wp.array([0, 1, 2, 0, 1, 2, 3, 4], dtype=wp.int32, device=device)
+
+    joint_torque = wp.zeros(total_controlled_dofs, dtype=float, device=device)
     wp.launch(
         _jacobian_transpose_force_kernel,
-        dim=(2, max_dofs),
-        inputs=[jacobian_tool_world, task_space_force_world, dof_count],
+        dim=total_controlled_dofs,
+        inputs=[jacobian_tool_world, task_space_force_world, robot_of_dof, slot_of_dof],
         outputs=[joint_torque],
         device=device,
     )
 
-    joint_torque_np = joint_torque.numpy()
-    for robot_idx, n in enumerate(dof_counts):
-        expected = jacobian_np[robot_idx, :, :n].T @ force_np[robot_idx]
-        np.testing.assert_allclose(joint_torque_np[robot_idx, :n], expected, atol=1e-4)
-        np.testing.assert_allclose(joint_torque_np[robot_idx, n:], -999.0 * np.ones(max_dofs - n))
+    expected = np.concatenate(
+        [jacobian_np[robot_idx, :, :n].T @ force_np[robot_idx] for robot_idx, n in enumerate(dof_counts)]
+    )
+    np.testing.assert_allclose(joint_torque.numpy(), expected, atol=1e-4)
 
 
 def test_jacobian_times_jacobian_transpose_matches_numpy(test, device):
@@ -811,12 +813,12 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
         dynamically_consistent_projector,
         atol=1e-3,
     )
-    np.testing.assert_allclose(
-        moore_penrose_projector @ moore_penrose_projector, moore_penrose_projector, atol=1e-3
-    )
+    np.testing.assert_allclose(moore_penrose_projector @ moore_penrose_projector, moore_penrose_projector, atol=1e-3)
 
     # Only the dynamically-consistent projector zeroes the task-space response to a null-space torque.
-    dynamically_consistent_response = jacobian_np @ mass_matrix_inv_np @ dynamically_consistent_projector @ mass_matrix_np
+    dynamically_consistent_response = (
+        jacobian_np @ mass_matrix_inv_np @ dynamically_consistent_projector @ mass_matrix_np
+    )
     moore_penrose_response = jacobian_np @ mass_matrix_inv_np @ moore_penrose_projector @ mass_matrix_np
 
     np.testing.assert_allclose(dynamically_consistent_response, np.zeros((6, 7)), atol=1e-3)
@@ -985,6 +987,291 @@ add_function_test(
     test_closed_loop_wrench_command_matches_formula,
     devices=devices,
 )
+
+
+# ---------------------------------------------------------------------------
+# ControllerOperationalSpaceModelFree
+# ---------------------------------------------------------------------------
+
+
+def _dofs_arr(dofs_list, device):
+    """Return a wp.array[int32] from a list of per-robot DOF counts."""
+    return wp.array(np.array(dofs_list, dtype=np.int32), device=device)
+
+
+def _poses(poses, device):
+    """Return a wp.array[wp.transform] from a list of wp.transform."""
+    return wp.array(poses, dtype=wp.transform, device=device)
+
+
+def _twists(twists, device):
+    """Return a wp.array[wp.spatial_vector] from a list of 6-tuples."""
+    return wp.array([wp.spatial_vector(*t) for t in twists], dtype=wp.spatial_vector, device=device)
+
+
+def _make_model_free(*, dofs_list, kp, kd, device, use_inertia=True):
+    """Construct a ControllerOperationalSpaceModelFree with scalar-broadcast gains."""
+    return ControllerOperationalSpaceModelFree(
+        controlled_dofs_per_robot=_dofs_arr(dofs_list, device),
+        motion_stiffness=kp,
+        motion_damping=kd,
+        use_inertia_decoupling=use_inertia,
+        device=device,
+    )
+
+
+def _run_model_free(
+    ctrl, *, current_poses, current_twists, desired_poses, desired_twists, jacobian, device, mass_matrix=None
+):
+    """Run one step on a ControllerOperationalSpaceModelFree and return the compact torque array."""
+    ins = ctrl.input()
+    ins.coordinate_change_world_from_tool = _poses(current_poses, device)
+    ins.tool_twist_world = _twists(current_twists, device)
+    ins.coordinate_change_world_from_desired_tool = _poses(desired_poses, device)
+    ins.desired_twist_world = _twists(desired_twists, device)
+    ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+    if mass_matrix is not None:
+        ins.mass_matrix = wp.array(mass_matrix, dtype=wp.float32, device=device)
+    outs = ctrl.output()
+    ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+    return outs.joint_f.numpy()
+
+
+class TestControllerOperationalSpaceModelFree(unittest.TestCase):
+    def test_zero_error_gives_zero_torque(self):
+        """Identical current and desired poses/twists produce zero torque."""
+        device = wp.get_device()
+        ctrl = _make_model_free(dofs_list=[7], kp=100.0, kd=10.0, device=device, use_inertia=False)
+        identity_pose = wp.transform(wp.vec3(0.1, 0.2, 0.3), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5))
+        rng = np.random.default_rng(0)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+        tau = _run_model_free(
+            ctrl,
+            current_poses=[identity_pose],
+            current_twists=[(0, 0, 0, 0, 0, 0)],
+            desired_poses=[identity_pose],
+            desired_twists=[(0, 0, 0, 0, 0, 0)],
+            jacobian=jacobian,
+            device=device,
+        )
+        np.testing.assert_allclose(tau, np.zeros(7), atol=1e-5)
+
+    def test_position_error_matches_formula_without_inertia_decoupling(self):
+        """tau = J^T @ (Kp * pose_error), when inertial decoupling is off."""
+        device = wp.get_device()
+        kp = 100.0
+        ctrl = _make_model_free(dofs_list=[7], kp=kp, kd=10.0, device=device, use_inertia=False)
+        current_pose = wp.transform_identity()
+        desired_pose = wp.transform(wp.vec3(0.1, -0.05, 0.02), wp.quat_identity())
+        rng = np.random.default_rng(1)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+
+        tau = _run_model_free(
+            ctrl,
+            current_poses=[current_pose],
+            current_twists=[(0, 0, 0, 0, 0, 0)],
+            desired_poses=[desired_pose],
+            desired_twists=[(0, 0, 0, 0, 0, 0)],
+            jacobian=jacobian,
+            device=device,
+        )
+
+        pose_error = np.array([0.1, -0.05, 0.02, 0.0, 0.0, 0.0])
+        expected = jacobian[0].T @ (kp * pose_error)
+        np.testing.assert_allclose(tau, expected, atol=1e-3)
+
+    def test_inertia_decoupling_matches_formula(self):
+        """tau = J^T @ Lambda @ (Kp * pose_error), the full chain, matches a from-scratch numpy computation."""
+        device = wp.get_device()
+        kp = 50.0
+        ctrl = _make_model_free(dofs_list=[7], kp=kp, kd=10.0, device=device, use_inertia=True)
+        current_pose = wp.transform_identity()
+        desired_pose = wp.transform(wp.vec3(0.1, -0.05, 0.02), wp.quat_identity())
+        rng = np.random.default_rng(2)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+        random_matrix = rng.standard_normal((7, 7)).astype(np.float32)
+        mass_matrix = (random_matrix @ random_matrix.T + 7 * np.eye(7, dtype=np.float32)).reshape(1, 7, 7)
+
+        tau = _run_model_free(
+            ctrl,
+            current_poses=[current_pose],
+            current_twists=[(0, 0, 0, 0, 0, 0)],
+            desired_poses=[desired_pose],
+            desired_twists=[(0, 0, 0, 0, 0, 0)],
+            jacobian=jacobian,
+            mass_matrix=mass_matrix,
+            device=device,
+        )
+
+        pose_error = np.array([0.1, -0.05, 0.02, 0.0, 0.0, 0.0])
+        mass_matrix_inv = np.linalg.inv(mass_matrix[0])
+        lambda_inv = jacobian[0] @ mass_matrix_inv @ jacobian[0].T
+        operational_space_mass_matrix = np.linalg.inv(lambda_inv)
+        expected = jacobian[0].T @ (operational_space_mass_matrix @ (kp * pose_error))
+        np.testing.assert_allclose(tau, expected, atol=1e-2)
+
+    def test_rejects_under_six_dof_with_inertia_decoupling(self):
+        """Fewer than 6 controlled DOFs with inertial decoupling raises at construction, not silently at runtime."""
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpaceModelFree(
+                controlled_dofs_per_robot=_dofs_arr([3], device),
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                use_inertia_decoupling=True,
+                device=device,
+            )
+
+    def test_heterogeneous_fleet_matches_per_robot_formulas(self):
+        """Two robots with different controlled-DOF counts (6 and 8) are computed independently and correctly."""
+        device = wp.get_device()
+        kp = 80.0
+        ctrl = _make_model_free(dofs_list=[6, 8], kp=kp, kd=10.0, device=device, use_inertia=False)
+
+        current_poses = [wp.transform_identity(), wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity())]
+        desired_poses = [
+            wp.transform(wp.vec3(0.05, 0.0, 0.0), wp.quat_identity()),
+            wp.transform(wp.vec3(1.0, 0.1, -0.05), wp.quat_identity()),
+        ]
+        rng = np.random.default_rng(3)
+        jacobian = np.zeros((2, 6, 8), dtype=np.float32)
+        jacobian[0, :, :6] = rng.standard_normal((6, 6)).astype(np.float32)
+        jacobian[1, :, :8] = rng.standard_normal((6, 8)).astype(np.float32)
+
+        tau = _run_model_free(
+            ctrl,
+            current_poses=current_poses,
+            current_twists=[(0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0)],
+            desired_poses=desired_poses,
+            desired_twists=[(0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0)],
+            jacobian=jacobian,
+            device=device,
+        )
+
+        pose_error_0 = np.array([0.05, 0.0, 0.0, 0.0, 0.0, 0.0])
+        pose_error_1 = np.array([0.0, 0.1, -0.05, 0.0, 0.0, 0.0])
+        expected_0 = jacobian[0, :, :6].T @ (kp * pose_error_0)
+        expected_1 = jacobian[1, :, :8].T @ (kp * pose_error_1)
+
+        np.testing.assert_allclose(tau[:6], expected_0, atol=1e-3)
+        np.testing.assert_allclose(tau[6:], expected_1, atol=1e-3)
+
+    def test_live_gains_read_from_inputs_each_step(self):
+        """Passing motion_stiffness=None at construction reads inputs.motion_stiffness each step."""
+        device = wp.get_device()
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=_dofs_arr([7], device),
+            motion_stiffness=None,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            device=device,
+        )
+        current_pose = wp.transform_identity()
+        desired_pose = wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_identity())
+        rng = np.random.default_rng(4)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.coordinate_change_world_from_tool = _poses([current_pose], device)
+        ins.tool_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
+        ins.coordinate_change_world_from_desired_tool = _poses([desired_pose], device)
+        ins.desired_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.motion_stiffness = wp.array(
+            [wp.spatial_vector(30.0, 30.0, 30.0, 5.0, 5.0, 5.0)], dtype=wp.spatial_vector, device=device
+        )
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        pose_error = np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
+        kp = np.array([30.0, 30.0, 30.0, 5.0, 5.0, 5.0])
+        expected = jacobian[0].T @ (kp * pose_error)
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-3)
+
+    def test_output_scatters_to_indexed_view(self):
+        """outputs.joint_f may be bound to an indexed view of a larger simulation-sized array."""
+        device = wp.get_device()
+        ctrl = _make_model_free(dofs_list=[7], kp=100.0, kd=10.0, device=device, use_inertia=False)
+        current_pose = wp.transform_identity()
+        desired_pose = wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_identity())
+        rng = np.random.default_rng(5)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.coordinate_change_world_from_tool = _poses([current_pose], device)
+        ins.tool_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
+        ins.coordinate_change_world_from_desired_tool = _poses([desired_pose], device)
+        ins.desired_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+
+        # A larger simulation-sized joint-force array; only indices [2:9) belong to this robot.
+        sim_joint_f = wp.zeros(12, dtype=wp.float32, device=device)
+        selection = wp.array(np.arange(2, 9, dtype=np.int32), device=device)
+        outs = ctrl.output()
+        outs.joint_f = sim_joint_f[selection]
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        pose_error = np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
+        expected = jacobian[0].T @ (100.0 * pose_error)
+        np.testing.assert_allclose(sim_joint_f.numpy()[2:9], expected, atol=1e-3)
+        np.testing.assert_allclose(sim_joint_f.numpy()[:2], 0.0)
+        np.testing.assert_allclose(sim_joint_f.numpy()[9:], 0.0)
+
+    def test_transform_and_spatial_vector_inputs_accept_indexed_views(self):
+        """Every input port, not just outputs.joint_f, may be bound to an indexed view of a larger array.
+
+        Binds coordinate_change_world_from_tool, tool_twist_world,
+        coordinate_change_world_from_desired_tool, desired_twist_world, and
+        motion_stiffness/motion_damping (live) to views selecting robot 1 out
+        of a larger 3-robot simulation-sized array, and checks the result
+        matches a plain-array run with the same values.
+        """
+        device = wp.get_device()
+        kp_vec = (30.0, 30.0, 30.0, 5.0, 5.0, 5.0)
+        kd_vec = (2.0, 2.0, 2.0, 0.5, 0.5, 0.5)
+        current_pose = wp.transform_identity()
+        desired_pose = wp.transform(wp.vec3(0.1, -0.05, 0.02), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.2))
+        rng = np.random.default_rng(6)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=_dofs_arr([7], device),
+            motion_stiffness=None,
+            motion_damping=None,
+            use_inertia_decoupling=False,
+            device=device,
+        )
+
+        # A larger, 3-robot simulation-sized set of per-robot arrays; only
+        # index 1 belongs to this controller's one robot.
+        selection = wp.array(np.array([1], dtype=np.int32), device=device)
+        sim_pose = wp.array(
+            [wp.transform_identity(), current_pose, wp.transform_identity()], dtype=wp.transform, device=device
+        )
+        sim_desired_pose = wp.array(
+            [wp.transform_identity(), desired_pose, wp.transform_identity()], dtype=wp.transform, device=device
+        )
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        sim_twist = wp.array([zero_twist, zero_twist, zero_twist], dtype=wp.spatial_vector, device=device)
+        sim_desired_twist = wp.array([zero_twist, zero_twist, zero_twist], dtype=wp.spatial_vector, device=device)
+        sim_stiffness = wp.array([wp.spatial_vector(*kp_vec)] * 3, dtype=wp.spatial_vector, device=device)
+        sim_damping = wp.array([wp.spatial_vector(*kd_vec)] * 3, dtype=wp.spatial_vector, device=device)
+
+        ins = ctrl.input()
+        ins.coordinate_change_world_from_tool = sim_pose[selection]
+        ins.tool_twist_world = sim_twist[selection]
+        ins.coordinate_change_world_from_desired_tool = sim_desired_pose[selection]
+        ins.desired_twist_world = sim_desired_twist[selection]
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.motion_stiffness = sim_stiffness[selection]
+        ins.motion_damping = sim_damping[selection]
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        pose_error = np.array([0.1, -0.05, 0.02, 0.0, 0.0, 0.2])
+        kp = np.array(kp_vec)
+        expected = jacobian[0].T @ (kp * pose_error)
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
 
 
 if __name__ == "__main__":

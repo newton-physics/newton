@@ -116,6 +116,24 @@ def _gather_mass_matrix_port_kernel(
 
 
 @wp.kernel
+def _gather_transform_port_kernel(
+    port: wp.indexedarray[wp.transform],  # view of a simulation-sized array
+    out: wp.array[wp.transform],  # one entry per element the view addresses
+):
+    dof = wp.tid()
+    out[dof] = port[dof]
+
+
+@wp.kernel
+def _gather_spatial_vector_port_kernel(
+    port: wp.indexedarray[wp.spatial_vector],  # view of a simulation-sized array
+    out: wp.array[wp.spatial_vector],  # one entry per element the view addresses
+):
+    dof = wp.tid()
+    out[dof] = port[dof]
+
+
+@wp.kernel
 def _scatter_port_kernel(
     values: wp.array[wp.float32],  # one entry per element the view addresses
     port: wp.indexedarray[wp.float32],  # view of a simulation-sized array
@@ -124,9 +142,19 @@ def _scatter_port_kernel(
     port[dof] = values[dof]
 
 
+# dtype -> (rank -> gather kernel), the set of dtype/rank combinations any
+# controller's ports currently use. Extend this table, not _read_port itself,
+# when a controller needs a new port dtype or rank.
+_GATHER_KERNELS_BY_DTYPE_AND_RANK = {
+    wp.float32: {1: _gather_port_kernel, 3: _gather_mass_matrix_port_kernel},
+    wp.transform: {1: _gather_transform_port_kernel},
+    wp.spatial_vector: {1: _gather_spatial_vector_port_kernel},
+}
+
+
 def _read_port(
-    port: wp.array[wp.float32] | wp.array3d[wp.float32] | wp.indexedarray[wp.float32],
-    buffer: wp.array[wp.float32] | wp.array3d[wp.float32],
+    port: wp.array | wp.indexedarray,
+    buffer: wp.array,
     shape: int | tuple[int, ...],
     device: Devicelike,
 ) -> None:
@@ -138,19 +166,25 @@ def _read_port(
 
     Args:
         port: The caller-bound port, a :class:`warp.array` or a view of one.
-            1-D for a compact or whole-model port, 3-D for a mass matrix; a 3-D
-            view has no bracket spelling and is
-            ``wp.indexedarray(dtype=wp.float32, ndim=3)``.
+            Any dtype/rank combination in :data:`_GATHER_KERNELS_BY_DTYPE_AND_RANK`
+            is supported when ``port`` is a view; a plain array supports any
+            dtype/rank, since :func:`warp.copy` doesn't care.
         buffer: Destination, matching ``port`` in shape and dtype.
         shape: Launch shape — the length for a 1-D port, ``(robots, rows, cols)``
-            for a mass matrix.
+            for a padded per-robot matrix.
         device: Device to launch on.
     """
     if not isinstance(port, wp.indexedarray):
         wp.copy(buffer, port)
         return
 
-    # A kernel parameter's dimensionality is part of its type, so a view needs
-    # the kernel that matches its rank.
-    kernel = _gather_port_kernel if port.ndim == 1 else _gather_mass_matrix_port_kernel
+    # A kernel parameter's dtype and dimensionality are part of its type, so
+    # a view needs the kernel that matches both.
+    kernels_by_rank = _GATHER_KERNELS_BY_DTYPE_AND_RANK.get(port.dtype)
+    kernel = kernels_by_rank.get(port.ndim) if kernels_by_rank is not None else None
+    if kernel is None:
+        raise TypeError(
+            f"_read_port has no gather kernel for a {port.ndim}-D indexed array of dtype {port.dtype}; "
+            f"add one to _GATHER_KERNELS_BY_DTYPE_AND_RANK in controllers/impl/_common.py."
+        )
     wp.launch(kernel, dim=shape, inputs=[port], outputs=[buffer], device=device)
