@@ -23,6 +23,14 @@ from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .deformable_visual import (
+    DeformableVisualGaussian,
+    DeformableVisualMesh,
+    DeformableVisuals,
+    compute_deformable_visual_mesh_normals,
+    skin_deformable_visual_gaussian,
+    skin_deformable_visual_mesh,
+)
 from .state import State
 
 logger = logging.getLogger(__name__)
@@ -903,6 +911,8 @@ class Model:
         """Number of gaussians."""
         self.gaussians_data = None
         """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
+        self._gaussians = []
+        self._gaussian_bvhs = []
 
         # Shape and particle BVH structures and related fields
         self.bvh_shapes: wp.Bvh | None = None
@@ -1043,6 +1053,14 @@ class Model:
         """Tetrahedral elastic parameters in form :math:`k_{mu}, k_{lambda}, k_{damp}`, shape [tet_count, 3].
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
         Stored per-element; kernels multiply by rest volume internally."""
+
+        self.deformable_visual_meshes: list[DeformableVisualMesh] = []
+        """High-resolution visual meshes embedded in deformables, skinned from the
+        simulation state for visualization and sensors only (see
+        :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`). Empty when no
+        visual meshes were attached."""
+        self.deformable_visual_gaussians: list[DeformableVisualGaussian] = []
+        """Gaussian fields embedded in deformables for visualization and sensors."""
 
         self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
@@ -1339,6 +1357,10 @@ class Model:
         """Total number of springs in the system."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
+        self.deformable_visual_mesh_count: int = 0
+        """Total number of deformable visual meshes in the system."""
+        self.deformable_visual_gaussian_count: int = 0
+        """Total number of deformable Gaussian visuals in the system."""
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
         self.joint_dof_count: int = 0
@@ -1775,6 +1797,88 @@ class Model:
             self, state, self.bvh_particles.lowers, self.bvh_particles.uppers, self.bvh_particles.groups
         )
         self.bvh_particles.refit()
+
+    def deformable_visuals(self) -> DeformableVisuals:
+        """Allocate current points and normals for deformable visual meshes.
+
+        The returned buffers are model-compatible and reusable across
+        simulation states. Populate them with
+        :meth:`update_deformable_visuals` before reading or rendering them.
+
+        Returns:
+            Uninitialized current deformable visual data.
+
+        .. experimental::
+
+            This API may change without a formal deprecation cycle while
+            deformable visual support is experimental.
+        """
+        return DeformableVisuals(self)
+
+    def update_deformable_visuals(self, state: State, visuals: DeformableVisuals) -> DeformableVisuals:
+        """Update current deformable visual points and normals from a state.
+
+        This method reuses the fixed buffers allocated by
+        :meth:`deformable_visuals` and performs no structural allocation.
+
+        Args:
+            state: Simulation state containing current particle positions and
+                body transforms.
+            visuals: Model-compatible destination for current visual data.
+
+        Returns:
+            The updated ``visuals`` object.
+
+        .. experimental::
+
+            This API may change without a formal deprecation cycle while
+            deformable visual support is experimental.
+        """
+        if not isinstance(visuals, DeformableVisuals):
+            raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
+        visuals._validate_model(self)
+
+        needs_particles = bool(self.deformable_visual_gaussians) or any(
+            mesh.kind != DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes
+        )
+        needs_bodies = any(mesh.kind == DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes)
+        if needs_particles and state.particle_q is None:
+            raise ValueError("State.particle_q is required by this model's deformable visual meshes")
+        if needs_bodies and state.body_q is None:
+            raise ValueError("State.body_q is required by this model's body-bound deformable visual meshes")
+        if needs_particles and state.particle_q.device != self.device:
+            raise ValueError(
+                f"State particle device {state.particle_q.device} does not match model device {self.device}"
+            )
+        if needs_bodies and state.body_q.device != self.device:
+            raise ValueError(f"State body device {state.body_q.device} does not match model device {self.device}")
+
+        visuals.normals.zero_()
+        for mesh, (start, end) in zip(self.deformable_visual_meshes, visuals.mesh_ranges, strict=True):
+            skin_deformable_visual_mesh(mesh, state, self, visuals.points, device=self.device, out_offset=start)
+            compute_deformable_visual_mesh_normals(
+                visuals.points,
+                mesh.indices,
+                visuals.normals,
+                device=self.device,
+                point_offset=start,
+                normal_offset=start,
+                vertex_count=end - start,
+                clear=False,
+            )
+
+        for gaussian, (start, _end) in zip(self.deformable_visual_gaussians, visuals.gaussian_ranges, strict=True):
+            skin_deformable_visual_gaussian(
+                gaussian,
+                state,
+                self,
+                visuals.gaussian_transforms,
+                visuals.gaussian_scales,
+                out_offset=start,
+            )
+
+        visuals._mark_updated(state)
+        return visuals
 
     def state(self, requires_grad: bool | None = None) -> State:
         """
