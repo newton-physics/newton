@@ -244,15 +244,16 @@ Limitations
 Known gaps of the experimental importer, tracked as follow-ups:
 
 * **Rest state** -- authored rest geometry is not imported as the deformable's simulated rest
-  configuration. Cloth and volume rest point/topology arrays and explicit cloth bend arrays are
-  ignored with a warning. The supported cloth bend default uses the simulation geometry at the
-  default time: ``flat`` sets zero rest dihedrals and ``restShape`` uses its imported dihedrals.
-  For a cable, including one in a welded graph, valid ``restShapePoints`` supplies only the
-  segment lengths used to discretize material stiffness into joint stiffness; invalid values
-  warn and fall back to default-time ``points`` lengths. ``restNormals`` is not applied. The rod
-  itself is still built relaxed at the default-time ``points`` pose, and mass distribution also
-  uses that geometry. A body saved in a deformed pose therefore resumes relaxed at that pose
-  instead of springing back.
+  configuration (`issue #3383 <https://github.com/newton-physics/newton/issues/3383>`_).
+  Cloth and volume rest point/topology arrays and explicit cloth bend arrays are ignored with a
+  warning. The supported cloth bend default uses the simulation geometry at the default time:
+  ``flat`` sets zero rest dihedrals and ``restShape`` uses its imported dihedrals. For a cable,
+  including one in a welded graph, valid ``restShapePoints`` supplies only the segment lengths
+  used to discretize material stiffness into joint stiffness; invalid values warn and fall back
+  to default-time ``points`` lengths. ``restNormals`` is not applied. The rod itself is still
+  built relaxed at the default-time ``points`` pose, and mass distribution also uses that
+  geometry. A body saved in a deformed pose therefore resumes relaxed at that pose instead of
+  springing back.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or
@@ -300,7 +301,9 @@ TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Element vo
 default-time segment lengths, triangle areas, or tet volumes with geometry thickness, then element
 masses are lowered to Newton's particles or rigid cable segments. The proposal evaluates these
 volumes on the rest shape; Newton uses the simulation geometry until full rest-state import is
-implemented (see the limitation above), so a saved deformed default pose shifts mass with it.
+implemented (see the limitation above and `issue #3383
+<https://github.com/newton-physics/newton/issues/3383>`_), so a saved deformed default pose shifts
+mass with it.
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
