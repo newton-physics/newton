@@ -190,13 +190,13 @@ class Example:
 
     def _add_cantilever(self, builder, name: str, mode: str) -> tuple[list[int], tuple[int, int]]:
         start = wp.vec3(0.0, self.CASE_Y[name], 0.0)
-        points = newton.utils.create_straight_cable_points(
+        points = newton.utils.cable_straight_points(
             start=start,
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=self.cable_length,
             num_segments=self.NUM_ELEMENTS,
         )
-        quats = newton.utils.create_parallel_transport_cable_quaternions(points)
+        quats = newton.utils.rod_parallel_transport_quaternions(points)
 
         joint_count_before = builder.joint_count
         rod_bodies, _ = builder.add_rod(

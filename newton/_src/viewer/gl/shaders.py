@@ -16,11 +16,13 @@ layout (location = 5) in vec4 aInstanceTransform2;
 layout (location = 6) in vec4 aInstanceTransform3;
 
 uniform mat4 light_space_matrix;
+uniform vec3 render_origin;
 
 void main()
 {
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
-    gl_Position = light_space_matrix * transform * vec4(aPos, 1.0);
+    vec3 render_position = mat3(transform) * aPos + transform[3].xyz - render_origin;
+    gl_Position = light_space_matrix * vec4(render_position, 1.0);
 }
 """
 
@@ -51,23 +53,22 @@ layout (location = 8) in vec4 aMaterial;
 
 uniform mat4 view;
 uniform mat4 projection;
-uniform mat4 light_space_matrix;
+uniform vec3 view_pos;
 
 out vec3 Normal;
-out vec3 FragPos;
 out vec3 LocalPos;
 out vec2 TexCoord;
 out vec3 ObjectColor;
-out vec4 FragPosLightSpace;
 out vec4 Material;
 
 void main()
 {
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
 
-    vec4 worldPos = transform * vec4(aPos, 1.0);
-    gl_Position = projection * view * worldPos;
-    FragPos = vec3(worldPos);
+    // Subtract before rotating to avoid cancellation in a translated view matrix for large coordinates.
+    vec3 camera_relative_position = mat3(transform) * aPos + transform[3].xyz - view_pos;
+    vec3 view_position = mat3(view) * camera_relative_position;
+    gl_Position = projection * vec4(view_position, 1.0);
     LocalPos = aPos;
 
     mat3 rotation = mat3(transform);
@@ -81,7 +82,6 @@ void main()
     Normal = normalMatrix * aNormal;
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
-    FragPosLightSpace = light_space_matrix * worldPos;
     Material = aMaterial;
 }
 """
@@ -91,13 +91,15 @@ shape_fragment_shader = """
 out vec4 FragColor;
 
 in vec3 Normal;
-in vec3 FragPos;
 in vec3 LocalPos;
 in vec2 TexCoord;
-in vec3 ObjectColor; // used as albedo
-in vec4 FragPosLightSpace;
+in vec3 ObjectColor;
 in vec4 Material;
 
+uniform mat4 view;
+uniform mat4 projection;
+uniform mat4 inverse_projection;
+uniform vec2 viewport_size;
 uniform vec3 view_pos;
 uniform vec3 light_color;
 uniform vec3 sky_color;
@@ -167,7 +169,33 @@ vec2 poissonDisk[16] = vec2[](
    vec2( 0.14383161, -0.14100790 )
 );
 
-float ShadowCalculation()
+vec3 ReconstructCameraRelativePosition()
+{
+    vec2 ndc_xy = gl_FragCoord.xy / viewport_size * 2.0 - 1.0;
+    vec4 near_h = inverse_projection * vec4(ndc_xy, -1.0, 1.0);
+    vec3 near_view = near_h.xyz / near_h.w;
+
+    // gl_FragCoord.w retains reciprocal clip-space W even when interpolated
+    // clip-space depth loses precision across a triangle much larger than the
+    // view frustum. Recover the view-space point along this pixel's camera ray.
+    vec4 clip_w_row = vec4(projection[0][3], projection[1][3], projection[2][3], projection[3][3]);
+    float denominator = dot(clip_w_row.xyz, near_view);
+    if (abs(gl_FragCoord.w) < 1.0e-8 || abs(denominator) < 1.0e-8)
+    {
+        float ndc_z = gl_FragCoord.z * 2.0 - 1.0;
+        vec4 view_h = inverse_projection * vec4(ndc_xy, ndc_z, 1.0);
+        gl_FragDepth = gl_FragCoord.z;
+        return transpose(mat3(view)) * (view_h.xyz / view_h.w);
+    }
+
+    float amount = (1.0 / gl_FragCoord.w - clip_w_row.w) / denominator;
+    vec3 view_position = near_view * amount;
+    vec4 clip_position = projection * vec4(view_position, 1.0);
+    gl_FragDepth = clip_position.z / clip_position.w * 0.5 + 0.5;
+    return transpose(mat3(view)) * view_position;
+}
+
+float ShadowCalculation(vec3 camera_to_fragment)
 {
     vec3 normal = normalize(Normal);
 
@@ -182,7 +210,7 @@ float ShadowCalculation()
 
     // For backfacing triangles, we might need different bias handling
     vec4 light_space_pos;
-    light_space_pos = light_space_matrix * vec4(FragPos + normal * normalBias, 1.0);
+    light_space_pos = light_space_matrix * vec4(camera_to_fragment + normal * normalBias, 1.0);
     vec3 projCoords = light_space_pos.xyz/light_space_pos.w;
 
     // map to [0,1]
@@ -223,16 +251,13 @@ float ShadowCalculation()
     return shadow * fade;
 }
 
-float SpotlightAttenuation()
+float SpotlightAttenuation(vec3 camera_to_fragment)
 {
     if (!spotlight_enabled)
         return 1.0;
 
-    // Calculate spotlight position as 20 units from the camera in sun direction
-    vec3 spotlight_pos = view_pos + sun_direction * 20.0;
-
     // Vector from fragment to spotlight
-    vec3 fragToLight = normalize(spotlight_pos - FragPos);
+    vec3 fragToLight = normalize(sun_direction * 20.0 - camera_to_fragment);
 
     // Angle between spotlight direction (towards origin) and vector from light to fragment
     float cosAngle = dot(normalize(sun_direction), fragToLight);
@@ -264,6 +289,9 @@ vec3 sample_env_map(vec3 dir, float lod)
 
 void main()
 {
+    // This reconstruction also corrects depth before the fragment is committed.
+    vec3 camera_to_fragment = ReconstructCameraRelativePosition();
+
     // material properties from vertex shader
     float roughness = clamp(Material.x, 0.0, 1.0);
     float metallic = clamp(Material.y, 0.0, 1.0);
@@ -301,7 +329,7 @@ void main()
 
     // surface vectors
     vec3 N = normalize(Normal);
-    vec3 V = normalize(view_pos - FragPos);
+    vec3 V = normalize(-camera_to_fragment);
     // Flip normal for backfacing triangles
     if (!gl_FrontFacing) N = -N;
     vec3 L = normalize(sun_direction);
@@ -353,9 +381,9 @@ void main()
     ambient = kD_ambient * ambient + ambient_spec * metallic;
 
     // shadows
-    float shadow = ShadowCalculation();
+    float shadow = ShadowCalculation(camera_to_fragment);
 
-    float spotAttenuation = SpotlightAttenuation();
+    float spotAttenuation = SpotlightAttenuation(camera_to_fragment);
     vec3 color = ambient + (1.0 - shadow) * spotAttenuation * Lo;
 
     // Environment / image-based lighting for metals
@@ -367,7 +395,7 @@ void main()
     color += env_spec * metallic;
 
     // fog
-    float dist = length(FragPos - view_pos);
+    float dist = length(camera_to_fragment);
     float fog_start = 20.0;
     float fog_end   = 200.0;
     float fog_factor = clamp((dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
@@ -520,11 +548,15 @@ class ShaderShape(ShaderGL):
         self.shader_program = ShaderProgram(
             Shader(shape_vertex_shader, "vertex"), Shader(shape_fragment_shader, "fragment")
         )
+        self._cached_projection = None
+        self._cached_inverse_projection = None
 
         # Get all uniform locations
         with self:
             self.loc_view = self._get_uniform_location("view")
             self.loc_projection = self._get_uniform_location("projection")
+            self.loc_inverse_projection = self._get_uniform_location("inverse_projection")
+            self.loc_viewport_size = self._get_uniform_location("viewport_size")
             self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
             self.loc_shadow_map = self._get_uniform_location("shadow_map")
@@ -548,6 +580,7 @@ class ShaderShape(ShaderGL):
         self,
         view_matrix: np.ndarray,
         projection_matrix: np.ndarray,
+        viewport_size: tuple[int, int],
         view_pos: tuple[float, float, float],
         fog_color: tuple[float, float, float],
         up_axis: int,
@@ -572,6 +605,14 @@ class ShaderShape(ShaderGL):
             # Basic matrices
             self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
             self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+            projection_array = np.asarray(projection_matrix).reshape(4, 4)
+            if self._cached_projection is None or not np.array_equal(projection_array, self._cached_projection):
+                self._cached_projection = projection_array.copy()
+                self._cached_inverse_projection = np.linalg.inv(projection_array).astype(np.float32)
+            self._gl.glUniformMatrix4fv(
+                self.loc_inverse_projection, 1, self._gl.GL_FALSE, arr_pointer(self._cached_inverse_projection)
+            )
+            self._gl.glUniform2f(self.loc_viewport_size, *viewport_size)
             self._gl.glUniform3f(self.loc_view_pos, *view_pos)
 
             # Lighting
@@ -674,13 +715,15 @@ class ShadowShader(ShaderGL):
         # Get uniform locations
         with self:
             self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
+            self.loc_render_origin = self._get_uniform_location("render_origin")
 
-    def update(self, light_space_matrix: np.ndarray):
+    def update(self, light_space_matrix: np.ndarray, render_origin: tuple[float, float, float]):
         """Update light space matrix for shadow rendering."""
         with self:
             self._gl.glUniformMatrix4fv(
                 self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(light_space_matrix)
             )
+            self._gl.glUniform3f(self.loc_render_origin, *render_origin)
 
 
 class FrameShader(ShaderGL):
@@ -983,19 +1026,18 @@ class ShaderEdge(ShaderGL):
         with self:
             self.loc_view = self._get_uniform_location("view")
             self.loc_projection = self._get_uniform_location("projection")
+            self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_edge_color = self._get_uniform_location("edge_color")
-            self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
 
     def update(
         self,
         view_matrix: np.ndarray,
         projection_matrix: np.ndarray,
+        view_pos: tuple[float, float, float],
         edge_color: tuple[float, float, float, float] = (0.05, 0.05, 0.05, 1.0),
-        light_space_matrix: np.ndarray | None = None,
     ):
         with self:
             self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
             self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+            self._gl.glUniform3f(self.loc_view_pos, *view_pos)
             self._gl.glUniform4f(self.loc_edge_color, *edge_color)
-            lsm = light_space_matrix if light_space_matrix is not None else np.eye(4, dtype=np.float32)
-            self._gl.glUniformMatrix4fv(self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(lsm))

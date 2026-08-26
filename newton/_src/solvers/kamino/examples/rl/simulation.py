@@ -439,10 +439,10 @@ class RigidBodySim:
         njd = self.sim.model.size.max_of_num_joint_dofs
         nb = self.sim.model.size.max_of_num_bodies
 
-        # Current code below assumes homogenous worlds and coords = dofs
+        # Current code below assumes homogenous worlds
         # To adapt if these assertions trigger
         assert self.sim.model.size.sum_of_num_joint_coords == nw * njc
-        assert njc == njd
+        assert self.sim.model.size.sum_of_num_joint_dofs == nw * njd
 
         # State tensors (read-only views into simulator)
         # q_j uses generalized coordinates (njc), dq_j uses DOFs (njd)
@@ -451,8 +451,9 @@ class RigidBodySim:
         self._q_i = wp.to_torch(self.sim.state.q_i).reshape(nw, nb, 7)
         self._u_i = wp.to_torch(self.sim.state.u_i).reshape(nw, nb, 6)
 
-        # Control tensors (writable views — all use DOF space)
-        self._q_j_ref = wp.to_torch(self.sim.control.q_j_ref).reshape(nw, njd)
+        # Control tensors (writable views)
+        # q_j_ref uses generalized coordinates (njc), dq_j_ref and tau_j_ref use DOFs (njd)
+        self._q_j_ref = wp.to_torch(self.sim.control.q_j_ref).reshape(nw, njc)
         self._dq_j_ref = wp.to_torch(self.sim.control.dq_j_ref).reshape(nw, njd)
         self._tau_j_ref = wp.to_torch(self.sim.control.tau_j_ref).reshape(nw, njd)
 
@@ -506,6 +507,7 @@ class RigidBodySim:
 
         # Read per-joint metadata from the Kamino model (first world only)
         joint_labels = [lbl.rsplit("/", 1)[-1] for lbl in self.sim.model.joints.label[:max_joints]]
+        joint_num_coords = wp.to_torch(self.sim.model.joints.num_coords)[:max_joints].tolist()
         joint_num_dofs = wp.to_torch(self.sim.model.joints.num_dofs)[:max_joints].tolist()
         joint_act_type = wp.to_torch(self.sim.model.joints.act_type)[:max_joints].tolist()
         joint_q_j_min = wp.to_torch(self.sim.model.joints.q_j_min)
@@ -514,17 +516,26 @@ class RigidBodySim:
         # Joint names and actuated indices
         self._joint_names: list[str] = []
         self._actuated_joint_names: list[str] = []
+        self._actuated_coord_indices: list[int] = []
         self._actuated_dof_indices: list[int] = []
+        coord_offset = 0
         dof_offset = 0
         for j in range(max_joints):
+            ncoords = int(joint_num_coords[j])
             ndofs = int(joint_num_dofs[j])
             self._joint_names.append(joint_labels[j])
             if int(joint_act_type[j]) > 0:  # act_type > PASSIVE means actuated
                 self._actuated_joint_names.append(joint_labels[j])
+                for coord_idx in range(ncoords):
+                    self._actuated_coord_indices.append(coord_offset + coord_idx)
                 for dof_idx in range(ndofs):
                     self._actuated_dof_indices.append(dof_offset + dof_idx)
+            coord_offset += ncoords
             dof_offset += ndofs
 
+        self._actuated_coord_indices_tensor = torch.tensor(
+            self._actuated_coord_indices, device=self._torch_device, dtype=torch.long
+        )
         self._actuated_dof_indices_tensor = torch.tensor(
             self._actuated_dof_indices, device=self._torch_device, dtype=torch.long
         )
@@ -782,7 +793,7 @@ class RigidBodySim:
         The actual reset happens on the next call to :meth:`apply_resets`.
 
         Args:
-            dof_positions: Joint positions ``(len(env_ids), num_joint_dofs)``.
+            dof_positions: Joint positions ``(len(env_ids), num_joint_coords)``.
             dof_velocities: Joint velocities ``(len(env_ids), num_joint_dofs)``.
             env_ids: Which worlds to reset.  ``None`` resets all.
         """
@@ -960,6 +971,15 @@ class RigidBodySim:
     @property
     def actuated_joint_names(self) -> list[str]:
         return self._actuated_joint_names
+
+    @property
+    def actuated_coord_indices(self) -> list[int]:
+        return self._actuated_coord_indices
+
+    @property
+    def actuated_coord_indices_tensor(self) -> torch.Tensor:
+        """Actuated coordinate indices (for indexing :attr:`q_j_ref`) as a ``torch.long`` tensor."""
+        return self._actuated_coord_indices_tensor
 
     @property
     def actuated_dof_indices(self) -> list[int]:

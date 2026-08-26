@@ -28,7 +28,7 @@ from newton.usd import SchemaResolverPhysx
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableCable(unittest.TestCase):
-    """Curve-deformable (cable) parsing into rods of capsule bodies + cable joints."""
+    """Curve-deformable (cable) parsing into capsule bodies joined by rod joints."""
 
     @staticmethod
     def _author_attached_cable_pair(*, gap, stiffness=None, damping=None):
@@ -191,7 +191,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(tb1 - tb0, 3, "trunk has 3 segments")
             self.assertEqual(bb1 - bb0, 2, "branch has 2 segments")
             # Graph cables are returned pre-wrapped, so the caller does no articulation work.
-            self.assertEqual(tj1 - tj0, 0, "graph cable joints are pre-wrapped (empty)")
+            self.assertEqual(tj1 - tj0, 0, "graph rod joints are pre-wrapped (empty)")
             self.assertEqual(builder.articulation_count, 1, "the welded component is one articulation")
 
             model = builder.finalize()
@@ -272,7 +272,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
             self.assertEqual(b1 - b0, 3)
 
-            # Split cable joints store target_ke as stretch, shear, bend, twist.
+            # Split rod joints store target_ke as stretch, shear, bend, twist.
             ke = builder.joint_target_ke
             for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
@@ -392,16 +392,16 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             result = builder.add_usd(stage, return_deformable_results=True)
             j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
-            # Stretch DOF target_ke is the authored 0.0, not add_rod's 1.0e5 default.
+            # The stretch-slot target_ke is the authored 0.0, not add_rod's 1.0e5 default.
             dof0 = builder.joint_qd_start[j0]
             self.assertEqual(builder.joint_target_ke[dof0], 0.0)
             self.assertEqual(builder.joint_target_mode[dof0], int(newton.JointTargetMode.NONE))
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["curvesStretchStiffness"], 0.0)
 
-    def test_cable_stiffness_setter_rejects_incompatible_joint(self):
-        """Verify that local cable stiffness assignment rejects incompatible joints."""
+    def test_rod_stiffness_setter_rejects_incompatible_joint(self):
+        """Verify that local rod stiffness assignment rejects incompatible joints."""
         builder = newton.ModelBuilder()
-        cable = builder.add_joint_cable(-1, builder.add_link())
+        rod = builder.add_joint_rod(-1, builder.add_link())
         fixed = builder.add_joint_fixed(-1, builder.add_link())
         stiffnesses = {
             "stretch_stiffness": 1.0,
@@ -410,15 +410,15 @@ class TestUSDDeformableCable(unittest.TestCase):
             "twist_stiffness": 1.0,
         }
 
-        with self.assertRaisesRegex(ValueError, "expected the four-DOF CABLE layout"):
-            builder._set_joint_cable_stiffnesses(fixed, **stiffnesses)
+        with self.assertRaisesRegex(ValueError, "expected the four-slot ROD layout"):
+            builder._set_joint_rod_stiffnesses(fixed, **stiffnesses)
 
-        builder.joint_dof_dim[cable] = (3, 3)
-        with self.assertRaisesRegex(ValueError, "expected the four-DOF CABLE layout"):
-            builder._set_joint_cable_stiffnesses(cable, **stiffnesses)
+        builder.joint_dof_dim[rod] = (3, 3)
+        with self.assertRaisesRegex(ValueError, "expected the four-slot ROD layout"):
+            builder._set_joint_rod_stiffnesses(rod, **stiffnesses)
 
     def test_cable_rest_length_from_rest_shape_points(self):
-        """Verify ``restShapePoints`` supplies each cable joint's local dual rest length.
+        """Verify ``restShapePoints`` supplies each rod joint's local dual rest length.
 
         A degenerate rest segment discards the whole curve's rest shape with a warning, leaving
         the joints normalized by their current lengths.
@@ -1252,9 +1252,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         builder.finalize()
 
     def test_two_point_curves(self):
-        """An open two-point curve (one segment) warns and is skipped (the rod needs two
-        segments); a periodic two-point curve closes into two segments and imports with a
-        parallel-joint warning."""
+        """Verify open two-point curves are skipped and periodic curves warn on parallel joints."""
         with self.subTest(wrap="open"):
             stage = _deformable_stage()
             _add_cable_curve(stage, "/World/Two", [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0)])
@@ -1267,7 +1265,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage = _deformable_stage()
             _add_cable_curve(stage, "/World/Loop2", [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0)], periodic=True)
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, r"Adding a CABLE joint.*undefined semantics"):
+            with self.assertWarnsRegex(
+                UserWarning,
+                r"Parallel joints between the same pair of bodies have undefined semantics",
+            ):
                 builder.add_usd(stage)
             b0, b1 = group_range(builder, "cable", "/World/Loop2", "body")
             self.assertEqual(b1 - b0, 2, "two segments after closure")
@@ -1376,7 +1377,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         result = builder.add_usd(stage, ignore_paths=["/World/Junction"], return_deformable_results=True)
 
         # Both curves still import, but as independent single cables (not a welded graph):
-        # single cables expose their cable joints for the caller to wrap, so joints are non-empty.
+        # single cables expose their rod joints for the caller to wrap, so joints are non-empty.
         tb0, tb1 = group_range(builder, "cable", "/World/Trunk", "body")
         tj0, tj1 = group_range(builder, "cable", "/World/Trunk", "joint")
         bj0, bj1 = group_range(builder, "cable", "/World/Branch", "joint")

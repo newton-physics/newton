@@ -485,7 +485,7 @@ class PADMMSolverConfig:
 
     compl_tolerance: float = 1e-6
     """
-    The target tolerance on the total complementarity residual `r_compl`.\n
+    The target tolerance on the complementarity residual `r_compl`.\n
     Must be greater than zero. Defaults to `1e-6`.
     """
 

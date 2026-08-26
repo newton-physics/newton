@@ -520,12 +520,12 @@ class TestModelView(unittest.TestCase):
         self.assertNotEqual(parent_flags[1] & dynamic, 0)
         self.assertEqual(parent_flags[1] & kinematic, 0)
 
-    def test_disable_joints_rewrites_cable_type_in_view(self):
-        """disable_joints should expose disabled cable joints as D6 in the view."""
+    def test_disable_joints_rewrites_rod_type_in_view(self):
+        """Verify disabled rod joints are exposed as D6 in the view."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parent = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         child = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        joint = builder.add_joint_cable(
+        joint = builder.add_joint_rod(
             parent=parent,
             child=child,
             parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()),
@@ -538,7 +538,7 @@ class TestModelView(unittest.TestCase):
 
         self.assertFalse(bool(view.joint_enabled.numpy()[joint]))
         self.assertEqual(int(view.joint_type.numpy()[joint]), int(newton.JointType.D6))
-        self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.CABLE))
+        self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.ROD))
         np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], model.joint_dof_dim.numpy()[joint])
 
     def test_zero_particle_mass(self):
