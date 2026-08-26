@@ -5886,7 +5886,6 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     test.assertAlmostEqual(material_k_at(j_d6, 2), max(700.0, 7000.0))
     test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 8000.0))
 
-    # A target_ke edit the limit still dominates must leave the slot at the limit value.
     joint_target_ke[joint_qd_start[j_revolute]] = 100.0  # below limit_ke of 5000
     model.joint_target_ke.assign(joint_target_ke)
     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
@@ -5911,8 +5910,10 @@ def _notify_joint_dof_properties_validates_compliant_materials(test, device):
     dof0 = int(model.joint_qd_start.numpy()[joint])
     start = int(solver.joint_constraint_start.numpy()[joint])
 
+    valid_target_ke = model.joint_target_ke.numpy().copy()
+
     for bad_value in (float("inf"), float("nan"), -1.0):
-        joint_target_ke = model.joint_target_ke.numpy()
+        joint_target_ke = valid_target_ke.copy()
         joint_target_ke[dof0 + 2] = bad_value
         model.joint_target_ke.assign(joint_target_ke)
         with test.assertRaises(ValueError):
