@@ -12,6 +12,12 @@ import numpy as np
 import warp as wp
 
 from .....geometry import ShapeFlags
+from .....geometry.broad_phase_common import test_world_and_group_pair, write_pair
+from .....geometry.broad_phase_nxn import (
+    BroadPhaseAllPairs,
+    _find_world_and_local_id,
+    _get_lower_triangular_indices,
+)
 from .....sim.model import Model
 from ....coupled.model_view import ModelView
 from ..utils import logger as msg
@@ -1901,6 +1907,101 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
     return geom_material
 
 
+@wp.kernel
+def _group_incompatible_pairs_kernel(
+    # Inputs
+    shape_collision_group: wp.array[wp.int32],
+    shape_world: wp.array[wp.int32],
+    world_cumsum_lower_tri: wp.array[wp.int32],  # Cumulative sum of lower tri elements per world
+    world_slice_ends: wp.array[wp.int32],  # End indices of each world slice
+    world_index_map: wp.array[wp.int32],  # Index map into source shapes
+    num_regular_worlds: int,  # Number of regular world segments (excluding dedicated -1 segment)
+    # Outputs
+    excluded_pair: wp.array[wp.vec2i],
+    excluded_pair_count: wp.array[wp.int32],
+    max_excluded_pairs: int,
+):
+    tid = wp.tid()
+
+    # Only shapes within the same world (or global, world -1) can ever collide, so restrict
+    # the thread space to per-world lower-triangular pairs instead of the full N^2 grid.
+    # Mirrors `_nxn_broadphase_kernel` in broad_phase_nxn.py.
+    world_id, local_id = _find_world_and_local_id(tid, world_cumsum_lower_tri)
+
+    world_slice_start = 0
+    if world_id > 0:
+        world_slice_start = world_slice_ends[world_id - 1]
+    world_slice_end = world_slice_ends[world_id]
+    num_shapes_in_world = world_slice_end - world_slice_start
+
+    local_shape_a, local_shape_b = _get_lower_triangular_indices(local_id, num_shapes_in_world)
+
+    shape_a_tmp = world_index_map[world_slice_start + local_shape_a]
+    shape_b_tmp = world_index_map[world_slice_start + local_shape_b]
+    shape_a = wp.min(shape_a_tmp, shape_b_tmp)
+    shape_b = wp.max(shape_a_tmp, shape_b_tmp)
+
+    world_a = shape_world[shape_a]
+    world_b = shape_world[shape_b]
+
+    # Skip pairs where both shapes are global (world -1), except in the dedicated
+    # -1 segment, to avoid counting global-vs-global pairs once per regular world.
+    is_dedicated_minus_one_segment = world_id >= num_regular_worlds
+    if world_a == -1 and world_b == -1 and not is_dedicated_minus_one_segment:
+        return
+
+    if not test_world_and_group_pair(world_a, world_b, shape_collision_group[shape_a], shape_collision_group[shape_b]):
+        write_pair(wp.vec2i(shape_a, shape_b), excluded_pair, excluded_pair_count, max_excluded_pairs)
+
+
+def compute_group_incompatible_pairs(
+    shape_collision_group: wp.array[wp.int32],
+    shape_world: wp.array[wp.int32],
+) -> np.ndarray:
+    """Find shape pairs that are incompatible under Newton's collision-group rule.
+    Used in Kamino's internal NXN/SAP broadphase, which does not check for
+    group-based exclusion, instead relying purely on the excluded-pairs list.
+
+    Args:
+        shape_collision_group: Per-shape collision group id, shape [num_shapes].
+        shape_world: Per-shape world index (-1 for global shapes), shape [num_shapes].
+
+    Returns:
+        Array of incompatible shape index pairs (each row canonical, i.e.
+        pair[0] < pair[1]), shape [pair_count, 2].
+    """
+    if shape_collision_group.shape[0] < 2:
+        return np.empty((0, 2), dtype=np.int32)
+
+    device = shape_collision_group.device
+    world_map = BroadPhaseAllPairs(shape_world, shape_flags=None, device=device)
+    num_threads = world_map.num_kernel_threads
+    if num_threads == 0:
+        return np.empty((0, 2), dtype=np.int32)
+
+    with wp.ScopedDevice(device):
+        excluded_pair = wp.zeros(num_threads, dtype=wp.vec2i)
+        excluded_pair_count = wp.zeros(1, dtype=wp.int32)
+
+    wp.launch(
+        kernel=_group_incompatible_pairs_kernel,
+        dim=num_threads,
+        inputs=[
+            shape_collision_group,
+            shape_world,
+            world_map.world_cumsum_lower_tri,
+            world_map.world_slice_ends,
+            world_map.world_index_map,
+            world_map.num_regular_worlds,
+        ],
+        outputs=[excluded_pair, excluded_pair_count, num_threads],
+        device=device,
+    )
+
+    count = int(excluded_pair_count.numpy()[0])
+    return excluded_pair.numpy()[:count]
+
+
 def convert_geometries(
     model: Model | ModelView,
     model_size: SizeKamino,
@@ -1956,8 +2057,20 @@ def convert_geometries(
         offset,
     )
 
-    # Create additional collision detection meta-data
-    sorted_excluded_pairs = model.shape_collision_filter_pairs_array()
+    # Create collision detection meta-data: Combine explicitly filtered
+    # pairs (e.g. same-body, user-specified exclusions) with pairs that are
+    # incompatible under Newton's collision-group rule. Kamino's NXN/SAP
+    # broadphase relies solely on this list for group-based filtering.
+    explicit_excluded_pairs = model.shape_collision_filter_pairs_array()
+    group_excluded_pairs = compute_group_incompatible_pairs(model.shape_collision_group, model.shape_world)
+    if explicit_excluded_pairs.size and group_excluded_pairs.size:
+        sorted_excluded_pairs = np.unique(
+            np.concatenate([explicit_excluded_pairs, group_excluded_pairs], axis=0), axis=0
+        )
+    elif group_excluded_pairs.size:
+        sorted_excluded_pairs = np.unique(group_excluded_pairs, axis=0)
+    else:
+        sorted_excluded_pairs = explicit_excluded_pairs
     excluded_pairs = wp.array(sorted_excluded_pairs, dtype=wp.vec2i, device=model.device)
 
     return GeometriesModel(
