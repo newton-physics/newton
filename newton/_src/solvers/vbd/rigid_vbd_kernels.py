@@ -3816,27 +3816,34 @@ def refresh_body_structural_k(
 
 
 @wp.kernel
-def refresh_joint_material_k(
+def refresh_joint_material_params(
     joint_type: wp.array[int],
     joint_qd_start: wp.array[int],
     joint_dof_dim: wp.array2d[int],
     joint_constraint_start: wp.array[wp.int32],
     joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
     joint_limit_ke: wp.array[float],
     legacy_lin_k_start: float,
     legacy_ang_k_start: float,
     joint_material_k: wp.array[float],
     joint_penalty_k: wp.array[float],
     joint_penalty_k_min: wp.array[float],
+    joint_penalty_kd: wp.array[float],
 ):
     """Recompute ``joint_material_k`` from ``joint_target_ke``/``joint_limit_ke`` and reseed
-    ``joint_penalty_k``/``joint_penalty_k_min`` to match (see ``_init_joint_penalty_k`` for
-    the same formulas at construction time).
+    ``joint_penalty_k``/``joint_penalty_k_min`` to match, plus ROD ``joint_penalty_kd`` from
+    ``joint_target_kd`` (see ``_init_joint_penalty_k`` for the same formulas at construction
+    time).
 
-    Covers ROD (all four material slots) and the drive/limit slot(s) of REVOLUTE, PRISMATIC,
-    and D6. Not covered: BALL, FIXED, and REVOLUTE/PRISMATIC/D6's structural slots, which come
-    from the solver-wide ``rigid_joint_linear_ke``/``rigid_joint_angular_ke`` constants rather
-    than ``joint_target_ke``.
+    Stiffness covers ROD (all four material slots) and the drive/limit slot(s) of REVOLUTE,
+    PRISMATIC, and D6. Not covered: BALL, FIXED, and REVOLUTE/PRISMATIC/D6's structural slots,
+    which come from the solver-wide ``rigid_joint_linear_ke``/``rigid_joint_angular_ke``
+    constants rather than ``joint_target_ke``.
+
+    Damping is ROD-only: other joint types' ``joint_penalty_kd`` slots hold the solver-wide
+    ``rigid_joint_{linear,angular}_kd`` constants or zero, and their drive damping is read
+    live from ``joint_target_kd`` by the stepping kernels rather than cached here.
 
     Args:
         legacy_lin_k_start: Ramp-cap seed for linear slots [N/m], negative to disable.
@@ -3855,6 +3862,7 @@ def refresh_joint_material_k(
             seeded = wp.min(seed, ke) if seed >= 0.0 else ke
             joint_penalty_k[c0 + s] = seeded
             joint_penalty_k_min[c0 + s] = seeded
+            joint_penalty_kd[c0 + s] = joint_target_kd[dof0 + s]
         return
 
     linear_count = int(0)

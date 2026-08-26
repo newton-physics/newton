@@ -5659,29 +5659,44 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25])
 
 
-def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
-    """Verify a live rod stiffness edit applied after graph capture matches a from-scratch build.
+def _assert_rod_dof_property_refresh(
+    test,
+    device,
+    *,
+    build_param,
+    target_array,
+    before,
+    after,
+    pointer_stable_arrays=(),
+):
+    """Assert a live ROD ``joint_target_*`` edit reaches the solve, matching a from-scratch build.
 
-    Same geometry both sides, so this isolates the stiffness path; trajectories must be
-    bit-for-bit equal.
+    Builds a cable chain with ``build_param`` set to ``before``, captures its step graph where
+    the device allows it, then rewrites ``target_array``'s bend and twist DOFs to ``after`` and
+    notifies with ``JOINT_DOF_PROPERTIES`` -- all before any replay, so the refresh has to reach
+    the already-captured graph. Compares that trajectory against from-scratch builds at both
+    ``after`` (must match bit-for-bit) and ``before`` (must differ, or the comparison is vacuous).
+
+    Args:
+        build_param: :func:`_build_cable_chain` keyword to vary (e.g. ``"bend_stiffness"``).
+        target_array: ``Model`` array to edit live (e.g. ``"joint_target_ke"``).
+        before: Value built with, and reinit'd away from.
+        after: Value reinit'd to.
+        pointer_stable_arrays: Solver array names required to keep their address across the
+            refresh -- a captured graph holds pointers, so reallocation would leave it reading
+            stale memory.
     """
-    segment_length = 0.2
-    num_links = 6
-    k_before, k_after = 5.0e1, 5.0e2
-    frame_dt = 1.0 / 60.0
+    fixed = {"bend_stiffness": 5.0e1, "bend_damping": 1.0}
     sim_substeps = 10
-    sim_dt = frame_dt / sim_substeps
+    sim_dt = (1.0 / 60.0) / sim_substeps
     num_steps = 20
 
-    def build_and_run(bend_stiffness, retarget_to=None):
-        """Build a chain at ``bend_stiffness``; if ``retarget_to`` is given, capture the
-        step graph first, THEN live-reinit joint_target_ke to it before any replay."""
+    def build_and_run(value, retarget_to=None):
         model, state0, state1, control, _rod_bodies = _build_cable_chain(
             device,
-            num_links=num_links,
-            bend_stiffness=bend_stiffness,
-            bend_damping=1.0,
-            segment_length=segment_length,
+            num_links=6,
+            segment_length=0.2,
+            **{**fixed, build_param: value},
         )
         collision_pipeline = newton.CollisionPipeline(model)
         contacts = collision_pipeline.contacts()
@@ -5696,28 +5711,24 @@ def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
                 solver.step(state["s0"], state["s1"], control, contacts, sim_dt)
                 state["s0"], state["s1"] = state["s1"], state["s0"]
 
-        use_graph = is_graph_capture_allocation_enabled(device)
         graph = None
-        if use_graph:
+        if is_graph_capture_allocation_enabled(device):
             with wp.ScopedCapture(device) as capture:
                 simulate()
             graph = capture.graph
 
         if retarget_to is not None:
-            ptrs_before = {
-                name: getattr(solver, name).ptr
-                for name in ("joint_material_k", "joint_penalty_k", "joint_penalty_k_min")
-            }
+            ptrs_before = {name: getattr(solver, name).ptr for name in pointer_stable_arrays}
 
-            joint_target_ke = model.joint_target_ke.numpy()
+            values = getattr(model, target_array).numpy()
             joint_qd_start = model.joint_qd_start.numpy()
             joint_type = model.joint_type.numpy()
             for j in range(model.joint_count):
                 if joint_type[j] == int(newton.JointType.ROD):
                     d0 = joint_qd_start[j]
-                    joint_target_ke[d0 + 2] = retarget_to  # bend slot
-                    joint_target_ke[d0 + 3] = retarget_to  # twist slot
-            model.joint_target_ke.assign(joint_target_ke)
+                    values[d0 + 2] = retarget_to  # bend slot
+                    values[d0 + 3] = retarget_to  # twist slot
+            getattr(model, target_array).assign(values)
             solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
             for name, ptr in ptrs_before.items():
@@ -5736,24 +5747,35 @@ def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
 
         return state["s0"].body_q.numpy().copy()
 
-    reinit_q = build_and_run(k_before, retarget_to=k_after)
-    reference_q = build_and_run(k_after)
-    unrefreshed_q = build_and_run(k_before)
+    reinit_q = build_and_run(before, retarget_to=after)
+    reference_q = build_and_run(after)
+    unrefreshed_q = build_and_run(before)
 
-    # Guard against a vacuous pass: if the two stiffnesses produced the same motion, the
-    # equality below would hold even when the refresh does nothing.
     test.assertFalse(
         np.array_equal(unrefreshed_q, reference_q),
-        msg=f"test is vacuous: k_before={k_before} and k_after={k_after} yield identical "
-        "trajectories, so matching the k_after build proves nothing about the refresh",
+        msg=f"test is vacuous: {build_param}={before} and {build_param}={after} yield identical "
+        "trajectories, so matching the latter proves nothing about the refresh",
     )
 
     np.testing.assert_array_equal(
         reinit_q,
         reference_q,
-        err_msg="a rod chain reinit'd from k_before to k_after via "
-        "notify_model_changed(JOINT_DOF_PROPERTIES) after graph capture should "
-        "reproduce a from-scratch k_after build bit-for-bit",
+        err_msg=f"a rod chain reinit'd via {target_array} + "
+        "notify_model_changed(JOINT_DOF_PROPERTIES) should reproduce a from-scratch build "
+        "bit-for-bit",
+    )
+
+
+def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
+    """Verify a live rod stiffness edit applied after graph capture matches a from-scratch build."""
+    _assert_rod_dof_property_refresh(
+        test,
+        device,
+        build_param="bend_stiffness",
+        target_array="joint_target_ke",
+        before=5.0e1,
+        after=5.0e2,
+        pointer_stable_arrays=("joint_material_k", "joint_penalty_k", "joint_penalty_k_min"),
     )
 
 
@@ -5860,6 +5882,23 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     test.assertAlmostEqual(material_k_at(j_prismatic, 2), max(600.0, 6000.0))
     test.assertAlmostEqual(material_k_at(j_d6, 2), max(700.0, 7000.0))
     test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 8000.0))
+
+
+def _notify_joint_dof_properties_refreshes_rod_penalty_kd(test, device):
+    """Verify a live rod damping edit reaches the solve and matches a from-scratch build.
+
+    ROD damping is cached in ``joint_penalty_kd`` at construction (unlike other joint types,
+    whose drive damping is read live), so it needs the same refresh as stiffness.
+    """
+    _assert_rod_dof_property_refresh(
+        test,
+        device,
+        build_param="bend_damping",
+        target_array="joint_target_kd",
+        before=1.0e-1,
+        after=5.0e1,
+        pointer_stable_arrays=("joint_penalty_kd",),
+    )
 
 
 def _notify_joint_dof_properties_refreshes_rod_structural_k(test, device):
@@ -6622,6 +6661,12 @@ add_function_test(
     TestCable,
     "test_notify_joint_dof_properties_refreshes_drive_limit_material_k",
     _notify_joint_dof_properties_refreshes_drive_limit_material_k,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_refreshes_rod_penalty_kd",
+    _notify_joint_dof_properties_refreshes_rod_penalty_kd,
     devices=devices,
 )
 add_function_test(

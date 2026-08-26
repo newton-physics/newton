@@ -66,7 +66,7 @@ from .rigid_vbd_kernels import (
     init_body_particle_contacts,
     init_rod_rest_bend_twist,
     refresh_body_structural_k,
-    refresh_joint_material_k,
+    refresh_joint_material_params,
     reset_rigid_state,
     snapshot_body_body_contact_history,
     solve_rigid_body,
@@ -164,10 +164,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
           for REVOLUTE, PRISMATIC, D6 (as drives), and ROD (as stretch, shear,
           bend, and twist stiffness and damping).
-          VBD interprets ``kd`` as absolute damping in physical units. ``joint_target_ke`` is
-          live-updatable via :meth:`notify_model_changed` with
-          :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` for ROD (all four slots) and the
-          drive/limit slot(s) of REVOLUTE, PRISMATIC, and D6; ``joint_target_kd`` is not.
+          VBD interprets ``kd`` as absolute damping in physical units. Both are live-updatable
+          via :meth:`notify_model_changed` with
+          :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`: ``joint_target_ke`` for ROD (all four
+          slots) and the drive/limit slot(s) of REVOLUTE, PRISMATIC, and D6, and
+          ``joint_target_kd`` for ROD. Other joint types' drive damping is read live at step
+          time and needs no notification.
         - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints.
@@ -1038,7 +1040,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             # Must run before _refresh_structural_k() below: that summary reads
             # joint_material_k as an input, so a stale material_k here would
             # produce a stale body_structural_k that is harder to spot.
-            self._refresh_joint_material_k()
+            self._refresh_joint_material_params()
         if refresh_structural_k:
             self._refresh_structural_k()
         if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES):
@@ -1740,17 +1742,21 @@ class SolverVBD(SolverBase, CouplingInterface):
             device=self.device,
         )
 
-    def _refresh_joint_material_k(self) -> None:
-        """Refresh ``joint_target_ke``-derived material stiffness, and reseed its penalty + floor.
+    def _refresh_joint_material_params(self) -> None:
+        """Refresh ``joint_target_ke``/``joint_target_kd``-derived material stiffness and damping.
 
-        Covers ROD and the drive/limit slot(s) of REVOLUTE, PRISMATIC, and D6. Not covered:
-        BALL, FIXED, and REVOLUTE/PRISMATIC/D6's structural slots, which come from the
-        solver-wide ``rigid_joint_linear_ke``/``rigid_joint_angular_ke`` constants.
+        Stiffness covers ROD and the drive/limit slot(s) of REVOLUTE, PRISMATIC, and D6; its
+        penalty and floor are reseeded alongside. Not covered: BALL, FIXED, and
+        REVOLUTE/PRISMATIC/D6's structural slots, which come from the solver-wide
+        ``rigid_joint_linear_ke``/``rigid_joint_angular_ke`` constants.
+
+        Damping is ROD-only -- other joint types read drive damping live from
+        ``joint_target_kd`` at step time rather than caching it here.
         """
         if self.model.joint_count == 0:
             return
         wp.launch(
-            kernel=refresh_joint_material_k,
+            kernel=refresh_joint_material_params,
             dim=self.model.joint_count,
             inputs=[
                 self.model.joint_type,
@@ -1758,11 +1764,17 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.model.joint_dof_dim,
                 self.joint_constraint_start,
                 self.model.joint_target_ke,
+                self.model.joint_target_kd,
                 self.model.joint_limit_ke,
                 self.rigid_joint_linear_k_start if self.rigid_joint_linear_k_start is not None else -1.0,
                 self.rigid_joint_angular_k_start if self.rigid_joint_angular_k_start is not None else -1.0,
             ],
-            outputs=[self.joint_material_k, self.joint_penalty_k, self.joint_penalty_k_min],
+            outputs=[
+                self.joint_material_k,
+                self.joint_penalty_k,
+                self.joint_penalty_k_min,
+                self.joint_penalty_kd,
+            ],
             device=self.device,
         )
 
