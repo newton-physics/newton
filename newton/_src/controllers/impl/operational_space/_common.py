@@ -361,17 +361,23 @@ def _apply_operational_space_mass_matrix_kernel(
     directly as the force) is the task-space-impedance alternative, which
     ignores the tool's effective inertia — the same ``use_inertia_decoupling``
     choice :class:`ControllerJointImpedanceModelFree` offers at the joint level.
+
+    Lambda is stored as a plain ``(robot_count, 6, 6)`` float array — not a
+    ``wp.spatial_matrix`` array — because :func:`_invert_spd_block_kernel`
+    also produces the joint-space mass-matrix inverse, whose block size
+    varies per robot and can exceed 6; a fixed-size ``spatial_matrix`` only
+    fits Lambda's always-exactly-6x6 case. This kernel loads Lambda into a
+    local ``wp.spatial_matrix`` so it can use Warp's built-in
+    matrix-vector product rather than a hand-rolled accumulation loop.
     """
     robot_idx = wp.tid()
-    acceleration = desired_task_acceleration_world[robot_idx]
 
-    force = wp.spatial_vector()
+    lambda_matrix = wp.spatial_matrix()
     for row in range(6):
-        total = float(0.0)
         for col in range(6):
-            total += operational_space_mass_matrix[robot_idx, row, col] * acceleration[col]
-        force[row] = total
-    task_space_force_world[robot_idx] = force
+            lambda_matrix[row, col] = operational_space_mass_matrix[robot_idx, row, col]
+
+    task_space_force_world[robot_idx] = lambda_matrix * desired_task_acceleration_world[robot_idx]
 
 
 @wp.kernel
@@ -387,14 +393,18 @@ def _jacobian_transpose_force_kernel(
     """Map a task-space force to joint torques, ``tau = J^T @ F``.
 
     Columns at or past ``dof_count[robot_idx]`` are left unwritten — they are
-    padding, not part of any robot's controlled-DOF set.
+    padding, not part of any robot's controlled-DOF set. Row ``dof_idx`` of
+    ``J^T`` is column ``dof_idx`` of ``J``, which is exactly what
+    :func:`_shift_jacobian_to_tool_kernel` produced one spatial-vector column
+    at a time — loading it back into a ``wp.spatial_vector`` here lets this
+    kernel use Warp's built-in dot product instead of a hand-rolled sum.
     """
     robot_idx, dof_idx = wp.tid()
     if dof_idx >= dof_count[robot_idx]:
         return
 
-    force = task_space_force_world[robot_idx]
-    total = float(0.0)
+    jacobian_column = wp.spatial_vector()
     for row in range(6):
-        total += jacobian_tool_world[robot_idx, row, dof_idx] * force[row]
-    joint_torque[robot_idx, dof_idx] = total
+        jacobian_column[row] = jacobian_tool_world[robot_idx, row, dof_idx]
+
+    joint_torque[robot_idx, dof_idx] = wp.dot(jacobian_column, task_space_force_world[robot_idx])
