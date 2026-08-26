@@ -297,3 +297,104 @@ def _pose_error_kernel(
         orientation_error_world = 2.0 * quat_error_vector
 
     pose_error_world[robot_idx] = wp.spatial_vector(position_error_world, orientation_error_world)
+
+
+# ---------------------------------------------------------------------------
+# Task-space impedance law: pose/velocity error -> desired task-space
+# acceleration -> task-space force -> joint torque.
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _task_space_pd_kernel(
+    pose_error_world: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) (position error, orientation error) from _pose_error_kernel
+    tool_twist_world: wp.array[wp.spatial_vector],  # (robot_count,) current tool twist, world coords
+    desired_twist_world: wp.array[wp.spatial_vector],  # (robot_count,) desired tool twist, world coords
+    stiffness: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) per-axis proportional gain Kp; [1/s^2] if inertial decoupling follows, else [N/m or N*m/rad]
+    damping: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) per-axis derivative gain Kd; [1/s] if inertial decoupling follows, else [N*s/m or N*m*s/rad]
+    # outputs
+    desired_task_acceleration_world: wp.array[wp.spatial_vector],  # (robot_count,) Kp .* pose_error + Kd .* twist_error
+):
+    """Task-space spring-damper term, ``Kp .* pose_error + Kd .* (desired_twist - current_twist)``.
+
+    The same law as :func:`_pd_term_kernel` in the joint-impedance controller
+    family, just operating on a 6D task-space error instead of a per-DOF one:
+    a proportional term pulling the tool toward the desired pose, plus a
+    derivative term pulling its twist toward the desired twist. Gains are
+    per-axis (diagonal), not a full 6x6 matrix, since there is no task-frame
+    rotation layer here for a matrix-valued gain to matter — see the module
+    docstring.
+    """
+    robot_idx = wp.tid()
+    pose_error = pose_error_world[robot_idx]
+    twist_error = desired_twist_world[robot_idx] - tool_twist_world[robot_idx]
+    proportional_gain = stiffness[robot_idx]
+    derivative_gain = damping[robot_idx]
+
+    result = wp.spatial_vector()
+    for axis in range(6):
+        result[axis] = proportional_gain[axis] * pose_error[axis] + derivative_gain[axis] * twist_error[axis]
+    desired_task_acceleration_world[robot_idx] = result
+
+
+@wp.kernel
+def _apply_operational_space_mass_matrix_kernel(
+    operational_space_mass_matrix: wp.array3d[float],  # (robot_count, 6, 6) Lambda, from _invert_spd_block_kernel
+    desired_task_acceleration_world: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) from _task_space_pd_kernel, units [1/s^2]
+    # outputs
+    task_space_force_world: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) = operational_space_mass_matrix @ desired_task_acceleration_world
+):
+    """Inertial decoupling: convert a desired task-space acceleration into the task-space force that produces it.
+
+    ``F = Lambda @ x_ddot_des``, the operational-space analogue of ``F =
+    m*a``. Skipping this kernel entirely (using ``desired_task_acceleration_world``
+    directly as the force) is the task-space-impedance alternative, which
+    ignores the tool's effective inertia — the same ``use_inertia_decoupling``
+    choice :class:`ControllerJointImpedanceModelFree` offers at the joint level.
+    """
+    robot_idx = wp.tid()
+    acceleration = desired_task_acceleration_world[robot_idx]
+
+    force = wp.spatial_vector()
+    for row in range(6):
+        total = float(0.0)
+        for col in range(6):
+            total += operational_space_mass_matrix[robot_idx, row, col] * acceleration[col]
+        force[row] = total
+    task_space_force_world[robot_idx] = force
+
+
+@wp.kernel
+def _jacobian_transpose_force_kernel(
+    jacobian_tool_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, in world coords
+    task_space_force_world: wp.array[wp.spatial_vector],  # (robot_count,) task-space force/wrench to map to joints
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    joint_torque: wp.array2d[float],  # (robot_count, max_dofs) = jacobian_tool_world^T @ task_space_force_world
+):
+    """Map a task-space force to joint torques, ``tau = J^T @ F``.
+
+    Columns at or past ``dof_count[robot_idx]`` are left unwritten — they are
+    padding, not part of any robot's controlled-DOF set.
+    """
+    robot_idx, dof_idx = wp.tid()
+    if dof_idx >= dof_count[robot_idx]:
+        return
+
+    force = task_space_force_world[robot_idx]
+    total = float(0.0)
+    for row in range(6):
+        total += jacobian_tool_world[robot_idx, row, dof_idx] * force[row]
+    joint_torque[robot_idx, dof_idx] = total

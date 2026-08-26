@@ -23,10 +23,13 @@ import warp as wp
 
 import newton
 from newton._src.controllers.impl.operational_space._common import (
+    _apply_operational_space_mass_matrix_kernel,
     _invert_spd_block_kernel,
+    _jacobian_transpose_force_kernel,
     _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
     _shift_jacobian_to_tool_kernel,
+    _task_space_pd_kernel,
     _tool_pose_and_twist_kernel,
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -470,6 +473,244 @@ def test_pose_error_orientation_matches_known_rotations(test, device):
         np.testing.assert_allclose(error[3:], expected_orientation_error, atol=1e-5)
 
 
+def test_task_space_pd_matches_formula(test, device):
+    """The PD kernel computes Kp .* pose_error + Kd .* (desired_twist - current_twist), axis by axis."""
+    pose_error_world = wp.array(
+        [wp.spatial_vector(0.1, -0.2, 0.3, 0.01, -0.02, 0.03)], dtype=wp.spatial_vector, device=device
+    )
+    tool_twist_world = wp.array(
+        [wp.spatial_vector(0.5, 0.0, -0.5, 0.1, 0.0, -0.1)], dtype=wp.spatial_vector, device=device
+    )
+    desired_twist_world = wp.array(
+        [wp.spatial_vector(0.0, 0.5, 0.0, 0.0, 0.1, 0.0)], dtype=wp.spatial_vector, device=device
+    )
+    stiffness = wp.array([wp.spatial_vector(10.0, 20.0, 30.0, 1.0, 2.0, 3.0)], dtype=wp.spatial_vector, device=device)
+    damping = wp.array([wp.spatial_vector(1.0, 2.0, 3.0, 0.1, 0.2, 0.3)], dtype=wp.spatial_vector, device=device)
+
+    desired_task_acceleration_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(
+        _task_space_pd_kernel,
+        dim=1,
+        inputs=[pose_error_world, tool_twist_world, desired_twist_world, stiffness, damping],
+        outputs=[desired_task_acceleration_world],
+        device=device,
+    )
+
+    kp = np.array([10.0, 20.0, 30.0, 1.0, 2.0, 3.0])
+    kd = np.array([1.0, 2.0, 3.0, 0.1, 0.2, 0.3])
+    pose_error_np = np.array([0.1, -0.2, 0.3, 0.01, -0.02, 0.03])
+    twist_error_np = np.array([0.0, 0.5, 0.0, 0.0, 0.1, 0.0]) - np.array([0.5, 0.0, -0.5, 0.1, 0.0, -0.1])
+    expected = kp * pose_error_np + kd * twist_error_np
+
+    np.testing.assert_allclose(desired_task_acceleration_world.numpy()[0], expected, atol=1e-6)
+
+
+def test_apply_operational_space_mass_matrix_matches_matvec(test, device):
+    """The inertial-decoupling kernel computes Lambda @ desired_task_acceleration_world."""
+    rng = np.random.default_rng(seed=1)
+    lambda_np = rng.standard_normal((6, 6)).astype(np.float32)
+    acceleration_np = rng.standard_normal(6).astype(np.float32)
+
+    operational_space_mass_matrix = wp.array(lambda_np.reshape(1, 6, 6), dtype=float, device=device)
+    desired_task_acceleration_world = wp.array(
+        [wp.spatial_vector(*acceleration_np.tolist())], dtype=wp.spatial_vector, device=device
+    )
+    task_space_force_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(
+        _apply_operational_space_mass_matrix_kernel,
+        dim=1,
+        inputs=[operational_space_mass_matrix, desired_task_acceleration_world],
+        outputs=[task_space_force_world],
+        device=device,
+    )
+
+    expected = lambda_np @ acceleration_np
+    np.testing.assert_allclose(task_space_force_world.numpy()[0], expected, atol=1e-4)
+
+
+def test_jacobian_transpose_force_matches_matvec(test, device):
+    """The force-mapping kernel computes jacobian_tool_world^T @ force, and leaves padding columns untouched.
+
+    Two robots with different controlled-DOF counts (3 and 5, both padded to
+    max_dofs=5) check that a robot's padding columns are never read from or
+    written to, only its own dof_count columns.
+    """
+    rng = np.random.default_rng(seed=2)
+    dof_counts = [3, 5]
+    max_dofs = 5
+
+    jacobian_np = np.zeros((2, 6, max_dofs), dtype=np.float32)
+    force_np = rng.standard_normal((2, 6)).astype(np.float32)
+    for robot_idx, n in enumerate(dof_counts):
+        jacobian_np[robot_idx, :, :n] = rng.standard_normal((6, n)).astype(np.float32)
+
+    jacobian_tool_world = wp.array(jacobian_np, dtype=float, device=device)
+    task_space_force_world = wp.array(
+        [wp.spatial_vector(*force_np[0].tolist()), wp.spatial_vector(*force_np[1].tolist())],
+        dtype=wp.spatial_vector,
+        device=device,
+    )
+    dof_count = wp.array(dof_counts, dtype=wp.int32, device=device)
+    # Poison the output with a sentinel so an accidental write to a padding
+    # column (instead of just leaving it alone) would be caught below.
+    joint_torque = wp.full((2, max_dofs), value=-999.0, dtype=float, device=device)
+    wp.launch(
+        _jacobian_transpose_force_kernel,
+        dim=(2, max_dofs),
+        inputs=[jacobian_tool_world, task_space_force_world, dof_count],
+        outputs=[joint_torque],
+        device=device,
+    )
+
+    joint_torque_np = joint_torque.numpy()
+    for robot_idx, n in enumerate(dof_counts):
+        expected = jacobian_np[robot_idx, :, :n].T @ force_np[robot_idx]
+        np.testing.assert_allclose(joint_torque_np[robot_idx, :n], expected, atol=1e-4)
+        np.testing.assert_allclose(joint_torque_np[robot_idx, n:], -999.0 * np.ones(max_dofs - n))
+
+
+def test_task_space_control_chain_matches_numpy(test, device):
+    """The full chain (pose error -> PD -> inertial decoupling -> J^T) matches a from-scratch numpy computation.
+
+    Uses the six-DOF arm so Lambda is well-posed (see the rank discussion for
+    _operational_space_mass_matrix_inverse_kernel), and a nonzero, non-identity
+    configuration and velocity so no term accidentally vanishes.
+    """
+    model, state, tool_body, coordinate_change_body_from_tool = _build_six_dof_arm_with_tool_site(device)
+    device = model.device
+
+    # Ground truth dynamics quantities at a non-identity configuration and velocity.
+    state.joint_q.assign([0.3, -0.4, 0.6, 0.2, -0.5, 0.35])
+    state.joint_qd.assign([0.1, -0.05, 0.2, 0.0, 0.1, -0.1])
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    mass_matrix = newton.eval_mass_matrix(model, state)
+    jacobian_com_world = newton.eval_jacobian(model, state)
+
+    tool_body_arr = wp.array([tool_body], dtype=wp.int32, device=device)
+    coordinate_change_body_from_tool_arr = wp.array(
+        [coordinate_change_body_from_tool], dtype=wp.transform, device=device
+    )
+
+    coordinate_change_world_from_tool = wp.zeros(1, dtype=wp.transform, device=device)
+    tool_twist_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(
+        _tool_pose_and_twist_kernel,
+        dim=1,
+        inputs=[state.body_q, state.body_qd, model.body_com, tool_body_arr, coordinate_change_body_from_tool_arr],
+        outputs=[coordinate_change_world_from_tool, tool_twist_world],
+        device=device,
+    )
+
+    max_dofs = model.max_dofs_per_articulation
+    jacobian_tool_world = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
+    wp.launch(
+        _shift_jacobian_to_tool_kernel,
+        dim=(1, max_dofs),
+        inputs=[
+            jacobian_com_world,
+            state.body_q,
+            model.body_com,
+            tool_body_arr,
+            coordinate_change_body_from_tool_arr,
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array([5], dtype=wp.int32, device=device),  # tool_body is link 5 (the 6th joint's child)
+        ],
+        outputs=[jacobian_tool_world],
+        device=device,
+    )
+
+    dof_count = wp.array([max_dofs], dtype=wp.int32, device=device)
+    mass_matrix_cholesky = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
+    mass_matrix_inv = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
+    wp.launch(
+        _invert_spd_block_kernel,
+        dim=1,
+        inputs=[mass_matrix, dof_count, mass_matrix_cholesky],
+        outputs=[mass_matrix_inv],
+        device=device,
+    )
+
+    operational_space_mass_matrix_inv = wp.zeros((1, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _operational_space_mass_matrix_inverse_kernel,
+        dim=(1, 6, 6),
+        inputs=[jacobian_tool_world, mass_matrix_inv, dof_count],
+        outputs=[operational_space_mass_matrix_inv],
+        device=device,
+    )
+
+    task_dim = wp.array([6], dtype=wp.int32, device=device)
+    operational_space_mass_matrix_cholesky = wp.zeros((1, 6, 6), dtype=float, device=device)
+    operational_space_mass_matrix = wp.zeros((1, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _invert_spd_block_kernel,
+        dim=1,
+        inputs=[operational_space_mass_matrix_inv, task_dim, operational_space_mass_matrix_cholesky],
+        outputs=[operational_space_mass_matrix],
+        device=device,
+    )
+
+    # Desired pose: a small offset and rotation away from the current one, so
+    # every term in the chain (position error, orientation error, velocity
+    # error) is nonzero.
+    current_pos = np.array(wp.transform_get_translation(wp.transform(*coordinate_change_world_from_tool.numpy()[0])))
+    current_quat = wp.transform_get_rotation(wp.transform(*coordinate_change_world_from_tool.numpy()[0]))
+    desired_pos = current_pos + np.array([0.05, -0.02, 0.03])
+    desired_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.1) * current_quat
+    coordinate_change_world_from_desired_tool = wp.array(
+        [wp.transform(wp.vec3(*desired_pos), desired_quat)], dtype=wp.transform, device=device
+    )
+
+    pose_error_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(
+        _pose_error_kernel,
+        dim=1,
+        inputs=[coordinate_change_world_from_tool, coordinate_change_world_from_desired_tool],
+        outputs=[pose_error_world],
+        device=device,
+    )
+
+    kp_np = np.array([50.0, 50.0, 50.0, 20.0, 20.0, 20.0])
+    kd_np = np.array([10.0, 10.0, 10.0, 4.0, 4.0, 4.0])
+    stiffness = wp.array([wp.spatial_vector(*kp_np.tolist())], dtype=wp.spatial_vector, device=device)
+    damping = wp.array([wp.spatial_vector(*kd_np.tolist())], dtype=wp.spatial_vector, device=device)
+    desired_twist_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)  # target is stationary
+
+    desired_task_acceleration_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(
+        _task_space_pd_kernel,
+        dim=1,
+        inputs=[pose_error_world, tool_twist_world, desired_twist_world, stiffness, damping],
+        outputs=[desired_task_acceleration_world],
+        device=device,
+    )
+
+    task_space_force_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(
+        _apply_operational_space_mass_matrix_kernel,
+        dim=1,
+        inputs=[operational_space_mass_matrix, desired_task_acceleration_world],
+        outputs=[task_space_force_world],
+        device=device,
+    )
+
+    joint_torque = wp.zeros((1, max_dofs), dtype=float, device=device)
+    wp.launch(
+        _jacobian_transpose_force_kernel,
+        dim=(1, max_dofs),
+        inputs=[jacobian_tool_world, task_space_force_world, dof_count],
+        outputs=[joint_torque],
+        device=device,
+    )
+
+    # Expected: the exact same formula, computed from scratch with numpy.
+    kp_expected = kp_np * pose_error_world.numpy()[0] + kd_np * (0.0 - tool_twist_world.numpy()[0])
+    force_expected = operational_space_mass_matrix.numpy()[0] @ kp_expected
+    torque_expected = jacobian_tool_world.numpy()[0].T @ force_expected
+
+    np.testing.assert_allclose(joint_torque.numpy()[0], torque_expected, atol=1e-3)
+
+
 class TestOperationalSpaceKernels(unittest.TestCase):
     pass
 
@@ -526,6 +767,30 @@ add_function_test(
     TestOperationalSpaceKernels,
     "test_pose_error_orientation_matches_known_rotations",
     test_pose_error_orientation_matches_known_rotations,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_task_space_pd_matches_formula",
+    test_task_space_pd_matches_formula,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_apply_operational_space_mass_matrix_matches_matvec",
+    test_apply_operational_space_mass_matrix_matches_matvec,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_jacobian_transpose_force_matches_matvec",
+    test_jacobian_transpose_force_matches_matvec,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_task_space_control_chain_matches_numpy",
+    test_task_space_control_chain_matches_numpy,
     devices=devices,
 )
 
