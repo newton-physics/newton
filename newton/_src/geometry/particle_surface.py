@@ -160,6 +160,7 @@ class _ParticleSurfaceSparseWorkspace(_ParticleSurfaceWorkspaceBase):
         self.grid_origin = wp.empty(self.world_count, dtype=wp.vec3, device=self.device)
         self.grid_dims = wp.empty(self.world_count, dtype=wp.vec3i, device=self.device)
         self.grid_counts = wp.zeros(7 * self.world_count, dtype=wp.int32, device=self.device)
+        self.per_world_status: wp.array[wp.int32] = self.grid_counts[3::7]
         self.grid_node_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
         self.grid_cell_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
         self.active_particle_count = wp.zeros(1, dtype=wp.int32, device=self.device)
@@ -1177,6 +1178,9 @@ class ParticleSurface:
 
         Reacquire :attr:`ParticleSurface.sparse_field` after updating or
         extracting the field because its underlying storage may be replaced.
+        When using preallocated storage, inspect :attr:`per_world_status`
+        before consuming results; a nonzero entry means the sparse field may
+        be incomplete because its capacity was exceeded.
         """
 
         volume: wp.Volume
@@ -1191,6 +1195,13 @@ class ParticleSurface:
         world_index_offsets: wp.array[wp.vec3i]
         """Offset of each world's coordinates in the packed index grid [voxels],
         shape ``(world_count,)``.
+        """
+
+        per_world_status: wp.array[wp.int32]
+        """Extraction status per world, shape ``(world_count,)``.
+
+        Zero indicates success; a nonzero value indicates sparse-grid
+        overflow.
         """
 
     class ExtractionMesh:
@@ -1424,6 +1435,7 @@ class ParticleSurface:
             self._workspace.field,
             self._field_background(),
             self._workspace.env_offsets,
+            self._workspace.per_world_status,
         )
 
     def _field_background(self) -> float:

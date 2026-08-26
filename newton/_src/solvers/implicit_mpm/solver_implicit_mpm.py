@@ -2400,12 +2400,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 particle_world=self.model.particle_world if surface.world_count > 1 else None,
             )
 
-        surface.update_field(
+        sparse_field = surface.update_field(
             state.particle_q,
             radii=self._mpm_model.particle_radius,
             particle_flags=particle_flags,
             particle_world=self.model.particle_world if surface.world_count > 1 else None,
         )
+        if sparse_field is None:
+            return surface.resurface(compute_normals=compute_normals)
 
         return extrapolate_surface_sdf_into_colliders(
             surface,

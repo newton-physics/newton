@@ -649,6 +649,7 @@ def test_grid_capacity_extraction(test, device):
     mesh_counts = mesh._counts.numpy()
     test.assertEqual(int(mesh_counts[0]), reference_vertices.shape[0])
     test.assertEqual(int(mesh_counts[1]), reference_indices.shape[0])
+    np.testing.assert_array_equal(surface.sparse_field.per_world_status.numpy(), [0])
 
     logical_overflow_surface = ParticleSurface(
         voxel_size=0.08,
@@ -665,6 +666,7 @@ def test_grid_capacity_extraction(test, device):
     )
     logical_overflow_mesh = logical_overflow_surface.extract(positions, radii, compute_normals=False)
     test.assertEqual(logical_overflow_surface._sparse_volume.get_active_stats().voxel_count, max_grid_cells)
+    np.testing.assert_array_equal(logical_overflow_surface.sparse_field.per_world_status.numpy(), [1])
     with test.assertRaisesRegex(ValueError, "exceeds configured max_grid_cells"):
         logical_overflow_mesh.to_arrays()
 
@@ -1145,6 +1147,18 @@ def test_solver_extract_particle_surface(test, device):
         field_mode="sdf",
         redistance_iterations=1,
     )
+    empty_mesh = solver.extract_particle_surface(
+        state,
+        surface_sdf,
+        compute_normals=False,
+        extrapolate_into_colliders=True,
+        particle_flags=inactive_flags,
+    )
+    empty_vertices, empty_indices, empty_normals = empty_mesh.to_arrays()
+    test.assertIsNone(empty_vertices)
+    test.assertIsNone(empty_indices)
+    test.assertIsNone(empty_normals)
+
     with patch.object(surface_sdf, "redistance", wraps=surface_sdf.redistance) as redistance:
         verts, indices, normals = solver.extract_particle_surface(
             state,
