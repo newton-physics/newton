@@ -84,11 +84,12 @@ class ControllerJointImpedanceModelFree(ControllerBase):
             :attr:`total_controlled_dofs` (the length of every port), and its
             maximum sets :attr:`max_controlled_dofs` (the padded width of the
             mass matrix). Every entry must be positive.
-        stiffness: Position-error gain Kp, shape [total_controlled_dofs]. Units
-            depend on ``use_inertia_decoupling``: [1/s²] when enabled, since the
-            PD term is then an acceleration premultiplied by M(q); otherwise
-            [N/m or N·m/rad]. Pass an array to copy it at construction, or
-            ``None`` to read ``inputs.stiffness`` each step.
+        stiffness: Position-error gain Kp. Units depend on
+            ``use_inertia_decoupling``: [1/s²] when enabled, since the PD term
+            is then an acceleration premultiplied by M(q); otherwise [N/m or
+            N·m/rad]. Pass a scalar to apply the same gain to every controlled
+            DOF, an array of shape [total_controlled_dofs] to set them
+            individually, or ``None`` to read ``inputs.stiffness`` each step.
         damping: Velocity-error gain Kd, [1/s] when ``use_inertia_decoupling``
             is enabled, otherwise [N·s/m or N·m·s/rad]. Same format as
             ``stiffness``.
@@ -140,8 +141,8 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         self,
         *,
         controlled_dofs_per_robot: wp.array[wp.int32],
-        stiffness: wp.array[wp.float32] | None,
-        damping: wp.array[wp.float32] | None,
+        stiffness: wp.array[wp.float32] | float | None,
+        damping: wp.array[wp.float32] | float | None,
         use_gravity_compensation: bool = True,
         use_coriolis_compensation: bool = True,
         use_inertia_decoupling: bool = True,
@@ -183,6 +184,8 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         total_controlled_dofs = int(controlled_dofs_per_robot_np.sum())
 
         for name, array in (("stiffness", stiffness), ("damping", damping)):
+            if isinstance(array, (int, float)) and not isinstance(array, bool):
+                continue  # broadcast at bake time, not a wp.array to validate
             _validate_array(
                 array=array,
                 name=name,
@@ -260,14 +263,23 @@ class ControllerJointImpedanceModelFree(ControllerBase):
             else None
         )
 
-    def _bake_gain(self, value: wp.array[wp.float32] | None) -> wp.array[wp.float32] | None:
-        """Copy a gain array so later edits to the caller's array have no effect.
+    def _bake_gain(self, value: wp.array[wp.float32] | float | None) -> wp.array[wp.float32] | None:
+        """Broadcast a scalar, or copy a gain array, into a fresh compact buffer.
 
         Returns ``None`` for live gains, which are read from the input struct
-        each step instead. Already validated by :func:`_validate_array`.
+        each step instead. A wp.array is already validated by
+        :func:`_validate_array`.
         """
         if value is None:
             return None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return wp.full(
+                self._total_controlled_dofs,
+                float(value),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=self._requires_grad,
+            )
         baked = wp.zeros(
             self._total_controlled_dofs,
             dtype=wp.float32,

@@ -100,11 +100,12 @@ class ControllerJointImpedance(ControllerBase):
             selected articulations, as a list or as a single pattern. ``None``
             selects every eligible joint (at least one coordinate and one
             DOF) of each selected articulation.
-        stiffness: Position-error gain Kp, shape [total_controlled_dofs]. Units
-            depend on ``use_inertia_decoupling``: [1/s²] when enabled, since
-            the PD term is then an acceleration premultiplied by M(q);
-            otherwise [N/m or N·m/rad]. Pass an array to copy it at
-            construction, or ``None`` to read ``inputs.stiffness`` each step.
+        stiffness: Position-error gain Kp. Units depend on
+            ``use_inertia_decoupling``: [1/s²] when enabled, since the PD term
+            is then an acceleration premultiplied by M(q); otherwise [N/m or
+            N·m/rad]. Pass a scalar to apply the same gain to every controlled
+            DOF, an array of shape [total_controlled_dofs] to set them
+            individually, or ``None`` to read ``inputs.stiffness`` each step.
         damping: Velocity-error gain Kd, [1/s] when
             ``use_inertia_decoupling`` is enabled, otherwise
             [N·s/m or N·m·s/rad]. Same format as ``stiffness``.
@@ -149,8 +150,8 @@ class ControllerJointImpedance(ControllerBase):
         *,
         articulations: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
         joints: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
-        stiffness: wp.array[wp.float32] | None,
-        damping: wp.array[wp.float32] | None,
+        stiffness: wp.array[wp.float32] | float | None,
+        damping: wp.array[wp.float32] | float | None,
         use_gravity_compensation: bool = True,
         use_coriolis_compensation: bool = True,
         use_inertia_decoupling: bool = True,

@@ -197,6 +197,21 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         )
         np.testing.assert_allclose(tau, [5.0, 0.0, 0.0], atol=1e-5)
 
+    def test_scalar_stiffness_broadcasts_to_every_dof(self):
+        """Verify a scalar stiffness applies the same Kp to every controlled DOF."""
+        device = wp.get_device()
+        ctrl = ControllerJointImpedanceModelFree(
+            controlled_dofs_per_robot=_dofs_arr([2, 1], device),
+            stiffness=5.0,
+            damping=0.0,
+            use_gravity_compensation=False,
+            use_coriolis_compensation=False,
+            use_inertia_decoupling=False,
+            device=device,
+        )
+        tau = _run_mf(ctrl, q=[0.0] * 3, qd=[0.0] * 3, q_des=[1.0, 2.0, 3.0], qd_des=[0.0] * 3, device=device)
+        np.testing.assert_allclose(tau, [5.0, 10.0, 15.0], atol=1e-5)
+
     def test_velocity_error_produces_damping_torque(self):
         """Verify τ = Kd * (qd_des - qd) when Kp=0."""
         device = wp.get_device()
@@ -747,6 +762,23 @@ class TestControllerJointImpedance(unittest.TestCase):
         ctrl = self._make_ctrl(device, kp=0.0, kd=3.0)
         tau = self._run(ctrl, q_sim=[0.0], qd_sim=[0.0], q_des=[0.0], qd_des=[2.0], device=device)
         np.testing.assert_allclose(tau, [6.0], atol=1e-4)
+
+    def test_scalar_stiffness_broadcasts_without_knowing_total_controlled_dofs(self):
+        """Verify a scalar stiffness applies to every controlled DOF, resolved after articulations/joints."""
+        device = wp.get_device()
+        model = _build_two_robot_mixed().finalize(device=device)  # robot0: 2 DOFs, robot1: 1 DOF
+        ctrl = ControllerJointImpedance(
+            model,
+            stiffness=4.0,
+            damping=0.0,
+            use_gravity_compensation=False,
+            use_coriolis_compensation=False,
+            use_inertia_decoupling=False,
+        )
+        tau = self._run(
+            ctrl, q_sim=[0.0, 0.0, 0.0], qd_sim=[0.0, 0.0, 0.0], q_des=[1.0, 0.0, 2.0], qd_des=[0.0] * 3, device=device
+        )
+        np.testing.assert_allclose(tau, [4.0, 0.0, 8.0], atol=1e-4)
 
     def test_is_graphable_true(self):
         """Verify is_graphable() returns True."""
