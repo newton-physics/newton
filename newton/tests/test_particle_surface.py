@@ -57,13 +57,16 @@ def _make_disk_particles(n=3000, seed=123, z_extent=0.02, device=None):
 
 
 def _sparse_field_samples(surface):
-    capacity = surface._capacity
-    node_count = capacity.volume.get_active_stats().voxel_count
-    packed = capacity.voxel_ijk[:node_count].numpy()
-    worlds = capacity.node_world[:node_count].numpy()
-    offsets = capacity.env_offsets.numpy()
+    sparse_field = surface.sparse_field
+    if sparse_field is None:
+        raise ValueError("Particle surface field has not been extracted")
+    workspace = surface._workspace
+    node_count = sparse_field.volume.get_active_stats().voxel_count
+    packed = workspace.voxel_ijk[:node_count].numpy()
+    worlds = workspace.node_world[:node_count].numpy()
+    offsets = sparse_field.world_index_offsets.numpy()
     coordinates = packed - offsets[worlds]
-    values = capacity.field[:node_count].numpy()
+    values = sparse_field.voxel_data[:node_count].numpy()
     order = np.lexsort(coordinates.T[::-1])
     return coordinates[order], values[order]
 
@@ -127,27 +130,31 @@ def test_multi_world_mesh(test, device):
     mesh = surface.extract(combined_positions, combined_radii, particle_world=particle_world)
     vertices, indices, normals = mesh.to_arrays()
 
-    vertex_world_start = mesh.vertex_world_start.numpy()
-    index_world_start = mesh.index_world_start.numpy()
-    test.assertEqual(int(vertex_world_start[-1]), vertices.shape[0])
-    test.assertEqual(int(index_world_start[-1]), indices.shape[0])
-    test.assertEqual(int(vertex_world_start[1]), int(vertex_world_start[2] - vertex_world_start[1]))
-    test.assertEqual(int(index_world_start[1]), int(index_world_start[2] - index_world_start[1]))
-    test.assertEqual(int(vertex_world_start[2]), int(vertex_world_start[3]))
-    test.assertEqual(int(index_world_start[2]), int(index_world_start[3]))
+    vertex_world_offsets = mesh.vertex_world_offsets.numpy()
+    index_world_offsets = mesh.index_world_offsets.numpy()
+    test.assertEqual(int(vertex_world_offsets[-1]), vertices.shape[0])
+    test.assertEqual(int(index_world_offsets[-1]), indices.shape[0])
+    test.assertEqual(int(vertex_world_offsets[1]), int(vertex_world_offsets[2] - vertex_world_offsets[1]))
+    test.assertEqual(int(index_world_offsets[1]), int(index_world_offsets[2] - index_world_offsets[1]))
+    test.assertEqual(int(vertex_world_offsets[2]), int(vertex_world_offsets[3]))
+    test.assertEqual(int(index_world_offsets[2]), int(index_world_offsets[3]))
 
     indices_np = indices.numpy()
     for world in range(2):
-        world_indices = indices_np[index_world_start[world] : index_world_start[world + 1]]
-        test.assertGreaterEqual(int(np.min(world_indices)), int(vertex_world_start[world]))
-        test.assertLess(int(np.max(world_indices)), int(vertex_world_start[world + 1]))
+        world_indices = indices_np[index_world_offsets[world] : index_world_offsets[world + 1]]
+        test.assertGreaterEqual(int(np.min(world_indices)), int(vertex_world_offsets[world]))
+        test.assertLess(int(np.max(world_indices)), int(vertex_world_offsets[world + 1]))
 
     test.assertEqual(normals.shape[0], vertices.shape[0])
-    test.assertEqual(surface.grid_dims_for_world(0), surface.grid_dims_for_world(1))
-    test.assertEqual(surface.grid_dims_for_world(2), (0, 0, 0))
-    test.assertIsNone(surface.field_for_world(2))
+    sparse_field = surface.sparse_field
+    test.assertEqual(sparse_field.world_index_offsets.shape, (3,))
+    world_index_offsets = sparse_field.world_index_offsets.numpy()
+    np.testing.assert_array_equal(world_index_offsets[2], [0, 0, 0])
+    test.assertEqual(surface._grid_dims_for_world(0), surface._grid_dims_for_world(1))
+    test.assertEqual(surface._grid_dims_for_world(2), (0, 0, 0))
+    test.assertIsNone(surface._field_for_world(2))
     np.testing.assert_allclose(
-        np.array(surface.grid_origin_for_world(1)) - np.array(surface.grid_origin_for_world(0)),
+        np.array(surface._grid_origin_for_world(1)) - np.array(surface._grid_origin_for_world(0)),
         offset,
         atol=1.0e-6,
     )
@@ -177,13 +184,13 @@ def test_multi_world_capacity(test, device):
         world_count=2,
         device=device,
     )
-    exact_surface.extract(
+    exact_surface._extract(
         combined_positions,
         combined_radii,
         particle_world=particle_world,
         compute_mesh=False,
     )
-    cell_world_start = exact_surface.grid_cell_world_start.numpy()
+    cell_world_start = exact_surface._grid_cell_world_start.numpy()
     world_cell_counts = np.diff(cell_world_start)
     total_cell_count = int(cell_world_start[-1])
 
@@ -197,11 +204,11 @@ def test_multi_world_capacity(test, device):
 
     mesh = surface.extract(combined_positions, combined_radii, particle_world=particle_world)
     vertices, indices, _normals = mesh.to_arrays()
-    vertex_world_start = mesh.vertex_world_start.numpy()
-    index_world_start = mesh.index_world_start.numpy()
-    test.assertEqual(int(vertex_world_start[-1]), vertices.shape[0])
-    test.assertEqual(int(index_world_start[-1]), indices.shape[0])
-    test.assertEqual(int(vertex_world_start[1]), int(vertex_world_start[2] - vertex_world_start[1]))
+    vertex_world_offsets = mesh.vertex_world_offsets.numpy()
+    index_world_offsets = mesh.index_world_offsets.numpy()
+    test.assertEqual(int(vertex_world_offsets[-1]), vertices.shape[0])
+    test.assertEqual(int(index_world_offsets[-1]), indices.shape[0])
+    test.assertEqual(int(vertex_world_offsets[1]), int(vertex_world_offsets[2] - vertex_world_offsets[1]))
 
     overflow_surface = ParticleSurface(
         voxel_size=0.1,
@@ -227,15 +234,12 @@ def test_multi_world_capacity(test, device):
 def test_field_only_extraction(test, device):
     positions, radii = _make_sphere_particles(device=device)
     ctx = ParticleSurface(voxel_size=0.05, kernel_radius=0.15, device=device)
-    verts, indices, normals = ctx.extract(positions, radii=radii, compute_mesh=False)
+    verts, indices, normals = ctx._extract(positions, radii=radii, compute_mesh=False)
 
     test.assertIsNone(verts)
     test.assertIsNone(indices)
     test.assertIsNone(normals)
-    test.assertIsNotNone(ctx.field)
-    test.assertIsNone(ctx.verts)
-    test.assertIsNone(ctx.indices)
-    test.assertIsNone(ctx.normals)
+    test.assertIsNotNone(ctx._field)
 
     verts, indices, normals = ctx.resurface()
     test.assertIsNotNone(verts)
@@ -259,12 +263,12 @@ def test_dynamic_grid_uses_realized_support(test, device):
         mesh_smooth_iterations=0,
         device=device,
     )
-    ctx.extract(positions, radii=radii, compute_mesh=False)
+    ctx._extract(positions, radii=radii, compute_mesh=False)
 
     G = ctx._G.numpy()[0]
     reach = 2.0 * np.linalg.norm(np.linalg.inv(G), axis=0)
-    grid_min = np.array([ctx.grid_origin[i] for i in range(3)])
-    grid_max = grid_min + (np.array(ctx.grid_dims) - 1) * ctx.voxel_size
+    grid_min = np.array([ctx._grid_origin_value[i] for i in range(3)])
+    grid_max = grid_min + (np.array(ctx._grid_dims_value) - 1) * ctx.voxel_size
     test.assertTrue(np.all(grid_min <= -reach))
     test.assertTrue(np.all(grid_max >= reach))
 
@@ -289,12 +293,12 @@ def test_isotropic_fallback_stencil_covers_support(test, device):
 
             mesh = surface.extract(positions, radii, compute_normals=False)
 
-            np.testing.assert_array_equal(mesh.counts.numpy(), [270, 1608, 0])
-            active_voxel_count = surface.sparse_volume.get_active_stats().voxel_count
+            np.testing.assert_array_equal(mesh._counts.numpy(), [270, 1608, 0])
+            active_voxel_count = surface._sparse_volume.get_active_stats().voxel_count
             if max_grid_cells is None:
-                candidate_leaf_count = surface._capacity.leaf_volume.get_active_stats().voxel_count
+                candidate_leaf_count = surface._workspace.leaf_volume.get_active_stats().voxel_count
             else:
-                leaf_hash = surface._capacity.leaf_hash
+                leaf_hash = surface._workspace.leaf_hash
                 candidate_leaf_count = int(leaf_hash.active_slots.numpy()[leaf_hash.capacity])
             candidate_voxel_count = 512 * candidate_leaf_count
             test.assertEqual(active_voxel_count, 1761)
@@ -314,9 +318,9 @@ def test_rebuildable_support_stencil_uses_anisotropy_bound(test, device):
         device=device,
     )
 
-    test.assertEqual(surface._capacity._support_leaf_radius, 3)
-    surface._capacity.ensure_support_leaf_keys(17)
-    test.assertEqual(surface._capacity._support_leaf_radius, 3)
+    test.assertEqual(surface._workspace._support_leaf_radius, 3)
+    surface._workspace.ensure_support_leaf_keys(17)
+    test.assertEqual(surface._workspace._support_leaf_radius, 3)
 
 
 def test_rebuildable_topology_scratch_is_fixed(test, device):
@@ -333,31 +337,31 @@ def test_rebuildable_topology_scratch_is_fixed(test, device):
     )
 
     clustered = wp.array([[0.0, 0.0, 0.0]] * 3, dtype=wp.vec3, device=device)
-    surface.extract(clustered, radii, compute_mesh=False)
-    leaf_hash = surface._capacity.leaf_hash
+    surface._extract(clustered, radii, compute_mesh=False)
+    leaf_hash = surface._workspace.leaf_hash
     initial_hash_capacity = leaf_hash.capacity
-    initial_topology_capacity = surface._capacity.topology_voxels.shape[0]
+    initial_topology_capacity = surface._workspace.topology_voxels.shape[0]
     initial_hash_keys_ptr = leaf_hash.keys.ptr
     initial_hash_slots_ptr = leaf_hash.active_slots.ptr
-    initial_leaf_ijk_ptr = surface._capacity.leaf_ijk.ptr
-    initial_occupancy_ptr = surface._capacity.topology_occupancy.ptr
-    initial_occupancy_temp_ptr = surface._capacity.topology_occupancy_temp.ptr
-    initial_topology_ptr = surface._capacity.topology_voxels.ptr
+    initial_leaf_ijk_ptr = surface._workspace.leaf_ijk.ptr
+    initial_occupancy_ptr = surface._workspace.topology_occupancy.ptr
+    initial_occupancy_temp_ptr = surface._workspace.topology_occupancy_temp.ptr
+    initial_topology_ptr = surface._workspace.topology_voxels.ptr
 
     spread = wp.array([[-5.0, 0.0, 0.0], [0.0, 0.0, 0.0], [5.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
-    surface.extract(spread, radii, compute_mesh=False)
+    surface._extract(spread, radii, compute_mesh=False)
 
-    test.assertGreaterEqual(initial_hash_capacity, surface._capacity.max_grid_cells)
+    test.assertGreaterEqual(initial_hash_capacity, surface._workspace.max_grid_cells)
     test.assertEqual(leaf_hash.capacity, initial_hash_capacity)
-    test.assertEqual(surface._capacity.topology_occupancy.shape[0], 16 * initial_hash_capacity)
-    test.assertEqual(surface._capacity.topology_voxels.shape[0], initial_topology_capacity)
+    test.assertEqual(surface._workspace.topology_occupancy.shape[0], 16 * initial_hash_capacity)
+    test.assertEqual(surface._workspace.topology_voxels.shape[0], initial_topology_capacity)
     test.assertEqual(leaf_hash.keys.ptr, initial_hash_keys_ptr)
     test.assertEqual(leaf_hash.active_slots.ptr, initial_hash_slots_ptr)
-    test.assertEqual(surface._capacity.leaf_ijk.ptr, initial_leaf_ijk_ptr)
-    test.assertEqual(surface._capacity.topology_occupancy.ptr, initial_occupancy_ptr)
-    test.assertEqual(surface._capacity.topology_occupancy_temp.ptr, initial_occupancy_temp_ptr)
-    test.assertEqual(surface._capacity.topology_voxels.ptr, initial_topology_ptr)
-    np.testing.assert_array_equal(surface._capacity.rebuild_status.numpy(), np.zeros(5, dtype=np.uint32))
+    test.assertEqual(surface._workspace.leaf_ijk.ptr, initial_leaf_ijk_ptr)
+    test.assertEqual(surface._workspace.topology_occupancy.ptr, initial_occupancy_ptr)
+    test.assertEqual(surface._workspace.topology_occupancy_temp.ptr, initial_occupancy_temp_ptr)
+    test.assertEqual(surface._workspace.topology_voxels.ptr, initial_topology_ptr)
+    np.testing.assert_array_equal(surface._workspace.rebuild_status.numpy(), np.zeros(5, dtype=np.uint32))
 
 
 def test_mesh_smoothing(test, device):
@@ -392,9 +396,9 @@ def test_nonfinite_positions_are_skipped(test, device):
     reference.update_field(reference_positions, reference_radii)
     surface.update_field(positions, radii)
 
-    test.assertEqual(surface.grid_dims, reference.grid_dims)
-    np.testing.assert_allclose(surface.grid_origin, reference.grid_origin)
-    np.testing.assert_allclose(surface.field.numpy(), reference.field.numpy())
+    test.assertEqual(surface._grid_dims_value, reference._grid_dims_value)
+    np.testing.assert_allclose(surface._grid_origin_value, reference._grid_origin_value)
+    np.testing.assert_allclose(surface._field.numpy(), reference._field.numpy())
 
 
 def test_radii_length_mismatch(test, device):
@@ -450,7 +454,7 @@ def test_anisotropic(test, device):
     test.assertGreater(verts.shape[0], 0)
 
     # Field should be close to 1.0 in the interior
-    field_np = ctx.field.numpy()
+    field_np = ctx._field.numpy()
     test.assertGreater(field_np.max(), 0.5, "Anisotropic field max should be significant")
 
     # G matrices should not all be isotropic (anisotropy should be active)
@@ -475,7 +479,7 @@ def test_anisotropy_strength(test, device):
     test.assertGreater(indices.shape[0], 0)
 
     G_np = ctx._G.numpy()
-    iso_scale = 1.0 / (ctx.kernel_scale * ctx.kernel_radius)
+    iso_scale = 1.0 / (ctx._kernel_scale * ctx._kernel_radius)
     np.testing.assert_allclose(G_np[:, 0, 0], iso_scale, rtol=1.0e-5, atol=1.0e-5)
     np.testing.assert_allclose(G_np[:, 1, 1], iso_scale, rtol=1.0e-5, atol=1.0e-5)
     np.testing.assert_allclose(G_np[:, 2, 2], iso_scale, rtol=1.0e-5, atol=1.0e-5)
@@ -502,7 +506,7 @@ def test_anisotropy_ratio_one_uses_isotropic_scale(test, device):
     ctx.update_field(positions, radii)
 
     G_np = ctx._G.numpy()
-    expected = np.eye(3, dtype=np.float32) / (ctx.kernel_scale * ctx.kernel_radius)
+    expected = np.eye(3, dtype=np.float32) / (ctx._kernel_scale * ctx._kernel_radius)
     np.testing.assert_allclose(
         G_np,
         np.broadcast_to(expected, G_np.shape),
@@ -530,7 +534,7 @@ def test_anisotropy_bin_coordinate_overflow_uses_isotropic_fallback(test, device
 
     ctx.update_field(positions, radii)
 
-    expected_scale = 1.0 / (ctx.kernel_scale * ctx.kernel_radius)
+    expected_scale = 1.0 / (ctx._kernel_scale * ctx._kernel_radius)
     np.testing.assert_allclose(ctx._G.numpy()[1], np.eye(3) * expected_scale, rtol=1.0e-5, atol=1.0e-5)
     test.assertEqual(int(ctx._isotropic_fallback.numpy()[1]), 1)
 
@@ -545,11 +549,19 @@ def test_sdf_field_mode(test, device):
         mesh_smooth_iterations=0,
         device=device,
     )
+    test.assertIsNone(ctx.sparse_field)
     verts, indices, _ = ctx.extract(positions, radii=radii, compute_normals=False)
     test.assertIsNotNone(verts)
     test.assertGreater(indices.shape[0], 0)
 
-    field_np = ctx.field.numpy()
+    sparse_field = ctx.sparse_field
+    test.assertIsInstance(sparse_field, ParticleSurface.SparseField)
+    test.assertIsInstance(sparse_field.volume, wp.Volume)
+    test.assertEqual(sparse_field.voxel_data.dtype, wp.float32)
+    test.assertAlmostEqual(sparse_field.background, 0.25)
+    test.assertEqual(sparse_field.world_index_offsets.shape, (1,))
+    np.testing.assert_array_equal(sparse_field.world_index_offsets.numpy(), [[0, 0, 0]])
+    field_np = sparse_field.voxel_data.numpy()
     test.assertLess(field_np.min(), 0.0)
     test.assertGreater(field_np.max(), 0.0)
 
@@ -592,9 +604,10 @@ def test_update_field_matches_extract_field(test, device):
         mesh_smooth_iterations=0,
         device=device,
     )
-    ctx.update_field(positions, radii)
+    sparse_field = ctx.update_field(positions, radii)
 
-    np.testing.assert_allclose(ctx.field.numpy(), ref.field.numpy(), rtol=1.0e-6, atol=1.0e-6)
+    test.assertIsInstance(sparse_field, ParticleSurface.SparseField)
+    np.testing.assert_allclose(sparse_field.voxel_data.numpy(), ref._field.numpy(), rtol=1.0e-6, atol=1.0e-6)
 
 
 def test_grid_capacity_extraction(test, device):
@@ -612,7 +625,7 @@ def test_grid_capacity_extraction(test, device):
         device=device,
     )
     reference_vertices, reference_indices, _ = reference.extract(positions, radii=radii, compute_normals=False)
-    max_grid_cells = reference.sparse_volume.get_active_stats().voxel_count
+    max_grid_cells = reference._sparse_volume.get_active_stats().voxel_count
 
     surface = ParticleSurface(
         voxel_size=0.08,
@@ -633,7 +646,7 @@ def test_grid_capacity_extraction(test, device):
     capacity_coordinates, capacity_field = _sparse_field_samples(surface)
     np.testing.assert_array_equal(capacity_coordinates, reference_coordinates)
     np.testing.assert_allclose(capacity_field, reference_field, rtol=1.0e-6, atol=1.0e-6)
-    mesh_counts = mesh.counts.numpy()
+    mesh_counts = mesh._counts.numpy()
     test.assertEqual(int(mesh_counts[0]), reference_vertices.shape[0])
     test.assertEqual(int(mesh_counts[1]), reference_indices.shape[0])
 
@@ -651,7 +664,7 @@ def test_grid_capacity_extraction(test, device):
         device=device,
     )
     logical_overflow_mesh = logical_overflow_surface.extract(positions, radii, compute_normals=False)
-    test.assertEqual(logical_overflow_surface.sparse_volume.get_active_stats().voxel_count, max_grid_cells)
+    test.assertEqual(logical_overflow_surface._sparse_volume.get_active_stats().voxel_count, max_grid_cells)
     with test.assertRaisesRegex(ValueError, "exceeds configured max_grid_cells"):
         logical_overflow_mesh.to_arrays()
 
@@ -779,14 +792,14 @@ def test_sparse_grid_avoids_empty_span(test, device):
 
     surface.update_field(positions, radii)
 
-    test.assertIsInstance(surface.sparse_volume, wp.Volume)
-    active_cells = surface.sparse_volume.get_active_stats().voxel_count
-    dense_cell_count = int(np.prod(np.asarray(surface.grid_dims, dtype=np.int64) - 1))
-    test.assertLessEqual(active_cells, surface._capacity.max_grid_cells)
-    test.assertGreater(dense_cell_count, surface._capacity.max_grid_cells)
+    test.assertIsInstance(surface._sparse_volume, wp.Volume)
+    active_cells = surface._sparse_volume.get_active_stats().voxel_count
+    dense_cell_count = int(np.prod(np.asarray(surface._grid_dims_value, dtype=np.int64) - 1))
+    test.assertLessEqual(active_cells, surface._workspace.max_grid_cells)
+    test.assertGreater(dense_cell_count, surface._workspace.max_grid_cells)
     test.assertGreater(dense_cell_count, 5 * active_cells)
-    test.assertEqual(surface._capacity.max_grid_nodes, surface._capacity.max_grid_cells)
-    test.assertEqual(int(surface._capacity.grid_counts.numpy()[3]), 0)
+    test.assertEqual(surface._workspace.max_grid_nodes, surface._workspace.max_grid_cells)
+    test.assertEqual(int(surface._workspace.grid_counts.numpy()[3]), 0)
 
 
 def test_sparse_topology_classification_strides_over_capacity(test, device):
@@ -798,12 +811,12 @@ def test_sparse_topology_classification_strides_over_capacity(test, device):
         max_grid_cells=30_000,
         device=device,
     )
-    surface._capacity.launch_threads = 1
+    surface._workspace.launch_threads = 1
 
     surface.update_field(positions, radii)
 
-    counts = surface._capacity.grid_counts.numpy()
-    cell_count = surface.sparse_volume.get_active_stats().voxel_count
+    counts = surface._workspace.grid_counts.numpy()
+    cell_count = surface._sparse_volume.get_active_stats().voxel_count
     node_count = cell_count
     test.assertEqual(int(counts[0]), node_count)
     test.assertEqual(int(counts[1]), cell_count)
@@ -849,7 +862,7 @@ def test_update_field_skips_inactive_particles(test, device):
     )
     ctx.update_field(positions, radii, particle_flags=flags)
 
-    np.testing.assert_allclose(ctx.field.numpy(), ref.field.numpy(), rtol=1.0e-6, atol=1.0e-6)
+    np.testing.assert_allclose(ctx._field.numpy(), ref._field.numpy(), rtol=1.0e-6, atol=1.0e-6)
 
 
 def test_update_field_cuda_graph(test, device):
@@ -883,7 +896,7 @@ def test_update_field_cuda_graph(test, device):
         device=device,
     )
     ctx.update_field(positions, radii, particle_flags=flags)
-    origin_before = np.array(ctx.grid_origin)
+    origin_before = np.array(ctx._grid_origin_value)
 
     with wp.ScopedCapture(device=device_obj) as capture:
         ctx.update_field(positions, radii, particle_flags=flags)
@@ -892,10 +905,10 @@ def test_update_field_cuda_graph(test, device):
     wp.copy(positions, wp.array(moved_positions_np, dtype=wp.vec3, device=device))
     wp.capture_launch(capture.graph)
 
-    field_np = ctx.field.numpy()
+    field_np = ctx._field.numpy()
     test.assertLess(field_np.min(), 0.0)
     test.assertGreater(field_np.max(), 0.0)
-    np.testing.assert_allclose(np.array(ctx.grid_origin) - origin_before, [4.0, 0.0, 0.0], atol=ctx.voxel_size)
+    np.testing.assert_allclose(np.array(ctx._grid_origin_value) - origin_before, [4.0, 0.0, 0.0], atol=ctx.voxel_size)
 
 
 def test_particle_sdf_surface_method(test, device):
@@ -915,7 +928,7 @@ def test_particle_sdf_surface_method(test, device):
     test.assertIsNotNone(verts)
     test.assertGreater(indices.shape[0], 0)
 
-    field_np = ctx.field.numpy()
+    field_np = ctx._field.numpy()
     test.assertLess(field_np.min(), 0.0)
     test.assertGreater(field_np.max(), 0.0)
     test.assertEqual(ctx._marching_threshold(), 0.0)
@@ -1056,8 +1069,10 @@ def test_particle_flags_filter_inactive(test, device):
     active_ctx.extract(active_positions, radii=active_radii, compute_normals=False)
     flagged_ctx.extract(positions, radii=radii, compute_normals=False, particle_flags=flags)
 
-    test.assertEqual(flagged_ctx.grid_dims, active_ctx.grid_dims)
-    np.testing.assert_allclose(np.array(flagged_ctx.grid_origin), np.array(active_ctx.grid_origin), atol=1e-6)
+    test.assertEqual(flagged_ctx._grid_dims_value, active_ctx._grid_dims_value)
+    np.testing.assert_allclose(
+        np.array(flagged_ctx._grid_origin_value), np.array(active_ctx._grid_origin_value), atol=1e-6
+    )
 
     inactive_flags = wp.zeros(all_np.shape[0], dtype=wp.int32, device=device)
     verts, indices, normals = flagged_ctx.extract(
@@ -1130,14 +1145,17 @@ def test_solver_extract_particle_surface(test, device):
         field_mode="sdf",
         redistance_iterations=1,
     )
-    verts, indices, normals = solver.extract_particle_surface(
-        state,
-        surface_sdf,
-        compute_normals=False,
-        extrapolate_into_colliders=True,
-        collider_extrapolation_depth=0.08,
-    )
+    with patch.object(surface_sdf, "redistance", wraps=surface_sdf.redistance) as redistance:
+        verts, indices, normals = solver.extract_particle_surface(
+            state,
+            surface_sdf,
+            compute_normals=False,
+            extrapolate_into_colliders=True,
+            collider_extrapolation_depth=0.08,
+            collider_extrapolation_redistance_iterations=2,
+        )
 
+    redistance.assert_called_once_with(2)
     test.assertIsNotNone(verts)
     test.assertGreater(verts.shape[0], 0)
     test.assertGreater(indices.shape[0], 0)
@@ -1158,7 +1176,7 @@ def test_solver_extract_particle_surface(test, device):
         extrapolate_into_colliders=True,
         collider_extrapolation_depth=0.08,
     )
-    capacity_counts = capacity_mesh.counts.numpy()
+    capacity_counts = capacity_mesh._counts.numpy()
     test.assertGreater(int(capacity_counts[0]), 0)
     test.assertGreater(int(capacity_counts[1]), 0)
 
@@ -1242,13 +1260,13 @@ def test_solver_extract_particle_surface_multi_world(test, device):
 
     mesh = solver.extract_particle_surface(state, surface, compute_normals=False)
     vertices, indices, normals = mesh.to_arrays()
-    vertex_world_start = mesh.vertex_world_start.numpy()
-    index_world_start = mesh.index_world_start.numpy()
+    vertex_world_offsets = mesh.vertex_world_offsets.numpy()
+    index_world_offsets = mesh.index_world_offsets.numpy()
 
     test.assertEqual(surface.world_count, 2)
-    test.assertEqual(int(vertex_world_start[-1]), vertices.shape[0])
-    test.assertEqual(int(index_world_start[-1]), indices.shape[0])
-    test.assertEqual(int(vertex_world_start[1]), int(vertex_world_start[2] - vertex_world_start[1]))
+    test.assertEqual(int(vertex_world_offsets[-1]), vertices.shape[0])
+    test.assertEqual(int(index_world_offsets[-1]), indices.shape[0])
+    test.assertEqual(int(vertex_world_offsets[1]), int(vertex_world_offsets[2] - vertex_world_offsets[1]))
     test.assertIsNone(normals)
 
     surface_sdf = solver.create_particle_surface(
@@ -1266,8 +1284,8 @@ def test_solver_extract_particle_surface_multi_world(test, device):
         collider_extrapolation_depth=0.08,
     )
     collider_vertices, collider_indices, _collider_normals = collider_mesh.to_arrays()
-    test.assertEqual(int(collider_mesh.vertex_world_start.numpy()[-1]), collider_vertices.shape[0])
-    test.assertEqual(int(collider_mesh.index_world_start.numpy()[-1]), collider_indices.shape[0])
+    test.assertEqual(int(collider_mesh.vertex_world_offsets.numpy()[-1]), collider_vertices.shape[0])
+    test.assertEqual(int(collider_mesh.index_world_offsets.numpy()[-1]), collider_indices.shape[0])
 
 
 class TestParticleSurface(unittest.TestCase):
@@ -1318,13 +1336,13 @@ class TestParticleSurface(unittest.TestCase):
             device="cpu",
         )
         ctx.extract(positions_cpu, radii=radii_cpu, compute_normals=False)
-        self.assertEqual(ctx.field.device, wp.get_device("cpu"))
-        self.assertEqual(ctx.smoothed_positions.device, wp.get_device("cpu"))
+        self.assertEqual(ctx._field.device, wp.get_device("cpu"))
+        self.assertEqual(ctx._smoothed_positions.device, wp.get_device("cpu"))
         self.assertEqual(ctx._G.device, wp.get_device("cpu"))
 
         ctx.extract(positions_cuda, radii=radii_cuda, compute_normals=False)
-        self.assertEqual(ctx.field.device, wp.get_device("cuda:0"))
-        self.assertEqual(ctx.smoothed_positions.device, wp.get_device("cuda:0"))
+        self.assertEqual(ctx._field.device, wp.get_device("cuda:0"))
+        self.assertEqual(ctx._smoothed_positions.device, wp.get_device("cuda:0"))
         self.assertEqual(ctx._G.device, wp.get_device("cuda:0"))
         self.assertEqual(ctx._blur_weights.device, wp.get_device("cuda:0"))
 

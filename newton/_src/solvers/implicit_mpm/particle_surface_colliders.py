@@ -78,7 +78,7 @@ def extrapolate_surface_sdf_into_colliders(
     *,
     max_depth: float | None = None,
     onset: float = 0.0,
-    redistance: bool = True,
+    redistance_iterations: int = 1,
     compute_normals: bool = True,
 ) -> ParticleSurface.ExtractionMesh:
     """Extrapolate a particle SDF into colliders and extract its surface.
@@ -88,11 +88,12 @@ def extrapolate_surface_sdf_into_colliders(
         collider: MPM collider representation to extrapolate into.
         body_q: Current rigid body transforms, shape ``(body_count,)``.
         max_depth: Maximum extrapolation depth inside colliders [m]. Defaults to
-            the smaller of ``4 * surface.voxel_size`` and the allocated
-            particle-surface topology halo.
+            the smaller of four surface voxels and the allocated topology
+            halo.
         onset: Signed collider distance where extrapolation starts [m]. A value
             of ``0`` starts at the collider surface.
-        redistance: Whether to redistance the modified SDF before extracting the mesh.
+        redistance_iterations: Number of redistancing iterations to apply to
+            the modified SDF. Set to 0 to disable redistancing.
         compute_normals: Whether to compute per-vertex normals.
 
     Returns:
@@ -101,65 +102,62 @@ def extrapolate_surface_sdf_into_colliders(
     Raises:
         ValueError: If ``surface`` does not contain an SDF field.
     """
-    if surface.field_mode != "sdf":
-        raise ValueError("Collider extrapolation requires ParticleSurface(field_mode='sdf')")
-    capacity = surface._capacity
-    if capacity is None:
-        raise ValueError("Particle surface field has not been extracted")
-    topology_halo = (
-        surface.padding
-        + surface.field_smooth_iterations * surface.field_smooth_radius
-        + surface.redistance_iterations
-        + 1
-    ) * surface.voxel_size
+    if redistance_iterations < 0:
+        raise ValueError("redistance_iterations must be non-negative")
     if not math.isfinite(onset):
         raise ValueError("onset must be finite")
+
+    sparse_field = surface.sparse_field
+    if sparse_field is None:
+        raise ValueError("Particle surface field has not been extracted")
+
+    # The public field supplies sampling data; MPM additionally needs packed
+    # node iteration metadata to avoid a host-side volume traversal.
+    sdf_metadata = surface._require_sparse_sdf_metadata()
     if max_depth is None:
-        max_depth = min(_DEFAULT_COLLIDER_EXTRAPOLATION_DEPTH_SCALE * surface.voxel_size, topology_halo)
+        max_depth = min(_DEFAULT_COLLIDER_EXTRAPOLATION_DEPTH_SCALE * surface.voxel_size, sdf_metadata.topology_halo)
     elif not math.isfinite(max_depth) or max_depth < 0.0:
         raise ValueError("max_depth must be finite and non-negative")
     required_inward_halo = max_depth + max(0.0, -onset)
-    if required_inward_halo > topology_halo:
+    if required_inward_halo > sdf_metadata.topology_halo:
         raise ValueError(
             f"Collider extrapolation requires an inward halo of {required_inward_halo}, "
-            f"which exceeds the allocated particle-surface topology halo ({topology_halo})"
+            f"which exceeds the allocated particle-surface topology halo ({sdf_metadata.topology_halo})"
         )
-    if capacity.volume is None or capacity.voxel_ijk is None or capacity.node_world is None:
+    workspace = sdf_metadata.workspace
+    if workspace.voxel_ijk is None or workspace.node_world is None:
         raise ValueError("Particle surface field has no sparse grid topology")
 
-    wp.copy(capacity.field_orig, capacity.field)
-    outside_value = surface.threshold
-    if surface.surface_method == "particle_sdf":
-        outside_value = surface.kernel_radius * surface.particle_sdf_band
+    wp.copy(workspace.field_orig, sparse_field.voxel_data)
     previous_query_distance = collider.query_max_dist
     collider.query_max_dist = max(previous_query_distance, max_depth + abs(onset) + surface.voxel_size)
     try:
         wp.launch(
             _mirror_sparse_sdf_into_colliders,
-            dim=capacity.launch_threads,
+            dim=workspace.launch_threads,
             inputs=[
-                capacity.volume.id,
-                capacity.voxel_ijk,
-                capacity.node_world,
-                capacity.env_offsets,
-                capacity.field,
-                capacity.field_orig,
-                capacity.grid_counts,
+                sparse_field.volume.id,
+                workspace.voxel_ijk,
+                workspace.node_world,
+                sparse_field.world_index_offsets,
+                sparse_field.voxel_data,
+                workspace.field_orig,
+                workspace.grid_counts,
                 surface.voxel_size,
-                outside_value,
+                sparse_field.background,
                 onset,
                 max_depth,
                 collider,
                 body_q,
                 None,
                 None,
-                capacity.launch_threads,
+                workspace.launch_threads,
             ],
-            device=capacity.device,
+            device=workspace.device,
         )
     finally:
         collider.query_max_dist = previous_query_distance
 
-    if redistance:
-        surface.redistance(max(surface.redistance_iterations, 1))
+    if redistance_iterations > 0:
+        surface.redistance(redistance_iterations)
     return surface.resurface(compute_normals=compute_normals)

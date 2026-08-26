@@ -1091,7 +1091,7 @@ def extract_mesh_vertices_worlds(
     vertices: wp.array[wp.vec3],
     edge_indices: wp.array[wp.int32],
     mesh_counts: wp.array[wp.int32],
-    vertex_world_start: wp.array[wp.int32],
+    vertex_world_offsets: wp.array[wp.int32],
     write_output: int,
     stride: int,
 ):
@@ -1122,7 +1122,7 @@ def extract_mesh_vertices_worlds(
                     wp.int32(1),
                 )
                 if write_output != 0:
-                    output_index = vertex_world_start[world] + local_output_index
+                    output_index = vertex_world_offsets[world] + local_output_index
                     interpolation = wp.clamp((threshold - value) / (neighbor_value - value), 0.0, 1.0)
                     position = wp.vec3(float(coordinate[0]), float(coordinate[1]), float(coordinate[2]))
                     position[axis] += interpolation
@@ -1146,7 +1146,7 @@ def extract_mesh_indices_worlds(
     edge_indices: wp.array[wp.int32],
     indices: wp.array[wp.int32],
     mesh_counts: wp.array[wp.int32],
-    index_world_start: wp.array[wp.int32],
+    index_world_offsets: wp.array[wp.int32],
     write_output: int,
     stride: int,
 ):
@@ -1180,7 +1180,7 @@ def extract_mesh_indices_worlds(
                 local_count,
             )
             if write_output != 0:
-                output_begin = index_world_start[world] + local_output_begin
+                output_begin = index_world_offsets[world] + local_output_begin
                 for local_index in range(local_begin, local_end):
                     edge = local_edges[local_index]
                     edge_coordinate = coordinate + edge_offsets[edge]
@@ -1195,22 +1195,22 @@ def extract_mesh_indices_worlds(
 def compute_mesh_world_starts(
     mesh_counts: wp.array[wp.int32],
     world_count: int,
-    vertex_world_start: wp.array[wp.int32],
-    index_world_start: wp.array[wp.int32],
+    vertex_world_offsets: wp.array[wp.int32],
+    index_world_offsets: wp.array[wp.int32],
     mesh_totals: wp.array[wp.int32],
 ):
     vertex_start = int(0)
     index_start = int(0)
     overflow = int(0)
-    vertex_world_start[0] = wp.int32(0)
-    index_world_start[0] = wp.int32(0)
+    vertex_world_offsets[0] = wp.int32(0)
+    index_world_offsets[0] = wp.int32(0)
     for world in range(world_count):
         counts_base = _mesh_count_index(world, 0)
         vertex_start += mesh_counts[counts_base + _MESH_VERTEX_COUNT]
         index_start += mesh_counts[counts_base + _MESH_INDEX_COUNT]
         overflow = wp.max(overflow, mesh_counts[counts_base + 2])
-        vertex_world_start[world + 1] = vertex_start
-        index_world_start[world + 1] = index_start
+        vertex_world_offsets[world + 1] = vertex_start
+        index_world_offsets[world + 1] = index_start
     mesh_totals[_MESH_VERTEX_COUNT] = vertex_start
     mesh_totals[_MESH_INDEX_COUNT] = index_start
     mesh_totals[2] = overflow

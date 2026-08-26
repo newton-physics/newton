@@ -1165,7 +1165,7 @@ def extract_mesh_vertices(
     vertices: wp.array[wp.vec3],
     edge_indices: wp.array[wp.int32],
     mesh_counts: wp.array[wp.int32],
-    vertex_world_start: wp.array[wp.int32],
+    vertex_world_offsets: wp.array[wp.int32],
     write_output: int,
     stride: int,
 ):
@@ -1192,7 +1192,7 @@ def extract_mesh_vertices(
                 )
                 local_output = wp.atomic_add(mesh_counts, count_index, wp.int32(1))
                 if write_output != 0:
-                    output = local_output + wp.where(world_count == 1, 0, vertex_world_start[world])
+                    output = local_output + wp.where(world_count == 1, 0, vertex_world_offsets[world])
                     interpolation = wp.clamp((threshold - value) / (neighbor_value - value), 0.0, 1.0)
                     local = coordinate - env_offsets[world]
                     position = voxel_size * wp.vec3(float(local[0]), float(local[1]), float(local[2]))
@@ -1219,7 +1219,7 @@ def extract_mesh_indices(
     edge_indices: wp.array[wp.int32],
     indices: wp.array[wp.int32],
     mesh_counts: wp.array[wp.int32],
-    index_world_start: wp.array[wp.int32],
+    index_world_offsets: wp.array[wp.int32],
     write_output: int,
     stride: int,
 ):
@@ -1247,7 +1247,7 @@ def extract_mesh_indices(
                 count_index = wp.where(world_count == 1, _MESH_INDEX_COUNT, _mesh_count_index(world, _MESH_INDEX_COUNT))
                 local_output = wp.atomic_add(mesh_counts, count_index, local_count)
                 if write_output != 0:
-                    output = local_output + wp.where(world_count == 1, 0, index_world_start[world])
+                    output = local_output + wp.where(world_count == 1, 0, index_world_offsets[world])
                     for local_index in range(local_begin, local_end):
                         edge = local_edges[local_index]
                         edge_coordinate = coordinate + edge_offsets[edge]

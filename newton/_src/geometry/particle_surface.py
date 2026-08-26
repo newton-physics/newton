@@ -24,7 +24,8 @@ Typical usage::
 from __future__ import annotations
 
 import math
-from typing import Literal
+from dataclasses import dataclass
+from typing import Literal, NamedTuple
 
 import numpy as np
 import warp as wp
@@ -43,7 +44,7 @@ _MIN_DENSITY_MARCHING_THRESHOLD = 0.01
 # ---------------------------------------------------------------------------
 
 
-class _ParticleSurfaceCapacityBase:
+class _ParticleSurfaceWorkspaceBase:
     """Common particle-bound and mesh-count launches."""
 
     def reset(self) -> None:
@@ -74,8 +75,8 @@ class _ParticleSurfaceCapacityBase:
             inputs=[
                 world_mesh_counts,
                 self.world_count,
-                self.vertex_world_start,
-                self.index_world_start,
+                self.vertex_world_offsets,
+                self.index_world_offsets,
                 self.mesh_counts,
             ],
             device=self.device,
@@ -133,7 +134,7 @@ class _ParticleSurfaceCapacityBase:
             )
 
 
-class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
+class _ParticleSurfaceSparseWorkspace(_ParticleSurfaceWorkspaceBase):
     """Sparse-volume storage and launches for particle surface extraction."""
 
     def __init__(
@@ -165,8 +166,8 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
         self.world_mesh_counts = wp.zeros(3 * self.world_count, dtype=wp.int32, device=self.device)
         self.mesh_write_counts = wp.zeros(3 * self.world_count, dtype=wp.int32, device=self.device)
         self.mesh_counts = wp.zeros(3, dtype=wp.int32, device=self.device)
-        self.vertex_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
-        self.index_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
+        self.vertex_world_offsets = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
+        self.index_world_offsets = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
         self.env_offsets = wp.zeros(self.world_count, dtype=wp.vec3i, device=self.device)
         self.packed_lower = wp.zeros(self.world_count, dtype=wp.vec3i, device=self.device)
         self.packed_upper = wp.zeros(self.world_count, dtype=wp.vec3i, device=self.device)
@@ -958,7 +959,7 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
                 vertices,
                 edge_indices,
                 output_counts,
-                self.vertex_world_start,
+                self.vertex_world_offsets,
                 write_output,
                 self.launch_threads,
             ],
@@ -983,7 +984,7 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
                 edge_indices,
                 indices,
                 output_counts,
-                self.index_world_start,
+                self.index_world_offsets,
                 write_output,
                 self.launch_threads,
             ],
@@ -1086,6 +1087,13 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
             )
 
 
+class _SparseSdfMetadata(NamedTuple):
+    """Internal sparse SDF metadata."""
+
+    workspace: _ParticleSurfaceSparseWorkspace
+    topology_halo: float
+
+
 class ParticleSurface:
     """Reusable context for extracting a triangle mesh from particle data.
 
@@ -1152,16 +1160,49 @@ class ParticleSurface:
         device: Warp device for computation.
     """
 
+    @dataclass(frozen=True)
+    class SparseField:
+        """Sparse scalar field stored as an index grid and per-voxel data.
+
+        Pass :attr:`volume`, :attr:`voxel_data`, and :attr:`background` to
+        :func:`warp.volume_sample_index` to sample the field. The voxel-data
+        buffer may include reserved capacity; the volume maps index-space
+        coordinates to the corresponding live entries.
+
+        Multiple worlds share one packed index grid. To sample world ``i`` at
+        world-space position ``position``, pass
+        ``position / particle_surface.voxel_size + wp.vec3(world_index_offsets[i])``
+        as the ``uvw`` argument to :func:`warp.volume_sample_index`. The offset
+        is zero for a single-world surface.
+
+        Reacquire :attr:`ParticleSurface.sparse_field` after updating or
+        extracting the field because its underlying storage may be replaced.
+        """
+
+        volume: wp.Volume
+        """NanoVDB index grid defining the sparse field topology."""
+
+        voxel_data: wp.array[float]
+        """Scalar feature values indexed by :attr:`volume`."""
+
+        background: float
+        """Value used when sampling outside the indexed topology."""
+
+        world_index_offsets: wp.array[wp.vec3i]
+        """Offset of each world's coordinates in the packed index grid [voxels],
+        shape ``(world_count,)``.
+        """
+
     class ExtractionMesh:
         """Particle surface mesh and its device-resident logical counts.
 
-        The entries of :attr:`counts` are the vertex count, flattened index
-        count, and grid-overflow flag. Buffers are exact-sized when
-        ``max_grid_cells`` is ``None`` and preallocated otherwise.
+        Buffers are exact-sized when ``max_grid_cells`` is ``None`` and
+        preallocated otherwise.
 
-        Vertices and indices from each world occupy contiguous ranges. The
-        corresponding starts are stored in :attr:`vertex_world_start` and
-        :attr:`index_world_start`, each with shape ``(world_count + 1,)``.
+        Vertices and indices from each world occupy contiguous ranges. Their
+        offsets are stored in :attr:`vertex_world_offsets` and
+        :attr:`index_world_offsets`, each with shape ``(world_count + 1,)``.
+        World ``i`` occupies the half-open range ``[offsets[i], offsets[i + 1])``.
         """
 
         def __init__(
@@ -1171,26 +1212,26 @@ class ParticleSurface:
             normals: wp.array[wp.vec3] | None,
             counts: wp.array[wp.int32],
             active_particle_count: wp.array[wp.int32],
-            vertex_world_start: wp.array[wp.int32],
-            index_world_start: wp.array[wp.int32],
+            vertex_world_offsets: wp.array[wp.int32],
+            index_world_offsets: wp.array[wp.int32],
             *,
             exact: bool,
         ):
             self.vertices = vertices
             self.indices = indices
             self.normals = normals
-            self.counts = counts
-            self.active_particle_count: wp.array[wp.int32] = active_particle_count
-            self.grid_overflow: wp.array[wp.int32] = counts[2:3]
-            self.vertex_world_start: wp.array[wp.int32] = vertex_world_start
-            self.index_world_start: wp.array[wp.int32] = index_world_start
-            self.world_count = vertex_world_start.shape[0] - 1
+            self._counts = counts
+            self._active_particle_count: wp.array[wp.int32] = active_particle_count
+            self._grid_overflow: wp.array[wp.int32] = counts[2:3]
+            self.vertex_world_offsets: wp.array[wp.int32] = vertex_world_offsets
+            self.index_world_offsets: wp.array[wp.int32] = index_world_offsets
+            self.world_count = vertex_world_offsets.shape[0] - 1
             self._exact = exact
 
         @classmethod
-        def _from_capacity(
+        def _from_workspace(
             cls,
-            workspace: ParticleSurfaceSparseCapacity,
+            workspace: _ParticleSurfaceSparseWorkspace,
             *,
             compute_normals: bool,
             exact: bool,
@@ -1202,8 +1243,8 @@ class ParticleSurface:
                 normals,
                 workspace.mesh_counts,
                 workspace.active_particle_count,
-                workspace.vertex_world_start,
-                workspace.index_world_start,
+                workspace.vertex_world_offsets,
+                workspace.index_world_offsets,
                 exact=exact,
             )
 
@@ -1216,7 +1257,7 @@ class ParticleSurface:
                     return None, None, None
                 return self.vertices, self.indices, self.normals
 
-            counts = self.counts.numpy()
+            counts = self._counts.numpy()
             if int(counts[2]) != 0:
                 raise ValueError("Particle surface exceeds configured max_grid_cells")
             vertex_count, index_count = int(counts[0]), int(counts[1])
@@ -1305,28 +1346,28 @@ class ParticleSurface:
         if redistance_iterations > 0 and field_mode != "sdf":
             raise ValueError("redistance_iterations requires field_mode='sdf'")
 
-        self.voxel_size = voxel_size
-        self.kernel_radius = kernel_radius
-        self.anisotropic = anisotropic
-        self.threshold = threshold
-        self.smooth_lambda = smooth_lambda
-        self.anisotropy_ratio = anisotropy_ratio
-        self.anisotropy_scale = anisotropy_scale
-        self.kernel_scale = kernel_scale
-        self.anisotropy_min_neighbors = anisotropy_min_neighbors
-        self.anisotropy_binning = anisotropy_binning
-        self.anisotropy_strength = anisotropy_strength
-        self.surface_method = surface_method
-        self.particle_sdf_radius_scale = particle_sdf_radius_scale
-        self.particle_sdf_band = particle_sdf_band
-        self.padding = padding
-        self.field_smooth_iterations = field_smooth_iterations
-        self.field_smooth_radius = field_smooth_radius
-        self.field_mode = field_mode
-        self.redistance_iterations = redistance_iterations
-        self.mesh_smooth_iterations = mesh_smooth_iterations
-        self.mesh_smooth_lambda = mesh_smooth_lambda
-        self.world_count = int(world_count)
+        self._voxel_size = voxel_size
+        self._kernel_radius = kernel_radius
+        self._anisotropic = anisotropic
+        self._threshold = threshold
+        self._smooth_lambda = smooth_lambda
+        self._anisotropy_ratio = anisotropy_ratio
+        self._anisotropy_scale = anisotropy_scale
+        self._kernel_scale = kernel_scale
+        self._anisotropy_min_neighbors = anisotropy_min_neighbors
+        self._anisotropy_binning = anisotropy_binning
+        self._anisotropy_strength = anisotropy_strength
+        self._surface_method = surface_method
+        self._particle_sdf_radius_scale = particle_sdf_radius_scale
+        self._particle_sdf_band = particle_sdf_band
+        self._padding = padding
+        self._field_smooth_iterations = field_smooth_iterations
+        self._field_smooth_radius = field_smooth_radius
+        self._field_mode = field_mode
+        self._redistance_iterations = redistance_iterations
+        self._mesh_smooth_iterations = mesh_smooth_iterations
+        self._mesh_smooth_lambda = mesh_smooth_lambda
+        self._world_count = int(world_count)
 
         self._device = wp.get_device() if device is None else wp.get_device(device)
 
@@ -1351,144 +1392,125 @@ class ParticleSurface:
         self._n_particles: int = 0
         self._max_particles: int = 0
         self._max_grid_cells = max_grid_cells
-        self._capacity: ParticleSurfaceSparseCapacity | None = None
+        self._workspace: _ParticleSurfaceSparseWorkspace | None = None
         self._grid_dims: list[tuple[int, int, int]] | None = None
         self._has_field = False
 
-        # Last extraction results
-        self._verts: wp.array[wp.vec3] | None = None
-        self._indices: wp.array[wp.int32] | None = None
-        self._normals: wp.array[wp.vec3] | None = None
-
         if max_grid_cells is not None:
-            self._configure_grid_capacity(max_grid_cells, device=self._device)
-
-    # -- Public properties --
+            self._configure_grid_workspace(max_grid_cells, device=self._device)
 
     @property
-    def verts(self) -> wp.array[wp.vec3] | None:
-        """Vertex positions from the last extraction [m]."""
-        return self._verts
+    def voxel_size(self) -> float:
+        """Edge length of each grid voxel [m]."""
+        return self._voxel_size
 
     @property
-    def max_grid_cells(self) -> int | None:
-        """Requested active sparse-cell capacity, or ``None`` for tight allocation."""
-        return self._max_grid_cells
+    def field_mode(self) -> Literal["density", "sdf"]:
+        """Field representation retained after extraction."""
+        return self._field_mode
 
     @property
-    def grid_node_world_start(self) -> wp.array[wp.int32] | None:
-        """Start of each world's compact scalar-field node range."""
-        return None if self._capacity is None else self._capacity.grid_node_world_start
+    def world_count(self) -> int:
+        """Number of independent particle worlds."""
+        return self._world_count
 
     @property
-    def grid_cell_world_start(self) -> wp.array[wp.int32] | None:
-        """Start of each world's compact sparse-cell range."""
-        return None if self._capacity is None else self._capacity.grid_cell_world_start
-
-    @property
-    def indices(self) -> wp.array[wp.int32] | None:
-        """Triangle indices from the last extraction, shape ``(3 * triangle_count,)``."""
-        return self._indices
-
-    @property
-    def normals(self) -> wp.array[wp.vec3] | None:
-        """Unit-length per-vertex normals from the last extraction."""
-        return self._normals
-
-    @property
-    def field(self) -> wp.array[wp.float32] | None:
-        """Compact scalar-field values for a single-world sparse grid."""
-        if self.world_count != 1:
-            raise RuntimeError("Use field_for_world() for a multi-world surface")
-        return self.field_for_world(0)
-
-    def field_for_world(self, world: int) -> wp.array[wp.float32] | None:
-        """Return compact scalar-field values for one world.
-
-        Args:
-            world: World index.
-
-        Returns:
-            The world's scalar field, or ``None`` when its grid is empty.
-        """
-        if self._capacity is None or not self._has_field:
+    def sparse_field(self) -> ParticleSurface.SparseField | None:
+        """Current sparse scalar field, or ``None`` before field extraction."""
+        if self._workspace is None or not self._has_field or self._workspace.volume is None:
             return None
-        if world < 0 or world >= self.world_count:
-            raise IndexError(f"world index {world} is out of range for {self.world_count} worlds")
-        counts = self._capacity.grid_counts.numpy().reshape(self.world_count, 7)[world]
+        return self.SparseField(
+            self._workspace.volume,
+            self._workspace.field,
+            self._field_background(),
+            self._workspace.env_offsets,
+        )
+
+    def _field_background(self) -> float:
+        if self._surface_method == "particle_sdf":
+            return self._kernel_radius * self._particle_sdf_band
+        if self._field_mode == "sdf":
+            return self._threshold
+        return 0.0
+
+    def _require_sparse_sdf_metadata(self) -> _SparseSdfMetadata:
+        """Return internal metadata for the current sparse SDF."""
+        if self._field_mode != "sdf":
+            raise ValueError("Sparse SDF access requires ParticleSurface(field_mode='sdf')")
+        if self._workspace is None or not self._has_field or self._workspace.volume is None:
+            raise ValueError("Particle surface field has not been extracted")
+        topology_halo = (
+            self._padding + self._field_smooth_iterations * self._field_smooth_radius + self._redistance_iterations + 1
+        ) * self._voxel_size
+        return _SparseSdfMetadata(self._workspace, topology_halo)
+
+    @property
+    def _grid_node_world_start(self) -> wp.array[wp.int32] | None:
+        return None if self._workspace is None else self._workspace.grid_node_world_start
+
+    @property
+    def _grid_cell_world_start(self) -> wp.array[wp.int32] | None:
+        return None if self._workspace is None else self._workspace.grid_cell_world_start
+
+    @property
+    def _field(self) -> wp.array[wp.float32] | None:
+        if self._world_count != 1:
+            raise RuntimeError("Use _field_for_world() for a multi-world surface")
+        return self._field_for_world(0)
+
+    def _field_for_world(self, world: int) -> wp.array[wp.float32] | None:
+        if self._workspace is None or not self._has_field:
+            return None
+        if world < 0 or world >= self._world_count:
+            raise IndexError(f"world index {world} is out of range for {self._world_count} worlds")
+        counts = self._workspace.grid_counts.numpy().reshape(self._world_count, 7)[world]
         if int(counts[3]) != 0:
             raise ValueError("Particle surface exceeds configured max_grid_cells")
-        starts = self._capacity.grid_node_world_start.numpy()
+        starts = self._workspace.grid_node_world_start.numpy()
         begin = int(starts[world])
         end = int(starts[world + 1])
         if end == begin:
             return None
-        return self._capacity.field[begin:end]
+        return self._workspace.field[begin:end]
 
     @property
-    def sparse_volume(self) -> wp.Volume | None:
-        """Sparse index volume holding the extraction topology."""
-        return None if self._capacity is None else self._capacity.volume
+    def _sparse_volume(self) -> wp.Volume | None:
+        return None if self._workspace is None else self._workspace.volume
 
     @property
-    def grid_origin(self) -> wp.vec3 | None:
-        """World-space grid origin for a single-world surface [m].
+    def _grid_origin_value(self) -> wp.vec3 | None:
+        if self._world_count != 1:
+            raise RuntimeError("Use _grid_origin_for_world() for a multi-world surface")
+        return self._grid_origin_for_world(0)
 
-        Accessing the origin reads it from the device.
-        """
-        if self.world_count != 1:
-            raise RuntimeError("Use grid_origin_for_world() for a multi-world surface")
-        return self.grid_origin_for_world(0)
-
-    def grid_origin_for_world(self, world: int) -> wp.vec3 | None:
-        """Return the world-space grid origin for one world [m].
-
-        Args:
-            world: World index.
-
-        Returns:
-            The grid origin, or ``None`` before field extraction.
-        """
-        if self._capacity is None or not self._has_field:
+    def _grid_origin_for_world(self, world: int) -> wp.vec3 | None:
+        if self._workspace is None or not self._has_field:
             return None
-        if world < 0 or world >= self.world_count:
-            raise IndexError(f"world index {world} is out of range for {self.world_count} worlds")
-        return wp.vec3(self._capacity.grid_origin.numpy()[world])
+        if world < 0 or world >= self._world_count:
+            raise IndexError(f"world index {world} is out of range for {self._world_count} worlds")
+        return wp.vec3(self._workspace.grid_origin.numpy()[world])
 
     @property
-    def grid_dims(self) -> tuple[int, int, int] | None:
-        """Bounding-box grid node counts for a single-world surface.
+    def _grid_dims_value(self) -> tuple[int, int, int] | None:
+        if self._world_count != 1:
+            raise RuntimeError("Use _grid_dims_for_world() for a multi-world surface")
+        return self._grid_dims_for_world(0)
 
-        Accessing a preallocated grid reads its dimensions from the device.
-        """
-        if self.world_count != 1:
-            raise RuntimeError("Use grid_dims_for_world() for a multi-world surface")
-        return self.grid_dims_for_world(0)
-
-    def grid_dims_for_world(self, world: int) -> tuple[int, int, int] | None:
-        """Return the bounding-box grid node counts for one world.
-
-        Args:
-            world: World index.
-
-        Returns:
-            Bounding-box grid node counts, or ``None`` before field extraction.
-        """
-        if world < 0 or world >= self.world_count:
-            raise IndexError(f"world index {world} is out of range for {self.world_count} worlds")
-        if self.max_grid_cells is None:
+    def _grid_dims_for_world(self, world: int) -> tuple[int, int, int] | None:
+        if world < 0 or world >= self._world_count:
+            raise IndexError(f"world index {world} is out of range for {self._world_count} worlds")
+        if self._max_grid_cells is None:
             return None if self._grid_dims is None else self._grid_dims[world]
-        if self._capacity is None or not self._has_field:
+        if self._workspace is None or not self._has_field:
             return None
-        counts = self._capacity.grid_counts.numpy().reshape(self.world_count, 7)[world]
+        counts = self._workspace.grid_counts.numpy().reshape(self._world_count, 7)[world]
         return tuple(int(value) for value in counts[4:7])
 
     @property
-    def smoothed_positions(self) -> wp.array[wp.vec3] | None:
-        """Smoothed particle positions from the last extraction [m]."""
+    def _smoothed_positions(self) -> wp.array[wp.vec3] | None:
         return self._smoothed
 
-    def _configure_grid_capacity(
+    def _configure_grid_workspace(
         self,
         max_grid_cells: int,
         device: wp.DeviceLike = None,
@@ -1499,11 +1521,11 @@ class ParticleSurface:
         self._max_grid_cells = max_grid_cells
         self._device = device_obj
         self._resource_device = device_obj
-        self._capacity = ParticleSurfaceSparseCapacity(
+        self._workspace = _ParticleSurfaceSparseWorkspace(
             max_grid_cells=max_grid_cells,
-            world_count=self.world_count,
-            voxel_size=self.voxel_size,
-            padding=self.padding,
+            world_count=self._world_count,
+            voxel_size=self._voxel_size,
+            padding=self._padding,
             support_leaf_radius=self._density_support_leaf_radius(),
             device=device_obj,
         )
@@ -1512,24 +1534,24 @@ class ParticleSurface:
         hash_grid_dim = max(16, int(math.ceil(max_grid_cells ** (1.0 / 3.0))))
         self._hash_grid = wp.HashGrid(hash_grid_dim, hash_grid_dim, hash_grid_dim, device=device_obj)
         self._hash_grid_dim = hash_grid_dim
-        if self.field_smooth_iterations > 0 and self.field_smooth_radius > 0:
+        if self._field_smooth_iterations > 0 and self._field_smooth_radius > 0:
             self._ensure_blur_weights(device_obj)
         return self
 
     def _density_support_leaf_radius(self) -> int | None:
-        if self.surface_method != "density":
+        if self._surface_method != "density":
             return None
 
         axis_scale = 1.0
-        if self.anisotropic and self.anisotropy_strength > 0.0 and self.anisotropy_ratio > 1.0:
+        if self._anisotropic and self._anisotropy_strength > 0.0 and self._anisotropy_ratio > 1.0:
             # Geometric-mean normalization bounds the longest WPCA axis by ratio**(2/3).
             # Apply the same inverse-radius blend as the anisotropy kernels.
-            min_relative_inverse_radius = (1.0 - self.anisotropy_strength) + self.anisotropy_strength / (
-                self.anisotropy_scale * self.anisotropy_ratio ** (2.0 / 3.0)
+            min_relative_inverse_radius = (1.0 - self._anisotropy_strength) + self._anisotropy_strength / (
+                self._anisotropy_scale * self._anisotropy_ratio ** (2.0 / 3.0)
             )
             axis_scale = max(axis_scale, 1.0 / min_relative_inverse_radius)
         max_reach_voxels = (
-            kernels._DENSITY_KERNEL_SUPPORT * self.kernel_scale * self.kernel_radius * axis_scale / self.voxel_size
+            kernels._DENSITY_KERNEL_SUPPORT * self._kernel_scale * self._kernel_radius * axis_scale / self._voxel_size
         )
         # Half-reach octant samples leave at most half the support width between samples.
         voxel_radius = int(math.ceil(0.5 * max_reach_voxels)) + 1
@@ -1541,23 +1563,22 @@ class ParticleSurface:
         radii: wp.array[float],
         particle_flags: wp.array[wp.int32] | None = None,
         particle_world: wp.array[wp.int32] | None = None,
-    ) -> wp.array[float]:
+    ) -> ParticleSurface.SparseField | None:
         """Update the scalar field without extracting a mesh.
 
         Args:
             positions: Particle positions [m], shape ``(N,)``, dtype ``wp.vec3``.
             radii: Per-particle radii [m], shape ``(N,)``, dtype ``wp.float32``.
-            particle_flags: Optional per-particle flags.  Particles without
-                :attr:`~newton.ParticleFlags.ACTIVE` are skipped without
-                compacting the particle arrays.
+            particle_flags: Optional per-particle flags. Particles without
+                :attr:`~newton.ParticleFlags.ACTIVE` are skipped.
             particle_world: Optional world index per particle. Particles with
                 negative or out-of-range world indices are skipped.
 
         Returns:
-            Compact field values when ``max_grid_cells`` is ``None``, otherwise
-            the preallocated field buffer. Use :attr:`sparse_volume` for topology.
+            The sparse index grid and its per-voxel data, or ``None`` when no
+            sparse field topology was produced.
         """
-        self.extract(
+        self._extract(
             positions,
             radii,
             compute_normals=False,
@@ -1565,9 +1586,7 @@ class ParticleSurface:
             particle_world=particle_world,
             compute_mesh=False,
         )
-        if self.max_grid_cells is None and self.world_count == 1:
-            return self.field
-        return self._capacity.field
+        return self.sparse_field
 
     # -- Core extraction --
 
@@ -1578,11 +1597,10 @@ class ParticleSurface:
         compute_normals: bool = True,
         particle_flags: wp.array[wp.int32] | None = None,
         particle_world: wp.array[wp.int32] | None = None,
-        compute_mesh: bool = True,
     ) -> ParticleSurface.ExtractionMesh:
         """Extract a triangle mesh from particle positions.
 
-        When :attr:`max_grid_cells` is set, this method performs no host
+        When ``max_grid_cells`` is set, this method performs no host
         synchronization and can be captured in a CUDA graph. Otherwise it
         allocates exact-size field and mesh arrays.
 
@@ -1594,13 +1612,29 @@ class ParticleSurface:
                 :attr:`~newton.ParticleFlags.ACTIVE` are skipped.
             particle_world: Optional world index per particle. Particles with
                 negative or out-of-range world indices are skipped.
-            compute_mesh: Whether to run Marching Cubes and mesh post-processing.
-                Set to ``False`` to update only :attr:`field`, for example before
-                modifying the field and calling :meth:`resurface`.
 
         Returns:
             Mesh buffers and device-resident logical counts.
         """
+        return self._extract(
+            positions,
+            radii,
+            compute_normals=compute_normals,
+            particle_flags=particle_flags,
+            particle_world=particle_world,
+            compute_mesh=True,
+        )
+
+    def _extract(
+        self,
+        positions: wp.array[wp.vec3],
+        radii: wp.array[float],
+        *,
+        compute_normals: bool = True,
+        particle_flags: wp.array[wp.int32] | None = None,
+        particle_world: wp.array[wp.int32] | None = None,
+        compute_mesh: bool = True,
+    ) -> ParticleSurface.ExtractionMesh:
         self._validate_positions_layout(positions)
         particle_count = positions.shape[0]
         device = positions.device
@@ -1616,25 +1650,21 @@ class ParticleSurface:
             compute_mesh=compute_mesh,
         )
 
-    def redistance(self, iterations: int | None = None) -> None:
+    def redistance(self, iterations: int) -> None:
         """Apply Eikonal redistancing to the current SDF field.
 
         Args:
-            iterations: Number of redistancing iterations.  Defaults to
-                :attr:`redistance_iterations`.
+            iterations: Number of redistancing iterations.
         """
-        if self.field_mode != "sdf":
-            raise ValueError("redistance() requires field_mode='sdf'")
-        if self._capacity is None or not self._has_field:
+        if iterations < 0:
+            raise ValueError("iterations must be non-negative")
+        if self._field_mode != "sdf":
+            raise ValueError("SDF redistancing requires field_mode='sdf'")
+        if self._workspace is None or not self._has_field:
             return
-        if iterations is None:
-            iterations = self.redistance_iterations
-        if iterations <= 0:
+        if iterations == 0:
             return
-        outside_value = self.threshold
-        if self.surface_method == "particle_sdf":
-            outside_value = self.kernel_radius * self.particle_sdf_band
-        self._capacity.redistance(iterations, outside_value=outside_value)
+        self._workspace.redistance(iterations, outside_value=self._field_background())
 
     def resurface(
         self,
@@ -1642,25 +1672,27 @@ class ParticleSurface:
     ) -> ParticleSurface.ExtractionMesh:
         """Re-run marching cubes on the current field.
 
-        Use after externally modifying :attr:`field`, for example to
-        extrapolate an SDF into collider regions before extracting the mesh.
+        Args:
+            compute_normals: Whether to compute per-vertex normals.
+
+        Returns:
+            Mesh buffers and device-resident logical counts.
         """
-        if self._capacity is None or not self._has_field:
-            raise RuntimeError("extract() or update_field() must populate the field before resurface()")
-        if self._capacity.volume is None:
-            self._capacity.reset_mesh_counts()
-            self._capacity.compute_mesh_world_starts()
-            result = self.ExtractionMesh._from_capacity(
-                self._capacity,
+        if self._workspace is None or not self._has_field:
+            raise RuntimeError("extract() must populate the field before resurfacing")
+        if self._workspace.volume is None:
+            self._workspace.reset_mesh_counts()
+            self._workspace.compute_mesh_world_starts()
+            result = self.ExtractionMesh._from_workspace(
+                self._workspace,
                 compute_normals=compute_normals,
-                exact=self.max_grid_cells is None,
+                exact=self._max_grid_cells is None,
             )
-            self._verts, self._indices, self._normals = None, None, None
             return result
         return self._extract_current_mesh(
-            self._capacity,
+            self._workspace,
             compute_normals=compute_normals,
-            exact=self.max_grid_cells is None,
+            exact=self._max_grid_cells is None,
         )
 
     # -- Internal helpers --
@@ -1678,7 +1710,7 @@ class ParticleSurface:
         particle_count = positions.shape[0]
         device = positions.device
         device_obj = wp.get_device(device)
-        exact = self.max_grid_cells is None
+        exact = self._max_grid_cells is None
         if exact:
             if device_obj != self._resource_device:
                 self._clear_device_resources()
@@ -1686,26 +1718,26 @@ class ParticleSurface:
                 self._resource_device = device_obj
             hash_grid_dim = max(16, int(math.ceil(max(particle_count, 1) ** (1.0 / 3.0))))
             self._ensure_hash_grid(hash_grid_dim, device)
-            self._capacity = ParticleSurfaceSparseCapacity(
+            self._workspace = _ParticleSurfaceSparseWorkspace(
                 max_grid_cells=None,
-                world_count=self.world_count,
-                voxel_size=self.voxel_size,
-                padding=self.padding,
+                world_count=self._world_count,
+                voxel_size=self._voxel_size,
+                padding=self._padding,
                 support_leaf_radius=None,
                 device=device,
             )
-            workspace = self._capacity
+            workspace = self._workspace
         else:
             if device_obj != self._resource_device:
-                self._configure_grid_capacity(self.max_grid_cells, device=device)
-            workspace = self._capacity
+                self._configure_grid_workspace(self._max_grid_cells, device=device)
+            workspace = self._workspace
 
-        self._ensure_capacity_particle_resources(particle_count)
+        self._ensure_workspace_particle_resources(particle_count)
         flags, use_flags = self._field_flag_args(particle_flags, particle_count, device)
         worlds = particle_world if particle_world is not None else flags
         use_worlds = int(particle_world is not None)
         workspace.reset()
-        sentinel_distance = 1.0e6 * max(self.kernel_radius, self.voxel_size)
+        sentinel_distance = 1.0e6 * max(self._kernel_radius, self._voxel_size)
         workspace.compute_particle_bounds(
             positions,
             flags,
@@ -1725,7 +1757,7 @@ class ParticleSurface:
             device,
         )
 
-        isotropic_sdf = not self.anisotropic or self.anisotropy_strength <= 0.0 or self.anisotropy_ratio <= 1.0
+        isotropic_sdf = not self._anisotropic or self._anisotropy_strength <= 0.0 or self._anisotropy_ratio <= 1.0
         workspace.compute_grid(
             self._smoothed[:particle_count],
             radii,
@@ -1735,24 +1767,23 @@ class ParticleSurface:
             use_worlds,
             self._det_G[:particle_count],
             self._density_reach[:particle_count],
-            self.particle_sdf_radius_scale,
-            self.particle_sdf_band,
-            self.surface_method == "particle_sdf",
+            self._particle_sdf_radius_scale,
+            self._particle_sdf_band,
+            self._surface_method == "particle_sdf",
             not isotropic_sdf,
         )
         if exact:
-            grid_counts = workspace.grid_counts.numpy().reshape(self.world_count, 7)
+            grid_counts = workspace.grid_counts.numpy().reshape(self._world_count, 7)
             self._grid_dims = [tuple(int(value) for value in counts[4:7]) for counts in grid_counts]
             if int(np.sum(grid_counts[:, 2])) == 0:
                 self._has_field = True
                 workspace.reset_mesh_counts()
                 workspace.compute_mesh_world_starts()
-                result = self.ExtractionMesh._from_capacity(
+                result = self.ExtractionMesh._from_workspace(
                     workspace,
                     compute_normals=compute_normals,
                     exact=True,
                 )
-                self._verts, self._indices, self._normals = None, None, None
                 return result
         else:
             self._grid_dims = None
@@ -1766,15 +1797,15 @@ class ParticleSurface:
             use_worlds,
             self._det_G[:particle_count],
             self._density_reach[:particle_count],
-            self.particle_sdf_radius_scale,
-            self.particle_sdf_band,
-            self.surface_method == "particle_sdf",
+            self._particle_sdf_radius_scale,
+            self._particle_sdf_band,
+            self._surface_method == "particle_sdf",
             not isotropic_sdf,
-            self.padding + self.field_smooth_iterations * self.field_smooth_radius + self.redistance_iterations + 1,
+            self._padding + self._field_smooth_iterations * self._field_smooth_radius + self._redistance_iterations + 1,
             self._G[:particle_count],
         )
 
-        if self.field_smooth_iterations > 0 and self.field_smooth_radius > 0:
+        if self._field_smooth_iterations > 0 and self._field_smooth_radius > 0:
             self._ensure_blur_weights(workspace.device)
         workspace.evaluate_field(
             self._smoothed[:particle_count],
@@ -1786,17 +1817,17 @@ class ParticleSurface:
             self._G[:particle_count],
             self._det_G[:particle_count],
             self._density_reach[:particle_count],
-            surface_method=self.surface_method,
+            surface_method=self._surface_method,
             anisotropic=not isotropic_sdf,
-            particle_sdf_radius_scale=self.particle_sdf_radius_scale,
-            particle_sdf_band=self.particle_sdf_band,
-            kernel_radius=self.kernel_radius,
-            field_mode=self.field_mode,
-            threshold=self.threshold,
+            particle_sdf_radius_scale=self._particle_sdf_radius_scale,
+            particle_sdf_band=self._particle_sdf_band,
+            kernel_radius=self._kernel_radius,
+            field_mode=self._field_mode,
+            threshold=self._threshold,
             blur_weights=self._blur_weights,
-            blur_radius=self.field_smooth_radius,
-            blur_iterations=self.field_smooth_iterations,
-            redistance_iterations=self.redistance_iterations,
+            blur_radius=self._field_smooth_radius,
+            blur_iterations=self._field_smooth_iterations,
+            redistance_iterations=self._redistance_iterations,
         )
         self._has_field = True
         if compute_mesh:
@@ -1804,23 +1835,22 @@ class ParticleSurface:
 
         workspace.reset_mesh_counts()
         workspace.compute_mesh_world_starts()
-        result = self.ExtractionMesh._from_capacity(
+        result = self.ExtractionMesh._from_workspace(
             workspace,
             compute_normals=compute_normals,
             exact=exact,
         )
-        self._verts, self._indices, self._normals = None, None, None
         return result
 
     def _extract_current_mesh(
         self,
-        workspace: ParticleSurfaceSparseCapacity,
+        workspace: _ParticleSurfaceSparseWorkspace,
         *,
         compute_normals: bool,
         exact: bool,
     ) -> ParticleSurface.ExtractionMesh:
         threshold = self._marching_threshold()
-        counts_precomputed = exact or self.world_count > 1
+        counts_precomputed = exact or self._world_count > 1
         if counts_precomputed:
             workspace.count_mesh(threshold)
         if exact:
@@ -1830,27 +1860,20 @@ class ParticleSurface:
         workspace.extract_mesh(
             threshold,
             counts_precomputed=counts_precomputed,
-            flip_winding=self.field_mode == "density",
-            smooth_iterations=self.mesh_smooth_iterations,
-            smooth_lambda=self.mesh_smooth_lambda,
+            flip_winding=self._field_mode == "density",
+            smooth_iterations=self._mesh_smooth_iterations,
+            smooth_lambda=self._mesh_smooth_lambda,
             compute_normals=compute_normals,
         )
-        result = self.ExtractionMesh._from_capacity(
+        result = self.ExtractionMesh._from_workspace(
             workspace,
             compute_normals=compute_normals,
             exact=exact,
         )
-        self._verts, self._indices, self._normals = result.vertices, result.indices, result.normals
         return result
 
-    def _clear_results(self):
-        self._verts = None
-        self._indices = None
-        self._normals = None
-
     def _clear_device_resources(self):
-        self._clear_results()
-        self._capacity = None
+        self._workspace = None
         self._grid_dims = None
         self._has_field = False
         self._hash_grid = None
@@ -1872,7 +1895,7 @@ class ParticleSurface:
 
     def _prepare_particle_values(
         self,
-        workspace: ParticleSurfaceSparseCapacity,
+        workspace: _ParticleSurfaceSparseWorkspace,
         positions: wp.array[wp.vec3],
         particle_count: int,
         flags: wp.array[wp.int32],
@@ -1887,7 +1910,7 @@ class ParticleSurface:
         density_reach = self._density_reach[:particle_count]
         isotropic_fallback = self._isotropic_fallback[:particle_count]
         hash_positions = positions
-        needs_smoothing_hash = self.smooth_lambda > 1.0e-6
+        needs_smoothing_hash = self._smooth_lambda > 1.0e-6
 
         if use_worlds != 0 and particle_count > 0:
             hash_positions = self._hash_positions[:particle_count]
@@ -1900,7 +1923,7 @@ class ParticleSurface:
                     use_flags,
                     particle_world,
                     use_worlds,
-                    self.world_count,
+                    self._world_count,
                     workspace.lower,
                     workspace.hash_spacing,
                     workspace.inactive_position,
@@ -1919,15 +1942,15 @@ class ParticleSurface:
                     use_flags,
                     particle_world,
                     use_worlds,
-                    self.world_count,
+                    self._world_count,
                     workspace.inactive_position,
                     hash_positions,
                 ],
                 device=device,
             )
 
-        if self.smooth_lambda > 1.0e-6 and particle_count > 0:
-            self._hash_grid.build(hash_positions, self.kernel_radius)
+        if self._smooth_lambda > 1.0e-6 and particle_count > 0:
+            self._hash_grid.build(hash_positions, self._kernel_radius)
             if hash_positions is not positions:
                 wp.launch(
                     kernels.smooth_positions_flagged,
@@ -1940,10 +1963,10 @@ class ParticleSurface:
                         use_flags,
                         particle_world,
                         use_worlds,
-                        self.world_count,
+                        self._world_count,
                         workspace.inactive_position,
-                        self.kernel_radius,
-                        self.smooth_lambda,
+                        self._kernel_radius,
+                        self._smooth_lambda,
                         smoothed,
                     ],
                     device=device,
@@ -1955,14 +1978,14 @@ class ParticleSurface:
                     inputs=[
                         self._hash_grid.id,
                         hash_positions,
-                        self.kernel_radius,
-                        self.smooth_lambda,
+                        self._kernel_radius,
+                        self._smooth_lambda,
                         smoothed,
                     ],
                     device=device,
                 )
         elif particle_count > 0:
-            if use_flags != 0 or use_worlds != 0 or self.anisotropic:
+            if use_flags != 0 or use_worlds != 0 or self._anisotropic:
                 wp.launch(
                     kernels.copy_active_or_sentinel_positions,
                     dim=particle_count,
@@ -1972,7 +1995,7 @@ class ParticleSurface:
                         use_flags,
                         particle_world,
                         use_worlds,
-                        self.world_count,
+                        self._world_count,
                         workspace.inactive_position,
                         smoothed,
                     ],
@@ -1981,7 +2004,7 @@ class ParticleSurface:
             else:
                 wp.copy(smoothed, positions)
 
-        if self.anisotropic and particle_count > 0:
+        if self._anisotropic and particle_count > 0:
             anisotropy_hash_positions = self._hash_positions[:particle_count]
             if use_worlds != 0:
                 wp.launch(
@@ -1993,7 +2016,7 @@ class ParticleSurface:
                         use_flags,
                         particle_world,
                         use_worlds,
-                        self.world_count,
+                        self._world_count,
                         workspace.lower,
                         workspace.hash_spacing,
                         workspace.inactive_position,
@@ -2011,14 +2034,14 @@ class ParticleSurface:
                         use_flags,
                         particle_world,
                         use_worlds,
-                        self.world_count,
+                        self._world_count,
                         workspace.inactive_position,
                         anisotropy_hash_positions,
                     ],
                     device=device,
                 )
-            self._hash_grid.build(anisotropy_hash_positions, self.kernel_radius)
-            if self.anisotropy_binning:
+            self._hash_grid.build(anisotropy_hash_positions, self._kernel_radius)
+            if self._anisotropy_binning:
                 self._prepare_binned_anisotropy(
                     workspace,
                     smoothed,
@@ -2045,13 +2068,13 @@ class ParticleSurface:
                         use_flags,
                         particle_world,
                         use_worlds,
-                        self.world_count,
-                        self.kernel_radius,
-                        self.anisotropy_ratio,
-                        self.anisotropy_scale,
-                        self.kernel_scale,
-                        self.anisotropy_min_neighbors,
-                        self.anisotropy_strength,
+                        self._world_count,
+                        self._kernel_radius,
+                        self._anisotropy_ratio,
+                        self._anisotropy_scale,
+                        self._kernel_scale,
+                        self._anisotropy_min_neighbors,
+                        self._anisotropy_strength,
                         G,
                         det_G,
                         density_reach,
@@ -2068,12 +2091,12 @@ class ParticleSurface:
                         smoothed,
                         flags,
                         use_flags,
-                        self.kernel_radius,
-                        self.anisotropy_ratio,
-                        self.anisotropy_scale,
-                        self.kernel_scale,
-                        self.anisotropy_min_neighbors,
-                        self.anisotropy_strength,
+                        self._kernel_radius,
+                        self._anisotropy_ratio,
+                        self._anisotropy_scale,
+                        self._kernel_scale,
+                        self._anisotropy_min_neighbors,
+                        self._anisotropy_strength,
                         G,
                         det_G,
                         density_reach,
@@ -2086,13 +2109,13 @@ class ParticleSurface:
                 kernels._fill_isotropic_G,
                 dim=particle_count,
                 inputs=[
-                    self.kernel_radius,
-                    self.kernel_scale,
+                    self._kernel_radius,
+                    self._kernel_scale,
                     flags,
                     use_flags,
                     particle_world,
                     use_worlds,
-                    self.world_count,
+                    self._world_count,
                     G,
                     det_G,
                     density_reach,
@@ -2103,7 +2126,7 @@ class ParticleSurface:
 
     def _prepare_binned_anisotropy(
         self,
-        workspace: ParticleSurfaceSparseCapacity,
+        workspace: _ParticleSurfaceSparseWorkspace,
         smoothed: wp.array[wp.vec3],
         particle_count: int,
         flags: wp.array[wp.int32],
@@ -2121,7 +2144,7 @@ class ParticleSurface:
         bin_markers = self._anisotropy_bin_markers[:particle_count]
         bin_indices = self._anisotropy_bin_indices[:particle_count]
         bin_starts = particles[particle_count : 2 * particle_count]
-        bin_size = 0.5 * self.kernel_radius
+        bin_size = 0.5 * self._kernel_radius
 
         wp.launch(
             kernels.build_anisotropy_bin_keys,
@@ -2132,11 +2155,11 @@ class ParticleSurface:
                 use_flags,
                 particle_world,
                 use_worlds,
-                self.world_count,
+                self._world_count,
                 workspace.lower,
                 1.0 / bin_size,
-                self.kernel_radius,
-                self.kernel_scale,
+                self._kernel_radius,
+                self._kernel_scale,
                 keys,
                 particles,
                 G,
@@ -2170,7 +2193,7 @@ class ParticleSurface:
                 use_flags,
                 particle_world,
                 use_worlds,
-                self.world_count,
+                self._world_count,
                 keys,
                 particles,
                 bin_starts,
@@ -2179,12 +2202,12 @@ class ParticleSurface:
                 workspace.lower,
                 workspace.hash_spacing,
                 bin_size,
-                self.kernel_radius,
-                self.anisotropy_ratio,
-                self.anisotropy_scale,
-                self.kernel_scale,
-                self.anisotropy_min_neighbors,
-                self.anisotropy_strength,
+                self._kernel_radius,
+                self._anisotropy_ratio,
+                self._anisotropy_scale,
+                self._kernel_scale,
+                self._anisotropy_min_neighbors,
+                self._anisotropy_strength,
                 G,
                 det_G,
                 density_reach,
@@ -2193,7 +2216,7 @@ class ParticleSurface:
             device=device,
         )
 
-    def _ensure_capacity_particle_resources(self, particle_count: int) -> None:
+    def _ensure_workspace_particle_resources(self, particle_count: int) -> None:
         if particle_count <= self._max_particles and self._smoothed is not None:
             return
         alloc_particles = max(particle_count, 1)
@@ -2203,7 +2226,7 @@ class ParticleSurface:
         self._density_reach = wp.empty(alloc_particles, dtype=wp.vec3, device=self._device)
         self._isotropic_fallback = wp.empty(alloc_particles, dtype=wp.int32, device=self._device)
         self._hash_positions = wp.empty(alloc_particles, dtype=wp.vec3, device=self._device)
-        if self.anisotropy_binning:
+        if self._anisotropy_binning:
             self._anisotropy_bin_keys = wp.empty(2 * alloc_particles, dtype=wp.uint64, device=self._device)
             self._anisotropy_bin_particles = wp.empty(2 * alloc_particles, dtype=wp.int32, device=self._device)
             self._anisotropy_bin_markers = wp.empty(alloc_particles, dtype=wp.int32, device=self._device)
@@ -2272,7 +2295,7 @@ class ParticleSurface:
             raise TypeError(f"particle_world must have dtype wp.int32, got {particle_world.dtype}")
 
     def _ensure_blur_weights(self, device: wp.DeviceLike):
-        hw = self.field_smooth_radius
+        hw = self._field_smooth_radius
         if hw <= 0:
             return
         device = wp.get_device(device)
@@ -2288,30 +2311,30 @@ class ParticleSurface:
         self._blur_weights = wp.array(w, dtype=float, device=device)
 
     def _marching_threshold(self) -> float:
-        if self.field_mode == "sdf":
+        if self._field_mode == "sdf":
             effective_threshold = 0.0
-            if self.mesh_smooth_iterations > 0:
+            if self._mesh_smooth_iterations > 0:
                 shrink = (
                     _MESH_SMOOTH_SHRINK_PER_VOXEL
-                    * math.sqrt(float(self.mesh_smooth_iterations))
-                    * self.mesh_smooth_lambda
-                    * self.voxel_size
+                    * math.sqrt(float(self._mesh_smooth_iterations))
+                    * self._mesh_smooth_lambda
+                    * self._voxel_size
                 )
-                if self.surface_method == "particle_sdf" or self.redistance_iterations > 0:
+                if self._surface_method == "particle_sdf" or self._redistance_iterations > 0:
                     effective_threshold = shrink
                 else:
-                    effective_threshold = shrink / self.kernel_radius
+                    effective_threshold = shrink / self._kernel_radius
             return effective_threshold
 
-        effective_threshold = self.threshold
-        if self.mesh_smooth_iterations > 0:
+        effective_threshold = self._threshold
+        if self._mesh_smooth_iterations > 0:
             shrink = (
                 _MESH_SMOOTH_SHRINK_PER_VOXEL
-                * math.sqrt(float(self.mesh_smooth_iterations))
-                * self.mesh_smooth_lambda
-                * self.voxel_size
+                * math.sqrt(float(self._mesh_smooth_iterations))
+                * self._mesh_smooth_lambda
+                * self._voxel_size
             )
-            effective_threshold = max(self.threshold - shrink / self.kernel_radius, _MIN_DENSITY_MARCHING_THRESHOLD)
+            effective_threshold = max(self._threshold - shrink / self._kernel_radius, _MIN_DENSITY_MARCHING_THRESHOLD)
         return effective_threshold
 
     def _validate_radii_layout(self, positions: wp.array[wp.vec3], radii: wp.array[float], n: int):

@@ -2359,6 +2359,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         extrapolate_into_colliders: bool = False,
         collider_extrapolation_depth: float | None = None,
         collider_extrapolation_onset: float = 0.0,
+        collider_extrapolation_redistance_iterations: int = 1,
         particle_flags: wp.array[wp.int32] | None = None,
     ) -> ParticleSurface.ExtractionMesh:
         """Extract a triangle mesh from the current particle state.
@@ -2370,12 +2371,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             compute_normals: Whether to compute per-vertex normals.
             extrapolate_into_colliders: Mirror-extrapolate the particle SDF
                 into collider interiors before meshing.  Requires
-                ``surface.field_mode == "sdf"``.
+                a surface created with ``field_mode="sdf"``.
             collider_extrapolation_depth: Maximum distance [m] to extrapolate
                 into colliders. Defaults to the smaller of
-                ``4 * surface.voxel_size`` and the allocated topology halo.
+                four surface voxels and the allocated topology halo.
             collider_extrapolation_onset: Signed collider distance [m] where
                 extrapolation starts.  ``0`` starts at the collider surface.
+            collider_extrapolation_redistance_iterations: Number of
+                redistancing iterations to apply after collider extrapolation.
+                Set to 0 to disable redistancing.
             particle_flags: Optional per-particle flags selecting the active
                 particles to surface.  Defaults to the model particle flags.
 
@@ -2387,16 +2391,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if extrapolate_into_colliders and surface.field_mode != "sdf":
             raise ValueError("Collider extrapolation requires ParticleSurface(field_mode='sdf')")
 
-        mesh = surface.extract(
+        if not extrapolate_into_colliders:
+            return surface.extract(
+                state.particle_q,
+                radii=self._mpm_model.particle_radius,
+                compute_normals=compute_normals,
+                particle_flags=particle_flags,
+                particle_world=self.model.particle_world if surface.world_count > 1 else None,
+            )
+
+        surface.update_field(
             state.particle_q,
             radii=self._mpm_model.particle_radius,
-            compute_normals=compute_normals and not extrapolate_into_colliders,
             particle_flags=particle_flags,
             particle_world=self.model.particle_world if surface.world_count > 1 else None,
-            compute_mesh=not extrapolate_into_colliders,
         )
-        if not extrapolate_into_colliders:
-            return mesh
 
         return extrapolate_surface_sdf_into_colliders(
             surface,
@@ -2404,6 +2413,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             state.body_q,
             max_depth=collider_extrapolation_depth,
             onset=collider_extrapolation_onset,
+            redistance_iterations=collider_extrapolation_redistance_iterations,
             compute_normals=compute_normals,
         )
 
