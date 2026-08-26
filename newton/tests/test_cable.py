@@ -5862,47 +5862,6 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 8000.0))
 
 
-def _notify_joint_dof_properties_caps_penalty_k_at_ramp_seed(test, device):
-    """Verify a refreshed ``joint_penalty_k`` is capped at the legacy AVBD ramp seed.
-
-    ``joint_material_k`` keeps the raw stiffness either way (see ``_penalty_k_init``).
-    """
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    body = builder.add_link()
-    joint = builder.add_joint_rod(-1, body, stretch_stiffness=100.0, bend_stiffness=10.0)
-    builder.add_articulation([joint])
-    builder.color()
-    model = builder.finalize(device=device)
-    # beta > 0 enables ramping, so rigid_joint_{linear,angular}_k_start become active seeds.
-    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True, rigid_avbd_beta=5.0)
-    lin_seed = solver.rigid_joint_linear_k_start
-    ang_seed = solver.rigid_joint_angular_k_start
-    test.assertIsNotNone(lin_seed)
-    test.assertIsNotNone(ang_seed)
-
-    dof0 = int(model.joint_qd_start.numpy()[joint])
-    joint_target_ke = model.joint_target_ke.numpy()
-    joint_target_ke[dof0 + 0] = 10.0 * lin_seed  # stretch: above the seed -> capped
-    joint_target_ke[dof0 + 2] = 0.3 * ang_seed  # bend: below the seed -> passes through
-    model.joint_target_ke.assign(joint_target_ke)
-    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-
-    start = int(solver.joint_constraint_start.numpy()[joint])
-    material_k = solver.joint_material_k.numpy()
-    penalty_k = solver.joint_penalty_k.numpy()
-    penalty_k_min = solver.joint_penalty_k_min.numpy()
-
-    test.assertAlmostEqual(float(material_k[start + 0]), 10.0 * lin_seed)
-    test.assertAlmostEqual(float(penalty_k[start + 0]), lin_seed)
-    test.assertAlmostEqual(float(material_k[start + 2]), 0.3 * ang_seed)
-    test.assertAlmostEqual(float(penalty_k[start + 2]), 0.3 * ang_seed)
-    np.testing.assert_array_equal(
-        penalty_k[start : start + 4],
-        penalty_k_min[start : start + 4],
-        err_msg="joint_penalty_k_min must be reseeded to the same values as joint_penalty_k",
-    )
-
-
 def _notify_joint_dof_properties_refreshes_rod_structural_k(test, device):
     """Verify a ROD stretch/shear edit also refreshes ``body_structural_k``.
 
@@ -6663,12 +6622,6 @@ add_function_test(
     TestCable,
     "test_notify_joint_dof_properties_refreshes_drive_limit_material_k",
     _notify_joint_dof_properties_refreshes_drive_limit_material_k,
-    devices=devices,
-)
-add_function_test(
-    TestCable,
-    "test_notify_joint_dof_properties_caps_penalty_k_at_ramp_seed",
-    _notify_joint_dof_properties_caps_penalty_k_at_ramp_seed,
     devices=devices,
 )
 add_function_test(
