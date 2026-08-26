@@ -8652,15 +8652,34 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         absent_solver = self._step_with_newton_contacts(absent_model)
         self.assertEqual(int(absent_solver.mjw_data.nacon.numpy()[0]), 0)
 
-    def test_pairid_rejection_drops_newton_contact(self):
-        """Drop contacts rejected by MuJoCo's compiled pair table."""
-        model = self._make_explicit_pair_contact_model()
+    def test_filtered_pairid_preserves_newton_contact(self):
+        """Preserve a Newton parent-child contact excluded by MuJoCo filtering."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        parent = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+        child = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(parent, radius=0.1)
+        builder.add_shape_sphere(child, radius=0.1)
+        root_joint = builder.add_joint_free(parent)
+        child_joint = builder.add_joint_ball(
+            parent,
+            child,
+            parent_xform=wp.transform(wp.vec3(0.15, 0.0, 0.0), wp.quat_identity()),
+            collision_filter_parent=False,
+        )
+        builder.add_articulation([root_joint, child_joint])
+        model = builder.finalize()
         solver, state_in, state_out, control, contacts = self._make_newton_contact_case(model)
-        solver.mjw_model.nxn_pairid.fill_(wp.vec2i(-2, -1))
 
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+        self.assertEqual(int(solver.mjw_model.nxn_pairid.numpy()[0, 0]), -2)
         solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
 
-        self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 0)
+        contact_count = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertGreater(contact_count, 0)
+        np.testing.assert_array_equal(
+            solver.mjw_data.contact.dim.numpy()[:contact_count],
+            np.full(contact_count, 3, dtype=np.int32),
+        )
 
     def test_pair_update_refreshes_newton_contact(self):
         """Refresh injected contacts after pair material updates."""

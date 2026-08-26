@@ -604,9 +604,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
             tid_to_cid[tid] = -1
             return
         pairid = nxn_pairid[upper_tri_index(ngeom, geom_lo, geom_hi)][0]
-        if pairid == -2:
-            tid_to_cid[tid] = -1
-            return
 
         worldid = body_a // bodies_per_world
         if body_a < 0:
