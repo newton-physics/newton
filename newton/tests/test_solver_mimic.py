@@ -70,9 +70,7 @@ def _test_solver_mimic(test, device, solver_name):
     """Enforce scalar and vectorized mimic relationships with one solver."""
     for vectorized in (False, True):
         with test.subTest(vectorized=vectorized):
-            model, state_in, state_out, reference, follower, offset, multiplier = _build_mimic_model(
-                device, vectorized
-            )
+            model, state_in, state_out, reference, follower, offset, multiplier = _build_mimic_model(device, vectorized)
             if solver_name == "featherstone":
                 solver = newton.solvers.SolverFeatherstone(model)
                 generalized = True
