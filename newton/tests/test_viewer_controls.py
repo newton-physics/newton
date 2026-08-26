@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import sys
 import unittest
 from collections import namedtuple
@@ -192,11 +193,33 @@ class TestViewerGLNumFramesValidation(unittest.TestCase):
             ViewerGL(num_frames=-1)
 
     def test_rejects_invalid_cuda_interop_mode(self):
-        for value in (True, 1.5):
+        for value in (True, 1, 1.5, "dynamic"):
             with self.subTest(value=value), self.assertRaises(TypeError):
                 ViewerGL(enable_cuda_interop=value)  # type: ignore[arg-type]
+
+    def test_cuda_interop_defaults_to_dynamic_meshes(self):
+        parameter = inspect.signature(ViewerGL).parameters["enable_cuda_interop"]
+        self.assertEqual(parameter.default, ViewerGL.CudaInterop.DYNAMIC_MESH)
+
+    def test_cuda_interop_flags_are_composable(self):
+        viewer = ViewerGL.__new__(ViewerGL)
+        viewer._enable_cuda_interop = ViewerGL.CudaInterop.POINTS | ViewerGL.CudaInterop.LINES
+
+        self.assertTrue(viewer._cuda_interop_enabled(ViewerGL.CudaInterop.POINTS))
+        self.assertTrue(viewer._cuda_interop_enabled(ViewerGL.CudaInterop.LINES))
+        self.assertFalse(viewer._cuda_interop_enabled(ViewerGL.CudaInterop.INSTANCES))
+        self.assertEqual(
+            ViewerGL.CudaInterop.ALL,
+            ViewerGL.CudaInterop.DYNAMIC_MESH
+            | ViewerGL.CudaInterop.STATIC_MESH
+            | ViewerGL.CudaInterop.POINTS
+            | ViewerGL.CudaInterop.INSTANCES
+            | ViewerGL.CudaInterop.LINES,
+        )
+
+    def test_rejects_unknown_cuda_interop_flags(self):
         with self.assertRaises(ValueError):
-            ViewerGL(enable_cuda_interop="sometimes")  # type: ignore[arg-type]
+            ViewerGL(enable_cuda_interop=ViewerGL.CudaInterop(1 << 10))
 
 
 class TestViewerGLParticles(unittest.TestCase):
@@ -389,7 +412,7 @@ class TestViewerGLDynamicMeshes(unittest.TestCase):
         viewer = ViewerGL.__new__(ViewerGL)
         viewer.objects = {}
         viewer.device = wp.get_device("cpu")
-        viewer._enable_cuda_interop = "dynamic"
+        viewer._enable_cuda_interop = ViewerGL.CudaInterop.DYNAMIC_MESH
         viewer._qualify = lambda name: name
         points = wp.zeros(3, dtype=wp.vec3)
         indices = wp.zeros(3, dtype=wp.int32)
@@ -403,7 +426,7 @@ class TestViewerGLDynamicMeshes(unittest.TestCase):
             self.assertTrue(original.enable_cuda_interop)
             viewer.log_mesh("static", points, indices)
             self.assertFalse(viewer.objects["static"].enable_cuda_interop)
-            viewer._enable_cuda_interop = "all"
+            viewer._enable_cuda_interop = ViewerGL.CudaInterop.STATIC_MESH
             viewer.log_mesh("all", points, indices)
             self.assertTrue(viewer.objects["all"].enable_cuda_interop)
             instancer = FakeInstancer(original)
@@ -419,6 +442,35 @@ class TestViewerGLDynamicMeshes(unittest.TestCase):
         self.assertIs(instancer.mesh, viewer.objects["mesh"])
         self.assertEqual(instancer.rebinds, 1)
         self.assertGreaterEqual(viewer.objects["mesh"].max_points, 7)
+
+    def test_points_interop_is_selected_independently(self):
+        class FakeInstancer:
+            def __init__(self, num_instances, mesh, *, enable_cuda_interop=False):
+                self.num_instances = num_instances
+                self.mesh = mesh
+                self.enable_cuda_interop = enable_cuda_interop
+                self.hidden = False
+
+            def update_from_points(self, points, radii, colors):
+                pass
+
+        viewer = ViewerGL.__new__(ViewerGL)
+        viewer.objects = {}
+        viewer.device = wp.get_device("cpu")
+        viewer._point_mesh = object()
+        viewer._qualify = lambda name: name
+        points = wp.zeros(3, dtype=wp.vec3)
+        radii = wp.ones(3, dtype=wp.float32)
+        colors = wp.ones(3, dtype=wp.vec3)
+
+        with patch("newton._src.viewer.viewer_gl.MeshInstancerGL", FakeInstancer):
+            viewer._enable_cuda_interop = ViewerGL.CudaInterop.POINTS
+            viewer.log_points("interop", points, radii, colors)
+            viewer._enable_cuda_interop = ViewerGL.CudaInterop.INSTANCES
+            viewer.log_points("host", points, radii, colors)
+
+        self.assertTrue(viewer.objects["interop"].enable_cuda_interop)
+        self.assertFalse(viewer.objects["host"].enable_cuda_interop)
 
 
 if __name__ == "__main__":
