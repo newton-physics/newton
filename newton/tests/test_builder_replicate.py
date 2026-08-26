@@ -247,7 +247,6 @@ class TestModelBuilderReplicate(unittest.TestCase):
         np.testing.assert_array_equal(expected.shape_contact_pairs.numpy(), actual.shape_contact_pairs.numpy())
 
     def test_replicate_and_finalize_matches_coord_layout_targets(self):
-        """Match ordinary replication with coordinate-layout joint targets."""
         with mock.patch("newton.use_coord_layout_targets", True):
             source = self._make_source()
             expected_builder = ModelBuilder()

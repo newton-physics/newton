@@ -148,10 +148,9 @@ _IDENTITY_ROTATION = np.asarray(wp.quatf(0.0, 0.0, 0.0, 1.0), dtype=np.float32)
 
 @functools.cache
 def _model_array_dtypes() -> dict[str, Any]:
-    """Warp dtypes from the instance annotations in ``Model.__init__``.
+    """Warp dtypes for the ``Model`` array attributes, read from the annotations in ``Model.__init__``.
 
-    Read on first use rather than at import: only replication into contiguous arrays needs
-    them, and reading them requires the source of ``Model.__init__`` to be available.
+    Deferred to first use: only array-backed replication needs them, and reading them requires source access.
     """
     import ast  # noqa: PLC0415
     import textwrap  # noqa: PLC0415
@@ -189,8 +188,7 @@ def _model_array_dtypes() -> dict[str, Any]:
     return result
 
 
-# These numeric fields drive large Python loops during finalization. Keeping
-# them as lists avoids boxing a NumPy scalar on every iteration.
+# Excluded from array backing: finalization loops over these in Python, where NumPy elements box a scalar per access.
 _FINALIZE_LIST_CONTROL_FLOW_FIELDS = frozenset({"shape_flags", "shape_type", "joint_type", "joint_dof_dim"})
 
 
@@ -2968,13 +2966,12 @@ class ModelBuilder:
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     def _project_target_q_to_dof(self) -> list[float] | np.ndarray:
-        """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
-        the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped list.
+        """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn the coord-sized
+        :attr:`joint_target_q` buffer into a DOF-shaped one.
 
-        Under :data:`newton.use_coord_layout_targets` ``False`` the builder
-        stores raw per-axis angles (extrinsic ZYX) in the first 3 quat slots
-        and a placeholder ``1.0`` in the 4th — this method just slices the
-        placeholder off to produce the legacy DOF-shaped ``Model.joint_target_q``.
+        Under :data:`newton.use_coord_layout_targets` ``False`` the builder stores raw per-axis angles (extrinsic
+        ZYX) in the first 3 quat slots and a placeholder ``1.0`` in the 4th — this method just slices the placeholder
+        off to produce the legacy DOF-shaped ``Model.joint_target_q``.
         """
         if isinstance(self.joint_target_q, np.ndarray):
             joint_types = np.asarray(self.joint_type, dtype=np.int32)
@@ -3101,30 +3098,25 @@ class ModelBuilder:
     ) -> Model:
         """Replicate a builder and immediately finalize the resulting model.
 
-        This is equivalent to calling :meth:`replicate` followed by :meth:`finalize`,
-        but performs the replication on a private, single-use copy of this builder.
-        Dense numeric attributes on that copy are stored directly as contiguous arrays
-        and the copy is discarded after finalization. This builder is not modified. Use
-        the separate calls when the replicated builder must be modified before
-        finalization. When cyclic garbage collection is enabled, it is deferred until
-        the single-use builder has been discarded, then run once before this method
-        returns. An already-disabled collector remains disabled.
+        Equivalent to :meth:`replicate` followed by :meth:`finalize`, but faster, and leaves this builder unmodified.
+        Use the separate calls when the replicated data must be changed in between. Cyclic garbage collection is
+        suspended for the duration.
 
         Args:
             builder: The builder to replicate.
             world_count: The number of worlds to create.
             spacing: The spacing between replicated worlds. Ignored when ``xforms`` is provided.
             xforms: Optional sequence of transforms, one per replicated world.
-            label_prefixes: Optional prefix prepended to all labels from ``builder``, one per
-                replicated world. See :meth:`replicate`.
-            device: Device on which to allocate the model.
+            label_prefixes: Optional prefix prepended to all labels from ``builder``, one per replicated world.
+                See :meth:`replicate`.
+            device: Device on which to allocate the model. If None, uses the current Warp device.
             requires_grad: Whether model arrays require gradients.
             skip_all_validations: Whether to skip all validation checks.
-            skip_validation_worlds: Whether to skip world-ordering validation.
-            skip_validation_joints: Whether to skip joint-membership validation.
-            skip_validation_shapes: Whether to skip shape-margin validation.
-            skip_validation_structure: Whether to skip structural validation.
-            skip_validation_joint_ordering: Whether to skip joint-ordering validation.
+            skip_validation_worlds: Whether to skip world ordering and contiguity validation.
+            skip_validation_joints: Whether to skip articulation-membership validation.
+            skip_validation_shapes: Whether to skip contact-margin validation.
+            skip_validation_structure: Whether to skip structural-invariant validation.
+            skip_validation_joint_ordering: Whether to skip DFS joint-ordering validation.
 
         Returns:
             The finalized replicated model.
@@ -3311,8 +3303,7 @@ class ModelBuilder:
                 prefix = np.asarray(prefix_values, dtype=numpy_dtype)
                 source = np.asarray(source_values, dtype=numpy_dtype)
                 if not element_shape:
-                    # Scalar Warp arrays can still be assembled from rows (for example,
-                    # triangle indices). Infer that builder-only layout from the data.
+                    # Scalar arrays may still be built row-wise (tri_indices); take the row width from the data.
                     shaped = source if source.ndim > 1 else prefix
                     if shaped.ndim > 1:
                         element_shape = shaped.shape[1:]

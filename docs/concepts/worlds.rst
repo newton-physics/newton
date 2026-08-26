@@ -265,16 +265,10 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
    world_count: 4
    body_count: 8
 
-If the replicated builder does not need further modification, use
-:meth:`~newton.ModelBuilder.replicate_and_finalize` to perform the two operations
-atomically. It produces the same model while forwarding the contiguous arrays
-created during replication directly to finalization through a private,
-single-use builder. It also defers cyclic garbage collection until that builder
-has been discarded, replacing collections during construction with one final
-collection. The destination builder is not modified. Add global entities and
-configure the destination builder before calling it; use separate
-:meth:`~newton.ModelBuilder.replicate` and :meth:`~newton.ModelBuilder.finalize`
-calls when the replicated data must be changed in between.
+If the replicated builder needs no further modification, :meth:`~newton.ModelBuilder.replicate_and_finalize`
+performs both steps in one call and finalizes faster. The destination builder is left unmodified; use separate
+:meth:`~newton.ModelBuilder.replicate` and :meth:`~newton.ModelBuilder.finalize` calls when the replicated data
+must be changed in between.
 
 .. important::
    Call :meth:`~newton.ModelBuilder.approximate_meshes` on the sub-builder
