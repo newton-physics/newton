@@ -1,20 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared Warp kernels for the joint impedance controllers.
+"""Shared Warp kernels used by more than one controller family.
 
 Every 1-D buffer here is compact — one entry per controlled DOF, robot 0's DOFs
 first, then robot 1's — so every kernel is a flat 1-D launch with no padding to
-skip. The exception is the mass matrix, which :func:`~newton.eval_mass_matrix`
-produces as one square block per articulation: the multiply kernel stays flat
-and indexes into those blocks, while the gather kernel launches over them.
+skip. The exception is a padded per-robot matrix (e.g. a mass matrix), which
+:func:`~newton.eval_mass_matrix` produces as one square block per articulation:
+:func:`_block_matrix_vector_multiply_kernel` stays a flat 1-D launch and indexes
+into those blocks, while the gather kernels launch over them directly.
+
+A kernel belongs here, rather than in one controller family's own ``_common.py``,
+once a second family needs the identical operation — see
+:class:`~newton.controllers.ControllerJointImpedanceModelFree` (joint-space PD,
+compact-vector accumulation, and the mass-matrix multiply/gather) and the
+operational-space controller family's null-space posture term (the same
+joint-space PD and accumulation, plus the same block-matrix-vector multiply for
+its ``N @ (M @ a)`` combine step) for the two current users.
 """
 
 from __future__ import annotations
 
 import warp as wp
 
-from ....core.types import Devicelike
+from ...core.types import Devicelike
 
 
 @wp.kernel
@@ -41,8 +50,8 @@ def _add_term_kernel(
 
 
 @wp.kernel
-def _mass_matrix_multiply_kernel(
-    mass_matrix: wp.array3d[wp.float32],  # (controlled_robot_count, max_controlled_dofs, max_controlled_dofs)
+def _block_matrix_vector_multiply_kernel(
+    block_matrix: wp.array3d[wp.float32],  # (controlled_robot_count, max_controlled_dofs, max_controlled_dofs)
     vec: wp.array[wp.float32],  # (total_controlled_dofs,)
     robot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> owning robot
     slot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> row within that robot's block
@@ -50,13 +59,19 @@ def _mass_matrix_multiply_kernel(
     controlled_dofs_per_robot: wp.array[wp.int32],  # (controlled_robot_count,)
     out: wp.array[wp.float32],  # (total_controlled_dofs,)
 ):
+    """Multiply a compact per-DOF vector by a padded per-robot square matrix, ``out = block_matrix @ vec``.
+
+    ``block_matrix`` need not be a mass matrix — any per-robot square matrix in
+    the same padded ``(controlled_robot_count, max_controlled_dofs,
+    max_controlled_dofs)`` layout works, e.g. a null-space projector.
+    """
     dof = wp.tid()
     robot = robot_of_dof[dof]
     row = slot_of_dof[dof]
     row_base = dof_offsets[robot]
     acc = float(0.0)
     for col in range(controlled_dofs_per_robot[robot]):
-        acc = acc + mass_matrix[robot, row, col] * vec[row_base + col]
+        acc = acc + block_matrix[robot, row, col] * vec[row_base + col]
     out[dof] = acc
 
 
@@ -77,9 +92,9 @@ def _gather_mass_matrix_blocks_kernel(
 
 # wp.copy is not recordable under APIC graph capture when either side is
 # non-contiguous, which every indexed-view port is. These two kernels do the
-# same work in a form that captures and serialises. Both controllers launch them
+# same work in a form that captures and serialises. Controllers launch them
 # at their own port length: one entry per controlled DOF for a compact port, one
-# per model coordinate or DOF for the model-based controller's whole-model ports.
+# per model coordinate or DOF for a model-based controller's whole-model ports.
 
 
 @wp.kernel

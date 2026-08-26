@@ -27,7 +27,7 @@ from newton._src.sim.model import Model
 from ...controller import ControllerBase
 from ...joint_selection import select_joints
 from ...utils import _validate_array
-from ._common import _gather_mass_matrix_blocks_kernel, _read_port
+from .._common import _gather_mass_matrix_blocks_kernel, _read_port
 from .model_free import ControllerJointImpedanceModelFree
 
 

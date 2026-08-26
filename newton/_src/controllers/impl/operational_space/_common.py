@@ -555,8 +555,9 @@ def _null_space_projector_kernel(
 # and then summed there -- not summed as task-space forces first. This
 # matches how the reference controller (Isaac Lab's OperationalSpaceController)
 # accumulates every contribution as ``joint_efforts +=``, and lets the
-# summation reuse ``_add_term_kernel`` from ``joint_impedance/_common.py``
-# rather than needing a task-space-vector accumulator kernel here.
+# summation reuse ``_add_term_kernel`` from ``controllers/impl/_common.py``
+# (shared with the joint-impedance family) rather than needing a
+# task-space-vector accumulator kernel here.
 # ---------------------------------------------------------------------------
 
 
@@ -604,7 +605,9 @@ def _rotate_selection_matrix_kernel(
 
 @wp.kernel
 def _closed_loop_wrench_command_kernel(
-    desired_wrench_world: wp.array[wp.spatial_vector],  # (robot_count,) desired contact wrench (force, moment), world coords
+    desired_wrench_world: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) desired contact wrench (force, moment), world coords
     measured_wrench_world: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) measured contact wrench (force, moment), world coords, e.g. from a 6-axis force/torque sensor
