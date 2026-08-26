@@ -1944,13 +1944,10 @@ class CollisionPipeline:
     def refit_soft_self_contact_bvh(self, new_pos: wp.array[wp.vec3], rebuild: bool = False) -> None:
         """Refit (or fully rebuild) the soft self-contact BVHs to ``new_pos``.
 
-        Keeping the BVHs up to date is the caller's responsibility:
-        :meth:`collide` never updates them, and self-contact detection reads
-        the positions of the last refit/rebuild. Call this after particle
-        positions change; pass ``rebuild=True`` to rebuild the trees from
-        scratch when repeated refitting has degraded their quality under large
-        deformation. (An owning solver refits internally as part of its own
-        detection procedure.)
+        :meth:`collide` automatically refits before self-contact detection.
+        Call this method directly to update the trees without detecting, or
+        pass ``rebuild=True`` to rebuild them from scratch when repeated
+        refitting has degraded their quality under large deformation.
 
         Args:
             new_pos: Particle positions [m] to fit the BVHs to, e.g.
@@ -2036,8 +2033,9 @@ class CollisionPipeline:
             soft_self_contact: Also run soft (cloth) self-contact detection
                 into ``contacts.soft_self_contact_data``. Requires
                 :meth:`init_soft_self_contact` to have been called. The
-                self-contact BVHs are **not** updated by this call — keep them
-                current via :meth:`refit_soft_self_contact_bvh`.
+                self-contact BVHs are refitted to ``state.particle_q`` before
+                detection. Use :meth:`refit_soft_self_contact_bvh` directly
+                when an explicit full rebuild is needed.
             dt: Collision-update horizon [s]. Required when speculative
                 contacts are enabled. ``0.0`` disables velocity adaptation for
                 this call. Ignored when speculative contacts are disabled. See
@@ -2459,11 +2457,10 @@ class CollisionPipeline:
         # contacts.soft_self_contact_data).
         if soft_self_contact:
             detector = self._get_soft_self_contact_detector(contacts)
+            detector.refit(state.particle_q)
             query_radius = self.soft_self_contact_margin + self.soft_self_contact_gap
-            # The BVHs (and the positions detection reads) are NOT updated here —
-            # keeping them current via refit_soft_self_contact_bvh() is
-            # the caller's responsibility. Rest-shape exclusion measures pair
-            # distances in the model's initial (rest) positions.
+            # Rest-shape exclusion measures pair distances in the model's
+            # initial positions rather than the current state.
             detector.vertex_triangle_collision_detection(
                 query_radius,
                 min_query_radius=self.soft_self_contact_rest_shape_exclusion_radius,

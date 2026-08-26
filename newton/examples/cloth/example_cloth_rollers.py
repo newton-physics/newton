@@ -368,11 +368,10 @@ class Example:
             # 24 vertex / 146 edge pairs); overflow drops pairs.
             particle_vertex_contact_buffer_size=48,
             particle_edge_contact_buffer_size=160,
-            collision_frequency=[1, 5],
-            collision_frequency_type=[
-                newton.solvers.SolverBase.CollisionFrequencyType.AUTO,
-                newton.solvers.SolverBase.CollisionFrequencyType.ITERATIONS,
-            ],
+            collision_frequency={newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: 5},
+            collision_frequency_type={
+                newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: newton.solvers.SolverBase.CollisionFrequencyType.ITERATIONS,
+            },
             particle_topological_contact_filter_threshold=2,
         )
 

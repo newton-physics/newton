@@ -11,6 +11,7 @@ from newton.solvers import SolverBase, SolverVBD
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 Frequency = SolverBase.CollisionFrequencyType
+Slot = SolverBase.CollisionSlot
 
 
 class _StubSolver(SolverBase):
@@ -24,8 +25,11 @@ class _StubSolver(SolverBase):
 
     def step(self, state_in, state_out, control, contacts, dt):
         contacts = self._resolve_step_contacts(contacts)
-        if self.pipeline is not None and self._resolved_collision_frequency_type(0) != Frequency.NONE:
-            self._run_rigid_collision(state_in)
+        if (
+            self.collision_pipeline is not None
+            and self._resolved_collision_frequency_type(Slot.RIGID) != Frequency.NONE
+        ):
+            self._run_rigid_collision(state_in, dt)
             self.collide_calls += 1
 
 
@@ -47,23 +51,38 @@ def test_frequency_toggle_drives_detection(test, device):
     """
     model = _build_model(device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-    solver = _StubSolver(model, pipeline=pipeline)
+    solver = _StubSolver(model, collision_pipeline=pipeline)
     state_a, state_b = model.state(), model.state()
 
     test.assertIsNotNone(solver.contacts)
 
     for i in range(6):
         solver.set_collision_frequency(
-            collision_frequency_type=[Frequency.PRE_INIT if i % 3 == 0 else Frequency.NONE, Frequency.NONE]
+            collision_frequency_type={Slot.RIGID: Frequency.PRE_INIT if i % 3 == 0 else Frequency.NONE}
         )
         solver.step(state_a, state_b, None, None, 1e-3)
     test.assertEqual(solver.collide_calls, 2)
 
     # AUTO resolves to PRE_INIT for the rigid slot of an owning solver.
-    solver.set_collision_frequency(collision_frequency_type=[Frequency.AUTO, Frequency.AUTO])
+    solver.set_collision_frequency(collision_frequency_type={Slot.RIGID: Frequency.AUTO})
     solver.step(state_a, state_b, None, None, 1e-3)
     test.assertEqual(solver.collide_calls, 3)
     test.assertGreater(int(solver.contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_owned_speculative_pipeline_receives_dt(test, device):
+    """Forward the step time horizon to an owned speculative pipeline."""
+    model = _build_model(device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
+    )
+    solver = _StubSolver(model, collision_pipeline=pipeline)
+
+    solver.step(model.state(), model.state(), None, None, 1e-3)
+
+    test.assertEqual(solver.collide_calls, 1)
 
 
 def test_frequency_validation_and_ownership(test, device):
@@ -83,15 +102,15 @@ def test_frequency_validation_and_ownership(test, device):
 
     # Pipeline passed to a solver that does not opt in.
     with test.assertRaises(ValueError):
-        _NonOwning(model, pipeline=pipeline)
+        _NonOwning(model, collision_pipeline=pipeline)
 
     other_model = _build_model(device)
     other_pipeline = newton.CollisionPipeline(other_model, broad_phase="nxn")
     with test.assertRaisesRegex(ValueError, "same model"):
-        _StubSolver(model, pipeline=other_pipeline)
+        _StubSolver(model, collision_pipeline=other_pipeline)
 
     with test.assertRaisesRegex(ValueError, "requires contact matching"):
-        SolverVBD(model, pipeline=pipeline, rigid_contact_history=True, rigid_compliant_alm=False)
+        SolverVBD(model, collision_pipeline=pipeline, rigid_contact_history=True, rigid_compliant_alm=False)
 
     # Non-owning solver: contacts property is None, external contacts pass through.
     plain = _NonOwning(model)
@@ -106,25 +125,42 @@ def test_frequency_validation_and_ownership(test, device):
 
     # Active rigid slot without a pipeline.
     with test.assertRaises(ValueError):
-        _NonOwning(model, collision_frequency_type=[Frequency.PRE_INIT, Frequency.NONE])
+        _NonOwning(model, collision_frequency_type={Slot.RIGID: Frequency.PRE_INIT})
 
     # PRE_POST_INIT is meaningless for the rigid slot.
     with test.assertRaises(ValueError):
-        _StubSolver(model, pipeline=pipeline, collision_frequency_type=[Frequency.PRE_POST_INIT, Frequency.NONE])
+        _StubSolver(
+            model,
+            collision_pipeline=pipeline,
+            collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
+        )
+    with test.assertRaisesRegex(ValueError, "requires contact matching"):
+        _StubSolver(
+            model,
+            collision_pipeline=pipeline,
+            collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS},
+        )
 
-    # List shape and range validation.
+    # Slot and range validation.
     with test.assertRaises(ValueError):
-        _StubSolver(model, pipeline=pipeline, collision_frequency=[1])
+        _StubSolver(model, collision_pipeline=pipeline, collision_frequency={Slot.RIGID: 0})
     with test.assertRaises(ValueError):
-        _StubSolver(model, pipeline=pipeline, collision_frequency=[0, 1])
+        _StubSolver(model, collision_pipeline=pipeline, collision_frequency={99: 1})
     with test.assertRaises(ValueError):
-        _StubSolver(model, pipeline=pipeline, collision_frequency_type=[Frequency.PRE_INIT])
+        _StubSolver(model, collision_pipeline=pipeline, collision_frequency_type={99: Frequency.PRE_INIT})
 
-    solver = _StubSolver(model, pipeline=pipeline, collision_frequency=[1, 2])
+    solver = _StubSolver(
+        model,
+        collision_pipeline=pipeline,
+        collision_frequency={Slot.SOFT_SELF_CONTACT: 2},
+    )
     # Partial update keeps the other setting.
-    solver.set_collision_frequency(collision_frequency_type=[Frequency.NONE, Frequency.ITERATIONS])
-    test.assertEqual(solver.collision_frequency, [1, 2])
-    test.assertEqual(solver.collision_frequency_type, [Frequency.NONE, Frequency.ITERATIONS])
+    solver.set_collision_frequency(collision_frequency_type={Slot.SOFT_SELF_CONTACT: Frequency.ITERATIONS})
+    test.assertEqual(solver.collision_frequency, {Slot.RIGID: 1, Slot.SOFT_SELF_CONTACT: 2})
+    test.assertEqual(
+        solver.collision_frequency_type,
+        {Slot.RIGID: Frequency.AUTO, Slot.SOFT_SELF_CONTACT: Frequency.ITERATIONS},
+    )
 
     # With an owned pipeline, step() must receive contacts=None.
     with test.assertRaises(ValueError):
@@ -138,10 +174,10 @@ def test_vbd_rigid_none_refreshes_external_contacts(test, device):
     solver = SolverVBD(
         model,
         iterations=1,
-        pipeline=pipeline,
+        collision_pipeline=pipeline,
         rigid_contact_history=False,
         rigid_compliant_alm=False,
-        collision_frequency_type=[Frequency.NONE, Frequency.NONE],
+        collision_frequency_type={Slot.RIGID: Frequency.NONE, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
     )
     state_a, state_b = model.state(), model.state()
 
@@ -161,9 +197,9 @@ def test_vbd_self_contact_none_starts_empty(test, device):
     solver = SolverVBD(
         model,
         iterations=1,
-        pipeline=pipeline,
+        collision_pipeline=pipeline,
         particle_enable_self_contact=True,
-        collision_frequency_type=[Frequency.NONE, Frequency.NONE],
+        collision_frequency_type={Slot.RIGID: Frequency.NONE, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
     )
     data = solver.contacts.soft_self_contact_data
     test.assertEqual(int(data.vertex_colliding_triangles_count.numpy().sum()), 0)
@@ -190,14 +226,14 @@ def test_vbd_rigid_iterations_mode(test, device):
         builder.add_ground_plane()
         builder.color()
         model = builder.finalize(device=device)
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
         solver = SolverVBD(
             model,
             iterations=3,
-            pipeline=pipeline,
+            collision_pipeline=pipeline,
             rigid_compliant_alm=False,
-            collision_frequency=[freq, 1],
-            collision_frequency_type=[mode, Frequency.NONE],
+            collision_frequency={Slot.RIGID: freq},
+            collision_frequency_type={Slot.RIGID: mode, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
         )
         s0, s1 = model.state(), model.state()
         for _ in range(3):
@@ -210,6 +246,41 @@ def test_vbd_rigid_iterations_mode(test, device):
     assert_np_equal(q_hi, q_pre, tol=1e-6)
     q_k1 = run(Frequency.ITERATIONS, 1)
     test.assertTrue(np.isfinite(q_k1).all())
+
+
+def test_vbd_rigid_iterations_preserves_contact_duals(test, device):
+    """Carry in-flight rigid contact duals across scheduled re-detection."""
+
+    class _TrackingSolver(SolverVBD):
+        def __init__(self, *args, **kwargs):
+            self.dual_norms = []
+            super().__init__(*args, **kwargs)
+
+        def _refresh_rigid_contact_state(self, contacts, refresh, *, restore_history=False):
+            before = float(np.abs(self.body_body_contact_lambda.numpy()).max()) if restore_history else 0.0
+            super()._refresh_rigid_contact_state(contacts, refresh, restore_history=restore_history)
+            if restore_history:
+                after = float(np.abs(self.body_body_contact_lambda.numpy()).max())
+                self.dual_norms.append((before, after))
+
+    model = _build_model(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+    solver = _TrackingSolver(
+        model,
+        iterations=3,
+        collision_pipeline=pipeline,
+        rigid_contact_history=False,
+        rigid_compliant_alm=False,
+        collision_frequency={Slot.RIGID: 1},
+        collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS},
+    )
+
+    solver.step(model.state(), model.state(), None, None, 1e-3)
+
+    test.assertGreater(len(solver.dual_norms), 0)
+    for before, after in solver.dual_norms:
+        test.assertGreater(before, 0.0)
+        test.assertGreater(after, 0.0)
 
 
 def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
@@ -230,15 +301,15 @@ def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
     builder.add_particle(pos=(0.55, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=0.1, radius=0.1)
     builder.color()
     model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1, contact_matching="latest")
     solver = _TrackingSolver(
         model,
         iterations=3,
-        pipeline=pipeline,
+        collision_pipeline=pipeline,
         rigid_contact_history=False,
         rigid_compliant_alm=False,
-        collision_frequency=[1, 1],
-        collision_frequency_type=[Frequency.ITERATIONS, Frequency.NONE],
+        collision_frequency={Slot.RIGID: 1},
+        collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
     )
 
     state_a, state_b = model.state(), model.state()
@@ -258,9 +329,9 @@ def test_vbd_pipeline_iterations_without_internal_bodies(test, device):
             self.collision_passes = 0
             super().__init__(*args, **kwargs)
 
-        def _run_rigid_collision(self, state):
+        def _run_rigid_collision(self, state, dt=None):
             self.collision_passes += 1
-            super()._run_rigid_collision(state)
+            super()._run_rigid_collision(state, dt)
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_particle(pos=(0.0, 0.0, 0.05), vel=(0.0, 0.0, 0.0), mass=0.1, radius=0.1)
@@ -269,13 +340,13 @@ def test_vbd_pipeline_iterations_without_internal_bodies(test, device):
     model = builder.finalize(device=device)
     test.assertEqual(model.body_count, 0)
 
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1, contact_matching="latest")
     solver = _TrackingSolver(
         model,
         iterations=3,
-        pipeline=pipeline,
-        collision_frequency=[1, 1],
-        collision_frequency_type=[Frequency.ITERATIONS, Frequency.NONE],
+        collision_pipeline=pipeline,
+        collision_frequency={Slot.RIGID: 1},
+        collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS, Slot.SOFT_SELF_CONTACT: Frequency.NONE},
     )
     state_a, state_b = model.state(), model.state()
     solver.step(state_a, state_b, None, None, 1e-3)
@@ -336,7 +407,7 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
 
     model_b = _build_cloth_model(device)
     pipeline_b = newton.CollisionPipeline(model_b, broad_phase="nxn")
-    solver_b = SolverVBD(model_b, pipeline=pipeline_b, **kwargs)
+    solver_b = SolverVBD(model_b, collision_pipeline=pipeline_b, **kwargs)
     test.assertIsNotNone(solver_b.contacts.soft_self_contact_data)
 
     def run(model, solver, contacts):
@@ -377,7 +448,7 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
             _build_cloth_model(device),
             iterations=1,
             particle_collision_detection_interval=2,
-            collision_frequency_type=[Frequency.AUTO, Frequency.ITERATIONS],
+            collision_frequency_type={Slot.SOFT_SELF_CONTACT: Frequency.ITERATIONS},
         )
     # gap cannot be combined with the deprecated radius.
     with test.assertRaises(ValueError):
@@ -411,6 +482,12 @@ add_function_test(
 )
 add_function_test(
     TestSolverCollisionFrequency,
+    "test_owned_speculative_pipeline_receives_dt",
+    test_owned_speculative_pipeline_receives_dt,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
     "test_vbd_rigid_none_refreshes_external_contacts",
     test_vbd_rigid_none_refreshes_external_contacts,
     devices=devices,
@@ -431,6 +508,12 @@ add_function_test(
     TestSolverCollisionFrequency,
     "test_vbd_rigid_iterations_refreshes_body_particle_contacts",
     test_vbd_rigid_iterations_refreshes_body_particle_contacts,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_rigid_iterations_preserves_contact_duals",
+    test_vbd_rigid_iterations_preserves_contact_duals,
     devices=devices,
 )
 add_function_test(

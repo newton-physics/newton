@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -321,9 +322,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-rod linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-rod angular joint constraints
         deterministic: wp.DeterministicMode | None = None,
-        pipeline: CollisionPipeline | None = None,
-        collision_frequency: list[int] | None = None,
-        collision_frequency_type: list[SolverBase.CollisionFrequencyType] | None = None,
+        collision_pipeline: CollisionPipeline | None = None,
+        collision_frequency: Mapping[SolverBase.CollisionSlot, int] | None = None,
+        collision_frequency_type: Mapping[SolverBase.CollisionSlot, SolverBase.CollisionFrequencyType] | None = None,
     ):
         """
         Args:
@@ -511,16 +512,18 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             Collision pipeline ownership:
 
-            pipeline: Optional :class:`~newton.CollisionPipeline` owned by this solver. When given,
-                the solver allocates its own contacts buffer (:attr:`contacts`), seeds the pipeline's
-                self-contact configuration from the ``particle_self_contact_*`` parameters, and runs
-                rigid collision detection itself per the schedule below; ``step()`` must then receive
-                ``contacts=None``.
-            collision_frequency: ``[rigid, soft_self_contact]`` frequency numbers; only used by
-                ``ITERATIONS`` slots ("every k-th iteration").
-            collision_frequency_type: ``[rigid, soft_self_contact]``
-                :class:`SolverBase.CollisionFrequencyType` entries naming the in-step detection point;
-                runtime-changeable via :meth:`SolverBase.set_collision_frequency`.
+            collision_pipeline: Optional :class:`~newton.CollisionPipeline`
+                owned by this solver. When given, the solver allocates its own
+                contacts buffer (:attr:`contacts`), seeds the pipeline's
+                self-contact configuration from the ``particle_self_contact_*``
+                parameters, and runs rigid collision detection itself per the
+                schedule below; ``step()`` must then receive ``contacts=None``.
+            collision_frequency: Iteration frequencies keyed by
+                :class:`SolverBase.CollisionSlot`; only used by ``ITERATIONS``
+                slots ("every k-th iteration").
+            collision_frequency_type: In-step detection points keyed by
+                :class:`SolverBase.CollisionSlot`; runtime-changeable via
+                :meth:`SolverBase.set_collision_frequency`.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -631,7 +634,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         if particle_collision_detection_interval is not None:
             if (
                 collision_frequency_type is not None
-                and SolverBase.CollisionFrequencyType(collision_frequency_type[1])
+                and SolverBase.CollisionSlot.SOFT_SELF_CONTACT in collision_frequency_type
+                and SolverBase.CollisionFrequencyType(
+                    collision_frequency_type[SolverBase.CollisionSlot.SOFT_SELF_CONTACT]
+                )
                 != SolverBase.CollisionFrequencyType.AUTO
             ):
                 raise ValueError(
@@ -652,8 +658,8 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # With an owned pipeline, seed its self-contact configuration from the solver's
         # parameters before the base class allocates the owned Contacts buffer.
-        if pipeline is not None and particle_enable_self_contact:
-            pipeline.init_soft_self_contact(
+        if collision_pipeline is not None and particle_enable_self_contact:
+            collision_pipeline.init_soft_self_contact(
                 margin=_sc_margin,
                 gap=_sc_gap,
                 rest_shape_exclusion_radius=particle_rest_shape_contact_exclusion_radius,
@@ -667,7 +673,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         super().__init__(
             model,
-            pipeline=pipeline,
+            collision_pipeline=collision_pipeline,
             collision_frequency=collision_frequency,
             collision_frequency_type=collision_frequency_type,
         )
@@ -676,7 +682,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         # history without matching silently cold-starts every refresh (k times per
         # step under rigid ITERATIONS). Matching is fixed at pipeline construction,
         # so surface the mismatch instead of repairing it.
-        if pipeline is not None and rigid_contact_history and pipeline.contact_matching == "disabled":
+        if (
+            collision_pipeline is not None
+            and rigid_contact_history
+            and collision_pipeline.contact_matching == "disabled"
+        ):
             raise ValueError(
                 "SolverVBD(rigid_contact_history=True) with an owned pipeline requires contact "
                 "matching for the warm-start restore; construct the pipeline with "
@@ -840,10 +850,12 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.particle_conservative_bound_relaxation = particle_conservative_bound_relaxation
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
 
-            if self.pipeline is not None:
+            if self.collision_pipeline is not None:
                 # Solver-owned pipeline: use its shared detector bound to the owned
                 # Contacts buffer so self-contact results land in solver.contacts.
-                self.trimesh_collision_detector = self.pipeline._get_soft_self_contact_detector(self._pipeline_contacts)
+                self.trimesh_collision_detector = self.collision_pipeline._get_soft_self_contact_detector(
+                    self._pipeline_contacts
+                )
             else:
                 self.trimesh_collision_detector = TriMeshCollisionDetector(
                     self.model,
@@ -1138,7 +1150,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         rcm = getattr(model, "rigid_contact_max", 0) or 0
         if rcm > 0 and self._integrates_rigid_bodies:
             self._init_body_body_contact_state(rcm)
-            if self.rigid_contact_history:
+            if (
+                self.rigid_contact_history
+                or self._resolved_collision_frequency_type(SolverBase.CollisionSlot.RIGID)
+                == SolverBase.CollisionFrequencyType.ITERATIONS
+            ):
                 self._init_rigid_contact_warmstart(rcm)
 
         # Persistent contact-query outputs; per-contact arrays grow on demand.
@@ -2205,15 +2221,16 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._sc_mode_this_step, self._sc_freq_this_step = self._resolve_self_contact_schedule()
         self._rigid_mode_this_step = _Frequency.NONE
         self._rigid_freq_this_step = 1
-        if self.pipeline is not None:
+        if self.collision_pipeline is not None:
             contacts = self._resolve_step_contacts(contacts)
-            rigid_mode = self._resolved_collision_frequency_type(SolverBase._COLLISION_SLOT_RIGID)
+            rigid_slot = SolverBase.CollisionSlot.RIGID
+            rigid_mode = self._resolved_collision_frequency_type(rigid_slot)
             self._rigid_mode_this_step = rigid_mode
-            self._rigid_freq_this_step = self._collision_frequency[SolverBase._COLLISION_SLOT_RIGID]
+            self._rigid_freq_this_step = self._collision_frequency[rigid_slot]
             if rigid_mode in (_Frequency.PRE_INIT, _Frequency.ITERATIONS):
                 # ITERATIONS' baseline includes the pre-init pass; in-loop
                 # re-detections start at the first k-th iteration.
-                self._run_rigid_collision(state_in)
+                self._run_rigid_collision(state_in, dt)
                 update_rigid = True
 
         if control is None:
@@ -2233,9 +2250,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 # the pipeline owns particle-shape contacts. In-flight rigid
                 # lambdas are snapshotted first so matching can carry them onto
                 # the refreshed contact set.
-                self._snapshot_rigid_contact_history(contacts)
-                self._run_rigid_collision(self._rigid_iterate_view(state_in, state_out))
-                self._refresh_rigid_contact_state(contacts, refresh=True)
+                self._snapshot_rigid_contact_history(contacts, force=True)
+                self._run_rigid_collision(self._rigid_iterate_view(state_in, state_out), dt)
+                self._refresh_rigid_contact_state(contacts, refresh=True, restore_history=True)
                 self._refresh_body_particle_contact_state(contacts, refresh=True)
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
@@ -2435,9 +2452,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             device=self.device,
         )
 
-    def _snapshot_rigid_contact_history(self, contacts: Contacts | None):
-        """Write solved contact state for next frame's match-index warm-start."""
-        if not self.rigid_contact_history or contacts is None:
+    def _snapshot_rigid_contact_history(self, contacts: Contacts | None, *, force: bool = False):
+        """Snapshot solved contact state for persistent or in-step matched restoration."""
+        if (not self.rigid_contact_history and not force) or contacts is None:
             return
 
         if not self._integrates_rigid_bodies:
@@ -2448,6 +2465,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         if self._prev_contact_lambda is None or self._prev_contact_lambda.shape[0] < contact_launch_dim:
+            history_cap = 0 if self._prev_contact_lambda is None else self._prev_contact_lambda.shape[0]
+            self._raise_if_capturing_resize("rigid contact history", history_cap, contact_launch_dim)
             self._init_rigid_contact_warmstart(contact_launch_dim)
 
         # Snapshot solved contact rows for the next step's warm-start.
@@ -2568,7 +2587,9 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         self._penetration_free_truncation(state_in.particle_q)
 
-    def _refresh_rigid_contact_state(self, contacts: Contacts | None, refresh: bool) -> None:
+    def _refresh_rigid_contact_state(
+        self, contacts: Contacts | None, refresh: bool, *, restore_history: bool = False
+    ) -> None:
         """Rebuild body-body contact lists and AVBD/ALM contact state from ``contacts``.
 
         The once-per-step prologue calls this from :meth:`_initialize_rigid_bodies`
@@ -2625,16 +2646,16 @@ class SolverVBD(SolverBase, CouplingInterface):
                 )
 
                 # Restore AVBD body-body contact state from history and pre-compute material properties
-                if self.rigid_contact_history and contact_launch_dim > 0:
+                if (self.rigid_contact_history or restore_history) and contact_launch_dim > 0:
                     if contacts.rigid_contact_match_index is None or contacts.contact_matching_mode not in (
                         "latest",
                         "sticky",
                     ):
                         raise RuntimeError(
-                            "SolverVBD(rigid_contact_history=True) requires Contacts with "
-                            "valid contact-matching provenance. Use "
+                            "Restoring rigid contact state requires Contacts with valid "
+                            "contact-matching provenance. Use "
                             'CollisionPipeline(contact_matching="latest") or '
-                            'CollisionPipeline(contact_matching="sticky"), or set rigid_contact_history=False. '
+                            'CollisionPipeline(contact_matching="sticky"). '
                             f"Got contact_matching_mode={contacts.contact_matching_mode!r}."
                         )
 
@@ -3761,7 +3782,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
-    def _default_collision_frequency_type(self, slot: int) -> SolverBase.CollisionFrequencyType:
+    def _default_collision_frequency_type(self, slot: SolverBase.CollisionSlot) -> SolverBase.CollisionFrequencyType:
         """Resolve ``AUTO``: the self-contact slot follows the legacy VBD behavior.
 
         With self-contact enabled, ``AUTO`` derives from the deprecated
@@ -3772,7 +3793,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         (PRE_INIT with an owned pipeline).
         """
         Frequency = SolverBase.CollisionFrequencyType
-        if slot == SolverBase._COLLISION_SLOT_SOFT_SELF and self.particle_enable_self_contact:
+        if slot == SolverBase.CollisionSlot.SOFT_SELF_CONTACT and self.particle_enable_self_contact:
             interval = self._deprecated_particle_interval
             if interval is None or interval == 0:
                 return Frequency.PRE_POST_INIT
@@ -3808,7 +3829,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         interval also supplies the ITERATIONS frequency.
         """
         Frequency = SolverBase.CollisionFrequencyType
-        slot = SolverBase._COLLISION_SLOT_SOFT_SELF
+        slot = SolverBase.CollisionSlot.SOFT_SELF_CONTACT
         mode = self._resolved_collision_frequency_type(slot)
         freq = self._collision_frequency[slot]
         interval = self._deprecated_particle_interval

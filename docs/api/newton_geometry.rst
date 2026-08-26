@@ -26,6 +26,7 @@ newton.geometry
    :toctree: _generated
    :signatures: long
 
+   build_tri_mesh_collision_info
    collide_box_box
    collide_capsule_box
    collide_capsule_capsule
@@ -41,6 +42,14 @@ newton.geometry
    compute_inertia_shape
    compute_offset_mesh
    create_empty_sdf_data
+   get_edge_colliding_edges
+   get_edge_colliding_edges_count
+   get_edge_collision_buffer_edge_index
+   get_triangle_colliding_vertices
+   get_triangle_colliding_vertices_count
+   get_vertex_colliding_triangles
+   get_vertex_colliding_triangles_count
+   get_vertex_collision_buffer_vertex_index
    sdf_box
    sdf_capsule
    sdf_cone

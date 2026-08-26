@@ -91,7 +91,7 @@ class Example:
             particle_enable_self_contact=True,
             particle_self_contact_margin=0.2,
             particle_self_contact_gap=0.15,
-            pipeline=self.collision_pipeline,
+            collision_pipeline=self.collision_pipeline,
         )
 
         self.state_0 = self.model.state()

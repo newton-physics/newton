@@ -155,10 +155,9 @@ class Example:
             particle_enable_self_contact=False,
             particle_vertex_contact_buffer_size=32,
             particle_edge_contact_buffer_size=64,
-            collision_frequency_type=[
-                newton.solvers.SolverBase.CollisionFrequencyType.AUTO,
-                newton.solvers.SolverBase.CollisionFrequencyType.PRE_INIT,
-            ],
+            collision_frequency_type={
+                newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: newton.solvers.SolverBase.CollisionFrequencyType.PRE_INIT,
+            },
         )
 
         self.viewer.set_model(self.model)

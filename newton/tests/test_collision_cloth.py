@@ -1571,12 +1571,12 @@ def test_pipeline_soft_self_contact(test, device):
     test.assertIsNotNone(contacts_a.soft_self_contact_data)
     test.assertIsNot(contacts_a.soft_self_contact_data, contacts_b.soft_self_contact_data)
 
-    pipeline.refit_soft_self_contact_bvh(state.particle_q)  # BVH upkeep is the caller's job
     # The init-created detector carries no result buffers of its own; the first
     # collide binds the Contacts-owned struct instead of replacing anything.
     test.assertIsNone(pipeline._soft_self_contact_detector.collision_info)
     for contacts in (contacts_a, contacts_b):
         pipeline.collide(state, contacts, soft_self_contact=True)
+        test.assertIs(pipeline._soft_self_contact_detector.vertex_positions, state.particle_q)
         data = contacts.soft_self_contact_data
         assert_np_equal(
             data.vertex_colliding_triangles_count.numpy(),
@@ -1637,7 +1637,6 @@ def test_pipeline_soft_self_contact(test, device):
         margin=1e-2, gap=query_radius - 1e-2, topological_filter_threshold=0, rest_shape_exclusion_radius=1e3
     )
     contacts_e = excluding.contacts()
-    excluding.refit_soft_self_contact_bvh(state.particle_q)
     excluding.collide(state, contacts_e, soft_self_contact=True)
     test.assertEqual(int(contacts_e.soft_self_contact_data.vertex_colliding_triangles_count.numpy().sum()), 0)
     test.assertEqual(int(contacts_e.soft_self_contact_data.edge_colliding_edges_count.numpy().sum()), 0)
