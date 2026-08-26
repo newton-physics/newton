@@ -25,7 +25,6 @@ import newton
 from newton._src.controllers.impl.operational_space._common import (
     _apply_mass_matrix_inv_on_right_kernel,
     _apply_spatial_matrix_kernel,
-    _closed_loop_wrench_command_kernel,
     _invert_spd_block_kernel,
     _jacobian_times_jacobian_transpose_kernel,
     _jacobian_transpose_force_kernel,
@@ -37,6 +36,8 @@ from newton._src.controllers.impl.operational_space._common import (
     _task_matrix_times_jacobian_kernel,
     _task_space_pd_kernel,
     _tool_pose_and_twist_kernel,
+    _wrench_feedback_only_kernel,
+    _wrench_feedforward_and_feedback_kernel,
 )
 from newton._src.controllers.impl.operational_space.model_free import ControllerOperationalSpaceModelFree
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -858,8 +859,8 @@ def test_rotate_selection_matrix_matches_numpy(test, device):
     np.testing.assert_allclose(result[3:6, 0:3], np.zeros((3, 3)))
 
 
-def test_closed_loop_wrench_command_matches_formula(test, device):
-    """The full wrench (force and moment) gets closed-loop feedback, desired + Kp .* (desired - measured)."""
+def test_wrench_feedforward_and_feedback_matches_formula(test, device):
+    """The full wrench (force and moment) gets feedforward + feedback, desired + Kp .* (desired - measured)."""
     desired_wrench_world = wp.array(
         [wp.spatial_vector(10.0, -5.0, 2.0, 1.0, -0.5, 0.25)], dtype=wp.spatial_vector, device=device
     )
@@ -870,7 +871,7 @@ def test_closed_loop_wrench_command_matches_formula(test, device):
 
     wrench_command_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
-        _closed_loop_wrench_command_kernel,
+        _wrench_feedforward_and_feedback_kernel,
         dim=1,
         inputs=[desired_wrench_world, measured_wrench_world, stiffness],
         outputs=[wrench_command_world],
@@ -881,6 +882,33 @@ def test_closed_loop_wrench_command_matches_formula(test, device):
     measured_np = np.array([8.0, -6.0, 2.5, 0.8, -0.6, 0.1])
     kp_np = np.array([2.0, 3.0, 1.0, 0.5, 0.5, 0.5])
     expected = desired_np + kp_np * (desired_np - measured_np)
+
+    np.testing.assert_allclose(wrench_command_world.numpy()[0], expected, atol=1e-5)
+
+
+def test_wrench_feedback_only_matches_formula(test, device):
+    """Feedback alone, with no feedforward term, is Kp .* (desired - measured)."""
+    desired_wrench_world = wp.array(
+        [wp.spatial_vector(10.0, -5.0, 2.0, 1.0, -0.5, 0.25)], dtype=wp.spatial_vector, device=device
+    )
+    measured_wrench_world = wp.array(
+        [wp.spatial_vector(8.0, -6.0, 2.5, 0.8, -0.6, 0.1)], dtype=wp.spatial_vector, device=device
+    )
+    stiffness = wp.array([wp.spatial_vector(2.0, 3.0, 1.0, 0.5, 0.5, 0.5)], dtype=wp.spatial_vector, device=device)
+
+    wrench_command_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(
+        _wrench_feedback_only_kernel,
+        dim=1,
+        inputs=[desired_wrench_world, measured_wrench_world, stiffness],
+        outputs=[wrench_command_world],
+        device=device,
+    )
+
+    desired_np = np.array([10.0, -5.0, 2.0, 1.0, -0.5, 0.25])
+    measured_np = np.array([8.0, -6.0, 2.5, 0.8, -0.6, 0.1])
+    kp_np = np.array([2.0, 3.0, 1.0, 0.5, 0.5, 0.5])
+    expected = kp_np * (desired_np - measured_np)
 
     np.testing.assert_allclose(wrench_command_world.numpy()[0], expected, atol=1e-5)
 
@@ -981,8 +1009,14 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_closed_loop_wrench_command_matches_formula",
-    test_closed_loop_wrench_command_matches_formula,
+    "test_wrench_feedforward_and_feedback_matches_formula",
+    test_wrench_feedforward_and_feedback_matches_formula,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_wrench_feedback_only_matches_formula",
+    test_wrench_feedback_only_matches_formula,
     devices=devices,
 )
 
@@ -992,128 +1026,105 @@ add_function_test(
 # ---------------------------------------------------------------------------
 
 
-def _dofs_arr(dofs_list, device):
-    """Return a wp.array[int32] from a list of per-robot DOF counts."""
-    return wp.array(np.array(dofs_list, dtype=np.int32), device=device)
-
-
-def _poses(poses, device):
-    """Return a wp.array[wp.transform] from a list of wp.transform."""
-    return wp.array(poses, dtype=wp.transform, device=device)
-
-
-def _twists(twists, device):
-    """Return a wp.array[wp.spatial_vector] from a list of 6-tuples."""
-    return wp.array([wp.spatial_vector(*t) for t in twists], dtype=wp.spatial_vector, device=device)
-
-
-def _make_model_free(*, dofs_list, kp, kd, device, use_inertia=True):
-    """Construct a ControllerOperationalSpaceModelFree with scalar-broadcast gains."""
-    return ControllerOperationalSpaceModelFree(
-        controlled_dofs_per_robot=_dofs_arr(dofs_list, device),
-        motion_stiffness=kp,
-        motion_damping=kd,
-        use_inertia_decoupling=use_inertia,
-        device=device,
-    )
-
-
-def _run_model_free(
-    ctrl, *, current_poses, current_twists, desired_poses, desired_twists, jacobian, device, mass_matrix=None
-):
-    """Run one step on a ControllerOperationalSpaceModelFree and return the compact torque array."""
-    ins = ctrl.input()
-    ins.tool_pose_world = _poses(current_poses, device)
-    ins.tool_twist_world = _twists(current_twists, device)
-    ins.desired_tool_pose_world = _poses(desired_poses, device)
-    ins.desired_twist_world = _twists(desired_twists, device)
-    ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
-    if mass_matrix is not None:
-        ins.mass_matrix = wp.array(mass_matrix, dtype=wp.float32, device=device)
-    outs = ctrl.output()
-    ctrl.step(inputs=ins, outputs=outs, dt=0.01)
-    return outs.joint_f.numpy()
-
-
 class TestControllerOperationalSpaceModelFree(unittest.TestCase):
     def test_zero_error_gives_zero_torque(self):
         """Identical current and desired poses/twists produce zero torque."""
         device = wp.get_device()
-        ctrl = _make_model_free(dofs_list=[7], kp=100.0, kd=10.0, device=device, use_inertia=False)
-        identity_pose = wp.transform(wp.vec3(0.1, 0.2, 0.3), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5))
-        rng = np.random.default_rng(0)
-        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
-        tau = _run_model_free(
-            ctrl,
-            current_poses=[identity_pose],
-            current_twists=[(0, 0, 0, 0, 0, 0)],
-            desired_poses=[identity_pose],
-            desired_twists=[(0, 0, 0, 0, 0, 0)],
-            jacobian=jacobian,
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
             device=device,
         )
-        np.testing.assert_allclose(tau, np.zeros(7), atol=1e-5)
+        identity_pose = wp.transform(wp.vec3(0.1, 0.2, 0.3), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5))
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        rng = np.random.default_rng(0)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        np.testing.assert_allclose(outs.joint_f.numpy(), np.zeros(7), atol=1e-5)
 
     def test_position_error_matches_formula_without_inertia_decoupling(self):
         """tau = J^T @ (Kp * pose_error), when inertial decoupling is off."""
         device = wp.get_device()
         kp = 100.0
-        ctrl = _make_model_free(dofs_list=[7], kp=kp, kd=10.0, device=device, use_inertia=False)
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+            motion_stiffness=kp,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            device=device,
+        )
         current_pose = wp.transform_identity()
         desired_pose = wp.transform(wp.vec3(0.1, -0.05, 0.02), wp.quat_identity())
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         rng = np.random.default_rng(1)
         jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
 
-        tau = _run_model_free(
-            ctrl,
-            current_poses=[current_pose],
-            current_twists=[(0, 0, 0, 0, 0, 0)],
-            desired_poses=[desired_pose],
-            desired_twists=[(0, 0, 0, 0, 0, 0)],
-            jacobian=jacobian,
-            device=device,
-        )
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
         pose_error = np.array([0.1, -0.05, 0.02, 0.0, 0.0, 0.0])
         expected = jacobian[0].T @ (kp * pose_error)
-        np.testing.assert_allclose(tau, expected, atol=1e-3)
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-3)
 
     def test_inertia_decoupling_matches_formula(self):
         """tau = J^T @ Lambda @ (Kp * pose_error), the full chain, matches a from-scratch numpy computation."""
         device = wp.get_device()
         kp = 50.0
-        ctrl = _make_model_free(dofs_list=[7], kp=kp, kd=10.0, device=device, use_inertia=True)
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+            motion_stiffness=kp,
+            motion_damping=10.0,
+            use_inertia_decoupling=True,
+            device=device,
+        )
         current_pose = wp.transform_identity()
         desired_pose = wp.transform(wp.vec3(0.1, -0.05, 0.02), wp.quat_identity())
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         rng = np.random.default_rng(2)
         jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
         random_matrix = rng.standard_normal((7, 7)).astype(np.float32)
         mass_matrix = (random_matrix @ random_matrix.T + 7 * np.eye(7, dtype=np.float32)).reshape(1, 7, 7)
 
-        tau = _run_model_free(
-            ctrl,
-            current_poses=[current_pose],
-            current_twists=[(0, 0, 0, 0, 0, 0)],
-            desired_poses=[desired_pose],
-            desired_twists=[(0, 0, 0, 0, 0, 0)],
-            jacobian=jacobian,
-            mass_matrix=mass_matrix,
-            device=device,
-        )
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.mass_matrix = wp.array(mass_matrix, dtype=wp.float32, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
         pose_error = np.array([0.1, -0.05, 0.02, 0.0, 0.0, 0.0])
         mass_matrix_inv = np.linalg.inv(mass_matrix[0])
         lambda_inv = jacobian[0] @ mass_matrix_inv @ jacobian[0].T
         operational_space_mass_matrix = np.linalg.inv(lambda_inv)
         expected = jacobian[0].T @ (operational_space_mass_matrix @ (kp * pose_error))
-        np.testing.assert_allclose(tau, expected, atol=1e-2)
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
 
     def test_rejects_under_six_dof_with_inertia_decoupling(self):
         """Fewer than 6 controlled DOFs with inertial decoupling raises at construction, not silently at runtime."""
         device = wp.get_device()
         with self.assertRaises(ValueError):
             ControllerOperationalSpaceModelFree(
-                controlled_dofs_per_robot=_dofs_arr([3], device),
+                controlled_dofs_per_robot=wp.array(np.array([3], dtype=np.int32), device=device),
                 motion_stiffness=1.0,
                 motion_damping=1.0,
                 use_inertia_decoupling=True,
@@ -1124,33 +1135,40 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         """Two robots with different controlled-DOF counts (6 and 8) are computed independently and correctly."""
         device = wp.get_device()
         kp = 80.0
-        ctrl = _make_model_free(dofs_list=[6, 8], kp=kp, kd=10.0, device=device, use_inertia=False)
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([6, 8], dtype=np.int32), device=device),
+            motion_stiffness=kp,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            device=device,
+        )
 
         current_poses = [wp.transform_identity(), wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity())]
         desired_poses = [
             wp.transform(wp.vec3(0.05, 0.0, 0.0), wp.quat_identity()),
             wp.transform(wp.vec3(1.0, 0.1, -0.05), wp.quat_identity()),
         ]
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         rng = np.random.default_rng(3)
         jacobian = np.zeros((2, 6, 8), dtype=np.float32)
         jacobian[0, :, :6] = rng.standard_normal((6, 6)).astype(np.float32)
         jacobian[1, :, :8] = rng.standard_normal((6, 8)).astype(np.float32)
 
-        tau = _run_model_free(
-            ctrl,
-            current_poses=current_poses,
-            current_twists=[(0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0)],
-            desired_poses=desired_poses,
-            desired_twists=[(0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0)],
-            jacobian=jacobian,
-            device=device,
-        )
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array(current_poses, dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist, zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array(desired_poses, dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist, zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
         pose_error_0 = np.array([0.05, 0.0, 0.0, 0.0, 0.0, 0.0])
         pose_error_1 = np.array([0.0, 0.1, -0.05, 0.0, 0.0, 0.0])
         expected_0 = jacobian[0, :, :6].T @ (kp * pose_error_0)
         expected_1 = jacobian[1, :, :8].T @ (kp * pose_error_1)
 
+        tau = outs.joint_f.numpy()
         np.testing.assert_allclose(tau[:6], expected_0, atol=1e-3)
         np.testing.assert_allclose(tau[6:], expected_1, atol=1e-3)
 
@@ -1158,7 +1176,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         """Passing motion_stiffness=None at construction reads inputs.motion_stiffness each step."""
         device = wp.get_device()
         ctrl = ControllerOperationalSpaceModelFree(
-            controlled_dofs_per_robot=_dofs_arr([7], device),
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=None,
             motion_damping=10.0,
             use_inertia_decoupling=False,
@@ -1166,14 +1184,15 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         )
         current_pose = wp.transform_identity()
         desired_pose = wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_identity())
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         rng = np.random.default_rng(4)
         jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
 
         ins = ctrl.input()
-        ins.tool_pose_world = _poses([current_pose], device)
-        ins.tool_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
-        ins.desired_tool_pose_world = _poses([desired_pose], device)
-        ins.desired_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
+        ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.motion_stiffness = wp.array(
             [wp.spatial_vector(30.0, 30.0, 30.0, 5.0, 5.0, 5.0)], dtype=wp.spatial_vector, device=device
@@ -1189,17 +1208,24 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
     def test_output_scatters_to_indexed_view(self):
         """outputs.joint_f may be bound to an indexed view of a larger simulation-sized array."""
         device = wp.get_device()
-        ctrl = _make_model_free(dofs_list=[7], kp=100.0, kd=10.0, device=device, use_inertia=False)
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            device=device,
+        )
         current_pose = wp.transform_identity()
         desired_pose = wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_identity())
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         rng = np.random.default_rng(5)
         jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
 
         ins = ctrl.input()
-        ins.tool_pose_world = _poses([current_pose], device)
-        ins.tool_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
-        ins.desired_tool_pose_world = _poses([desired_pose], device)
-        ins.desired_twist_world = _twists([(0, 0, 0, 0, 0, 0)], device)
+        ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
 
         # A larger simulation-sized joint-force array; only indices [2:9) belong to this robot.
@@ -1233,7 +1259,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
 
         ctrl = ControllerOperationalSpaceModelFree(
-            controlled_dofs_per_robot=_dofs_arr([7], device),
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=None,
             motion_damping=None,
             use_inertia_decoupling=False,
@@ -1269,6 +1295,229 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         pose_error = np.array([0.1, -0.05, 0.02, 0.0, 0.0, 0.2])
         kp = np.array(kp_vec)
         expected = jacobian[0].T @ (kp * pose_error)
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
+
+    def test_use_wrench_feedforward_requires_selection_axes(self):
+        """use_wrench_feedforward=True without wrench_selection_axes_tool raises at construction."""
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpaceModelFree(
+                controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                use_inertia_decoupling=False,
+                use_wrench_feedforward=True,
+                device=device,
+            )
+
+    def test_wrench_params_rejected_without_wrench_enabled(self):
+        """wrench_selection_axes_tool set without use_wrench_feedforward/use_wrench_feedback raises at construction."""
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpaceModelFree(
+                controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                use_inertia_decoupling=False,
+                wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+                device=device,
+            )
+
+    def test_wrench_stiffness_rejects_a_value_that_is_not_a_gain_shape(self):
+        """A wrench_stiffness that is neither a float, wp.spatial_vector, nor wp.array raises at construction."""
+        device = wp.get_device()
+        with self.assertRaises(TypeError):
+            ControllerOperationalSpaceModelFree(
+                controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                use_inertia_decoupling=False,
+                use_wrench_feedback=True,
+                wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+                wrench_stiffness=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                device=device,
+            )
+
+    def test_wrench_stiffness_accepts_a_bare_spatial_vector(self):
+        """A wrench_stiffness passed as a wp.spatial_vector is broadcast to every robot, same as motion_stiffness."""
+        device = wp.get_device()
+        kp = 60.0
+        wrench_kp_vec = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
+            motion_stiffness=kp,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_wrench_feedback=True,
+            motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
+            wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+            wrench_stiffness=wp.spatial_vector(*wrench_kp_vec),
+            device=device,
+        )
+        current_pose = wp.transform_identity()
+        desired_pose = wp.transform_identity()
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        desired_wrench = wp.spatial_vector(0.0, 0.0, 20.0, 0.0, 0.0, 0.0)
+        measured_wrench = wp.spatial_vector(0.0, 0.0, 15.0, 0.0, 0.0, 0.0)
+        rng = np.random.default_rng(10)
+        jacobian = rng.standard_normal((1, 6, 6)).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.desired_wrench_world = wp.array([desired_wrench], dtype=wp.spatial_vector, device=device)
+        ins.measured_wrench_world = wp.array([measured_wrench], dtype=wp.spatial_vector, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        # Zero pose error, so the motion term contributes nothing. The z-axis wrench gain is
+        # wrench_kp_vec[2] = 3.0, not a uniform scalar, proving the per-axis spatial_vector was used.
+        wrench_command_z = wrench_kp_vec[2] * (20.0 - 15.0)
+        masked_wrench_force = np.array([0.0, 0.0, wrench_command_z, 0.0, 0.0, 0.0])
+        expected = jacobian[0].T @ masked_wrench_force
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
+
+    def test_wrench_feedforward_only_and_motion_selection_matches_formula(self):
+        """Hybrid motion/wrench control: tau = J^T @ (S_motion @ F_motion) + J^T @ (S_wrench @ desired_wrench).
+
+        Uses a peg-in-hole-style split (translation z and rotation open to
+        force control, everything else motion-controlled) at a non-identity
+        tool orientation, so the world-frame selection matrices actually mix
+        axes rather than reducing to a fixed 0/1 mask.
+        """
+        device = wp.get_device()
+        kp = 60.0
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
+            motion_stiffness=kp,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_wrench_feedforward=True,
+            motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
+            wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+            device=device,
+        )
+        quat = wp.quat_from_axis_angle(wp.vec3(0.3, -0.6, 0.2), 1.1)
+        current_pose = wp.transform(wp.vec3(0.2, 0.1, -0.1), quat)
+        desired_pose = wp.transform(wp.vec3(0.25, 0.05, -0.08), quat)
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        desired_wrench = wp.spatial_vector(3.0, -2.0, 20.0, 0.4, -0.3, 0.6)
+        rng = np.random.default_rng(7)
+        jacobian = rng.standard_normal((1, 6, 6)).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.desired_wrench_world = wp.array([desired_wrench], dtype=wp.spatial_vector, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        pose_error = np.array([0.05, -0.05, 0.02, 0.0, 0.0, 0.0])
+        motion_force = kp * pose_error
+        desired_wrench_np = np.array([3.0, -2.0, 20.0, 0.4, -0.3, 0.6])
+
+        rotation_np = np.array(wp.quat_to_matrix(quat)).reshape(3, 3)
+        motion_linear_block = rotation_np @ np.diag([1.0, 1.0, 0.0]) @ rotation_np.T
+        motion_angular_block = rotation_np @ np.diag([1.0, 1.0, 1.0]) @ rotation_np.T
+        wrench_linear_block = rotation_np @ np.diag([0.0, 0.0, 1.0]) @ rotation_np.T
+        wrench_angular_block = rotation_np @ np.diag([0.0, 0.0, 0.0]) @ rotation_np.T
+
+        masked_motion_force = np.concatenate(
+            [motion_linear_block @ motion_force[:3], motion_angular_block @ motion_force[3:]]
+        )
+        masked_wrench_force = np.concatenate(
+            [wrench_linear_block @ desired_wrench_np[:3], wrench_angular_block @ desired_wrench_np[3:]]
+        )
+        expected = jacobian[0].T @ masked_motion_force + jacobian[0].T @ masked_wrench_force
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
+
+    def test_wrench_feedforward_and_feedback_control_matches_formula(self):
+        """With both enabled, wrench control adds Kp .* (desired - measured) to the desired wrench before masking."""
+        device = wp.get_device()
+        kp = 60.0
+        wrench_kp = 2.0
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
+            motion_stiffness=kp,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_wrench_feedforward=True,
+            use_wrench_feedback=True,
+            motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
+            wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+            wrench_stiffness=wrench_kp,
+            device=device,
+        )
+        current_pose = wp.transform_identity()
+        desired_pose = wp.transform_identity()
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        desired_wrench = wp.spatial_vector(0.0, 0.0, 20.0, 0.0, 0.0, 0.0)
+        measured_wrench = wp.spatial_vector(0.0, 0.0, 15.0, 0.0, 0.0, 0.0)
+        rng = np.random.default_rng(8)
+        jacobian = rng.standard_normal((1, 6, 6)).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.desired_wrench_world = wp.array([desired_wrench], dtype=wp.spatial_vector, device=device)
+        ins.measured_wrench_world = wp.array([measured_wrench], dtype=wp.spatial_vector, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        # Zero pose error, so the motion term contributes nothing.
+        wrench_command_z = 20.0 + wrench_kp * (20.0 - 15.0)
+        masked_wrench_force = np.array([0.0, 0.0, wrench_command_z, 0.0, 0.0, 0.0])
+        expected = jacobian[0].T @ masked_wrench_force
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
+
+    def test_wrench_feedback_only_control_matches_formula(self):
+        """With only use_wrench_feedback, the command is Kp .* (desired - measured), with no feedforward term."""
+        device = wp.get_device()
+        kp = 60.0
+        wrench_kp = 2.0
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
+            motion_stiffness=kp,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_wrench_feedback=True,
+            motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
+            wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+            wrench_stiffness=wrench_kp,
+            device=device,
+        )
+        current_pose = wp.transform_identity()
+        desired_pose = wp.transform_identity()
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        desired_wrench = wp.spatial_vector(0.0, 0.0, 20.0, 0.0, 0.0, 0.0)
+        measured_wrench = wp.spatial_vector(0.0, 0.0, 15.0, 0.0, 0.0, 0.0)
+        rng = np.random.default_rng(9)
+        jacobian = rng.standard_normal((1, 6, 6)).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.desired_wrench_world = wp.array([desired_wrench], dtype=wp.spatial_vector, device=device)
+        ins.measured_wrench_world = wp.array([measured_wrench], dtype=wp.spatial_vector, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        # Zero pose error, so the motion term contributes nothing. No "+ desired" feedforward term this time.
+        wrench_command_z = wrench_kp * (20.0 - 15.0)
+        masked_wrench_force = np.array([0.0, 0.0, wrench_command_z, 0.0, 0.0, 0.0])
+        expected = jacobian[0].T @ masked_wrench_force
         np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
 
 

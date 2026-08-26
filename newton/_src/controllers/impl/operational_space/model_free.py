@@ -9,18 +9,40 @@ then robot 1's — for `outputs.joint_f`, the controller's only per-DOF port.
 Every other port is per-robot: exactly one entry per robot, since the task
 itself is always 6-dimensional regardless of how many DOFs a robot has.
 
-This first increment implements motion control only: a task-space
-spring-damper term, with optional inertial decoupling through the
-operational-space mass matrix Lambda. Wrench (force) control and null-space
-posture control are not implemented yet.
+This increment implements motion control (a task-space spring-damper term,
+with optional inertial decoupling through the operational-space mass matrix
+Lambda) and, when enabled, contact-wrench control, combined through per-axis
+selection matrices. Null-space posture control is not implemented yet.
 
-Impedance law (terms enabled at construction):
+Motion law (terms enabled at construction):
 
-    F = [Lambda if use_inertia_decoupling else I] · (Kp·pose_error + Kd·twist_error)
-    tau = J^T · F
+    F_motion = [Lambda if use_inertia_decoupling else I] · (Kp·pose_error + Kd·twist_error)
+
+Wrench law, only when ``use_wrench_feedforward`` or ``use_wrench_feedback`` is
+enabled:
+
+    F_wrench = [desired_wrench if use_wrench_feedforward else 0]
+             + [Kp·(desired_wrench - measured_wrench) if use_wrench_feedback else 0]
 
 where ``pose_error`` and ``twist_error`` are the task-space position/orientation
 and linear/angular velocity errors between the current and desired tool pose.
+``desired_wrench`` is the feedforward term, commanded directly; the second
+term is a feedback correction toward that same setpoint from a measured
+wrench, e.g. a 6-axis force/torque sensor reading. Either may be used alone —
+``use_wrench_feedback`` with ``use_wrench_feedforward=False`` regulates the
+measured wrench toward the setpoint with no separate feedforward term.
+
+When wrench control is enabled, ``F_motion`` and ``F_wrench`` are each
+rotated from a fixed tool-local selection into a world-frame 6x6 selection
+matrix every step (since which axes are free to move vs. under force control
+is a property of the tool's current orientation, not a fixed world
+direction), masked by that matrix, mapped to joint torques separately, and
+summed there:
+
+    tau = J^T · (selection_motion_world · F_motion) + J^T · (selection_wrench_world · F_wrench)
+
+Without wrench control, every axis is motion-controlled and no selection
+matrix is applied: ``tau = J^T · F_motion``.
 """
 
 from __future__ import annotations
@@ -32,15 +54,116 @@ import warp as wp
 
 from ...controller import ControllerBase
 from ...utils import _validate_array
-from .._common import _read_port, _scatter_port_kernel
+from .._common import _add_term_kernel, _read_port, _scatter_port_kernel
 from ._common import (
     _apply_spatial_matrix_kernel,
     _invert_spd_block_kernel,
     _jacobian_transpose_force_kernel,
     _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
+    _rotate_selection_matrix_kernel,
     _task_space_pd_kernel,
+    _wrench_feedback_only_kernel,
+    _wrench_feedforward_and_feedback_kernel,
 )
+
+
+def _validate_selection_axes_argument(
+    value: Any, name: str, controlled_robot_count: int, device: wp.DeviceLike
+) -> None:
+    """Validate a selection-axes constructor argument: a wp.spatial_vector, or a per-robot wp.array."""
+    if isinstance(value, wp.spatial_vector):
+        return
+    if isinstance(value, wp.array):
+        _validate_array(
+            array=value,
+            name=name,
+            dtype=wp.spatial_vector,
+            shape=(controlled_robot_count,),
+            device=device,
+        )
+        return
+    raise TypeError(
+        f"{name} must be a wp.array[wp.spatial_vector] of shape (controlled_robot_count,) or a "
+        f"wp.spatial_vector of per-axis weights, got {type(value).__name__}."
+    )
+
+
+def _validate_gain_argument(value: Any, name: str, controlled_robot_count: int, device: wp.DeviceLike) -> None:
+    """Validate a baked-gain constructor argument: a float, a wp.spatial_vector, or a per-robot wp.array."""
+    if value is None:
+        return
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be a float, wp.spatial_vector, or wp.array[wp.spatial_vector], got bool.")
+    if isinstance(value, (int, float)):
+        return
+    if isinstance(value, wp.spatial_vector):
+        return
+    if isinstance(value, wp.array):
+        _validate_array(
+            array=value,
+            name=name,
+            dtype=wp.spatial_vector,
+            shape=(controlled_robot_count,),
+            device=device,
+        )
+        return
+    raise TypeError(
+        f"{name} must be a float, a wp.spatial_vector, or a wp.array[wp.spatial_vector] of shape "
+        f"(controlled_robot_count,), got {type(value).__name__}."
+    )
+
+
+def _validate_wrench_construction_arguments(
+    *,
+    use_wrench_feedforward: bool,
+    use_wrench_feedback: bool,
+    motion_selection_axes_tool: wp.array[wp.spatial_vector] | wp.spatial_vector | None,
+    wrench_selection_axes_tool: wp.array[wp.spatial_vector] | wp.spatial_vector | None,
+    wrench_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
+    controlled_robot_count: int,
+    device: wp.DeviceLike,
+) -> wp.array[wp.spatial_vector] | wp.spatial_vector | None:
+    """Validate the wrench-control constructor arguments, and resolve ``motion_selection_axes_tool``'s default.
+
+    Returns the resolved ``motion_selection_axes_tool``, or ``None`` when
+    wrench control is disabled and every wrench-only argument was correctly
+    left unset.
+    """
+    if not (use_wrench_feedforward or use_wrench_feedback):
+        for name, value in (
+            ("motion_selection_axes_tool", motion_selection_axes_tool),
+            ("wrench_selection_axes_tool", wrench_selection_axes_tool),
+            ("wrench_stiffness", wrench_stiffness),
+        ):
+            if value is not None:
+                raise ValueError(
+                    f"{name} is set, but use_wrench_feedforward and use_wrench_feedback are both False, "
+                    f"so it would be ignored."
+                )
+        return None
+
+    if wrench_selection_axes_tool is None:
+        raise ValueError(
+            "wrench_selection_axes_tool is required when use_wrench_feedforward or use_wrench_feedback is True."
+        )
+    if not use_wrench_feedback and wrench_stiffness is not None:
+        raise ValueError("wrench_stiffness is set, but use_wrench_feedback=False, so it would be ignored.")
+
+    motion_selection_axes_tool_resolved = (
+        motion_selection_axes_tool
+        if motion_selection_axes_tool is not None
+        else wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+    )
+    _validate_selection_axes_argument(
+        motion_selection_axes_tool_resolved, "motion_selection_axes_tool", controlled_robot_count, device
+    )
+    _validate_selection_axes_argument(
+        wrench_selection_axes_tool, "wrench_selection_axes_tool", controlled_robot_count, device
+    )
+    if use_wrench_feedback:
+        _validate_gain_argument(wrench_stiffness, "wrench_stiffness", controlled_robot_count, device)
+    return motion_selection_axes_tool_resolved
 
 
 class ControllerOperationalSpaceModelFree(ControllerBase):
@@ -56,12 +179,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
     Every port is **per-robot**: a 1-D array with one entry per robot,
     ordered to match ``controlled_dofs_per_robot`` — except
     ``outputs.joint_f``, which is **compact**: one entry per controlled DOF,
-    robot 0's DOFs first, then robot 1's, exactly like
-    :class:`~newton.controllers.ControllerJointImpedanceModelFree`.
+    robot 0's DOFs first, then robot 1's.
 
     Every port, of any dtype, may be bound either to a plain array or to an
-    indexed view of a simulation-sized array, exactly like
-    :class:`ControllerJointImpedanceModelFree` — including the
+    indexed view of a simulation-sized array — including the
     ``wp.transform``/``wp.spatial_vector`` ports (tool pose, tool twist,
     gains), via the ``wp.transform``/``wp.spatial_vector`` gather kernels in
     ``controllers/impl/_common.py``.
@@ -95,8 +216,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             since the spring-damper term is then a task-space acceleration
             premultiplied by Lambda; otherwise [N/m] on the position axes and
             [N·m/rad] on the orientation axes. Pass a scalar to apply the
-            same gain to every axis of every robot, an array of shape
-            [controlled_robot_count] to set them individually (one
+            same gain to every axis of every robot, a ``wp.spatial_vector``
+            to apply the same 6 per-axis gains to every robot, an array of
+            shape [controlled_robot_count] to set them individually (one
             ``wp.spatial_vector`` of 6 gains per robot), or ``None`` to read
             ``inputs.motion_stiffness`` each step.
         motion_damping: Task-space velocity-error gain Kd, [1/s] when
@@ -105,6 +227,42 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             format as ``motion_stiffness``.
         use_inertia_decoupling: Premultiply the task-space spring-damper term
             by Lambda, the operational-space mass matrix.
+        use_wrench_feedforward: Command the desired wrench directly, as a
+            feedforward term in the wrench law, combined with motion control
+            through per-axis selection matrices. When both this and
+            ``use_wrench_feedback`` are ``False``, every axis is
+            motion-controlled and ``motion_selection_axes_tool``/
+            ``wrench_selection_axes_tool``/``wrench_stiffness`` must all be
+            left at their defaults.
+        use_wrench_feedback: Correct the wrench command by
+            ``Kp · (desired - measured)`` using ``inputs.measured_wrench_world``
+            each step, as a feedback term in the wrench law. May be enabled
+            with or without ``use_wrench_feedforward``: without it, the
+            command is the feedback correction alone, regulating the
+            measured wrench toward the desired setpoint with no separate
+            feedforward term.
+        motion_selection_axes_tool: Diagonal selection weight per task axis
+            (0/1, or any scalar weight), tool-local: (linear x, y, z, angular
+            x, y, z). Rotated into a world-frame selection matrix every step
+            and applied to the motion term before it is mapped to joint
+            torques. Pass a ``wp.spatial_vector`` to apply the same weights
+            to every robot, or an array of shape [controlled_robot_count] to
+            set them individually. Only meaningful when wrench control is
+            enabled; defaults to every axis motion-controlled,
+            ``wp.spatial_vector(1, 1, 1, 1, 1, 1)``.
+            Usually the complement of ``wrench_selection_axes_tool`` — each
+            axis under motion control, not force control, and vice versa —
+            but that is not enforced: nothing here requires the two to
+            partition the 6 axes.
+        wrench_selection_axes_tool: Diagonal selection weight per task axis,
+            tool-local, same format as ``motion_selection_axes_tool``, applied
+            to the wrench term. Required when wrench control is enabled.
+            Usually the complement of ``motion_selection_axes_tool``, but
+            that is not enforced — see its docstring above.
+        wrench_stiffness: Contact-wrench proportional feedback gain Kp,
+            [N/m] on the force axes and [N·m/rad] on the moment axes. Same
+            format as ``motion_stiffness``. Only meaningful when
+            ``use_wrench_feedback=True``.
         device: Warp device.
         requires_grad: Whether internal buffers need gradient support.
     """
@@ -135,6 +293,12 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         """Task-space position/orientation-error gain Kp, shape [controlled_robot_count]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m] / [N·m/rad]. ``None`` when gains are baked at construction."""
         motion_damping: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Task-space velocity-error gain Kd, shape [controlled_robot_count]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] / [N·m·s/rad]. ``None`` when gains are baked at construction."""
+        desired_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
+        """Desired contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count] — the feedforward term, and/or the feedback setpoint. ``None`` unless wrench control is enabled."""
+        measured_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
+        """Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count], e.g. from a 6-axis force/torque sensor. ``None`` unless ``use_wrench_feedback=True``."""
+        wrench_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
+        """Contact-wrench proportional feedback gain Kp, shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerOperationalSpaceModelFree.output`."""
@@ -146,9 +310,14 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         self,
         *,
         controlled_dofs_per_robot: wp.array[wp.int32],
-        motion_stiffness: wp.array[wp.spatial_vector] | float | None,
-        motion_damping: wp.array[wp.spatial_vector] | float | None,
+        motion_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
+        motion_damping: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
         use_inertia_decoupling: bool = True,
+        use_wrench_feedforward: bool = False,
+        use_wrench_feedback: bool = False,
+        motion_selection_axes_tool: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
+        wrench_selection_axes_tool: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
+        wrench_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None = None,
         device: Any = None,
         requires_grad: bool = False,
     ):
@@ -196,31 +365,36 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         max_controlled_dofs = int(controlled_dofs_per_robot_np.max())
         total_controlled_dofs = int(controlled_dofs_per_robot_np.sum())
 
-        for name, array in (("motion_stiffness", motion_stiffness), ("motion_damping", motion_damping)):
-            if isinstance(array, (int, float)) and not isinstance(array, bool):
-                continue  # broadcast at bake time, not a wp.array to validate
-            _validate_array(
-                array=array,
-                name=name,
-                dtype=wp.spatial_vector,
-                shape=(controlled_robot_count,),
-                device=self._device,
-                required=False,
-            )
+        for name, value in (("motion_stiffness", motion_stiffness), ("motion_damping", motion_damping)):
+            _validate_gain_argument(value, name, controlled_robot_count, self._device)
+
+        motion_selection_axes_tool_resolved = _validate_wrench_construction_arguments(
+            use_wrench_feedforward=use_wrench_feedforward,
+            use_wrench_feedback=use_wrench_feedback,
+            motion_selection_axes_tool=motion_selection_axes_tool,
+            wrench_selection_axes_tool=wrench_selection_axes_tool,
+            wrench_stiffness=wrench_stiffness,
+            controlled_robot_count=controlled_robot_count,
+            device=self._device,
+        )
         # ------------------------------------------------------------------
 
         self._controlled_robot_count = controlled_robot_count
         self._max_controlled_dofs = max_controlled_dofs
         self._total_controlled_dofs = total_controlled_dofs
         self._use_inertia = bool(use_inertia_decoupling)
+        self._use_wrench_feedforward = bool(use_wrench_feedforward)
+        self._use_wrench_feedback = bool(use_wrench_feedback)
+        self._use_wrench = self._use_wrench_feedforward or self._use_wrench_feedback
         self._requires_grad = requires_grad
 
-        # Copied, not stored: see the identical comment in
-        # ControllerJointImpedanceModelFree.__init__ for why.
+        # Copied, not stored: the kernels below use this as a loop bound
+        # while the tables below it are derived from the same host
+        # snapshot, so a later edit to the caller's array would send a
+        # multiply past the end of a buffer.
         self._controlled_dofs_per_robot = wp.array(controlled_dofs_per_robot_np, dtype=wp.int32, device=self._device)
 
-        # Flat-DOF -> (robot, slot) tables, the same compact-DOF lookup
-        # ControllerJointImpedanceModelFree builds, needed here so the final
+        # Flat-DOF -> (robot, slot) tables, needed so the final
         # Jacobian-transpose force mapping can write directly into the
         # compact total_controlled_dofs layout.
         offsets_np = np.zeros(controlled_robot_count, dtype=np.int32)
@@ -231,7 +405,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             device=self._device,
         )
         self._slot_of_dof = wp.array(
-            np.concatenate([np.arange(n, dtype=np.int32) for n in controlled_dofs_per_robot_np]),
+            np.concatenate([np.arange(dof_count, dtype=np.int32) for dof_count in controlled_dofs_per_robot_np]),
             dtype=wp.int32,
             device=self._device,
         )
@@ -277,6 +451,39 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         )
         self._damping_buf: wp.array[wp.spatial_vector] | None = _twist_buf() if self._damping_baked is None else None
 
+        self._motion_selection_axes_tool: wp.array[wp.spatial_vector] | None = None
+        self._wrench_selection_axes_tool: wp.array[wp.spatial_vector] | None = None
+        self._motion_selection_matrix_world: wp.array3d[wp.float32] | None = None
+        self._wrench_selection_matrix_world: wp.array3d[wp.float32] | None = None
+        self._masked_motion_force_buf: wp.array[wp.spatial_vector] | None = None
+        self._desired_wrench_buf: wp.array[wp.spatial_vector] | None = None
+        self._measured_wrench_buf: wp.array[wp.spatial_vector] | None = None
+        self._wrench_command_buf: wp.array[wp.spatial_vector] | None = None
+        self._masked_wrench_force_buf: wp.array[wp.spatial_vector] | None = None
+        self._wrench_tau_buf: wp.array[wp.float32] | None = None
+        self._wrench_stiffness_baked: wp.array[wp.spatial_vector] | None = None
+        self._wrench_stiffness_buf: wp.array[wp.spatial_vector] | None = None
+        if self._use_wrench:
+            self._motion_selection_axes_tool = self._bake_axes(motion_selection_axes_tool_resolved)
+            self._wrench_selection_axes_tool = self._bake_axes(wrench_selection_axes_tool)
+            self._motion_selection_matrix_world = wp.zeros(
+                (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
+            self._wrench_selection_matrix_world = wp.zeros(
+                (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
+            self._masked_motion_force_buf = _twist_buf()
+            self._desired_wrench_buf = _twist_buf()
+            self._masked_wrench_force_buf = _twist_buf()
+            self._wrench_tau_buf = wp.zeros(
+                total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
+            if self._use_wrench_feedback:
+                self._measured_wrench_buf = _twist_buf()
+                self._wrench_command_buf = _twist_buf()
+                self._wrench_stiffness_baked = self._bake_gain(wrench_stiffness)
+                self._wrench_stiffness_buf = _twist_buf() if self._wrench_stiffness_baked is None else None
+
         self._pose_error_buf = _twist_buf()
         self._desired_task_acceleration_buf = _twist_buf()
         self._task_space_force_buf: wp.array[wp.spatial_vector] | None = _twist_buf() if self._use_inertia else None
@@ -317,8 +524,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
 
-    def _bake_gain(self, value: wp.array[wp.spatial_vector] | float | None) -> wp.array[wp.spatial_vector] | None:
-        """Broadcast a scalar, or copy a gain array, into a fresh per-robot buffer.
+    def _bake_gain(
+        self, value: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None
+    ) -> wp.array[wp.spatial_vector] | None:
+        """Broadcast a scalar or wp.spatial_vector, or copy a gain array, into a fresh per-robot buffer.
 
         Returns ``None`` for live gains, which are read from the input struct
         each step instead. A wp.array is already validated by
@@ -335,6 +544,14 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
                 requires_grad=self._requires_grad,
             )
+        if isinstance(value, wp.spatial_vector):
+            return wp.full(
+                self._controlled_robot_count,
+                value,
+                dtype=wp.spatial_vector,
+                device=self._device,
+                requires_grad=self._requires_grad,
+            )
         baked = wp.zeros(
             self._controlled_robot_count,
             dtype=wp.spatial_vector,
@@ -343,6 +560,28 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         )
         wp.copy(baked, value)
         return baked
+
+    def _bake_axes(self, value: wp.array[wp.spatial_vector] | wp.spatial_vector) -> wp.array[wp.spatial_vector]:
+        """Broadcast a wp.spatial_vector, or copy a per-robot array, of tool-local selection weights into a fresh buffer.
+
+        A wp.array is already validated by :func:`_validate_array`.
+        """
+        if isinstance(value, wp.array):
+            baked = wp.zeros(
+                self._controlled_robot_count,
+                dtype=wp.spatial_vector,
+                device=self._device,
+                requires_grad=self._requires_grad,
+            )
+            wp.copy(baked, value)
+            return baked
+        return wp.full(
+            self._controlled_robot_count,
+            value,
+            dtype=wp.spatial_vector,
+            device=self._device,
+            requires_grad=self._requires_grad,
+        )
 
     @property
     def controlled_robot_count(self) -> int:
@@ -372,28 +611,58 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
 
     def input(self) -> Inputs:
         """Return a pre-allocated :class:`Inputs` with zero-initialised arrays."""
-        d, rg, n = self._device, self._requires_grad, self._controlled_robot_count
+        device = self._device
+        requires_grad = self._requires_grad
+        robot_count = self._controlled_robot_count
 
         inputs = ControllerOperationalSpaceModelFree.Inputs()
-        inputs.tool_pose_world = wp.zeros(n, dtype=wp.transform, device=d, requires_grad=rg)
-        inputs.tool_twist_world = wp.zeros(n, dtype=wp.spatial_vector, device=d, requires_grad=rg)
+        inputs.tool_pose_world = wp.zeros(robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad)
+        inputs.tool_twist_world = wp.zeros(
+            robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad
+        )
         inputs.jacobian_tool_world = wp.zeros(
-            (n, 6, self._max_controlled_dofs), dtype=wp.float32, device=d, requires_grad=rg
+            (robot_count, 6, self._max_controlled_dofs), dtype=wp.float32, device=device, requires_grad=requires_grad
         )
         inputs.mass_matrix = (
             wp.zeros(
-                (n, self._max_controlled_dofs, self._max_controlled_dofs), dtype=wp.float32, device=d, requires_grad=rg
+                (robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
+                dtype=wp.float32,
+                device=device,
+                requires_grad=requires_grad,
             )
             if self._use_inertia
             else None
         )
-        inputs.desired_tool_pose_world = wp.zeros(n, dtype=wp.transform, device=d, requires_grad=rg)
-        inputs.desired_twist_world = wp.zeros(n, dtype=wp.spatial_vector, device=d, requires_grad=rg)
+        inputs.desired_tool_pose_world = wp.zeros(
+            robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad
+        )
+        inputs.desired_twist_world = wp.zeros(
+            robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad
+        )
         inputs.motion_stiffness = (
-            wp.zeros(n, dtype=wp.spatial_vector, device=d, requires_grad=rg) if self._stiffness_baked is None else None
+            wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
+            if self._stiffness_baked is None
+            else None
         )
         inputs.motion_damping = (
-            wp.zeros(n, dtype=wp.spatial_vector, device=d, requires_grad=rg) if self._damping_baked is None else None
+            wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
+            if self._damping_baked is None
+            else None
+        )
+        inputs.desired_wrench_world = (
+            wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
+            if self._use_wrench
+            else None
+        )
+        inputs.measured_wrench_world = (
+            wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
+            if self._use_wrench_feedback
+            else None
+        )
+        inputs.wrench_stiffness = (
+            wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
+            if self._use_wrench_feedback and self._wrench_stiffness_baked is None
+            else None
         )
         return inputs
 
@@ -420,7 +689,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             outputs: :class:`Outputs` struct to write torques into.
             dt: Unused. Accepted for API compatibility.
         """
-        n = self._controlled_robot_count
+        robot_count = self._controlled_robot_count
 
         # A port belonging to a disabled feature is never read, so writing
         # one would go unnoticed. getattr because a caller may leave the
@@ -429,6 +698,13 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             ("mass_matrix", self._use_inertia, "use_inertia_decoupling"),
             ("motion_stiffness", self._stiffness_baked is None, "a live motion_stiffness"),
             ("motion_damping", self._damping_baked is None, "a live motion_damping"),
+            ("desired_wrench_world", self._use_wrench, "use_wrench_feedforward or use_wrench_feedback"),
+            ("measured_wrench_world", self._use_wrench_feedback, "use_wrench_feedback"),
+            (
+                "wrench_stiffness",
+                self._use_wrench_feedback and self._wrench_stiffness_baked is None,
+                "a live wrench_stiffness",
+            ),
         ):
             if not enabled and getattr(inputs, name, None) is not None:
                 raise ValueError(
@@ -455,29 +731,31 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             ),
             (inputs.desired_twist_world, "inputs.desired_twist_world", wp.spatial_vector, self._desired_twist_buf),
         ):
-            _validate_array(array=port, name=name, dtype=dtype, shape=(n,), device=self._device, allow_indexed=True)
-            _read_port(port, buf, n, self._device)
+            _validate_array(
+                array=port, name=name, dtype=dtype, shape=(robot_count,), device=self._device, allow_indexed=True
+            )
+            _read_port(port, buf, robot_count, self._device)
 
         if self._stiffness_baked is None:
             _validate_array(
                 array=inputs.motion_stiffness,
                 name="inputs.motion_stiffness",
                 dtype=wp.spatial_vector,
-                shape=(n,),
+                shape=(robot_count,),
                 device=self._device,
                 allow_indexed=True,
             )
-            _read_port(inputs.motion_stiffness, self._stiffness_buf, n, self._device)
+            _read_port(inputs.motion_stiffness, self._stiffness_buf, robot_count, self._device)
         if self._damping_baked is None:
             _validate_array(
                 array=inputs.motion_damping,
                 name="inputs.motion_damping",
                 dtype=wp.spatial_vector,
-                shape=(n,),
+                shape=(robot_count,),
                 device=self._device,
                 allow_indexed=True,
             )
-            _read_port(inputs.motion_damping, self._damping_buf, n, self._device)
+            _read_port(inputs.motion_damping, self._damping_buf, robot_count, self._device)
 
         # Jacobian and (optional) mass matrix: plain float32 arrays, so they
         # reuse the shared, view-aware port machinery.
@@ -485,41 +763,76 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             array=inputs.jacobian_tool_world,
             name="inputs.jacobian_tool_world",
             dtype=wp.float32,
-            shape=(n, 6, self._max_controlled_dofs),
+            shape=(robot_count, 6, self._max_controlled_dofs),
             device=self._device,
             allow_indexed=True,
         )
-        _read_port(inputs.jacobian_tool_world, self._jacobian_buf, (n, 6, self._max_controlled_dofs), self._device)
+        _read_port(
+            inputs.jacobian_tool_world, self._jacobian_buf, (robot_count, 6, self._max_controlled_dofs), self._device
+        )
 
         if self._use_inertia:
             _validate_array(
                 array=inputs.mass_matrix,
                 name="inputs.mass_matrix",
                 dtype=wp.float32,
-                shape=(n, self._max_controlled_dofs, self._max_controlled_dofs),
+                shape=(robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
                 device=self._device,
                 allow_indexed=True,
             )
             _read_port(
                 inputs.mass_matrix,
                 self._mass_matrix_buf,
-                (n, self._max_controlled_dofs, self._max_controlled_dofs),
+                (robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
                 self._device,
             )
+
+        if self._use_wrench:
+            _validate_array(
+                array=inputs.desired_wrench_world,
+                name="inputs.desired_wrench_world",
+                dtype=wp.spatial_vector,
+                shape=(robot_count,),
+                device=self._device,
+                allow_indexed=True,
+            )
+            _read_port(inputs.desired_wrench_world, self._desired_wrench_buf, robot_count, self._device)
+
+            if self._use_wrench_feedback:
+                _validate_array(
+                    array=inputs.measured_wrench_world,
+                    name="inputs.measured_wrench_world",
+                    dtype=wp.spatial_vector,
+                    shape=(robot_count,),
+                    device=self._device,
+                    allow_indexed=True,
+                )
+                _read_port(inputs.measured_wrench_world, self._measured_wrench_buf, robot_count, self._device)
+
+                if self._wrench_stiffness_baked is None:
+                    _validate_array(
+                        array=inputs.wrench_stiffness,
+                        name="inputs.wrench_stiffness",
+                        dtype=wp.spatial_vector,
+                        shape=(robot_count,),
+                        device=self._device,
+                        allow_indexed=True,
+                    )
+                    _read_port(inputs.wrench_stiffness, self._wrench_stiffness_buf, robot_count, self._device)
 
         stiffness = self._stiffness_baked if self._stiffness_baked is not None else self._stiffness_buf
         damping = self._damping_baked if self._damping_baked is not None else self._damping_buf
 
         wp.launch(
             _pose_error_kernel,
-            dim=n,
+            dim=robot_count,
             inputs=[self._pose_buf, self._desired_pose_buf],
             outputs=[self._pose_error_buf],
             device=self._device,
         )
         wp.launch(
             _task_space_pd_kernel,
-            dim=n,
+            dim=robot_count,
             inputs=[self._pose_error_buf, self._twist_buf, self._desired_twist_buf, stiffness, damping],
             outputs=[self._desired_task_acceleration_buf],
             device=self._device,
@@ -529,21 +842,21 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         if self._use_inertia:
             wp.launch(
                 _invert_spd_block_kernel,
-                dim=n,
+                dim=robot_count,
                 inputs=[self._mass_matrix_buf, self._controlled_dofs_per_robot, self._mass_matrix_cholesky],
                 outputs=[self._mass_matrix_inv],
                 device=self._device,
             )
             wp.launch(
                 _operational_space_mass_matrix_inverse_kernel,
-                dim=(n, 6, 6),
+                dim=(robot_count, 6, 6),
                 inputs=[self._jacobian_buf, self._mass_matrix_inv, self._controlled_dofs_per_robot],
                 outputs=[self._operational_space_mass_matrix_inv],
                 device=self._device,
             )
             wp.launch(
                 _invert_spd_block_kernel,
-                dim=n,
+                dim=robot_count,
                 inputs=[
                     self._operational_space_mass_matrix_inv,
                     self._task_dim,
@@ -554,12 +867,29 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             )
             wp.launch(
                 _apply_spatial_matrix_kernel,
-                dim=n,
+                dim=robot_count,
                 inputs=[self._operational_space_mass_matrix, self._desired_task_acceleration_buf],
                 outputs=[self._task_space_force_buf],
                 device=self._device,
             )
             force_source = self._task_space_force_buf
+
+        if self._use_wrench:
+            wp.launch(
+                _rotate_selection_matrix_kernel,
+                dim=robot_count,
+                inputs=[self._pose_buf, self._motion_selection_axes_tool],
+                outputs=[self._motion_selection_matrix_world],
+                device=self._device,
+            )
+            wp.launch(
+                _apply_spatial_matrix_kernel,
+                dim=robot_count,
+                inputs=[self._motion_selection_matrix_world, force_source],
+                outputs=[self._masked_motion_force_buf],
+                device=self._device,
+            )
+            force_source = self._masked_motion_force_buf
 
         wp.launch(
             _jacobian_transpose_force_kernel,
@@ -568,6 +898,57 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             outputs=[self._tau_buf],
             device=self._device,
         )
+
+        if self._use_wrench:
+            wrench_command_source = self._desired_wrench_buf
+            if self._use_wrench_feedback:
+                wrench_stiffness = (
+                    self._wrench_stiffness_baked
+                    if self._wrench_stiffness_baked is not None
+                    else self._wrench_stiffness_buf
+                )
+                wrench_command_kernel = (
+                    _wrench_feedforward_and_feedback_kernel
+                    if self._use_wrench_feedforward
+                    else _wrench_feedback_only_kernel
+                )
+                wp.launch(
+                    wrench_command_kernel,
+                    dim=robot_count,
+                    inputs=[self._desired_wrench_buf, self._measured_wrench_buf, wrench_stiffness],
+                    outputs=[self._wrench_command_buf],
+                    device=self._device,
+                )
+                wrench_command_source = self._wrench_command_buf
+
+            wp.launch(
+                _rotate_selection_matrix_kernel,
+                dim=robot_count,
+                inputs=[self._pose_buf, self._wrench_selection_axes_tool],
+                outputs=[self._wrench_selection_matrix_world],
+                device=self._device,
+            )
+            wp.launch(
+                _apply_spatial_matrix_kernel,
+                dim=robot_count,
+                inputs=[self._wrench_selection_matrix_world, wrench_command_source],
+                outputs=[self._masked_wrench_force_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _jacobian_transpose_force_kernel,
+                dim=self._total_controlled_dofs,
+                inputs=[self._jacobian_buf, self._masked_wrench_force_buf, self._robot_of_dof, self._slot_of_dof],
+                outputs=[self._wrench_tau_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _add_term_kernel,
+                dim=self._total_controlled_dofs,
+                inputs=[self._wrench_tau_buf],
+                outputs=[self._tau_buf],
+                device=self._device,
+            )
 
         if isinstance(outputs.joint_f, wp.indexedarray):
             wp.launch(

@@ -128,18 +128,16 @@ def _shift_jacobian_to_tool_kernel(
 # twice: once to invert M (block_dim = each robot's controlled-DOF count),
 # once to invert Lambda^-1 (block_dim = 6, the fixed task dimension).
 #
-# TODO(operational-space controller): Lambda^-1 = J M^-1 J^T only has rank
-# min(6, controlled_dof_count). For a robot with fewer than 6 controlled
-# DOFs, it is genuinely singular, not just ill-conditioned — the Cholesky
-# pivot floor in _invert_spd_block_kernel keeps that from producing NaN, but
-# it produces a huge, physically meaningless Lambda entry along the
-# uncontrollable directions instead (verified empirically: eigenvalues up to
-# ~1e8 for a 2-DOF arm, ~1e6 for a 5-DOF arm, vs. O(1-100) for 6+ DOF).
-# ControllerOperationalSpace(ModelFree) should raise at construction when
-# use_inertia_decoupling=True (full, non-partial) and a robot's
-# controlled-DOF count < 6, matching ControllerJointImpedance's pattern of
-# validating configuration up front rather than letting it misbehave silently
-# at runtime.
+# Lambda^-1 = J M^-1 J^T only has rank min(6, controlled_dof_count). For a
+# robot with fewer than 6 controlled DOFs, it is genuinely singular, not
+# just ill-conditioned — the Cholesky pivot floor in _invert_spd_block_kernel
+# keeps that from producing NaN, but it produces a huge, physically
+# meaningless Lambda entry along the uncontrollable directions instead
+# (verified empirically: eigenvalues up to ~1e8 for a 2-DOF arm, ~1e6 for a
+# 5-DOF arm, vs. O(1-100) for 6+ DOF). ControllerOperationalSpaceModelFree
+# raises at construction instead, when use_inertia_decoupling=True and a
+# robot has fewer than 6 controlled DOFs, rather than letting this misbehave
+# silently at runtime.
 # ---------------------------------------------------------------------------
 
 
@@ -166,39 +164,45 @@ def _invert_spd_block_kernel(
     ``newton/_src/actuators/response_oracle.py`` uses for the same reason.
     """
     block_idx = wp.tid()
-    n = block_dim[block_idx]
+    block_size = block_dim[block_idx]
 
     # Cholesky factorization: spd_matrix == cholesky_factor @ cholesky_factor^T.
-    for col in range(n):
+    for col in range(block_size):
         diagonal_term = spd_matrix[block_idx, col, col]
-        for k in range(col):
-            diagonal_term -= cholesky_factor[block_idx, col, k] * cholesky_factor[block_idx, col, k]
+        for prior_col in range(col):
+            diagonal_term -= cholesky_factor[block_idx, col, prior_col] * cholesky_factor[block_idx, col, prior_col]
         diagonal_term = wp.max(diagonal_term, _FLOAT32_EPS * wp.max(wp.abs(spd_matrix[block_idx, col, col]), 1.0))
         diagonal_value = wp.sqrt(diagonal_term)
         cholesky_factor[block_idx, col, col] = diagonal_value
-        for row in range(col + 1, n):
+        for row in range(col + 1, block_size):
             off_diagonal_term = spd_matrix[block_idx, row, col]
-            for k in range(col):
-                off_diagonal_term -= cholesky_factor[block_idx, row, k] * cholesky_factor[block_idx, col, k]
+            for prior_col in range(col):
+                off_diagonal_term -= (
+                    cholesky_factor[block_idx, row, prior_col] * cholesky_factor[block_idx, col, prior_col]
+                )
             cholesky_factor[block_idx, row, col] = off_diagonal_term / diagonal_value
 
-    # Solve spd_matrix @ x = e_c for every column c, writing x into column c of the inverse.
-    for c in range(n):
-        # Forward substitution: cholesky_factor @ y = e_c.
-        for row in range(n):
+    # Solve spd_matrix @ x = e_column for every column, writing x into that column of the inverse.
+    for column in range(block_size):
+        # Forward substitution: cholesky_factor @ y = e_column.
+        for row in range(block_size):
             right_hand_side = float(0.0)
-            if row == c:
+            if row == column:
                 right_hand_side = 1.0
-            for k in range(row):
-                right_hand_side -= cholesky_factor[block_idx, row, k] * spd_matrix_inv[block_idx, k, c]
-            spd_matrix_inv[block_idx, row, c] = right_hand_side / cholesky_factor[block_idx, row, row]
+            for prior_row in range(row):
+                right_hand_side -= (
+                    cholesky_factor[block_idx, row, prior_row] * spd_matrix_inv[block_idx, prior_row, column]
+                )
+            spd_matrix_inv[block_idx, row, column] = right_hand_side / cholesky_factor[block_idx, row, row]
         # Back substitution: cholesky_factor^T @ x = y, overwriting y with x in place.
-        for reverse_row in range(n):
-            row = n - 1 - reverse_row
-            right_hand_side = spd_matrix_inv[block_idx, row, c]
-            for k in range(row + 1, n):
-                right_hand_side -= cholesky_factor[block_idx, k, row] * spd_matrix_inv[block_idx, k, c]
-            spd_matrix_inv[block_idx, row, c] = right_hand_side / cholesky_factor[block_idx, row, row]
+        for reverse_row in range(block_size):
+            row = block_size - 1 - reverse_row
+            right_hand_side = spd_matrix_inv[block_idx, row, column]
+            for later_row in range(row + 1, block_size):
+                right_hand_side -= (
+                    cholesky_factor[block_idx, later_row, row] * spd_matrix_inv[block_idx, later_row, column]
+                )
+            spd_matrix_inv[block_idx, row, column] = right_hand_side / cholesky_factor[block_idx, row, row]
 
 
 @wp.kernel
@@ -222,15 +226,15 @@ def _operational_space_mass_matrix_inverse_kernel(
     acceleration to the task-space force that would produce it.
     """
     robot_idx, row, col = wp.tid()
-    n = dof_count[robot_idx]
+    robot_dof_count = dof_count[robot_idx]
 
     total = float(0.0)
-    for a in range(n):
-        for b in range(n):
+    for dof_a in range(robot_dof_count):
+        for dof_b in range(robot_dof_count):
             total += (
-                jacobian_tool_world[robot_idx, row, a]
-                * mass_matrix_inv[robot_idx, a, b]
-                * jacobian_tool_world[robot_idx, col, b]
+                jacobian_tool_world[robot_idx, row, dof_a]
+                * mass_matrix_inv[robot_idx, dof_a, dof_b]
+                * jacobian_tool_world[robot_idx, col, dof_b]
             )
     operational_space_mass_matrix_inv[robot_idx, row, col] = total
 
@@ -363,8 +367,7 @@ def _apply_spatial_matrix_kernel(
       task-space force that produces it — the operational-space analogue of
       ``F = m*a``. Skipping this step entirely (using the acceleration
       directly as the force) is the task-space-impedance alternative, which
-      ignores the tool's effective inertia — the same ``use_inertia_decoupling``
-      choice :class:`ControllerJointImpedanceModelFree` offers at the joint level.
+      ignores the tool's effective inertia.
     - **Selection masking**: ``matrix`` a world-frame selection matrix (from
       :func:`_rotate_selection_matrix_kernel`), ``vector`` a candidate
       task-space force or wrench, ``result`` its component along the
@@ -452,10 +455,10 @@ def _jacobian_times_jacobian_transpose_kernel(
     the Moore-Penrose pseudo-inverse transpose needs, ``(J @ J^T)^-1 @ J``.
     """
     robot_idx, row, col = wp.tid()
-    n = dof_count[robot_idx]
+    robot_dof_count = dof_count[robot_idx]
     total = float(0.0)
-    for k in range(n):
-        total += jacobian_tool_world[robot_idx, row, k] * jacobian_tool_world[robot_idx, col, k]
+    for dof in range(robot_dof_count):
+        total += jacobian_tool_world[robot_idx, row, dof] * jacobian_tool_world[robot_idx, col, dof]
     jacobian_times_jacobian_transpose[robot_idx, row, col] = total
 
 
@@ -481,8 +484,8 @@ def _task_matrix_times_jacobian_kernel(
     if col >= dof_count[robot_idx]:
         return
     total = float(0.0)
-    for k in range(6):
-        total += task_matrix[robot_idx, row, k] * jacobian_tool_world[robot_idx, k, col]
+    for task_axis in range(6):
+        total += task_matrix[robot_idx, row, task_axis] * jacobian_tool_world[robot_idx, task_axis, col]
     result[robot_idx, row, col] = total
 
 
@@ -503,12 +506,12 @@ def _apply_mass_matrix_inv_on_right_kernel(
     ``jacobian_pinv_transpose = Lambda @ J @ M^-1``.
     """
     robot_idx, row, col = wp.tid()
-    n = dof_count[robot_idx]
-    if col >= n:
+    robot_dof_count = dof_count[robot_idx]
+    if col >= robot_dof_count:
         return
     total = float(0.0)
-    for k in range(n):
-        total += matrix[robot_idx, row, k] * mass_matrix_inv[robot_idx, k, col]
+    for dof in range(robot_dof_count):
+        total += matrix[robot_idx, row, dof] * mass_matrix_inv[robot_idx, dof, col]
     result[robot_idx, row, col] = total
 
 
@@ -528,15 +531,16 @@ def _null_space_projector_kernel(
 ):
     """The null-space projector, ``N = I - J^T @ jacobian_pinv_transpose``.
 
-    A joint torque ``N^T @ (anything)`` stays entirely in the null space of
-    the task, in the sense that it doesn't change the joint-space-to-task-space
-    kinematic relationship — see the module docstring and tests for what
-    additional guarantee holds depending on which ``jacobian_pinv_transpose``
-    variant built ``N``.
+    A joint torque built as ``N @ M @ a``, for any joint acceleration ``a``
+    and the joint-space mass matrix ``M``, produces zero task-space
+    acceleration — but only when ``jacobian_pinv_transpose`` is the
+    dynamically-consistent variant: ``J @ M^-1 @ N @ M`` is the zero matrix
+    in that case, and generally nonzero for the Moore-Penrose variant, since
+    that one ignores the robot's inertia.
     """
     robot_idx, row, col = wp.tid()
-    n = dof_count[robot_idx]
-    if row >= n or col >= n:
+    robot_dof_count = dof_count[robot_idx]
+    if row >= robot_dof_count or col >= robot_dof_count:
         return
 
     identity_entry = float(0.0)
@@ -612,24 +616,27 @@ def _rotate_selection_matrix_kernel(
 
 
 @wp.kernel
-def _closed_loop_wrench_command_kernel(
+def _wrench_feedforward_and_feedback_kernel(
     desired_wrench_world: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) desired contact wrench (force, moment), world coords
     measured_wrench_world: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) measured contact wrench (force, moment), world coords, e.g. from a 6-axis force/torque sensor
-    stiffness: wp.array[wp.spatial_vector],  # (robot_count,) per-axis proportional gain Kp
+    stiffness: wp.array[wp.spatial_vector],  # (robot_count,) per-axis proportional feedback gain Kp
     # outputs
     wrench_command_world: wp.array[
         wp.spatial_vector
-    ],  # (robot_count,) closed-loop wrench command, desired + Kp .* (desired - measured)
+    ],  # (robot_count,) desired (feedforward) + Kp .* (desired - measured) (feedback)
 ):
-    """Closed-loop contact-wrench command, ``desired + Kp .* (desired - measured)``.
+    """Wrench command combining a feedforward and a feedback term, ``desired + Kp .* (desired - measured)``.
 
-    Same law as :func:`_task_space_pd_kernel`'s proportional term, applied
-    uniformly across all 6 wrench axes — this assumes the full wrench
-    (force and moment) is measurable, e.g. from a 6-axis force/torque sensor.
+    The feedforward term is the desired wrench, commanded directly. The
+    feedback term is the same law as :func:`_task_space_pd_kernel`'s
+    proportional term, applied uniformly across all 6 wrench axes — this
+    assumes the full wrench (force and moment) is measurable, e.g. from a
+    6-axis force/torque sensor. See :func:`_wrench_feedback_only_kernel` for
+    the feedback term alone, without the feedforward term.
     """
     robot_idx = wp.tid()
     desired = desired_wrench_world[robot_idx]
@@ -640,4 +647,33 @@ def _closed_loop_wrench_command_kernel(
     for axis in range(6):
         wrench_error = desired[axis] - measured[axis]
         result[axis] = desired[axis] + proportional_gain[axis] * wrench_error
+    wrench_command_world[robot_idx] = result
+
+
+@wp.kernel
+def _wrench_feedback_only_kernel(
+    desired_wrench_world: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) desired contact wrench (force, moment), world coords, used as the feedback setpoint only
+    measured_wrench_world: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) measured contact wrench (force, moment), world coords, e.g. from a 6-axis force/torque sensor
+    stiffness: wp.array[wp.spatial_vector],  # (robot_count,) per-axis proportional feedback gain Kp
+    # outputs
+    wrench_command_world: wp.array[wp.spatial_vector],  # (robot_count,) Kp .* (desired - measured), no feedforward term
+):
+    """Wrench feedback correction alone, ``Kp .* (desired - measured)``, with no feedforward term.
+
+    For a controller that wants to regulate a measured wrench toward a
+    setpoint without also commanding that setpoint directly — see
+    :func:`_wrench_feedforward_and_feedback_kernel` for the combined law.
+    """
+    robot_idx = wp.tid()
+    desired = desired_wrench_world[robot_idx]
+    measured = measured_wrench_world[robot_idx]
+    proportional_gain = stiffness[robot_idx]
+
+    result = wp.spatial_vector()
+    for axis in range(6):
+        result[axis] = proportional_gain[axis] * (desired[axis] - measured[axis])
     wrench_command_world[robot_idx] = result
