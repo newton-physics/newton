@@ -422,7 +422,7 @@ class TestSolverKaminoJointFrictionLimitStopsMotion(unittest.TestCase):
                     solver,
                     model,
                     state,
-                    steps=200,
+                    steps=300,
                     dt=0.001,
                     joint_force=feedforward_torque,
                 )
