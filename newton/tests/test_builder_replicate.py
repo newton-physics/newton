@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 from newton import Mesh, Model, ModelBuilder
+from newton._src.sim.builder import _FINALIZE_LIST_CONTROL_FLOW_FIELDS, _model_array_dtypes
 from newton.actuators import ControllerPD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
@@ -186,6 +187,78 @@ class TestModelBuilderReplicate(unittest.TestCase):
         actual.replicate(source, len(xforms), xforms=xforms)
 
         self.assert_builder_merge_state_equal(expected, actual)
+
+    def test_replicate_and_finalize_matches_separate_calls(self):
+        """Match ordinary replication using an array-backed scratch builder."""
+        source = self._make_source()
+        xforms = [
+            wp.transform((1.0, 2.0, 3.0), wp.quat_rpy(0.1, 0.2, 0.3)),
+            wp.transform((-2.0, 1.0, 0.5), wp.quat_rpy(-0.2, 0.4, 0.1)),
+        ]
+
+        def make_destination_with_mutable_prefix() -> ModelBuilder:
+            destination = ModelBuilder()
+            body = destination.add_body(label="global")
+            destination.add_shape_sphere(body, radius=0.1, label="global_shape")
+            destination.add_builder(source, label_prefix="prefix")
+            destination.begin_world()
+            existing = destination.add_body(label="existing")
+            destination.add_shape_box(existing, hx=0.1, hy=0.1, hz=0.1, label="existing_shape")
+            destination.end_world()
+            return destination
+
+        expected_builder = make_destination_with_mutable_prefix()
+        expected_builder.replicate(source, len(xforms), xforms=xforms)
+        expected = expected_builder.finalize(device="cpu")
+
+        unchanged_builder = make_destination_with_mutable_prefix()
+        actual_builder = make_destination_with_mutable_prefix()
+        captured = {}
+        original_finalize = ModelBuilder._finalize
+
+        def capture_finalize(scratch, *args, **kwargs):
+            captured["scratch"] = scratch
+            return original_finalize(scratch, *args, **kwargs)
+
+        with mock.patch.object(ModelBuilder, "_finalize", autospec=True, side_effect=capture_finalize):
+            actual = actual_builder.replicate_and_finalize(source, len(xforms), xforms=xforms, device="cpu")
+
+        scratch = captured["scratch"]
+        self.assertIsNot(scratch, actual_builder)
+        array_backed = {name for name in _model_array_dtypes() if isinstance(getattr(scratch, name, None), np.ndarray)}
+        self.assertTrue(array_backed)
+        self.assertTrue(all(getattr(scratch, name).flags.c_contiguous for name in array_backed))
+        self.assertTrue(all(isinstance(getattr(scratch, name), list) for name in _FINALIZE_LIST_CONTROL_FLOW_FIELDS))
+
+        for name in array_backed:
+            with self.subTest(attribute=name, property="dtype"):
+                warp_dtype = _model_array_dtypes()[name]
+                scalar_dtype = getattr(warp_dtype, "_wp_scalar_type_", warp_dtype)
+                self.assertEqual(getattr(scratch, name).dtype, np.dtype(wp.dtype_to_numpy(scalar_dtype)))
+
+        self.assert_builder_merge_state_equal(unchanged_builder, actual_builder)
+        for name in array_backed:
+            with self.subTest(attribute=name):
+                self.assertEqual(getattr(actual, name).dtype, getattr(expected, name).dtype)
+                np.testing.assert_array_equal(getattr(expected, name).numpy(), getattr(actual, name).numpy())
+
+        self.assertEqual(expected.world_count, actual.world_count)
+        self.assertEqual(expected.shape_contact_pair_count, actual.shape_contact_pair_count)
+        np.testing.assert_array_equal(expected.shape_contact_pairs.numpy(), actual.shape_contact_pairs.numpy())
+
+    def test_replicate_and_finalize_matches_coord_layout_targets(self):
+        """Match ordinary replication with coordinate-layout joint targets."""
+        with mock.patch("newton.use_coord_layout_targets", True):
+            source = self._make_source()
+            expected_builder = ModelBuilder()
+            expected_builder.replicate(source, 3, spacing=(2.0, 3.0, 0.0))
+            expected = expected_builder.finalize(device="cpu")
+
+            actual = ModelBuilder().replicate_and_finalize(source, 3, spacing=(2.0, 3.0, 0.0), device="cpu")
+
+        for name in ("joint_q", "joint_qd", "joint_target_q", "joint_target_qd"):
+            with self.subTest(attribute=name):
+                np.testing.assert_array_equal(getattr(expected, name).numpy(), getattr(actual, name).numpy())
 
     def test_replicate_rejects_mismatched_explicit_transforms(self):
         with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):
@@ -641,3 +714,10 @@ class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
         """label_prefixes must have exactly one entry per replicated world."""
         with self.assertRaises(ValueError):
             ModelBuilder().replicate(self._source("root"), 2, label_prefixes=["only-one"])
+
+    def test_atomic_path_applies_the_same_prefixes(self):
+        """replicate_and_finalize() names each world exactly as replicate() does."""
+        prefixes = [f"/World/envs/env_{index}/Robot" for index in range(3)]
+        model = ModelBuilder().replicate_and_finalize(self._source(), 3, label_prefixes=prefixes, device="cpu")
+
+        self.assertEqual(list(model.shape_label), [f"{prefix}/box" for prefix in prefixes])

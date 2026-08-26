@@ -144,6 +144,55 @@ _SCALAR_GRAVITY_DEPRECATION_MSG = (
 _IDENTITY_TRANSFORM = np.asarray(wp.transformf((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)), dtype=np.float32)
 _IDENTITY_ROTATION = np.asarray(wp.quatf(0.0, 0.0, 0.0, 1.0), dtype=np.float32)
 
+
+@functools.cache
+def _model_array_dtypes() -> dict[str, Any]:
+    """Warp dtypes from the instance annotations in ``Model.__init__``.
+
+    Read on first use rather than at import: only replication into contiguous arrays needs
+    them, and reading them requires the source of ``Model.__init__`` to be available.
+    """
+    import ast  # noqa: PLC0415
+    import textwrap  # noqa: PLC0415
+
+    init_source = textwrap.dedent(inspect.getsource(Model.__init__))
+    init_node = ast.parse(init_source).body[0]
+    result = {}
+    for node in ast.walk(init_node):
+        if not (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Attribute)
+            and isinstance(node.target.value, ast.Name)
+            and node.target.value.id == "self"
+        ):
+            continue
+        array_annotation = next(
+            (
+                candidate
+                for candidate in ast.walk(node.annotation)
+                if isinstance(candidate, ast.Subscript)
+                and isinstance(candidate.value, ast.Attribute)
+                and isinstance(candidate.value.value, ast.Name)
+                and candidate.value.value.id == "wp"
+                and candidate.value.attr.startswith("array")
+            ),
+            None,
+        )
+        if (
+            array_annotation is not None
+            and isinstance(array_annotation.slice, ast.Attribute)
+            and isinstance(array_annotation.slice.value, ast.Name)
+            and array_annotation.slice.value.id == "wp"
+        ):
+            result[node.target.attr] = getattr(wp, array_annotation.slice.attr)
+    return result
+
+
+# These numeric fields drive large Python loops during finalization. Keeping
+# them as lists avoids boxing a NumPy scalar on every iteration.
+_FINALIZE_LIST_CONTROL_FLOW_FIELDS = frozenset({"shape_flags", "shape_type", "joint_type", "joint_dof_dim"})
+
+
 _MERGE_VALIDATION_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 """Memoizes :meth:`ModelBuilder._validate_builder_merge` as ``dest -> {source: schema epochs}``.
 
@@ -2917,7 +2966,7 @@ class ModelBuilder:
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
-    def _project_target_q_to_dof(self) -> list[float]:
+    def _project_target_q_to_dof(self) -> list[float] | np.ndarray:
         """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
         the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped list.
 
@@ -2926,6 +2975,16 @@ class ModelBuilder:
         and a placeholder ``1.0`` in the 4th — this method just slices the
         placeholder off to produce the legacy DOF-shaped ``Model.joint_target_q``.
         """
+        if isinstance(self.joint_target_q, np.ndarray):
+            joint_types = np.asarray(self.joint_type, dtype=np.int32)
+            ball_mask = joint_types == int(JointType.BALL)
+            padding_mask = ball_mask | (joint_types == int(JointType.FREE)) | (joint_types == int(JointType.DISTANCE))
+            padding_indices = np.asarray(self.joint_q_start, dtype=np.int64)[padding_mask]
+            padding_indices += np.where(ball_mask[padding_mask], 3, 6)
+            keep = np.ones(len(self.joint_target_q), dtype=np.bool_)
+            keep[padding_indices] = False
+            return self.joint_target_q[keep]
+
         result: list[float] = []
         for j, jtype in enumerate(self.joint_type):
             q_start = self.joint_q_start[j]
@@ -3020,6 +3079,124 @@ class ModelBuilder:
                 world's labels as they are in ``builder``; an empty source label remains
                 unlabeled.
         """
+        self._replicate(builder, world_count, spacing, xforms=xforms, label_prefixes=label_prefixes)
+
+    def replicate_and_finalize(
+        self,
+        builder: ModelBuilder,
+        world_count: int,
+        spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        *,
+        xforms: Sequence[Transform] | None = None,
+        label_prefixes: Sequence[str | None] | None = None,
+        device: Devicelike | None = None,
+        requires_grad: bool = False,
+        skip_all_validations: bool = False,
+        skip_validation_worlds: bool = False,
+        skip_validation_joints: bool = False,
+        skip_validation_shapes: bool = False,
+        skip_validation_structure: bool = False,
+        skip_validation_joint_ordering: bool = True,
+    ) -> Model:
+        """Replicate a builder and immediately finalize the resulting model.
+
+        This is equivalent to calling :meth:`replicate` followed by :meth:`finalize`,
+        but performs the replication on a private, single-use copy of this builder.
+        Dense numeric attributes on that copy are stored directly as contiguous arrays
+        and the copy is discarded after finalization. This builder is not modified. Use
+        the separate calls when the replicated builder must be modified before
+        finalization.
+
+        Args:
+            builder: The builder to replicate.
+            world_count: The number of worlds to create.
+            spacing: The spacing between replicated worlds. Ignored when ``xforms`` is provided.
+            xforms: Optional sequence of transforms, one per replicated world.
+            label_prefixes: Optional prefix prepended to all labels from ``builder``, one per
+                replicated world. See :meth:`replicate`.
+            device: Device on which to allocate the model.
+            requires_grad: Whether model arrays require gradients.
+            skip_all_validations: Whether to skip all validation checks.
+            skip_validation_worlds: Whether to skip world-ordering validation.
+            skip_validation_joints: Whether to skip joint-membership validation.
+            skip_validation_shapes: Whether to skip shape-margin validation.
+            skip_validation_structure: Whether to skip structural validation.
+            skip_validation_joint_ordering: Whether to skip joint-ordering validation.
+
+        Returns:
+            The finalized replicated model.
+        """
+        scratch = self._fork_for_finalize()
+        scratch._replicate(
+            builder, world_count, spacing, xforms=xforms, label_prefixes=label_prefixes, array_backed=True
+        )
+        return scratch._finalize(
+            device,
+            requires_grad=requires_grad,
+            skip_all_validations=skip_all_validations,
+            skip_validation_worlds=skip_validation_worlds,
+            skip_validation_joints=skip_validation_joints,
+            skip_validation_shapes=skip_validation_shapes,
+            skip_validation_structure=skip_validation_structure,
+            skip_validation_joint_ordering=skip_validation_joint_ordering,
+        )
+
+    def _fork_for_finalize(self) -> ModelBuilder:
+        """Create a single-use builder with independent mutable containers."""
+        scratch = copy.copy(self)
+        for name, value in vars(self).items():
+            if isinstance(value, list):
+                setattr(scratch, name, list(value))
+            elif isinstance(value, dict):
+                setattr(scratch, name, dict(value))
+            elif isinstance(value, set):
+                setattr(scratch, name, set(value))
+
+        scratch.body_shapes = {body: list(shapes) for body, shapes in self.body_shapes.items()}
+        scratch.joint_parents = {body: list(joints) for body, joints in self.joint_parents.items()}
+        scratch.joint_children = {body: list(joints) for body, joints in self.joint_children.items()}
+
+        scratch.custom_attributes = {}
+        for key, attribute in self.custom_attributes.items():
+            values = attribute.values
+            if isinstance(values, list):
+                values = list(values)
+            elif isinstance(values, dict):
+                values = dict(values)
+            scratch.custom_attributes[key] = replace(attribute, values=values)
+
+        scratch.actuator_entries = {
+            key: replace(
+                entry,
+                indices=list(entry.indices),
+                pos_indices=list(entry.pos_indices),
+                controller_args=list(entry.controller_args),
+                delay_args=list(entry.delay_args),
+                clamping_args=list(entry.clamping_args),
+            )
+            for key, entry in self.actuator_entries.items()
+        }
+
+        filter_pairs = self._shape_collision_filter_pairs
+        if isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs):
+            scratch_filter_pairs = copy.copy(filter_pairs)
+            scratch_filter_pairs._entries = list(filter_pairs._entries)
+            scratch._shape_collision_filter_pairs = scratch_filter_pairs
+        else:
+            scratch._shape_collision_filter_pairs = list(filter_pairs)
+        scratch._merge_filter_template = None
+        return scratch
+
+    def _replicate(
+        self,
+        builder: ModelBuilder,
+        world_count: int,
+        spacing: tuple[float, float, float],
+        *,
+        xforms: Sequence[Transform] | None,
+        label_prefixes: Sequence[str | None] | None = None,
+        array_backed: bool = False,
+    ) -> None:
         if world_count <= 0:
             return
         if self.current_world != -1:
@@ -3039,7 +3216,13 @@ class ModelBuilder:
 
         base_world = self.world_count
         worlds = list(range(base_world, base_world + world_count))
-        self._merge_builder_copies(builder, worlds, xforms, label_prefixes)
+        self._merge_builder_copies(
+            builder,
+            worlds,
+            xforms,
+            label_prefixes,
+            array_backed=array_backed,
+        )
 
         self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
         self.world_count += world_count
@@ -3050,6 +3233,8 @@ class ModelBuilder:
         worlds: Sequence[int],
         xforms: Sequence[Transform | None],
         label_prefixes: Sequence[str | None],
+        *,
+        array_backed: bool = False,
     ) -> None:
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
@@ -3094,6 +3279,37 @@ class ModelBuilder:
         attribute_specs = self._builder_merge_attribute_specs()
         bases = self._builder_merge_counts(self)
 
+        array_starts = {}
+        if array_backed:
+            for attr, warp_dtype in _model_array_dtypes().items():
+                spec = attribute_specs.get(attr)
+                if spec is None or attr in _FINALIZE_LIST_CONTROL_FLOW_FIELDS or spec.compaction_policy != "generic":
+                    continue
+                prefix_values = getattr(self, attr)
+                source_values = getattr(builder, attr)
+                if len(prefix_values) == 0 and len(source_values) == 0:
+                    continue
+
+                scalar_dtype = getattr(warp_dtype, "_wp_scalar_type_", warp_dtype)
+                numpy_dtype = wp.dtype_to_numpy(scalar_dtype)
+                element_shape = tuple(getattr(warp_dtype, "_shape_", ()))
+
+                prefix = np.asarray(prefix_values, dtype=numpy_dtype)
+                source = np.asarray(source_values, dtype=numpy_dtype)
+                if not element_shape:
+                    # Scalar Warp arrays can still be assembled from rows (for example,
+                    # triangle indices). Infer that builder-only layout from the data.
+                    shaped = source if source.ndim > 1 else prefix
+                    if shaped.ndim > 1:
+                        element_shape = shaped.shape[1:]
+                prefix = prefix.reshape((-1, *element_shape))
+                source = source.reshape((-1, *element_shape))
+                values = np.empty((len(prefix) + world_count * len(source), *element_shape), dtype=numpy_dtype)
+                values[: len(prefix)] = prefix
+                values[len(prefix) :].reshape((world_count, len(source), *element_shape))[:] = source
+                setattr(self, attr, values)
+                array_starts[attr] = len(prefix)
+
         world_range = np.arange(world_count, dtype=np.int64)
         start_arrays = {kind: base + world_range * counts[kind] for kind, base in bases.items()}
         start_arrays["muscle_point"] = len(self.muscle_bodies) + world_range * len(builder.muscle_bodies)
@@ -3101,10 +3317,18 @@ class ModelBuilder:
         def starts(kind: str) -> np.ndarray:
             return start_arrays[kind]
 
-        def extend_referenced(dst: list, values: Sequence[Any], kind: str) -> None:
-            if not values:
+        def extend_referenced(attr: str, dst: list | np.ndarray, values: Sequence[Any], kind: str) -> None:
+            if len(values) == 0:
                 return
             source = np.asarray(values, dtype=np.int64)
+            if isinstance(dst, np.ndarray):
+                target = dst[array_starts[attr] :].reshape((world_count, *source.shape))
+                target[:] = source
+                reference_starts = np.asarray(starts(kind), dtype=dst.dtype).reshape(
+                    (world_count,) + (1,) * source.ndim
+                )
+                np.add(target, reference_starts, out=target, where=target >= 0)
+                return
             if world_count == 1:
                 start = int(start_arrays[kind][0])
                 dst.extend(np.where(source >= 0, source + start, source).tolist())
@@ -3123,14 +3347,18 @@ class ModelBuilder:
             self.particle_max_velocity = builder.particle_max_velocity
             particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (world_count, 1))
             particle_q += np.repeat(offsets, counts["particle"], axis=0)
-            self.particle_q.extend(particle_q.tolist())
+            if "particle_q" in array_starts:
+                self.particle_q[array_starts["particle_q"] :] = particle_q
+            else:
+                self.particle_q.extend(particle_q.tolist())
 
         shape_starts = starts("shape")
         body_starts = starts("body")
 
-        attribute_specs.pop("shape_transform")
-        shape_transform_start = len(self.shape_transform)
-        self.shape_transform.extend(source_list("shape_transform") * world_count)
+        attribute_specs.pop("shape_transform", None)
+        shape_transform_start = array_starts.get("shape_transform", int(bases["shape"]))
+        if "shape_transform" not in array_starts:
+            self.shape_transform.extend(source_list("shape_transform") * world_count)
         if counts["shape"]:
             static_shapes = np.flatnonzero(np.asarray(builder.shape_body, dtype=np.int64) == -1)
             for world_index, xform in enumerate(xforms):
@@ -3139,7 +3367,8 @@ class ModelBuilder:
                 for shape in static_shapes.tolist():
                     source = wp.transform(*builder.shape_transform[shape])
                     target = shape_transform_start + world_index * counts["shape"] + shape
-                    self.shape_transform[target] = transform_mul(xform, source)
+                    transformed = transform_mul(xform, source)
+                    self.shape_transform[target] = transformed
 
         for body_start, shape_start in zip(body_starts, shape_starts, strict=True):
             for body, shapes in builder.body_shapes.items():
@@ -3153,10 +3382,11 @@ class ModelBuilder:
         joint_coord_starts = starts("joint_coord")
         joint_dof_starts = starts("joint_dof")
 
-        attribute_specs.pop("joint_X_p")
+        attribute_specs.pop("joint_X_p", None)
         attribute_specs.pop("joint_q")
-        joint_X_p_start = len(self.joint_X_p)
-        self.joint_X_p.extend(source_list("joint_X_p") * world_count)
+        joint_X_p_start = array_starts.get("joint_X_p", int(bases["joint"]))
+        if "joint_X_p" not in array_starts:
+            self.joint_X_p.extend(source_list("joint_X_p") * world_count)
         joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float32), world_count)
         if counts["joint"]:
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
@@ -3168,7 +3398,8 @@ class ModelBuilder:
                 for joint in nonfree_roots.tolist():
                     source = wp.transform(*builder.joint_X_p[joint])
                     target = joint_X_p_start + world_index * counts["joint"] + joint
-                    self.joint_X_p[target] = transform_mul(xform, source)
+                    transformed = transform_mul(xform, source)
+                    self.joint_X_p[target] = transformed
 
             free_roots = np.flatnonzero((joint_parents == -1) & (joint_types == int(JointType.FREE)))
             if len(free_roots) and any(xform is not None for xform in xforms):
@@ -3189,7 +3420,10 @@ class ModelBuilder:
                         target_q = coord_base + source_q
                         joint_q[target_q : target_q + 7] = np.asarray(transformed, dtype=np.float32)
 
-        self.joint_q.extend(joint_q.tolist())
+        if "joint_q" in array_starts:
+            self.joint_q[array_starts["joint_q"] :] = joint_q
+        else:
+            self.joint_q.extend(joint_q.tolist())
 
         for world_index, joint_start in enumerate(joint_starts.tolist()):
             body_start = int(body_starts[world_index])
@@ -3201,20 +3435,34 @@ class ModelBuilder:
                 self.joint_parents.setdefault(new_child, []).append((new_parent, joint))
                 self.joint_children.setdefault(new_parent, []).append((new_child, joint))
 
-        attribute_specs.pop("body_q")
+        attribute_specs.pop("body_q", None)
         if counts["body"]:
             if translations_only:
                 body_q = np.tile(np.asarray(builder.body_q, dtype=np.float32).reshape((-1, 7)), (world_count, 1))
                 if np.any(offsets):
                     body_q[:, :3] += np.repeat(offsets, counts["body"], axis=0)
-                # Own each transform without retaining per-row views into the tiled array.
-                self.body_q.extend(wp.transform.from_buffer_copy(row) for row in body_q)
+                if "body_q" in array_starts:
+                    self.body_q[array_starts["body_q"] :] = body_q
+                else:
+                    # Own each transform without retaining per-row views into the tiled array.
+                    self.body_q.extend(wp.transform.from_buffer_copy(row) for row in body_q)
             else:
+                body_q_target = array_starts.get("body_q", int(bases["body"]))
                 for xform in xforms:
                     if xform is None:
-                        self.body_q.extend(wp.transform(*body_q) for body_q in builder.body_q)
+                        if "body_q" not in array_starts:
+                            self.body_q.extend(wp.transform(*source_body_q) for source_body_q in builder.body_q)
+                        body_q_target += counts["body"]
+                        continue
+                    if "body_q" in array_starts:
+                        for body, source_body_q in enumerate(builder.body_q):
+                            transformed = transform_mul(xform, wp.transform(*source_body_q))
+                            self.body_q[body_q_target + body] = transformed
                     else:
-                        self.body_q.extend(transform_mul(xform, wp.transform(*body_q)) for body_q in builder.body_q)
+                        self.body_q.extend(
+                            transform_mul(xform, wp.transform(*source_body_q)) for source_body_q in builder.body_q
+                        )
+                    body_q_target += counts["body"]
 
         source_filter_pairs = builder._shape_collision_filter_pairs
         if source_filter_pairs:
@@ -3235,10 +3483,24 @@ class ModelBuilder:
         for attr, spec in attribute_specs.items():
             if spec.compaction_policy in {"world_start", "passthrough"}:
                 continue
-            source = source_list(attr)
-            if not source:
+            source_values = getattr(builder, attr)
+            if len(source_values) == 0:
                 continue
             destination = getattr(self, attr)
+            if attr in array_starts:
+                if spec.references in {Model.AttributeFrequency.WORLD, "world"}:
+                    source_count = counts.get(self._builder_frequency_key(spec.frequency), len(source_values))
+                    destination[array_starts[attr] :] = np.repeat(worlds, source_count)
+                elif spec.references is not None:
+                    extend_referenced(
+                        attr,
+                        destination,
+                        source_values,
+                        self._builder_frequency_key(spec.references),
+                    )
+                continue
+
+            source = source_list(attr)
             if spec.compaction_policy == "color_groups":
                 kind = self._builder_frequency_key(spec.frequency)
                 source_groups = [np.asarray(group, dtype=np.int64) for group in source]
@@ -3266,7 +3528,7 @@ class ModelBuilder:
                 source_count = counts.get(self._builder_frequency_key(spec.frequency), len(source))
                 destination.extend(np.repeat(worlds, source_count).tolist())
             elif spec.references is not None:
-                extend_referenced(destination, source, self._builder_frequency_key(spec.references))
+                extend_referenced(attr, destination, source, self._builder_frequency_key(spec.references))
             else:
                 destination.extend(source * world_count)
 
@@ -11001,7 +11263,7 @@ class ModelBuilder:
         all_world_indices = set()
 
         for array_name, world_array in world_arrays:
-            if not world_array:
+            if len(world_array) == 0:
                 continue
 
             arr = np.array(world_array, dtype=np.int32)
@@ -11842,7 +12104,29 @@ class ModelBuilder:
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
         """
+        return self._finalize(
+            device,
+            requires_grad=requires_grad,
+            skip_all_validations=skip_all_validations,
+            skip_validation_worlds=skip_validation_worlds,
+            skip_validation_joints=skip_validation_joints,
+            skip_validation_shapes=skip_validation_shapes,
+            skip_validation_structure=skip_validation_structure,
+            skip_validation_joint_ordering=skip_validation_joint_ordering,
+        )
 
+    def _finalize(
+        self,
+        device: Devicelike | None = None,
+        *,
+        requires_grad: bool = False,
+        skip_all_validations: bool = False,
+        skip_validation_worlds: bool = False,
+        skip_validation_joints: bool = False,
+        skip_validation_shapes: bool = False,
+        skip_validation_structure: bool = False,
+        skip_validation_joint_ordering: bool = True,
+    ) -> Model:
         # ensure the world count is set correctly
         self.world_count = max(1, self.world_count)
 
@@ -11900,7 +12184,12 @@ class ModelBuilder:
             m.particle_mass = wp.array(self.particle_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_inv_mass = wp.array(particle_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_radius = wp.array(self.particle_radius, dtype=wp.float32, requires_grad=requires_grad)
-            m.particle_flags = wp.array([flag_to_int(f) for f in self.particle_flags], dtype=wp.int32)
+            particle_flags = (
+                self.particle_flags
+                if isinstance(self.particle_flags, np.ndarray)
+                else [flag_to_int(f) for f in self.particle_flags]
+            )
+            m.particle_flags = wp.array(particle_flags, dtype=wp.int32)
             m.particle_world = wp.array(self.particle_world, dtype=wp.int32)
             m.particle_max_radius = np.max(self.particle_radius) if len(self.particle_radius) > 0 else 0.0
             m.particle_max_velocity = self.particle_max_velocity
@@ -12810,7 +13099,7 @@ class ModelBuilder:
             # derive the edge/triangle maps against the final triangles.
             edge_indices = (
                 np.array(self.edge_indices, dtype=np.int32).reshape(-1, 4)
-                if self.edge_indices
+                if len(self.edge_indices) > 0
                 else np.empty((0, 4), dtype=np.int32)
             )
             m.soft_mesh_adjacency = MeshAdjacency(
@@ -12965,7 +13254,7 @@ class ModelBuilder:
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
             m.joint_X_p = wp.array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_X_c = wp.array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
-            m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
+            m.joint_dof_dim = wp.array(np.asarray(self.joint_dof_dim, dtype=np.int32), dtype=wp.int32, ndim=2)
             m.joint_axis = wp.array(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
