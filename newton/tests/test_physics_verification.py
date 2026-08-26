@@ -41,6 +41,43 @@ class TestPhysicsVerification(unittest.TestCase):
     pass
 
 
+@wp.kernel
+def _record_joint_q_scalar(joint_q: wp.array[wp.float32], q_index: int, step: int, out: wp.array[wp.float32]):
+    out[step] = joint_q[q_index]
+
+
+@wp.kernel
+def _record_pendulum_angle_from_body(body_q: wp.array[wp.transform], step: int, out: wp.array[wp.float32]):
+    p = wp.transform_get_translation(body_q[0])
+    out[step] = wp.atan2(p[0], -p[1])
+
+
+@wp.kernel
+def _record_joint_coord_and_rate(
+    joint_q: wp.array[wp.float32],
+    joint_qd: wp.array[wp.float32],
+    q_index: int,
+    step: int,
+    q_out: wp.array[wp.float32],
+    qd_out: wp.array[wp.float32],
+):
+    q_out[step] = joint_q[q_index]
+    qd_out[step] = joint_qd[q_index]
+
+
+@wp.kernel
+def _record_pendulum_theta_from_body(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    step: int,
+    theta_out: wp.array[wp.float32],
+    dtheta_out: wp.array[wp.float32],
+):
+    p = wp.transform_get_translation(body_q[0])
+    theta_out[step] = wp.atan2(p[0], -p[1])
+    dtheta_out[step] = body_qd[0][5]
+
+
 # ---------------------------------------------------------------------------
 # Test 1: Free Fall
 # Verify free-fall trajectory against y(t) = h0 + 0.5*g*t^2 and v(t) = g*t.
@@ -152,23 +189,30 @@ def test_pendulum_period(test, device, solver_fn, uses_generalized_coords, sim_d
     I_pivot = I_cm_zz + mass * L * L
     expected_T = 2.0 * np.pi * np.sqrt(I_pivot / (mass * abs(g) * L))
 
-    # Simulate for ~3 full periods
+    # Simulate for ~3 full periods. Record on-device so we do not sync every step.
     num_steps = int(3.5 * expected_T / sim_dt)
+    angles_d = wp.zeros(num_steps, dtype=wp.float32, device=device)
 
-    angles = []
-    for _ in range(num_steps):
+    for i in range(num_steps):
         state_0.clear_forces()
         solver.step(state_0, state_1, None, None, sim_dt)
         state_0, state_1 = state_1, state_0
-
         if uses_generalized_coords:
-            angles.append(float(state_0.joint_q.numpy()[qi]))
+            wp.launch(
+                _record_joint_q_scalar,
+                dim=1,
+                inputs=[state_0.joint_q, qi, i, angles_d],
+                device=device,
+            )
         else:
-            # Maximal-coordinate solvers don't update joint_q; recover angle from body position
-            bq = state_0.body_q.numpy()[0]
-            angles.append(float(np.arctan2(bq[0], -bq[1])))
+            wp.launch(
+                _record_pendulum_angle_from_body,
+                dim=1,
+                inputs=[state_0.body_q, i, angles_d],
+                device=device,
+            )
 
-    angles = np.array(angles)
+    angles = angles_d.numpy()
     times = np.arange(1, num_steps + 1) * sim_dt
 
     omega = 2.0 * np.pi / expected_T
@@ -231,37 +275,40 @@ def test_energy_conservation(test, device, solver_fn, uses_generalized_coords, s
     I_cm_zz = float(I_body[2, 2] if I_body.ndim == 2 else I_body[2])
     I_pivot = I_cm_zz + mass * L * L
 
-    def compute_ke_pe(state):
-        if uses_generalized_coords:
-            theta = float(state.joint_q.numpy()[qi])
-            theta_dot = float(state.joint_qd.numpy()[qi])
-        else:
-            bq = state.body_q.numpy()[0]
-            bqd = state.body_qd.numpy()[0]
-            theta = float(np.arctan2(bq[0], -bq[1]))
-            theta_dot = float(bqd[5])
-        ke = 0.5 * I_pivot * theta_dot**2
-        pe = mass * abs(g) * (-L * np.cos(theta))
-        return ke, pe
-
     num_steps = int(2.0 / sim_dt)
+    n_samples = num_steps + 1
+    theta_d = wp.zeros(n_samples, dtype=wp.float32, device=device)
+    dtheta_d = wp.zeros(n_samples, dtype=wp.float32, device=device)
 
-    ke0, pe0 = compute_ke_pe(state_0)
-    E_initial = ke0 + pe0
-    ke_values = [ke0]
-    pe_values = [pe0]
+    def _record(step: int):
+        if uses_generalized_coords:
+            wp.launch(
+                _record_joint_coord_and_rate,
+                dim=1,
+                inputs=[state_0.joint_q, state_0.joint_qd, qi, step, theta_d, dtheta_d],
+                device=device,
+            )
+        else:
+            wp.launch(
+                _record_pendulum_theta_from_body,
+                dim=1,
+                inputs=[state_0.body_q, state_0.body_qd, step, theta_d, dtheta_d],
+                device=device,
+            )
 
-    for _ in range(num_steps):
+    _record(0)
+    for i in range(num_steps):
         state_0.clear_forces()
         solver.step(state_0, state_1, None, None, sim_dt)
         state_0, state_1 = state_1, state_0
-        ke, pe = compute_ke_pe(state_0)
-        ke_values.append(ke)
-        pe_values.append(pe)
+        _record(i + 1)
 
-    ke_values = np.array(ke_values)
-    pe_values = np.array(pe_values)
+    theta = theta_d.numpy()
+    dtheta = dtheta_d.numpy()
+    ke_values = 0.5 * I_pivot * dtheta**2
+    pe_values = mass * abs(g) * (-L * np.cos(theta))
     energies = ke_values + pe_values
+    E_initial = float(energies[0])
 
     # Check KE is near-zero at turning points
     min_ke = np.min(ke_values[1:])
