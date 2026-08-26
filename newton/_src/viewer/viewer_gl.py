@@ -203,6 +203,8 @@ class ViewerGL(ViewerBase):
         paused: bool = False,
         plot_history_size: int = 250,
         num_frames: int | None = None,
+        *,
+        enable_cuda_interop: Literal["all", "none", "dynamic"] = "none",
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -219,6 +221,10 @@ class ViewerGL(ViewerBase):
                 :meth:`is_running` returns False. If None, headless rendering
                 is unbounded; if 0, no frames are rendered. Ignored in
                 windowed mode.
+            enable_cuda_interop: CUDA-OpenGL interoperability mode. ``"none"``
+                disables geometry-upload interoperability, ``"dynamic"``
+                enables it only for meshes logged with ``dynamic=True``, and
+                ``"all"`` enables it for all supported render-geometry buffers.
         """
         if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
             raise TypeError("plot_history_size must be an integer")
@@ -229,6 +235,11 @@ class ViewerGL(ViewerBase):
                 raise TypeError("num_frames must be an integer or None")
             if num_frames < 0:
                 raise ValueError("num_frames must be >= 0")
+        if not isinstance(enable_cuda_interop, str):
+            raise TypeError("enable_cuda_interop must be a string")
+        if enable_cuda_interop not in ("all", "none", "dynamic"):
+            raise ValueError("enable_cuda_interop must be 'all', 'none', or 'dynamic'")
+        self._enable_cuda_interop = enable_cuda_interop
 
         # Rolling buffers for log_scalar() time-series plots.
         self._scalar_buffers: dict[str, collections.deque] = {}
@@ -433,7 +444,12 @@ class ViewerGL(ViewerBase):
         Create a low-resolution sphere mesh for point rendering.
         """
         mesh = nt.Mesh.create_sphere(1.0, num_latitudes=6, num_longitudes=6, compute_inertia=False)
-        self._point_mesh = MeshGL(len(mesh.vertices), len(mesh.indices), self.device)
+        self._point_mesh = MeshGL(
+            len(mesh.vertices),
+            len(mesh.indices),
+            self.device,
+            enable_cuda_interop=self._enable_cuda_interop == "all",
+        )
 
         points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
         normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
@@ -756,7 +772,11 @@ class ViewerGL(ViewerBase):
             if _key not in capsule_keys:
                 if shapes.name not in self.objects:
                     if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
-                        instancer = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+                        instancer = MeshInstancerGL(
+                            max(n, 1),
+                            self.objects[shapes.mesh],
+                            enable_cuda_interop=self._enable_cuda_interop == "all",
+                        )
                         # Planes (e.g. the ground) opt out of the wireframe edge
                         # overlay. Keyed on geometry type, not the checker material
                         # bit, so checker-shaded non-planes still get edges (#2808).
@@ -923,6 +943,8 @@ class ViewerGL(ViewerBase):
                 hidden=hidden,
                 backface_culling=backface_culling,
                 dynamic=dynamic,
+                enable_cuda_interop=self._enable_cuda_interop == "all"
+                or (self._enable_cuda_interop == "dynamic" and dynamic),
             )
             if existing is not None:
                 replacement.color = existing.color
@@ -999,13 +1021,17 @@ class ViewerGL(ViewerBase):
 
         if instancer is None:
             capacity = max(transform_count, 1)
-            instancer = MeshInstancerGL(capacity, self.objects[mesh])
+            instancer = MeshInstancerGL(
+                capacity, self.objects[mesh], enable_cuda_interop=self._enable_cuda_interop == "all"
+            )
             self.objects[name] = instancer
             resized = True
         elif transform_count > instancer.num_instances:
             new_capacity = max(transform_count, instancer.num_instances * 2)
             old = instancer
-            instancer = MeshInstancerGL(new_capacity, self.objects[mesh])
+            instancer = MeshInstancerGL(
+                new_capacity, self.objects[mesh], enable_cuda_interop=self._enable_cuda_interop == "all"
+            )
             self.objects[name] = instancer
             del old
             resized = True
@@ -1175,12 +1201,16 @@ class ViewerGL(ViewerBase):
         if name not in self.lines:
             # Start with reasonable default size, will expand as needed
             max_lines = max(num_lines, 1000)  # Reasonable default
-            self.lines[name] = LinesGL(max_lines, self.device, hidden=hidden)
+            self.lines[name] = LinesGL(
+                max_lines, self.device, hidden=hidden, enable_cuda_interop=self._enable_cuda_interop == "all"
+            )
         elif num_lines > self.lines[name].max_lines:
             # Need to recreate with larger capacity
             self.lines[name].destroy()
             max_lines = max(num_lines, self.lines[name].max_lines * 2)
-            self.lines[name] = LinesGL(max_lines, self.device, hidden=hidden)
+            self.lines[name] = LinesGL(
+                max_lines, self.device, hidden=hidden, enable_cuda_interop=self._enable_cuda_interop == "all"
+            )
 
         self.lines[name].update(starts, ends, colors)
         self.lines[name].hidden = hidden
@@ -1237,11 +1267,15 @@ class ViewerGL(ViewerBase):
 
         if name not in self.arrows:
             max_arrows = max(num_arrows, 1000)
-            self.arrows[name] = LinesGL(max_arrows, self.device, hidden=hidden)
+            self.arrows[name] = LinesGL(
+                max_arrows, self.device, hidden=hidden, enable_cuda_interop=self._enable_cuda_interop == "all"
+            )
         elif num_arrows > self.arrows[name].max_lines:
             self.arrows[name].destroy()
             max_arrows = max(num_arrows, self.arrows[name].max_lines * 2)
-            self.arrows[name] = LinesGL(max_arrows, self.device, hidden=hidden)
+            self.arrows[name] = LinesGL(
+                max_arrows, self.device, hidden=hidden, enable_cuda_interop=self._enable_cuda_interop == "all"
+            )
 
         self.arrows[name].update(starts, ends, colors)
         self.arrows[name].hidden = hidden
@@ -1294,6 +1328,41 @@ class ViewerGL(ViewerBase):
         for owner in getattr(self, "_wireframe_vbo_owners", {}).values():
             owner.destroy()
 
+    def _destroy_render_geometry(self):
+        """Destroy all render geometry while the OpenGL context is current."""
+        objects = getattr(self, "objects", {})
+        destroyed_ids: set[int] = set()
+
+        def destroy_once(obj):
+            if id(obj) not in destroyed_ids:
+                obj.destroy()
+                destroyed_ids.add(id(obj))
+
+        # Instancer VAOs reference prototype mesh buffers, so release them first.
+        for obj in objects.values():
+            if isinstance(obj, MeshInstancerGL):
+                destroy_once(obj)
+        for obj in objects.values():
+            if not isinstance(obj, MeshInstancerGL) and hasattr(obj, "destroy"):
+                destroy_once(obj)
+        objects.clear()
+
+        for collection_name in ("lines", "arrows"):
+            collection = getattr(self, collection_name, {})
+            for obj in collection.values():
+                destroy_once(obj)
+            collection.clear()
+
+        self._destroy_all_wireframes()
+        getattr(self, "wireframe_shapes", {}).clear()
+        getattr(self, "_wireframe_vbo_owners", {}).clear()
+
+        for mesh_name in ("_point_mesh", "_gaussian_mesh"):
+            mesh = getattr(self, mesh_name, None)
+            if mesh is not None:
+                destroy_once(mesh)
+                setattr(self, mesh_name, None)
+
     @override
     def clear_wireframe_vbo_cache(self):
         for obj in self.wireframe_shapes.values():
@@ -1345,12 +1414,16 @@ class ViewerGL(ViewerBase):
         if name not in self.objects:
             # Start with a reasonable default.
             initial_capacity = max(num_points, 256)
-            self.objects[name] = MeshInstancerGL(initial_capacity, self._point_mesh)
+            self.objects[name] = MeshInstancerGL(
+                initial_capacity, self._point_mesh, enable_cuda_interop=self._enable_cuda_interop == "all"
+            )
             object_recreated = True
         elif num_points > self.objects[name].num_instances:
             old = self.objects[name]
             new_capacity = max(num_points, old.num_instances * 2)
-            self.objects[name] = MeshInstancerGL(new_capacity, self._point_mesh)
+            self.objects[name] = MeshInstancerGL(
+                new_capacity, self._point_mesh, enable_cuda_interop=self._enable_cuda_interop == "all"
+            )
             del old
             object_recreated = True
 
@@ -1372,7 +1445,12 @@ class ViewerGL(ViewerBase):
     def _create_gaussian_mesh(self):
         """Create a very low-poly sphere mesh dedicated to Gaussian splat rendering."""
         mesh = nt.Mesh.create_sphere(1.0, num_latitudes=3, num_longitudes=4, compute_inertia=False)
-        self._gaussian_mesh = MeshGL(len(mesh.vertices), len(mesh.indices), self.device)
+        self._gaussian_mesh = MeshGL(
+            len(mesh.vertices),
+            len(mesh.indices),
+            self.device,
+            enable_cuda_interop=self._enable_cuda_interop == "all",
+        )
         points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
         normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
         uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
@@ -1457,12 +1535,18 @@ class ViewerGL(ViewerBase):
 
         recreated = False
         if name not in self.objects:
-            self.objects[name] = MeshInstancerGL(max(n, 256), self._gaussian_mesh)
+            self.objects[name] = MeshInstancerGL(
+                max(n, 256), self._gaussian_mesh, enable_cuda_interop=self._enable_cuda_interop == "all"
+            )
             self.objects[name].cast_shadow = False
             recreated = True
         elif n > self.objects[name].num_instances:
             old = self.objects[name]
-            self.objects[name] = MeshInstancerGL(max(n, old.num_instances * 2), self._gaussian_mesh)
+            self.objects[name] = MeshInstancerGL(
+                max(n, old.num_instances * 2),
+                self._gaussian_mesh,
+                enable_cuda_interop=self._enable_cuda_interop == "all",
+            )
             self.objects[name].cast_shadow = False
             del old
             recreated = True
@@ -1977,6 +2061,7 @@ class ViewerGL(ViewerBase):
         self._invalidate_pbo()
         if self._image_logger is not None:
             self._image_logger.clear()
+        self._destroy_render_geometry()
         self.renderer.close()
 
     @property

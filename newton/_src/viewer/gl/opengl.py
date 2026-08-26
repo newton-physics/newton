@@ -5,6 +5,7 @@ import ctypes
 import io
 import os
 import sys
+import warnings
 
 import numpy as np
 import warp as wp
@@ -23,10 +24,29 @@ from .shaders import (
     ShadowShader,
 )
 
-ENABLE_CUDA_INTEROP = False
 ENABLE_GL_CHECKS = False
+_CUDA_INTEROP_WARNINGS: set[str] = set()
 
 wp.set_module_options({"enable_backward": False})
+
+
+def _register_cuda_gl_buffer(buffer, device):
+    try:
+        return wp.RegisteredGLBuffer(
+            int(buffer.value),
+            device,
+            flags=wp.RegisteredGLBuffer.WRITE_DISCARD,
+            fallback_to_copy=False,
+        )
+    except RuntimeError:
+        if "unavailable" not in _CUDA_INTEROP_WARNINGS:
+            warnings.warn(
+                "CUDA-OpenGL interoperability is unavailable; using host buffer uploads.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            _CUDA_INTEROP_WARNINGS.add("unavailable")
+        return None
 
 
 def check_gl_error():
@@ -158,7 +178,17 @@ def fill_line_vertex_data(
 class MeshGL:
     """Encapsulates mesh data and OpenGL buffers for a shape."""
 
-    def __init__(self, num_points, num_indices, device, hidden=False, backface_culling=True, dynamic=False):
+    def __init__(
+        self,
+        num_points,
+        num_indices,
+        device,
+        hidden=False,
+        backface_culling=True,
+        dynamic=False,
+        *,
+        enable_cuda_interop=False,
+    ):
         """Initialize mesh data with vertices and indices."""
         gl = RendererGL.gl
 
@@ -238,15 +268,14 @@ class MeshGL:
         self.color = (0.7, 0.5, 0.3)
         self.material = (0.5, 0.0, 0.0, 0.0)
 
-        # Create CUDA-GL interop buffer for efficient updates
-        if ENABLE_CUDA_INTEROP and self.device.is_cuda:
-            self.vertex_cuda_buffer = wp.RegisteredGLBuffer(
-                int(self.vbo.value),
-                self.device,
-                flags=wp.RegisteredGLBuffer.WRITE_DISCARD,
-            )
-        else:
-            self.vertex_cuda_buffer = None
+        self.vertex_cuda_buffer = None
+        self.index_cuda_buffer = None
+        if enable_cuda_interop and self.device.is_cuda and self.vbo_size > 0 and self.ebo_size > 0:
+            vertex_cuda_buffer = _register_cuda_gl_buffer(self.vbo, self.device)
+            index_cuda_buffer = _register_cuda_gl_buffer(self.ebo, self.device)
+            if vertex_cuda_buffer is not None and index_cuda_buffer is not None:
+                self.vertex_cuda_buffer = vertex_cuda_buffer
+                self.index_cuda_buffer = index_cuda_buffer
         self._points = None
 
     def destroy(self):
@@ -255,6 +284,7 @@ class MeshGL:
         try:
             # CUDA must release the registration before OpenGL deletes the buffer.
             self.vertex_cuda_buffer = None
+            self.index_cuda_buffer = None
             if hasattr(self, "vao"):
                 gl.glDeleteVertexArrays(1, self.vao)
             if hasattr(self, "vbo"):
@@ -284,18 +314,31 @@ class MeshGL:
         self._points = points
         self.num_points = len(points)
         self.num_indices = len(indices)
+        use_cuda_interop = self.vertex_cuda_buffer is not None and self.index_cuda_buffer is not None
 
         if self.indices is None or self.dynamic:
-            self.indices = wp.clone(indices).view(dtype=wp.uint32)
+            if self.dynamic:
+                self.indices = indices.view(dtype=wp.uint32)
+            else:
+                self.indices = wp.clone(indices).view(dtype=wp.uint32)
             self.num_indices = len(self.indices)
 
-            ebo_usage = gl.GL_DYNAMIC_DRAW if self.dynamic else gl.GL_STATIC_DRAW
-            host_indices = self.indices.numpy()
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
-            if self.dynamic:
-                gl.glBufferSubData(gl.GL_ELEMENT_ARRAY_BUFFER, 0, host_indices.nbytes, host_indices.ctypes.data)
+            if use_cuda_interop:
+                ebo_indices = self.index_cuda_buffer.map(dtype=wp.uint32, shape=(self.max_indices,))
+                try:
+                    wp.copy(ebo_indices, self.indices, count=self.num_indices)
+                finally:
+                    self.index_cuda_buffer.unmap()
             else:
-                gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, ebo_usage)
+                ebo_usage = gl.GL_DYNAMIC_DRAW if self.dynamic else gl.GL_STATIC_DRAW
+                host_indices = self.indices.numpy()
+                gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
+                if self.dynamic:
+                    gl.glBufferSubData(gl.GL_ELEMENT_ARRAY_BUFFER, 0, host_indices.nbytes, host_indices.ctypes.data)
+                else:
+                    gl.glBufferData(
+                        gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, ebo_usage
+                    )
 
         # If normals are missing, compute them before packing vertex data.
         if points is not None and normals is None:
@@ -312,11 +355,13 @@ class MeshGL:
         )
 
         # upload vertices to GL
-        if self.vertex_cuda_buffer is not None:
+        if use_cuda_interop:
             # upload points via CUDA if possible
             vbo_vertices = self.vertex_cuda_buffer.map(dtype=RenderVertex, shape=self.vertices.shape)
-            wp.copy(vbo_vertices, self.vertices, count=self.num_points)
-            self.vertex_cuda_buffer.unmap()
+            try:
+                wp.copy(vbo_vertices, self.vertices, count=self.num_points)
+            finally:
+                self.vertex_cuda_buffer.unmap()
 
         else:
             host_vertices = self.vertices[: self.num_points].numpy()
@@ -396,7 +441,7 @@ class MeshGL:
 class LinesGL:
     """Encapsulates line data and OpenGL buffers for line rendering."""
 
-    def __init__(self, max_lines, device, hidden=False):
+    def __init__(self, max_lines, device, hidden=False, *, enable_cuda_interop=False):
         """Initialize line data with the specified maximum number of lines.
 
         Args:
@@ -440,9 +485,8 @@ class LinesGL:
 
         gl.glBindVertexArray(0)
 
-        # Create CUDA-GL interop buffer for efficient updates
-        if ENABLE_CUDA_INTEROP and self.device.is_cuda:
-            self.vertex_cuda_buffer = wp.RegisteredGLBuffer(int(self.vbo.value), self.device)
+        if enable_cuda_interop and self.device.is_cuda and self.vbo_size > 0:
+            self.vertex_cuda_buffer = _register_cuda_gl_buffer(self.vbo, self.device)
         else:
             self.vertex_cuda_buffer = None
 
@@ -450,6 +494,7 @@ class LinesGL:
         """Clean up OpenGL resources."""
         gl = RendererGL.gl
         try:
+            self.vertex_cuda_buffer = None
             if hasattr(self, "vao"):
                 gl.glDeleteVertexArrays(1, self.vao)
             if hasattr(self, "vbo"):
@@ -494,12 +539,12 @@ class LinesGL:
                 device=self.device,
             )
 
-        # Upload vertices to GL
-        if ENABLE_CUDA_INTEROP and self.vertices.device.is_cuda:
-            # Upload points via CUDA if possible
+        if self.vertex_cuda_buffer is not None:
             vbo_vertices = self.vertex_cuda_buffer.map(dtype=LineVertex, shape=self.vertices.shape)
-            wp.copy(vbo_vertices, self.vertices)
-            self.vertex_cuda_buffer.unmap()
+            try:
+                wp.copy(vbo_vertices, self.vertices)
+            finally:
+                self.vertex_cuda_buffer.unmap()
         else:
             host_vertices = self.vertices.numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo)
@@ -684,38 +729,41 @@ class MeshInstancerGL:
         [3D point, 3D normal, UV texture coordinates]
     """
 
-    def __init__(self, num_instances, mesh):
+    def __init__(self, num_instances, mesh, *, enable_cuda_interop=False):
         self.mesh = mesh
         self.device = mesh.device
         self.hidden = False
         self.instance_transform_buffer = None
         self.instance_color_buffer = None
         self.instance_material_buffer = None
-
-        self.instance_transform_cuda_buffer = None
+        self._enable_cuda_interop = enable_cuda_interop
+        self._instance_transform_cuda_buffer = None
 
         self.allocate(num_instances)
         self.active_instances = num_instances
 
     def __del__(self):
-        gl = RendererGL.gl
+        self.destroy()
 
-        if self.instance_transform_cuda_buffer is not None:
-            try:
-                gl.glDeleteBuffers(1, self.instance_transform_cuda_buffer)
-            except Exception:
-                # Ignore any errors (e.g., context already destroyed)
-                pass
-
-        if hasattr(self, "vao") and self.vao is not None:
-            try:
+    def destroy(self):
+        """Clean up OpenGL resources."""
+        # CUDA must release the registration before OpenGL deletes the buffer.
+        self._instance_transform_cuda_buffer = None
+        try:
+            gl = RendererGL.gl
+            if getattr(self, "vao", None) is not None:
                 gl.glDeleteVertexArrays(1, self.vao)
                 gl.glDeleteBuffers(1, self.instance_transform_buffer)
                 gl.glDeleteBuffers(1, self.instance_color_buffer)
                 gl.glDeleteBuffers(1, self.instance_material_buffer)
-            except Exception:
-                # Ignore any errors during interpreter shutdown
-                pass
+        except Exception:
+            # Ignore any errors during interpreter shutdown.
+            pass
+        finally:
+            self.vao = None
+            self.instance_transform_buffer = None
+            self.instance_color_buffer = None
+            self.instance_material_buffer = None
 
     def allocate(self, num_instances):
         gl = RendererGL.gl
@@ -784,13 +832,8 @@ class MeshInstancerGL:
 
         gl.glBindVertexArray(0)
 
-        # Create CUDA buffer for instance transforms
-        if ENABLE_CUDA_INTEROP and self.device.is_cuda:
-            self._instance_transform_cuda_buffer = wp.RegisteredGLBuffer(
-                int(self.instance_transform_buffer.value), self.device, flags=wp.RegisteredGLBuffer.WRITE_DISCARD
-            )
-        else:
-            self._instance_transform_cuda_buffer = None
+        if self._enable_cuda_interop and self.device.is_cuda and self.instance_transform_buffer_size > 0:
+            self._instance_transform_cuda_buffer = _register_cuda_gl_buffer(self.instance_transform_buffer, self.device)
 
     def _bind_mesh_buffers(self):
         gl = RendererGL.gl
@@ -897,10 +940,12 @@ class MeshInstancerGL:
     def _update_vbo(self, xforms, colors, materials):
         gl = RendererGL.gl
 
-        if ENABLE_CUDA_INTEROP and self.device.is_cuda:
+        if self._instance_transform_cuda_buffer is not None:
             vbo_transforms = self._instance_transform_cuda_buffer.map(dtype=wp.mat44, shape=(self.num_instances,))
-            wp.copy(vbo_transforms, xforms)
-            self._instance_transform_cuda_buffer.unmap()
+            try:
+                wp.copy(vbo_transforms, xforms)
+            finally:
+                self._instance_transform_cuda_buffer.unmap()
         else:
             host_transforms = xforms.numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)

@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import warp as wp
 
-from newton._src.viewer.gl.opengl import MeshGL
+from newton._src.viewer.gl.opengl import MeshGL, MeshInstancerGL, RendererGL, RenderVertex
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_null import ViewerNull
@@ -191,6 +191,13 @@ class TestViewerGLNumFramesValidation(unittest.TestCase):
         with self.assertRaises(ValueError):
             ViewerGL(num_frames=-1)
 
+    def test_rejects_invalid_cuda_interop_mode(self):
+        for value in (True, 1.5):
+            with self.subTest(value=value), self.assertRaises(TypeError):
+                ViewerGL(enable_cuda_interop=value)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            ViewerGL(enable_cuda_interop="sometimes")  # type: ignore[arg-type]
+
 
 class TestViewerGLParticles(unittest.TestCase):
     def test_hidden_particles_skip_instance_updates(self):
@@ -205,7 +212,110 @@ class TestViewerGLParticles(unittest.TestCase):
         viewer.log_points.assert_called_once_with("/model/particles", points=None, hidden=True)
 
 
+class TestViewerGLCleanup(unittest.TestCase):
+    def test_close_destroys_geometry_before_renderer(self):
+        events = []
+        viewer = ViewerGL.__new__(ViewerGL)
+        viewer._clear_array_textures = Mock(side_effect=lambda: events.append("textures"))
+        viewer._invalidate_pbo = Mock(side_effect=lambda: events.append("pbo"))
+        viewer._image_logger = SimpleNamespace(clear=lambda: events.append("images"))
+        viewer._destroy_render_geometry = Mock(side_effect=lambda: events.append("geometry"))
+        viewer.renderer = SimpleNamespace(close=lambda: events.append("renderer"))
+
+        viewer.close()
+
+        self.assertEqual(events, ["textures", "pbo", "images", "geometry", "renderer"])
+
+    def test_destroy_render_geometry_releases_all_owned_resources(self):
+        viewer = ViewerGL.__new__(ViewerGL)
+        instancer = MeshInstancerGL.__new__(MeshInstancerGL)
+        instancer.destroy = Mock()
+        mesh = Mock()
+        line = Mock()
+        arrow = Mock()
+        wireframe = Mock()
+        wireframe_owner = Mock()
+        point_mesh = Mock()
+        gaussian_mesh = Mock()
+        viewer.objects = {"instancer": instancer, "mesh": mesh}
+        viewer.lines = {"line": line}
+        viewer.arrows = {"arrow": arrow}
+        viewer.wireframe_shapes = {"wireframe": wireframe}
+        viewer._wireframe_vbo_owners = {1: wireframe_owner}
+        viewer._point_mesh = point_mesh
+        viewer._gaussian_mesh = gaussian_mesh
+
+        viewer._destroy_render_geometry()
+
+        for resource in (instancer, mesh, line, arrow, wireframe, wireframe_owner, point_mesh, gaussian_mesh):
+            resource.destroy.assert_called_once_with()
+        self.assertFalse(viewer.objects)
+        self.assertFalse(viewer.lines)
+        self.assertFalse(viewer.arrows)
+        self.assertFalse(viewer.wireframe_shapes)
+        self.assertFalse(viewer._wireframe_vbo_owners)
+        self.assertIsNone(viewer._point_mesh)
+        self.assertIsNone(viewer._gaussian_mesh)
+
+    def test_instancer_releases_registration_before_gl_buffers(self):
+        events = []
+
+        class Registration:
+            def __del__(self):
+                events.append("registration")
+
+        instancer = MeshInstancerGL.__new__(MeshInstancerGL)
+        instancer._instance_transform_cuda_buffer = Registration()
+        instancer.vao = 1
+        instancer.instance_transform_buffer = 2
+        instancer.instance_color_buffer = 3
+        instancer.instance_material_buffer = 4
+        gl = Mock()
+        gl.glDeleteVertexArrays.side_effect = lambda *_args: events.append("vao")
+        gl.glDeleteBuffers.side_effect = lambda *_args: events.append("buffer")
+
+        with patch.object(RendererGL, "gl", gl):
+            instancer.destroy()
+            instancer.destroy()
+
+        self.assertEqual(events, ["registration", "vao", "buffer", "buffer", "buffer"])
+        self.assertIsNone(instancer.vao)
+        self.assertIsNone(instancer.instance_transform_buffer)
+        self.assertIsNone(instancer.instance_color_buffer)
+        self.assertIsNone(instancer.instance_material_buffer)
+
+
 class TestViewerGLDynamicMeshes(unittest.TestCase):
+    def test_dynamic_mesh_uploads_indices_through_cuda_interop(self):
+        mesh = MeshGL.__new__(MeshGL)
+        mesh.device = wp.get_device("cpu")
+        mesh.max_points = 3
+        mesh.max_indices = 3
+        mesh.vertex_byte_size = 32
+        mesh.index_byte_size = 4
+        mesh.dynamic = True
+        mesh.indices = None
+        mesh.normals = None
+        mesh.vertices = wp.zeros(3, dtype=RenderVertex)
+        mesh.index_cuda_buffer = Mock()
+        mesh.index_cuda_buffer.map.return_value = wp.empty(3, dtype=wp.uint32)
+        mesh.vertex_cuda_buffer = Mock()
+        mesh.vertex_cuda_buffer.map.return_value = wp.empty(3, dtype=RenderVertex)
+        mesh.update_texture = Mock()
+
+        points = wp.zeros(3, dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        normals = wp.zeros(3, dtype=wp.vec3)
+        gl = Mock(GL_DYNAMIC_DRAW=1, GL_STATIC_DRAW=2, GL_ELEMENT_ARRAY_BUFFER=3, GL_ARRAY_BUFFER=4)
+
+        with patch.object(RendererGL, "gl", gl), patch("newton._src.viewer.gl.opengl.wp.launch"):
+            mesh.update(points, indices, normals, None)
+            mesh.index_cuda_buffer.map.assert_called_once_with(dtype=wp.uint32, shape=(3,))
+            mesh.index_cuda_buffer.unmap.assert_called_once_with()
+            mesh.vertex_cuda_buffer.map.assert_called_once_with(dtype=RenderVertex, shape=(3,))
+            mesh.vertex_cuda_buffer.unmap.assert_called_once_with()
+            gl.glBufferSubData.assert_not_called()
+
     def test_dynamic_normal_scratch_supports_shrink_then_growth(self):
         mesh = MeshGL.__new__(MeshGL)
         mesh.device = wp.get_device("cpu")
@@ -236,7 +346,17 @@ class TestViewerGLDynamicMeshes(unittest.TestCase):
 
     def test_dynamic_mesh_reuses_capacity_and_rebinds_instancers_on_growth(self):
         class FakeMesh:
-            def __init__(self, num_points, num_indices, device, hidden=False, backface_culling=True, dynamic=False):
+            def __init__(
+                self,
+                num_points,
+                num_indices,
+                device,
+                hidden=False,
+                backface_culling=True,
+                dynamic=False,
+                *,
+                enable_cuda_interop=False,
+            ):
                 self.max_points = num_points
                 self.max_indices = num_indices
                 self.num_points = num_points
@@ -245,6 +365,7 @@ class TestViewerGLDynamicMeshes(unittest.TestCase):
                 self.hidden = hidden
                 self.backface_culling = backface_culling
                 self.dynamic = dynamic
+                self.enable_cuda_interop = enable_cuda_interop
                 self.color = (0.7, 0.5, 0.3)
                 self.material = (0.5, 0.0, 0.0, 0.0)
                 self.destroyed = False
@@ -268,6 +389,7 @@ class TestViewerGLDynamicMeshes(unittest.TestCase):
         viewer = ViewerGL.__new__(ViewerGL)
         viewer.objects = {}
         viewer.device = wp.get_device("cpu")
+        viewer._enable_cuda_interop = "dynamic"
         viewer._qualify = lambda name: name
         points = wp.zeros(3, dtype=wp.vec3)
         indices = wp.zeros(3, dtype=wp.int32)
@@ -278,6 +400,12 @@ class TestViewerGLDynamicMeshes(unittest.TestCase):
         ):
             viewer.log_mesh("mesh", points, indices, dynamic=True)
             original = viewer.objects["mesh"]
+            self.assertTrue(original.enable_cuda_interop)
+            viewer.log_mesh("static", points, indices)
+            self.assertFalse(viewer.objects["static"].enable_cuda_interop)
+            viewer._enable_cuda_interop = "all"
+            viewer.log_mesh("all", points, indices)
+            self.assertTrue(viewer.objects["all"].enable_cuda_interop)
             instancer = FakeInstancer(original)
             viewer.objects["instances"] = instancer
 
