@@ -7,6 +7,7 @@ from ...core.types import override
 from ...sim import Contacts, Control, Model, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
+from ..joint_mimic import has_supported_joint_mimics, project_joint_mimics
 from ..solver import SolverBase
 from . import kernels_body, kernels_contact, kernels_muscle, kernels_particle
 from .kernels_body import (
@@ -51,7 +52,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
-        - Equality and mimic constraints are not supported.
+        - Joint-owned mimic relationships are supported for PRISMATIC, REVOLUTE, and D6 joints.
+          Equality constraints and the deprecated sparse mimic constraints are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
 
@@ -68,6 +70,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             state_in, state_out = state_out, state_in
 
     """
+
+    _MIMIC_ITERATIONS = 16
 
     @deprecate_nonkeyword_arguments
     def __init__(
@@ -115,6 +119,11 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
         self.enable_tri_contact = enable_tri_contact
+
+        self._has_joint_mimics = has_supported_joint_mimics(model, "SolverSemiImplicit")
+        self._mimic_body_deltas = None
+        if self._has_joint_mimics:
+            self._mimic_body_deltas = wp.zeros_like(model.body_qd)
 
         if model.particle_count > 1 and model.particle_grid is not None:
             with wp.ScopedDevice(model.device):
@@ -215,3 +224,15 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 state_in.body_f = body_f_work
                 self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
                 state_in.body_f = body_f_prev
+
+            if self._has_joint_mimics:
+                project_joint_mimics(
+                    model,
+                    state_out.body_q,
+                    state_out.body_qd,
+                    model.body_inv_mass,
+                    model.body_inv_inertia,
+                    self._mimic_body_deltas,
+                    dt,
+                    self._MIMIC_ITERATIONS,
+                )

@@ -1,1 +1,1 @@
-Add joint-owned mimic metadata for joints with matching dimensions, `ModelBuilder.set_joint_mimic()`, componentwise follower-coordinate updates through `eval_mimic()`, XPBD enforcement, and MuJoCo lowering for revolute, prismatic, and D6 mimic joints.
+Add joint-owned mimic metadata for joints with matching dimensions, `ModelBuilder.set_joint_mimic()`, componentwise follower-coordinate updates through `eval_mimic()`, solver support in Featherstone, SemiImplicit, XPBD, MuJoCo, and VBD, and a lead-screw example.

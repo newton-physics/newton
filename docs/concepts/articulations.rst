@@ -157,10 +157,13 @@ case would create a chain.
 
 Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
 maximal-coordinate body poses should reflect the mimic relationship.
-:class:`newton.solvers.SolverXPBD` enforces relationships between revolute,
-prismatic, and D6 joints during its maximal-coordinate solve. The correction
-acts on both joints, so forces applied to the follower also affect the
-reference joint through the mimic relationship.
+:class:`newton.solvers.SolverSemiImplicit`, :class:`newton.solvers.SolverXPBD`,
+and :class:`newton.solvers.SolverVBD` enforce relationships between revolute,
+prismatic, and D6 joints in maximal coordinates. Their correction acts on both
+joints, so forces applied to the follower also affect the reference joint.
+:class:`newton.solvers.SolverFeatherstone` applies the same relationships in
+generalized coordinates. It removes follower degrees of freedom from the
+dynamics solve and transfers their forces and inertia to the reference joint.
 :class:`newton.solvers.SolverMuJoCo` applies the joint-owned mimic metadata
 directly through its joint equality constraints.
 

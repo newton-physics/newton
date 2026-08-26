@@ -381,6 +381,15 @@ add_basic_example_test(
     test_suffix="vbd",
 )
 
+for mimic_solver in ("featherstone", "semi_implicit", "xpbd", "mujoco", "vbd"):
+    add_basic_example_test(
+        name="basic.example_basic_mimic_joint",
+        devices=test_devices,
+        use_viewer=True,
+        test_options={"num-frames": 120, "solver": mimic_solver},
+        test_suffix=mimic_solver,
+    )
+
 add_basic_example_test(
     name="basic.example_basic_shapes",
     devices=test_devices,

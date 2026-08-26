@@ -1,14 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
-
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, JointType, Model, ModelFlags, State
+from ...sim import Contacts, Control, Model, ModelFlags, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
+from ..joint_mimic import has_supported_joint_mimics
 from ..solver import SolverBase
 from . import kernels
 from .kernels import (
@@ -174,24 +173,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
         self.compute_body_velocity_from_position_delta = False
 
-        joint_mimic_joint = model.joint_mimic_joint.numpy()
-        joint_type = model.joint_type.numpy()
-        supported_mimic_types = {int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)}
-        mimic_followers = [follower for follower, reference in enumerate(joint_mimic_joint) if reference >= 0]
-        supported_mimic_followers = [
-            follower
-            for follower in mimic_followers
-            if int(joint_type[follower]) in supported_mimic_types
-            and int(joint_type[joint_mimic_joint[follower]]) in supported_mimic_types
-        ]
-        self._has_joint_mimics = bool(supported_mimic_followers)
-        unsupported_mimic_followers = sorted(set(mimic_followers) - set(supported_mimic_followers))
-        if unsupported_mimic_followers:
-            warnings.warn(
-                "SolverXPBD ignores joint-owned mimic relationships unless both joints are PRISMATIC, "
-                f"REVOLUTE, or D6; unsupported follower joint indices: {unsupported_mimic_followers}.",
-                stacklevel=2,
-            )
+        self._has_joint_mimics = has_supported_joint_mimics(model, "SolverXPBD")
 
         self._init_kinematic_state()
 
