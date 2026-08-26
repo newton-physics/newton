@@ -164,8 +164,7 @@ def select_joints(
         selected_arts = sorted(dict.fromkeys(matched_arts))
 
     robot_joints_by_art: dict[int, list[int]] = {art: [] for art in selected_arts}
-    joints_is_default = joints is None
-    if joints_is_default:
+    if joints is None:
         for art in selected_arts:
             robot_joints_by_art[art] = np.arange(art_start[art], art_end[art]).tolist()
     else:
@@ -193,7 +192,7 @@ def select_joints(
         # coordinate count without a separate end array.
         coord_count = q_start[robot_joints + 1] - q_start[robot_joints]
         dof_count = qd_start[robot_joints + 1] - qd_start[robot_joints]
-        if joints_is_default:
+        if joints is None:
             # Only the default is narrowed to what the controller can actually
             # use; a joint named explicitly is left in even if not 1x1, so the
             # controller raises instead of the joint silently disappearing.
