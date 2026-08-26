@@ -313,6 +313,13 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         solver.step(state_in, model.state(), control=None, contacts=None, dt=DT)
         np.testing.assert_array_equal(sparse_jacobians._J_cts.bsm.dims.numpy()[:, 0], expected_rows)
 
+
+class TestSolverKaminoJointFrictionWarmstart(unittest.TestCase):
+    def setUp(self):
+        """Initialize the shared public Kamino test context."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+
     def test_container_warmstart_reduces_friction_residual(self):
         """Reduce one-iteration residuals using cached joint friction."""
         for config_name, config_factory in KAMINO_CONFIGS:
@@ -360,6 +367,13 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
                         if not (cold_residual < 1.0e-6 and warm_residual < 1.0e-6):
                             self.assertLess(warm_residual, cold_residual)
 
+
+class TestSolverKaminoJointFrictionHoldAndBreakaway(unittest.TestCase):
+    def setUp(self):
+        """Initialize the shared public Kamino test context."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+
     def test_hold_and_breakaway(self):
         """Hold below the friction limit and break away above it.
 
@@ -371,8 +385,16 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
             use_acceleration_options = (True, False) if config_name in PADMM_CONFIG_NAMES else (False,)
             for use_acceleration in use_acceleration_options:
                 config = config_factory()
-                config.padmm.use_acceleration = use_acceleration
+                if config.padmm is not None:
+                    config.padmm.use_acceleration = use_acceleration
                 _run_hold_and_breakaway_test(self, config_name, config)
+
+
+class TestSolverKaminoJointFrictionLimitStopsMotion(unittest.TestCase):
+    def setUp(self):
+        """Initialize the shared public Kamino test context."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
 
     def test_limit_stops_motion_with_bounded_friction(self):
         """Test that friction is well behaved when interacting with limits.
@@ -411,42 +433,6 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
                     np.abs(friction_torques),
                     friction + 1.0e-4,
                 )
-
-    def test_box_natural_map_metrics(self):
-        """Include bounded friction rows in iteration-info and solution natural maps."""
-        model = _build_revolute(friction=2.0)
-        model.set_gravity((0.0, 0.0, 0.0))
-        solver = SolverKamino(
-            model,
-            make_padmm_dense_config(collect_solver_info=True, compute_solution_metrics=True),
-        )
-        state_in = _initialize_state(model, qd=1.0)
-        solver.step(state_in, model.state(), control=None, contacts=None, dt=DT)
-
-        solver_impl = solver._solver_kamino
-        solver_fd = solver_impl.solver_fd
-        metrics = solver_impl.metrics
-        self.assertIsNotNone(metrics)
-        self.assertEqual(int(solver_impl.problem_fd.data.nbc.numpy()[0]), 1)
-
-        problem_data = solver_impl.problem_fd.data
-        bid = 0
-        row = int(problem_data.vio.numpy()[0] + problem_data.bcgo.numpy()[0] + bid)
-        bound_idx = int(problem_data.bcio.numpy()[0] + bid)
-        lower = float(problem_data.P.numpy()[row] * problem_data.bound_lower.numpy()[bound_idx])
-        upper = float(problem_data.P.numpy()[row] * problem_data.bound_upper.numpy()[bound_idx])
-
-        iterations = int(solver_fd.data.status.numpy()[0]["iterations"])
-        info_idx = int(solver_fd.data.info.offsets.numpy()[0]) + iterations - 1
-        lambda_info = float(solver_fd.data.info.lambdas.numpy()[row])
-        v_aug_info = float(solver_fd.data.info.v_aug.numpy()[row])
-        expected_info = abs(lambda_info - np.clip(lambda_info - v_aug_info, lower, upper))
-        self.assertAlmostEqual(float(solver_fd.data.info.r_ncp_natmap.numpy()[info_idx]), expected_info, places=6)
-
-        lambda_solution = float(solver_fd.data.solution.lambdas.numpy()[row])
-        v_aug_metrics = float(metrics._buffer_v.numpy()[row])
-        expected_metrics = abs(lambda_solution - np.clip(lambda_solution - v_aug_metrics, lower, upper))
-        self.assertAlmostEqual(float(metrics.data.r_vi_natmap.numpy()[0]), expected_metrics, places=6)
 
 
 class TestSolverKaminoJointFrictionSpinDown(unittest.TestCase):

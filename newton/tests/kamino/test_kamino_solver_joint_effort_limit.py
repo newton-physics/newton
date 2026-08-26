@@ -119,6 +119,13 @@ class TestSolverKaminoJointEffortLimit(unittest.TestCase):
                             delta=3.0e-4,
                         )
 
+
+class TestSolverKaminoJointEffortLimitImplicitPd(unittest.TestCase):
+    def setUp(self):
+        """Initialize the shared public Kamino test context."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+
     def test_implicit_pd_effort_saturates_and_is_reported(self):
         """Apply and report saturated implicit-PD effort with the commanded sign."""
         effort_limit = 1.0
@@ -163,6 +170,13 @@ class TestSolverKaminoJointEffortLimit(unittest.TestCase):
                                 expected_velocity,
                                 delta=3.0e-4,
                             )
+
+
+class TestSolverKaminoJointEffortLimitWarmstart(unittest.TestCase):
+    def setUp(self):
+        """Initialize the shared public Kamino test context."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
 
     def test_container_warmstart_reduces_effort_residual(self):
         """Reduce one-iteration residuals using cached implicit-PD effort."""
