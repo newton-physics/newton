@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import ctypes
 import functools
+import gc
 import inspect
 import math
 import os
@@ -3105,7 +3106,9 @@ class ModelBuilder:
         Dense numeric attributes on that copy are stored directly as contiguous arrays
         and the copy is discarded after finalization. This builder is not modified. Use
         the separate calls when the replicated builder must be modified before
-        finalization.
+        finalization. When cyclic garbage collection is enabled, it is deferred until
+        the single-use builder has been discarded, then run once before this method
+        returns. An already-disabled collector remains disabled.
 
         Args:
             builder: The builder to replicate.
@@ -3126,20 +3129,31 @@ class ModelBuilder:
         Returns:
             The finalized replicated model.
         """
-        scratch = self._fork_for_finalize()
-        scratch._replicate(
-            builder, world_count, spacing, xforms=xforms, label_prefixes=label_prefixes, array_backed=True
-        )
-        return scratch._finalize(
-            device,
-            requires_grad=requires_grad,
-            skip_all_validations=skip_all_validations,
-            skip_validation_worlds=skip_validation_worlds,
-            skip_validation_joints=skip_validation_joints,
-            skip_validation_shapes=skip_validation_shapes,
-            skip_validation_structure=skip_validation_structure,
-            skip_validation_joint_ordering=skip_validation_joint_ordering,
-        )
+        collect_garbage = gc.isenabled()
+        if collect_garbage:
+            gc.disable()
+        scratch = None
+        try:
+            scratch = self._fork_for_finalize()
+            scratch._replicate(
+                builder, world_count, spacing, xforms=xforms, label_prefixes=label_prefixes, array_backed=True
+            )
+            model = scratch._finalize(
+                device,
+                requires_grad=requires_grad,
+                skip_all_validations=skip_all_validations,
+                skip_validation_worlds=skip_validation_worlds,
+                skip_validation_joints=skip_validation_joints,
+                skip_validation_shapes=skip_validation_shapes,
+                skip_validation_structure=skip_validation_structure,
+                skip_validation_joint_ordering=skip_validation_joint_ordering,
+            )
+        finally:
+            del scratch
+            if collect_garbage:
+                gc.enable()
+                gc.collect()
+        return model
 
     def _fork_for_finalize(self) -> ModelBuilder:
         """Create a single-use builder with independent mutable containers."""

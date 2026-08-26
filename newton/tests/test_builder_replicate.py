@@ -260,6 +260,24 @@ class TestModelBuilderReplicate(unittest.TestCase):
             with self.subTest(attribute=name):
                 np.testing.assert_array_equal(getattr(expected, name).numpy(), getattr(actual, name).numpy())
 
+    def test_replicate_and_finalize_preserves_gc_state(self):
+        """Preserve disabled GC and otherwise collect once after finalization."""
+        source = self._make_source()
+
+        with mock.patch.object(gc, "collect", wraps=gc.collect) as collect:
+            ModelBuilder().replicate_and_finalize(source, 2, device="cpu")
+        collect.assert_called_once_with()
+        self.assertTrue(gc.isenabled())
+
+        gc.disable()
+        try:
+            with mock.patch.object(gc, "collect", wraps=gc.collect) as collect:
+                ModelBuilder().replicate_and_finalize(source, 2, device="cpu")
+            collect.assert_not_called()
+            self.assertFalse(gc.isenabled())
+        finally:
+            gc.enable()
+
     def test_replicate_rejects_mismatched_explicit_transforms(self):
         with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):
             ModelBuilder().replicate(self._make_source(), 2, xforms=[wp.transform_identity()])
