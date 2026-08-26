@@ -133,8 +133,10 @@ def _read_deformable_element_array(
         legacy_implicit_type = True
         warnings.warn(
             f"{path}: physics:{name} without physics:{name}:elementType follows an earlier AOUSD "
-            f"proposal revision and is deprecated; author physics:{name}:elementType = "
-            f"'{legacy_element_type}'.",
+            f"proposal revision and is deprecated; it retains Newton's direct point interpretation. "
+            f"Ensure every value is strictly positive, then author physics:{name}:elementType = "
+            f"'{legacy_element_type}' to use the proposal's volume-weighted conversion; for valid "
+            "values, total mass is preserved, but its distribution may change.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -159,8 +161,13 @@ def _read_deformable_element_array(
     allow_zero = legacy_implicit_type
     if any(not math.isfinite(value) or value < 0.0 or (value == 0.0 and not allow_zero) for value in values):
         expected = ">= 0" if allow_zero else "> 0"
+        consequence = (
+            "ignoring the entire array and continuing with lower-precedence mass sources"
+            if name == "masses"
+            else "ignoring the entire array"
+        )
         warnings.warn(
-            f"{path}: physics:{name} contains invalid values (expected finite values {expected}); ignoring the array.",
+            f"{path}: physics:{name} contains invalid values (expected finite values {expected}); {consequence}.",
             stacklevel=2,
         )
         return None
@@ -498,14 +505,13 @@ class _CurveDeformableRecord:
 
     Positions are already in world space (import transform applied). ``material`` holds
     the authored curve-deformable material values, or ``None`` when no curve material API
-    applies (see :func:`.usd.utils._get_curve_deformable_material`); ``radius`` and
-    ``density`` are the resolved per-curve values.
+    applies (see :func:`.usd.utils._get_curve_deformable_material`); ``segment_radii`` and
+    ``point_radii`` preserve the resolved local geometry, while ``density`` is per curve.
     """
 
     prim: Usd.Prim
     positions: list[wp.vec3]
     closed: bool
-    radius: float
     segment_radii: list[float]
     """Resolved collision radius for each curve segment in stage length units."""
 
@@ -729,6 +735,7 @@ def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
 def _set_cable_body_radius(builder: ModelBuilder, body: int, radius: float) -> None:
     """Set one cable segment's collision radius and rebuild its capsule inertia."""
     from ..geometry.inertia import compute_inertia_capsule  # noqa: PLC0415
+    from ..geometry.utils import compute_shape_radius  # noqa: PLC0415
 
     shapes = builder.body_shapes[body]
     if not shapes:
@@ -736,6 +743,9 @@ def _set_cable_body_radius(builder: ModelBuilder, body: int, radius: float) -> N
     shape = shapes[0]
     half_height = float(builder.shape_scale[shape][1])
     builder.shape_scale[shape] = wp.vec3(radius, half_height, 0.0)
+    builder.shape_collision_radius[shape] = compute_shape_radius(
+        builder.shape_type[shape], builder.shape_scale[shape], builder.shape_source[shape]
+    )
     mass = float(builder.body_mass[body])
     unit_mass, _, unit_inertia = compute_inertia_capsule(1.0, radius, half_height)
     if mass > 0.0 and unit_mass > 0.0:

@@ -962,7 +962,10 @@ class TestUSDDeformableCloth(unittest.TestCase):
             ("nan", [1.0, float("nan"), 3.0, 4.0]),
         ):
             with self.subTest(kind=label):
-                with self.assertWarnsRegex(UserWarning, "invalid values"):
+                with self.assertWarnsRegex(
+                    UserWarning,
+                    r"invalid values.*ignoring the entire array.*lower-precedence mass sources",
+                ):
                     builder = import_cloth(bad)
                 masses = [builder.particle_mass[i] for i in range(4)]
                 # Fell back to density-derived masses: all finite and strictly positive.

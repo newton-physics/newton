@@ -190,7 +190,9 @@ The first release deliberately supports a narrow, predictable set of inputs:
   Removed material ``physics:surfaceThickness`` / ``physics:curvesThickness`` attributes remain
   accepted during a deprecation window and supply only a thickness fallback. Move their values to
   simulation-geometry ``physics:thicknesses`` and author the corresponding
-  ``physics:thicknesses:elementType``; an authored geometry array takes precedence.
+  ``physics:thicknesses:elementType``; an authored geometry array takes precedence. In particular,
+  migrate scalar cable ``physics:curvesThickness = d`` to ``physics:thicknesses = [d]`` with
+  ``physics:thicknesses:elementType = "constant"``.
 
   The earlier unprefixed material stiffness attributes have a separate compatibility path. They
   retain their former modulus interpretation during the deprecation window; convert them to the
@@ -199,10 +201,13 @@ The first release deliberately supports a narrow, predictable set of inputs:
 * Typed simulation-geometry ``physics:masses`` arrays. Every non-empty array must author
   ``physics:masses:elementType``: volume supports ``constant``, ``tetrahedron``, and ``point``;
   surface supports ``constant``, ``face``, and ``point``; curves support ``constant``, ``curve``,
-  ``segment``, and ``point``. Constant and curve totals are distributed by element volume,
-  point values are converted through the proposal's volume-weighted relation, and simplex
-  element masses are lumped equally to Newton particles. Untyped arrays retain Newton's former
-  direct point interpretation during the deprecation window and warn.
+  ``segment``, and ``point``. Every value must be finite and strictly positive; one invalid value
+  rejects the entire typed array and continues with the next source in the mass-precedence order.
+  Constant and curve totals are distributed by element volume, point values are converted through
+  the proposal's volume-weighted relation, and simplex element masses are lumped equally to Newton
+  particles. Point conversion preserves total mass but can redistribute it relative to Newton's
+  former direct point interpretation, which untyped arrays retain during the deprecation window
+  with a warning.
 * Simulation points, topology, and normals are read at the USD default time. Newton builds the
   deformable at that pose. Missing cloth bend arrays use
   ``physics:restBendAnglesDefault = "flat"``; ``"restShape"`` retains the imported dihedral.
@@ -289,12 +294,13 @@ Known gaps of the experimental importer, tracked as follow-ups:
 **Mass distribution** follows the proposal's precedence order. Typed ``physics:masses`` on the
 simulation geometry win. Next comes the ``PhysicsDeformableBodyAPI`` ``mass`` total, then body
 density, family-material density, and base ``UsdPhysicsMaterialAPI`` density. If none is authored,
-proposal-marked deformables use the final 1000 kg/m³ fallback; a bare TetMesh keeps
-``ModelBuilder.default_tet_density`` for compatibility. Element volumes combine default-time
-segment lengths, triangle areas, or tet volumes with geometry thickness, then element masses are
-lowered to Newton's particles or rigid cable segments. The proposal evaluates these volumes on the
-rest shape; Newton uses the simulation geometry until full rest-state import is implemented (see
-the limitation above), so a saved deformed default pose shifts mass with it.
+proposal-marked deformables use the final 1000 kg/m³ fallback rather than
+``ModelBuilder.default_shape_cfg.density`` or ``ModelBuilder.default_tet_density``; only a bare
+TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Element volumes combine
+default-time segment lengths, triangle areas, or tet volumes with geometry thickness, then element
+masses are lowered to Newton's particles or rigid cable segments. The proposal evaluates these
+volumes on the rest shape; Newton uses the simulation geometry until full rest-state import is
+implemented (see the limitation above), so a saved deformed default pose shifts mass with it.
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:

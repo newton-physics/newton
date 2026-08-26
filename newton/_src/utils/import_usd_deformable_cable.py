@@ -225,8 +225,8 @@ def _warn_legacy_curve_material(path: str, material: dict[str, float] | None) ->
     if material is not None and "curvesThickness" in material:
         warnings.warn(
             f"{path}: physics:curvesThickness on the curve material was removed from the AOUSD "
-            "proposal and is deprecated; move the diameter to physics:thicknesses on the "
-            "simulation geometry and author physics:thicknesses:elementType.",
+            "proposal and is deprecated; move diameter d to physics:thicknesses = [d] on the "
+            "simulation geometry and set physics:thicknesses:elementType = 'constant'.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -465,7 +465,6 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             positions=positions,
             closed=closed,
             material=mat,
-            radius=segment_radii[0],
             segment_radii=segment_radii,
             point_radii=[0.5 * thickness for thickness in point_thicknesses],
             density=density,
@@ -519,11 +518,12 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 stacklevel=2,
             )
             continue
-        # A tenth of the thinner cable's radius: welding then moves geometry by well under the
-        # junction bodies' own overlap, so the weld is equivalent to the authored constraint.
-        coincidence_tol = 0.1 * min(curve_recs[src0].radius, curve_recs[src1].radius)
+        # A tenth of the thinner attached point's radius: welding then moves geometry by well
+        # under the junction bodies' own overlap, so the weld is equivalent to the authored
+        # constraint even when thickness varies along either cable.
         if any(
-            float(wp.length(curve_recs[src0].positions[a] - curve_recs[src1].positions[b])) > coincidence_tol
+            float(wp.length(curve_recs[src0].positions[a] - curve_recs[src1].positions[b]))
+            > 0.1 * min(curve_recs[src0].point_radii[a], curve_recs[src1].point_radii[b])
             for a, b in zip(idx0, idx1, strict=True)
         ):
             warnings.warn(
@@ -677,7 +677,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                     "Density remains local to each curve.",
                     stacklevel=2,
                 )
-        radius = rep.radius
+        radius = rep.segment_radii[0]
         mat = rep.material
         # One rod graph has one shape config, so collision is resolved per component:
         # any collision-enabled member curve makes the whole graph collide.

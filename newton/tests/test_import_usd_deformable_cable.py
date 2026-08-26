@@ -84,6 +84,46 @@ class TestUSDDeformableCable(unittest.TestCase):
                 if name == "zero_stiffness":
                     self.assertEqual(attrs["stiffness"], 0.0)
 
+    def test_weld_tolerance_uses_attachment_point_radii(self):
+        """Use the attached points' radii, independent of the first segment, to decide welding."""
+        gap = 5.0e-4
+        points_a = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        points_b = [(0.3, gap, 1.0), (0.4, gap, 1.0), (0.5, gap, 1.0), (0.6, gap, 1.0)]
+        cases = (
+            ("thin_first_thick_attachment", [0.002, 0.002, 0.02, 0.02], True),
+            ("thick_first_thin_attachment", [0.02, 0.02, 0.002, 0.002], False),
+        )
+        for name, thicknesses_a, should_weld in cases:
+            with self.subTest(case=name):
+                stage = _deformable_stage()
+                cable_a = _add_cable_curve(stage, "/World/CableA", points_a, thickness=None)
+                cable_b = _add_cable_curve(stage, "/World/CableB", points_b, thickness=None)
+                _author_deformable_element_array(cable_a.GetPrim(), "thicknesses", thicknesses_a, "point")
+                _author_deformable_element_array(cable_b.GetPrim(), "thicknesses", [0.02] * 4, "point")
+                _add_physics_attachment(
+                    stage,
+                    "/World/Junction",
+                    src0="/World/CableA",
+                    src1="/World/CableB",
+                    type0="point",
+                    type1="point",
+                    indices0=[3],
+                    indices1=[0],
+                )
+
+                builder = newton.ModelBuilder()
+                if should_weld:
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                else:
+                    with self.assertWarnsRegex(UserWarning, "not coincident"):
+                        result = builder.add_usd(stage, return_deformable_results=True)
+
+                self.assertEqual(builder.articulation_count, 1 if should_weld else 2)
+                self.assertEqual(
+                    "graph_component" in result["path_cable_attrs"]["/World/CableA"],
+                    should_weld,
+                )
+
     def test_weld_collapsing_a_segment_rejects_weld(self):
         """Welding that merges both endpoints of an authored segment into one graph node
         rejects the whole weld instead of silently deleting the segment (which would import
@@ -663,7 +703,10 @@ class TestUSDDeformableCable(unittest.TestCase):
         curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 2.0, 3.0, 4.0])
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(DeprecationWarning, "masses:elementType"):
+        with self.assertWarnsRegex(
+            DeprecationWarning,
+            r"direct point interpretation.*strictly positive.*volume-weighted conversion.*total mass.*distribution",
+        ):
             builder.add_usd(stage)
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         np.testing.assert_allclose([builder.body_mass[body] for body in range(b0, b1)], [2.0, 2.5, 5.5])
@@ -814,7 +857,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         _bind_deformable_material(stage, curves.GetPrim(), "/World/Mat", curvesThickness=0.1)
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(DeprecationWarning, "curvesThickness.*thicknesses"):
+        with self.assertWarnsRegex(DeprecationWarning, r"curvesThickness.*thicknesses = \[d\].*constant"):
             builder.add_usd(stage)
 
         for body in range(builder.body_count):
@@ -845,6 +888,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         for body, radius in zip(range(b0, b1), radii, strict=True):
             shape = builder.body_shapes[body][0]
             self.assertAlmostEqual(float(builder.shape_scale[shape][0]), radius, places=7)
+            self.assertAlmostEqual(builder.shape_collision_radius[shape], 0.5 + radius, places=7)
             self.assertAlmostEqual(builder.body_mass[body], 1000.0 * math.pi * radius**2, places=5)
 
         j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
@@ -852,6 +896,12 @@ class TestUSDDeformableCable(unittest.TestCase):
         section_stiffnesses = [1.0e6 * math.pi * radius**2 for radius in radii]
         expected_stretch = 1.0 / (0.5 / section_stiffnesses[0] + 0.5 / section_stiffnesses[1])
         self.assertAlmostEqual(builder.joint_target_ke[dof], expected_stretch, delta=expected_stretch * 1.0e-5)
+
+        model = builder.finalize(device="cpu")
+        model_collision_radii = model.shape_collision_radius.numpy()
+        for body, radius in zip(range(b0, b1), radii, strict=True):
+            shape = builder.body_shapes[body][0]
+            self.assertAlmostEqual(float(model_collision_radii[shape]), 0.5 + radius, places=7)
 
     def test_cable_point_thickness_samples_segments_and_vertex(self):
         """Average point thickness on segments and sample the shared point for bend."""
