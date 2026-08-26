@@ -549,6 +549,14 @@ def _null_space_projector_kernel(
 # axis" for a peg-in-hole task should track the tool's current orientation,
 # not stay fixed in world), so the selection weights are rotated into world
 # coordinates every step from a fixed tool-local specification.
+#
+# The motion, force, and (if used) null-space joint torques are each mapped
+# to joint space by their own :func:`_jacobian_transpose_force_kernel` call
+# and then summed there -- not summed as task-space forces first. This
+# matches how the reference controller (Isaac Lab's OperationalSpaceController)
+# accumulates every contribution as ``joint_efforts +=``, and lets the
+# summation reuse ``_add_term_kernel`` from ``joint_impedance/_common.py``
+# rather than needing a task-space-vector accumulator kernel here.
 # ---------------------------------------------------------------------------
 
 
@@ -622,21 +630,3 @@ def _closed_loop_wrench_command_kernel(
         wrench_error = desired[axis] - measured[axis]
         result[axis] = desired[axis] + proportional_gain[axis] * wrench_error
     wrench_command_world[robot_idx] = result
-
-
-@wp.kernel
-def _add_spatial_vector_kernel(
-    term: wp.array[wp.spatial_vector],  # (robot_count,) task-space contribution to accumulate
-    total: wp.array[wp.spatial_vector],  # (robot_count,) running total; read and written (total += term)
-):
-    """Accumulate one task-space contribution into a running total.
-
-    Mirrors ``_add_term_kernel`` in ``joint_impedance/_common.py``: summing
-    the motion and force task-space contributions this way, before a single
-    final :func:`_jacobian_transpose_force_kernel` call, is equivalent to
-    mapping each to joint torques separately and summing those, since the
-    Jacobian-transpose map is linear — and needs only one force-mapping
-    kernel launch instead of two.
-    """
-    robot_idx = wp.tid()
-    total[robot_idx] = total[robot_idx] + term[robot_idx]

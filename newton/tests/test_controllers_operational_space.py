@@ -23,7 +23,6 @@ import warp as wp
 
 import newton
 from newton._src.controllers.impl.operational_space._common import (
-    _add_spatial_vector_kernel,
     _apply_mass_matrix_inv_on_right_kernel,
     _apply_spatial_matrix_kernel,
     _closed_loop_wrench_command_kernel,
@@ -886,17 +885,6 @@ def test_closed_loop_wrench_command_matches_formula(test, device):
     np.testing.assert_allclose(wrench_command_world.numpy()[0], expected, atol=1e-5)
 
 
-def test_add_spatial_vector_accumulates(test, device):
-    """total[i] = total[i] + term[i], not a plain overwrite."""
-    total = wp.array([wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)], dtype=wp.spatial_vector, device=device)
-    term = wp.array([wp.spatial_vector(0.5, -1.0, 0.0, 2.0, 0.0, -3.0)], dtype=wp.spatial_vector, device=device)
-
-    wp.launch(_add_spatial_vector_kernel, dim=1, inputs=[term], outputs=[total], device=device)
-
-    expected = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) + np.array([0.5, -1.0, 0.0, 2.0, 0.0, -3.0])
-    np.testing.assert_allclose(total.numpy()[0], expected, atol=1e-6)
-
-
 class TestOperationalSpaceKernels(unittest.TestCase):
     pass
 
@@ -995,12 +983,6 @@ add_function_test(
     TestOperationalSpaceKernels,
     "test_closed_loop_wrench_command_matches_formula",
     test_closed_loop_wrench_command_matches_formula,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
-    "test_add_spatial_vector_accumulates",
-    test_add_spatial_vector_accumulates,
     devices=devices,
 )
 
