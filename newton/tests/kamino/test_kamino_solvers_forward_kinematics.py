@@ -959,6 +959,173 @@ class ForwardKinematicsWarnings(unittest.TestCase):
         self.assertTrue(any("no free-floating base body" in message for message in logs.output))
 
 
+class MultiRhsVelocityForwardKinematics(unittest.TestCase):
+    """Verify shared-factorization velocity FK."""
+
+    def setUp(self):
+        """Initialize the shared Kamino test device."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        """Release the test device reference."""
+        self.default_device = None
+
+    def test_multi_rhs_matches_repeated_velocity_solves(self):
+        """Match every multi-RHS body twist to an independent velocity solve."""
+        builder = build_boxes_fourbar(
+            fixedbase=False,
+            floatingbase=True,
+            limits=False,
+            ground=False,
+            verbose=False,
+            dynamic_joints=False,
+            implicit_pd=False,
+            actuator_ids=[1],
+        )
+        model = builder.finalize(device=self.default_device)
+        solver = ForwardKinematicsSolver(model=model)
+        bodies_q = wp.clone(model.bodies.q_i_0)
+
+        rhs_size = 4
+        actuator_count = model.size.sum_of_num_fk_actuated_joint_dofs
+        actuator_u_np = np.linspace(-0.7, 0.8, rhs_size * actuator_count, dtype=np.float32).reshape(
+            rhs_size, actuator_count
+        )
+        base_u_np = np.array(
+            [
+                [0.1, -0.2, 0.3, 0.0, 0.1, -0.1],
+                [0.0, 0.0, 0.0, 0.2, -0.1, 0.3],
+                [-0.3, 0.1, 0.0, -0.2, 0.0, 0.1],
+                [0.2, 0.2, -0.1, 0.0, -0.3, 0.0],
+            ],
+            dtype=np.float32,
+        )
+
+        expected = []
+        for rhs_index in range(rhs_size):
+            actuator_u = wp.array(actuator_u_np[rhs_index], dtype=wp.float32, device=self.default_device)
+            base_u = wp.array(
+                base_u_np[rhs_index : rhs_index + 1], dtype=wp.spatial_vectorf, device=self.default_device
+            )
+            bodies_u = wp.zeros(model.size.sum_of_num_bodies, dtype=wp.spatial_vectorf, device=self.default_device)
+            solver.solve_for_body_velocities(actuator_u, bodies_q, bodies_u, base_u=base_u)
+            expected.append(bodies_u.numpy())
+
+        actuator_u = wp.array(actuator_u_np, dtype=wp.float32, device=self.default_device)
+        base_u = wp.array(base_u_np[:, None, :], dtype=wp.spatial_vectorf, device=self.default_device)
+        bodies_u = wp.zeros(
+            (rhs_size, model.size.sum_of_num_bodies), dtype=wp.spatial_vectorf, device=self.default_device
+        )
+        with self.assertRaisesRegex(ValueError, "request_velocity_solve_batch_size"):
+            solver.solve_for_body_velocities(actuator_u, bodies_q, bodies_u, base_u=base_u)
+
+        solver.request_velocity_solve_batch_size(rhs_size)
+        solver.solve_for_body_velocities(actuator_u, bodies_q, bodies_u, base_u=base_u)
+
+        np.testing.assert_allclose(bodies_u.numpy(), np.asarray(expected), rtol=2.0e-4, atol=2.0e-4)
+
+    def test_multi_rhs_preserves_linearity(self):
+        """Map summed velocity inputs to the sum of their body-twist responses."""
+        builder = build_boxes_fourbar(
+            fixedbase=False,
+            floatingbase=True,
+            limits=False,
+            ground=False,
+            verbose=False,
+            dynamic_joints=False,
+            implicit_pd=False,
+            actuator_ids=[1],
+        )
+        model = builder.finalize(device=self.default_device)
+        solver = ForwardKinematicsSolver(model=model)
+        bodies_q = wp.clone(model.bodies.q_i_0)
+
+        actuator_u = wp.array([[0.0], [0.7], [0.7]], dtype=wp.float32, device=self.default_device)
+        base_u = wp.array(
+            [
+                [[0.2, 0.0, -0.1, 0.0, 0.3, 0.0]],
+                [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+                [[0.2, 0.0, -0.1, 0.0, 0.3, 0.0]],
+            ],
+            dtype=wp.spatial_vectorf,
+            device=self.default_device,
+        )
+        bodies_u = wp.zeros((3, model.size.sum_of_num_bodies), dtype=wp.spatial_vectorf, device=self.default_device)
+
+        solver.request_velocity_solve_batch_size(3)
+        solver.solve_for_body_velocities(actuator_u, bodies_q, bodies_u, base_u=base_u)
+
+        result = bodies_u.numpy()
+        np.testing.assert_allclose(result[2], result[0] + result[1], rtol=2.0e-4, atol=2.0e-4)
+        self.assertGreater(float(np.max(np.abs(result))), 1.0e-3)
+
+    def test_multi_rhs_refreshes_gimbal_coords_with_explicit_transforms(self):
+        """Evaluate gimbal velocity axes from the current body pose."""
+        builder = ModelBuilderKamino(default_world=True)
+        body_id = builder.add_rigid_body(
+            name="gimbal_body",
+            m_i=1.0,
+            i_I_i=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            q_i_0=wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0)),
+        )
+        builder.add_joint(
+            act_type=JointActuationType.POSITION,
+            dof_type=JointDoFType.GIMBAL,
+            bid_B=-1,
+            bid_F=body_id,
+            B_r_Bj=wp.vec3f(0.0),
+            F_r_Fj=wp.vec3f(0.0),
+            X_Bj=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            k_p_j=1.0,
+        )
+        model = builder.finalize(device=self.default_device)
+        solver = ForwardKinematicsSolver(model=model)
+        actuator_q = wp.array([0.4, -0.3, 0.2], dtype=wp.float32, device=self.default_device)
+        bodies_q = wp.clone(model.bodies.q_i_0)
+        solver.solve_fk(actuator_q, bodies_q, use_graph=False)
+        target_transforms = solver.eval_position_control_transformations(actuator_q)
+
+        actuator_u_np = np.array([[0.3, -0.4, 0.5], [-0.2, 0.1, 0.35]], dtype=np.float32)
+        actuator_u = wp.array(actuator_u_np, dtype=wp.float32, device=self.default_device)
+        base_u = wp.zeros(1, dtype=wp.spatial_vectorf, device=self.default_device)
+
+        # Use independent single-RHS solves as the reference for both velocity
+        # vectors at the same converged gimbal pose.
+        expected = []
+        for rhs_index in range(actuator_u_np.shape[0]):
+            actuator_u_single = wp.array(actuator_u_np[rhs_index], dtype=wp.float32, device=self.default_device)
+            body_u = wp.zeros(model.size.sum_of_num_bodies, dtype=wp.spatial_vectorf, device=self.default_device)
+            solver.solve_for_body_velocities(
+                actuator_u_single,
+                bodies_q,
+                body_u,
+                base_u=base_u,
+                target_rel_transforms=target_transforms,
+            )
+            expected.append(body_u.numpy())
+
+        # Poison the coordinate scratch buffer with a different gimbal pose. The
+        # batched solve must refresh it from bodies_q so its velocity axes do not
+        # depend on state left behind by an earlier operation.
+        solver.actuators_q_next.assign([1.1, 0.7, -0.8])
+        rhs_size = actuator_u_np.shape[0]
+        solver.request_velocity_solve_batch_size(rhs_size)
+        actual = wp.zeros(
+            (rhs_size, model.size.sum_of_num_bodies), dtype=wp.spatial_vectorf, device=self.default_device
+        )
+        solver.solve_for_body_velocities(
+            actuator_u,
+            bodies_q,
+            actual,
+            base_u=wp.zeros((1, 1), dtype=wp.spatial_vectorf, device=self.default_device),
+            target_rel_transforms=target_transforms,
+        )
+
+        np.testing.assert_allclose(actual.numpy(), np.asarray(expected), rtol=2.0e-4, atol=2.0e-4)
+
+
 ###
 # Test execution
 ###

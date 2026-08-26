@@ -508,15 +508,28 @@ class DRLegsBenchmarkWorkload:
         return builder
 
     @staticmethod
-    def create_solver(model, sim_dt):
-        # Import the shared settings without the RL policy stack: the policy-free
-        # PR benchmark intentionally omits PyTorch.
-        from newton._src.solvers.kamino.examples._rl_settings import create_rl_settings  # noqa: PLC0415
-
-        settings = create_rl_settings(sim_dt)
-        settings.solver.collision_detector = settings.collision_detector
-        settings.solver.dynamics.linear_solver_type = "LLTBRCM"
-        return newton.solvers.SolverKamino(model, config=settings.solver)
+    def create_solver(model, _sim_dt):
+        # Pin the deployed RL settings without importing its PyTorch-dependent module.
+        config = newton.solvers.SolverKamino.Config(
+            sparse_jacobian=True,
+            use_collision_detector=True,
+            integrator="moreau",
+        )
+        config.collision_detector.pipeline = "unified"
+        config.collision_detector.max_contacts_per_pair = 8
+        config.constraints.alpha = 0.1
+        config.padmm.primal_tolerance = 1e-4
+        config.padmm.dual_tolerance = 1e-4
+        config.padmm.compl_tolerance = 1e-4
+        config.padmm.max_iterations = 200
+        config.padmm.eta = 1e-5
+        config.padmm.rho_0 = 0.05
+        config.padmm.use_acceleration = True
+        config.padmm.warmstart_mode = "containers"
+        config.padmm.contact_warmstart_method = "geom_pair_net_force"
+        config.padmm.use_graph_conditionals = False
+        config.dynamics.linear_solver_type = "LLTBRCM"
+        return newton.solvers.SolverKamino(model, config=config)
 
 
 if __name__ == "__main__":

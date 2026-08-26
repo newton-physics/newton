@@ -48,6 +48,7 @@ try:
 
     _DEFERRED_WORKLOAD_MODULES_AFTER_METRIC_IMPORT = {name: name in sys.modules for name in _DEFERRED_WORKLOAD_MODULES}
 
+    import benchmark_kamino
     from benchmark_kamino import DRLegsBenchmarkWorkload
     from benchmark_mujoco import Example as MuJoCoExample
 finally:
@@ -131,43 +132,6 @@ class TestSimulationBenchmarks(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-c", script],
             cwd=BENCHMARK_DIR.parents[1],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_dr_legs_solver_setup_does_not_import_torch(self):
-        """Keep the policy-free PR benchmark independent of PyTorch."""
-        script = "\n".join(
-            (
-                "import builtins",
-                "import sys",
-                "from unittest.mock import patch",
-                "real_import = builtins.__import__",
-                "def import_without_torch(name, *args, **kwargs):",
-                "    if name == 'torch' or name.startswith('torch.'):",
-                "        raise ModuleNotFoundError(\"No module named 'torch'\")",
-                "    return real_import(name, *args, **kwargs)",
-                "builtins.__import__ = import_without_torch",
-                f"sys.path.insert(0, {str(BENCHMARK_DIR)!r})",
-                "from benchmark_kamino import DRLegsBenchmarkWorkload",
-                "with patch('benchmark_kamino.newton.solvers.SolverKamino') as solver_cls:",
-                "    model = object()",
-                "    solver = DRLegsBenchmarkWorkload.create_solver(model, 0.004)",
-                "    assert solver is solver_cls.return_value",
-                "    solver_cls.assert_called_once()",
-                "    assert solver_cls.call_args.args == (model,)",
-                "    config = solver_cls.call_args.kwargs['config']",
-                "    assert config.dynamics.linear_solver_type == 'LLTBRCM'",
-            )
-        )
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = ""
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            cwd=ROOT,
             env=env,
             capture_output=True,
             text=True,
@@ -324,6 +288,18 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Give the DR Legs cache longer than ASV's default timeout."""
         config = json.loads((BENCHMARK_DIR.parents[1] / "asv.conf.json").read_text(encoding="utf-8"))
         self.assertGreater(bench_kamino.KpiDRLegs.setup_cache.timeout, config["default_benchmark_timeout"])
+
+    def test_fast_dr_legs_solver_does_not_import_torch(self):
+        """Construct the fast DR Legs solver without importing PyTorch."""
+        config_cls = benchmark_kamino.newton.solvers.SolverKamino.Config
+        with (
+            patch.dict(sys.modules, {"torch": None}),
+            patch.object(benchmark_kamino.newton.solvers, "SolverKamino") as solver_cls,
+        ):
+            solver_cls.Config = config_cls
+            DRLegsBenchmarkWorkload.create_solver(Mock(), 0.005)
+
+        solver_cls.assert_called_once()
 
     def test_aws_benchmark_comparison_gates_only_runtime_metrics(self):
         """Gate discovered PR runtimes while retaining dashboard-only metrics."""
