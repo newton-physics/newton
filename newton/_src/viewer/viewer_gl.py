@@ -22,7 +22,7 @@ from .camera import Camera
 from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
-from .viewer import _DEFAULT_LAYER_ID, ViewerBase
+from .viewer import _DEFAULT_LAYER_ID, LayerRenderStyle, ViewerBase
 from .viewer_gui import ViewerGui
 from .wind import Wind
 
@@ -321,6 +321,7 @@ class ViewerGL(ViewerBase):
     @override
     def _init_extra_layer_state(self, layer):
         super()._init_extra_layer_state(layer)
+        layer._render_style_dirty = False
         layer._packed_groups = []
         layer._capsule_keys = set()
         layer._packed_write_indices = None
@@ -573,6 +574,7 @@ class ViewerGL(ViewerBase):
         self._packed_world_xforms = None
         self._packed_vbo_xforms = None
         self._packed_vbo_xforms_host = None
+        self._render_style_dirty = False
 
         # Scalar, array, and image names are layer-qualified just like
         # geometry names; clear only the active layer's entries.
@@ -690,6 +692,7 @@ class ViewerGL(ViewerBase):
 
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
+        self._render_style_dirty = True
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
@@ -822,6 +825,119 @@ class ViewerGL(ViewerBase):
             batch.scales = out_scales
 
         self._build_packed_vbo_arrays()
+        self._render_style_dirty = True
+
+    @override
+    def set_layer_render_style(self, layer_id: str, style: LayerRenderStyle | None) -> None:
+        super().set_layer_render_style(layer_id, style)
+        layer = self._layers[layer_id]
+        layer._render_style_dirty = True
+        if layer_id == self._active_layer_id:
+            self._render_style_dirty = True
+            self._apply_layer_render_style()
+
+    @override
+    def set_layer_shape_visibility(self, layer_id: str, visibility: Sequence[bool] | None) -> None:
+        super().set_layer_shape_visibility(layer_id, visibility)
+        layer = self._layers[layer_id]
+        layer._render_style_dirty = True
+        if layer_id == self._active_layer_id:
+            self._render_style_dirty = True
+            self._apply_layer_render_style()
+
+    def _apply_layer_render_style(self) -> None:
+        """Upload the active layer's model-shape appearance to GL buffers."""
+        if self.model is None:
+            return
+
+        visibility = self.layer.shape_visibility
+        if visibility is not None and len(visibility) != self.model.shape_count:
+            raise ValueError(f"Expected {self.model.shape_count} shape visibility values, got {len(visibility)}")
+
+        complete = True
+        for key, batch in self._shape_instances.items():
+            values = self._resolve_layer_render_style(
+                np.asarray(batch.model_shapes, dtype=np.int32),
+                self.layer.render_style,
+                visibility,
+            )
+            complete = self._upload_batch_render_styles(batch, values, key in self._capsule_keys) and complete
+
+        for batch in self._sdf_isomesh_instances.values():
+            values = self._resolve_layer_render_style(
+                np.asarray(batch.model_shapes, dtype=np.int32),
+                self.layer.render_style,
+                visibility,
+            )
+            complete = self._upload_batch_render_styles(batch, values, False) and complete
+
+        for gname, _gaussian, _parent, _xform, _world, _flags, _static, shape_index in self._gaussian_instances:
+            instancer = self.objects.get(gname)
+            if not isinstance(instancer, MeshInstancerGL):
+                continue
+            shape_style = self._resolve_layer_render_style(
+                np.asarray([shape_index], dtype=np.int32),
+                self.layer.render_style,
+                visibility,
+            )
+            instancer.update_render_styles(np.repeat(shape_style, instancer.active_instances, axis=0))
+        self._render_style_dirty = not complete
+
+    def _upload_batch_render_styles(
+        self,
+        batch: ViewerBase.ShapeInstances,
+        values: np.ndarray,
+        is_capsule: bool,
+    ) -> bool:
+        """Upload resolved styles to one regular or capsule shape batch."""
+        if is_capsule:
+            cylinder = self.objects.get(f"{batch.name}/capsule_cylinder")
+            caps = self.objects.get(f"{batch.name}/capsule_caps")
+            cylinder_ready = isinstance(cylinder, MeshInstancerGL) and cylinder.active_instances == len(values)
+            cap_values = np.repeat(values, 2, axis=0)
+            caps_ready = isinstance(caps, MeshInstancerGL) and caps.active_instances == len(cap_values)
+            if cylinder_ready:
+                cylinder.update_render_styles(values)
+            if caps_ready:
+                caps.update_render_styles(cap_values)
+            return cylinder_ready and caps_ready
+
+        instancer = self.objects.get(batch.name)
+        if not isinstance(instancer, MeshInstancerGL) or instancer.active_instances != len(values):
+            return False
+        instancer.update_render_styles(values)
+        return True
+
+    @override
+    def _populate_sdf_isomesh_instances(self) -> None:
+        """Populate SDF isomesh batches and schedule their GL style upload."""
+        super()._populate_sdf_isomesh_instances()
+        self._render_style_dirty = True
+
+    @override
+    def _log_gaussian_shapes(self, state: nt.State) -> None:
+        """Log Gaussian model shapes and style newly created instancers."""
+        existing = set(self.objects)
+        super()._log_gaussian_shapes(state)
+        if any(name not in existing and name in self.objects for name, *_rest in self._gaussian_instances):
+            self._render_style_dirty = True
+
+    @staticmethod
+    def _resolve_layer_render_style(
+        model_shapes: np.ndarray,
+        style: LayerRenderStyle,
+        visibility: tuple[bool, ...] | None,
+    ) -> np.ndarray:
+        """Resolve style and an application-supplied visibility mask."""
+        values = np.empty((len(model_shapes), 4), dtype=np.float32)
+        # Negative RGB is an internal sentinel that tells the shader to retain
+        # each instance's asset color and texture.
+        values[:, :3] = style.color if style.color is not None else -1.0
+        values[:, 3] = style.opacity
+        if visibility is not None:
+            mask = np.asarray(visibility, dtype=np.float32)
+            values[:, 3] *= mask[model_shapes]
+        return values
 
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
@@ -1426,6 +1542,9 @@ class ViewerGL(ViewerBase):
         instancer = self.objects[name]
         instancer.active_instances = n
         instancer.hidden = False
+        # A Gaussian shape may contain hundreds of thousands of splats. Keep
+        # it as one depth-sorted draw batch instead of issuing one draw per splat.
+        instancer.sort_translucent_instances = False
 
         # Fast-path: skip VBO update when the transform has not changed.
         xform_key: tuple | None = None
@@ -1467,6 +1586,7 @@ class ViewerGL(ViewerBase):
         gl = RendererGL.gl
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, instancer.instance_transform_buffer)
         gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, n * 64, vbo.ctypes.data)
+        instancer._record_host_transforms(vbo, n)
 
         if recreated or not cache["colors_uploaded"]:
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, instancer.instance_color_buffer)
@@ -1650,6 +1770,8 @@ class ViewerGL(ViewerBase):
             super().log_state(state)
 
         self._render_picking_line(state)
+        if self._render_style_dirty:
+            self._apply_layer_render_style()
 
     def _render_picking_line(self, state):
         """

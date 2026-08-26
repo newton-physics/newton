@@ -14,6 +14,7 @@ newton.viewer
    :nosignatures:
 
    Layer
+   LayerRenderStyle
    ViewerBase
    ViewerFile
    ViewerGL
