@@ -199,11 +199,13 @@ def finalize_sparse_grids(
     world_count: int,
     voxel_size: float,
     padding: int,
+    topology_halo_voxels: int,
 ):
     if wp.tid() != 0:
         return
     inv_voxel_size = 1.0 / voxel_size
     packed_x = int(0)
+    packing_gap = ((2 * topology_halo_voxels + _TILE_SIZE - 1) // _TILE_SIZE) * _TILE_SIZE
     total_active = int(0)
     for world in range(world_count):
         counts_base = _grid_count_index(world, 0)
@@ -235,8 +237,9 @@ def finalize_sparse_grids(
         packed_max = tile_upper
         if world_count > 1:
             offset = wp.vec3i(packed_x, 0, 0) - tile_min
-            packed_min = wp.vec3i(packed_x, 0, 0)
-            packed_max = wp.vec3i(packed_x + extent[0], extent[1], extent[2])
+            halo = wp.vec3i(topology_halo_voxels)
+            packed_min = wp.vec3i(packed_x, 0, 0) - halo
+            packed_max = wp.vec3i(packed_x + extent[0], extent[1], extent[2]) + halo
         grid_origin[world] = voxel_size * wp.vec3(float(grid_min[0]), float(grid_min[1]), float(grid_min[2]))
         grid_dims[world] = dims
         env_offsets[world] = offset
@@ -246,7 +249,7 @@ def finalize_sparse_grids(
         grid_counts[counts_base + _GRID_DIM_Y] = dims[1]
         grid_counts[counts_base + _GRID_DIM_Z] = dims[2]
         if world_count > 1:
-            packed_x += extent[0] + _TILE_SIZE
+            packed_x += extent[0] + packing_gap
     active_particle_count[0] = total_active
 
 

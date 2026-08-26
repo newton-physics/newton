@@ -56,7 +56,7 @@ def _make_disk_particles(n=3000, seed=123, z_extent=0.02, device=None):
     return positions, radii
 
 
-def _sparse_field_samples(surface):
+def _sparse_field_samples(surface, world=None):
     sparse_field = surface.sparse_field
     if sparse_field is None:
         raise ValueError("Particle surface field has not been extracted")
@@ -65,8 +65,14 @@ def _sparse_field_samples(surface):
     packed = workspace.voxel_ijk[:node_count].numpy()
     worlds = workspace.node_world[:node_count].numpy()
     offsets = sparse_field.world_index_offsets.numpy()
+    if world is not None:
+        selected = worlds == world
+        packed = packed[selected]
+        worlds = worlds[selected]
     coordinates = packed - offsets[worlds]
     values = sparse_field.voxel_data[:node_count].numpy()
+    if world is not None:
+        values = values[selected]
     order = np.lexsort(coordinates.T[::-1])
     return coordinates[order], values[order]
 
@@ -158,6 +164,33 @@ def test_multi_world_mesh(test, device):
         offset,
         atol=1.0e-6,
     )
+
+
+def test_multi_world_large_topology_halo(test, device):
+    positions = wp.zeros(2, dtype=wp.vec3, device=device)
+    radii = wp.array([0.18, 0.32], dtype=wp.float32, device=device)
+    particle_world = wp.array([0, 1], dtype=wp.int32, device=device)
+    options = {
+        "voxel_size": 0.1,
+        "kernel_radius": 0.3,
+        "surface_method": "particle_sdf",
+        "particle_sdf_band": 2.0,
+        "field_smooth_iterations": 3,
+        "field_smooth_radius": 2,
+        "redistance_iterations": 4,
+        "mesh_smooth_iterations": 0,
+        "device": device,
+    }
+    multi_world_surface = ParticleSurface(world_count=2, **options)
+    multi_world_surface.update_field(positions, radii, particle_world=particle_world)
+
+    for world in range(2):
+        single_world_surface = ParticleSurface(**options)
+        single_world_surface.update_field(positions[world : world + 1], radii[world : world + 1])
+        multi_coordinates, multi_values = _sparse_field_samples(multi_world_surface, world=world)
+        single_coordinates, single_values = _sparse_field_samples(single_world_surface)
+        np.testing.assert_array_equal(multi_coordinates, single_coordinates)
+        np.testing.assert_allclose(multi_values, single_values, rtol=1.0e-6, atol=1.0e-6)
 
 
 def test_multi_world_capacity(test, device):
@@ -1366,6 +1399,12 @@ devices = get_test_devices(mode="basic")
 add_function_test(TestParticleSurface, "test_one_shot", test_one_shot, devices=devices)
 add_function_test(TestParticleSurface, "test_reusable_context", test_reusable_context, devices=devices)
 add_function_test(TestParticleSurface, "test_multi_world_mesh", test_multi_world_mesh, devices=devices)
+add_function_test(
+    TestParticleSurface,
+    "test_multi_world_large_topology_halo",
+    test_multi_world_large_topology_halo,
+    devices=devices,
+)
 add_function_test(TestParticleSurface, "test_multi_world_capacity", test_multi_world_capacity, devices=devices)
 add_function_test(TestParticleSurface, "test_field_only_extraction", test_field_only_extraction, devices=devices)
 add_function_test(

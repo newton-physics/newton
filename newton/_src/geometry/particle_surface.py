@@ -325,6 +325,7 @@ class _ParticleSurfaceSparseWorkspace(_ParticleSurfaceWorkspaceBase):
         particle_sdf_band: float,
         particle_sdf: bool,
         anisotropic: bool,
+        topology_halo_voxels: int,
     ) -> None:
         wp.launch(kernels.reset_bounds, dim=self.world_count, inputs=[self.lower, self.upper], device=self.device)
         if positions.shape[0] > 0:
@@ -368,6 +369,7 @@ class _ParticleSurfaceSparseWorkspace(_ParticleSurfaceWorkspaceBase):
                 self.world_count,
                 self.voxel_size,
                 self.padding,
+                topology_halo_voxels,
             ],
             device=self.device,
         )
@@ -1284,6 +1286,7 @@ class ParticleSurface:
     def __init__(
         self,
         voxel_size: float,
+        *,
         kernel_radius: float | None = None,
         threshold: float = 0.25,
         smooth_lambda: float = 0.5,
@@ -1445,15 +1448,18 @@ class ParticleSurface:
             return self._threshold
         return 0.0
 
+    def _topology_halo_voxels(self) -> int:
+        return (
+            self._padding + self._field_smooth_iterations * self._field_smooth_radius + self._redistance_iterations + 1
+        )
+
     def _require_sparse_sdf_metadata(self) -> _SparseSdfMetadata:
         """Return internal metadata for the current sparse SDF."""
         if self._field_mode != "sdf":
             raise ValueError("Sparse SDF access requires ParticleSurface(field_mode='sdf')")
         if self._workspace is None or not self._has_field or self._workspace.volume is None:
             raise ValueError("Particle surface field has not been extracted")
-        topology_halo = (
-            self._padding + self._field_smooth_iterations * self._field_smooth_radius + self._redistance_iterations + 1
-        ) * self._voxel_size
+        topology_halo = self._topology_halo_voxels() * self._voxel_size
         return _SparseSdfMetadata(self._workspace, topology_halo)
 
     @property
@@ -1573,6 +1579,7 @@ class ParticleSurface:
         self,
         positions: wp.array[wp.vec3],
         radii: wp.array[float],
+        *,
         particle_flags: wp.array[wp.int32] | None = None,
         particle_world: wp.array[wp.int32] | None = None,
     ) -> ParticleSurface.SparseField | None:
@@ -1606,6 +1613,7 @@ class ParticleSurface:
         self,
         positions: wp.array[wp.vec3],
         radii: wp.array[float],
+        *,
         compute_normals: bool = True,
         particle_flags: wp.array[wp.int32] | None = None,
         particle_world: wp.array[wp.int32] | None = None,
@@ -1680,6 +1688,7 @@ class ParticleSurface:
 
     def resurface(
         self,
+        *,
         compute_normals: bool = True,
     ) -> ParticleSurface.ExtractionMesh:
         """Re-run marching cubes on the current field.
@@ -1770,6 +1779,7 @@ class ParticleSurface:
         )
 
         isotropic_sdf = not self._anisotropic or self._anisotropy_strength <= 0.0 or self._anisotropy_ratio <= 1.0
+        topology_halo_voxels = self._topology_halo_voxels()
         workspace.compute_grid(
             self._smoothed[:particle_count],
             radii,
@@ -1783,6 +1793,7 @@ class ParticleSurface:
             self._particle_sdf_band,
             self._surface_method == "particle_sdf",
             not isotropic_sdf,
+            topology_halo_voxels,
         )
         if exact:
             grid_counts = workspace.grid_counts.numpy().reshape(self._world_count, 7)
@@ -1813,7 +1824,7 @@ class ParticleSurface:
             self._particle_sdf_band,
             self._surface_method == "particle_sdf",
             not isotropic_sdf,
-            self._padding + self._field_smooth_iterations * self._field_smooth_radius + self._redistance_iterations + 1,
+            topology_halo_voxels,
             self._G[:particle_count],
         )
 

@@ -2355,6 +2355,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self,
         state: newton.State,
         surface: ParticleSurface,
+        *,
         compute_normals: bool = True,
         extrapolate_into_colliders: bool = False,
         collider_extrapolation_depth: float | None = None,
