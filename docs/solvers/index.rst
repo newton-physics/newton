@@ -326,7 +326,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes| :sup:`2`
      - |no|
      - |yes|
-     - |yes| :sup:`5`
+     - |yes| :sup:`6`
      - |no|
    * - :attr:`~newton.Model.joint_effort_limit`
      - |no|
@@ -364,7 +364,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes| :sup:`2`
      - |yes|
      - |yes|
-     - |yes| :sup:`5`
+     - |yes| :sup:`6`
      - |yes|
    * - :attr:`~newton.Model.joint_target_mode`
      - |no|
@@ -403,16 +403,17 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
    * - Mimic constraints
-     - |no|
-     - |no|
      - |yes| :sup:`3`
      - |yes| :sup:`4`
-     - |no|
+     - |yes| :sup:`4`
+     - |yes| :sup:`5`
+     - |yes| :sup:`4`
      - |no|
 
-| :sup:`3` XPBD enforces joint-owned mimic relationships between REVOLUTE, PRISMATIC, and D6 joints. The deprecated sparse mimic constraints are not supported.
-| :sup:`4` MuJoCo supports mimic relationships between REVOLUTE, PRISMATIC, and D6 joints. Multi-axis D6 relationships produce one equality constraint per axis.
-| :sup:`5` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
+| :sup:`3` Featherstone eliminates follower degrees of freedom from its reduced dynamics and transfers follower forces and inertia to the reference joint.
+| :sup:`4` SemiImplicit, XPBD, and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections.
+| :sup:`5` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
+| :sup:`6` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 
 
 
