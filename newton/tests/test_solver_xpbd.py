@@ -879,6 +879,12 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
     cube_mg = cube_mass * gravity
 
     builder = newton.ModelBuilder()
+    # This regression targets normal support forces. Disable friction so that
+    # contact-order roundoff cannot grow into unrelated lateral or rolling
+    # transients while the combined scene settles.
+    builder.default_shape_cfg.mu = 0.0
+    builder.default_shape_cfg.mu_torsional = 0.0
+    builder.default_shape_cfg.mu_rolling = 0.0
     ground_shape = builder.add_ground_plane()
 
     builder.default_shape_cfg.density = sphere_density
@@ -992,10 +998,9 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
         "Box should average more than one ground contact point per step",
     )
 
-    # XPBD contact accumulation uses parallel floating-point atomics, so small
-    # lateral reactions vary with contact ordering. Bound them relative to the
-    # supported weight instead of using a mass-independent absolute tolerance.
-    max_horizontal_force_ratio = 0.02
+    # With friction disabled and a vertical plane normal, the reported linear
+    # contact forces should not contain horizontal components.
+    horizontal_force_atol = 1.0e-6
 
     np.testing.assert_allclose(
         sphere_force[2],
@@ -1006,8 +1011,8 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
     np.testing.assert_allclose(
         sphere_force[:2],
         0.0,
-        atol=max_horizontal_force_ratio * sphere_mass * gravity,
-        err_msg="Sphere on plane: horizontal contact force should be small relative to its weight",
+        atol=horizontal_force_atol,
+        err_msg="Sphere on plane: horizontal contact force should be zero",
     )
 
     np.testing.assert_allclose(
@@ -1019,8 +1024,8 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
     np.testing.assert_allclose(
         heavy_force[:2],
         0.0,
-        atol=max_horizontal_force_ratio * heavy_mass * gravity,
-        err_msg="Heavy sphere on plane: horizontal contact force should be small relative to its weight",
+        atol=horizontal_force_atol,
+        err_msg="Heavy sphere on plane: horizontal contact force should be zero",
     )
 
     np.testing.assert_allclose(
@@ -1032,8 +1037,8 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
     np.testing.assert_allclose(
         box_force[:2],
         0.0,
-        atol=max_horizontal_force_ratio * box_mass * gravity,
-        err_msg="Box on plane: horizontal contact force should be small relative to its weight",
+        atol=horizontal_force_atol,
+        err_msg="Box on plane: horizontal contact force should be zero",
     )
 
     # The exact split is sensitive to contact ordering, but the total reaction
