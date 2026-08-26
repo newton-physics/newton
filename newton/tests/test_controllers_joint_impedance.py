@@ -837,7 +837,12 @@ class TestControllerJointImpedance(unittest.TestCase):
         np.testing.assert_allclose(tau, [5.0], atol=1e-4)
 
     def test_ball_joint_controlled_raises(self):
-        """Verify that controlling a multi-DOF ball joint raises ValueError."""
+        """Verify explicitly naming a multi-DOF ball joint in ``joints`` raises ValueError.
+
+        The default selection leaves an unsupported joint like this one
+        uncontrolled instead (see ``test_default_selection_skips_uncontrollable_joints``),
+        so this test names it explicitly to still exercise the check.
+        """
         device = wp.get_device()
         builder = newton.ModelBuilder()
         link = builder.add_link()
@@ -852,11 +857,33 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
+                joints=[j],
                 stiffness=_gains(1, 1.0, device),
                 damping=_gains(1, 0.0, device),
                 use_gravity_compensation=False,
                 use_coriolis_compensation=False,
             )
+
+    def test_default_selection_skips_uncontrollable_joints(self):
+        """Verify the default ``joints`` selection leaves non-1x1 joints uncontrolled rather than raising.
+
+        A model mixing a ball joint with a controllable revolute joint should
+        not need to be pruned by hand: omitting ``joints`` controls only the
+        revolute joint, the same result as naming it explicitly.
+        """
+        device = wp.get_device()
+        builder, _j_ball, j_rev = _build_ball_then_revolute()
+        model = builder.finalize(device=device)
+        ctrl = ControllerJointImpedance(
+            model,
+            stiffness=_gains(1, 5.0, device),
+            damping=_gains(1, 0.0, device),
+            use_gravity_compensation=False,
+            use_coriolis_compensation=False,
+            use_inertia_decoupling=False,
+        )
+        self.assertEqual(ctrl.total_controlled_dofs, 1)
+        np.testing.assert_array_equal(ctrl.qd_start.numpy(), [model.joint_qd_start.numpy()[j_rev]])
 
     def test_fixed_joint_allowed(self):
         """Verify that fixed joints (zero DOF) are accepted alongside revolute/prismatic joints."""

@@ -66,9 +66,10 @@ class ControllerJointImpedance(ControllerBase):
     coordinate and a single DOF can be controlled, since the PD error term
     ``q_des - q`` is only a well-defined scalar subtraction for those; every
     other joint (Fixed, or any multi-DOF type) is read for FK and dynamics but
-    never actuated. Addressing a non-scalar joint raises
-    ``ValueError`` at construction, as does addressing a joint that belongs to
-    no robot, or the same DOF twice.
+    never actuated. The default ``joints`` selection leaves such joints
+    uncontrolled automatically; explicitly naming one in ``joints`` raises
+    ``ValueError`` at construction instead, as does addressing a joint that
+    belongs to no robot, or the same DOF twice.
 
     Supports heterogeneous robot fleets — robots may have different
     controlled-DOF counts, and a robot may be left uncontrolled entirely. An
@@ -98,8 +99,12 @@ class ControllerJointImpedance(ControllerBase):
             in ``model``.
         joints: Model joint indices or label patterns to control within the
             selected articulations, as a list or as a single pattern. ``None``
-            selects every eligible joint (at least one coordinate and one
-            DOF) of each selected articulation.
+            selects every joint spanning exactly one coordinate and one DOF —
+            the only kind this controller can actuate — in each selected
+            articulation; any other joint (Fixed, or a multi-DOF type such as
+            a floating base) is left uncontrolled instead of rejected. A
+            joint named explicitly is not filtered this way and still raises
+            ``ValueError`` if it is not 1-coordinate/1-DOF.
         stiffness: Position-error gain Kp. Units depend on
             ``use_inertia_decoupling``: [1/s²] when enabled, since the PD term
             is then an acceleration premultiplied by M(q); otherwise [N/m or

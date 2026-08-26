@@ -100,15 +100,20 @@ def select_joints(
             twice.
         joints: Model joint indices or label patterns to control within the
             selected articulations, as a list or as a single pattern. ``None``
-            records the starting coordinate/DOF index of every joint with at
-            least one coordinate and one DOF in each selected articulation —
-            a joint with neither (Fixed) is skipped, since it has no starting
-            index to give (explicitly naming one contributes no entry either).
-            Every other selected joint contributes exactly one entry, its
-            starting coordinate/DOF index — not one entry per coordinate or
-            DOF — and whether that joint is otherwise controllable is checked
-            by the controller, not here. Duplicates are collapsed, as they
-            are for ``articulations``.
+            records the starting coordinate/DOF index of every *controllable*
+            joint — one spanning exactly one coordinate and one DOF — in each
+            selected articulation; any other joint (Fixed, or a multi-DOF type
+            such as a floating base) is silently left out, so a model mixing
+            controllable and uncontrollable joints does not need to be pruned
+            by hand. This filtering applies only to the default: a joint named
+            explicitly is not screened for controllability — Fixed still
+            contributes no entry, since it has no starting index to give, but
+            any other uncontrollable joint is left in for the controller to
+            reject, so naming one by name or pattern still raises rather than
+            being silently dropped. Every selected joint contributes exactly
+            one entry, its starting coordinate/DOF index — not one entry per
+            coordinate or DOF. Duplicates are collapsed, as they are for
+            ``articulations``.
 
     Returns:
         The matched starting coordinate/DOF index pair for each selected
@@ -159,7 +164,8 @@ def select_joints(
         selected_arts = sorted(dict.fromkeys(matched_arts))
 
     robot_joints_by_art: dict[int, list[int]] = {art: [] for art in selected_arts}
-    if joints is None:
+    joints_is_default = joints is None
+    if joints_is_default:
         for art in selected_arts:
             robot_joints_by_art[art] = np.arange(art_start[art], art_end[art]).tolist()
     else:
@@ -185,10 +191,16 @@ def select_joints(
         # joint. q_start/qd_start carry a trailing sentinel (length
         # joint_count + 1), so q_start[j + 1] - q_start[j] is that joint's
         # coordinate count without a separate end array.
-        has_coord_and_dof = (q_start[robot_joints + 1] > q_start[robot_joints]) & (
-            qd_start[robot_joints + 1] > qd_start[robot_joints]
-        )
-        robot_joints = robot_joints[has_coord_and_dof]
+        coord_count = q_start[robot_joints + 1] - q_start[robot_joints]
+        dof_count = qd_start[robot_joints + 1] - qd_start[robot_joints]
+        if joints_is_default:
+            # Only the default is narrowed to what the controller can actually
+            # use; a joint named explicitly is left in even if not 1x1, so the
+            # controller raises instead of the joint silently disappearing.
+            eligible = (coord_count == 1) & (dof_count == 1)
+        else:
+            eligible = (coord_count > 0) & (dof_count > 0)
+        robot_joints = robot_joints[eligible]
         if robot_joints.size == 0:
             continue
         q_start_chunks.append(q_start[robot_joints])

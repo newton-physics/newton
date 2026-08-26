@@ -126,13 +126,18 @@ def _build_floating_base_fleet():
 
 
 class TestSelectJoints(unittest.TestCase):
-    def test_single_robot_all_joints(self):
-        """Verify select_joints defaults to every joint of the model."""
+    def test_default_excludes_uncontrollable_joints(self):
+        """Verify select_joints defaults to only the controllable (1-coordinate/1-DOF) joints.
+
+        The ball joint spans four coordinates and three DOFs, so it is left
+        out of the default selection; only the revolute joint after it
+        qualifies.
+        """
         device = wp.get_device()
         model = _build_ball_then_revolute()[0].finalize(device=device)
         selection = select_joints(model)
-        np.testing.assert_array_equal(selection.q_start.numpy(), [0, 4])
-        np.testing.assert_array_equal(selection.qd_start.numpy(), [0, 3])
+        np.testing.assert_array_equal(selection.q_start.numpy(), [4])
+        np.testing.assert_array_equal(selection.qd_start.numpy(), [3])
 
     def test_returns_int32_arrays(self):
         """Verify both index arrays are int32 so they work as Warp indexed-view subscripts."""
@@ -153,6 +158,19 @@ class TestSelectJoints(unittest.TestCase):
         selection = select_joints(model, joints=[j_rev])
         np.testing.assert_array_equal(selection.q_start.numpy(), [4])  # after the 4-coordinate quaternion
         np.testing.assert_array_equal(selection.qd_start.numpy(), [3])  # after the 3-DOF angular velocity
+
+    def test_default_excludes_floating_base(self):
+        """Verify the default selection skips a free-joint base without raising.
+
+        A common floating-base robot mixes an uncontrollable free joint with
+        controllable revolute joints; the default should not need the caller
+        to prune the free joint by hand.
+        """
+        device = wp.get_device()
+        builder, revolute_joints = _build_floating_base_fleet()
+        model = builder.finalize(device=device)
+        selection = select_joints(model)
+        np.testing.assert_array_equal(selection.qd_start.numpy(), model.joint_qd_start.numpy()[revolute_joints])
 
     def test_heterogeneous_two_robots(self):
         """Verify select_joints concatenates controlled DOFs per articulation for a mixed fleet."""
