@@ -48,6 +48,7 @@ try:
 
     _DEFERRED_WORKLOAD_MODULES_AFTER_METRIC_IMPORT = {name: name in sys.modules for name in _DEFERRED_WORKLOAD_MODULES}
 
+    import benchmark_kamino
     from benchmark_kamino import DRLegsBenchmarkWorkload
     from benchmark_mujoco import Example as MuJoCoExample
 finally:
@@ -287,6 +288,18 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Give the DR Legs cache longer than ASV's default timeout."""
         config = json.loads((BENCHMARK_DIR.parents[1] / "asv.conf.json").read_text(encoding="utf-8"))
         self.assertGreater(bench_kamino.KpiDRLegs.setup_cache.timeout, config["default_benchmark_timeout"])
+
+    def test_fast_dr_legs_solver_does_not_import_torch(self):
+        """Construct the fast DR Legs solver without importing PyTorch."""
+        config_cls = benchmark_kamino.newton.solvers.SolverKamino.Config
+        with (
+            patch.dict(sys.modules, {"torch": None}),
+            patch.object(benchmark_kamino.newton.solvers, "SolverKamino") as solver_cls,
+        ):
+            solver_cls.Config = config_cls
+            DRLegsBenchmarkWorkload.create_solver(Mock(), 0.005)
+
+        solver_cls.assert_called_once()
 
     def test_aws_benchmark_comparison_gates_only_runtime_metrics(self):
         """Gate discovered PR runtimes while retaining dashboard-only metrics."""
