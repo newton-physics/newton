@@ -7,7 +7,6 @@ import warp as wp
 
 from ..sim import JointType, Model
 
-
 _SUPPORTED_JOINT_TYPES = {int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)}
 
 
@@ -79,18 +78,12 @@ def reduce_mimic_inertia(
                 for column_axis in range(column_count):
                     source_column = joint_qd_start[column_joint] + column_axis
                     destination_column = column_destination_start + column_axis
-                    value = H[
-                        matrix_start
-                        + (source_row - dof_start) * matrix_rows
-                        + (source_column - dof_start)
-                    ]
+                    value = H[matrix_start + (source_row - dof_start) * matrix_rows + (source_column - dof_start)]
                     if source_row == source_column:
                         value += joint_armature[source_row]
                     wp.atomic_add(
                         H_reduced,
-                        matrix_start
-                        + (destination_row - dof_start) * matrix_rows
-                        + (destination_column - dof_start),
+                        matrix_start + (destination_row - dof_start) * matrix_rows + (destination_column - dof_start),
                         row_multiplier * column_multiplier * value,
                     )
 
@@ -205,7 +198,7 @@ def project_joint_mimics(
 ) -> None:
     """Project supported mimic relationships in maximal coordinates."""
     # Import lazily so importing another solver does not initialize SolverXPBD.
-    from .xpbd.kernels import solve_joint_mimics
+    from .xpbd.kernels import solve_joint_mimics  # noqa: PLC0415
 
     for _ in range(iterations):
         deltas.zero_()

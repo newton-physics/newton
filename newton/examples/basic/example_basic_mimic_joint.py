@@ -24,7 +24,7 @@ import newton.examples
 
 class Example:
     FPS = 60
-    SIM_SUBSTEPS = 4
+    DEFAULT_SIM_SUBSTEPS = 4
     CYCLE_TIME = 6.0
     TRAVEL_AMPLITUDE = 0.45
     SCREW_CENTER_Z = 1.5
@@ -39,7 +39,10 @@ class Example:
         self.viewer = viewer
         self.solver_name = args.solver
         self.frame_dt = 1.0 / self.FPS
-        self.sim_dt = self.frame_dt / self.SIM_SUBSTEPS
+        # VBD projects the mimic relationship inside each solver iteration, so
+        # this simple mechanism does not benefit from additional substeps.
+        self.sim_substeps = 1 if self.solver_name == "vbd" else self.DEFAULT_SIM_SUBSTEPS
+        self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
         self.pitch = float(args.pitch)
@@ -214,7 +217,7 @@ class Example:
         if self.solver_name == "vbd":
             return newton.solvers.SolverVBD(
                 self.model,
-                iterations=6,
+                iterations=2,
                 rigid_compliant_alm=True,
                 rigid_joint_linear_ke=1.0e6,
                 rigid_joint_angular_ke=1.0e6,
@@ -223,7 +226,7 @@ class Example:
 
     def simulate(self):
         """Advance the lead-screw mechanism by one rendered frame."""
-        for _ in range(self.SIM_SUBSTEPS):
+        for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
@@ -291,10 +294,7 @@ class Example:
         if self.max_abs_screw_angle < 0.5:
             raise ValueError("Lead-screw actuator did not produce enough rotation")
         if self.max_abs_coupling_error > 0.01:
-            raise ValueError(
-                "Lead-screw mimic error exceeded 10 mm: "
-                f"{1000.0 * self.max_abs_coupling_error:.3f} mm"
-            )
+            raise ValueError(f"Lead-screw mimic error exceeded 10 mm: {1000.0 * self.max_abs_coupling_error:.3f} mm")
 
     @staticmethod
     def create_parser():
