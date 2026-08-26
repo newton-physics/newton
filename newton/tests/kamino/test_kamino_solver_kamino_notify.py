@@ -24,6 +24,8 @@ def _build_revolute(
     limited: bool = False,
     friction: float | None = None,
     actuator_mode: newton.JointTargetMode = newton.JointTargetMode.NONE,
+    effort_limit: float = math.inf,
+    target_ke: float = 0.0,
     body_com: wp.vec3f | None = None,
     shape_materials: tuple[tuple[float, float], ...] | None = None,
     has_shape_collision: bool = True,
@@ -82,7 +84,8 @@ def _build_revolute(
         armature=1.0 if dynamic else 0.0,
         friction=friction,
         damping=0.0,
-        target_ke=0.0,
+        effort_limit=effort_limit,
+        target_ke=target_ke,
         target_kd=0.0,
         actuator_mode=actuator_mode,
     )
@@ -550,6 +553,68 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         model.joint_target_ke.assign([np.float32(2.0)])
 
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_effort_limit_value_edit_is_allowed(self):
+        """Allow finite effort-limit edits that preserve implicit-PD row topology."""
+        model = _build_revolute(
+            actuator_mode=newton.JointTargetMode.POSITION,
+            effort_limit=1.0,
+            target_ke=100.0,
+        )
+        solver = SolverKamino(model)
+        model.joint_effort_limit.assign([0.25])
+
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_effort_limit_finiteness_change_raises(self):
+        """Reject effort-limit edits that change implicit-PD row topology."""
+        for initial_limit, updated_limit in ((1.0, math.inf), (math.inf, 1.0)):
+            with self.subTest(initial_limit=initial_limit, updated_limit=updated_limit):
+                model = _build_revolute(
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                    effort_limit=initial_limit,
+                    target_ke=100.0,
+                )
+                solver = SolverKamino(model)
+                model.joint_effort_limit.assign([updated_limit])
+
+                with self.assertRaisesRegex(RuntimeError, "dynamic constraint topology"):
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_zero_gains_remove_effort_row_raises(self):
+        """Reject gain edits that add or remove an implicit-PD effort row."""
+        for initial_gain, updated_gain in ((100.0, 0.0), (0.0, 100.0)):
+            with self.subTest(initial_gain=initial_gain, updated_gain=updated_gain):
+                model = _build_revolute(
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                    effort_limit=1.0,
+                    target_ke=initial_gain,
+                )
+                solver = SolverKamino(model)
+                model.joint_target_ke.assign([updated_gain])
+                model.joint_target_kd.assign([0.0])
+
+                with self.assertRaisesRegex(RuntimeError, "effort-limit row topology"):
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_effort_row_removal_via_actuator_mode_raises(self):
+        """Reject actuator-mode edits that add or remove an effort row."""
+        modes = (
+            (newton.JointTargetMode.POSITION, newton.JointTargetMode.EFFORT),
+            (newton.JointTargetMode.EFFORT, newton.JointTargetMode.POSITION),
+        )
+        for initial_mode, updated_mode in modes:
+            with self.subTest(initial_mode=initial_mode, updated_mode=updated_mode):
+                model = _build_revolute(
+                    actuator_mode=initial_mode,
+                    effort_limit=1.0,
+                    target_ke=100.0,
+                )
+                solver = SolverKamino(model)
+                model.joint_target_mode.assign([updated_mode])
+
+                with self.assertRaisesRegex(RuntimeError, "effort-limit row topology"):
+                    solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
 
     def test_moving_dynamic_row_between_dofs_raises(self):
         """Reject moving a dynamic row between axes without changing its count."""
