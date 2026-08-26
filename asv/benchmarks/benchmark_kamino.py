@@ -509,13 +509,12 @@ class DRLegsBenchmarkWorkload:
 
     @staticmethod
     def create_solver(model, sim_dt):
-        # Reuse the Kamino RL example's solver settings to mirror the deployed workload.
-        from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim  # noqa: PLC0415
+        # Import the shared settings without the RL policy stack: the policy-free
+        # PR benchmark intentionally omits PyTorch.
+        from newton._src.solvers.kamino.examples._rl_settings import create_rl_settings  # noqa: PLC0415
 
-        settings = RigidBodySim.default_settings(sim_dt)
+        settings = create_rl_settings(sim_dt)
         settings.solver.collision_detector = settings.collision_detector
-        # Pin the linear solver so a change to default_settings cannot
-        # silently switch what this benchmark measures.
         settings.solver.dynamics.linear_solver_type = "LLTBRCM"
         return newton.solvers.SolverKamino(model, config=settings.solver)
 

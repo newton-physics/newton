@@ -138,6 +138,43 @@ class TestSimulationBenchmarks(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_dr_legs_solver_setup_does_not_import_torch(self):
+        """Keep the policy-free PR benchmark independent of PyTorch."""
+        script = "\n".join(
+            (
+                "import builtins",
+                "import sys",
+                "from unittest.mock import patch",
+                "real_import = builtins.__import__",
+                "def import_without_torch(name, *args, **kwargs):",
+                "    if name == 'torch' or name.startswith('torch.'):",
+                "        raise ModuleNotFoundError(\"No module named 'torch'\")",
+                "    return real_import(name, *args, **kwargs)",
+                "builtins.__import__ = import_without_torch",
+                f"sys.path.insert(0, {str(BENCHMARK_DIR)!r})",
+                "from benchmark_kamino import DRLegsBenchmarkWorkload",
+                "with patch('benchmark_kamino.newton.solvers.SolverKamino') as solver_cls:",
+                "    model = object()",
+                "    solver = DRLegsBenchmarkWorkload.create_solver(model, 0.004)",
+                "    assert solver is solver_cls.return_value",
+                "    solver_cls.assert_called_once()",
+                "    assert solver_cls.call_args.args == (model,)",
+                "    config = solver_cls.call_args.kwargs['config']",
+                "    assert config.dynamics.linear_solver_type == 'LLTBRCM'",
+            )
+        )
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_benchmark_imports_preserve_warp_config(self):
         """Preserve Warp global configuration across benchmark imports."""
         self.assertEqual(
