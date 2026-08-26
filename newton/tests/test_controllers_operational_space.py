@@ -23,12 +23,16 @@ import warp as wp
 
 import newton
 from newton._src.controllers.impl.operational_space._common import (
+    _apply_mass_matrix_inv_on_right_kernel,
     _apply_operational_space_mass_matrix_kernel,
     _invert_spd_block_kernel,
+    _jacobian_times_jacobian_transpose_kernel,
     _jacobian_transpose_force_kernel,
+    _null_space_projector_kernel,
     _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
     _shift_jacobian_to_tool_kernel,
+    _task_matrix_times_jacobian_kernel,
     _task_space_pd_kernel,
     _tool_pose_and_twist_kernel,
 )
@@ -89,6 +93,58 @@ def _build_six_dof_arm_with_tool_site(device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
 
     axes = [newton.Axis.Z, newton.Axis.Y, newton.Axis.Z, newton.Axis.Y, newton.Axis.Z, newton.Axis.Y]
+    joints = []
+    parent_body = -1
+    for link_idx, axis in enumerate(axes):
+        body = builder.add_link(mass=1.0 + 0.1 * link_idx)
+        builder.add_shape_box(body, hx=0.1, hy=0.08, hz=0.06)
+        builder.body_com[body] = wp.vec3(0.15, 0.02, -0.01)
+        parent_xform = wp.transform_identity() if parent_body == -1 else wp.transform(wp.vec3(0.3, 0.0, 0.0))
+        joints.append(
+            builder.add_joint_revolute(
+                parent=parent_body,
+                child=body,
+                axis=axis,
+                parent_xform=parent_xform,
+                child_xform=wp.transform_identity(),
+            )
+        )
+        parent_body = body
+    tool_body = parent_body
+    builder.add_articulation(joints, label="arm")
+
+    coordinate_change_body_from_tool = wp.transform(wp.vec3(0.2, 0.0, 0.05), wp.quat_identity())
+    builder.add_site(tool_body, xform=coordinate_change_body_from_tool, label="tool_site")
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    return model, state, tool_body, coordinate_change_body_from_tool
+
+
+def _build_seven_dof_arm_with_tool_site(device):
+    """Seven-revolute-joint spatial arm (alternating Z/Y axes) with a tool site at the tip.
+
+    One more DOF than the 6D task, i.e. a redundant manipulator — needed for
+    the null-space projector to have a nontrivial (nonzero) null space to
+    project onto. The 6-DOF arm above can't be used for this: with exactly
+    6 DOF, J is square and (generically) invertible, so both pseudo-inverse
+    variants degenerate to the exact inverse and the projector is always
+    zero, which wouldn't distinguish them.
+
+    Returns:
+        Tuple of (model, state, tool_body, coordinate_change_body_from_tool).
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+
+    axes = [
+        newton.Axis.Z,
+        newton.Axis.Y,
+        newton.Axis.Z,
+        newton.Axis.Y,
+        newton.Axis.Z,
+        newton.Axis.Y,
+        newton.Axis.Z,
+    ]
     joints = []
     parent_body = -1
     for link_idx, axis in enumerate(axes):
@@ -569,6 +625,200 @@ def test_jacobian_transpose_force_matches_matvec(test, device):
         np.testing.assert_allclose(joint_torque_np[robot_idx, n:], -999.0 * np.ones(max_dofs - n))
 
 
+def test_jacobian_times_jacobian_transpose_matches_numpy(test, device):
+    """J @ J^T, the purely kinematic factor the Moore-Penrose pseudo-inverse transpose needs, matches numpy."""
+    model, state, tool_body, coordinate_change_body_from_tool = _build_seven_dof_arm_with_tool_site(device)
+    device = model.device
+
+    state.joint_q.assign([0.3, -0.4, 0.6, 0.2, -0.5, 0.35, 0.15])
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    jacobian_com_world = newton.eval_jacobian(model, state)
+
+    max_dofs = model.max_dofs_per_articulation
+    jacobian_tool_world = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
+    wp.launch(
+        _shift_jacobian_to_tool_kernel,
+        dim=(1, max_dofs),
+        inputs=[
+            jacobian_com_world,
+            state.body_q,
+            model.body_com,
+            wp.array([tool_body], dtype=wp.int32, device=device),
+            wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array([6], dtype=wp.int32, device=device),  # tool_body is link 6 (the 7th joint's child)
+        ],
+        outputs=[jacobian_tool_world],
+        device=device,
+    )
+
+    dof_count = wp.array([max_dofs], dtype=wp.int32, device=device)
+    jacobian_times_jacobian_transpose = wp.zeros((1, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _jacobian_times_jacobian_transpose_kernel,
+        dim=(1, 6, 6),
+        inputs=[jacobian_tool_world, dof_count],
+        outputs=[jacobian_times_jacobian_transpose],
+        device=device,
+    )
+
+    jacobian_np = jacobian_tool_world.numpy()[0]
+    expected = jacobian_np @ jacobian_np.T
+    np.testing.assert_allclose(jacobian_times_jacobian_transpose.numpy()[0], expected, atol=1e-3)
+
+
+def test_null_space_projector_zeroes_task_response_only_when_dynamically_consistent(test, device):
+    """The null-space projector's defining property: null-space torques must not move the tool.
+
+    A joint torque entirely in the null space, tau_null = N @ M @ a for any
+    joint acceleration a, must produce zero task-space acceleration when N is
+    built from the dynamically-consistent pseudo-inverse transpose. Algebraically
+    this reduces to one identity: J @ M^-1 @ N @ M == 0 (a 6 x n zero matrix,
+    true for every a simultaneously, not just one example).
+
+    This does *not* hold for the Moore-Penrose variant (which ignores the
+    robot's inertia) unless M happens to be proportional to identity, so it's
+    checked here too as a contrast — confirming this test would actually
+    catch the two variants being mixed up, not just that the formulas run.
+    """
+    model, state, tool_body, coordinate_change_body_from_tool = _build_seven_dof_arm_with_tool_site(device)
+    device = model.device
+
+    # Ground-truth dynamics quantities at a non-identity configuration.
+    state.joint_q.assign([0.3, -0.4, 0.6, 0.2, -0.5, 0.35, 0.15])
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    mass_matrix = newton.eval_mass_matrix(model, state)
+    jacobian_com_world = newton.eval_jacobian(model, state)
+
+    tool_body_arr = wp.array([tool_body], dtype=wp.int32, device=device)
+    coordinate_change_body_from_tool_arr = wp.array(
+        [coordinate_change_body_from_tool], dtype=wp.transform, device=device
+    )
+    max_dofs = model.max_dofs_per_articulation
+    dof_count = wp.array([max_dofs], dtype=wp.int32, device=device)
+    task_dim = wp.array([6], dtype=wp.int32, device=device)
+
+    jacobian_tool_world = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
+    wp.launch(
+        _shift_jacobian_to_tool_kernel,
+        dim=(1, max_dofs),
+        inputs=[
+            jacobian_com_world,
+            state.body_q,
+            model.body_com,
+            tool_body_arr,
+            coordinate_change_body_from_tool_arr,
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array([6], dtype=wp.int32, device=device),  # tool_body is link 6 (the 7th joint's child)
+        ],
+        outputs=[jacobian_tool_world],
+        device=device,
+    )
+
+    mass_matrix_cholesky = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
+    mass_matrix_inv = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
+    wp.launch(
+        _invert_spd_block_kernel,
+        dim=1,
+        inputs=[mass_matrix, dof_count, mass_matrix_cholesky],
+        outputs=[mass_matrix_inv],
+        device=device,
+    )
+
+    # Lambda = (J M^-1 J^T)^-1, for the dynamically-consistent variant.
+    operational_space_mass_matrix_inv = wp.zeros((1, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _operational_space_mass_matrix_inverse_kernel,
+        dim=(1, 6, 6),
+        inputs=[jacobian_tool_world, mass_matrix_inv, dof_count],
+        outputs=[operational_space_mass_matrix_inv],
+        device=device,
+    )
+    operational_space_mass_matrix_cholesky = wp.zeros((1, 6, 6), dtype=float, device=device)
+    operational_space_mass_matrix = wp.zeros((1, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _invert_spd_block_kernel,
+        dim=1,
+        inputs=[operational_space_mass_matrix_inv, task_dim, operational_space_mass_matrix_cholesky],
+        outputs=[operational_space_mass_matrix],
+        device=device,
+    )
+
+    # (J @ J^T)^-1, for the Moore-Penrose variant.
+    jacobian_times_jacobian_transpose = wp.zeros((1, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _jacobian_times_jacobian_transpose_kernel,
+        dim=(1, 6, 6),
+        inputs=[jacobian_tool_world, dof_count],
+        outputs=[jacobian_times_jacobian_transpose],
+        device=device,
+    )
+    jacobian_times_jacobian_transpose_cholesky = wp.zeros((1, 6, 6), dtype=float, device=device)
+    jacobian_times_jacobian_transpose_inv = wp.zeros((1, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _invert_spd_block_kernel,
+        dim=1,
+        inputs=[jacobian_times_jacobian_transpose, task_dim, jacobian_times_jacobian_transpose_cholesky],
+        outputs=[jacobian_times_jacobian_transpose_inv],
+        device=device,
+    )
+
+    def build_projector(task_matrix, apply_mass_matrix_inv):
+        task_matrix_times_jacobian = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
+        wp.launch(
+            _task_matrix_times_jacobian_kernel,
+            dim=(1, 6, max_dofs),
+            inputs=[task_matrix, jacobian_tool_world, dof_count],
+            outputs=[task_matrix_times_jacobian],
+            device=device,
+        )
+        if apply_mass_matrix_inv:
+            jacobian_pinv_transpose = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
+            wp.launch(
+                _apply_mass_matrix_inv_on_right_kernel,
+                dim=(1, 6, max_dofs),
+                inputs=[task_matrix_times_jacobian, mass_matrix_inv, dof_count],
+                outputs=[jacobian_pinv_transpose],
+                device=device,
+            )
+        else:
+            jacobian_pinv_transpose = task_matrix_times_jacobian
+
+        null_space_projector = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
+        wp.launch(
+            _null_space_projector_kernel,
+            dim=(1, max_dofs, max_dofs),
+            inputs=[jacobian_tool_world, jacobian_pinv_transpose, dof_count],
+            outputs=[null_space_projector],
+            device=device,
+        )
+        return null_space_projector.numpy()[0][:7, :7]
+
+    dynamically_consistent_projector = build_projector(operational_space_mass_matrix, apply_mass_matrix_inv=True)
+    moore_penrose_projector = build_projector(jacobian_times_jacobian_transpose_inv, apply_mass_matrix_inv=False)
+
+    jacobian_np = jacobian_tool_world.numpy()[0][:, :7]
+    mass_matrix_inv_np = mass_matrix_inv.numpy()[0][:7, :7]
+    mass_matrix_np = mass_matrix.numpy()[0][:7, :7]
+
+    # Both are valid projectors (idempotent), regardless of which pseudo-inverse built them.
+    np.testing.assert_allclose(
+        dynamically_consistent_projector @ dynamically_consistent_projector,
+        dynamically_consistent_projector,
+        atol=1e-3,
+    )
+    np.testing.assert_allclose(
+        moore_penrose_projector @ moore_penrose_projector, moore_penrose_projector, atol=1e-3
+    )
+
+    # Only the dynamically-consistent projector zeroes the task-space response to a null-space torque.
+    dynamically_consistent_response = jacobian_np @ mass_matrix_inv_np @ dynamically_consistent_projector @ mass_matrix_np
+    moore_penrose_response = jacobian_np @ mass_matrix_inv_np @ moore_penrose_projector @ mass_matrix_np
+
+    np.testing.assert_allclose(dynamically_consistent_response, np.zeros((6, 7)), atol=1e-3)
+    test.assertGreater(np.abs(moore_penrose_response).max(), 0.1)
+
+
 class TestOperationalSpaceKernels(unittest.TestCase):
     pass
 
@@ -643,6 +893,18 @@ add_function_test(
     TestOperationalSpaceKernels,
     "test_jacobian_transpose_force_matches_matvec",
     test_jacobian_transpose_force_matches_matvec,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_jacobian_times_jacobian_transpose_matches_numpy",
+    test_jacobian_times_jacobian_transpose_matches_numpy,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_null_space_projector_zeroes_task_response_only_when_dynamically_consistent",
+    test_null_space_projector_zeroes_task_response_only_when_dynamically_consistent,
     devices=devices,
 )
 

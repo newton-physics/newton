@@ -408,3 +408,129 @@ def _jacobian_transpose_force_kernel(
         jacobian_column[row] = jacobian_tool_world[robot_idx, row, dof_idx]
 
     joint_torque[robot_idx, dof_idx] = wp.dot(jacobian_column, task_space_force_world[robot_idx])
+
+
+# ---------------------------------------------------------------------------
+# Null-space projector: N = I - J^T @ jacobian_pinv_transpose.
+#
+# jacobian_pinv_transpose has two variants:
+#   - dynamically consistent: Lambda @ J @ M^-1 (needs the mass matrix)
+#   - Moore-Penrose: (J @ J^T)^-1 @ J (kinematic only, ignores inertia)
+# Only the dynamically-consistent variant guarantees that a joint torque
+# entirely in the null space, tau_null = N^T @ M @ a for any joint
+# acceleration a, produces zero task-space acceleration. That guarantee is
+# the identity J @ M^-1 @ N^T == 0, which the module tests check directly
+# (and check does *not* hold for the Moore-Penrose variant, in general).
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _jacobian_times_jacobian_transpose_kernel(
+    jacobian_tool_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, in world coords
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    jacobian_times_jacobian_transpose: wp.array3d[float],  # (robot_count, 6, 6) = jacobian_tool_world @ its transpose
+):
+    """``J @ J^T``, the purely kinematic (inertia-blind) analogue of ``Lambda^-1 = J M^-1 J^T``.
+
+    Its inverse (via :func:`_invert_spd_block_kernel`) gives the 6x6 factor
+    the Moore-Penrose pseudo-inverse transpose needs, ``(J @ J^T)^-1 @ J``.
+    """
+    robot_idx, row, col = wp.tid()
+    n = dof_count[robot_idx]
+    total = float(0.0)
+    for k in range(n):
+        total += jacobian_tool_world[robot_idx, row, k] * jacobian_tool_world[robot_idx, col, k]
+    jacobian_times_jacobian_transpose[robot_idx, row, col] = total
+
+
+@wp.kernel
+def _task_matrix_times_jacobian_kernel(
+    task_matrix: wp.array3d[float],  # (robot_count, 6, 6) symmetric: Lambda, or (J @ J^T)^-1
+    jacobian_tool_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, in world coords
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    result: wp.array3d[float],  # (robot_count, 6, max_dofs) = task_matrix @ jacobian_tool_world; zero beyond dof_count
+):
+    """The 6x6-matrix-times-Jacobian step shared by both pseudo-inverse-transpose variants.
+
+    With ``task_matrix = Lambda`` this is the first half of the
+    dynamically-consistent ``jacobian_pinv_transpose = Lambda @ J @ M^-1``
+    (still needs :func:`_apply_mass_matrix_inv_on_right_kernel`). With
+    ``task_matrix = (J @ J^T)^-1`` this *is* the Moore-Penrose
+    ``jacobian_pinv_transpose`` already, with no further step needed.
+    """
+    robot_idx, row, col = wp.tid()
+    if col >= dof_count[robot_idx]:
+        return
+    total = float(0.0)
+    for k in range(6):
+        total += task_matrix[robot_idx, row, k] * jacobian_tool_world[robot_idx, k, col]
+    result[robot_idx, row, col] = total
+
+
+@wp.kernel
+def _apply_mass_matrix_inv_on_right_kernel(
+    matrix: wp.array3d[float],  # (robot_count, 6, max_dofs), e.g. Lambda @ jacobian_tool_world
+    mass_matrix_inv: wp.array3d[
+        float
+    ],  # (robot_count, max_dofs, max_dofs) inverse of the controlled-DOF mass matrix; zero beyond dof_count
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    result: wp.array3d[float],  # (robot_count, 6, max_dofs) = matrix @ mass_matrix_inv; zero beyond dof_count
+):
+    """Right-multiply by ``M^-1``, the remaining step of the dynamically-consistent pseudo-inverse transpose.
+
+    Given ``matrix = Lambda @ jacobian_tool_world`` (from
+    :func:`_task_matrix_times_jacobian_kernel`), this completes
+    ``jacobian_pinv_transpose = Lambda @ J @ M^-1``.
+    """
+    robot_idx, row, col = wp.tid()
+    n = dof_count[robot_idx]
+    if col >= n:
+        return
+    total = float(0.0)
+    for k in range(n):
+        total += matrix[robot_idx, row, k] * mass_matrix_inv[robot_idx, k, col]
+    result[robot_idx, row, col] = total
+
+
+@wp.kernel
+def _null_space_projector_kernel(
+    jacobian_tool_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, in world coords
+    jacobian_pinv_transpose: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) either pseudo-inverse-transpose variant; zero beyond dof_count
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    null_space_projector: wp.array3d[
+        float
+    ],  # (robot_count, max_dofs, max_dofs) = I - J^T @ jacobian_pinv_transpose; untouched beyond dof_count
+):
+    """The null-space projector, ``N = I - J^T @ jacobian_pinv_transpose``.
+
+    A joint torque ``N^T @ (anything)`` stays entirely in the null space of
+    the task, in the sense that it doesn't change the joint-space-to-task-space
+    kinematic relationship — see the module docstring and tests for what
+    additional guarantee holds depending on which ``jacobian_pinv_transpose``
+    variant built ``N``.
+    """
+    robot_idx, row, col = wp.tid()
+    n = dof_count[robot_idx]
+    if row >= n or col >= n:
+        return
+
+    identity_entry = float(0.0)
+    if row == col:
+        identity_entry = 1.0
+
+    total = float(0.0)
+    for k in range(6):
+        total += jacobian_tool_world[robot_idx, k, row] * jacobian_pinv_transpose[robot_idx, k, col]
+    null_space_projector[robot_idx, row, col] = identity_entry - total
