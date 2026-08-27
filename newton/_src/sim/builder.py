@@ -6012,6 +6012,12 @@ class ModelBuilder:
             if body2 >= 0:
                 bodies_in_constraints.add(body2)
 
+        # A body-particle attachment needs a surviving body to anchor to and to receive the
+        # reaction force, so its body must not be merged into the world.
+        for body in self.attachment_body_particle_body:
+            if body >= 0:
+                bodies_in_constraints.add(body)
+
         retained_joints = []
         retained_bodies = []
         body_remap = {-1: -1}
