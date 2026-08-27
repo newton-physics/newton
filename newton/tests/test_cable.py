@@ -5822,7 +5822,7 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     ``joint_target_ke`` or ``joint_limit_ke`` alone must propagate. Built on the legacy AVBD
     path because it is the only formulation that reads these cached slots -- compliant ALM
     gathers the same coefficients live from the model each solve (see
-    ``_gather_joint_axis_drive_limit``) and needs no notification.
+    ``_load_joint_axis_drive_limit``) and needs no notification.
     """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     JointDofConfig = newton.ModelBuilder.JointDofConfig
