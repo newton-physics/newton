@@ -4134,7 +4134,13 @@ def test_edge_face_pushes_vertices_out(test, device):
     test.assertEqual(int(np.sum(idx[:, 1] < 0)), 0, "vertices should be outside the legacy particle margin")
     test.assertGreater(total, 0, "edge/face contacts must be detected")
 
-    normal = contacts.soft_contact_normal.numpy()[0]
+    # Every record lies on one flat face of the post, so they share a normal. Assert that
+    # rather than letting the push check below depend silently on record 0.
+    normals = contacts.soft_contact_normal.numpy()[:total]
+    test.assertTrue(
+        bool(np.allclose(normals, normals[0], atol=1.0e-6)), "edge/face records should share one face normal"
+    )
+    normal = normals[0]
 
     solver = newton.solvers.SolverVBD(model)
 
