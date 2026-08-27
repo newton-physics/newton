@@ -1436,12 +1436,12 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
             device=device,
         )
 
-        # With K=rho: s=0.5, k_eff=5 -> lambda_n = k_eff*C_n = 0.5.
-        # Cone uses normal_force = k_eff*C_n + s*lambda_n = 0.75 -> limit 0.375.
+        # With K=rho: s=0.5, k_eff=5 -> lambda_n = k_eff*C_n = 0.5,
+        # and the Coulomb limit is mu*lambda_n = 0.25.
         np.testing.assert_allclose(
             contact_lambda.numpy(),
             [
-                [-0.375, 0.0, 0.5],
+                [-0.25, 0.0, 0.5],
                 [0.0, 0.0, 0.5],
             ],
             rtol=1.0e-6,
