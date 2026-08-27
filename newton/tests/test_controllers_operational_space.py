@@ -1613,11 +1613,11 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         )
         identity_pose = wp.transform_identity()
         zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        # A fixed, well-conditioned Jacobian (rank 6, singular values ~1.1-4.6) and a diagonal
-        # (trivially SPD, well-conditioned) mass matrix, rather than a random Gram matrix -- a
-        # poorly-conditioned random mass matrix amplifies the float32 rounding difference between
-        # this kernel's Cholesky-based inverse and numpy's LU-based one enough to need a much
-        # looser tolerance below to avoid test flakiness.
+        # A fixed, well-conditioned Jacobian (rank 6, singular values ~1.1-4.6) and a fixed,
+        # genuinely coupled SPD mass matrix (A @ A^T + 5*I for a fixed, non-diagonal A) -- rather
+        # than a random Gram matrix, whose poor conditioning would amplify the float32 rounding
+        # difference between this kernel's Cholesky-based inverse and numpy's LU-based one enough
+        # to need a much looser tolerance below to avoid test flakiness.
         jacobian = np.array(
             [
                 [2, 0, 0, 1, 0, 1, 0],
@@ -1629,7 +1629,19 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             ],
             dtype=np.float32,
         ).reshape(1, 6, 7)
-        mass_matrix = np.diag([2.0, 3.0, 1.5, 4.0, 2.5, 3.5, 2.0]).astype(np.float32).reshape(1, 7, 7)
+        mass_matrix_seed = np.array(
+            [
+                [1, 0, 1, 0, 0, 1, 0],
+                [0, 1, 0, 1, 0, 0, 1],
+                [1, 0, 1, 0, 1, 0, 0],
+                [0, 1, 0, 2, 0, 1, 0],
+                [0, 0, 1, 0, 1, 0, 1],
+                [1, 1, 0, 1, 0, 2, 0],
+                [0, 0, 0, 0, 1, 0, 1],
+            ],
+            dtype=np.float32,
+        )
+        mass_matrix = (mass_matrix_seed @ mass_matrix_seed.T + 5.0 * np.eye(7, dtype=np.float32)).reshape(1, 7, 7)
         joint_q = np.array([0.1, -0.2, 0.3, -0.1, 0.05, -0.15, 0.2], dtype=np.float32)
         joint_qd = np.array([0.05, 0.02, -0.03, 0.01, -0.02, 0.04, -0.01], dtype=np.float32)
         joint_q_des_null = np.zeros(7, dtype=np.float32)
@@ -1752,7 +1764,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         current_pose = wp.transform_identity()
         desired_pose = wp.transform(wp.vec3(0.1, -0.05, 0.02), wp.quat_identity())
         zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        # Same fixed, well-conditioned Jacobian and diagonal mass matrix as the null-space tests above.
+        # Same fixed, well-conditioned Jacobian and genuinely coupled SPD mass matrix as the
+        # null-space tests above.
         jacobian = np.array(
             [
                 [2, 0, 0, 1, 0, 1, 0],
@@ -1764,7 +1777,19 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             ],
             dtype=np.float32,
         ).reshape(1, 6, 7)
-        mass_matrix = np.diag([2.0, 3.0, 1.5, 4.0, 2.5, 3.5, 2.0]).astype(np.float32).reshape(1, 7, 7)
+        mass_matrix_seed = np.array(
+            [
+                [1, 0, 1, 0, 0, 1, 0],
+                [0, 1, 0, 1, 0, 0, 1],
+                [1, 0, 1, 0, 1, 0, 0],
+                [0, 1, 0, 2, 0, 1, 0],
+                [0, 0, 1, 0, 1, 0, 1],
+                [1, 1, 0, 1, 0, 2, 0],
+                [0, 0, 0, 0, 1, 0, 1],
+            ],
+            dtype=np.float32,
+        )
+        mass_matrix = (mass_matrix_seed @ mass_matrix_seed.T + 5.0 * np.eye(7, dtype=np.float32)).reshape(1, 7, 7)
 
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
@@ -1825,7 +1850,19 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             ],
             dtype=np.float32,
         ).reshape(1, 6, 7)
-        mass_matrix = np.diag([2.0, 3.0, 1.5, 4.0, 2.5, 3.5, 2.0]).astype(np.float32).reshape(1, 7, 7)
+        mass_matrix_seed = np.array(
+            [
+                [1, 0, 1, 0, 0, 1, 0],
+                [0, 1, 0, 1, 0, 0, 1],
+                [1, 0, 1, 0, 1, 0, 0],
+                [0, 1, 0, 2, 0, 1, 0],
+                [0, 0, 1, 0, 1, 0, 1],
+                [1, 1, 0, 1, 0, 2, 0],
+                [0, 0, 0, 0, 1, 0, 1],
+            ],
+            dtype=np.float32,
+        )
+        mass_matrix = (mass_matrix_seed @ mass_matrix_seed.T + 5.0 * np.eye(7, dtype=np.float32)).reshape(1, 7, 7)
         joint_q = np.array([0.1, -0.2, 0.3, -0.1, 0.05, -0.15, 0.2], dtype=np.float32)
         joint_qd = np.array([0.05, 0.02, -0.03, 0.01, -0.02, 0.04, -0.01], dtype=np.float32)
         joint_q_des_null = np.zeros(7, dtype=np.float32)
