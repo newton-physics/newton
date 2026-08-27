@@ -2647,29 +2647,26 @@ class Gaussian:
         from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         with wp.ScopedDevice(device):
-            self._warp_data = Gaussian.Data()
-            self._warp_data.transforms = wp.array(
-                np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf
-            )
-            self._warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
-            self._warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
-            self._warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
-            self._warp_data.min_response = self.min_response
-            self._warp_data.sorting_mode = self.sorting_mode
-            self._warp_data.num_points = self._warp_data.transforms.shape[0]
-
+            warp_data = Gaussian.Data()
+            warp_data.transforms = wp.array(np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf)
+            warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
+            warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
+            warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            warp_data.min_response = self.min_response
+            warp_data.sorting_mode = self.sorting_mode
+            warp_data.num_points = warp_data.transforms.shape[0]
             lowers = wp.zeros(self.count, dtype=wp.vec3f)
             uppers = wp.zeros(self.count, dtype=wp.vec3f)
-
             wp.launch(
                 kernel=compute_gaussian_bvh_bounds,
                 dim=self.count,
-                inputs=[self._warp_data, lowers, uppers],
+                inputs=[warp_data, lowers, uppers],
             )
-
-            self._warp_bvh = wp.Bvh(lowers, uppers, constructor=bvh_constructor)
-            self._warp_data.bvh_id = self._warp_bvh.id
-        return self._warp_data
+            warp_bvh = wp.Bvh(lowers, uppers, constructor=bvh_constructor)
+            warp_data.bvh_id = warp_bvh.id
+            self._warp_data = warp_data
+            self._warp_bvh = warp_bvh
+        return warp_data
 
     def bvh_refit(self) -> None:
         """Refit the Gaussian :attr:`bvh` in place for the current finalized data.
