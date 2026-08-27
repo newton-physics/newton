@@ -5626,6 +5626,30 @@ class TestMuJoCoValidation(unittest.TestCase):
             SolverMuJoCo(model, separate_worlds=True)
         self.assertIn("joint types mismatch at position", str(ctx.exception).lower())
 
+    def test_mismatched_joint_dof_counts_fails(self):
+        """Test that D6 joints with differing DOF layouts across worlds raises ValueError."""
+
+        # Both worlds use D6 joints but differ in DOF count
+        def make_robot(angular_axis_count):
+            robot = newton.ModelBuilder()
+            b1 = robot.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+            axes = [
+                newton.ModelBuilder.JointDofConfig(axis=a) for a in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+            ][:angular_axis_count]
+            j1 = robot.add_joint_d6(-1, b1, linear_axes=[], angular_axes=axes)
+            robot.add_articulation([j1])
+            robot.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+            return robot
+
+        main = newton.ModelBuilder()
+        main.add_world(make_robot(2))
+        main.add_world(make_robot(3))
+        model = main.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        self.assertIn("joint dof counts mismatch at position", str(ctx.exception).lower())
+
     def test_mismatched_shape_types_fails(self):
         """Test that different shape types at same position across worlds raises ValueError."""
         robot1 = newton.ModelBuilder()
