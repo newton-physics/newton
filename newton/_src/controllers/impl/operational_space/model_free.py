@@ -671,9 +671,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             self._joint_qd_buf = _compact_buf()
             self._joint_q_des_null_buf = _compact_buf()
             self._joint_qd_des_null_buf = _compact_buf()
-            self._null_stiffness_baked = self._bake_compact_gain(null_space_stiffness)
+            self._null_stiffness_baked = self._bake_joint_gain(null_space_stiffness)
             self._null_stiffness_buf = _compact_buf() if self._null_stiffness_baked is None else None
-            self._null_damping_baked = self._bake_compact_gain(null_space_damping)
+            self._null_damping_baked = self._bake_joint_gain(null_space_damping)
             self._null_damping_buf = _compact_buf() if self._null_damping_baked is None else None
             self._posture_acc_buf = _compact_buf()
             self._null_space_jacobian_pinv_transpose = wp.zeros(
@@ -774,8 +774,8 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             requires_grad=self._requires_grad,
         )
 
-    def _bake_compact_gain(self, value: wp.array[wp.float32] | float | None) -> wp.array[wp.float32] | None:
-        """Broadcast a scalar, or copy a gain array, into a fresh compact per-DOF buffer.
+    def _bake_joint_gain(self, value: wp.array[wp.float32] | float | None) -> wp.array[wp.float32] | None:
+        """Broadcast a scalar, or copy a gain array, into a fresh joint-space (compact, per-DOF) buffer.
 
         Returns ``None`` for live gains, which are read from the input struct
         each step instead. A wp.array is already validated by
@@ -1038,6 +1038,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             inputs.jacobian_tool_world, self._jacobian_buf, (robot_count, 6, self._max_controlled_dofs), self._device
         )
 
+        # Inertial decoupling: read the mass matrix, needed for Lambda below.
         if self._use_inertia:
             _validate_array(
                 array=inputs.mass_matrix,
@@ -1054,6 +1055,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 self._device,
             )
 
+        # Gravity compensation: read the caller-supplied compact torque term.
         if self._use_gravity:
             _validate_array(
                 array=inputs.gravity_force,
@@ -1065,6 +1067,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             )
             _read_port(inputs.gravity_force, self._grav_buf, self._total_controlled_dofs, self._device)
 
+        # Null-space posture control: read current/desired joint state and gains.
         if self._use_null_space:
             for port, name, buf in (
                 (inputs.joint_q, "inputs.joint_q", self._joint_q_buf),
@@ -1105,6 +1108,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 )
                 _read_port(inputs.null_space_damping, self._null_damping_buf, self._total_controlled_dofs, self._device)
 
+        # Wrench control: read the desired wrench, and (feedback only) the measurement and gain.
         if self._use_wrench:
             _validate_array(
                 array=inputs.desired_wrench_world,
@@ -1158,6 +1162,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
 
         force_source = self._desired_task_acceleration_buf
         if self._use_inertia:
+            # Lambda = (J M^-1 J^T)^-1, then premultiply the PD term by it.
             wp.launch(
                 _invert_spd_block_kernel,
                 dim=robot_count,
@@ -1193,6 +1198,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             force_source = self._task_space_force_buf
 
         if self._use_wrench:
+            # Mask the motion force to the motion-controlled axes before mapping to joint torques.
             wp.launch(
                 _rotate_selection_matrix_kernel,
                 dim=robot_count,
@@ -1218,6 +1224,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         )
 
         if self._use_wrench:
+            # Build the wrench command: feedforward + feedback, feedback only, or feedforward only.
             wrench_command_source = self._desired_wrench_buf
             if self._use_wrench_feedback:
                 wrench_stiffness = (
@@ -1289,6 +1296,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             )
 
             if self._use_inertia:
+                # Dynamically-consistent pinv-transpose, Lambda @ J @ M^-1 (reuses this step's Lambda/M^-1).
                 wp.launch(
                     _task_matrix_times_jacobian_kernel,
                     dim=(robot_count, 6, self._max_controlled_dofs),
@@ -1308,6 +1316,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     device=self._device,
                 )
             else:
+                # Moore-Penrose pinv-transpose, (J @ J^T)^-1 @ J: kinematics-only, no mass matrix needed.
                 wp.launch(
                     _jacobian_times_jacobian_transpose_kernel,
                     dim=(robot_count, 6, 6),
@@ -1338,6 +1347,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
             )
 
+            # Premultiply the posture PD term by M (an acceleration -> torque conversion) before projecting.
             posture_source = self._posture_acc_buf
             if self._use_inertia:
                 wp.launch(
@@ -1355,6 +1365,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     device=self._device,
                 )
                 posture_source = self._posture_force_buf
+            # tau_null = N @ posture_source, projected so it doesn't disturb task-space motion.
             wp.launch(
                 _block_matrix_vector_multiply_kernel,
                 dim=self._total_controlled_dofs,
@@ -1386,6 +1397,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
             )
 
+        # A view needs the scatter kernel (wp.copy isn't graph-capture-safe for a non-contiguous target).
         if isinstance(outputs.joint_f, wp.indexedarray):
             wp.launch(
                 _scatter_port_kernel,
