@@ -2554,8 +2554,8 @@ class Gaussian:
         self._sh_coeffs.setflags(write=False)
 
         # GPU arrays populated by finalize()
-        self.warp_bvh: wp.Bvh = None
-        self.warp_data: Gaussian.Data = None
+        self._warp_bvh: wp.Bvh = None
+        self._warp_data: Gaussian.Data = None
 
         # Inertia: Gaussians are render-only so they contribute no mass
         self.has_inertia = False
@@ -2619,7 +2619,7 @@ class Gaussian:
         Use :meth:`bvh_refit` to update it in place after the finalized
         :class:`Data` arrays change.
         """
-        return self.warp_bvh
+        return self._warp_bvh
 
     def _find_sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
@@ -2647,16 +2647,16 @@ class Gaussian:
         from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         with wp.ScopedDevice(device):
-            self.warp_data = Gaussian.Data()
-            self.warp_data.transforms = wp.array(
+            self._warp_data = Gaussian.Data()
+            self._warp_data.transforms = wp.array(
                 np.append(self._positions, self._rotations, axis=1), dtype=wp.transformf
             )
-            self.warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
-            self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
-            self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
-            self.warp_data.min_response = self.min_response
-            self.warp_data.sorting_mode = self.sorting_mode
-            self.warp_data.num_points = self.warp_data.transforms.shape[0]
+            self._warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
+            self._warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
+            self._warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            self._warp_data.min_response = self.min_response
+            self._warp_data.sorting_mode = self.sorting_mode
+            self._warp_data.num_points = self._warp_data.transforms.shape[0]
 
             lowers = wp.zeros(self.count, dtype=wp.vec3f)
             uppers = wp.zeros(self.count, dtype=wp.vec3f)
@@ -2664,12 +2664,12 @@ class Gaussian:
             wp.launch(
                 kernel=compute_gaussian_bvh_bounds,
                 dim=self.count,
-                inputs=[self.warp_data, lowers, uppers],
+                inputs=[self._warp_data, lowers, uppers],
             )
 
-            self.warp_bvh = wp.Bvh(lowers, uppers, constructor=bvh_constructor)
-            self.warp_data.bvh_id = self.warp_bvh.id
-        return self.warp_data
+            self._warp_bvh = wp.Bvh(lowers, uppers, constructor=bvh_constructor)
+            self._warp_data.bvh_id = self._warp_bvh.id
+        return self._warp_data
 
     def bvh_refit(self) -> None:
         """Refit the Gaussian :attr:`bvh` in place for the current finalized data.
@@ -2689,16 +2689,16 @@ class Gaussian:
         """
         from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
-        if self.warp_bvh is None or self.warp_data is None:
+        if self._warp_bvh is None or self._warp_data is None:
             raise RuntimeError("Gaussian.bvh_refit() requires Gaussian.finalize() to have been called first.")
 
-        with wp.ScopedDevice(self.warp_bvh.device):
+        with wp.ScopedDevice(self._warp_bvh.device):
             wp.launch(
                 kernel=compute_gaussian_bvh_bounds,
                 dim=self.count,
-                inputs=[self.warp_data, self.warp_bvh.lowers, self.warp_bvh.uppers],
+                inputs=[self._warp_data, self._warp_bvh.lowers, self._warp_bvh.uppers],
             )
-            self.warp_bvh.refit()
+            self._warp_bvh.refit()
 
     # ---- Factory methods -----------------------------------------------------
 
