@@ -452,13 +452,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_deterministic_max_records = 0
         coupling_deterministic_max_records = 0
         if effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
+            attachment_records = 0
             if model.attachment_body_particle_count > 0:
                 attachment_particles = model.attachment_body_particle_particle.numpy()
                 attachment_records = int(np.bincount(attachment_particles, minlength=model.particle_count).max())
-                particle_deterministic_max_records = max(
-                    particle_deterministic_max_records,
-                    attachment_records,
-                )
+                particle_deterministic_max_records = attachment_records
             if particle_enable_self_contact:
                 edge_iterations = (
                     particle_edge_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
@@ -470,10 +468,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                 force_records = 2 * edge_iterations + 4 * vertex_iterations
                 if model.shape_count > 0:
                     force_records += 1
+                # Attachments accumulate into the same force/Hessian buffers as contacts within a
+                # color pass, so their records add to the force phase rather than competing with it.
                 particle_deterministic_max_records = max(
-                    particle_deterministic_max_records,
                     truncation_records,
-                    force_records,
+                    force_records + attachment_records,
                 )
                 coupling_deterministic_max_records = 2 * edge_iterations + 3 * vertex_iterations
         if model.particle_count > 0:

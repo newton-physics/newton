@@ -6253,6 +6253,20 @@ class ModelBuilder:
                     target_attr.values[eq_idx] = -1
                     target_kind_attr.values[eq_idx] = 0
 
+        # Remap body-particle attachments onto the reindexed bodies. When the anchored body was
+        # merged into its parent, the local anchor must be re-expressed in the surviving parent's
+        # frame so the attachment keeps its world-space position.
+        for i in range(len(self.attachment_body_particle_body)):
+            old_body = self.attachment_body_particle_body[i]
+            if old_body in body_merged_parent:
+                merge_xform = body_merged_transform[old_body]
+                self.attachment_body_particle_body_point[i] = wp.transform_point(
+                    merge_xform, self.attachment_body_particle_body_point[i]
+                )
+                self.attachment_body_particle_body[i] = body_remap[body_merged_parent[old_body]]
+            else:
+                self.attachment_body_particle_body[i] = body_remap[old_body]
+
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
         # Body references follow merges: a reference to a body that was merged into its parent

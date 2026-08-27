@@ -2807,7 +2807,13 @@ class SolverCoupledADMM(SolverCoupled):
             )
 
         rows = []
-        for label, count, *arrays in sources:
+        # An attachment migrated to the model arrays but still authored through the deprecated
+        # helper appears in both sources; applying it twice would double its stiffness. Identical
+        # rows within one source stay, since repeating a row there is an explicit choice.
+        model_keys = set()
+        duplicates = []
+        for source_index, (label, count, *arrays) in enumerate(sources):
+            is_model_source = source_index == 0 and label == "row"
             body_np, particle_np, point_np, stiffness_np, damping_np, enabled_np = (array.numpy() for array in arrays)
             for row in range(count):
                 if not bool(enabled_np[row]):
@@ -2826,7 +2832,20 @@ class SolverCoupledADMM(SolverCoupled):
                 if damping < 0.0:
                     raise ValueError(f"ADMM body-particle attachment {name} has negative damping")
                 point = (float(point_np[row][0]), float(point_np[row][1]), float(point_np[row][2]))
+                key = (body, particle, point, stiffness, damping)
+                if is_model_source:
+                    model_keys.add(key)
+                elif key in model_keys:
+                    duplicates.append(name)
+                    continue
                 rows.append((name, body, particle, point, stiffness, damping))
+
+        if duplicates:
+            logger.warning(
+                f"SolverCoupledADMM ignored body-particle attachment {', '.join(duplicates)} because an identical "
+                "attachment is already defined on the model; remove the deprecated "
+                "SolverCoupledADMM.add_body_particle_attachment() call.",
+            )
         return rows
 
     def _build_admm_body_particle_attachment_groups(self) -> None:
