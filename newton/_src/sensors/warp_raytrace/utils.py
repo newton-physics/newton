@@ -703,10 +703,11 @@ class Utils:
         """Compute camera-space ray directions for OpenCV pinhole cameras.
 
         Inverts OpenCV's rational radial, tangential, and thin-prism distortion
-        model with fixed-point iteration. The four- and five-coefficient
+        model with damped Newton iteration. The four- and five-coefficient
         variants are represented by leaving unused coefficients at zero. The
         forward distortion mapping must be invertible over the calibrated image
-        domain.
+        domain. Pixels whose inverse cannot be verified within the solver
+        tolerance receive a zero direction.
 
         Args:
             width: Output image width [px].
@@ -742,8 +743,8 @@ class Utils:
                 shape ``(1, height, width, 2)`` and dtype ``vec3f``.
 
         Raises:
-            ValueError: If focal lengths or calibration image dimensions are
-                non-finite or non-positive.
+            ValueError: If any calibration value is non-finite, or if focal
+                lengths or calibration image dimensions are non-positive.
         """
         image_width = width if image_width is None else image_width
         image_height = height if image_height is None else image_height
@@ -753,6 +754,8 @@ class Utils:
             math.isfinite(image_width) and math.isfinite(image_height) and image_width > 0.0 and image_height > 0.0
         ):
             raise ValueError("image_width and image_height must be finite and positive.")
+        if not all(math.isfinite(value) for value in (cx, cy, k1, k2, k3, k4, k5, k6, p1, p2, s1, s2, s3, s4)):
+            raise ValueError("cx, cy, and distortion coefficients must be finite.")
         out_rays, camera_index = camera_utils._validate_camera_ray_output(
             width, height, 1, out_rays, camera_index, self.__render_context.device
         )

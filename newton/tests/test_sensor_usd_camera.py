@@ -176,6 +176,85 @@ class TestSensorCameraRays(unittest.TestCase):
                 self.assertAlmostEqual(x_distorted, expected_x, delta=1.0e-5)
                 self.assertAlmostEqual(y_distorted, expected_y, delta=1.0e-5)
 
+    def test_opencv_pinhole_strong_distortion_round_trips(self):
+        """Verify inversion remains accurate for strong invertible distortion."""
+        utils = _make_utils()
+        width, height = 32, 24
+        image_width, image_height = 640.0, 480.0
+        fx = fy = 320.0
+        cx, cy = 320.0, 240.0
+        coefficients = {
+            "k1": -0.45,
+            "k2": 0.25,
+            "k3": 0.0,
+            "k4": 0.0,
+            "k5": 0.0,
+            "k6": 0.0,
+            "p1": 0.0,
+            "p2": 0.0,
+            "s1": 0.0,
+            "s2": 0.0,
+            "s3": 0.0,
+            "s4": 0.0,
+        }
+
+        rays = utils.compute_camera_rays_pinhole_opencv(
+            width,
+            height,
+            fx,
+            fy,
+            cx,
+            cy,
+            image_width=image_width,
+            image_height=image_height,
+            **coefficients,
+        ).numpy()
+
+        np.testing.assert_allclose(np.linalg.norm(rays[..., 1, :], axis=-1), 1.0, atol=1e-6)
+        for py in range(height):
+            for px in range(width):
+                x, y = _ray_to_opencv_normalized(rays[0, py, px, 1])
+                x_distorted, y_distorted = _forward_pinhole_opencv(x, y, coefficients)
+                expected_x = (((px + 0.5) / width) * image_width - cx) / fx
+                expected_y = (((py + 0.5) / height) * image_height - cy) / fy
+                self.assertAlmostEqual(x_distorted, expected_x, delta=1.0e-5)
+                self.assertAlmostEqual(y_distorted, expected_y, delta=1.0e-5)
+
+    def test_opencv_pinhole_non_invertible_distortion_returns_sentinel(self):
+        """Verify pixels without a verifiable inverse receive the zero sentinel."""
+        utils = _make_utils()
+        width, height = 64, 48
+        image_width, image_height = 640.0, 480.0
+        fx = fy = 150.0
+        cx, cy = 320.0, 240.0
+
+        # A strong barrel term folds the forward map, leaving outer pixels non-invertible.
+        rays = utils.compute_camera_rays_pinhole_opencv(
+            width,
+            height,
+            fx,
+            fy,
+            cx,
+            cy,
+            image_width=image_width,
+            image_height=image_height,
+            k1=-0.9,
+        ).numpy()
+
+        directions = rays[0, :, :, 1]
+        self.assertTrue(np.isfinite(directions).all())
+
+        norms = np.linalg.norm(directions, axis=-1)
+        is_zero = norms == 0.0
+        is_unit = np.isclose(norms, 1.0, atol=1e-6)
+        # Every ray is either a valid unit direction or the exact zero sentinel.
+        self.assertTrue(np.logical_or(is_zero, is_unit).all())
+        # The fold produces both resolvable and unresolvable pixels.
+        self.assertTrue(is_zero.any())
+        self.assertTrue(is_unit.any())
+        # The central pixel is near the principal point and must resolve.
+        self.assertTrue(is_unit[height // 2, width // 2])
+
     def test_opencv_pinhole_rays_write_preallocated_camera_index(self):
         """Verify writing OpenCV pinhole rays into a shared camera buffer."""
         utils = _make_utils()
@@ -223,6 +302,13 @@ class TestSensorCameraRays(unittest.TestCase):
                 with self.subTest(name=name, value=value):
                     invalid_calibration = calibration | {name: value}
                     with self.assertRaisesRegex(ValueError, "image_width and image_height must be finite and positive"):
+                        utils.compute_camera_rays_pinhole_opencv(**invalid_calibration)
+
+        for name in ("cx", "cy", "k1", "k2", "k3", "k4", "k5", "k6", "p1", "p2", "s1", "s2", "s3", "s4"):
+            for value in (math.nan, math.inf, -math.inf):
+                with self.subTest(name=name, value=value):
+                    invalid_calibration = calibration | {name: value}
+                    with self.assertRaisesRegex(ValueError, "cx, cy, and distortion coefficients must be finite"):
                         utils.compute_camera_rays_pinhole_opencv(**invalid_calibration)
 
     def test_pinhole_rays_write_preallocated_camera_index(self):
