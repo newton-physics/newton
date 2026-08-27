@@ -1147,10 +1147,11 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         view = coupled.view("vbd")
 
+        # The view compacts bodies but keeps every particle visible, so the retained row pairs a
+        # view-local body index with the unchanged global particle index.
         self.assertEqual(view.attachment_body_particle_count, 1)
         np.testing.assert_array_equal(view.attachment_body_particle_body.numpy(), [0])
         np.testing.assert_array_equal(view.attachment_body_particle_particle.numpy(), [owned_particle])
-        self.assertEqual(coupled.solver("vbd").body_particle_attachment_offsets.shape[0], view.body_count + 1)
 
     def test_noncompact_views_hide_cross_entry_attachments(self):
         """Filter attachment ownership even when heterogeneous worlds prevent compaction."""

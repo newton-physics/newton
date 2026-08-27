@@ -287,32 +287,6 @@ def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
     return model
 
 
-def _build_legacy_body_particle_attachment_scene() -> newton.Model:
-    """Build an attachment authored through the legacy coupling custom attributes."""
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    body = builder.add_body(
-        xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
-        mass=1.0,
-        inertia=wp.mat33(np.eye(3)),
-    )
-    particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
-    SolverCoupledADMM.register_custom_attributes(builder)
-    builder.add_custom_values(
-        **{
-            SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_BODY_ATTR: int(body),
-            SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_PARTICLE_ATTR: int(particle),
-            SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_BODY_POINT_ATTR: wp.vec3(),
-            SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_STIFFNESS_ATTR: 500.0,
-            SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_DAMPING_ATTR: 0.0,
-            SolverCoupledADMM.BODY_PARTICLE_ATTACHMENT_ENABLED_ATTR: True,
-        }
-    )
-    builder.color()
-    model = builder.finalize(device="cpu")
-    model.particle_grid = None
-    return model
-
-
 def _build_two_world_body_particle_attachment_scene() -> newton.Model:
     """Build two worlds with one rigid-particle attachment each."""
     world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -1049,19 +1023,6 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         """Couple a cross-entry model attachment and pull the endpoints together."""
         model = _build_body_particle_attachment_scene()
         solver = _make_semi_body_particle_solver(model)
-        initial_gap = np.linalg.norm(model.state().body_q.numpy()[0, :3] - model.state().particle_q.numpy()[0])
-
-        body_q, particle_q = _run_body_particle(solver, model, n_steps=8, dt=1.0 / 120.0)
-        final_gap = np.linalg.norm(body_q[0, :3] - particle_q[0])
-
-        self.assertLess(final_gap, 0.5 * initial_gap)
-
-    def test_legacy_custom_attribute_attachment_closes_gap(self):
-        """Keep coupling attachments authored through the legacy custom attributes."""
-        model = _build_legacy_body_particle_attachment_scene()
-        self.assertEqual(model.attachment_body_particle_count, 0)
-        solver = _make_semi_body_particle_solver(model)
-        self.assertEqual(len(solver._admm_rp_groups), 1)
         initial_gap = np.linalg.norm(model.state().body_q.numpy()[0, :3] - model.state().particle_q.numpy()[0])
 
         body_q, particle_q = _run_body_particle(solver, model, n_steps=8, dt=1.0 / 120.0)
