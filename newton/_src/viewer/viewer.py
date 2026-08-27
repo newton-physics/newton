@@ -1632,11 +1632,8 @@ class ViewerBase(ABC):
                 uvs,
                 hidden=hidden,
                 texture=texture,
-                texture_scale=geo_src.texture_scale,
-                texture_translate=geo_src.texture_translate,
-                texture_rotate=geo_src.texture_rotate,
-                texture_projection=geo_src.texture_projection,
             )
+            self._apply_mesh_texture_mapping(name, geo_src)
             return
 
         # Generate vertices/indices for supported primitive types
@@ -1733,11 +1730,6 @@ class ViewerBase(ABC):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
-        *,
-        texture_scale: tuple[float, float] = (1.0, 1.0),
-        texture_translate: tuple[float, float] = (0.0, 0.0),
-        texture_rotate: float = 0.0,
-        texture_projection: int = newton.Mesh.TextureProjection.UV,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1763,10 +1755,6 @@ class ViewerBase(ABC):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
-            texture_scale: Scale applied to texture coordinates.
-            texture_translate: Translation applied to texture coordinates.
-            texture_rotate: OmniPBR-compatible texture-coordinate rotation in degrees.
-            texture_projection: Coordinate source from :class:`newton.Mesh.TextureProjection`.
         """
         pass
 
@@ -2154,6 +2142,10 @@ class ViewerBase(ABC):
     ) -> int:
         return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
 
+    def _apply_mesh_texture_mapping(self, name: str, mesh: newton.Mesh) -> None:
+        """Apply backend-specific texture-coordinate mapping to a logged mesh."""
+        return None
+
     def _hash_shape(self, geo_hash, shape_static, shape_flags) -> int:
         return hash((geo_hash, shape_static, shape_flags))
 
@@ -2292,11 +2284,8 @@ class ViewerBase(ABC):
             uvs_wp,
             hidden=hidden,
             texture=getattr(src, "texture", None),
-            texture_scale=src.texture_scale,
-            texture_translate=src.texture_translate,
-            texture_rotate=src.texture_rotate,
-            texture_projection=src.texture_projection,
         )
+        self._apply_mesh_texture_mapping(name, src)
 
     # creates meshes and instances for each shape in the Model
     def _populate_shapes(self):
@@ -2444,10 +2433,13 @@ class ViewerBase(ABC):
                     material = wp.vec4(float(geo_src.roughness), material.y, material.z, material.w)
                 if getattr(geo_src, "metallic", None) is not None:
                     material = wp.vec4(material.x, float(geo_src.metallic), material.z, material.w)
-                if geo_src is not None and geo_src._uvs is not None:
-                    has_texture = getattr(geo_src, "texture", None) is not None
-                    if has_texture:
-                        material = wp.vec4(material.x, material.y, material.z, 1.0)
+                has_texture = getattr(geo_src, "texture", None) is not None
+                has_texture_coordinates = (
+                    geo_src._uvs is not None
+                    or geo_src.texture_coordinate_source != newton.Mesh.TextureCoordinateSource.UV
+                )
+                if has_texture and has_texture_coordinates:
+                    material = wp.vec4(material.x, material.y, material.z, 1.0)
 
             # Planes keep their checkerboard material even when model.shape_color
             # is populated with resolved default colors.

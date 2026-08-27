@@ -51,9 +51,9 @@ layout (location = 7) in vec3 aObjectColor;
 // material properties
 layout (location = 8) in vec4 aMaterial;
 
-// per-mesh texture mapping: scale.xy, translate.xy, rotation in degrees, projection mode
-layout (location = 9) in vec4 aTextureTransform;
-layout (location = 10) in vec2 aTextureOptions;
+// rows of the 2-D linear transform; translation.xy and coordinate source
+layout (location = 9) in vec4 aTextureLinear;
+layout (location = 10) in vec3 aTextureOffsetSource;
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -65,8 +65,8 @@ out vec3 LocalNormal;
 out vec2 TexCoord;
 out vec3 ObjectColor;
 out vec4 Material;
-flat out vec4 TextureTransform;
-flat out vec2 TextureOptions;
+flat out vec4 TextureLinear;
+flat out vec3 TextureOffsetSource;
 
 void main()
 {
@@ -91,8 +91,8 @@ void main()
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
     Material = aMaterial;
-    TextureTransform = aTextureTransform;
-    TextureOptions = aTextureOptions;
+    TextureLinear = aTextureLinear;
+    TextureOffsetSource = aTextureOffsetSource;
 }
 """
 
@@ -106,8 +106,8 @@ in vec3 LocalNormal;
 in vec2 TexCoord;
 in vec3 ObjectColor;
 in vec4 Material;
-flat in vec4 TextureTransform;
-flat in vec2 TextureOptions;
+flat in vec4 TextureLinear;
+flat in vec3 TextureOffsetSource;
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -176,17 +176,13 @@ vec2 CubicProjection(vec3 position, vec3 normal)
 vec2 TextureCoordinates(vec3 camera_to_fragment)
 {
     vec2 uv = TexCoord;
-    int projection_mode = int(TextureOptions.y + 0.5);
-    if (projection_mode == 1)
+    int coordinate_source = int(TextureOffsetSource.z + 0.5);
+    if (coordinate_source == 1)
         uv = CubicProjection(LocalPos, LocalNormal);
-    else if (projection_mode == 2)
+    else if (coordinate_source == 2)
         uv = CubicProjection(camera_to_fragment + view_pos, Normal);
 
-    float angle = radians(TextureOptions.x);
-    float cosine = cos(angle);
-    float sine = sin(angle);
-    uv = vec2(cosine * uv.x + sine * uv.y, -sine * uv.x + cosine * uv.y);
-    return uv * TextureTransform.xy + TextureTransform.zw;
+    return vec2(dot(TextureLinear.xy, uv), dot(TextureLinear.zw, uv)) + TextureOffsetSource.xy;
 }
 
 vec2 poissonDisk[16] = vec2[](

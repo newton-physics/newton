@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import unittest
 
 import numpy as np
@@ -78,22 +79,44 @@ class _ViewerMeshProbe(ViewerNull):
         self.points = points.numpy()
 
 
-class TestViewerGeometryBatching(unittest.TestCase):
-    def test_gl_rejects_invalid_texture_mapping_before_logging(self):
-        """Reject malformed GL texture mapping before mutating viewer state."""
-        viewer = ViewerGL.__new__(ViewerGL)
-        points = wp.zeros(3, dtype=wp.vec3)
-        indices = wp.array([0, 1, 2], dtype=wp.int32)
+class _ViewerLegacyMeshSignatureProbe(ViewerNull):
+    """Represent a third-party backend implementing the pre-PR mesh signature."""
 
+    def __init__(self):
+        super().__init__(num_frames=1)
+        self.logged = False
+
+    def log_mesh(
+        self,
+        name,
+        points,
+        indices,
+        normals=None,
+        uvs=None,
+        texture=None,
+        hidden=False,
+        backface_culling=True,
+        color=None,
+        roughness=None,
+        metallic=None,
+        dynamic=False,
+    ):
+        """Record a mesh without accepting new texture-mapping keywords."""
+        self.logged = True
+
+
+class TestViewerGeometryBatching(unittest.TestCase):
+    def test_mesh_rejects_invalid_texture_mapping(self):
+        """Reject malformed texture mapping at its Mesh owner."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        indices = np.array([0, 1, 2], dtype=np.int32)
         for mapping, message in (
-            ({"texture_scale": (1.0,)}, "texture_scale"),
-            ({"texture_scale": (1.0, np.nan)}, "texture_scale"),
-            ({"texture_translate": (0.0, 1.0, 2.0)}, "texture_translate"),
-            ({"texture_translate": (0.0, np.inf)}, "texture_translate"),
-            ({"texture_rotate": np.inf}, "texture_rotate"),
+            ({"texture_transform": ((1.0, 0.0), (0.0, 1.0))}, "texture_transform"),
+            ({"texture_transform": ((1.0, 0.0, np.nan), (0.0, 1.0, 0.0))}, "texture_transform"),
+            ({"texture_coordinate_source": 99}, "texture_coordinate_source"),
         ):
             with self.subTest(mapping=mapping), self.assertRaisesRegex(ValueError, message):
-                viewer.log_mesh("/invalid", points, indices, **mapping)
+                newton.Mesh(vertices, indices, compute_inertia=False, **mapping)
 
     def test_gl_texture_mapping_is_owned_by_gl_geometry_cache(self):
         """Keep projected mapping identity inside the supporting GL backend."""
@@ -102,7 +125,7 @@ class TestViewerGeometryBatching(unittest.TestCase):
         mesh = newton.Mesh(vertices, indices, compute_inertia=False)
         mesh.texture = np.full((2, 2, 3), 255, dtype=np.uint8)
         projected_mesh = mesh.copy()
-        projected_mesh.texture_projection = newton.Mesh.TextureProjection.WORLD
+        projected_mesh.texture_coordinate_source = newton.Mesh.TextureCoordinateSource.WORLD
 
         self.assertEqual(hash(projected_mesh), hash(mesh))
 
@@ -116,6 +139,52 @@ class TestViewerGeometryBatching(unittest.TestCase):
         mesh_hash = viewer._hash_geometry(newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, mesh)
         projected_mesh_hash = viewer._hash_geometry(newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, projected_mesh)
         self.assertNotEqual(projected_mesh_hash, mesh_hash)
+
+    def test_mesh_mapping_does_not_expand_backend_log_mesh_signature(self):
+        """Keep texture mapping out of the public backend method contract."""
+        parameters = inspect.signature(newton.viewer.ViewerBase.log_mesh).parameters
+        forbidden = {
+            "texture_transform",
+            "texture_coordinate_source",
+            "texture_scale",
+            "texture_translate",
+            "texture_rotate",
+            "texture_projection",
+        }
+        self.assertTrue(forbidden.isdisjoint(parameters))
+        self.assertFalse(hasattr(newton.Mesh, "TextureProjection"))
+
+        mesh = newton.Mesh(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            [0, 1, 2],
+            compute_inertia=False,
+            texture=np.full((2, 2, 3), 255, dtype=np.uint8),
+            texture_coordinate_source=newton.Mesh.TextureCoordinateSource.OBJECT,
+        )
+        viewer = _ViewerLegacyMeshSignatureProbe()
+        viewer.log_geo("/mesh", newton.GeoType.MESH, (1.0, 1.0, 1.0), 0.0, True, geo_src=mesh)
+        self.assertTrue(viewer.logged)
+
+    def test_projected_texture_is_enabled_without_authored_uvs(self):
+        """Enable projected textures while leaving UV sampling disabled without UVs."""
+        for source, expected in (
+            (newton.Mesh.TextureCoordinateSource.UV, 0.0),
+            (newton.Mesh.TextureCoordinateSource.OBJECT, 1.0),
+        ):
+            with self.subTest(source=source):
+                mesh = newton.Mesh(
+                    [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+                    [0, 1, 2],
+                    compute_inertia=False,
+                    texture=np.full((2, 2, 3), 255, dtype=np.uint8),
+                    texture_coordinate_source=source,
+                )
+                builder = newton.ModelBuilder()
+                builder.add_shape_mesh(-1, mesh=mesh)
+                viewer = _ViewerGeometryBatchingProbe()
+                viewer.set_model(builder.finalize())
+                material = next(iter(viewer._shape_instances.values())).materials.numpy()[0]
+                self.assertEqual(material[3], expected)
 
     def test_barrel_cylinder_geometry(self):
         """Verify viewers generate the curved cylinder profile."""

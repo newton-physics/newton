@@ -19,7 +19,6 @@ import newton as nt
 
 from ..core.types import Axis, override
 from ..utils.render import copy_rgb_frame_uint8
-from ..utils.texture import normalize_texture_vec2
 from .camera import Camera
 from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
@@ -385,13 +384,15 @@ class ViewerGL(ViewerBase):
         geometry_hash = super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src, mirror)
         texture_mapping = ()
         if isinstance(geo_src, nt.Mesh) and geo_src.texture is not None:
-            texture_mapping = (
-                geo_src.texture_scale,
-                geo_src.texture_translate,
-                geo_src.texture_rotate,
-                int(geo_src.texture_projection),
-            )
+            texture_mapping = (geo_src.texture_transform, int(geo_src.texture_coordinate_source))
         return hash((geometry_hash, texture_mapping))
+
+    @override
+    def _apply_mesh_texture_mapping(self, name: str, mesh: nt.Mesh) -> None:
+        """Apply texture-coordinate mapping to the GL mesh prototype."""
+        mesh_gl = self.objects[self._qualify(name)]
+        mesh_gl.texture_transform = mesh.texture_transform
+        mesh_gl.texture_coordinate_source = mesh.texture_coordinate_source
 
     def _invalidate_pbo(self):
         """Invalidate PBO resources, forcing reallocation on next get_frame() call."""
@@ -929,11 +930,6 @@ class ViewerGL(ViewerBase):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
-        *,
-        texture_scale: tuple[float, float] = (1.0, 1.0),
-        texture_translate: tuple[float, float] = (0.0, 0.0),
-        texture_rotate: float = 0.0,
-        texture_projection: int = nt.Mesh.TextureProjection.UV,
     ):
         """
         Log a mesh for rendering.
@@ -954,22 +950,11 @@ class ViewerGL(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
-            texture_scale: Scale applied to texture coordinates.
-            texture_translate: Translation applied to texture coordinates.
-            texture_rotate: OmniPBR-compatible texture-coordinate rotation in degrees.
-            texture_projection: Coordinate source from :class:`newton.Mesh.TextureProjection`.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
         assert uvs is None or isinstance(uvs, wp.array)
-
-        texture_scale = normalize_texture_vec2(texture_scale, "texture_scale")
-        texture_translate = normalize_texture_vec2(texture_translate, "texture_translate")
-        texture_rotate = float(texture_rotate)
-        if not np.isfinite(texture_rotate):
-            raise ValueError("texture_rotate must be finite.")
-        texture_projection = nt.Mesh.TextureProjection(texture_projection)
 
         # Route user-supplied names through the active layer (idempotent).
         name = self._qualify(name)
@@ -1020,11 +1005,6 @@ class ViewerGL(ViewerBase):
             self.objects[name].update(points, indices, normals, uvs, texture)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
-        self.objects[name].texture_scale = texture_scale
-        self.objects[name].texture_translate = texture_translate
-        self.objects[name].texture_rotate = texture_rotate
-        self.objects[name].texture_projection = texture_projection
-
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
 

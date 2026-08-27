@@ -71,11 +71,6 @@ class ViewerNull(ViewerBase):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
-        *,
-        texture_scale: tuple[float, float] = (1.0, 1.0),
-        texture_translate: tuple[float, float] = (0.0, 0.0),
-        texture_rotate: float = 0.0,
-        texture_projection: int = newton.Mesh.TextureProjection.UV,
     ):
         """
         No-op implementation for logging a mesh.
@@ -96,10 +91,6 @@ class ViewerNull(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
-            texture_scale: Accepted for viewer API compatibility; unused by this backend.
-            texture_translate: Accepted for viewer API compatibility; unused by this backend.
-            texture_rotate: Accepted for viewer API compatibility; unused by this backend.
-            texture_projection: Accepted for viewer API compatibility; unused by this backend.
         """
         pass
 

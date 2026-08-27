@@ -1203,12 +1203,12 @@ def _get_mesh_from_source(
         texture=material_source.texture if material_source is not None else None,
         metallic=material_source.metallic if material_source is not None else None,
         roughness=material_source.roughness if material_source is not None else None,
-        texture_scale=material_source.texture_scale if material_source is not None else (1.0, 1.0),
-        texture_translate=material_source.texture_translate if material_source is not None else (0.0, 0.0),
-        texture_rotate=material_source.texture_rotate if material_source is not None else 0.0,
-        texture_projection=material_source.texture_projection
+        texture_transform=material_source.texture_transform
         if material_source is not None
-        else Mesh.TextureProjection.UV,
+        else ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        texture_coordinate_source=material_source.texture_coordinate_source
+        if material_source is not None
+        else Mesh.TextureCoordinateSource.UV,
     )
 
 
@@ -1228,12 +1228,18 @@ def _material_surface_shader(material: UsdShade.Material | None) -> UsdShade.Sha
 
 
 def _uvtexture_reader_varname(texture_shader: UsdShade.Shader) -> str | None:
-    """Return the primvar name a ``UsdUVTexture`` reads via its ``st`` -> ``UsdPrimvarReader_float2``."""
+    """Return the primvar read by a ``UsdUVTexture``, through an optional ``UsdTransform2d``."""
     st_input = texture_shader.GetInput("st")
     source = st_input.GetConnectedSource() if st_input else None
     if not source:
         return None
     reader = UsdShade.Shader(source[0].GetPrim())
+    if reader.GetIdAttr().Get() == "UsdTransform2d":
+        transform_input = reader.GetInput("in")
+        source = transform_input.GetConnectedSource() if transform_input else None
+        if not source:
+            return None
+        reader = UsdShade.Shader(source[0].GetPrim())
     varname = reader.GetInput("varname")
     if not varname:
         return None
@@ -1775,14 +1781,12 @@ def get_mesh(
         texture=material_props.get("texture"),
         metallic=material_props.get("metallic"),
         roughness=material_props.get("roughness"),
-        texture_scale=(1.0, 1.0) if material_props.get("texture_scale") is None else material_props["texture_scale"],
-        texture_translate=(0.0, 0.0)
-        if material_props.get("texture_translate") is None
-        else material_props["texture_translate"],
-        texture_rotate=0.0 if material_props.get("texture_rotate") is None else material_props["texture_rotate"],
-        texture_projection=Mesh.TextureProjection.UV
-        if material_props.get("texture_projection") is None
-        else material_props["texture_projection"],
+        texture_transform=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+        if material_props.get("texture_transform") is None
+        else material_props["texture_transform"],
+        texture_coordinate_source=Mesh.TextureCoordinateSource.UV
+        if material_props.get("texture_coordinate_source") is None
+        else material_props["texture_coordinate_source"],
     )
     if return_uv_indices:
         return mesh_out, uv_indices
@@ -2614,44 +2618,6 @@ def _resolve_color_texture_asset(
     return linear_texture_to_srgb(pixels)
 
 
-def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> str | np.ndarray | None:
-    """Search a shader network for a connected texture asset.
-
-    Args:
-        shader: The shader node to inspect.
-        prim: The prim providing stage context for asset resolution.
-
-    Returns:
-        Resolved texture asset path, converted display texture array, or
-        ``None`` if not found.
-    """
-    if shader is None:
-        return None
-    shader_id = shader.GetIdAttr().Get()
-    if shader_id == "UsdUVTexture":
-        file_input = shader.GetInput("file")
-        if file_input:
-            attrs = UsdShade.Utils.GetValueProducingAttributes(file_input)
-            if attrs:
-                asset = attrs[0].Get()
-                return _resolve_color_texture_asset(asset, prim, attrs[0], shader)
-            asset = file_input.Get()
-            if asset:
-                return _resolve_color_texture_asset(asset, prim, file_input.GetAttr(), shader)
-        return None
-    if shader_id == "UsdPreviewSurface":
-        for input_name in ("diffuseColor", "baseColor"):
-            shader_input = shader.GetInput(input_name)
-            if shader_input:
-                source = shader_input.GetConnectedSource()
-                if source:
-                    source_shader = UsdShade.Shader(source[0].GetPrim())
-                    texture = _find_texture_in_shader(source_shader, prim)
-                    if texture is not None:
-                        return texture
-    return None
-
-
 def _get_input_value_and_attr(
     shader: UsdShade.Shader | None,
     names: tuple[str, ...],
@@ -2692,10 +2658,8 @@ def _empty_material_properties() -> dict[str, Any]:
         "metallic": None,
         "roughness": None,
         "texture": None,
-        "texture_scale": None,
-        "texture_translate": None,
-        "texture_rotate": None,
-        "texture_projection": None,
+        "texture_transform": None,
+        "texture_coordinate_source": None,
     }
 
 
@@ -2736,6 +2700,73 @@ def _coerce_vec2(value: Any) -> tuple[float, float] | None:
     return (float(result[0]), float(result[1]))
 
 
+def _extract_usd_transform2d(
+    texture_shader: UsdShade.Shader,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    """Resolve the standard ``UsdTransform2d`` directly feeding a ``UsdUVTexture``."""
+    st_input = texture_shader.GetInput("st")
+    source = st_input.GetConnectedSource() if st_input else None
+    if not source:
+        return None
+    transform = UsdShade.Shader(source[0].GetPrim())
+    if transform.GetIdAttr().Get() != "UsdTransform2d":
+        return None
+
+    scale = _coerce_vec2(_get_input_value(transform, ("scale",))) or (1.0, 1.0)
+    translation = _coerce_vec2(_get_input_value(transform, ("translation",))) or (0.0, 0.0)
+    rotation = _coerce_float(_get_input_value(transform, ("rotation",)))
+    rotation = rotation if rotation is not None and math.isfinite(rotation) else 0.0
+    cosine, sine = math.cos(math.radians(rotation)), math.sin(math.radians(rotation))
+
+    # UsdTransform2d is scale, then counter-clockwise rotation, then translation.
+    return (
+        (cosine * scale[0], -sine * scale[1], translation[0]),
+        (sine * scale[0], cosine * scale[1], translation[1]),
+    )
+
+
+def _is_omnipbr_shader(shader: UsdShade.Shader) -> bool:
+    """Return whether a shader explicitly identifies the OmniPBR MDL definition."""
+    try:
+        if shader.GetImplementationSource() != "sourceAsset" or "mdl" not in shader.GetSourceTypes():
+            return False
+        source_asset = shader.GetSourceAsset("mdl")
+        source_path = getattr(source_asset, "path", "")
+        sub_identifier = str(shader.GetSourceAssetSubIdentifier("mdl") or "")
+    except Exception:
+        return False
+    return os.path.basename(source_path).lower() == "omnipbr.mdl" or sub_identifier == "OmniPBR"
+
+
+def _extract_omnipbr_texture_mapping(shader: UsdShade.Shader) -> dict[str, Any]:
+    """Adapt OmniPBR MDL inputs to Newton's vendor-neutral texture mapping."""
+    if not _is_omnipbr_shader(shader):
+        return {}
+
+    scale = _coerce_vec2(_get_input_value(shader, ("texture_scale",)))
+    translation = _coerce_vec2(_get_input_value(shader, ("texture_translate",)))
+    rotation = _coerce_float(_get_input_value(shader, ("texture_rotate",)))
+    mapping: dict[str, Any] = {}
+    if scale is not None or translation is not None or rotation is not None:
+        scale = scale or (1.0, 1.0)
+        translation = translation or (0.0, 0.0)
+        rotation = rotation if rotation is not None and math.isfinite(rotation) else 0.0
+        cosine, sine = math.cos(math.radians(rotation)), math.sin(math.radians(rotation))
+        # OmniPBR rotates coordinates before applying its component-wise scale.
+        mapping["texture_transform"] = (
+            (scale[0] * cosine, scale[0] * sine, translation[0]),
+            (-scale[1] * sine, scale[1] * cosine, translation[1]),
+        )
+
+    if bool(_get_input_value(shader, ("project_uvw",))):
+        mapping["texture_coordinate_source"] = (
+            Mesh.TextureCoordinateSource.WORLD
+            if bool(_get_input_value(shader, ("world_or_object",)))
+            else Mesh.TextureCoordinateSource.OBJECT
+        )
+    return mapping
+
+
 def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract material properties from a UsdPreviewSurface shader.
 
@@ -2744,9 +2775,8 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, ``texture``,
-        ``texture_scale``, ``texture_translate``, ``texture_rotate``, and
-        ``texture_projection``.
+        Dictionary with scalar surface properties, texture data, and a
+        vendor-neutral texture-coordinate mapping.
     """
     properties = _empty_material_properties()
     if shader is None:
@@ -2757,10 +2787,12 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
 
     color_input = shader.GetInput("baseColor") or shader.GetInput("diffuseColor")
     if color_input:
+        texture, texture_transform = _color_texture_from_input(color_input, prim)
+        properties["texture"] = texture
+        properties["texture_transform"] = texture_transform
         source = color_input.GetConnectedSource()
         if source:
             source_shader = UsdShade.Shader(source[0].GetPrim())
-            properties["texture"] = _find_texture_in_shader(source_shader, prim)
             if properties["texture"] is None:
                 color_value, color_attr = _get_input_value_and_attr(
                     source_shader,
@@ -2846,8 +2878,13 @@ def _is_color_texture_input_name(base_name: str) -> bool:
     return any(fragment in name for fragment in _COLOR_TEXTURE_INPUT_NAMES)
 
 
-def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> str | np.ndarray | None:
-    """Return the base-color texture feeding a surface shader input, if any.
+def _color_texture_from_input(
+    surface_input: UsdShade.Input, prim: Usd.Prim
+) -> tuple[
+    str | np.ndarray | None,
+    tuple[tuple[float, float, float], tuple[float, float, float]] | None,
+]:
+    """Return the base-color texture and standard transform feeding a shader input.
 
     The input must be a base-color/albedo parameter by name: a normal map is
     conventionally wired as ``UsdUVTexture.outputs:rgb`` too, so its 3-channel
@@ -2862,7 +2899,7 @@ def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> 
       no texture node to inspect, so the base-color input is identified by name.
     """
     if not _is_color_texture_input_name(surface_input.GetBaseName()):
-        return None
+        return None, None
     try:
         producing = UsdShade.Utils.GetValueProducingAttributes(surface_input)
     except Exception:
@@ -2876,9 +2913,10 @@ def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> 
             continue
         if _output_channel_count(attr.GetTypeName()) < 3:
             continue
-        texture = _find_texture_in_shader(source_shader, prim)
+        asset, asset_attr = _get_input_value_and_attr(source_shader, ("file",))
+        texture = _resolve_color_texture_asset(asset, prim, asset_attr, source_shader)
         if texture is not None:
-            return texture
+            return texture, _extract_usd_transform2d(source_shader)
 
     try:
         connected = surface_input.HasConnectedSource()
@@ -2887,8 +2925,8 @@ def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> 
     if not connected:
         asset = surface_input.Get()
         if asset:
-            return _resolve_color_texture_asset(asset, prim, surface_input.GetAttr())
-    return None
+            return _resolve_color_texture_asset(asset, prim, surface_input.GetAttr()), None
+    return None, None
 
 
 def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
@@ -2902,7 +2940,7 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with scalar surface properties, texture data, and texture-coordinate mapping.
     """
     properties = _extract_preview_surface_properties(shader, prim)
     if shader is None:
@@ -2937,27 +2975,20 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
 
     if properties["texture"] is None:
         for inp in shader.GetInputs():
-            texture = _color_texture_from_input(inp, prim)
+            texture, texture_transform = _color_texture_from_input(inp, prim)
             if texture is not None:
                 properties["texture"] = texture
+                properties["texture_transform"] = texture_transform
                 break
 
-    texture_scale = _coerce_vec2(_get_input_value(shader, ("texture_scale",)))
-    if texture_scale is not None:
-        properties["texture_scale"] = texture_scale
-    texture_translate = _coerce_vec2(_get_input_value(shader, ("texture_translate",)))
-    if texture_translate is not None:
-        properties["texture_translate"] = texture_translate
-    texture_rotate = _coerce_float(_get_input_value(shader, ("texture_rotate",)))
-    if texture_rotate is not None:
-        properties["texture_rotate"] = texture_rotate
-
-    if bool(_get_input_value(shader, ("project_uvw",))):
-        properties["texture_projection"] = (
-            Mesh.TextureProjection.WORLD
-            if bool(_get_input_value(shader, ("world_or_object",)))
-            else Mesh.TextureProjection.OBJECT
-        )
+    # OmniPBR is a compatibility adapter, never the definition of Newton's
+    # mapping contract. A standard UsdTransform2d connected to the color texture
+    # takes precedence if both representations are present.
+    omnipbr_mapping = _extract_omnipbr_texture_mapping(shader)
+    if properties["texture_transform"] is None and "texture_transform" in omnipbr_mapping:
+        properties["texture_transform"] = omnipbr_mapping["texture_transform"]
+    if "texture_coordinate_source" in omnipbr_mapping:
+        properties["texture_coordinate_source"] = omnipbr_mapping["texture_coordinate_source"]
 
     return properties
 
@@ -2969,13 +3000,11 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
     without creating a shader network.
 
     Returns:
-        Dictionary with scalar surface properties, texture data, and texture-coordinate mapping.
+        Dictionary with scalar surface properties and texture data.
     """
     properties = _empty_material_properties()
     if material is None:
         return properties
-    project_uvw = None
-    world_or_object = None
 
     for inp in material.GetInputs():
         name = inp.GetBaseName()
@@ -2987,22 +3016,6 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             continue
         value = inp.Get()
         if value is None:
-            continue
-
-        if name_lower == "texture_scale":
-            properties["texture_scale"] = _coerce_vec2(value)
-            continue
-        if name_lower == "texture_translate":
-            properties["texture_translate"] = _coerce_vec2(value)
-            continue
-        if name_lower == "texture_rotate":
-            properties["texture_rotate"] = _coerce_float(value)
-            continue
-        if name_lower == "project_uvw":
-            project_uvw = bool(value)
-            continue
-        if name_lower == "world_or_object":
-            world_or_object = bool(value)
             continue
 
         if properties["texture"] is None and ("texture" in name_lower or "file" in name_lower):
@@ -3037,11 +3050,6 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             roughness = _coerce_float(value)
             if roughness is not None:
                 properties["roughness"] = roughness
-
-    if project_uvw:
-        properties["texture_projection"] = (
-            Mesh.TextureProjection.WORLD if world_or_object else Mesh.TextureProjection.OBJECT
-        )
 
     return properties
 
@@ -3102,16 +3110,7 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     # it has fallback logic for common shader input names.
     properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
-    for key in (
-        "texture",
-        "color",
-        "metallic",
-        "roughness",
-        "texture_scale",
-        "texture_translate",
-        "texture_rotate",
-        "texture_projection",
-    ):
+    for key in ("texture", "color", "metallic", "roughness"):
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
     if properties["color"] is None and properties["texture"] is None:

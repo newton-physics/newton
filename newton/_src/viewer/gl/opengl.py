@@ -268,10 +268,8 @@ class MeshGL:
         # Per-mesh albedo and material (applied in render()).
         self.color = (0.7, 0.5, 0.3)
         self.material = (0.5, 0.0, 0.0, 0.0)
-        self.texture_scale = (1.0, 1.0)
-        self.texture_translate = (0.0, 0.0)
-        self.texture_rotate = 0.0
-        self.texture_projection = 0
+        self.texture_transform = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+        self.texture_coordinate_source = 0
 
         self.vertex_cuda_buffer = None
         self.index_cuda_buffer = None
@@ -446,8 +444,9 @@ class MeshGL:
     def _set_texture_mapping_attributes(self):
         """Set constant shader attributes shared by this mesh's instances."""
         gl = RendererGL.gl
-        gl.glVertexAttrib4f(9, *self.texture_scale, *self.texture_translate)
-        gl.glVertexAttrib2f(10, self.texture_rotate, int(self.texture_projection))
+        row_0, row_1 = self.texture_transform
+        gl.glVertexAttrib4f(9, row_0[0], row_0[1], row_1[0], row_1[1])
+        gl.glVertexAttrib3f(10, row_0[2], row_1[2], int(self.texture_coordinate_source))
 
 
 class LinesGL:

@@ -7567,7 +7567,7 @@ def Xform "Articulation" (
         return stage, shape_path
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_uvless_textured_visual_mesh_uses_projected_uvs(self):
+    def test_uvless_textured_visual_mesh_disables_uv_sampling(self):
         """Verify a full visual mesh retains its texture when UVs are unavailable."""
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
         builder = newton.ModelBuilder()
@@ -7579,10 +7579,10 @@ def Xform "Articulation" (
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture will use projected UVs", "\n".join(log_ctx.output))
+        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_uvless_textured_visual_mesh_subset_uses_projected_uvs(self):
+    def test_uvless_textured_visual_mesh_subset_disables_uv_sampling(self):
         """Verify a material subset retains its texture when UVs are unavailable."""
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=True)
         builder = newton.ModelBuilder()
@@ -7594,7 +7594,7 @@ def Xform "Articulation" (
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture will use projected UVs", "\n".join(log_ctx.output))
+        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
 
     def _build_custom_shader_mesh_stage(self, *, with_diffuse: bool):
         """Build a stage whose mesh binds a non-UsdPreviewSurface shader with map inputs.
@@ -7781,13 +7781,13 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mdl_texture_coordinate_mapping_is_preserved(self):
-        """Preserve OmniPBR coordinate projection and transforms on imported meshes."""
+        """Preserve OmniPBR mapping through the scoped MDL compatibility adapter."""
         from pxr import Sdf, UsdShade
 
         for project, world, expected in (
-            (False, True, newton.Mesh.TextureProjection.UV),
-            (True, False, newton.Mesh.TextureProjection.OBJECT),
-            (True, True, newton.Mesh.TextureProjection.WORLD),
+            (False, True, newton.Mesh.TextureCoordinateSource.UV),
+            (True, False, newton.Mesh.TextureCoordinateSource.OBJECT),
+            (True, True, newton.Mesh.TextureCoordinateSource.WORLD),
         ):
             with self.subTest(project_uvw=project, world_or_object=world):
                 stage = self._build_mdl_shader_mesh_stage({"diffuse_texture": "albedo.png"})
@@ -7801,10 +7801,81 @@ def Xform "Articulation" (
                 builder = newton.ModelBuilder()
                 result = builder.add_usd(stage)
                 src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
-                self.assertEqual(src.texture_projection, expected)
-                self.assertEqual(src.texture_scale, (0.5, 2.0))
-                self.assertEqual(src.texture_translate, (0.25, -0.75))
-                self.assertEqual(src.texture_rotate, 30.0)
+                self.assertEqual(src.texture_coordinate_source, expected)
+                np.testing.assert_allclose(
+                    src.texture_transform,
+                    (
+                        (0.5 * math.cos(math.pi / 6), 0.5 * math.sin(math.pi / 6), 0.25),
+                        (-2.0 * math.sin(math.pi / 6), 2.0 * math.cos(math.pi / 6), -0.75),
+                    ),
+                    atol=1.0e-7,
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_transform2d_mapping_is_preserved(self):
+        """Preserve standard UsdTransform2d order and its upstream primvar reader."""
+        from pxr import Sdf, UsdGeom, UsdShade
+
+        stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
+        mesh = UsdGeom.Mesh(stage.GetPrimAtPath(shape_path))
+        st_1 = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "st_1", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+        )
+        authored_uvs = [(0.1, 0.2), (1.1, 0.2), (1.1, 1.2), (0.1, 1.2)]
+        st_1.Set(authored_uvs)
+
+        reader = UsdShade.Shader.Define(stage, "/Materials/Textured/TexcoordReader")
+        reader.CreateIdAttr("UsdPrimvarReader_float2")
+        reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st_1")
+        reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+        transform = UsdShade.Shader.Define(stage, "/Materials/Textured/Transform2d")
+        transform.CreateIdAttr("UsdTransform2d")
+        transform.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(reader.ConnectableAPI(), "result")
+        transform.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set((0.5, 2.0))
+        transform.CreateInput("rotation", Sdf.ValueTypeNames.Float).Set(30.0)
+        transform.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set((0.25, -0.75))
+        transform.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+        texture = UsdShade.Shader(stage.GetPrimAtPath("/Materials/Textured/Albedo"))
+        texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(transform.ConnectableAPI(), "result")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"][shape_path]]
+        self.assertEqual(src.texture_coordinate_source, newton.Mesh.TextureCoordinateSource.UV)
+        np.testing.assert_allclose(src.uvs, authored_uvs, atol=1.0e-7)
+        np.testing.assert_allclose(
+            src.texture_transform,
+            (
+                (0.5 * math.cos(math.pi / 6), -2.0 * math.sin(math.pi / 6), 0.25),
+                (0.5 * math.sin(math.pi / 6), 2.0 * math.cos(math.pi / 6), -0.75),
+            ),
+            atol=1.0e-7,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_omnipbr_mapping_names_are_vendor_scoped(self):
+        """Ignore OmniPBR mapping parameters on other shaders and bare material inputs."""
+        from pxr import Sdf, UsdShade
+
+        stage = self._build_mdl_shader_mesh_stage({"diffuse_texture": "albedo.png"})
+        shader = UsdShade.Shader(stage.GetPrimAtPath("/M/Mdl"))
+        shader.SetSourceAsset(Sdf.AssetPath("Other.mdl"), "mdl")
+        shader.SetSourceAssetSubIdentifier("Other", "mdl")
+        material = UsdShade.Material(stage.GetPrimAtPath("/M"))
+        for owner in (shader, material):
+            owner.CreateInput("texture_scale", Sdf.ValueTypeNames.Float2).Set((0.5, 2.0))
+            owner.CreateInput("texture_translate", Sdf.ValueTypeNames.Float2).Set((0.25, -0.75))
+            owner.CreateInput("texture_rotate", Sdf.ValueTypeNames.Float).Set(30.0)
+            owner.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(True)
+            owner.CreateInput("world_or_object", Sdf.ValueTypeNames.Bool).Set(True)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+        self.assertEqual(src.texture_transform, ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)))
+        self.assertEqual(src.texture_coordinate_source, newton.Mesh.TextureCoordinateSource.UV)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_loads_alternate_texcoord_set(self):
@@ -8060,7 +8131,7 @@ def Xform "Articulation" (
 
         joined = "\n".join(log_ctx.output)
         self.assertIn("UV primvar length", joined)
-        self.assertIn("texture will use projected UVs", joined)
+        self.assertIn("texture sampling is disabled", joined)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_used_by_mass_properties(self):

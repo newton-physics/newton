@@ -14,7 +14,7 @@ import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
 from ..utils.deprecation import deprecate_nonkeyword_arguments
-from ..utils.texture import compute_texture_hash, normalize_texture_vec2
+from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
     from ..sim.model import Model
@@ -167,17 +167,24 @@ class Mesh:
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
-    class TextureProjection(enum.IntEnum):
-        """Coordinate source used to sample a mesh texture."""
+    class TextureCoordinateSource(enum.IntEnum):
+        """Coordinate source used to sample a mesh texture.
+
+        .. experimental::
+
+            Object- and world-space texture coordinates are currently supported
+            only by :class:`~newton.viewer.ViewerGL`. They are a Newton viewer
+            extension, not OpenUSD shader nodes.
+        """
 
         UV = 0
         """Use the mesh's authored UV coordinates."""
 
         OBJECT = 1
-        """Generate cubic projection coordinates in object space."""
+        """Generate cubic coordinates in object space."""
 
         WORLD = 2
-        """Generate cubic projection coordinates in world space."""
+        """Generate cubic coordinates in world space."""
 
     def __init__(
         self,
@@ -193,10 +200,8 @@ class Mesh:
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
         *,
-        texture_scale: Vec2 = (1.0, 1.0),
-        texture_translate: Vec2 = (0.0, 0.0),
-        texture_rotate: float = 0.0,
-        texture_projection: int = TextureProjection.UV,
+        texture_transform: Sequence[Sequence[float]] | np.ndarray = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        texture_coordinate_source: int = TextureCoordinateSource.UV,
         sdf: "SDF | None" = None,
     ):
         """
@@ -218,10 +223,11 @@ class Mesh:
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
             texture: Optional texture path/URL or image data (H, W, C).
-            texture_scale: UV scale applied before texture sampling.
-            texture_translate: UV translation applied before texture sampling.
-            texture_rotate: OmniPBR-compatible texture-coordinate rotation in degrees.
-            texture_projection: Coordinate source from :class:`Mesh.TextureProjection`.
+            texture_transform: Affine texture-coordinate transform as two rows
+                ``((m00, m01, tx), (m10, m11, ty))``. It is applied to the
+                selected coordinates as ``(u', v') = M @ (u, v) + t``.
+            texture_coordinate_source: Coordinate source from
+                :class:`Mesh.TextureCoordinateSource`.
             sdf: Optional prebuilt SDF object owned by this mesh.
         """
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
@@ -235,15 +241,8 @@ class Mesh:
         self.color = color
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
-        self._texture_scale = normalize_texture_vec2(texture_scale, "texture_scale")
-        self._texture_translate = normalize_texture_vec2(texture_translate, "texture_translate")
-        self._texture_rotate = float(texture_rotate)
-        if not math.isfinite(self._texture_rotate):
-            raise ValueError("texture_rotate must be finite.")
-        try:
-            self._texture_projection = self.TextureProjection(texture_projection)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Invalid texture_projection: {texture_projection!r}.") from exc
+        self.texture_transform = texture_transform
+        self.texture_coordinate_source = texture_coordinate_source
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -830,10 +829,8 @@ class Mesh:
             else (self._texture.copy() if self._texture is not None else None),
             roughness=self._roughness,
             metallic=self._metallic,
-            texture_scale=self._texture_scale,
-            texture_translate=self._texture_translate,
-            texture_rotate=self._texture_rotate,
-            texture_projection=self._texture_projection,
+            texture_transform=self._texture_transform,
+            texture_coordinate_source=self._texture_coordinate_source,
         )
         if not recompute_inertia:
             m.inertia = self.inertia
@@ -1568,46 +1565,31 @@ class Mesh:
         return self._compute_texture_hash()
 
     @property
-    def texture_scale(self) -> tuple[float, float]:
-        """UV scale applied before texture sampling."""
-        return self._texture_scale
+    def texture_transform(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """Affine transform applied to the selected texture coordinates."""
+        return self._texture_transform
 
-    @texture_scale.setter
-    def texture_scale(self, value: Vec2):
-        self._texture_scale = normalize_texture_vec2(value, "texture_scale")
-
-    @property
-    def texture_translate(self) -> tuple[float, float]:
-        """UV translation applied before texture sampling."""
-        return self._texture_translate
-
-    @texture_translate.setter
-    def texture_translate(self, value: Vec2):
-        self._texture_translate = normalize_texture_vec2(value, "texture_translate")
-
-    @property
-    def texture_rotate(self) -> float:
-        """OmniPBR-compatible texture-coordinate rotation in degrees."""
-        return self._texture_rotate
-
-    @texture_rotate.setter
-    def texture_rotate(self, value: float):
-        value = float(value)
-        if not math.isfinite(value):
-            raise ValueError("texture_rotate must be finite.")
-        self._texture_rotate = value
-
-    @property
-    def texture_projection(self) -> TextureProjection:
-        """Coordinate source used to sample this mesh's texture."""
-        return self._texture_projection
-
-    @texture_projection.setter
-    def texture_projection(self, value: int):
+    @texture_transform.setter
+    def texture_transform(self, value: Sequence[Sequence[float]] | np.ndarray):
         try:
-            self._texture_projection = self.TextureProjection(value)
+            matrix = np.asarray(value, dtype=np.float64)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"Invalid texture_projection: {value!r}.") from exc
+            raise ValueError("texture_transform must be a finite 2-by-3 matrix.") from exc
+        if matrix.shape != (2, 3) or not np.all(np.isfinite(matrix)):
+            raise ValueError("texture_transform must be a finite 2-by-3 matrix.")
+        self._texture_transform = tuple(tuple(float(component) for component in row) for row in matrix)
+
+    @property
+    def texture_coordinate_source(self) -> TextureCoordinateSource:
+        """Coordinate source used to sample this mesh's texture."""
+        return self._texture_coordinate_source
+
+    @texture_coordinate_source.setter
+    def texture_coordinate_source(self, value: int):
+        try:
+            self._texture_coordinate_source = self.TextureCoordinateSource(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid texture_coordinate_source: {value!r}.") from exc
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:

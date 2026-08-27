@@ -294,11 +294,6 @@ class ViewerUSD(ViewerBase):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
-        *,
-        texture_scale: tuple[float, float] = (1.0, 1.0),
-        texture_translate: tuple[float, float] = (0.0, 0.0),
-        texture_rotate: float = 0.0,
-        texture_projection: int = newton.Mesh.TextureProjection.UV,
     ):
         """
         Create a USD mesh prototype from vertex and index data.
@@ -319,10 +314,6 @@ class ViewerUSD(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
-            texture_scale: Accepted for viewer API compatibility; unsupported by this backend.
-            texture_translate: Accepted for viewer API compatibility; unsupported by this backend.
-            texture_rotate: Accepted for viewer API compatibility; unsupported by this backend.
-            texture_projection: Accepted for viewer API compatibility; unsupported by this backend.
         """
 
         name = self._qualify(name)

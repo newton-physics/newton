@@ -14,17 +14,6 @@ import numpy as np
 _texture_url_cache: dict[str, bytes] = {}
 
 
-def normalize_texture_vec2(value: object, name: str) -> tuple[float, float]:
-    """Normalize a texture-coordinate parameter to two finite floats."""
-    try:
-        values = np.asarray(value, dtype=np.float64).reshape(-1)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must contain two finite values.") from exc
-    if values.size != 2 or not np.all(np.isfinite(values)):
-        raise ValueError(f"{name} must contain two finite values.")
-    return (float(values[0]), float(values[1]))
-
-
 def _linear_to_srgb(linear: np.ndarray) -> np.ndarray:
     return np.where(linear <= 0.0031308, linear * 12.92, 1.055 * np.power(linear, 1.0 / 2.4) - 0.055)
 
