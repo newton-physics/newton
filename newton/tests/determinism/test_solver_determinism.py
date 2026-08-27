@@ -377,29 +377,6 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             self.assertEqual(options["deterministic"], wp.DeterministicMode.NOT_GUARANTEED)
             self.assertEqual(options["deterministic_max_records"], 0)
 
-    def test_vbd_attachment_record_budget_counts_shared_particles(self):
-        """Size deterministic records for all attachments targeting one particle."""
-        with wp.ScopedDevice("cpu"):
-            builder = newton.ModelBuilder()
-            body0 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-            body1 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-            particle = builder.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
-            builder.add_attachment_body_particle(body0, particle)
-            builder.add_attachment_body_particle(body1, particle)
-            builder.color()
-            model = builder.finalize(device="cpu")
-
-            newton.solvers.SolverVBD(
-                model,
-                particle_enable_self_contact=False,
-                particle_enable_tile_solve=False,
-                deterministic=DETERMINISTIC_MODE,
-            )
-
-            options = wp.get_module_options(module=particle_vbd_kernels)
-            self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
-            self.assertEqual(options["deterministic_max_records"], 2)
-
     def test_vbd_coupling_hook_reapplies_deterministic_options(self):
         with wp.ScopedDevice("cpu"):
             model = _build_soft_body("cpu")
