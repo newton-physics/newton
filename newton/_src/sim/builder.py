@@ -73,7 +73,7 @@ if TYPE_CHECKING:
     from pxr import Usd
 
     from ..actuators.clamping.base import Clamping
-    from ..actuators.controllers.base import Controller
+    from ..actuators.drives.base import DriveBase
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -86,6 +86,10 @@ _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pa
 _SCALAR_GRAVITY_DEPRECATION_MSG = (
     "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
     "Scalar gravity will be removed in a future release."
+)
+_DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
+_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
+    "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
 )
 
 # Plain constructors, not wp.transform_identity()/wp.quat_identity(): builtins
@@ -442,19 +446,19 @@ class ModelBuilder:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)``
+        ``(drive_class, delay_steps is not None, clamping_key, drive_shared_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
         be identical across all actuators in a group.  Delay step values
         are per-DOF; the buffer is sized to ``max(delay_step_values) + 1``.
         """
 
-        controller_class: type  # Controller subclass (e.g. ControllerPD)
+        drive_class: type  # DriveBase subclass (e.g. DrivePD)
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
-        controller_shared_kwargs: dict  # Shared controller kwargs (e.g. model_path)
+        drive_shared_kwargs: dict  # Shared drive kwargs (e.g. model_path)
         indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
         pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
-        controller_args: list[dict[str, Any]]  # Per-actuator controller array params
+        drive_args: list[dict[str, Any]]  # Per-actuator drive array params
         delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
@@ -1651,9 +1655,9 @@ class ModelBuilder:
         """Running counts for custom string frequencies used to size custom attribute arrays."""
 
         # Actuator entries (accumulated during add_actuator calls)
-        # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
+        # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
         self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
-        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
+        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by drive class and shared params."""
 
         # Equality constraints are canonical MuJoCo custom attributes and must be available
         # independently of SolverMuJoCo. Lazy import avoids a module-level solver dependency.
@@ -2216,17 +2220,19 @@ class ModelBuilder:
 
     def add_actuator(
         self,
-        controller_class: type[Controller] | None = None,
+        drive_class: type[DriveBase] | None = None,
         index: int | None = None,
         clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
         delay_steps: int | None = None,
         pos_index: int | None = None,
+        *,
+        controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> None:
         """Add an external actuator for a single DOF.
 
         External actuators apply forces computed outside the physics engine.
-        Multiple calls with the same *controller_class*, *clamping*
+        Multiple calls with the same *drive_class*, *clamping*
         types, and identical shared parameters are accumulated into one
         :class:`~newton.actuators.Actuator` instance during
         :meth:`finalize <ModelBuilder.finalize>`.  Different delay
@@ -2234,38 +2240,44 @@ class ModelBuilder:
         sized to ``max(delay_step_values)``.
 
         Args:
-            controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
+            drive_class: Drive class (e.g. :class:`~newton.actuators.DrivePD`).
             index: DOF index into ``joint_qd``-shaped arrays (velocities,
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
-                post-controller. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
+                post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
             delay_steps: Optional number of timesteps [timesteps] to delay inputs.
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
-            **kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
+            controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
+            **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
         """
-        if controller_class is None:
-            raise TypeError("add_actuator() requires 'controller_class'")
+        if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
+            warnings.warn(_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if drive_class is not None:
+                raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
+            drive_class = controller_class
+        if drive_class is None:
+            raise TypeError("add_actuator() requires 'drive_class'")
 
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
 
         clamping = clamping or []
 
-        # --- Resolve controller kwargs and separate shared from per-DOF ---
-        resolved_ctrl = controller_class.resolve_arguments(kwargs)
-        unrecognized = set(kwargs) - set(resolved_ctrl)
+        # --- Resolve drive kwargs and separate shared from per-DOF ---
+        resolved_drive = drive_class.resolve_arguments(kwargs)
+        unrecognized = set(kwargs) - set(resolved_drive)
         if unrecognized:
             warnings.warn(
-                f"add_actuator: {controller_class.__name__} ignoring "
+                f"add_actuator: {drive_class.__name__} ignoring "
                 f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
                 stacklevel=2,
             )
-        ctrl_shared_names = getattr(controller_class, "SHARED_PARAMS", set())
-        ctrl_shared = {k: resolved_ctrl[k] for k in ctrl_shared_names if k in resolved_ctrl}
-        ctrl_array_params = {k: v for k, v in resolved_ctrl.items() if k not in ctrl_shared_names}
+        drive_shared_names = getattr(drive_class, "SHARED_PARAMS", set())
+        drive_shared = {k: resolved_drive[k] for k in drive_shared_names if k in resolved_drive}
+        drive_array_params = {k: v for k, v in resolved_drive.items() if k not in drive_shared_names}
 
         # --- Resolve per-clamping kwargs and separate shared from per-DOF ---
         clamping_classes = tuple(cc for cc, _ in clamping)
@@ -2282,31 +2294,31 @@ class ModelBuilder:
         clamping_shared_kwargs = tuple(clamping_shared_list)
 
         # --- Build entry key: identifies a group of compatible actuators ---
-        # Groups differ when controller class, presence of delay, clamping
-        # types/shared-params, or controller shared params differ.
+        # Groups differ when drive class, presence of delay, clamping
+        # types/shared-params, or drive shared params differ.
         # Delay values are per-DOF; the buffer is sized to max(delays).
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)
             return v
 
-        ctrl_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in ctrl_shared.items()))
+        drive_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in drive_shared.items()))
         clamping_key = tuple(
             (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
         )
-        entry_key = (controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)
+        entry_key = (drive_class, delay_steps is not None, clamping_key, drive_shared_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
             ModelBuilder.ActuatorEntry(
-                controller_class=controller_class,
+                drive_class=drive_class,
                 clamping_classes=clamping_classes,
                 clamping_shared_kwargs=clamping_shared_kwargs,
-                controller_shared_kwargs=ctrl_shared,
+                drive_shared_kwargs=drive_shared,
                 indices=[],
                 pos_indices=[],
-                controller_args=[],
+                drive_args=[],
                 delay_args=[],
                 clamping_args=[],
             ),
@@ -2314,7 +2326,7 @@ class ModelBuilder:
 
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
-        entry.controller_args.append(ctrl_array_params)
+        entry.drive_args.append(drive_array_params)
         if delay_steps is not None:
             entry.delay_args.append({"delay_steps": delay_steps})
         entry.clamping_args.append(clamping_array_params_list)
@@ -4252,20 +4264,20 @@ class ModelBuilder:
             entry = self.actuator_entries.setdefault(
                 entry_key,
                 ModelBuilder.ActuatorEntry(
-                    controller_class=sub_entry.controller_class,
+                    drive_class=sub_entry.drive_class,
                     clamping_classes=sub_entry.clamping_classes,
                     clamping_shared_kwargs=sub_entry.clamping_shared_kwargs,
-                    controller_shared_kwargs=sub_entry.controller_shared_kwargs,
+                    drive_shared_kwargs=sub_entry.drive_shared_kwargs,
                     indices=[],
                     pos_indices=[],
-                    controller_args=[],
+                    drive_args=[],
                     delay_args=[],
                     clamping_args=[],
                 ),
             )
             entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
             entry.pos_indices.extend(idx + joint_coord_offset for idx in sub_entry.pos_indices)
-            entry.controller_args.extend(sub_entry.controller_args)
+            entry.drive_args.extend(sub_entry.drive_args)
             entry.delay_args.extend(sub_entry.delay_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
 
@@ -12508,11 +12520,9 @@ class ModelBuilder:
                 if entry.pos_indices != entry.indices:
                     pos_indices_arg = self._build_index_array(entry.pos_indices, device)
 
-                # Build controller from stacked per-DOF arrays + shared kwargs
-                ctrl_arrays = self._stack_args_to_arrays(
-                    entry.controller_args, device=device, requires_grad=requires_grad
-                )
-                controller = entry.controller_class(**ctrl_arrays, **entry.controller_shared_kwargs)
+                # Build drive from stacked per-DOF arrays + shared kwargs
+                drive_arrays = self._stack_args_to_arrays(entry.drive_args, device=device, requires_grad=requires_grad)
+                drive = entry.drive_class(**drive_arrays, **entry.drive_shared_kwargs)
 
                 delay_obj = None
                 if entry.delay_args:
@@ -12536,7 +12546,7 @@ class ModelBuilder:
                 )
                 actuator = Actuator(
                     indices=indices,
-                    controller=controller,
+                    drive=drive,
                     delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,

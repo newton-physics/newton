@@ -97,7 +97,7 @@ def _clamp_dc_motor_kernel(
 class ClampingDCMotor(Clamping):
     r"""DC motor four-quadrant effort-speed saturation.
 
-    Clips controller output using the linear effort-speed characteristic::
+    Clips drive output using the linear effort-speed characteristic::
 
         effort_max(vel) = min(saturation_effort * (1 - vel / velocity_limit),  max_motor_effort)
         effort_min(vel) = max(saturation_effort * (-1 - vel / velocity_limit), -max_motor_effort)

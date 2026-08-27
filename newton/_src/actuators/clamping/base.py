@@ -11,7 +11,7 @@ import warp as wp
 class Clamping:
     """Base class for actuator output effort clamping.
 
-    Clamping objects are stacked on top of a controller to constrain
+    Clamping objects are stacked on top of a drive to constrain
     actuator output effort — symmetric limits, velocity-dependent
     saturation, position-dependent curves, etc.  They read from a
     source effort buffer and write bounded values to a destination buffer.
@@ -88,7 +88,7 @@ class Clamping:
 
         When src and dst are the same array, this is an in-place update.
         The Actuator uses different arrays for the first clamping
-        (to preserve the raw controller output) and the same array
+        (to preserve the raw drive output) and the same array
         for subsequent clampings.
 
         Args:

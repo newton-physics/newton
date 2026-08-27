@@ -3,8 +3,8 @@
 
 from .actuator import Actuator
 from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, ControllerPD, ControllerPID
 from .delay import Delay
+from .drives import DriveBase, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .response_oracle import ResponseOracle
 from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuator_prim, register_actuator_component
 
@@ -16,12 +16,12 @@ __all__ = [
     "ClampingMaxEffort",
     "ClampingPositionBased",
     "ComponentKind",
-    "Controller",
-    "ControllerNeuralLSTM",
-    "ControllerNeuralMLP",
-    "ControllerPD",
-    "ControllerPID",
     "Delay",
+    "DriveBase",
+    "DriveNeuralLSTM",
+    "DriveNeuralMLP",
+    "DrivePD",
+    "DrivePID",
     "ResponseOracle",
     "SchemaNames",
     "parse_actuator_prim",

@@ -1999,7 +1999,7 @@ class ArticulationView:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
             component: The component that owns the parameter — a
-                :class:`~newton.actuators.Controller`,
+                :class:`~newton.actuators.DriveBase`,
                 :class:`~newton.actuators.Clamping`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
@@ -2045,7 +2045,7 @@ class ArticulationView:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
             component: The component that owns the parameter — a
-                :class:`~newton.actuators.Controller`,
+                :class:`~newton.actuators.DriveBase`,
                 :class:`~newton.actuators.Clamping`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
