@@ -47,6 +47,17 @@ class TestActuatorView(unittest.TestCase):
     def mapping(self) -> wp.array2d[int]:
         return wp.array([[0, -1, 1], [2, -1, 3]], dtype=int, device=wp.get_device())
 
+    def make_articulation_view(self) -> tuple[ArticulationView, Actuator]:
+        template = newton.ModelBuilder()
+        body = template.add_link()
+        joint = template.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+        template.add_articulation([joint], label="robot")
+        template.add_actuator(ControllerPD, index=template.joint_qd_start[joint], kp=100.0)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        return ArticulationView(model, "robot"), model.actuators[0]
+
     def test_public_actuator_module_exports_view(self):
         self.assertTrue(hasattr(actuator_api, "ActuatorView"))
 
@@ -113,20 +124,21 @@ class TestActuatorView(unittest.TestCase):
         np.testing.assert_array_equal(values.numpy(), [[10.0, 0.0, 20.0], [30.0, 0.0, 40.0]])
 
     def test_from_articulation_view_uses_explicit_actuators(self):
-        template = newton.ModelBuilder()
-        body = template.add_link()
-        joint = template.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
-        template.add_articulation([joint], label="robot")
-        template.add_actuator(ControllerPD, index=template.joint_qd_start[joint], kp=100.0)
-        builder = newton.ModelBuilder()
-        builder.replicate(template, 2)
-        model = builder.finalize()
-        actuator = model.actuators[0]
-        source = ArticulationView(model, "robot")
+        source, actuator = self.make_articulation_view()
 
         view = actuator_api.ActuatorView.from_articulation_view(source, [actuator])
 
         values = view.get_actuator_parameter(actuator, "controller", "kp")
+        np.testing.assert_array_equal(values.numpy(), [[100.0], [100.0]])
+
+    def test_articulation_view_returns_cached_actuator_view(self):
+        source, actuator = self.make_articulation_view()
+
+        first = source.get_actuator_view([actuator])
+        second = source.get_actuator_view([actuator])
+
+        self.assertIs(first, second)
+        values = first.get_actuator_parameter(actuator, "controller", "kp")
         np.testing.assert_array_equal(values.numpy(), [[100.0], [100.0]])
 
 

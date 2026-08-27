@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 from warp.types import is_array
 
-from ..actuators.actuator import _gather_parameter_kernel, _scatter_parameter_kernel
+from ..actuators.view import ActuatorView
 from ..sim import (
     Control,
     JointType,
@@ -1834,7 +1834,7 @@ class ArticulationView:
         Note:
             Assumes SISO actuators (one DOF per actuator).
 
-        Returns array of shape (world_count * dofs_per_world,) where each element is:
+        Returns array of shape (world_count, dofs_per_world) where each element is:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
@@ -1846,7 +1846,7 @@ class ArticulationView:
         dofs_per_world = dofs_per_arti * self.count_per_world
 
         if dofs_per_world == 0:
-            return wp.empty(0, dtype=int, device=self.device)
+            return wp.empty((self.world_count, 0), dtype=int, device=self.device)
 
         mapping = wp.full(self.world_count * dofs_per_world, -1, dtype=int, device=self.device)
 
@@ -1888,7 +1888,22 @@ class ArticulationView:
                 device=self.device,
             )
 
-        return mapping
+        return mapping.reshape((self.world_count, dofs_per_world))
+
+    def get_actuator_view(self, actuators: list[Actuator]) -> ActuatorView:
+        """Get a cached actuator view in this articulation view's DOF layout.
+
+        Args:
+            actuators: Actuators to expose through the returned view.
+
+        Returns:
+            A model-independent actuator view.
+        """
+        return self._get_actuator_view(tuple(actuators))
+
+    @functools.cache  # noqa: B019 - cache is tied to view lifetime
+    def _get_actuator_view(self, actuators: tuple[Actuator, ...]) -> ActuatorView:
+        return ActuatorView({actuator: self._get_actuator_dof_mapping(actuator) for actuator in actuators})
 
     def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
         """Read an actuator-component parameter for every DOF in this view.
@@ -1913,23 +1928,7 @@ class ArticulationView:
             ``dofs_per_world`` is the total number of DOFs in the view (not
             just the actuated subset).
         """
-        mapping = self._get_actuator_dof_mapping(actuator)
-        if len(mapping) == 0:
-            return wp.empty((self.world_count, 0), dtype=float, device=self.device)
-
-        src = getattr(component, name)
-        dofs_per_world = len(mapping) // self.world_count
-
-        mapping = mapping.reshape((self.world_count, dofs_per_world))
-        dst = wp.zeros(mapping.shape, dtype=src.dtype, device=self.device)
-        wp.launch(
-            _gather_parameter_kernel,
-            dim=mapping.shape,
-            inputs=[src, mapping],
-            outputs=[dst],
-            device=self.device,
-        )
-        return dst
+        return self.get_actuator_view([actuator])._get_parameter_array(actuator, getattr(component, name))
 
     def set_actuator_parameter(
         self,
@@ -1958,25 +1957,4 @@ class ArticulationView:
                 where ``dofs_per_world`` is the total number of DOFs in the view.
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
-        mask = self._resolve_world_mask(mask)
-        mapping = self._get_actuator_dof_mapping(actuator)
-        if len(mapping) == 0:
-            return
-
-        dst = getattr(component, name)
-        dofs_per_world = len(mapping) // self.world_count
-        expected_shape = (self.world_count, dofs_per_world, *dst.shape[1:])
-
-        if not is_array(values):
-            values = wp.array(values, dtype=dst.dtype, shape=expected_shape, device=self.device, copy=False)
-
-        if values.shape[:2] != expected_shape[:2]:
-            raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
-
-        wp.launch(
-            _scatter_parameter_kernel,
-            dim=(self.world_count, dofs_per_world),
-            inputs=[values, mapping.reshape((self.world_count, dofs_per_world)), mask],
-            outputs=[dst],
-            device=self.device,
-        )
+        self.get_actuator_view([actuator])._set_parameter_array(actuator, getattr(component, name), values, mask)

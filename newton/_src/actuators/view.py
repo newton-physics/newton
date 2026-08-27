@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import warp as wp
+from warp.types import is_array
 
 from .actuator import Actuator, _gather_parameter_kernel, _scatter_parameter_kernel
 
@@ -41,11 +42,7 @@ class ActuatorView:
         Returns:
             A standalone actuator view.
         """
-        mappings = {
-            actuator: articulation_view._get_actuator_dof_mapping(actuator).reshape((articulation_view.world_count, -1))
-            for actuator in actuators
-        }
-        return cls(mappings)
+        return articulation_view.get_actuator_view(actuators)
 
     def get_actuator_parameter(self, actuator: Actuator, component_name: str, parameter_name: str) -> wp.array2d[Any]:
         """Read an actuator parameter in the view's DOF layout.
@@ -60,8 +57,13 @@ class ActuatorView:
             Parameter values in the selected parameter's units, shaped
             ``(world_count, dofs_per_world)``. Unmapped DOFs are zero.
         """
-        mapping = self._mappings[actuator]
         parameter = self._get_parameter(actuator, component_name, parameter_name)
+        return self._get_parameter_array(actuator, parameter)
+
+    def _get_parameter_array(self, actuator: Actuator, parameter: wp.array[Any]) -> wp.array2d[Any]:
+        mapping = self._mappings[actuator]
+        if mapping.shape[1] == 0:
+            return wp.empty(mapping.shape, dtype=parameter.dtype, device=mapping.device)
         values = wp.zeros(mapping.shape, dtype=parameter.dtype, device=mapping.device)
         wp.launch(
             _gather_parameter_kernel,
@@ -91,12 +93,36 @@ class ActuatorView:
                 ``(world_count, dofs_per_world)``.
             mask: Per-world mask. All worlds are updated when omitted.
         """
-        mapping = self._mappings[actuator]
         parameter = self._get_parameter(actuator, component_name, parameter_name)
+        self._set_parameter_array(actuator, parameter, values, mask)
+
+    def _set_parameter_array(
+        self,
+        actuator: Actuator,
+        parameter: wp.array[Any],
+        values: wp.array2d[Any],
+        mask: wp.array[bool] | None,
+    ) -> None:
+        mapping = self._mappings[actuator]
+        if mapping.shape[1] == 0:
+            return
+
+        if not is_array(values):
+            values = wp.array(values, dtype=parameter.dtype, shape=mapping.shape, device=mapping.device, copy=False)
+        if values.shape != mapping.shape:
+            raise ValueError(f"Expected values shape {mapping.shape}, got {values.shape}")
+
+        if mask is None:
+            mask = self._full_mask
+        elif not isinstance(mask, wp.array):
+            mask = wp.array(mask, dtype=bool, shape=(mapping.shape[0],), device=mapping.device, copy=False)
+        if mask.shape != (mapping.shape[0],):
+            raise ValueError(f"Expected mask shape ({mapping.shape[0]},), got {mask.shape}")
+
         wp.launch(
             _scatter_parameter_kernel,
             dim=mapping.shape,
-            inputs=[values, mapping, self._full_mask if mask is None else mask],
+            inputs=[values, mapping, mask],
             outputs=[parameter],
             device=mapping.device,
         )
