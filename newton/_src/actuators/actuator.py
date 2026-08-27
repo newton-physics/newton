@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from .clamping.base import Clamping
+from .clamping.base import ClampingBase
 from .delay import Delay
 from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
@@ -83,9 +83,9 @@ class Actuator:
         def __init__(
             self,
             delay_state: Delay.State | None = None,
-            drive_state: DriveBase.State | None | object = _DEPRECATED_UNSET,
+            drive_state: DriveBase.State | object | None = _DEPRECATED_UNSET,
             *,
-            controller_state: DriveBase.State | None | object = _DEPRECATED_UNSET,
+            controller_state: DriveBase.State | object | None = _DEPRECATED_UNSET,
         ) -> None:
             """Initialize composed actuator state.
 
@@ -95,9 +95,9 @@ class Actuator:
                 controller_state: Deprecated in Newton 1.6; use ``drive_state``.
             """
             if controller_state is not _DEPRECATED_UNSET:
-                warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
                 if drive_state is not _DEPRECATED_UNSET:
                     raise TypeError("Specify only one of 'drive_state' and deprecated 'controller_state'.")
+                warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
                 drive_state = controller_state
 
             self.delay_state = delay_state
@@ -135,7 +135,7 @@ class Actuator:
         indices: wp.array[wp.uint32],
         drive: DriveBase | None = None,
         delay: Delay | None = None,
-        clamping: list[Clamping] | None = None,
+        clamping: list[ClampingBase] | None = None,
         pos_indices: wp.array[wp.uint32] | None = None,
         target_pos_indices: wp.array[wp.uint32] | None = None,
         effort_indices: wp.array[wp.uint32] | None = None,
@@ -148,7 +148,7 @@ class Actuator:
         control_computed_output_attr: str | None = None,
         requires_grad: bool = False,
         *,
-        controller: DriveBase | None | object = _DEPRECATED_UNSET,
+        controller: DriveBase | object | None = _DEPRECATED_UNSET,
     ):
         """Initialize actuator.
 
@@ -186,9 +186,9 @@ class Actuator:
             controller: Deprecated in Newton 1.6; use ``drive`` instead.
         """
         if controller is not _DEPRECATED_UNSET:
-            warnings.warn(_CONTROLLER_KEYWORD_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             if drive is not None:
                 raise TypeError("Specify only one of 'drive' and deprecated 'controller'.")
+            warnings.warn(_CONTROLLER_KEYWORD_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             drive = controller
         if drive is None:
             raise TypeError("Actuator() missing required argument: 'drive'")

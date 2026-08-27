@@ -25,7 +25,7 @@ from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
     ActuatorParsed,
-    Clamping,
+    ClampingBase,
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
@@ -1924,7 +1924,7 @@ def _pipeline_clamping(
     clamp: str | None,
     device: wp.Device,
     n: int,
-) -> tuple[list[Clamping] | None, Callable[[float, float], tuple[float, float]]]:
+) -> tuple[list[ClampingBase] | None, Callable[[float, float], tuple[float, float]]]:
     """Return the clamping list for *clamp* and its NumPy ``(q, qd) -> (lo, hi)`` law."""
     if clamp is None:
         return None, lambda q, qd: (-np.inf, np.inf)

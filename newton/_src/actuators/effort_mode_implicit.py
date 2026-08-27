@@ -429,7 +429,8 @@ class _EffortModeImplicit:
             func = clamp.evaluate_clamp
             if func is None:
                 raise NotImplementedError(
-                    f"{type(clamp).__name__} does not support implicit actuation (Clamping.evaluate_clamp unavailable)"
+                    f"{type(clamp).__name__} does not support implicit actuation "
+                    "(ClampingBase.evaluate_clamp unavailable)"
                 )
             width = clamp.param_width()
             entries.append((func, col))

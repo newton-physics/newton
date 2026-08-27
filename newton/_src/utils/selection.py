@@ -2000,7 +2000,7 @@ class ArticulationView:
                 view DOFs are considered actuated.
             component: The component that owns the parameter — a
                 :class:`~newton.actuators.DriveBase`,
-                :class:`~newton.actuators.Clamping`, or
+                :class:`~newton.actuators.ClampingBase`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
                 ``"delay_steps"``).
@@ -2046,7 +2046,7 @@ class ArticulationView:
                 view DOFs are considered actuated.
             component: The component that owns the parameter — a
                 :class:`~newton.actuators.DriveBase`,
-                :class:`~newton.actuators.Clamping`, or
+                :class:`~newton.actuators.ClampingBase`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
                 ``"delay_steps"``).

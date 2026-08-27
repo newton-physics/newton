@@ -9,14 +9,14 @@ from typing import Any
 
 import warp as wp
 
-from .clamping.base import Clamping
+from .clamping.base import ClampingBase
 from .drives.base import DriveBase
 
 
 class _EffortModeExplicit:
     """Explicit effort mode: control law at the current state, then clamps."""
 
-    def __init__(self, drive: DriveBase, clamping: list[Clamping], device: wp.Device):
+    def __init__(self, drive: DriveBase, clamping: list[ClampingBase], device: wp.Device):
         self._drive = drive
         self._clamping = clamping
         self._device = device

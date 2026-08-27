@@ -72,7 +72,7 @@ from .model import Model, _pack_shape_pair_codes
 if TYPE_CHECKING:
     from pxr import Usd
 
-    from ..actuators.clamping.base import Clamping
+    from ..actuators.clamping.base import ClampingBase
     from ..actuators.drives.base import DriveBase
     from ..geometry.types import TetMesh
 
@@ -2222,7 +2222,7 @@ class ModelBuilder:
         self,
         drive_class: type[DriveBase] | None = None,
         index: int | None = None,
-        clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
+        clamping: list[tuple[type[ClampingBase], dict[str, Any]]] | None = None,
         delay_steps: int | None = None,
         pos_index: int | None = None,
         *,
@@ -2254,9 +2254,9 @@ class ModelBuilder:
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
         """
         if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
-            warnings.warn(_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             if drive_class is not None:
                 raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
+            warnings.warn(_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             drive_class = controller_class
         if drive_class is None:
             raise TypeError("add_actuator() requires 'drive_class'")

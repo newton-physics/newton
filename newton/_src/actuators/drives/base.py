@@ -22,7 +22,7 @@ class DriveBase:
     Drives compute actuator output effort from authored drive
     parameters, commanded inputs (targets, feedforward), and simulation
     state. The output may still be constrained by one or more
-    :class:`~newton.actuators.Clamping` objects.
+    :class:`~newton.actuators.ClampingBase` objects.
 
     Subclasses must override ``compute`` and ``resolve_arguments``.
 

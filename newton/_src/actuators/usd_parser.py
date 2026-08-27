@@ -12,7 +12,7 @@ from typing import Any
 
 from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
-from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
+from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
 from .drives import DriveBase, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .utils import load_metadata
@@ -71,7 +71,7 @@ class ActuatorParsed:
 
     drive_class: type[DriveBase]
     drive_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type[Clamping | Delay], dict[str, Any]]] = field(default_factory=list)
+    component_specs: list[tuple[type[ClampingBase | Delay], dict[str, Any]]] = field(default_factory=list)
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
 
@@ -79,7 +79,7 @@ class ActuatorParsed:
         self,
         drive_class: type[DriveBase] | object = _DEPRECATED_UNSET,
         drive_kwargs: dict[str, Any] | object = _DEPRECATED_UNSET,
-        component_specs: list[tuple[type[Clamping | Delay], dict[str, Any]]] | None = None,
+        component_specs: list[tuple[type[ClampingBase | Delay], dict[str, Any]]] | None = None,
         target_path: str = "",
         *,
         controller_class: type[DriveBase] | object = _DEPRECATED_UNSET,
@@ -96,14 +96,14 @@ class ActuatorParsed:
             controller_kwargs: Deprecated in Newton 1.6; use ``drive_kwargs``.
         """
         if controller_class is not _DEPRECATED_UNSET:
-            warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             if drive_class is not _DEPRECATED_UNSET:
                 raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
+            warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             drive_class = controller_class
         if controller_kwargs is not _DEPRECATED_UNSET:
-            warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             if drive_kwargs is not _DEPRECATED_UNSET:
                 raise TypeError("Specify only one of 'drive_kwargs' and deprecated 'controller_kwargs'.")
+            warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             drive_kwargs = controller_kwargs
         if drive_class is _DEPRECATED_UNSET:
             raise TypeError("ActuatorParsed() missing required argument: 'drive_class'")

@@ -28,7 +28,7 @@ construction.
 
    Actuator
    ActuatorParsed
-   Clamping
+   ClampingBase
    ClampingDCMotor
    ClampingMaxEffort
    ClampingPositionBased
@@ -58,6 +58,8 @@ construction.
 
    * - Name
      - Guidance
+   * - ``Clamping``
+     - Deprecated in 1.6; use ClampingBase instead.
    * - ``Controller``
      - Deprecated in 1.6; use DriveBase instead.
    * - ``ControllerNeuralLSTM``

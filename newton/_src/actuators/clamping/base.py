@@ -8,10 +8,10 @@ from typing import Any, ClassVar
 import warp as wp
 
 
-class Clamping:
+class ClampingBase:
     """Base class for actuator output effort clamping.
 
-    Clamping objects are stacked on top of a drive to constrain
+    Clamping stages are stacked on top of a drive to constrain
     actuator output effort — symmetric limits, velocity-dependent
     saturation, position-dependent curves, etc.  They read from a
     source effort buffer and write bounded values to a destination buffer.

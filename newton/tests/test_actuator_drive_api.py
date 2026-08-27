@@ -13,11 +13,12 @@ import newton.actuators as actuators
 
 
 class TestActuatorDriveAPI(unittest.TestCase):
-    """Verify canonical drive names and deprecated controller compatibility."""
+    """Verify canonical actuator names and deprecated compatibility aliases."""
 
-    def test_public_drive_names_and_deprecated_aliases(self):
-        """Expose drive names canonically and warn for controller aliases."""
+    def test_public_base_names_and_deprecated_aliases(self):
+        """Expose Base-suffixed names and warn for deprecated aliases."""
         aliases = {
+            "Clamping": "ClampingBase",
             "Controller": "DriveBase",
             "ControllerPD": "DrivePD",
             "ControllerPID": "DrivePID",
@@ -74,6 +75,9 @@ class TestActuatorDriveAPI(unittest.TestCase):
             state.controller_state = None
         self.assertIsNone(state.drive_state)
 
+        with self.assertRaisesRegex(TypeError, "only one"):
+            actuators.Actuator.State(drive_state=drive_state, controller_state=drive_state)
+
     def test_builder_deprecated_controller_class_keyword(self):
         """Keep the former builder keyword functional with a warning."""
         builder = newton.ModelBuilder()
@@ -112,6 +116,19 @@ class TestActuatorDriveAPI(unittest.TestCase):
             self.assertIs(parsed.controller_class, actuators.DrivePD)
         with self.assertWarnsRegex(DeprecationWarning, r"controller_kwargs.*drive_kwargs"):
             self.assertEqual(parsed.controller_kwargs, {"kp": 1.0})
+
+        with self.assertRaisesRegex(TypeError, "only one"):
+            actuators.ActuatorParsed(
+                drive_class=actuators.DrivePD,
+                controller_class=actuators.DrivePD,
+            )
+
+        with self.assertRaisesRegex(TypeError, "only one"):
+            actuators.ActuatorParsed(
+                drive_class=actuators.DrivePD,
+                drive_kwargs={"kp": 1.0},
+                controller_kwargs={"kp": 1.0},
+            )
 
     def test_component_kind_deprecated_controller_member(self):
         """Keep the former component-kind member functional with a warning."""

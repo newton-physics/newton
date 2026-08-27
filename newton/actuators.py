@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from ._src.actuators import (
     Actuator,
     ActuatorParsed,
-    Clamping,
+    ClampingBase,
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
@@ -41,7 +41,7 @@ from ._src.actuators import (
 __all__ = [
     "Actuator",
     "ActuatorParsed",
-    "Clamping",
+    "ClampingBase",
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
@@ -59,13 +59,15 @@ __all__ = [
 ]
 
 if TYPE_CHECKING:
+    Clamping = ClampingBase
     Controller = DriveBase
     ControllerNeuralLSTM = DriveNeuralLSTM
     ControllerNeuralMLP = DriveNeuralMLP
     ControllerPD = DrivePD
     ControllerPID = DrivePID
 
-_DEPRECATED_CONTROLLER_SYMBOLS = {
+_DEPRECATED_SYMBOLS = {
+    "Clamping": ClampingBase,
     "Controller": DriveBase,
     "ControllerNeuralLSTM": DriveNeuralLSTM,
     "ControllerNeuralMLP": DriveNeuralMLP,
@@ -74,6 +76,7 @@ _DEPRECATED_CONTROLLER_SYMBOLS = {
 }
 
 __deprecated_symbols__ = {
+    "Clamping": "Deprecated in 1.6; use ClampingBase instead.",
     "Controller": "Deprecated in 1.6; use DriveBase instead.",
     "ControllerNeuralLSTM": "Deprecated in 1.6; use DriveNeuralLSTM instead.",
     "ControllerNeuralMLP": "Deprecated in 1.6; use DriveNeuralMLP instead.",
@@ -84,7 +87,7 @@ __deprecated_symbols__ = {
 
 def __getattr__(name: str):
     try:
-        value = _DEPRECATED_CONTROLLER_SYMBOLS[name]
+        value = _DEPRECATED_SYMBOLS[name]
     except KeyError:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
 
@@ -98,4 +101,4 @@ def __getattr__(name: str):
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(_DEPRECATED_CONTROLLER_SYMBOLS))
+    return sorted(set(globals()) | set(_DEPRECATED_SYMBOLS))

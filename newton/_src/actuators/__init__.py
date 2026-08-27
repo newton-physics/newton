@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .actuator import Actuator
-from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
+from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
 from .drives import DriveBase, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .response_oracle import ResponseOracle
@@ -11,7 +11,7 @@ from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuat
 __all__ = [
     "Actuator",
     "ActuatorParsed",
-    "Clamping",
+    "ClampingBase",
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",

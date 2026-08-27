@@ -70,7 +70,7 @@ The per-step pipeline is:
    Delay read → Drive → Clamping → Scatter-add → State updates (drive + delay write)
 
 Drives and clamping objects are pluggable: implement the
-:class:`DriveBase` or :class:`Clamping` base class to add new models.
+:class:`DriveBase` or :class:`ClampingBase` class to add new models.
 
 .. deprecated:: 1.6
 
@@ -79,6 +79,8 @@ Drives and clamping objects are pluggable: implement the
    :class:`DriveNeuralMLP`, and :class:`DriveNeuralLSTM`. The former
    ``controller`` constructor keywords and attributes are also deprecated;
    use ``drive``, ``drive_class``, ``drive_state``, and ``drive_kwargs``.
+   The clamping base class is now :class:`ClampingBase`; :class:`Clamping`
+   remains as a deprecated compatibility alias.
 
 .. note::
 
@@ -321,7 +323,8 @@ response update can be captured in one CUDA graph.
 explicit mode. :class:`~newton.actuators.Actuator.ImplicitOptions` sets the
 solve's iteration count and convergence tolerances.
 
-All drives support the implicit mode:
+The following built-in drives support the implicit mode (neural drives require
+the ONNX backend):
 :class:`~newton.actuators.DrivePD`,
 :class:`~newton.actuators.DrivePID`,
 :class:`~newton.actuators.DriveNeuralMLP` and
@@ -384,7 +387,7 @@ Customization
 Any actuator can be assembled from the existing building blocks — mix and
 match drives, clamping stages, and delay to fit a specific use case.
 When the built-in components are not sufficient, implement new ones by
-subclassing :class:`DriveBase` or :class:`Clamping`.
+subclassing :class:`DriveBase` or :class:`ClampingBase`.
 
 For example, a custom drive needs to implement
 :meth:`~DriveBase.compute`, :meth:`~DriveBase.resolve_arguments`,
@@ -463,8 +466,9 @@ configuration cannot be solved implicitly.
 Torch-backed neural checkpoint. Leaving
 :attr:`~DriveBase.evaluate_force` as ``None`` raises the same error.
 
-Similarly, a custom clamping stage subclasses :class:`Clamping` and implements
-:meth:`~Clamping.modify_forces` (which reads effort from a source buffer and writes bounded effort to a destination buffer).
+Similarly, a custom clamping stage subclasses :class:`ClampingBase` and
+implements :meth:`~ClampingBase.modify_forces` (which reads effort from a source
+buffer and writes bounded effort to a destination buffer).
 
 See Also
 --------
