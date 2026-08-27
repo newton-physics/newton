@@ -1720,14 +1720,19 @@ class SolverVBD(SolverBase, CouplingInterface):
         own summary before combining endpoints.
         Direction- and chain-blind by design: it bounds neighborhood stiffness to
         condition rho and never enters a force law.
-        Structural material and topology are construction-time state. The summary
-        is refreshed in place after a notified joint-enable change.
+        Topology and the non-rod structural constants are construction-time state. The summary
+        is refreshed in place after a notified joint-enable change, and after a
+        ``JOINT_DOF_PROPERTIES`` change to rod stretch/shear stiffness, which feeds it.
         """
         self.body_structural_k = wp.empty(self.model.body_count, dtype=float, device=self.device)
         self._refresh_structural_k()
 
     def _refresh_structural_k(self) -> None:
-        """Refresh the enable-dependent structural summary without reallocating it."""
+        """Refresh the structural summary in place, without reallocating it.
+
+        Depends on joint-enable flags and on rod stretch/shear ``joint_material_k``, so it is
+        rerun for both ``JOINT_PROPERTIES`` and ``JOINT_DOF_PROPERTIES``.
+        """
         self.body_structural_k.zero_()
         if self.model.joint_count == 0:
             return
