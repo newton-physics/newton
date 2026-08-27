@@ -12,8 +12,7 @@ itself is always 6-dimensional regardless of how many DOFs a robot has.
 This increment implements motion control (a task-space spring-damper term,
 with optional inertial decoupling through the operational-space mass matrix
 Lambda), contact-wrench control combined through per-axis selection
-matrices, and gravity compensation. Null-space posture control is not
-implemented yet.
+matrices, gravity compensation, and null-space posture control.
 
 Motion law (terms enabled at construction):
 
@@ -48,6 +47,23 @@ matrix is applied: ``tau = J^T · F_motion``.
 When ``use_gravity_compensation=True``, ``inputs.gravity_force`` (the
 caller-supplied gravity generalized forces, compact over the controlled
 DOFs) is added directly to the summed joint torque.
+
+When ``use_null_space_control=True``, a secondary joint-space posture task
+is pursued only in directions that leave the task-space motion undisturbed:
+
+    tau_null = N^T · [M(q)·a_posture if use_inertia_decoupling else a_posture]
+    a_posture = Kp_null·(q_des_null - q) + Kd_null·(qd_des_null - qd)
+
+``N^T = I - J^T · jacobian_pinv_transpose`` is the null-space projector,
+built from whichever pseudo-inverse variant ``use_inertia_decoupling``
+selects: the dynamically-consistent one (``Lambda·J·M(q)^-1``, reusing the
+same Lambda and mass-matrix inverse the motion term computes) when it is
+``True``, or the kinematics-only Moore-Penrose one (``(J·J^T)^-1·J``) when
+it is ``False`` — the latter needs no mass matrix, so null-space control
+still works without inertial decoupling. Only a robot with more controlled
+DOFs than task dimensions (6) has a nontrivial null space to work with.
+``tau_null`` is mapped through the same compact per-DOF layout as every
+other term here and summed into the joint torque the same way.
 """
 
 from __future__ import annotations
@@ -59,14 +75,24 @@ import warp as wp
 
 from ...controller import ControllerBase
 from ...utils import _validate_array
-from .._common import _add_term_kernel, _read_port, _scatter_port_kernel
+from .._common import (
+    _add_term_kernel,
+    _block_matrix_vector_multiply_kernel,
+    _pd_term_kernel,
+    _read_port,
+    _scatter_port_kernel,
+)
 from ._common import (
+    _apply_mass_matrix_inv_on_right_kernel,
     _apply_spatial_matrix_kernel,
     _invert_spd_block_kernel,
+    _jacobian_times_jacobian_transpose_kernel,
     _jacobian_transpose_force_kernel,
+    _null_space_projector_kernel,
     _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
     _rotate_selection_matrix_kernel,
+    _task_matrix_times_jacobian_kernel,
     _task_space_pd_kernel,
     _wrench_feedback_only_kernel,
     _wrench_feedforward_and_feedback_kernel,
@@ -270,6 +296,26 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             [N/m] on the force axes and [N·m/rad] on the moment axes. Same
             format as ``motion_stiffness``. Only meaningful when
             ``use_wrench_feedback=True``.
+        use_null_space_control: Pursue a secondary joint-space posture task
+            in the null space of the primary task, so it does not disturb
+            task-space motion. Requires every robot to have more than 6
+            controlled DOFs (redundant relative to the 6D task). Which
+            pseudo-inverse variant builds the null-space projector follows
+            ``use_inertia_decoupling``: dynamically-consistent (reusing the
+            motion term's Lambda and mass-matrix inverse) when it is
+            ``True``, or the kinematics-only Moore-Penrose variant (no mass
+            matrix needed) when it is ``False``.
+        null_space_stiffness: Joint-space posture position-error gain Kp.
+            Units depend on ``use_inertia_decoupling``: [1/s²] when enabled,
+            since the posture PD term is then premultiplied by the mass
+            matrix; otherwise [N/m or N·m/rad]. Pass a scalar to apply the
+            same gain to every controlled DOF, an array of shape
+            [total_controlled_dofs] to set them individually, or ``None`` to
+            read ``inputs.null_space_stiffness`` each step. Only meaningful
+            when ``use_null_space_control=True``.
+        null_space_damping: Joint-space posture velocity-error gain Kd,
+            [1/s] when ``use_inertia_decoupling`` is enabled, otherwise
+            [N·s/m or N·m·s/rad]. Same format as ``null_space_stiffness``.
         device: Warp device.
         requires_grad: Whether internal buffers need gradient support.
     """
@@ -308,6 +354,18 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         """Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count], e.g. from a 6-axis force/torque sensor. ``None`` unless ``use_wrench_feedback=True``."""
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Contact-wrench proportional feedback gain Kp, shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
+        joint_q: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Current joint positions [m or rad], compact, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_control=True``."""
+        joint_qd: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Current joint velocities [m/s or rad/s], compact, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_control=True``."""
+        joint_q_des_null: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Desired joint positions for the null-space posture task [m or rad], compact, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_control=True``."""
+        joint_qd_des_null: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Desired joint velocities for the null-space posture task [m/s or rad/s], compact, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_control=True``."""
+        null_space_stiffness: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Joint-space posture position-error gain Kp, compact, shape [total_controlled_dofs]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction, or when ``use_null_space_control=False``."""
+        null_space_damping: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Joint-space posture velocity-error gain Kd, compact, shape [total_controlled_dofs]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction, or when ``use_null_space_control=False``."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerOperationalSpaceModelFree.output`."""
@@ -328,6 +386,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         motion_selection_axes_tool: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         wrench_selection_axes_tool: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None = None,
+        use_null_space_control: bool = False,
+        null_space_stiffness: wp.array[wp.float32] | float | None = None,
+        null_space_damping: wp.array[wp.float32] | float | None = None,
         device: Any = None,
         requires_grad: bool = False,
     ):
@@ -371,6 +432,16 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 f"all 6 task dimensions; got controlled_dofs_per_robot={controlled_dofs_per_robot_np.tolist()}. "
                 f"Pass use_inertia_decoupling=False for an under-actuated robot."
             )
+        if use_null_space_control and controlled_dofs_per_robot_np.min() <= 6:
+            # A robot with 6 or fewer controlled DOFs has no DOF left over
+            # once the 6D task is satisfied, so its null space is trivial
+            # (rank 0) -- there is nothing left for a posture task to move
+            # in without disturbing the primary task.
+            raise ValueError(
+                f"use_null_space_control=True requires every robot to have more than 6 controlled DOFs, "
+                f"since a robot with 6 or fewer has no null space left over from the 6D task; got "
+                f"controlled_dofs_per_robot={controlled_dofs_per_robot_np.tolist()}."
+            )
 
         max_controlled_dofs = int(controlled_dofs_per_robot_np.max())
         total_controlled_dofs = int(controlled_dofs_per_robot_np.sum())
@@ -387,6 +458,29 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             controlled_robot_count=controlled_robot_count,
             device=self._device,
         )
+
+        if not use_null_space_control:
+            for name, value in (
+                ("null_space_stiffness", null_space_stiffness),
+                ("null_space_damping", null_space_damping),
+            ):
+                if value is not None:
+                    raise ValueError(f"{name} is set, but use_null_space_control=False, so it would be ignored.")
+        else:
+            for name, value in (
+                ("null_space_stiffness", null_space_stiffness),
+                ("null_space_damping", null_space_damping),
+            ):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    continue  # broadcast at bake time, not a wp.array to validate
+                _validate_array(
+                    array=value,
+                    name=name,
+                    dtype=wp.float32,
+                    shape=(total_controlled_dofs,),
+                    device=self._device,
+                    required=False,
+                )
         # ------------------------------------------------------------------
 
         self._controlled_robot_count = controlled_robot_count
@@ -397,6 +491,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         self._use_wrench_feedforward = bool(use_wrench_feedforward)
         self._use_wrench_feedback = bool(use_wrench_feedback)
         self._use_wrench = self._use_wrench_feedforward or self._use_wrench_feedback
+        self._use_null_space = bool(use_null_space_control)
         self._requires_grad = requires_grad
 
         # Copied, not stored: the kernels below use this as a loop bound
@@ -418,6 +513,15 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             dtype=wp.int32,
             device=self._device,
         )
+
+        # Per-robot flat starting index into the compact total_controlled_dofs
+        # layout, needed only by the null-space posture term's block-matrix
+        # (mass matrix, then null-space projector) multiplies.
+        self._dof_offsets: wp.array[wp.int32] | None = None
+        if self._use_null_space:
+            dof_offsets_np = np.zeros(controlled_robot_count, dtype=np.int32)
+            dof_offsets_np[1:] = np.cumsum(controlled_dofs_per_robot_np[:-1])
+            self._dof_offsets = wp.array(dof_offsets_np, dtype=wp.int32, device=self._device)
 
         self._stiffness_baked = self._bake_gain(motion_stiffness)
         self._damping_baked = self._bake_gain(motion_damping)
@@ -527,6 +631,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             self._operational_space_mass_matrix = wp.zeros(
                 (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
             )
+        if self._use_inertia or self._use_null_space:
+            # Shared by Lambda's 6x6 inverse above and, when null-space
+            # control uses the kinematics-only Moore-Penrose pseudo-inverse
+            # below, (J @ J^T)'s 6x6 inverse -- both are always exactly 6x6.
             self._task_dim = wp.full(controlled_robot_count, 6, dtype=wp.int32, device=self._device)
 
         self._tau_buf = wp.zeros(
@@ -537,6 +645,75 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             if self._use_gravity
             else None
         )
+
+        def _compact_buf():
+            return wp.zeros(total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+
+        self._joint_q_buf: wp.array[wp.float32] | None = None
+        self._joint_qd_buf: wp.array[wp.float32] | None = None
+        self._joint_q_des_null_buf: wp.array[wp.float32] | None = None
+        self._joint_qd_des_null_buf: wp.array[wp.float32] | None = None
+        self._null_stiffness_baked: wp.array[wp.float32] | None = None
+        self._null_stiffness_buf: wp.array[wp.float32] | None = None
+        self._null_damping_baked: wp.array[wp.float32] | None = None
+        self._null_damping_buf: wp.array[wp.float32] | None = None
+        self._posture_acc_buf: wp.array[wp.float32] | None = None
+        self._posture_force_buf: wp.array[wp.float32] | None = None
+        self._null_space_jacobian_pinv_transpose: wp.array3d[wp.float32] | None = None
+        self._null_space_jacobian_pinv_transpose_stage: wp.array3d[wp.float32] | None = None
+        self._null_space_jjt: wp.array3d[wp.float32] | None = None
+        self._null_space_jjt_cholesky: wp.array3d[wp.float32] | None = None
+        self._null_space_jjt_inv: wp.array3d[wp.float32] | None = None
+        self._null_space_projector: wp.array3d[wp.float32] | None = None
+        self._null_space_tau_buf: wp.array[wp.float32] | None = None
+        if self._use_null_space:
+            self._joint_q_buf = _compact_buf()
+            self._joint_qd_buf = _compact_buf()
+            self._joint_q_des_null_buf = _compact_buf()
+            self._joint_qd_des_null_buf = _compact_buf()
+            self._null_stiffness_baked = self._bake_compact_gain(null_space_stiffness)
+            self._null_stiffness_buf = _compact_buf() if self._null_stiffness_baked is None else None
+            self._null_damping_baked = self._bake_compact_gain(null_space_damping)
+            self._null_damping_buf = _compact_buf() if self._null_damping_baked is None else None
+            self._posture_acc_buf = _compact_buf()
+            self._null_space_jacobian_pinv_transpose = wp.zeros(
+                (controlled_robot_count, 6, max_controlled_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
+            )
+            self._null_space_projector = wp.zeros(
+                (controlled_robot_count, max_controlled_dofs, max_controlled_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
+            )
+            self._null_space_tau_buf = _compact_buf()
+            if self._use_inertia:
+                # Dynamically-consistent pseudo-inverse transpose, Lambda @ J
+                # @ M^-1: reuses the motion term's Lambda and mass-matrix
+                # inverse, computed once per step regardless of null-space
+                # control, so only the intermediate Lambda @ J needs its own
+                # scratch buffer here.
+                self._posture_force_buf = _compact_buf()
+                self._null_space_jacobian_pinv_transpose_stage = wp.zeros(
+                    (controlled_robot_count, 6, max_controlled_dofs),
+                    dtype=wp.float32,
+                    device=self._device,
+                    requires_grad=requires_grad,
+                )
+            else:
+                # Moore-Penrose pseudo-inverse transpose, (J @ J^T)^-1 @ J:
+                # kinematics-only, needs no mass matrix.
+                self._null_space_jjt = wp.zeros(
+                    (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+                )
+                self._null_space_jjt_cholesky = wp.zeros(
+                    (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+                )
+                self._null_space_jjt_inv = wp.zeros(
+                    (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+                )
 
     def _bake_gain(
         self, value: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None
@@ -596,6 +773,32 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             device=self._device,
             requires_grad=self._requires_grad,
         )
+
+    def _bake_compact_gain(self, value: wp.array[wp.float32] | float | None) -> wp.array[wp.float32] | None:
+        """Broadcast a scalar, or copy a gain array, into a fresh compact per-DOF buffer.
+
+        Returns ``None`` for live gains, which are read from the input struct
+        each step instead. A wp.array is already validated by
+        :func:`_validate_array`.
+        """
+        if value is None:
+            return None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return wp.full(
+                self._total_controlled_dofs,
+                float(value),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=self._requires_grad,
+            )
+        baked = wp.zeros(
+            self._total_controlled_dofs,
+            dtype=wp.float32,
+            device=self._device,
+            requires_grad=self._requires_grad,
+        )
+        wp.copy(baked, value)
+        return baked
 
     @property
     def controlled_robot_count(self) -> int:
@@ -683,6 +886,36 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             if self._use_wrench_feedback and self._wrench_stiffness_baked is None
             else None
         )
+        inputs.joint_q = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space
+            else None
+        )
+        inputs.joint_qd = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space
+            else None
+        )
+        inputs.joint_q_des_null = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space
+            else None
+        )
+        inputs.joint_qd_des_null = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space
+            else None
+        )
+        inputs.null_space_stiffness = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space and self._null_stiffness_baked is None
+            else None
+        )
+        inputs.null_space_damping = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space and self._null_damping_baked is None
+            else None
+        )
         return inputs
 
     def output(self) -> Outputs:
@@ -724,6 +957,20 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 "wrench_stiffness",
                 self._use_wrench_feedback and self._wrench_stiffness_baked is None,
                 "a live wrench_stiffness",
+            ),
+            ("joint_q", self._use_null_space, "use_null_space_control"),
+            ("joint_qd", self._use_null_space, "use_null_space_control"),
+            ("joint_q_des_null", self._use_null_space, "use_null_space_control"),
+            ("joint_qd_des_null", self._use_null_space, "use_null_space_control"),
+            (
+                "null_space_stiffness",
+                self._use_null_space and self._null_stiffness_baked is None,
+                "a live null_space_stiffness",
+            ),
+            (
+                "null_space_damping",
+                self._use_null_space and self._null_damping_baked is None,
+                "a live null_space_damping",
             ),
         ):
             if not enabled and getattr(inputs, name, None) is not None:
@@ -817,6 +1064,46 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 allow_indexed=True,
             )
             _read_port(inputs.gravity_force, self._grav_buf, self._total_controlled_dofs, self._device)
+
+        if self._use_null_space:
+            for port, name, buf in (
+                (inputs.joint_q, "inputs.joint_q", self._joint_q_buf),
+                (inputs.joint_qd, "inputs.joint_qd", self._joint_qd_buf),
+                (inputs.joint_q_des_null, "inputs.joint_q_des_null", self._joint_q_des_null_buf),
+                (inputs.joint_qd_des_null, "inputs.joint_qd_des_null", self._joint_qd_des_null_buf),
+            ):
+                _validate_array(
+                    array=port,
+                    name=name,
+                    dtype=wp.float32,
+                    shape=(self._total_controlled_dofs,),
+                    device=self._device,
+                    allow_indexed=True,
+                )
+                _read_port(port, buf, self._total_controlled_dofs, self._device)
+
+            if self._null_stiffness_baked is None:
+                _validate_array(
+                    array=inputs.null_space_stiffness,
+                    name="inputs.null_space_stiffness",
+                    dtype=wp.float32,
+                    shape=(self._total_controlled_dofs,),
+                    device=self._device,
+                    allow_indexed=True,
+                )
+                _read_port(
+                    inputs.null_space_stiffness, self._null_stiffness_buf, self._total_controlled_dofs, self._device
+                )
+            if self._null_damping_baked is None:
+                _validate_array(
+                    array=inputs.null_space_damping,
+                    name="inputs.null_space_damping",
+                    dtype=wp.float32,
+                    shape=(self._total_controlled_dofs,),
+                    device=self._device,
+                    allow_indexed=True,
+                )
+                _read_port(inputs.null_space_damping, self._null_damping_buf, self._total_controlled_dofs, self._device)
 
         if self._use_wrench:
             _validate_array(
@@ -977,6 +1264,115 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 _add_term_kernel,
                 dim=self._total_controlled_dofs,
                 inputs=[self._wrench_tau_buf],
+                outputs=[self._tau_buf],
+                device=self._device,
+            )
+
+        if self._use_null_space:
+            null_stiffness = (
+                self._null_stiffness_baked if self._null_stiffness_baked is not None else self._null_stiffness_buf
+            )
+            null_damping = self._null_damping_baked if self._null_damping_baked is not None else self._null_damping_buf
+            wp.launch(
+                _pd_term_kernel,
+                dim=self._total_controlled_dofs,
+                inputs=[
+                    self._joint_q_buf,
+                    self._joint_qd_buf,
+                    self._joint_q_des_null_buf,
+                    self._joint_qd_des_null_buf,
+                    null_stiffness,
+                    null_damping,
+                ],
+                outputs=[self._posture_acc_buf],
+                device=self._device,
+            )
+
+            if self._use_inertia:
+                wp.launch(
+                    _task_matrix_times_jacobian_kernel,
+                    dim=(robot_count, 6, self._max_controlled_dofs),
+                    inputs=[self._operational_space_mass_matrix, self._jacobian_buf, self._controlled_dofs_per_robot],
+                    outputs=[self._null_space_jacobian_pinv_transpose_stage],
+                    device=self._device,
+                )
+                wp.launch(
+                    _apply_mass_matrix_inv_on_right_kernel,
+                    dim=(robot_count, 6, self._max_controlled_dofs),
+                    inputs=[
+                        self._null_space_jacobian_pinv_transpose_stage,
+                        self._mass_matrix_inv,
+                        self._controlled_dofs_per_robot,
+                    ],
+                    outputs=[self._null_space_jacobian_pinv_transpose],
+                    device=self._device,
+                )
+            else:
+                wp.launch(
+                    _jacobian_times_jacobian_transpose_kernel,
+                    dim=(robot_count, 6, 6),
+                    inputs=[self._jacobian_buf, self._controlled_dofs_per_robot],
+                    outputs=[self._null_space_jjt],
+                    device=self._device,
+                )
+                wp.launch(
+                    _invert_spd_block_kernel,
+                    dim=robot_count,
+                    inputs=[self._null_space_jjt, self._task_dim, self._null_space_jjt_cholesky],
+                    outputs=[self._null_space_jjt_inv],
+                    device=self._device,
+                )
+                wp.launch(
+                    _task_matrix_times_jacobian_kernel,
+                    dim=(robot_count, 6, self._max_controlled_dofs),
+                    inputs=[self._null_space_jjt_inv, self._jacobian_buf, self._controlled_dofs_per_robot],
+                    outputs=[self._null_space_jacobian_pinv_transpose],
+                    device=self._device,
+                )
+
+            wp.launch(
+                _null_space_projector_kernel,
+                dim=(robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
+                inputs=[self._jacobian_buf, self._null_space_jacobian_pinv_transpose, self._controlled_dofs_per_robot],
+                outputs=[self._null_space_projector],
+                device=self._device,
+            )
+
+            posture_source = self._posture_acc_buf
+            if self._use_inertia:
+                wp.launch(
+                    _block_matrix_vector_multiply_kernel,
+                    dim=self._total_controlled_dofs,
+                    inputs=[
+                        self._mass_matrix_buf,
+                        self._posture_acc_buf,
+                        self._robot_of_dof,
+                        self._slot_of_dof,
+                        self._dof_offsets,
+                        self._controlled_dofs_per_robot,
+                    ],
+                    outputs=[self._posture_force_buf],
+                    device=self._device,
+                )
+                posture_source = self._posture_force_buf
+            wp.launch(
+                _block_matrix_vector_multiply_kernel,
+                dim=self._total_controlled_dofs,
+                inputs=[
+                    self._null_space_projector,
+                    posture_source,
+                    self._robot_of_dof,
+                    self._slot_of_dof,
+                    self._dof_offsets,
+                    self._controlled_dofs_per_robot,
+                ],
+                outputs=[self._null_space_tau_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _add_term_kernel,
+                dim=self._total_controlled_dofs,
+                inputs=[self._null_space_tau_buf],
                 outputs=[self._tau_buf],
                 device=self._device,
             )

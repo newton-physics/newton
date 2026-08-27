@@ -1576,6 +1576,125 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         with self.assertRaises(ValueError):
             ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
+    def test_null_space_control_requires_redundant_manipulator(self):
+        """use_null_space_control=True with 6 or fewer controlled DOFs raises at construction."""
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpaceModelFree(
+                controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                use_inertia_decoupling=True,
+                use_null_space_control=True,
+                null_space_stiffness=1.0,
+                null_space_damping=1.0,
+                device=device,
+            )
+
+    def test_null_space_control_dynamically_consistent_matches_formula(self):
+        """With use_inertia_decoupling=True, tau_null = N @ (M @ (Kp*(q_des_null-q) + Kd*(qd_des_null-qd))).
+
+        N is built from the dynamically-consistent pseudo-inverse transpose,
+        Lambda @ J @ M^-1. Zero pose error isolates the null-space term from
+        the motion term.
+        """
+        device = wp.get_device()
+        null_kp = 20.0
+        null_kd = 4.0
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=True,
+            use_null_space_control=True,
+            null_space_stiffness=null_kp,
+            null_space_damping=null_kd,
+            device=device,
+        )
+        identity_pose = wp.transform_identity()
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        rng = np.random.default_rng(13)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+        random_matrix = rng.standard_normal((7, 7)).astype(np.float32)
+        mass_matrix = (random_matrix @ random_matrix.T + 7 * np.eye(7, dtype=np.float32)).reshape(1, 7, 7)
+        joint_q = rng.standard_normal(7).astype(np.float32)
+        joint_qd = rng.standard_normal(7).astype(np.float32)
+        joint_q_des_null = rng.standard_normal(7).astype(np.float32)
+        joint_qd_des_null = rng.standard_normal(7).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.mass_matrix = wp.array(mass_matrix, dtype=wp.float32, device=device)
+        ins.joint_q = wp.array(joint_q, dtype=wp.float32, device=device)
+        ins.joint_qd = wp.array(joint_qd, dtype=wp.float32, device=device)
+        ins.joint_q_des_null = wp.array(joint_q_des_null, dtype=wp.float32, device=device)
+        ins.joint_qd_des_null = wp.array(joint_qd_des_null, dtype=wp.float32, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        mass_matrix_inv = np.linalg.inv(mass_matrix[0])
+        lambda_inv = jacobian[0] @ mass_matrix_inv @ jacobian[0].T
+        operational_space_mass_matrix = np.linalg.inv(lambda_inv)
+        jacobian_pinv_transpose = operational_space_mass_matrix @ jacobian[0] @ mass_matrix_inv
+        null_space_projector = np.eye(7) - jacobian[0].T @ jacobian_pinv_transpose
+
+        posture_acc = null_kp * (joint_q_des_null - joint_q) + null_kd * (joint_qd_des_null - joint_qd)
+        expected = null_space_projector @ (mass_matrix[0] @ posture_acc)
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-1)
+
+    def test_null_space_control_moore_penrose_matches_formula(self):
+        """With use_inertia_decoupling=False, N is built from the kinematics-only Moore-Penrose pseudo-inverse.
+
+        tau_null = N @ (Kp*(q_des_null-q) + Kd*(qd_des_null-qd)) directly,
+        with no mass-matrix premultiply, and no mass_matrix input needed.
+        """
+        device = wp.get_device()
+        null_kp = 15.0
+        null_kd = 3.0
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_null_space_control=True,
+            null_space_stiffness=null_kp,
+            null_space_damping=null_kd,
+            device=device,
+        )
+        identity_pose = wp.transform_identity()
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        rng = np.random.default_rng(14)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+        joint_q = rng.standard_normal(7).astype(np.float32)
+        joint_qd = rng.standard_normal(7).astype(np.float32)
+        joint_q_des_null = rng.standard_normal(7).astype(np.float32)
+        joint_qd_des_null = rng.standard_normal(7).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.joint_q = wp.array(joint_q, dtype=wp.float32, device=device)
+        ins.joint_qd = wp.array(joint_qd, dtype=wp.float32, device=device)
+        ins.joint_q_des_null = wp.array(joint_q_des_null, dtype=wp.float32, device=device)
+        ins.joint_qd_des_null = wp.array(joint_qd_des_null, dtype=wp.float32, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        jjt = jacobian[0] @ jacobian[0].T
+        jacobian_pinv_transpose = np.linalg.inv(jjt) @ jacobian[0]
+        null_space_projector = np.eye(7) - jacobian[0].T @ jacobian_pinv_transpose
+
+        posture_acc = null_kp * (joint_q_des_null - joint_q) + null_kd * (joint_qd_des_null - joint_qd)
+        expected = null_space_projector @ posture_acc
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
+
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()
