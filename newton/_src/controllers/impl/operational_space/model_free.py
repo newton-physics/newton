@@ -18,6 +18,13 @@ Motion law (terms enabled at construction):
 
     F_motion = [Lambda if use_inertia_decoupling else I] · (Kp·pose_error + Kd·twist_error)
 
+When ``use_partial_inertia_decoupling=True`` (only meaningful alongside
+``use_inertia_decoupling=True``), Lambda is computed as two independent 3x3
+inversions — the translational block from the Jacobian's first 3 rows, the
+rotational block from its last 3 — instead of one 6x6 inversion, ignoring
+the linear/angular coupling. Lambda ends up block-diagonal and is used
+exactly the same way afterward.
+
 Wrench law, only when ``use_wrench_feedforward`` or ``use_wrench_feedback`` is
 enabled:
 
@@ -55,13 +62,17 @@ is pursued only in directions that leave the task-space motion undisturbed:
     a_posture = Kp_null·(q_des_null - q) + Kd_null·(qd_des_null - qd)
 
 ``N^T = I - J^T · jacobian_pinv_transpose`` is the null-space projector,
-built from whichever pseudo-inverse variant ``use_inertia_decoupling``
-selects: the dynamically-consistent one (``Lambda·J·M(q)^-1``, reusing the
-same Lambda and mass-matrix inverse the motion term computes) when it is
-``True``, or the kinematics-only Moore-Penrose one (``(J·J^T)^-1·J``) when
-it is ``False`` — the latter needs no mass matrix, so null-space control
-still works without inertial decoupling. Only a robot with more controlled
-DOFs than task dimensions (6) has a nontrivial null space to work with.
+built from whichever pseudo-inverse variant applies: the dynamically-consistent
+one (``Lambda·J·M(q)^-1``, reusing the same Lambda and mass-matrix inverse the
+motion term computes) when ``use_inertia_decoupling=True`` and
+``use_partial_inertia_decoupling=False``, or the kinematics-only Moore-Penrose
+one (``(J·J^T)^-1·J``) otherwise — the latter needs no mass matrix, so
+null-space control still works without inertial decoupling. A block-diagonal
+(partially-decoupled) Lambda does not have the property the
+dynamically-consistent formula needs, so partial decoupling always falls back
+to Moore-Penrose here too, even though a mass matrix is available. Only a
+robot with more controlled DOFs than task dimensions (6) has a nontrivial
+null space to work with.
 ``tau_null`` is mapped through the same compact per-DOF layout as every
 other term here and summed into the joint torque the same way.
 """
@@ -258,6 +269,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             format as ``motion_stiffness``.
         use_inertia_decoupling: Premultiply the task-space spring-damper term
             by Lambda, the operational-space mass matrix.
+        use_partial_inertia_decoupling: Compute Lambda as two independent 3x3
+            inversions (translation, rotation) instead of one 6x6 inversion,
+            ignoring the linear/angular coupling. Only meaningful when
+            ``use_inertia_decoupling=True``.
         use_gravity_compensation: Add ``inputs.gravity_force`` directly to
             the summed joint torque.
         use_wrench_feedforward: Command the desired wrench directly, as a
@@ -380,6 +395,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         motion_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
         motion_damping: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
         use_inertia_decoupling: bool = True,
+        use_partial_inertia_decoupling: bool = False,
         use_gravity_compensation: bool = True,
         use_wrench_feedforward: bool = False,
         use_wrench_feedback: bool = False,
@@ -431,6 +447,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 f"since the operational-space mass matrix is only invertible when the Jacobian can span "
                 f"all 6 task dimensions; got controlled_dofs_per_robot={controlled_dofs_per_robot_np.tolist()}. "
                 f"Pass use_inertia_decoupling=False for an under-actuated robot."
+            )
+        if use_partial_inertia_decoupling and not use_inertia_decoupling:
+            raise ValueError(
+                "use_partial_inertia_decoupling=True requires use_inertia_decoupling=True, so it would be ignored."
             )
         if use_null_space_control and controlled_dofs_per_robot_np.min() <= 6:
             # A robot with 6 or fewer controlled DOFs has no DOF left over
@@ -487,6 +507,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         self._max_controlled_dofs = max_controlled_dofs
         self._total_controlled_dofs = total_controlled_dofs
         self._use_inertia = bool(use_inertia_decoupling)
+        self._use_partial_inertia = bool(use_partial_inertia_decoupling)
         self._use_gravity = bool(use_gravity_compensation)
         self._use_wrench_feedforward = bool(use_wrench_feedforward)
         self._use_wrench_feedback = bool(use_wrench_feedback)
@@ -636,6 +657,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             # control uses the kinematics-only Moore-Penrose pseudo-inverse
             # below, (J @ J^T)'s 6x6 inverse -- both are always exactly 6x6.
             self._task_dim = wp.full(controlled_robot_count, 6, dtype=wp.int32, device=self._device)
+        self._partial_task_dim: wp.array[wp.int32] | None = None
+        if self._use_partial_inertia:
+            # block_dim for Lambda's two independent 3x3 (translation, rotation) inversions.
+            self._partial_task_dim = wp.full(controlled_robot_count, 3, dtype=wp.int32, device=self._device)
 
         self._tau_buf = wp.zeros(
             total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
@@ -690,12 +715,16 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             )
             self._null_space_tau_buf = _compact_buf()
             if self._use_inertia:
+                # The mass matrix stays fully valid even with partial inertia
+                # decoupling (only Lambda becomes block-diagonal), so the
+                # posture PD term is still premultiplied by it.
+                self._posture_force_buf = _compact_buf()
+            if self._use_inertia and not self._use_partial_inertia:
                 # Dynamically-consistent pseudo-inverse transpose, Lambda @ J
                 # @ M^-1: reuses the motion term's Lambda and mass-matrix
                 # inverse, computed once per step regardless of null-space
                 # control, so only the intermediate Lambda @ J needs its own
                 # scratch buffer here.
-                self._posture_force_buf = _compact_buf()
                 self._null_space_jacobian_pinv_transpose_stage = wp.zeros(
                     (controlled_robot_count, 6, max_controlled_dofs),
                     dtype=wp.float32,
@@ -704,7 +733,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 )
             else:
                 # Moore-Penrose pseudo-inverse transpose, (J @ J^T)^-1 @ J:
-                # kinematics-only, needs no mass matrix.
+                # kinematics-only, needs no mass matrix. Also the fallback
+                # when partial inertia decoupling leaves Lambda block-diagonal,
+                # since that Lambda doesn't have the property the
+                # dynamically-consistent formula needs.
                 self._null_space_jjt = wp.zeros(
                     (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
                 )
@@ -1170,24 +1202,50 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 outputs=[self._mass_matrix_inv],
                 device=self._device,
             )
-            wp.launch(
-                _operational_space_mass_matrix_inverse_kernel,
-                dim=(robot_count, 6, 6),
-                inputs=[self._jacobian_buf, self._mass_matrix_inv, self._controlled_dofs_per_robot],
-                outputs=[self._operational_space_mass_matrix_inv],
-                device=self._device,
-            )
-            wp.launch(
-                _invert_spd_block_kernel,
-                dim=robot_count,
-                inputs=[
-                    self._operational_space_mass_matrix_inv,
-                    self._task_dim,
-                    self._operational_space_mass_matrix_cholesky,
-                ],
-                outputs=[self._operational_space_mass_matrix],
-                device=self._device,
-            )
+            if self._use_partial_inertia:
+                # Lambda as two independent 3x3 inversions (translation, rotation), ignoring their coupling.
+                for axis_start, axis_end in ((0, 3), (3, 6)):
+                    wp.launch(
+                        _operational_space_mass_matrix_inverse_kernel,
+                        dim=(robot_count, 3, 3),
+                        inputs=[
+                            self._jacobian_buf[:, axis_start:axis_end, :],
+                            self._mass_matrix_inv,
+                            self._controlled_dofs_per_robot,
+                        ],
+                        outputs=[self._operational_space_mass_matrix_inv[:, axis_start:axis_end, axis_start:axis_end]],
+                        device=self._device,
+                    )
+                    wp.launch(
+                        _invert_spd_block_kernel,
+                        dim=robot_count,
+                        inputs=[
+                            self._operational_space_mass_matrix_inv[:, axis_start:axis_end, axis_start:axis_end],
+                            self._partial_task_dim,
+                            self._operational_space_mass_matrix_cholesky[:, axis_start:axis_end, axis_start:axis_end],
+                        ],
+                        outputs=[self._operational_space_mass_matrix[:, axis_start:axis_end, axis_start:axis_end]],
+                        device=self._device,
+                    )
+            else:
+                wp.launch(
+                    _operational_space_mass_matrix_inverse_kernel,
+                    dim=(robot_count, 6, 6),
+                    inputs=[self._jacobian_buf, self._mass_matrix_inv, self._controlled_dofs_per_robot],
+                    outputs=[self._operational_space_mass_matrix_inv],
+                    device=self._device,
+                )
+                wp.launch(
+                    _invert_spd_block_kernel,
+                    dim=robot_count,
+                    inputs=[
+                        self._operational_space_mass_matrix_inv,
+                        self._task_dim,
+                        self._operational_space_mass_matrix_cholesky,
+                    ],
+                    outputs=[self._operational_space_mass_matrix],
+                    device=self._device,
+                )
             wp.launch(
                 _apply_spatial_matrix_kernel,
                 dim=robot_count,
@@ -1295,7 +1353,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
             )
 
-            if self._use_inertia:
+            if self._use_inertia and not self._use_partial_inertia:
                 # Dynamically-consistent pinv-transpose, Lambda @ J @ M^-1 (reuses this step's Lambda/M^-1).
                 wp.launch(
                     _task_matrix_times_jacobian_kernel,

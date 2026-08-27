@@ -1718,6 +1718,142 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         expected = null_space_projector @ posture_acc
         np.testing.assert_allclose(outs.joint_f.numpy(), expected, rtol=1e-4, atol=1e-4)
 
+    def test_partial_inertia_decoupling_requires_full_inertia_decoupling(self):
+        """use_partial_inertia_decoupling=True with use_inertia_decoupling=False raises at construction."""
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpaceModelFree(
+                controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                use_inertia_decoupling=False,
+                use_partial_inertia_decoupling=True,
+                device=device,
+            )
+
+    def test_partial_inertia_decoupling_matches_block_diagonal_formula(self):
+        """With use_partial_inertia_decoupling=True, Lambda is two independent 3x3 inversions, block-diagonal.
+
+        tau = J^T @ Lambda_partial @ (Kp * pose_error), where Lambda_partial
+        is built from separately inverting the translational and rotational
+        3x3 blocks of J M^-1 J^T, ignoring their coupling -- unlike the full
+        Lambda, which inverts the whole 6x6 at once.
+        """
+        device = wp.get_device()
+        kp = 50.0
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+            motion_stiffness=kp,
+            motion_damping=10.0,
+            use_inertia_decoupling=True,
+            use_partial_inertia_decoupling=True,
+            device=device,
+        )
+        current_pose = wp.transform_identity()
+        desired_pose = wp.transform(wp.vec3(0.1, -0.05, 0.02), wp.quat_identity())
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        # Same fixed, well-conditioned Jacobian and diagonal mass matrix as the null-space tests above.
+        jacobian = np.array(
+            [
+                [2, 0, 0, 1, 0, 1, 0],
+                [0, 3, 0, 0, 1, 0, 1],
+                [0, 0, 1, 2, 1, 0, 0],
+                [1, 1, 0, 0, 0, 3, 1],
+                [0, 1, 2, 1, 0, 0, 1],
+                [1, 0, 1, 0, 2, 1, 0],
+            ],
+            dtype=np.float32,
+        ).reshape(1, 6, 7)
+        mass_matrix = np.diag([2.0, 3.0, 1.5, 4.0, 2.5, 3.5, 2.0]).astype(np.float32).reshape(1, 7, 7)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.mass_matrix = wp.array(mass_matrix, dtype=wp.float32, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        pose_error = np.array([0.1, -0.05, 0.02, 0.0, 0.0, 0.0])
+        jacobian_np = jacobian[0]
+        mass_matrix_inv = np.linalg.inv(mass_matrix[0])
+        lambda_linear = np.linalg.inv(jacobian_np[0:3] @ mass_matrix_inv @ jacobian_np[0:3].T)
+        lambda_angular = np.linalg.inv(jacobian_np[3:6] @ mass_matrix_inv @ jacobian_np[3:6].T)
+        lambda_partial = np.zeros((6, 6))
+        lambda_partial[0:3, 0:3] = lambda_linear
+        lambda_partial[3:6, 3:6] = lambda_angular
+
+        expected = jacobian_np.T @ (lambda_partial @ (kp * pose_error))
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, rtol=1e-4, atol=1e-4)
+
+    def test_null_space_control_falls_back_to_moore_penrose_with_partial_inertia_decoupling(self):
+        """With partial inertia decoupling, the null-space projector uses Moore-Penrose, not dynamically-consistent.
+
+        A block-diagonal (partially-decoupled) Lambda does not have the
+        property the dynamically-consistent pseudo-inverse formula needs, so
+        the projector falls back to the kinematics-only Moore-Penrose
+        variant even though use_inertia_decoupling=True and a mass matrix is
+        available -- the posture term is still premultiplied by the mass
+        matrix, since that stays valid regardless.
+        """
+        device = wp.get_device()
+        null_kp = 20.0
+        null_kd = 4.0
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=True,
+            use_partial_inertia_decoupling=True,
+            use_null_space_control=True,
+            null_space_stiffness=null_kp,
+            null_space_damping=null_kd,
+            device=device,
+        )
+        identity_pose = wp.transform_identity()
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        jacobian = np.array(
+            [
+                [2, 0, 0, 1, 0, 1, 0],
+                [0, 3, 0, 0, 1, 0, 1],
+                [0, 0, 1, 2, 1, 0, 0],
+                [1, 1, 0, 0, 0, 3, 1],
+                [0, 1, 2, 1, 0, 0, 1],
+                [1, 0, 1, 0, 2, 1, 0],
+            ],
+            dtype=np.float32,
+        ).reshape(1, 6, 7)
+        mass_matrix = np.diag([2.0, 3.0, 1.5, 4.0, 2.5, 3.5, 2.0]).astype(np.float32).reshape(1, 7, 7)
+        joint_q = np.array([0.1, -0.2, 0.3, -0.1, 0.05, -0.15, 0.2], dtype=np.float32)
+        joint_qd = np.array([0.05, 0.02, -0.03, 0.01, -0.02, 0.04, -0.01], dtype=np.float32)
+        joint_q_des_null = np.zeros(7, dtype=np.float32)
+        joint_qd_des_null = np.zeros(7, dtype=np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.mass_matrix = wp.array(mass_matrix, dtype=wp.float32, device=device)
+        ins.joint_q = wp.array(joint_q, dtype=wp.float32, device=device)
+        ins.joint_qd = wp.array(joint_qd, dtype=wp.float32, device=device)
+        ins.joint_q_des_null = wp.array(joint_q_des_null, dtype=wp.float32, device=device)
+        ins.joint_qd_des_null = wp.array(joint_qd_des_null, dtype=wp.float32, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        jacobian_np = jacobian[0]
+        jjt = jacobian_np @ jacobian_np.T
+        jacobian_pinv_transpose = np.linalg.inv(jjt) @ jacobian_np
+        null_space_projector = np.eye(7) - jacobian_np.T @ jacobian_pinv_transpose
+
+        posture_acc = null_kp * (joint_q_des_null - joint_q) + null_kd * (joint_qd_des_null - joint_qd)
+        expected = null_space_projector @ (mass_matrix[0] @ posture_acc)
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, rtol=1e-4, atol=1e-4)
+
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()
