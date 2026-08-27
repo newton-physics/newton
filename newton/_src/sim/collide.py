@@ -1904,6 +1904,7 @@ class CollisionPipeline:
             )
 
         # Run broad phase (AABBs are already expanded by effective gaps, so pass None)
+        broad_phase_speculative_kwargs = {"shape_displacement": self._shape_displacement} if speculative_active else {}
         if isinstance(self.broad_phase, BroadPhaseAllPairs):
             self.broad_phase.launch(
                 self.narrow_phase.shape_aabb_lower,
@@ -1921,9 +1922,11 @@ class CollisionPipeline:
                 filter_pairs=self.shape_pairs_excluded,
                 num_filter_pairs=self.shape_pairs_excluded_count,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
-                shape_displacement=self._shape_displacement if speculative_active else None,
+                **broad_phase_speculative_kwargs,
             )
         elif isinstance(self.broad_phase, BroadPhaseSAP):
+            if speculative_active:
+                broad_phase_speculative_kwargs["sort_axis_displacement_limit"] = max_speculative_extension
             self.broad_phase.launch(
                 self.narrow_phase.shape_aabb_lower,
                 self.narrow_phase.shape_aabb_upper,
@@ -1940,8 +1943,7 @@ class CollisionPipeline:
                 filter_pairs=self.shape_pairs_excluded,
                 num_filter_pairs=self.shape_pairs_excluded_count,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
-                shape_displacement=self._shape_displacement if speculative_active else None,
-                sort_axis_displacement_limit=max_speculative_extension if speculative_active else None,
+                **broad_phase_speculative_kwargs,
             )
         else:  # BroadPhaseExplicit
             self.broad_phase.launch(
@@ -1957,7 +1959,7 @@ class CollisionPipeline:
                 include_static_kinematic_pairs=self.include_static_kinematic_pairs,
                 device=self.device,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
-                shape_displacement=self._shape_displacement if speculative_active else None,
+                **broad_phase_speculative_kwargs,
             )
 
         # Create ContactWriterData struct for custom contact writing
@@ -1996,6 +1998,21 @@ class CollisionPipeline:
         writer_data.collision_update_dt = collision_update_dt
         writer_data.max_speculative_extension = max_speculative_extension
         # Run narrow phase with custom contact writer (writes directly to Contacts format)
+        narrow_phase_extension_kwargs = {}
+        if type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write:
+            narrow_phase_extension_kwargs.update(
+                mesh_edge_centers=model.mesh_edge_centers,
+                mesh_edge_halves=model.mesh_edge_halves,
+                hydroelastic_shape_sdf_data_prepared=self._hydro_shape_sdf_data_prepared,
+            )
+        if self._speculative_enabled:
+            narrow_phase_extension_kwargs.update(
+                shape_base_gap=model.shape_gap,
+                shape_linear_velocity=self._shape_linear_velocity,
+                shape_angular_velocity=self._shape_angular_velocity,
+                collision_update_dt=collision_update_dt,
+                max_speculative_extension=max_speculative_extension,
+            )
         self.narrow_phase.launch_custom_write(
             candidate_pair=self.broad_phase_shape_pairs,
             candidate_pair_count=self.broad_phase_pair_count,
@@ -2007,7 +2024,6 @@ class CollisionPipeline:
             shape_sdf_index=model._shape_sdf_index,
             texture_sdf_data=model._texture_sdf_data,
             shape_gap=search_gap,
-            shape_base_gap=model.shape_gap,
             shape_collision_radius=model.shape_collision_radius,
             shape_flags=model.shape_flags,
             shape_collision_aabb_lower=model.shape_collision_aabb_lower,
@@ -2017,16 +2033,10 @@ class CollisionPipeline:
             heightfield_data=model.heightfield_data,
             heightfield_elevations=model.heightfield_elevations,
             mesh_edge_indices=model.mesh_edge_indices,
-            mesh_edge_centers=model.mesh_edge_centers,
-            mesh_edge_halves=model.mesh_edge_halves,
             shape_edge_range=model.shape_edge_range,
             writer_data=writer_data,
-            hydroelastic_shape_sdf_data_prepared=self._hydro_shape_sdf_data_prepared,
-            shape_linear_velocity=self._shape_linear_velocity,
-            shape_angular_velocity=self._shape_angular_velocity,
-            collision_update_dt=collision_update_dt,
-            max_speculative_extension=max_speculative_extension,
             device=self.device,
+            **narrow_phase_extension_kwargs,
         )
 
         # Match contacts against previous frame before sorting.

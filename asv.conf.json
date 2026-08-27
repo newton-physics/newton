@@ -15,8 +15,8 @@
   "default_benchmark_timeout": 600,
   "build_command": ["python -m build --wheel -o {build_cache_dir} {build_dir}"],
   "install_command": [
-    "in-dir={env_dir} python -m pip install {wheel_file}[dev] --extra-index-url=https://pypi.nvidia.com/",
     "in-dir={env_dir} python -m pip install warp-lang==1.17.0.dev20260807 mujoco==3.11.0 mujoco-warp==3.11.0 --extra-index-url=https://pypi.nvidia.com/",
+    "in-dir={env_dir} python -m pip install {wheel_file}[examples] --extra-index-url=https://pypi.nvidia.com/",
     "python -m pip install torch==2.10.0+cu130 --index-url https://download.pytorch.org/whl/cu130",
     "python -m pip install 'asv_runner<0.3.0'"
   ]
