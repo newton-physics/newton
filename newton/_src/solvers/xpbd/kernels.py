@@ -2228,6 +2228,7 @@ def solve_joint_mimics(
     reference_child = joint_child[reference]
     coordinate_count = joint_dof_dim[follower, 0] + joint_dof_dim[follower, 1]
     follower_linear_count = joint_dof_dim[follower, 0]
+    reference_linear_count = joint_dof_dim[reference, 0]
     coeffs = joint_mimic_coeffs[follower]
     offset = coeffs[0]
     multiplier = coeffs[1]
@@ -2266,7 +2267,7 @@ def solve_joint_mimics(
         )
 
         error = follower_q - offset - multiplier * reference_q
-        if component >= follower_linear_count:
+        if component >= follower_linear_count and component >= reference_linear_count:
             error = wp.atan2(wp.sin(error), wp.cos(error))
 
         gradient_0 = follower_parent_gradient

@@ -15,8 +15,8 @@ from newton.utils import compute_world_offsets
 
 
 class TestModelBuilderReplicate(unittest.TestCase):
-    @staticmethod
-    def _make_source() -> ModelBuilder:
+    def _make_source(self) -> ModelBuilder:
+        """Build source data while verifying the sparse mimic deprecation."""
         builder = ModelBuilder()
 
         particles = [
@@ -63,7 +63,8 @@ class TestModelBuilderReplicate(unittest.TestCase):
         )
         builder.add_shape_box(body=fixed, hx=0.1, hy=0.1, hz=0.1, label="fixed_shape")
         builder.add_shape_collision_filter_pair(root_shape, child_shape)
-        builder.add_constraint_mimic(child_joint, root_joint, coef0=0.25, coef1=-1.0, label="mimic")
+        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
+            builder.add_constraint_mimic(child_joint, root_joint, coef0=0.25, coef1=-1.0, label="mimic")
 
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="thing", namespace="test"))
         builder.add_custom_attribute(
@@ -629,3 +630,35 @@ add_function_test(
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
+    """Per-world label prefixes on the batched replication path."""
+
+    @staticmethod
+    def _source(root: str = "") -> ModelBuilder:
+        """A two-link prototype whose labels are relative to ``root`` (empty names the root)."""
+        builder = ModelBuilder()
+        body = builder.add_link(xform=wp.transform(), label=root)
+        builder.add_shape_box(body=body, label=f"{root}/box" if root else "box")
+        return builder
+
+    def test_each_world_gets_its_own_prefix(self):
+        """Each replicated world's labels are prefixed with its own entry from label_prefixes."""
+        scene = ModelBuilder()
+        prefixes = [f"/World/envs/env_{index}/Robot" for index in range(3)]
+        scene.replicate(self._source(), 3, label_prefixes=prefixes)
+
+        self.assertEqual(scene.shape_label, [f"{prefix}/box" for prefix in prefixes])
+
+    def test_a_none_prefix_leaves_that_world_alone(self):
+        """A None entry in label_prefixes copies that world's labels unprefixed."""
+        scene = ModelBuilder()
+        scene.replicate(self._source("root"), 2, label_prefixes=["left", None])
+
+        self.assertEqual(scene.shape_label, ["left/root/box", "root/box"])
+
+    def test_prefix_count_must_match_world_count(self):
+        """label_prefixes must have exactly one entry per replicated world."""
+        with self.assertRaises(ValueError):
+            ModelBuilder().replicate(self._source("root"), 2, label_prefixes=["only-one"])

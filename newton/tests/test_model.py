@@ -3295,6 +3295,19 @@ class TestModelJoints(unittest.TestCase):
         self.assertIn("joint_child", error_msg)
         self.assertIn("Child cannot be the world", error_msg)
 
+    def test_validate_structure_invalid_joint_mimic_reference(self):
+        """Reject out-of-range joint mimic references during finalization."""
+        for invalid_reference in (-2, 1):
+            with self.subTest(invalid_reference=invalid_reference):
+                builder = ModelBuilder()
+                body = builder.add_link(mass=1.0)
+                joint = builder.add_joint_revolute(parent=-1, child=body, label="test_joint")
+                builder.add_articulation([joint])
+                builder.joint_mimic_joint[joint] = invalid_reference
+
+                with self.assertRaisesRegex(ValueError, "joint_mimic_joint"):
+                    builder.finalize()
+
     def test_validate_structure_self_referential_joint(self):
         """Test that _validate_structure catches self-referential joints."""
         builder = ModelBuilder()
@@ -3442,14 +3455,15 @@ class TestModelJoints(unittest.TestCase):
                 coef1=1.5,
                 label="mimic1",
             )
-        _c2 = builder.add_constraint_mimic(
-            joint0=j3,
-            joint1=j1,
-            coef0=0.0,
-            coef1=-1.0,
-            enabled=False,
-            label="mimic2",
-        )
+        with self.assertWarnsRegex(DeprecationWarning, "set_joint_mimic"):
+            _c2 = builder.add_constraint_mimic(
+                joint0=j3,
+                joint1=j1,
+                coef0=0.0,
+                coef1=-1.0,
+                enabled=False,
+                label="mimic2",
+            )
 
         model = builder.finalize()
 
@@ -3532,6 +3546,25 @@ class TestModelJoints(unittest.TestCase):
 
         np.testing.assert_allclose(state.joint_q.numpy(), [1.0, 2.0, 3.0, 1.5, 3.5, 5.5])
         np.testing.assert_allclose(state.joint_qd.numpy(), [4.0, 5.0, 6.0, 8.0, 10.0, 12.0])
+
+    def test_joint_mimic_rejects_quaternion_coordinates(self):
+        """Reject componentwise mimic mappings for quaternion-parameterized joints."""
+        for joint_type in (newton.JointType.BALL, newton.JointType.FREE, newton.JointType.DISTANCE):
+            with self.subTest(joint_type=joint_type.name):
+                builder = newton.ModelBuilder()
+                bodies = [builder.add_link() for _ in range(2)]
+                if joint_type == newton.JointType.BALL:
+                    reference = builder.add_joint_ball(parent=-1, child=bodies[0])
+                    follower = builder.add_joint_ball(parent=bodies[0], child=bodies[1])
+                elif joint_type == newton.JointType.FREE:
+                    reference = builder.add_joint_free(parent=-1, child=bodies[0])
+                    follower = builder.add_joint_free(parent=bodies[0], child=bodies[1])
+                else:
+                    reference = builder.add_joint_distance(parent=-1, child=bodies[0])
+                    follower = builder.add_joint_distance(parent=bodies[0], child=bodies[1])
+
+                with self.assertRaisesRegex(ValueError, "quaternion"):
+                    builder.set_joint_mimic(follower, reference, (0.0, 2.0))
 
     def test_joint_mimic_rejects_chains(self):
         """Verify mimic relationships cannot form chains in either authoring order."""

@@ -21,6 +21,8 @@ import warp as wp
 import newton
 import newton.examples
 
+__all__ = ["Example"]
+
 
 class Example:
     FPS = 60

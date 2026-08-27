@@ -9776,8 +9776,8 @@ def Xform "Articulation" (
                 builder.add_usd(stage)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_mimic_coef0_warns_for_multi_dof_follower(self):
-        """A spherical follower has no scalar angle, so the offset is passed through with a warning."""
+    def test_mimic_rejects_quaternion_follower(self):
+        """Reject imported mimic relationships that would map quaternion coordinates."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -9813,21 +9813,8 @@ def Xform "Articulation" (
         prim.GetAttribute("newton:mimicCoef0").Set(0.5)
 
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            result = builder.add_usd(stage)
-        model = builder.finalize()
-
-        # A ball joint's coordinates are a quaternion, so no scalar conversion applies.
-        leader_idx = result["path_joint_map"]["/World/Root/Leader"]
-        follower_idx = result["path_joint_map"]["/World/Root/Follower"]
-        self.assertEqual(model.constraint_mimic_count, 0)
-        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
-        self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.5, places=6)
-        self.assertTrue(
-            any("no defined unit" in str(w.message) for w in caught),
-            "expected a warning that the offset has no defined unit for a multi-DOF follower",
-        )
+        with self.assertRaisesRegex(ValueError, "quaternion"):
+            builder.add_usd(stage)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_joint_parsing(self):

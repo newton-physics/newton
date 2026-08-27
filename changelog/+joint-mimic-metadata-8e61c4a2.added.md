@@ -1,1 +1,1 @@
-Add joint-owned mimic metadata for joints with matching dimensions, `ModelBuilder.set_joint_mimic()`, componentwise follower-coordinate updates through `eval_mimic()`, solver support in Featherstone, SemiImplicit, XPBD, MuJoCo, and VBD, and a lead-screw example.
+Add joint-owned mimic metadata for non-quaternion joints with matching dimensions, `ModelBuilder.set_joint_mimic()`, componentwise follower-coordinate updates through `eval_mimic()`, solver support in Featherstone, SemiImplicit, XPBD, MuJoCo, and VBD, and a lead-screw example.

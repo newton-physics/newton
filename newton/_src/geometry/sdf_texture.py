@@ -146,6 +146,7 @@ class TextureSDFData:
     subgrid_size_f: float  # float(subgrid_size) - avoids int->float conversion
     subgrid_samples_f: float  # float(subgrid_size + 1) - samples per subgrid dimension
     fine_to_coarse: float
+    num_subgrids: int  # Number of non-empty narrow-band subgrids
 
     # Spatial metadata
     voxel_size: wp.vec3
@@ -2322,6 +2323,7 @@ def create_sparse_sdf_textures(
     sdf_params.subgrid_size_f = float(sparse_data["subgrid_size"])
     sdf_params.subgrid_samples_f = float(sparse_data["subgrid_size"] + 1)
     sdf_params.fine_to_coarse = 1.0 / sparse_data["subgrid_size"]
+    sdf_params.num_subgrids = int(np.count_nonzero(sparse_data["subgrid_start_slots"] != int(SLOT_EMPTY)))
 
     sdf_params.voxel_size = wp.vec3(float(cell_size[0]), float(cell_size[1]), float(cell_size[2]))
     sdf_params.voxel_radius = float(0.5 * np.linalg.norm(cell_size))

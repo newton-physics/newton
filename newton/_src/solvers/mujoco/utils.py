@@ -148,7 +148,7 @@ def mjc_add_equality_mimic(
     custom_attrs: dict[str, Any],
 ) -> tuple[int, int]:
     """Add a Newton mimic constraint and its authoritative MuJoCo equality row."""
-    mimic_idx = builder.add_constraint_mimic(
+    mimic_idx = builder._add_constraint_mimic(
         joint0=joint1,
         joint1=joint2,
         coef0=polycoef[0],

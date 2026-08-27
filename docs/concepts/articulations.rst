@@ -141,7 +141,9 @@ same relationship, ``q_follower = offset + multiplier * q_reference``, is
 applied componentwise when the joints have more than one coordinate.
 The joint types do not need to match; only their position and velocity
 dimensions must match. For example, a one-axis D6 joint can mimic another
-one-dimensional joint.
+one-dimensional joint. Quaternion-parameterized ``BALL``, ``FREE``, and
+``DISTANCE`` joints are not supported because a componentwise affine mapping
+would not preserve a unit quaternion.
 
 :func:`newton.eval_mimic` updates the follower coordinates in a state. For each
 follower, it reads all position and velocity coordinates of the reference joint
