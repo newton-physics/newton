@@ -95,14 +95,15 @@ class ActuatorParsed:
             controller_class: Deprecated in Newton 1.6; use ``drive_class``.
             controller_kwargs: Deprecated in Newton 1.6; use ``drive_kwargs``.
         """
+        if controller_class is not _DEPRECATED_UNSET and drive_class is not _DEPRECATED_UNSET:
+            raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
+        if controller_kwargs is not _DEPRECATED_UNSET and drive_kwargs is not _DEPRECATED_UNSET:
+            raise TypeError("Specify only one of 'drive_kwargs' and deprecated 'controller_kwargs'.")
+
         if controller_class is not _DEPRECATED_UNSET:
-            if drive_class is not _DEPRECATED_UNSET:
-                raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
             warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             drive_class = controller_class
         if controller_kwargs is not _DEPRECATED_UNSET:
-            if drive_kwargs is not _DEPRECATED_UNSET:
-                raise TypeError("Specify only one of 'drive_kwargs' and deprecated 'controller_kwargs'.")
             warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             drive_kwargs = controller_kwargs
         if drive_class is _DEPRECATED_UNSET:

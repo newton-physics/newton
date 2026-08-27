@@ -130,6 +130,15 @@ class TestActuatorDriveAPI(unittest.TestCase):
                 controller_kwargs={"kp": 1.0},
             )
 
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            with self.assertRaisesRegex(TypeError, "only one"):
+                actuators.ActuatorParsed(
+                    drive_kwargs={"kp": 1.0},
+                    controller_class=actuators.DrivePD,
+                    controller_kwargs={"kp": 1.0},
+                )
+
     def test_component_kind_deprecated_controller_member(self):
         """Keep the former component-kind member functional with a warning."""
         with self.assertWarnsRegex(DeprecationWarning, r"CONTROLLER.*DRIVE"):
