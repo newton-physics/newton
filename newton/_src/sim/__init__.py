@@ -3,7 +3,7 @@
 
 from .articulation import eval_fk, eval_ik, eval_inverse_dynamics_force, eval_jacobian, eval_mass_matrix
 from .builder import ModelBuilder
-from .collide import CollisionPipeline
+from .collide import CollisionPipeline  # patched: use per-SDF kernel launches
 from .contact_kinematics import eval_rigid_contact_kinematics
 from .contacts import Contacts
 from .control import Control
