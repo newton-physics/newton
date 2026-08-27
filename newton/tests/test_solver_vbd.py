@@ -3796,7 +3796,7 @@ def _body_particle_attachment_is_native_vbd(test, device):
     state_in = model.state()
     state_out = model.state()
     control = model.control()
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False)
     dt = 2.0e-3
     for _ in range(20):
         state_in.clear_forces()
@@ -3907,7 +3907,7 @@ def _body_particle_attachment_accumulates_body_csr(test, device):
     builder.add_attachment_body_particle(body, particles[2], stiffness=1000.0, enabled=False)
     builder.color()
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverVBD(model, iterations=0)
+    solver = newton.solvers.SolverVBD(model, iterations=0, rigid_compliant_alm=False)
 
     np.testing.assert_array_equal(solver.body_particle_attachment_offsets.numpy(), [0, 3])
     np.testing.assert_array_equal(solver.body_particle_attachment_indices.numpy(), [0, 1, 2])
@@ -4001,7 +4001,7 @@ def _body_particle_attachment_deformable_under_load(test, device, deformable_kin
 
     state_in = model.state()
     state_out = model.state()
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False)
     dt = 2.0e-3
     for _ in range(30):
         state_in.clear_forces()
@@ -4027,13 +4027,13 @@ def _body_particle_attachment_to_cable_capsule(test, device):
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 100.0
 
-    points = newton.utils.create_straight_cable_points(
+    points = newton.utils.cable_straight_points(
         start=wp.vec3(0.0, 0.0, 0.0),
         direction=wp.vec3(1.0, 0.0, 0.0),
         length=0.4,
         num_segments=4,
     )
-    quaternions = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=0.0)
+    quaternions = newton.utils.rod_parallel_transport_quaternions(points, twist_total=0.0)
     bodies, _joints = builder.add_rod(
         positions=points,
         quaternions=quaternions,
@@ -4060,7 +4060,7 @@ def _body_particle_attachment_to_cable_capsule(test, device):
     initial_anchor_pos = _transform_point_np(state_in.body_q.numpy()[capsule], np.zeros(3))
     initial_gap = float(np.linalg.norm(initial_particle_pos - initial_anchor_pos))
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False)
     dt = 2.0e-3
     for _ in range(40):
         state_in.clear_forces()

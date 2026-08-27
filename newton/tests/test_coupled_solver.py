@@ -1139,7 +1139,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 ),
                 SolverCoupled.Entry(
                     "vbd",
-                    lambda view: SolverVBD(view, iterations=0),
+                    lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
                     bodies=(body_a, body_b),
                     particles=(owned_particle,),
                 ),

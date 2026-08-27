@@ -1083,7 +1083,7 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
                 [
                     SolverCoupled.Entry(
                         "both",
-                        lambda view: SolverVBD(view, iterations=0),
+                        lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
                         bodies=range(model.body_count),
                         particles=range(model.particle_count),
                     ),
