@@ -25,7 +25,6 @@ from newton.controllers import (
     ControllerJointImpedance,
     ControllerJointImpedanceModelFree,
     export_controller_graph,
-    select_joints,
 )
 
 # One robot: a four-link revolute arm, of which the first three joints are
@@ -93,23 +92,22 @@ def build_model(device) -> newton.Model:
     return builder.finalize(device=device)
 
 
-def build_controller(model, selection, device) -> ControllerJointImpedance:
+def build_controller(model, device) -> ControllerJointImpedance:
     return ControllerJointImpedance(
         model,
-        joint_selection=selection,
+        joints=CONTROLLED,
         stiffness=wp.array(STIFFNESS, dtype=wp.float32, device=device),
         damping=wp.array(DAMPING, dtype=wp.float32, device=device),
-        device=device,
     )
 
 
-def export_with_views(model, selection, device, out_dir: Path) -> np.ndarray:
+def export_with_views(model, device, out_dir: Path) -> np.ndarray:
     """Export the same controller with joint_q_des and joint_f bound to views.
 
     Each of those ports becomes a parameter of VIEW_SIM_DOFS floats rather than
     one per controlled DOF, and the graph reads and writes only VIEW_INDICES.
     """
-    controller = build_controller(model, selection, device)
+    controller = build_controller(model, device)
     inputs, outputs = controller.input(), controller.output()
     inputs.joint_q.assign(Q)
     inputs.joint_qd.assign(QD)
@@ -174,8 +172,7 @@ def main(out_dir: Path) -> int:
     device = wp.get_device()
 
     model = build_model(device)
-    selection = select_joints(model, joints=CONTROLLED)
-    controller = build_controller(model, selection, device)
+    controller = build_controller(model, device)
 
     inputs, outputs = controller.input(), controller.output()
     inputs.joint_q.assign(Q)
@@ -190,7 +187,7 @@ def main(out_dir: Path) -> int:
     export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=out_dir / "joint_impedance")
     (out_dir / "joint_impedance_expected.txt").write_text("\n".join(f"{value:.9g}" for value in expected) + "\n")
 
-    scattered = export_with_views(model, selection, device, out_dir)
+    scattered = export_with_views(model, device, out_dir)
     # Binding a port to a view changes where the values live, not the control
     # law, so the same torques must appear at the addressed slots.
     np.testing.assert_allclose(scattered[VIEW_INDICES], expected, atol=1e-5)

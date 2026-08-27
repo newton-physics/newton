@@ -15,7 +15,6 @@ from newton.controllers import (
     ControllerJointImpedance,
     ControllerJointImpedanceModelFree,
     export_controller_graph,
-    select_joints,
 )
 
 
@@ -51,13 +50,10 @@ def _run_loaded(graph, name, count, device):
 class TestExportGraph(unittest.TestCase):
     def _model_based(self, device):
         model = _build_arm(device)
-        selection = select_joints(model)
         return ControllerJointImpedance(
             model,
-            joint_selection=selection,
             stiffness=wp.array([50.0, 30.0], dtype=wp.float32, device=device),
             damping=wp.array([5.0, 3.0], dtype=wp.float32, device=device),
-            device=device,
         )
 
     def test_exports_a_named_parameter_per_port(self):
