@@ -397,8 +397,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         # Flat-DOF -> (robot, slot) tables, needed so the final
         # Jacobian-transpose force mapping can write directly into the
         # compact total_controlled_dofs layout.
-        offsets_np = np.zeros(controlled_robot_count, dtype=np.int32)
-        offsets_np[1:] = np.cumsum(controlled_dofs_per_robot_np[:-1])
         self._robot_of_dof = wp.array(
             np.repeat(np.arange(controlled_robot_count, dtype=np.int32), controlled_dofs_per_robot_np),
             dtype=wp.int32,
