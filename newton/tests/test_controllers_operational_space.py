@@ -1613,14 +1613,27 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         )
         identity_pose = wp.transform_identity()
         zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        rng = np.random.default_rng(13)
-        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
-        random_matrix = rng.standard_normal((7, 7)).astype(np.float32)
-        mass_matrix = (random_matrix @ random_matrix.T + 7 * np.eye(7, dtype=np.float32)).reshape(1, 7, 7)
-        joint_q = rng.standard_normal(7).astype(np.float32)
-        joint_qd = rng.standard_normal(7).astype(np.float32)
-        joint_q_des_null = rng.standard_normal(7).astype(np.float32)
-        joint_qd_des_null = rng.standard_normal(7).astype(np.float32)
+        # A fixed, well-conditioned Jacobian (rank 6, singular values ~1.1-4.6) and a diagonal
+        # (trivially SPD, well-conditioned) mass matrix, rather than a random Gram matrix -- a
+        # poorly-conditioned random mass matrix amplifies the float32 rounding difference between
+        # this kernel's Cholesky-based inverse and numpy's LU-based one enough to need a much
+        # looser tolerance below to avoid test flakiness.
+        jacobian = np.array(
+            [
+                [2, 0, 0, 1, 0, 1, 0],
+                [0, 3, 0, 0, 1, 0, 1],
+                [0, 0, 1, 2, 1, 0, 0],
+                [1, 1, 0, 0, 0, 3, 1],
+                [0, 1, 2, 1, 0, 0, 1],
+                [1, 0, 1, 0, 2, 1, 0],
+            ],
+            dtype=np.float32,
+        ).reshape(1, 6, 7)
+        mass_matrix = np.diag([2.0, 3.0, 1.5, 4.0, 2.5, 3.5, 2.0]).astype(np.float32).reshape(1, 7, 7)
+        joint_q = np.array([0.1, -0.2, 0.3, -0.1, 0.05, -0.15, 0.2], dtype=np.float32)
+        joint_qd = np.array([0.05, 0.02, -0.03, 0.01, -0.02, 0.04, -0.01], dtype=np.float32)
+        joint_q_des_null = np.zeros(7, dtype=np.float32)
+        joint_qd_des_null = np.zeros(7, dtype=np.float32)
 
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
@@ -1644,7 +1657,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
 
         posture_acc = null_kp * (joint_q_des_null - joint_q) + null_kd * (joint_qd_des_null - joint_qd)
         expected = null_space_projector @ (mass_matrix[0] @ posture_acc)
-        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-1)
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, rtol=1e-4, atol=1e-4)
 
     def test_null_space_control_moore_penrose_matches_formula(self):
         """With use_inertia_decoupling=False, N is built from the kinematics-only Moore-Penrose pseudo-inverse.
@@ -1667,12 +1680,22 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         )
         identity_pose = wp.transform_identity()
         zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        rng = np.random.default_rng(14)
-        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
-        joint_q = rng.standard_normal(7).astype(np.float32)
-        joint_qd = rng.standard_normal(7).astype(np.float32)
-        joint_q_des_null = rng.standard_normal(7).astype(np.float32)
-        joint_qd_des_null = rng.standard_normal(7).astype(np.float32)
+        # Same fixed, well-conditioned Jacobian as the dynamically-consistent test above.
+        jacobian = np.array(
+            [
+                [2, 0, 0, 1, 0, 1, 0],
+                [0, 3, 0, 0, 1, 0, 1],
+                [0, 0, 1, 2, 1, 0, 0],
+                [1, 1, 0, 0, 0, 3, 1],
+                [0, 1, 2, 1, 0, 0, 1],
+                [1, 0, 1, 0, 2, 1, 0],
+            ],
+            dtype=np.float32,
+        ).reshape(1, 6, 7)
+        joint_q = np.array([0.1, -0.2, 0.3, -0.1, 0.05, -0.15, 0.2], dtype=np.float32)
+        joint_qd = np.array([0.05, 0.02, -0.03, 0.01, -0.02, 0.04, -0.01], dtype=np.float32)
+        joint_q_des_null = np.zeros(7, dtype=np.float32)
+        joint_qd_des_null = np.zeros(7, dtype=np.float32)
 
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
@@ -1693,7 +1716,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
 
         posture_acc = null_kp * (joint_q_des_null - joint_q) + null_kd * (joint_qd_des_null - joint_qd)
         expected = null_space_projector @ posture_acc
-        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, rtol=1e-4, atol=1e-4)
 
 
 if __name__ == "__main__":
