@@ -39,6 +39,7 @@ from newton._src.controllers.impl.operational_space._common import (
     _wrench_feedback_only_kernel,
     _wrench_feedforward_and_feedback_kernel,
 )
+from newton._src.controllers.impl.operational_space.model_based import ControllerOperationalSpace
 from newton._src.controllers.impl.operational_space.model_free import ControllerOperationalSpaceModelFree
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -1915,6 +1916,205 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         posture_acc = null_kp * (joint_q_des_null - joint_q) + null_kd * (joint_qd_des_null - joint_qd)
         expected = null_space_projector @ (mass_matrix[0] @ posture_acc)
         np.testing.assert_allclose(outs.joint_f.numpy(), expected, rtol=1e-4, atol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# ControllerOperationalSpace (model-based): construction/selection only.
+# step() is not implemented yet, so these tests only exercise __init__.
+# ---------------------------------------------------------------------------
+
+
+def _build_heterogeneous_fleet_with_tool_sites(device):
+    """Two robots: a 1-DOF robot and a 3-DOF robot, each with a tool site on its last link.
+
+    Returns:
+        Tuple of (model, robot_0_tip_body, robot_1_tip_body).
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+
+    robot_0_body = builder.add_link(mass=1.0)
+    builder.add_shape_box(robot_0_body, hx=0.1, hy=0.1, hz=0.1)
+    robot_0_joint = builder.add_joint_revolute(
+        parent=-1,
+        child=robot_0_body,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([robot_0_joint], label="robot_0")
+    builder.add_site(robot_0_body, xform=wp.transform_identity(), label="tool_site")
+
+    robot_1_body_1 = builder.add_link(mass=1.0)
+    robot_1_body_2 = builder.add_link(mass=1.0)
+    robot_1_body_3 = builder.add_link(mass=1.0)
+    builder.add_shape_box(robot_1_body_1, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(robot_1_body_2, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(robot_1_body_3, hx=0.1, hy=0.1, hz=0.1)
+    robot_1_joint_1 = builder.add_joint_revolute(
+        parent=-1,
+        child=robot_1_body_1,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    robot_1_joint_2 = builder.add_joint_revolute(
+        parent=robot_1_body_1,
+        child=robot_1_body_2,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform_identity(),
+    )
+    robot_1_joint_3 = builder.add_joint_revolute(
+        parent=robot_1_body_2,
+        child=robot_1_body_3,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([robot_1_joint_1, robot_1_joint_2, robot_1_joint_3], label="robot_1")
+    builder.add_site(robot_1_body_3, xform=wp.transform_identity(), label="tool_site")
+
+    model = builder.finalize(device=device)
+    return model, robot_0_body, robot_1_body_3
+
+
+class TestControllerOperationalSpace(unittest.TestCase):
+    def test_resolves_single_robot_selection(self):
+        """A single-articulation model resolves controlled DOFs, tool body, and link index correctly."""
+        device = wp.get_device()
+        model, _state, tool_body, coordinate_change_body_from_tool = _build_two_link_arm_with_tool_site(device)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+        )
+
+        self.assertEqual(ctrl.controlled_robot_count, 1)
+        self.assertEqual(ctrl.total_controlled_dofs, 2)
+        self.assertEqual(ctrl.max_controlled_dofs, 2)
+        np.testing.assert_array_equal(ctrl.q_start.numpy(), [0, 1])
+        np.testing.assert_array_equal(ctrl.qd_start.numpy(), [0, 1])
+        np.testing.assert_array_equal(ctrl.tool_body.numpy(), [tool_body])
+        # The tool site is on the second (and last) joint's child body, so its
+        # row-block index within the articulation's Jacobian is 1.
+        np.testing.assert_array_equal(ctrl._robot_link_idx.numpy(), [1])
+        resolved_transform = ctrl._tool_transform_body.numpy()[0]
+        np.testing.assert_allclose(resolved_transform, np.array(coordinate_change_body_from_tool), atol=1e-6)
+
+    def test_resolves_heterogeneous_fleet_selection(self):
+        """Two robots with different controlled-DOF counts each resolve their own tool site."""
+        device = wp.get_device()
+        model, robot_0_body, robot_1_tip_body = _build_heterogeneous_fleet_with_tool_sites(device)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+        )
+
+        self.assertEqual(ctrl.controlled_robot_count, 2)
+        self.assertEqual(ctrl.total_controlled_dofs, 4)
+        self.assertEqual(ctrl.max_controlled_dofs, 3)
+        np.testing.assert_array_equal(ctrl._controlled_dofs_per_robot.numpy(), [1, 3])
+        np.testing.assert_array_equal(ctrl.tool_body.numpy(), [robot_0_body, robot_1_tip_body])
+        # Robot 0's tool is on its only (first) joint's child; robot 1's tool
+        # is on its third joint's child.
+        np.testing.assert_array_equal(ctrl._robot_link_idx.numpy(), [0, 2])
+
+    def test_tool_pattern_matching_nothing_raises(self):
+        """A tool pattern that matches no site in the model raises at construction."""
+        device = wp.get_device()
+        model, _state, _tool_body, _transform = _build_two_link_arm_with_tool_site(device)
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpace(
+                model,
+                tool="nonexistent_site",
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                use_gravity_compensation=False,
+            )
+
+    def test_tool_pattern_matching_multiple_sites_on_one_robot_raises(self):
+        """A tool selection matching more than one site on the same robot raises at construction."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+        body = builder.add_link(mass=1.0)
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_revolute(
+            parent=-1,
+            child=body,
+            axis=newton.Axis.Z,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([joint], label="robot")
+        builder.add_site(body, xform=wp.transform_identity(), label="site_a")
+        builder.add_site(body, xform=wp.transform_identity(), label="site_b")
+        model = builder.finalize(device=device)
+
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpace(
+                model,
+                tool=["site_a", "site_b"],
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                use_gravity_compensation=False,
+            )
+
+    def test_model_without_sites_raises(self):
+        """A model with no sites at all raises at construction, rather than resolving zero matches silently."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+        body = builder.add_link(mass=1.0)
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_revolute(
+            parent=-1,
+            child=body,
+            axis=newton.Axis.Z,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([joint], label="robot")
+        model = builder.finalize(device=device)
+
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpace(
+                model, tool="tool_site", motion_stiffness=1.0, motion_damping=1.0, use_gravity_compensation=False
+            )
+
+    def test_tool_by_explicit_site_index(self):
+        """An explicit site index, rather than a label pattern, resolves the same tool body."""
+        device = wp.get_device()
+        model, _state, tool_body, _transform = _build_two_link_arm_with_tool_site(device)
+        site_index = model.shape_label.index("tool_site")
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool=site_index,
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+        )
+        np.testing.assert_array_equal(ctrl.tool_body.numpy(), [tool_body])
+
+    def test_non_model_raises_type_error(self):
+        """Passing a non-Model object raises TypeError, not an unrelated AttributeError."""
+        with self.assertRaises(TypeError):
+            ControllerOperationalSpace(
+                "not a model",
+                tool="tool_site",
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                use_gravity_compensation=False,
+            )
 
 
 if __name__ == "__main__":
