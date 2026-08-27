@@ -36,6 +36,15 @@ void check_close(float got, float expected, float tolerance, const std::string& 
     }
 }
 
+void print_vector(const std::string& label, const std::vector<float>& values) {
+    std::cout << label << ": [";
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        std::cout << values[index];
+        if (index + 1 < values.size()) std::cout << ", ";
+    }
+    std::cout << "]\n";
+}
+
 std::vector<float> read_reference(const std::filesystem::path& path) {
     std::ifstream file(path);
     std::vector<float> values;
@@ -73,6 +82,7 @@ const std::vector<float> kFleetBlock{2.0f, 0.0f, 0.0f, 4.0f};
 const std::vector<float> kFleetQDes{1.0f, 1.0f};
 
 void test_buffers_are_sized_from_the_graph(const std::filesystem::path& wrp) {
+    std::cout << "\n=== test_buffers_are_sized_from_the_graph ===\n";
     newton::controllers::Controller controller{wrp};
     const auto input = controller.input();
     const auto output = controller.output();
@@ -92,6 +102,7 @@ void test_buffers_are_sized_from_the_graph(const std::filesystem::path& wrp) {
 }
 
 void test_params_lists_every_parameter(const std::filesystem::path& wrp) {
+    std::cout << "\n=== test_params_lists_every_parameter ===\n";
     newton::controllers::Controller controller{wrp};
     bool has_dt = false;
     bool has_joint_f = false;
@@ -110,6 +121,7 @@ void test_params_lists_every_parameter(const std::filesystem::path& wrp) {
 }
 
 void test_unknown_field_throws(const std::filesystem::path& wrp) {
+    std::cout << "\n=== test_unknown_field_throws ===\n";
     newton::controllers::Controller controller{wrp};
     auto input = controller.input();
     bool threw = false;
@@ -122,6 +134,7 @@ void test_unknown_field_throws(const std::filesystem::path& wrp) {
 }
 
 void test_step_reports_a_bad_field_without_throwing(const std::filesystem::path& wrp) {
+    std::cout << "\n=== test_step_reports_a_bad_field_without_throwing ===\n";
     newton::controllers::Controller controller{wrp};
     auto input = controller.input();
     auto output = controller.output();
@@ -150,6 +163,7 @@ void test_step_reports_a_bad_field_without_throwing(const std::filesystem::path&
 }
 
 void test_step_matches_python(const std::filesystem::path& wrp, const std::filesystem::path& reference_path) {
+    std::cout << "\n=== test_step_matches_python ===\n";
     const std::vector<float> expected = read_reference(reference_path);
     check(expected.size() == kControlledDofs, "reference file holds one torque per controlled DOF");
     if (expected.size() != kControlledDofs) return;
@@ -164,6 +178,9 @@ void test_step_matches_python(const std::filesystem::path& wrp, const std::files
     input["joint_qd_des"] = kJointQdDes;
 
     check(controller.step(input, output, kDt), "step succeeds: " + controller.last_error());
+
+    print_vector("python controller joint_f", expected);
+    print_vector("C++ controller joint_f   ", output["joint_f"]);
 
     for (std::size_t dof = 0; dof < expected.size(); ++dof) {
         check_close(output["joint_f"][dof], expected[dof], 1e-3f,
@@ -180,6 +197,7 @@ void test_step_matches_python(const std::filesystem::path& wrp, const std::files
 
 void test_view_bound_ports_round_trip(const std::filesystem::path& wrp,
                                       const std::filesystem::path& reference_path) {
+    std::cout << "\n=== test_view_bound_ports_round_trip ===\n";
     const std::vector<float> expected = read_reference(reference_path);
     if (expected.size() != kControlledDofs) {
         check(false, "reference file holds one torque per controlled DOF");
@@ -212,6 +230,8 @@ void test_view_bound_ports_round_trip(const std::filesystem::path& wrp,
     check(controller.step(input, output, kDt), "step with view-bound ports succeeds: " + controller.last_error());
 
     const std::vector<float>& joint_f = output["joint_f"];
+    print_vector("python controller joint_f (compact torques)", expected);
+    print_vector("C++ controller joint_f (scattered)          ", joint_f);
     for (std::size_t dof = 0; dof < kViewIndices.size(); ++dof) {
         check_close(joint_f[kViewIndices[dof]], expected[dof], 1e-3f,
                     "joint_f at simulation slot " + std::to_string(kViewIndices[dof])
@@ -230,6 +250,7 @@ void test_view_bound_ports_round_trip(const std::filesystem::path& wrp,
 }
 
 void test_view_bound_mass_matrix(const std::filesystem::path& wrp, const std::filesystem::path& reference_path) {
+    std::cout << "\n=== test_view_bound_mass_matrix ===\n";
     const std::vector<float> expected = read_reference(reference_path);
     if (expected.size() != kFleetDofs) {
         check(false, "reference file holds one torque per controlled DOF");
@@ -256,6 +277,9 @@ void test_view_bound_mass_matrix(const std::filesystem::path& wrp, const std::fi
     input["joint_q_des"] = kFleetQDes;
 
     check(controller.step(input, output, kDt), "step with a view-bound mass matrix succeeds: " + controller.last_error());
+
+    print_vector("python controller joint_f", expected);
+    print_vector("C++ controller joint_f   ", output["joint_f"]);
 
     for (std::size_t dof = 0; dof < expected.size(); ++dof) {
         check_close(output["joint_f"][dof], expected[dof], 1e-3f,

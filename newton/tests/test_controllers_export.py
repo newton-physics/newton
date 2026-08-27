@@ -37,15 +37,6 @@ def _build_arm(device, link_count=2):
     return builder.finalize(device=device)
 
 
-def _run_loaded(graph, name, count, device):
-    """Launch a loaded graph and read one output parameter back."""
-    wp.capture_launch(graph)
-    wp.synchronize_device(device)
-    result = wp.zeros(count, dtype=wp.float32, device=device)
-    graph.get_param(name, result)
-    return result.numpy()
-
-
 @unittest.skipUnless(wp.is_cuda_available(), "graph capture requires CUDA")
 class TestExportGraph(unittest.TestCase):
     def _model_based(self, device):
@@ -58,6 +49,7 @@ class TestExportGraph(unittest.TestCase):
 
     def test_exports_a_named_parameter_per_port(self):
         """Verify every array port becomes a prefixed graph parameter, plus dt."""
+        print("\n=== test_exports_a_named_parameter_per_port ===")
         device = wp.get_device()
         controller = self._model_based(device)
         inputs, outputs = controller.input(), controller.output()
@@ -65,6 +57,7 @@ class TestExportGraph(unittest.TestCase):
             path = Path(tmp) / "controller"
             export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=path)
             graph = wp.capture_load(str(path), device=device)
+        print(f"graph params: {sorted(graph.params)}")
         self.assertEqual(
             set(graph.params),
             {"dt", "input.joint_q", "input.joint_qd", "input.joint_q_des", "input.joint_qd_des", "output.joint_f"},
@@ -72,6 +65,7 @@ class TestExportGraph(unittest.TestCase):
 
     def test_loaded_graph_reproduces_the_python_torques(self):
         """Verify the exported graph computes what the controller computed."""
+        print("\n=== test_loaded_graph_reproduces_the_python_torques ===")
         device = wp.get_device()
         controller = self._model_based(device)
         inputs, outputs = controller.input(), controller.output()
@@ -87,7 +81,13 @@ class TestExportGraph(unittest.TestCase):
             path = Path(tmp) / "controller"
             export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=path)
             graph = wp.capture_load(str(path), device=device)
-            actual = _run_loaded(graph, "output.joint_f", 2, device)
+            wp.capture_launch(graph)
+            wp.synchronize_device(device)
+            actual = wp.zeros(2, dtype=wp.float32, device=device)
+            graph.get_param("output.joint_f", actual)
+            actual = actual.numpy()
+        print(f"python controller joint_f: {expected}")
+        print(f"loaded graph joint_f:      {actual}")
         np.testing.assert_allclose(actual, expected, atol=1e-4)
 
     def test_ports_bound_to_views_export_and_scatter(self):
@@ -97,6 +97,7 @@ class TestExportGraph(unittest.TestCase):
         the simulation-sized array underneath it; the gather and scatter indices
         travel inside the graph.
         """
+        print("\n=== test_ports_bound_to_views_export_and_scatter ===")
         device = wp.get_device()
         controller = ControllerJointImpedanceModelFree(
             controlled_dofs_per_robot=wp.array([2], dtype=wp.int32, device=device),
@@ -121,14 +122,56 @@ class TestExportGraph(unittest.TestCase):
             path = Path(tmp) / "controller"
             export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=path)
             graph = wp.capture_load(str(path), device=device)
-            actual = _run_loaded(graph, "output.joint_f", 5, device)
+            wp.capture_launch(graph)
+            wp.synchronize_device(device)
+            actual = wp.zeros(5, dtype=wp.float32, device=device)
+            graph.get_param("output.joint_f", actual)
+            actual = actual.numpy()
 
+        print(f"python controller sim_f (scattered): {expected}")
+        print(f"loaded graph joint_f (scattered):    {actual}")
+        # The torques land in the simulation slots the view addresses.
+        np.testing.assert_allclose(actual, expected, atol=1e-4)
+        self.assertTrue(np.allclose(actual[[0, 1, 4]], 0.0))
+
+    def test_model_based_ports_bound_to_views_export_and_scatter(self):
+        """Verify the model-based controller also exports and scatters correctly when ports are bound to views."""
+        print("\n=== test_model_based_ports_bound_to_views_export_and_scatter ===")
+        device = wp.get_device()
+        controller = self._model_based(device)
+        inputs, outputs = controller.input(), controller.output()
+        inputs.joint_q.assign(np.array([0.3, -0.4], dtype=np.float32))
+        inputs.joint_qd.assign(np.array([0.1, 0.2], dtype=np.float32))
+        inputs.joint_qd_des.zero_()
+
+        sim_q_des = wp.array(np.array([0.0, 0.0, 1.0, 2.0, 0.0], dtype=np.float32), dtype=wp.float32, device=device)
+        sim_f = wp.zeros(5, dtype=wp.float32, device=device)
+        idx = wp.array(np.array([2, 3], dtype=np.int32), dtype=wp.int32, device=device)
+        inputs.joint_q_des = sim_q_des[idx]
+        outputs.joint_f = sim_f[idx]
+
+        controller.step(inputs=inputs, outputs=outputs, dt=0.01)
+        expected = sim_f.numpy().copy()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "controller"
+            export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=path)
+            graph = wp.capture_load(str(path), device=device)
+            wp.capture_launch(graph)
+            wp.synchronize_device(device)
+            actual = wp.zeros(5, dtype=wp.float32, device=device)
+            graph.get_param("output.joint_f", actual)
+            actual = actual.numpy()
+
+        print(f"python controller sim_f (scattered): {expected}")
+        print(f"loaded graph joint_f (scattered):    {actual}")
         # The torques land in the simulation slots the view addresses.
         np.testing.assert_allclose(actual, expected, atol=1e-4)
         self.assertTrue(np.allclose(actual[[0, 1, 4]], 0.0))
 
     def test_non_float32_port_raises(self):
         """Verify a port the C++ runtime cannot address raises rather than exporting."""
+        print("\n=== test_non_float32_port_raises ===")
         device = wp.get_device()
         controller = self._model_based(device)
         inputs, outputs = controller.input(), controller.output()
