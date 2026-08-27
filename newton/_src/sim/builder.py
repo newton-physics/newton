@@ -3317,7 +3317,10 @@ class ModelBuilder:
 
         world_range = np.arange(world_count, dtype=np.int64)
         start_arrays = {kind: base + world_range * counts[kind] for kind, base in bases.items()}
-        start_arrays["muscle_point"] = len(self.muscle_bodies) + world_range * len(builder.muscle_bodies)
+        # muscle_point has no count attribute, so its base is the waypoint count. Read it from array_starts
+        # when muscle_bodies is array-backed: it was already resized above to hold the replicated worlds.
+        muscle_point_base = array_starts.get("muscle_bodies", len(self.muscle_bodies))
+        start_arrays["muscle_point"] = muscle_point_base + world_range * len(builder.muscle_bodies)
 
         def starts(kind: str) -> np.ndarray:
             return start_arrays[kind]
@@ -12815,7 +12818,7 @@ class ModelBuilder:
                                 warnings.warn(
                                     f"Texture SDF construction failed for shape {i} "
                                     f"(type={shape_type}): {e}. Falling back to BVH.",
-                                    stacklevel=2,
+                                    stacklevel=3,
                                 )
                                 tex_data = create_empty_texture_sdf_data()
                                 c_tex = None
@@ -12895,7 +12898,7 @@ class ModelBuilder:
                         warnings.warn(
                             f"Full-surface SDF construction failed for mesh shape {i} ({e}); it falls "
                             "back to the legacy per-particle soft-contact path.",
-                            stacklevel=2,
+                            stacklevel=3,
                         )
                         continue
                     wt_idx = len(compact_texture_sdf_data)
@@ -12926,7 +12929,7 @@ class ModelBuilder:
                 warnings.warn(
                     "Heightfield-vs-heightfield collision is not supported; "
                     "contacts between heightfield pairs will be skipped.",
-                    stacklevel=2,
+                    stacklevel=3,
                 )
             from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 
@@ -13220,7 +13223,7 @@ class ModelBuilder:
                         warnings.warn(
                             f"Inertia validation corrected {num_corrections} bodies. "
                             f"Set validate_inertia_detailed=True for detailed per-body warnings.",
-                            stacklevel=2,
+                            stacklevel=3,
                         )
 
                     # Use the corrected arrays directly on the Model.
@@ -13295,7 +13298,7 @@ class ModelBuilder:
                         "will be removed. Set newton.use_coord_layout_targets = True before "
                         "building models and index targets via Model.joint_target_q_start.",
                         DeprecationWarning,
-                        stacklevel=2,
+                        stacklevel=3,
                     )
                 target_q_values = self._project_target_q_to_dof()
             m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)
@@ -13509,7 +13512,7 @@ class ModelBuilder:
                             f"Custom attribute '{full_key}' has {attr_count} values but frequency '{freq_key}' "
                             f"expects {expected_count}. Missing values will be filled with defaults.",
                             UserWarning,
-                            stacklevel=2,
+                            stacklevel=3,
                         )
 
             # Store custom frequency counts on the model for selection.py and other consumers

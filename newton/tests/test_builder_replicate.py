@@ -246,6 +246,26 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(expected.shape_contact_pair_count, actual.shape_contact_pair_count)
         np.testing.assert_array_equal(expected.shape_contact_pairs.numpy(), actual.shape_contact_pairs.numpy())
 
+    def test_replicate_and_finalize_matches_muscle_waypoints(self):
+        """Offset muscle waypoints by the pre-merge count, not the array-backed allocation length."""
+        source = self._make_source()
+
+        for prefix_worlds in (0, 1):
+            with self.subTest(prefix_worlds=prefix_worlds):
+                expected_builder = ModelBuilder()
+                actual_builder = ModelBuilder()
+                for _ in range(prefix_worlds):
+                    expected_builder.add_builder(source)
+                    actual_builder.add_builder(source)
+
+                expected_builder.replicate(source, 3, spacing=(2.0, 0.0, 0.0))
+                expected = expected_builder.finalize(device="cpu")
+                actual = actual_builder.replicate_and_finalize(source, 3, spacing=(2.0, 0.0, 0.0), device="cpu")
+
+                for name in ("muscle_start", "muscle_bodies", "muscle_points"):
+                    with self.subTest(attribute=name):
+                        np.testing.assert_array_equal(getattr(expected, name).numpy(), getattr(actual, name).numpy())
+
     def test_replicate_and_finalize_matches_coord_layout_targets(self):
         with mock.patch("newton.use_coord_layout_targets", True):
             source = self._make_source()
