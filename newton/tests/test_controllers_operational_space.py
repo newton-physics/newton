@@ -1520,6 +1520,62 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         expected = jacobian[0].T @ masked_wrench_force
         np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
 
+    def test_gravity_compensation_adds_directly_to_torque(self):
+        """inputs.gravity_force is added directly to the summed joint torque, with zero pose error isolating it."""
+        device = wp.get_device()
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=True,
+            device=device,
+        )
+        identity_pose = wp.transform_identity()
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        rng = np.random.default_rng(11)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+        gravity_force = rng.standard_normal(7).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.gravity_force = wp.array(gravity_force, dtype=wp.float32, device=device)
+        outs = ctrl.output()
+        ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+        np.testing.assert_allclose(outs.joint_f.numpy(), gravity_force, atol=1e-5)
+
+    def test_gravity_force_rejected_without_use_gravity_compensation(self):
+        """inputs.gravity_force set without use_gravity_compensation=True raises at step."""
+        device = wp.get_device()
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+            device=device,
+        )
+        identity_pose = wp.transform_identity()
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        rng = np.random.default_rng(12)
+        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+        ins.gravity_force = wp.zeros(7, dtype=wp.float32, device=device)
+        outs = ctrl.output()
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()

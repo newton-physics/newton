@@ -11,8 +11,9 @@ itself is always 6-dimensional regardless of how many DOFs a robot has.
 
 This increment implements motion control (a task-space spring-damper term,
 with optional inertial decoupling through the operational-space mass matrix
-Lambda) and, when enabled, contact-wrench control, combined through per-axis
-selection matrices. Null-space posture control is not implemented yet.
+Lambda), contact-wrench control combined through per-axis selection
+matrices, and gravity compensation. Null-space posture control is not
+implemented yet.
 
 Motion law (terms enabled at construction):
 
@@ -43,6 +44,10 @@ summed there:
 
 Without wrench control, every axis is motion-controlled and no selection
 matrix is applied: ``tau = J^T · F_motion``.
+
+When ``use_gravity_compensation=True``, ``inputs.gravity_force`` (the
+caller-supplied gravity generalized forces, compact over the controlled
+DOFs) is added directly to the summed joint torque.
 """
 
 from __future__ import annotations
@@ -227,6 +232,8 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             format as ``motion_stiffness``.
         use_inertia_decoupling: Premultiply the task-space spring-damper term
             by Lambda, the operational-space mass matrix.
+        use_gravity_compensation: Add ``inputs.gravity_force`` directly to
+            the summed joint torque.
         use_wrench_feedforward: Command the desired wrench directly, as a
             feedforward term in the wrench law, combined with motion control
             through per-axis selection matrices. When both this and
@@ -285,6 +292,8 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         """Tool-point Jacobian in world coordinates, shape [controlled_robot_count, 6, max_controlled_dofs]."""
         mass_matrix: wp.array3d[wp.float32] | wp.indexedarray(dtype=wp.float32, ndim=3) | None
         """Joint-space mass matrix over the controlled DOFs, shape [controlled_robot_count, max_controlled_dofs, max_controlled_dofs]; a robot with fewer than ``max_controlled_dofs`` DOFs leaves the trailing rows and columns unread. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
+        gravity_force: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Gravity generalized forces [N or N·m], compact, shape [total_controlled_dofs]. ``None`` unless ``use_gravity_compensation=True``."""
         desired_tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
         """Desired world pose of the tool frame, shape [controlled_robot_count]."""
         desired_twist_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
@@ -313,6 +322,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         motion_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
         motion_damping: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
         use_inertia_decoupling: bool = True,
+        use_gravity_compensation: bool = True,
         use_wrench_feedforward: bool = False,
         use_wrench_feedback: bool = False,
         motion_selection_axes_tool: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
@@ -383,6 +393,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         self._max_controlled_dofs = max_controlled_dofs
         self._total_controlled_dofs = total_controlled_dofs
         self._use_inertia = bool(use_inertia_decoupling)
+        self._use_gravity = bool(use_gravity_compensation)
         self._use_wrench_feedforward = bool(use_wrench_feedforward)
         self._use_wrench_feedback = bool(use_wrench_feedback)
         self._use_wrench = self._use_wrench_feedforward or self._use_wrench_feedback
@@ -521,6 +532,11 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         self._tau_buf = wp.zeros(
             total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
+        self._grav_buf: wp.array[wp.float32] | None = (
+            wp.zeros(total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+            if self._use_gravity
+            else None
+        )
 
     def _bake_gain(
         self, value: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None
@@ -631,6 +647,11 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             if self._use_inertia
             else None
         )
+        inputs.gravity_force = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_gravity
+            else None
+        )
         inputs.desired_tool_pose_world = wp.zeros(
             robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad
         )
@@ -694,6 +715,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         # field unset rather than None.
         for name, enabled, switch in (
             ("mass_matrix", self._use_inertia, "use_inertia_decoupling"),
+            ("gravity_force", self._use_gravity, "use_gravity_compensation"),
             ("motion_stiffness", self._stiffness_baked is None, "a live motion_stiffness"),
             ("motion_damping", self._damping_baked is None, "a live motion_damping"),
             ("desired_wrench_world", self._use_wrench, "use_wrench_feedforward or use_wrench_feedback"),
@@ -784,6 +806,17 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 (robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
                 self._device,
             )
+
+        if self._use_gravity:
+            _validate_array(
+                array=inputs.gravity_force,
+                name="inputs.gravity_force",
+                dtype=wp.float32,
+                shape=(self._total_controlled_dofs,),
+                device=self._device,
+                allow_indexed=True,
+            )
+            _read_port(inputs.gravity_force, self._grav_buf, self._total_controlled_dofs, self._device)
 
         if self._use_wrench:
             _validate_array(
@@ -944,6 +977,15 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 _add_term_kernel,
                 dim=self._total_controlled_dofs,
                 inputs=[self._wrench_tau_buf],
+                outputs=[self._tau_buf],
+                device=self._device,
+            )
+
+        if self._use_gravity:
+            wp.launch(
+                _add_term_kernel,
+                dim=self._total_controlled_dofs,
+                inputs=[self._grav_buf],
                 outputs=[self._tau_buf],
                 device=self._device,
             )
