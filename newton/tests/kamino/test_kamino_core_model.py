@@ -656,6 +656,26 @@ class TestModelConversions(unittest.TestCase):
             ),
         )
 
+    def test_06g_model_conversions_group_exclusion_non_colliding_shape_excluded(self):
+        """A shape without ShapeFlags.COLLIDE_SHAPES must be excluded from its
+        group-compatible pair."""
+        builder: ModelBuilder = ModelBuilder()
+        builder.begin_world()
+        body_a = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        body_b = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+        shape_a = builder.add_shape_sphere(body=body_a, radius=0.5, cfg=ModelBuilder.ShapeConfig(collision_group=1))
+        shape_b = builder.add_shape_sphere(
+            body=body_b,
+            radius=0.5,
+            cfg=ModelBuilder.ShapeConfig(collision_group=1, has_shape_collision=False),
+        )
+        builder.end_world()
+
+        model_kamino: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        excluded = {tuple(sorted(pair)) for pair in model_kamino.geoms.excluded_pairs.numpy().tolist()}
+        self.assertEqual(model_kamino.geoms.num_excluded_pairs, 1)
+        self.assertEqual(excluded, {tuple(sorted((shape_a, shape_b)))})
+
     def test_10_model_conversions_arbitrary_axis(self):
         """
         Test that Newton→Kamino conversion succeeds for a revolute joint

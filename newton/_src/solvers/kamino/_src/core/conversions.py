@@ -1912,6 +1912,7 @@ def _group_incompatible_pairs_kernel(
     # Inputs
     shape_collision_group: wp.array[wp.int32],
     shape_world: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
     world_cumsum_lower_tri: wp.array[wp.int32],  # Cumulative sum of lower tri elements per world
     world_slice_ends: wp.array[wp.int32],  # End indices of each world slice
     world_index_map: wp.array[wp.int32],  # Index map into source shapes
@@ -1950,21 +1951,30 @@ def _group_incompatible_pairs_kernel(
     if world_a == -1 and world_b == -1 and not is_dedicated_minus_one_segment:
         return
 
-    if not test_world_and_group_pair(world_a, world_b, shape_collision_group[shape_a], shape_collision_group[shape_b]):
+    groups_collide = test_world_and_group_pair(
+        world_a, world_b, shape_collision_group[shape_a], shape_collision_group[shape_b]
+    )
+    flags_collide = (shape_flags[shape_a] & ShapeFlags.COLLIDE_SHAPES) != 0 and (
+        shape_flags[shape_b] & ShapeFlags.COLLIDE_SHAPES
+    ) != 0
+    if not (groups_collide and flags_collide):
         write_pair(wp.vec2i(shape_a, shape_b), excluded_pair, excluded_pair_count, max_excluded_pairs)
 
 
 def compute_group_incompatible_pairs(
     shape_collision_group: wp.array[wp.int32],
     shape_world: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
 ) -> np.ndarray:
-    """Find shape pairs that are incompatible under Newton's collision-group rule.
-    Used in Kamino's internal NXN/SAP broadphase, which does not check for
-    group-based exclusion, instead relying purely on the excluded-pairs list.
+    """Find shape pairs that are incompatible under Newton's collision-group and
+    shape flag rules. Used in Kamino's internal NXN/SAP broadphase, which does
+    not check for group- or flag-based exclusion, instead relying purely on the
+    excluded-pairs list.
 
     Args:
         shape_collision_group: Per-shape collision group id, shape [num_shapes].
         shape_world: Per-shape world index (-1 for global shapes), shape [num_shapes].
+        shape_flags: Per-shape flags, shape [num_shapes].
 
     Returns:
         Array of incompatible shape index pairs (each row canonical, i.e.
@@ -1989,6 +1999,7 @@ def compute_group_incompatible_pairs(
         inputs=[
             shape_collision_group,
             shape_world,
+            shape_flags,
             world_map.world_cumsum_lower_tri,
             world_map.world_slice_ends,
             world_map.world_index_map,
@@ -2059,10 +2070,13 @@ def convert_geometries(
 
     # Create collision detection meta-data: Combine explicitly filtered
     # pairs (e.g. same-body, user-specified exclusions) with pairs that are
-    # incompatible under Newton's collision-group rule. Kamino's NXN/SAP
-    # broadphase relies solely on this list for group-based filtering.
+    # incompatible under Newton's collision-group and shape flag rules.
+    # Kamino's NXN/SAP broadphase relies solely on this list for collision
+    # filtering.
     explicit_excluded_pairs = model.shape_collision_filter_pairs_array()
-    group_excluded_pairs = compute_group_incompatible_pairs(model.shape_collision_group, model.shape_world)
+    group_excluded_pairs = compute_group_incompatible_pairs(
+        model.shape_collision_group, model.shape_world, model.shape_flags
+    )
     if explicit_excluded_pairs.size and group_excluded_pairs.size:
         sorted_excluded_pairs = np.unique(
             np.concatenate([explicit_excluded_pairs, group_excluded_pairs], axis=0), axis=0
