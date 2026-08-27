@@ -1728,6 +1728,7 @@ class ViewerBase(ABC):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1752,6 +1753,7 @@ class ViewerBase(ABC):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
         """
         pass
 

@@ -974,6 +974,21 @@ add_example_test(
 
 add_example_test(
     TestMPMExamples,
+    name="mpm.example_mpm_water_dam_break",
+    devices=cuda_test_devices,
+    test_options={
+        "num-frames": 10,
+        "voxel-size": 0.15,
+        "surface-voxel-size": 0.075,
+        "surface-max-grid-cells": 4_000_000,
+        "particles-per-cell": 1,
+        "world-count": 2,
+    },
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMPMExamples,
     name="mpm.example_mpm_twoway_coupling",
     devices=cuda_test_devices,
     test_options={"num-frames": 80},

@@ -1049,18 +1049,16 @@ def _compliant_contact_dual_step(
     """Advance a finite-normal/ideal-Coulomb contact multiplier.
 
     The normal dual is updated and projected first. The tangent trial is then
-    projected using the physical normal force implied by that updated dual.
+    projected into the Coulomb disk defined by that normal update.
     """
     lam_n_old = wp.dot(lam_old, normal)
     lam_t_old = lam_old - normal * lam_n_old
 
     lam_n_new = wp.max(_alm_relaxed_ascent(lam_n_old, normal_residual, material_k, rho_n), 0.0)
-    normal_primal_k, lam_n_eff = _material_force_terms(rho_n, material_k, lam_n_new, 1)
-    normal_force = wp.max(normal_primal_k * normal_residual + lam_n_eff, 0.0)
 
     lam_t_trial = lam_t_old + rho_t * tangent_residual
     tangent_trial_length = wp.length(lam_t_trial)
-    cone_limit = mu * normal_force
+    cone_limit = mu * lam_n_new
     lam_t_new = _project_coulomb_tangent(lam_t_trial, tangent_trial_length, cone_limit)
 
     return normal * lam_n_new + lam_t_new
