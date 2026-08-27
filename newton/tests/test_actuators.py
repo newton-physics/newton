@@ -201,6 +201,11 @@ def _build_lstm_onnx(
 # ---------------------------------------------------------------------------
 
 
+# Regularize the fixtures' idealized point masses without changing their
+# effective dynamics from the inertia that validation previously synthesized.
+_POINT_MASS_INERTIA = wp.mat33(1.0e-6, 0.0, 0.0, 0.0, 1.0e-6, 0.0, 0.0, 0.0, 1.0e-6)
+
+
 def _write_dof_values(
     model: newton.Model,
     array: wp.array[float],
@@ -222,8 +227,7 @@ def _build_pendulum(device: wp.Device, worlds: int = 1) -> newton.Model:
         worlds: Number of identical worlds to replicate the pendulum into.
     """
     template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    body = template.add_link(mass=1.0)
-    template.body_com[body] = wp.vec3(0.5, 0.0, 0.0)
+    body = template.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
     joint = template.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
     template.add_articulation([joint])
     if worlds == 1:
@@ -244,11 +248,10 @@ def _two_link_builder(armature: float = 0.0, dummy_body: bool = False) -> newton
     """
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     if dummy_body:
-        builder.add_joint_revolute(parent=-1, child=builder.add_link(mass=1.0), axis=newton.Axis.Z)
-    base = builder.add_link(mass=2.0)
-    tip = builder.add_link(mass=1.0)
-    builder.body_com[base] = wp.vec3(0.3, 0.0, 0.0)
-    builder.body_com[tip] = wp.vec3(0.25, 0.0, 0.0)
+        dummy = builder.add_link(inertia=_POINT_MASS_INERTIA, mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=dummy, axis=newton.Axis.Z)
+    base = builder.add_link(com=wp.vec3(0.3, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=2.0)
+    tip = builder.add_link(com=wp.vec3(0.25, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
     j0 = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z, armature=armature)
     j1 = builder.add_joint_revolute(
         parent=base,
@@ -431,6 +434,28 @@ def _ignore_torchscript_deprecation(test_case: unittest.TestCase) -> None:
         message=r"Loading (TorchScript|dict) checkpoints .* is deprecated",
         category=DeprecationWarning,
     )
+
+
+# ---------------------------------------------------------------------------
+# Fixture validation
+# ---------------------------------------------------------------------------
+
+
+class TestActuatorFixtures(unittest.TestCase):
+    """Validate the shared actuator model fixtures."""
+
+    def test_model_builders_do_not_warn(self):
+        """Keep actuator fixture finalization warning-free."""
+        device = wp.get_device()
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _build_pendulum(device)
+            _build_pendulum(device, worlds=2)
+            _build_two_link(device)
+            _build_two_link(device, dummy_body=True, worlds=2)
+
+        self.assertFalse(caught, [str(warning.message) for warning in caught])
 
 
 # ---------------------------------------------------------------------------
