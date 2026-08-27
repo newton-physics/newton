@@ -428,9 +428,10 @@ class TestViewerGLMultisampling(unittest.TestCase):
         viewer = _make_headless_viewer_gl_or_skip(self)
 
         try:
-            granted = viewer.renderer.window.config.samples
-            # A driver offering no multi-sampled config at all reports 0; any
-            # other value has to agree with what the scene is rendered at.
+            # A driver offering no multi-sampled config at all reports 0, and a
+            # backend that leaves the attribute unset reports None; any other
+            # value has to agree with what the scene is rendered at.
+            granted = viewer.renderer.window.config.samples or 0
             self.assertIn(granted, (0, viewer.renderer.msaa_samples))
         finally:
             viewer.close()
@@ -441,11 +442,11 @@ class TestViewerGLMultisampling(unittest.TestCase):
             import pyglet.window
         except Exception as exc:
             self.skipTest(f"pyglet window backend not available: {exc}")
-            return
 
         real_window = pyglet.window.Window
 
         def _reject_multisampled_config(*args, **kwargs):
+            """Stand in for a driver that matches no multi-sampled window config."""
             if kwargs.pop("config", None) is not None:
                 raise pyglet.window.NoSuchConfigException("no multi-sampled config")
             return real_window(*args, **kwargs)
