@@ -232,7 +232,7 @@ def assert_builders_equal(
         test.assertEqual(joint1.wid, joint2.wid)
         test.assertEqual(joint1.jid, joint2.jid)
         test.assertEqual(joint1.act_type, joint2.act_type)
-        test.assertEqual(joint1.act_type_dof, joint2.act_type_dof)
+        test.assertEqual(joint1.dof_act_types, joint2.dof_act_types)
         test.assertEqual(joint1.dof_type, joint2.dof_type)
         test.assertEqual(joint1.bid_B, joint2.bid_B)
         test.assertEqual(joint1.bid_F, joint2.bid_F)
@@ -650,7 +650,7 @@ def assert_model_joints_equal(
     if excluded is None or "label" not in excluded:
         assert_scalar_attributes_equal(test, joints0, joints1, ["label"], mapping=mapping)
     dof_flat_attributes = [
-        "act_type_dof",
+        "dof_act_types",
         "q_j_min",
         "q_j_max",
         "dq_j_max",

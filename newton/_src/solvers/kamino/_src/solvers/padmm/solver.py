@@ -703,7 +703,7 @@ class PADMMSolver:
                 data.joints.lambda_f_j,
                 data.joints.lambda_tau_j,
                 data.joints.dq_j,
-                data.joints.inv_rho_a,
+                data.joints.inv_m_a,
                 data.joints.dq_b_a,
                 problem.data.P,
                 # Outputs:

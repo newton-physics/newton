@@ -79,7 +79,7 @@ class PIDControllerData:
 @wp.kernel
 def _reset_jointspace_pid_references(
     # Inputs
-    model_joints_act_type_dof: wp.array[wp.int32],
+    model_joints_dof_act_types: wp.array[wp.int32],
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_actuated_dofs_offset: wp.array[wp.int32],
     state_joints_q_j: wp.array[wp.float32],
@@ -104,8 +104,8 @@ def _reset_jointspace_pid_references(
         # Compute the DoF index in the global DoF vector
         dof_index = dofs_offset + dof
 
-        # Only proceed for force actuated DoFs
-        if model_joints_act_type_dof[dof_index] != JointActuationType.FORCE:
+        # Only proceed for force-actuated DoFs
+        if model_joints_dof_act_types[dof_index] != JointActuationType.FORCE:
             continue
 
         # Compute the actuator index in the controller vectors
@@ -124,7 +124,7 @@ def _reset_jointspace_pid_references(
 def _compute_jointspace_pid_control(
     # Inputs
     model_joints_wid: wp.array[wp.int32],
-    model_joints_act_type_dof: wp.array[wp.int32],
+    model_joints_dof_act_types: wp.array[wp.int32],
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_actuated_dofs_offset: wp.array[wp.int32],
     model_joints_tau_j_max: wp.array[wp.float32],
@@ -179,8 +179,8 @@ def _compute_jointspace_pid_control(
         # Compute the DoF index in the global DoF vector
         joint_dof_index = dofs_offset + dof
 
-        # Only proceed for force actuated DoFs
-        if model_joints_act_type_dof[joint_dof_index] != JointActuationType.FORCE:
+        # Only proceed for force-actuated DoFs
+        if model_joints_dof_act_types[joint_dof_index] != JointActuationType.FORCE:
             continue
 
         # Compute the actuator index in the controller vectors
@@ -247,7 +247,7 @@ def reset_jointspace_pid_references(
         dim=model.size.sum_of_num_joints,
         inputs=[
             # Inputs
-            model.joints.act_type_dof,
+            model.joints.dof_act_types,
             model.joints.dofs_offset,
             model.joints.actuated_dofs_offset,
             state.q_j,
@@ -278,7 +278,7 @@ def compute_jointspace_pid_control(
         inputs=[
             # Inputs
             model.joints.wid,
-            model.joints.act_type_dof,
+            model.joints.dof_act_types,
             model.joints.dofs_offset,
             model.joints.actuated_dofs_offset,
             model.joints.tau_j_max,

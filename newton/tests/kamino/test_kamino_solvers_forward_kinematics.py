@@ -71,7 +71,7 @@ def create_four_bar_tie_rod() -> ModelBuilderKamino:
         joint_copy = copy.deepcopy(joint)
         if joint.name == "link2_to_link3" or joint.name == "link3_to_link4":
             joint_copy.dof_type = JointDoFType.SPHERICAL
-            joint_copy.act_type_dof = [joint_copy.act_type] * joint_copy.dof_type.num_dofs
+            joint_copy.dof_act_types = [joint_copy.act_type] * joint_copy.dof_type.num_dofs
             for attribute in ("q_j_min", "q_j_max", "dq_j_max", "tau_j_max", "a_j", "b_j", "k_p_j", "k_d_j", "f_j"):
                 setattr(
                     joint_copy,
@@ -153,6 +153,7 @@ class PerDofActuationForwardKinematics(unittest.TestCase):
         builder = build_unary_universal_joint_test(limits=True, ground=False)
         builder.joint_target_mode[0] = newton.JointTargetMode.NONE
         builder.joint_target_mode[1] = newton.JointTargetMode.POSITION
+        builder.joint_target_ke[1] = 1.0
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         with self.assertRaisesRegex(ValueError, "all DoFs must be passive or all must be actuated"):
@@ -163,6 +164,8 @@ class PerDofActuationForwardKinematics(unittest.TestCase):
         builder = build_unary_universal_joint_test(limits=True, ground=False)
         builder.joint_target_mode[0] = newton.JointTargetMode.POSITION
         builder.joint_target_mode[1] = newton.JointTargetMode.VELOCITY
+        builder.joint_target_ke[0] = 1.0
+        builder.joint_target_kd[1] = 1.0
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         ForwardKinematicsSolver(model)

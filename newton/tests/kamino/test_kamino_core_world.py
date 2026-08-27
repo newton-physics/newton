@@ -107,7 +107,7 @@ class TestJointDescriptor(unittest.TestCase):
     def test_00_default_construction(self):
         joint = JointDescriptor(
             name="test_joint",
-            act_type_dof=[JointActuationType.PASSIVE] * JointDoFType.FREE.num_dofs,
+            dof_act_types=[JointActuationType.PASSIVE] * JointDoFType.FREE.num_dofs,
         )
         self.assertIsInstance(joint, JointDescriptor)
         msg.info(f"joint: {joint}")
@@ -156,7 +156,7 @@ class TestJointDescriptor(unittest.TestCase):
         joint = JointDescriptor(
             name="test_joint_revolute_dynamic",
             dof_type=JointDoFType.REVOLUTE,
-            act_type_dof=[JointActuationType.FORCE],
+            dof_act_types=[JointActuationType.FORCE],
             bid_B=0,
             bid_F=1,
             a_j=1.0,
@@ -444,7 +444,7 @@ class TestWorldDescriptor(unittest.TestCase):
         joint_0 = JointDescriptor(
             name="body_0_to_1",
             dof_type=JointDoFType.REVOLUTE,
-            act_type_dof=[JointActuationType.PASSIVE],
+            dof_act_types=[JointActuationType.PASSIVE],
             bid_B=body_0.bid,
             bid_F=body_1.bid,
         )
@@ -490,7 +490,7 @@ class TestWorldDescriptor(unittest.TestCase):
         joint_0 = JointDescriptor(
             name="body_0_to_1",
             dof_type=JointDoFType.REVOLUTE,
-            act_type_dof=[JointActuationType.PASSIVE],
+            dof_act_types=[JointActuationType.PASSIVE],
             bid_B=body_0.bid,
             bid_F=body_1.bid,
             a_j=1.0,
@@ -619,7 +619,7 @@ class TestWorldDescriptor(unittest.TestCase):
         joint_0 = JointDescriptor(
             name="body_0_to_1",
             dof_type=JointDoFType.REVOLUTE,
-            act_type_dof=[JointActuationType.PASSIVE],
+            dof_act_types=[JointActuationType.PASSIVE],
             bid_B=body_0.bid,
             bid_F=body_1.bid,
         )
@@ -630,7 +630,7 @@ class TestWorldDescriptor(unittest.TestCase):
         joint_1 = JointDescriptor(
             name="body_1_to_2",
             dof_type=JointDoFType.REVOLUTE,
-            act_type_dof=[JointActuationType.PASSIVE],
+            dof_act_types=[JointActuationType.PASSIVE],
             bid_F=body_2.bid,
         )
         world.add_joint(joint_1)

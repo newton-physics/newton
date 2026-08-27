@@ -1420,10 +1420,9 @@ class SolverKamino(SolverBase, CouplingInterface):
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
             raise RuntimeError(
-                f"Changing dynamic constraint topology for joint {joint} "
+                f"Changing joint dynamics allocation for joint {joint} "
                 f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
-                "Each dynamic row is selected per DoF by passive armature or damping, or by active implicit PD "
-                "without a finite effort limit. Moving, adding, or removing one of those rows requires recreation."
+                "This occurs when armature, damping, or unbounded implicit-PD gains cross zero on a DoF."
             )
 
         if limit_dof != sentinel:
@@ -1436,15 +1435,17 @@ class SolverKamino(SolverBase, CouplingInterface):
         if friction_joint != sentinel:
             joint = int(friction_joint)
             raise RuntimeError(
-                f"Changing joint friction row topology for joint {joint} "
-                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
+                f"Changing joint friction allocation for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "Enabling or disabling friction on a DoF requires recreation."
             )
 
         if effort_joint != sentinel:
             joint = int(effort_joint)
             raise RuntimeError(
-                f"Changing effort-limit row topology for joint {joint} "
-                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
+                f"Changing effort-limit allocation for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "Adding or removing bounded implicit PD on a DoF requires recreation."
             )
 
         if actuation_joint != sentinel:

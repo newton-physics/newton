@@ -358,7 +358,7 @@ def _add_joint_effort_diagonal_regularization_dense(
     model_info_joint_effort_cts_offset: wp.array[wp.int32],
     model_info_bounded_cts_group_offset: wp.array[wp.int32],
     model_info_num_friction_cts: wp.array[wp.int32],
-    model_joint_inv_rho_a: wp.array[wp.float32],
+    model_joint_inv_m_a: wp.array[wp.float32],
     delassus_dim: wp.array[wp.int32],
     delassus_mio: wp.array[wp.int32],
     # Outputs:
@@ -374,8 +374,8 @@ def _add_joint_effort_diagonal_regularization_dense(
     dmio = delassus_mio[wid]
     world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
     row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
-    inv_rho_a = model_joint_inv_rho_a[world_effort_cts_offset + tid]
-    delassus_D[dmio + ncts * row + row] += inv_rho_a
+    inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
+    delassus_D[dmio + ncts * row + row] += inv_m_a
 
 
 @wp.kernel
@@ -548,7 +548,7 @@ def _add_effort_regularization_sparse(
     model_info_bounded_cts_group_offset: wp.array[wp.int32],
     model_info_num_friction_cts: wp.array[wp.int32],
     row_start: wp.array[wp.int32],
-    model_joint_inv_rho_a: wp.array[wp.float32],
+    model_joint_inv_m_a: wp.array[wp.float32],
     # Outputs:
     combined_regularization: wp.array[wp.float32],
 ):
@@ -559,10 +559,10 @@ def _add_effort_regularization_sparse(
         return
 
     world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
-    inv_rho_a = model_joint_inv_rho_a[world_effort_cts_offset + tid]
+    inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
     row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
     vec_id = row_start[wid] + row
-    combined_regularization[vec_id] += inv_rho_a
+    combined_regularization[vec_id] += inv_m_a
 
 
 @wp.kernel
@@ -609,7 +609,7 @@ def _add_effort_regularization_preconditioned_sparse(
     model_info_joint_effort_cts_offset: wp.array[wp.int32],
     model_info_bounded_cts_group_offset: wp.array[wp.int32],
     model_info_num_friction_cts: wp.array[wp.int32],
-    model_joint_inv_rho_a: wp.array[wp.float32],
+    model_joint_inv_m_a: wp.array[wp.float32],
     row_start: wp.array[wp.int32],
     preconditioner: wp.array[wp.float32],
     # Outputs:
@@ -622,11 +622,11 @@ def _add_effort_regularization_preconditioned_sparse(
         return
 
     world_effort_cts_offset = model_info_joint_effort_cts_offset[wid]
-    inv_rho_a = model_joint_inv_rho_a[world_effort_cts_offset + tid]
+    inv_m_a = model_joint_inv_m_a[world_effort_cts_offset + tid]
     row = model_info_bounded_cts_group_offset[wid] + model_info_num_friction_cts[wid] + tid
     vec_id = row_start[wid] + row
     p = preconditioner[vec_id]
-    combined_regularization[vec_id] += p * p * inv_rho_a
+    combined_regularization[vec_id] += p * p * inv_m_a
 
 
 @wp.kernel
@@ -1139,7 +1139,7 @@ class DelassusOperator:
                     model.info.joint_effort_cts_offset,
                     model.info.joint_bounded_cts_group_offset,
                     model.info.num_joint_friction_cts,
-                    data.joints.inv_rho_a,
+                    data.joints.inv_m_a,
                     self._operator.info.dim,
                     self._operator.info.mio,
                     self._operator.mat,
@@ -1654,7 +1654,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                             self._model.info.joint_bounded_cts_group_offset,
                             self._model.info.num_joint_friction_cts,
                             self.bsm.row_start,
-                            self._data.joints.inv_rho_a,
+                            self._data.joints.inv_m_a,
                             self._combined_regularization,
                         ],
                         device=self._device,
@@ -1688,7 +1688,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                             self._model.info.joint_effort_cts_offset,
                             self._model.info.joint_bounded_cts_group_offset,
                             self._model.info.num_joint_friction_cts,
-                            self._data.joints.inv_rho_a,
+                            self._data.joints.inv_m_a,
                             self.bsm.row_start,
                             self._preconditioner,
                             self._combined_regularization,
@@ -1737,8 +1737,9 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         """Stores the diagonal of the Delassus matrix in the given array.
 
         Note:
-            This includes armature and effort compliance regularization, but excludes ``eta`` and
-            preconditioning.
+            Returns the diagonal of the pure Delassus matrix. Armature and
+            effort-compliance diagonal terms are included; proximal
+            regularization (``eta``) and preconditioning are not.
 
         Args:
             diag: Output vector for the Delassus matrix diagonal entries.
@@ -1796,7 +1797,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                     self._model.info.joint_bounded_cts_group_offset,
                     self._model.info.num_joint_friction_cts,
                     self.constraint_jacobian.row_start,
-                    self._data.joints.inv_rho_a,
+                    self._data.joints.inv_m_a,
                     diag,
                 ],
                 device=self._device,

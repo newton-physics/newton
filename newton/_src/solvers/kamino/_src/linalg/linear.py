@@ -1097,7 +1097,7 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
 
     def _refresh_combined_regularization(self, op) -> wp.array[wp.float32]:
         # Mirror BlockSparseMatrixFreeDelassusOperator.update()'s regularization step (eta plus
-        # armature inv_m_j and effort inv_rho_a) without assembling any Jacobian copy. Uses the raw
+        # armature inv_m_j and effort inv_m_a) without assembling any Jacobian copy. Uses the raw
         # Jacobian's row_start.
         if op._combined_regularization is None:
             return op._eta
@@ -1142,7 +1142,7 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
                         model.info.joint_bounded_cts_group_offset,
                         model.info.num_joint_friction_cts,
                         row_start,
-                        data.joints.inv_rho_a,
+                        data.joints.inv_m_a,
                         op._combined_regularization,
                     ],
                     device=device,
@@ -1171,7 +1171,7 @@ class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
                         model.info.joint_effort_cts_offset,
                         model.info.joint_bounded_cts_group_offset,
                         model.info.num_joint_friction_cts,
-                        data.joints.inv_rho_a,
+                        data.joints.inv_m_a,
                         row_start,
                         op._preconditioner,
                         op._combined_regularization,

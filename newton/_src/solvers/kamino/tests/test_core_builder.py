@@ -312,7 +312,7 @@ class TestModelBuilder(unittest.TestCase):
             bid_B=bid_0,
             bid_F=bid_1,
             dof_type=JointDoFType.PRISMATIC,
-            act_type_dof=[JointActuationType.FORCE],
+            dof_act_types=[JointActuationType.FORCE],
             a_j=1.0,
             b_j=1.0,
         )
@@ -362,7 +362,7 @@ class TestModelBuilder(unittest.TestCase):
             bid_B=bid_0,
             bid_F=bid_1,
             dof_type=JointDoFType.PRISMATIC,
-            act_type_dof=[JointActuationType.FORCE],
+            dof_act_types=[JointActuationType.FORCE],
         )
         builder.add_joint_descriptor(joint, world_index=wid)
 
@@ -386,7 +386,7 @@ class TestModelBuilder(unittest.TestCase):
             bid_B=-1,
             bid_F=bid,
             dof_type=JointDoFType.GIMBAL,
-            act_type_dof=[
+            dof_act_types=[
                 JointActuationType.POSITION,
                 JointActuationType.FORCE,
                 JointActuationType.FORCE,
@@ -402,7 +402,7 @@ class TestModelBuilder(unittest.TestCase):
         model = builder.finalize(self.default_device)
 
         np.testing.assert_array_equal(
-            model.joints.act_type_dof.numpy(),
+            model.joints.dof_act_types.numpy(),
             [
                 JointActuationType.POSITION,
                 JointActuationType.FORCE,
@@ -410,6 +410,37 @@ class TestModelBuilder(unittest.TestCase):
             ],
         )
         self.assertEqual(joint.act_type, JointActuationType.POSITION)
+
+    def test_reject_implicit_pd_actuation_without_gains(self):
+        """Reject implicit-PD modes whose required gains are all zero."""
+        for act_type, k_p_j, k_d_j in (
+            (JointActuationType.VELOCITY, 1.0, 0.0),
+            (JointActuationType.POSITION, 0.0, 0.0),
+            (JointActuationType.POSITION_VELOCITY, 0.0, 0.0),
+            (JointActuationType.POSITION_VELOCITY_FORCE, 0.0, 0.0),
+        ):
+            with self.subTest(act_type=act_type):
+                with self.assertRaisesRegex(ValueError, "requires a non-zero gain"):
+                    JointDescriptor(
+                        name="test_joint",
+                        dof_type=JointDoFType.PRISMATIC,
+                        dof_act_types=[act_type],
+                        k_p_j=k_p_j,
+                        k_d_j=k_d_j,
+                    )
+
+    def test_allow_unused_implicit_pd_gains(self):
+        """Allow gains that are unused by passive or force-actuated DoFs."""
+        for act_type in (JointActuationType.PASSIVE, JointActuationType.FORCE):
+            with self.subTest(act_type=act_type):
+                joint = JointDescriptor(
+                    name="test_joint",
+                    dof_type=JointDoFType.PRISMATIC,
+                    dof_act_types=[act_type],
+                    k_p_j=1.0,
+                    k_d_j=1.0,
+                )
+                self.assertEqual(joint.dof_act_types, [act_type])
 
     def test_08_add_invalid_joint(self):
         builder = ModelBuilderKamino()
@@ -419,7 +450,7 @@ class TestModelBuilder(unittest.TestCase):
         joint = JointDescriptor(
             name="test_joint",
             dof_type=JointDoFType.PRISMATIC,
-            act_type_dof=[JointActuationType.FORCE],
+            dof_act_types=[JointActuationType.FORCE],
         )
         # Attempt to add a joint without specifying bodies and expect an error
         self.assertRaises(ValueError, builder.add_joint_descriptor, joint, world_index=wid)

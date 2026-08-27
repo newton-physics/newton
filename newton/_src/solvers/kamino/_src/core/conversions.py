@@ -24,10 +24,11 @@ from .geometry import GeometriesModel
 from .joints import (
     JOINT_QMAX,
     JOINT_QMIN,
-    JointActuationPath,
+    DofActuationPath,
     JointActuationType,
     JointDoFType,
     JointsModel,
+    _validate_implicit_pd_gains,
     has_dynamic_cts_wp,
     has_effort_cts_wp,
     has_friction_cts_wp,
@@ -230,6 +231,9 @@ def validate_joint_dof_updates_kernel(
         for axis in range(dof_end - dof_start):
             dof = dof_start + axis
             act_type = JointActuationType.from_newton_wp(joint_target_mode[dof])
+            if act_type < 0:
+                wp.atomic_min(violations, StructuralUpdateViolation.INVALID_TARGET_MODE, tid)
+                return
             dynamic_required = has_dynamic_cts_wp(
                 act_type,
                 joint_target_ke[dof],
@@ -379,7 +383,7 @@ def validate_body_inertial_updates_kernel(
 def update_joint_actuation_kernel(
     # Inputs:
     joint_qd_start: wp.array[wp.int32],
-    act_type_dof: wp.array[wp.int32],
+    dof_act_types: wp.array[wp.int32],
     # Outputs:
     act_type: wp.array[wp.int32],
 ):
@@ -388,7 +392,7 @@ def update_joint_actuation_kernel(
     act_type[joint] = JointActuationType.aggregate_wp(
         joint_qd_start[joint],
         joint_qd_start[joint + 1],
-        act_type_dof,
+        dof_act_types,
     )
 
 
@@ -397,11 +401,11 @@ def update_joint_dof_actuation_kernel(
     # Inputs:
     joint_target_mode: wp.array[wp.int32],
     # Outputs:
-    act_type_dof: wp.array[wp.int32],
+    dof_act_types: wp.array[wp.int32],
 ):
     """Update each DoF's Kamino actuation type from its Newton target mode."""
     dof = wp.tid()
-    act_type_dof[dof] = JointActuationType.from_newton_wp(joint_target_mode[dof])
+    dof_act_types[dof] = JointActuationType.from_newton_wp(joint_target_mode[dof])
 
 
 @wp.kernel
@@ -461,8 +465,8 @@ def joint_conversion_kernel(
     joint_jid: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
     joint_act_type: wp.array[wp.int32],
-    joint_act_type_dof: wp.array[wp.int32],
-    joint_actuation_path_dof: wp.array[wp.int32],
+    joint_dof_act_types: wp.array[wp.int32],
+    joint_dof_act_paths: wp.array[wp.int32],
     joint_num_coords: wp.array[wp.int32],
     joint_num_dofs: wp.array[wp.int32],
     joint_num_bilateral_cts: wp.array[wp.int32],
@@ -514,19 +518,19 @@ def joint_conversion_kernel(
     num_effort_cts_j = int(0)
     for axis in range(qd_count_j):
         dof = dofs_start_j + axis
-        act_type_dof = JointActuationType.from_newton_wp(model_joint_target_mode[dof])
-        assert act_type_dof >= 0, "Joint actuation type must be valid"
-        joint_act_type_dof[dof] = act_type_dof
-        act_type_j = max(act_type_j, act_type_dof)
+        dof_act_types = JointActuationType.from_newton_wp(model_joint_target_mode[dof])
+        assert dof_act_types >= 0, "Joint actuation type must be valid"
+        joint_dof_act_types[dof] = dof_act_types
+        act_type_j = max(act_type_j, dof_act_types)
 
         effort = has_effort_cts_wp(
-            act_type_dof,
+            dof_act_types,
             model_joint_target_ke[dof],
             model_joint_target_kd[dof],
             model_joint_effort_limit[dof],
         )
         dynamic = has_dynamic_cts_wp(
-            act_type_dof,
+            dof_act_types,
             model_joint_target_ke[dof],
             model_joint_target_kd[dof],
             model_joint_effort_limit[dof],
@@ -540,11 +544,11 @@ def joint_conversion_kernel(
             num_friction_cts_j += 1
         if effort:
             num_effort_cts_j += 1
-            joint_actuation_path_dof[dof] = JointActuationPath.EFFORT_CTS
+            joint_dof_act_paths[dof] = DofActuationPath.EFFORT_CTS
         elif dynamic:
-            joint_actuation_path_dof[dof] = JointActuationPath.DYNAMIC_CTS
+            joint_dof_act_paths[dof] = DofActuationPath.DYNAMIC_CTS
         else:
-            joint_actuation_path_dof[dof] = JointActuationPath.BODY_WRENCHES
+            joint_dof_act_paths[dof] = DofActuationPath.BODY_WRENCHES
 
     joint_act_type[joint_id] = act_type_j
     joint_num_dynamic_cts[joint_id] = num_dynamic_cts_j
@@ -1190,7 +1194,7 @@ def convert_model_joint_actuation(model: Model, joints: JointsModel) -> None:
                 # Inputs:
                 model.joint_target_mode,
                 # Outputs:
-                joints.act_type_dof,
+                joints.dof_act_types,
             ],
             device=model.device,
         )
@@ -1200,7 +1204,7 @@ def convert_model_joint_actuation(model: Model, joints: JointsModel) -> None:
         inputs=[
             # Inputs:
             model.joint_qd_start,
-            joints.act_type_dof,
+            joints.dof_act_types,
             # Outputs:
             joints.act_type,
         ],
@@ -1498,6 +1502,16 @@ def _warn_ignored_free_joint_friction(
             msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
 
 
+def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
+    """Raises if a Newton joint's selected implicit-PD mode has no effective gain."""
+    target_mode = model.joint_target_mode.numpy()
+    k_p = model.joint_target_ke.numpy()
+    k_d = model.joint_target_kd.numpy()
+    for dof in range(model.joint_dof_count):
+        act_type = JointActuationType.from_newton(target_mode[dof])
+        _validate_implicit_pd_gains(act_type, k_p[dof], k_d[dof], label=f"DoF={dof}")
+
+
 def convert_joints(
     model: Model | ModelView,
     model_size: SizeKamino,
@@ -1517,6 +1531,8 @@ def convert_joints(
     Returns:
         Fully converted joints model in Kamino's format.
     """
+    _validate_model_joint_pd_gains(model)
+
     # Compute the number of joints per world
     joint_world_start_np = model.joint_world_start.numpy()
     num_joints_np = joint_world_start_np[1 : model.world_count + 1] - joint_world_start_np[: model.world_count]
@@ -1526,8 +1542,8 @@ def convert_joints(
         joint_jid = wp.empty(shape=(model.joint_count,), dtype=wp.int32)
         joint_dof_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_act_type = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
-        joint_act_type_dof = wp.zeros(shape=(model.joint_dof_count,), dtype=wp.int32)
-        joint_actuation_path_dof = wp.zeros(shape=(model.joint_dof_count,), dtype=wp.int32)
+        joint_dof_act_types = wp.zeros(shape=(model.joint_dof_count,), dtype=wp.int32)
+        joint_dof_act_paths = wp.zeros(shape=(model.joint_dof_count,), dtype=wp.int32)
         joint_num_coords = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_num_dofs = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
         joint_num_bilateral_cts = wp.zeros(shape=(model.joint_count,), dtype=wp.int32)
@@ -1541,6 +1557,10 @@ def convert_joints(
         joint_X_B = wp.empty(shape=(model.joint_count,), dtype=wp.mat33f)
         joint_X_F = wp.empty(shape=(model.joint_count,), dtype=wp.mat33f)
 
+    # First classify each DoF and count its joint dynamics, friction, and
+    # effort-limit constraints. The indexing pass then needs those counts to
+    # prefix-sum the world-local offsets; they cannot be inferred from joint
+    # type alone because they depend on per-DoF actuation and parameters.
     wp.launch(
         kernel=joint_conversion_kernel,
         dim=model.joint_count,
@@ -1566,8 +1586,8 @@ def convert_joints(
             joint_jid,
             joint_dof_type,
             joint_act_type,
-            joint_act_type_dof,
-            joint_actuation_path_dof,
+            joint_dof_act_types,
+            joint_dof_act_paths,
             joint_num_coords,
             joint_num_dofs,
             joint_num_bilateral_cts,
@@ -1972,8 +1992,8 @@ def convert_joints(
         jid=joint_jid,  # TODO: Remove
         dof_type=joint_dof_type,
         act_type=joint_act_type,
-        act_type_dof=joint_act_type_dof,
-        actuation_path_dof=joint_actuation_path_dof,
+        dof_act_types=joint_dof_act_types,
+        dof_act_paths=joint_dof_act_paths,
         fk_act_flag=model.fk_actuation_flag if hasattr(model, "fk_actuation_flag") else None,
         bid_B=model.joint_parent,
         bid_F=model.joint_child,

@@ -18,7 +18,7 @@ from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_orig
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.conversions import convert_target_coords_to_target_dofs
-from newton._src.solvers.kamino._src.core.joints import JOINT_TAUMAX, JointActuationPath, JointActuationType
+from newton._src.solvers.kamino._src.core.joints import JOINT_TAUMAX, DofActuationPath, JointActuationType
 from newton._src.solvers.kamino._src.core.materials import MaterialDescriptor
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
@@ -1392,7 +1392,7 @@ class TestModelConversions(unittest.TestCase):
         np.testing.assert_array_equal(kamino.joints.effort_cts_axis.numpy(), [1])
         np.testing.assert_array_equal(kamino.joints.friction_cts_axis.numpy(), [2])
         np.testing.assert_array_equal(
-            kamino.joints.act_type_dof.numpy(),
+            kamino.joints.dof_act_types.numpy(),
             [
                 JointActuationType.PASSIVE,
                 JointActuationType.POSITION,
@@ -1400,11 +1400,11 @@ class TestModelConversions(unittest.TestCase):
             ],
         )
         np.testing.assert_array_equal(
-            kamino.joints.actuation_path_dof.numpy(),
+            kamino.joints.dof_act_paths.numpy(),
             [
-                JointActuationPath.DYNAMIC_CTS,
-                JointActuationPath.EFFORT_CTS,
-                JointActuationPath.BODY_WRENCHES,
+                DofActuationPath.DYNAMIC_CTS,
+                DofActuationPath.EFFORT_CTS,
+                DofActuationPath.BODY_WRENCHES,
             ],
         )
         self.assertEqual(kamino.size.sum_of_num_dynamic_joint_cts, 1)

@@ -90,7 +90,11 @@ wp.set_module_options({"enable_backward": False})
 
 class ForwardKinematicsSolver:
     """
-    Forward Kinematics solver class
+    Forward Kinematics solver class.
+
+    FK requires every joint to be either fully passive or fully actuated.
+    Dynamics supports per-DoF actuation, but mixed passive and actuated DoFs
+    within one joint are not yet supported by FK.
     """
 
     PreconditionerType = ForwardKinematicsPreconditionerType
@@ -214,13 +218,13 @@ class ForwardKinematicsSolver:
             )
         joints_act_type_prev = resolved_act_type.numpy()
         joint_dof_start = self.model.joints.dofs_offset.numpy()
-        joint_act_type_dof = self.model.joints.act_type_dof.numpy()
+        joint_dof_act_types = self.model.joints.dof_act_types.numpy()
         base_joint_ids_input = self.model.info.base_joint_index.numpy().tolist()
         base_joint_id_set = {joint_id for joint_id in base_joint_ids_input if joint_id >= 0}
         for joint in range(self.model.size.sum_of_num_joints):
             if joint in base_joint_id_set:
                 continue
-            dof_actuation = joint_act_type_dof[joint_dof_start[joint] : joint_dof_start[joint + 1]]
+            dof_actuation = joint_dof_act_types[joint_dof_start[joint] : joint_dof_start[joint + 1]]
             passive = dof_actuation == JointActuationType.PASSIVE
             if np.any(passive) and not np.all(passive):
                 raise ValueError(

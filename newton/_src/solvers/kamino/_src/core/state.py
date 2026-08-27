@@ -331,7 +331,7 @@ class StateKamino:
             lambda_f_j = wp.zeros(shape=(size.sum_of_num_friction_joint_cts,), dtype=wp.float32, device=device)
             state.joint_lambdas_f = lambda_f_j
 
-        # Retrieve or allocate multipliers for effort-limited actuator constraints
+        # Retrieve or allocate multipliers for effort-limit implicit-PD constraints
         if (
             hasattr(state, "joint_lambdas_tau")
             and state.joint_lambdas_tau is not None

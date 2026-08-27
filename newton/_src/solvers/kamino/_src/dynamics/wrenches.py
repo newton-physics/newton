@@ -10,7 +10,7 @@ from __future__ import annotations
 import warp as wp
 
 from ..core.data import DataKamino
-from ..core.joints import JointActuationPath
+from ..core.joints import DofActuationPath
 from ..core.model import ModelKamino
 from ..core.types import mat63f, vec6f
 from ..geometry.contacts import ContactsKamino
@@ -49,7 +49,7 @@ def _compute_joint_dof_body_wrenches_dense(
     model_joints_bid_B: wp.array[wp.int32],
     model_joints_bid_F: wp.array[wp.int32],
     model_joints_tau_j_max: wp.array[wp.float32],
-    model_joints_actuation_path_dof: wp.array[wp.int32],
+    model_joints_dof_act_paths: wp.array[wp.int32],
     data_joints_tau_j: wp.array[wp.float32],
     jacobian_dofs_offsets: wp.array[wp.int32],
     jacobian_dofs_data: wp.array[wp.float32],
@@ -89,7 +89,7 @@ def _compute_joint_dof_body_wrenches_dense(
     dio_F = 6 * (bid_F_j - bio)
     for j in range(d_j):
         vio_j = vio + j
-        if model_joints_actuation_path_dof[vio_j] != JointActuationPath.BODY_WRENCHES:
+        if model_joints_dof_act_paths[vio_j] != DofActuationPath.BODY_WRENCHES:
             continue
         mio_j = mio + nbd * j + dio_F
         tau_j = wp.clamp(data_joints_tau_j[vio_j], -model_joints_tau_j_max[vio_j], model_joints_tau_j_max[vio_j])
@@ -103,7 +103,7 @@ def _compute_joint_dof_body_wrenches_dense(
         dio_B = 6 * (bid_B_j - bio)
         for j in range(d_j):
             vio_j = vio + j
-            if model_joints_actuation_path_dof[vio_j] != JointActuationPath.BODY_WRENCHES:
+            if model_joints_dof_act_paths[vio_j] != DofActuationPath.BODY_WRENCHES:
                 continue
             mio_j = mio + nbd * j + dio_B
             tau_j = wp.clamp(data_joints_tau_j[vio_j], -model_joints_tau_j_max[vio_j], model_joints_tau_j_max[vio_j])
@@ -120,7 +120,7 @@ def _compute_joint_dof_body_wrenches_sparse(
     model_joints_bid_B: wp.array[wp.int32],
     model_joints_bid_F: wp.array[wp.int32],
     model_joints_tau_j_max: wp.array[wp.float32],
-    model_joints_actuation_path_dof: wp.array[wp.int32],
+    model_joints_dof_act_paths: wp.array[wp.int32],
     data_joints_tau_j: wp.array[wp.float32],
     jac_joint_nzb_offsets: wp.array[wp.int32],
     jac_nzb_values: wp.array[vec6f],
@@ -146,7 +146,7 @@ def _compute_joint_dof_body_wrenches_sparse(
     w_j_F = wp.spatial_vectorf(0.0)
     for j in range(d_j):
         vio_j = dio_j + j
-        if model_joints_actuation_path_dof[vio_j] != JointActuationPath.BODY_WRENCHES:
+        if model_joints_dof_act_paths[vio_j] != DofActuationPath.BODY_WRENCHES:
             continue
         jac_block = jac_nzb_values[jac_j_nzb_start + j]
         tau_j = wp.clamp(data_joints_tau_j[vio_j], -model_joints_tau_j_max[vio_j], model_joints_tau_j_max[vio_j])
@@ -158,7 +158,7 @@ def _compute_joint_dof_body_wrenches_sparse(
         w_j_B = wp.spatial_vectorf(0.0)
         for j in range(d_j):
             vio_j = dio_j + j
-            if model_joints_actuation_path_dof[vio_j] != JointActuationPath.BODY_WRENCHES:
+            if model_joints_dof_act_paths[vio_j] != DofActuationPath.BODY_WRENCHES:
                 continue
             jac_block = jac_nzb_values[jac_j_nzb_start + d_j + j]
             tau_j = wp.clamp(data_joints_tau_j[vio_j], -model_joints_tau_j_max[vio_j], model_joints_tau_j_max[vio_j])
@@ -718,7 +718,7 @@ def compute_joint_dof_body_wrenches_dense(
             model.joints.bid_B,
             model.joints.bid_F,
             model.joints.tau_j_max,
-            model.joints.actuation_path_dof,
+            model.joints.dof_act_paths,
             data.joints.tau_j,
             jacobians.data.J_dofs_offsets,
             jacobians.data.J_dofs_data,
@@ -756,7 +756,7 @@ def compute_joint_dof_body_wrenches_sparse(
             model.joints.bid_B,
             model.joints.bid_F,
             model.joints.tau_j_max,
-            model.joints.actuation_path_dof,
+            model.joints.dof_act_paths,
             data.joints.tau_j,
             jacobians._J_dofs_joint_nzb_offsets,
             jacobians._J_dofs.bsm.nzb_values,
@@ -833,7 +833,7 @@ def compute_constraint_body_wrenches_dense(
         )
 
     if model.size.sum_of_num_effort_joint_cts > 0:
-        # Joint-DoF wrenches own zeroing `w_a_i` and must run before this accumulation.
+        # `compute_joint_dof_body_wrenches` clears `w_a_i` before this accumulates into it.
         wp.launch(
             _compute_joint_effort_cts_body_wrenches_dense,
             dim=model.size.sum_of_num_joints,
@@ -960,8 +960,8 @@ def compute_constraint_body_wrenches_sparse(
         data.bodies.w_l_i.zero_()
         data.bodies.w_c_i.zero_()
 
-    # Then compute the body wrenches resulting from the current active constraints
-    # Joint-DoF wrenches own zeroing `w_a_i` and must run before this accumulation.
+    # Then compute the body wrenches resulting from the current active constraints.
+    # `compute_joint_dof_body_wrenches` clears `w_a_i` before this accumulates into it.
     wp.launch(
         _compute_cts_body_wrenches_sparse,
         dim=(model.size.num_worlds, jacobians._J_cts.bsm.max_of_num_nzb),

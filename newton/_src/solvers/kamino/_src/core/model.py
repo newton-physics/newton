@@ -226,7 +226,7 @@ class ModelKaminoInfo:
     """
 
     num_joint_effort_cts: wp.array[wp.int32] | None = None
-    """The number of effort-limited implicit-PD actuator constraint rows in each world."""
+    """The number of effort-limit implicit-PD constraint rows in each world."""
 
     max_limit_cts: wp.array[wp.int32] | None = None
     """
@@ -462,7 +462,7 @@ class ModelKaminoInfo:
 
     joint_effort_cts_group_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the effort-limited actuator constraint group within each world's constraint block.
+    The index offset of the effort-limit implicit-PD constraint group within each world's constraint block.
     Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
     Shape of ``(num_worlds,)``.
     """
@@ -663,7 +663,7 @@ class ModelKamino:
                 m_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 inv_m_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 dq_b_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
-                inv_rho_a=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
+                inv_m_a=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
                 dq_b_a=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
                 bound_a=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
                 # TODO: Should we make these optional and only include them when implicit joints are present?

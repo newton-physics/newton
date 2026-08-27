@@ -208,7 +208,7 @@ class ModelBuilderKamino:
 
     @property
     def num_effort_joint_cts(self) -> int:
-        """Returns the number of effort-limited implicit-PD actuator constraint rows contained in the model."""
+        """Returns the number of effort-limit implicit-PD constraint rows contained in the model."""
         return self._num_joint_effort_cts
 
     @property
@@ -457,9 +457,9 @@ class ModelBuilderKamino:
         if not isinstance(dof_type, JointDoFType):
             raise TypeError(f"Invalid DoF type: {dof_type}. Must be `JointDoFType`.")
         if isinstance(act_type, JointActuationType):
-            act_type_dof = [act_type] * dof_type.num_dofs
+            dof_act_types = [act_type] * dof_type.num_dofs
         elif isinstance(act_type, list):
-            act_type_dof = act_type
+            dof_act_types = act_type
         else:
             raise TypeError(f"Invalid actuation type: {act_type}. Must be `JointActuationType` or a list of them.")
 
@@ -470,7 +470,7 @@ class ModelBuilderKamino:
         joint = JointDescriptor(
             name=name if name is not None else f"joint_{self._num_joints}",
             uid=uid,
-            act_type_dof=act_type_dof,
+            dof_act_types=dof_act_types,
             dof_type=dof_type,
             bid_B=bid_B,
             bid_F=bid_F,
@@ -1034,7 +1034,7 @@ class ModelBuilderKamino:
         joints_jid = []
         joints_dof_type = []
         joints_act_type = []
-        joints_act_type_dof = []
+        joints_dof_act_types = []
         joints_fk_act_flag = []
         joints_q_j_0 = []
         joints_dq_j_0 = []
@@ -1061,7 +1061,7 @@ class ModelBuilderKamino:
         joints_nfriccts_j = []
         joints_neffortcts_j = []
         joints_ndyncts_j = []
-        joints_actuation_path_dof = []
+        joints_dof_act_paths = []
         joints_dynamic_cts_axis = []
         joints_friction_cts_axis = []
         joints_effort_cts_axis = []
@@ -1177,8 +1177,8 @@ class ModelBuilderKamino:
                 joints_jid.append(joint.jid)
                 joints_dof_type.append(joint.dof_type.value)
                 joints_act_type.append(joint.act_type.value)
-                joints_act_type_dof.extend(act_type.value for act_type in joint.act_type_dof)
-                joints_actuation_path_dof.extend(path.value for path in joint.actuation_path_dof())
+                joints_dof_act_types.extend(act_type.value for act_type in joint.dof_act_types)
+                joints_dof_act_paths.extend(path.value for path in joint.dof_act_paths())
                 joints_fk_act_flag.append(joint.fk_act_flag)
                 joints_B_r_Bj.append(joint.B_r_Bj)
                 joints_F_r_Fj.append(joint.F_r_Fj)
@@ -1468,8 +1468,8 @@ class ModelBuilderKamino:
                 jid=to_warp_int32_array(joints_jid),
                 dof_type=to_warp_int32_array(joints_dof_type),
                 act_type=to_warp_int32_array(joints_act_type),
-                act_type_dof=to_warp_int32_array(joints_act_type_dof),
-                actuation_path_dof=to_warp_int32_array(joints_actuation_path_dof),
+                dof_act_types=to_warp_int32_array(joints_dof_act_types),
+                dof_act_paths=to_warp_int32_array(joints_dof_act_paths),
                 fk_act_flag=to_warp_int32_array(joints_fk_act_flag)
                 if any(act_flag != -1 for act_flag in joints_fk_act_flag)
                 else None,

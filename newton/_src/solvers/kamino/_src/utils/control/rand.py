@@ -83,7 +83,7 @@ def _generate_random_control_inputs(
     controller_decimation: wp.array[wp.int32],
     controller_scale: wp.array[wp.float32],
     model_joints_wid: wp.array[wp.int32],
-    model_joints_act_type_dof: wp.array[wp.int32],
+    model_joints_dof_act_types: wp.array[wp.int32],
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_tau_j_max: wp.array[wp.float32],
     state_time_steps: wp.array[wp.int32],
@@ -122,7 +122,7 @@ def _generate_random_control_inputs(
     for dof in range(num_dofs_j):
         # Compute the DoF index in the global DoF vector
         joint_dof_index = dofs_start + dof
-        act_type = model_joints_act_type_dof[joint_dof_index]
+        act_type = model_joints_dof_act_types[joint_dof_index]
         if act_type != JointActuationType.FORCE and act_type != JointActuationType.POSITION_VELOCITY_FORCE:
             continue
 
@@ -327,7 +327,7 @@ class RandomJointController:
                 self._data.decimation,
                 self._data.scale,
                 self._model.joints.wid,
-                self._model.joints.act_type_dof,
+                self._model.joints.dof_act_types,
                 self._model.joints.dofs_offset,
                 self._model.joints.tau_j_max,
                 time.steps,

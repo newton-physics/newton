@@ -655,7 +655,7 @@ def _build_joint_effort_bounds(
     problem_bound_lower: wp.array[wp.float32],
     problem_bound_upper: wp.array[wp.float32],
 ):
-    """Scatter precomputed effort-limited actuator impulse bounds."""
+    """Scatter precomputed effort-limit implicit-PD impulse bounds."""
     jid = wp.tid()
     wid = model_joints_wid[jid]
     effort_start = model_joints_effort_cts_offset[jid]
@@ -1720,8 +1720,9 @@ class DualProblem:
         Primarily builds the free-velocity bias vector ``v_b`` (joint dynamics and
         kinematics, limits, contacts). Also fills auxiliary inequality data that is
         zeroed in :meth:`zero` and consumed later by the solver: joint-friction
-        impulse bounds (``bound_lower``, ``bound_upper``) and contact friction
-        coefficients (``mu``).
+        and effort-limit impulse bounds (``bound_lower``, ``bound_upper``),
+        effort-row velocity biases in ``v_b``, and contact friction coefficients
+        (``mu``).
         """
 
         if model.size.sum_of_num_joints > 0:

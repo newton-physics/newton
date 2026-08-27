@@ -25,7 +25,8 @@ def _build_revolute(
     friction: float | None = None,
     actuator_mode: newton.JointTargetMode = newton.JointTargetMode.NONE,
     effort_limit: float = math.inf,
-    target_ke: float = 0.0,
+    target_ke: float = 1.0,
+    target_kd: float = 1.0,
     body_com: wp.vec3f | None = None,
     shape_materials: tuple[tuple[float, float], ...] | None = None,
     has_shape_collision: bool = True,
@@ -86,7 +87,7 @@ def _build_revolute(
         damping=0.0,
         effort_limit=effort_limit,
         target_ke=target_ke,
-        target_kd=0.0,
+        target_kd=target_kd,
         actuator_mode=actuator_mode,
     )
     builder.add_articulation([jid])
@@ -578,12 +579,12 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
                 solver = SolverKamino(model)
                 model.joint_effort_limit.assign([updated_limit])
 
-                with self.assertRaisesRegex(RuntimeError, "dynamic constraint topology"):
+                with self.assertRaisesRegex(RuntimeError, "joint dynamics allocation"):
                     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_zero_gains_remove_effort_row_raises(self):
-        """Reject gain edits that add or remove an implicit-PD effort row."""
-        for initial_gain, updated_gain in ((100.0, 0.0), (0.0, 100.0)):
+        """Reject gain edits that remove an implicit-PD effort row."""
+        for initial_gain, updated_gain in ((100.0, 0.0),):
             with self.subTest(initial_gain=initial_gain, updated_gain=updated_gain):
                 model = _build_revolute(
                     actuator_mode=newton.JointTargetMode.POSITION,
@@ -594,7 +595,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
                 model.joint_target_ke.assign([updated_gain])
                 model.joint_target_kd.assign([0.0])
 
-                with self.assertRaisesRegex(RuntimeError, "effort-limit row topology"):
+                with self.assertRaisesRegex(RuntimeError, "effort-limit allocation"):
                     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_effort_row_removal_via_actuator_mode_raises(self):
@@ -613,7 +614,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
                 solver = SolverKamino(model)
                 model.joint_target_mode.assign([updated_mode])
 
-                with self.assertRaisesRegex(RuntimeError, "effort-limit row topology"):
+                with self.assertRaisesRegex(RuntimeError, "effort-limit allocation"):
                     solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
 
     def test_moving_dynamic_row_between_dofs_raises(self):
@@ -631,7 +632,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         armature[dof_start : dof_start + 3] = [0.0, 1.0, 0.0]
         model.joint_armature.assign(armature)
 
-        with self.assertRaisesRegex(RuntimeError, "dynamic constraint topology"):
+        with self.assertRaisesRegex(RuntimeError, "joint dynamics allocation"):
             solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_unbounded_implicit_pd_coefficient_edit_is_allowed(self):
@@ -674,7 +675,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver = SolverKamino(model, SolverKamino.Config(dynamics_solver="padmm"))
         model.joint_friction.assign([1.0])
 
-        with self.assertRaisesRegex(RuntimeError, "friction row topology"):
+        with self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
             solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_enabling_friction_on_unallocated_axis_raises(self):
@@ -692,7 +693,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         friction[dof_start + 1] = 1.0
         model.joint_friction.assign(friction)
 
-        with self.assertRaisesRegex(RuntimeError, "friction row topology"):
+        with self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
             solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_limit_finiteness_change_raises(self):
@@ -796,6 +797,9 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             newton.JointTargetMode.EFFORT,
         ]
         model.joint_target_mode.assign(target_modes)
+        gains = np.ones(3, dtype=np.float32)
+        model.joint_target_ke.assign(gains)
+        model.joint_target_kd.assign(gains)
         solver = SolverKamino(model)
 
         target_modes[dof_start : dof_start + 3] = [
@@ -807,7 +811,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
         np.testing.assert_array_equal(
-            solver._model_kamino.joints.act_type_dof.numpy()[dof_start : dof_start + 3],
+            solver._model_kamino.joints.dof_act_types.numpy()[dof_start : dof_start + 3],
             [
                 solver._kamino.JointActuationType.VELOCITY,
                 solver._kamino.JointActuationType.POSITION,

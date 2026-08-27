@@ -190,10 +190,10 @@ class SizeKamino:
     """The maximum number of Coulomb joint friction constraint rows in any world."""
 
     sum_of_num_effort_joint_cts: int = 0
-    """The total number of effort-limited implicit-PD actuator constraint rows across all worlds."""
+    """The total number of effort-limit implicit-PD constraint rows across all worlds."""
 
     max_of_num_effort_joint_cts: int = 0
-    """The maximum number of effort-limited implicit-PD actuator constraint rows in any world."""
+    """The maximum number of effort-limit implicit-PD constraint rows in any world."""
 
     sum_of_max_limits: int = 0
     """The total maximum number of limits allocated for the model across all worlds."""

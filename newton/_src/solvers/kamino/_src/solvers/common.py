@@ -93,7 +93,7 @@ def warmstart_joint_constraints(
     joint_lambda_f_j: wp.array[wp.float32],
     joint_lambda_tau_j: wp.array[wp.float32],
     joint_dq_j: wp.array[wp.float32],
-    joint_inv_rho_a: wp.array[wp.float32],
+    joint_inv_m_a: wp.array[wp.float32],
     joint_dq_b_a: wp.array[wp.float32],
     problem_P: wp.array[wp.float32],
     x_0: wp.array[wp.float32],
@@ -148,7 +148,7 @@ def warmstart_joint_constraints(
         axis = joint_effort_cts_axis[effort_index]
         velocity = (
             joint_dq_j[joint_dofs_start + axis]
-            + joint_inv_rho_a[effort_index] * lambda_impulse
+            + joint_inv_m_a[effort_index] * lambda_impulse
             - joint_dq_b_a[effort_index]
         )
         x_0[effort_cts_row_start_j + j] = lambda_j
