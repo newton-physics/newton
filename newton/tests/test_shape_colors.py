@@ -416,7 +416,7 @@ class TestShapeColors(unittest.TestCase):
             pass
 
         class FakeMeshInstancer:
-            def __init__(self, num_instances, mesh):
+            def __init__(self, num_instances, mesh, *, enable_cuda_interop=False):
                 self.num_instances = num_instances
                 self.mesh = mesh
                 self.hidden = False
@@ -433,6 +433,7 @@ class TestShapeColors(unittest.TestCase):
                 return bool(self.last_opacities is not None and np.any(self.last_opacities < 0.999))
 
         viewer = ViewerGL.__new__(ViewerGL)
+        viewer._enable_cuda_interop = ViewerGL.CudaInterop.NONE
         viewer._layers = {_DEFAULT_LAYER_ID: Layer(_DEFAULT_LAYER_ID)}
         viewer._active_layer_id = _DEFAULT_LAYER_ID
         viewer.objects = {"/mesh": FakeMesh()}

@@ -1374,6 +1374,8 @@ void main() {
             self._pending_instance_visibility.clear()
             self._pending_mesh_points.clear()
             self._pending_mesh_normals.clear()
+            self._pending_mesh_topology.clear()
+            self._pending_mesh_visibility.clear()
             self._pending_line_batches.clear()
             self._pending_point_batches.clear()
             self._gizmo_log = {}
@@ -1455,6 +1457,7 @@ void main() {
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
         opacity: float | None = None,
     ) -> None:
         """Log a mesh for rendering.
@@ -1474,6 +1477,7 @@ void main() {
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
         """
         name = self._qualify(name)
@@ -1492,6 +1496,7 @@ void main() {
                 color=color,
                 roughness=roughness,
                 metallic=metallic,
+                dynamic=dynamic,
             )
             self._mesh_prim_paths[name] = self._get_path(name)
         elif name in self._mesh_prim_paths:
@@ -1507,6 +1512,17 @@ void main() {
                     if isinstance(normals, wp.array)
                     else np.asarray(normals, dtype=np.float32)
                 )
+            elif dynamic:
+                self._pending_mesh_normals[name] = None
+            if dynamic:
+                indices_np = (
+                    indices.numpy().astype(np.int32)
+                    if isinstance(indices, wp.array)
+                    else np.asarray(indices, dtype=np.int32)
+                )
+                face_vertex_counts = np.full(len(indices_np) // 3, 3, dtype=np.int32)
+                self._pending_mesh_topology[name] = (face_vertex_counts, indices_np)
+            self._pending_mesh_visibility[name] = not hidden and len(pts) > 0
 
     @override
     def log_instances(
@@ -1767,7 +1783,12 @@ void main() {
         return ViewerRTX._make_laned_array_dltensor(np.asarray(points_np, dtype=np.float32), lanes=3)
 
     def _update_ovrtx_mesh_points(self):
-        if self._rtx is None or (not self._pending_mesh_points and not self._pending_mesh_normals):
+        if self._rtx is None or (
+            not self._pending_mesh_points
+            and not self._pending_mesh_normals
+            and not self._pending_mesh_topology
+            and not self._pending_mesh_visibility
+        ):
             return
         with wp.ScopedTimer("ViewerRTX::update_mesh_points", active=PROFILE_ENABLED, use_nvtx=True):
             for mesh_name, points_np in self._pending_mesh_points.items():
@@ -1784,11 +1805,27 @@ void main() {
                 prim_path = self._mesh_prim_paths.get(mesh_name)
                 if prim_path is None:
                     continue
-                dl = self._make_point3f_dltensor(normals_np)
+                normals_values = np.empty((0, 3), dtype=np.float32) if normals_np is None else normals_np
+                dl = self._make_point3f_dltensor(normals_values)
                 self._rtx.write_array_attribute(
                     prim_paths=[prim_path],
                     attribute_name="normals",
                     tensors=[dl],
+                )
+            for mesh_name, (face_vertex_counts, face_vertex_indices) in self._pending_mesh_topology.items():
+                prim_path = self._mesh_prim_paths.get(mesh_name)
+                if prim_path is None:
+                    continue
+                self._write_ovrtx_array_attribute(prim_path, "faceVertexCounts", face_vertex_counts)
+                self._write_ovrtx_array_attribute(prim_path, "faceVertexIndices", face_vertex_indices)
+            for mesh_name, visible in self._pending_mesh_visibility.items():
+                prim_path = self._mesh_prim_paths.get(mesh_name)
+                if prim_path is None:
+                    continue
+                self._rtx.write_attribute(
+                    prim_paths=[prim_path],
+                    attribute_name="visibility",
+                    tensor=["inherited" if visible else "invisible"],
                 )
 
     def _update_ovrtx_line_batches(self):
@@ -2103,6 +2140,8 @@ void main() {
         self._pending_instance_visibility = {}
         self._pending_mesh_points = {}
         self._pending_mesh_normals = {}
+        self._pending_mesh_topology = {}
+        self._pending_mesh_visibility = {}
         self._pending_line_batches = {}
         self._pending_point_batches = {}
 

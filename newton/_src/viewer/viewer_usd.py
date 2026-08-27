@@ -298,6 +298,7 @@ class ViewerUSD(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
         opacity: float | None = None,
     ):
         """
@@ -318,6 +319,7 @@ class ViewerUSD(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
         """
 
@@ -326,22 +328,26 @@ class ViewerUSD(ViewerBase):
         # Convert warp arrays to numpy
         points_np = points.numpy().astype(np.float32)
         indices_np = indices.numpy().astype(np.uint32)
+        face_vertex_counts = [3] * (len(indices_np) // 3)
 
         if name not in self._meshes:
             self._ensure_scopes_for_path(self.stage, self._get_path(name))
 
             mesh_prim = UsdGeom.Mesh.Define(self.stage, self._get_path(name))
 
-            # setup topology once (do not set every frame)
-            face_vertex_counts = [3] * (len(indices_np) // 3)
-            mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts)
-            mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np)
+            if not dynamic:
+                # Static mesh topology is authored once.
+                mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts)
+                mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np)
 
             # Store the prototype path
             self._meshes[name] = mesh_prim
 
         mesh_prim = self._meshes[name]
         mesh_prim.GetDoubleSidedAttr().Set(not backface_culling)
+        if dynamic:
+            mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts, self._frame_index)
+            mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np, self._frame_index)
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
@@ -358,6 +364,8 @@ class ViewerUSD(ViewerBase):
             normals_np = normals.numpy().astype(np.float32)
             mesh_prim.GetNormalsAttr().Set(normals_np, self._frame_index)
             mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+        elif dynamic:
+            mesh_prim.GetNormalsAttr().Set([], self._frame_index)
 
         # Set UVs if provided
         if uvs is not None:
