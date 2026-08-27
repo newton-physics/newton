@@ -562,7 +562,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(builder.body_count, 0)
 
     def test_cable_material_without_family_api_is_ignored(self):
-        """A family-less material remains ignored, including its Newton damping."""
+        """Verify that a material without ``PhysicsCurvesDeformableMaterialAPI`` and its Newton damping are ignored."""
         from pxr import Sdf, UsdShade
 
         stage = _deformable_stage(up_axis="y")
@@ -587,8 +587,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(builder.joint_target_ke[dof0], 1.0e5)  # add_rod default stretch stiffness
         self.assertEqual(builder.joint_target_kd[dof0], 0.0)
 
-    def test_material_attr_authored_on_geometry_warns(self):
-        """Verify that deformable material properties authored on geometry warn and are ignored."""
+    def test_geometry_authored_material_attrs_warn_on_standalone_import(self):
+        """Verify that standalone import warns about and ignores geometry-authored material attributes."""
         from pxr import Sdf
 
         stage = _deformable_stage(up_axis="y")
@@ -605,6 +605,25 @@ class TestUSDDeformableCable(unittest.TestCase):
         messages = [str(item.message) for item in caught]
         self.assertTrue(any("physics:curvesStretchStiffness" in message for message in messages))
         self.assertTrue(any("newton:curvesStretchDamping" in message for message in messages))
+
+    def test_geometry_authored_material_attrs_warn_on_welded_import(self):
+        """Verify that welded import warns about and ignores geometry-authored material attributes."""
+        from pxr import Sdf
+
+        stage = self._author_attached_cable_pair(gap=0.0)
+        prim = stage.GetPrimAtPath("/World/CableA")
+        prim.CreateAttribute("physics:curvesStretchStiffness", Sdf.ValueTypeNames.Float).Set(500.0)
+        prim.CreateAttribute("newton:curvesStretchDamping", Sdf.ValueTypeNames.Float).Set(50.0)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage, return_deformable_results=True)
+
+        messages = [str(item.message) for item in caught]
+        self.assertTrue(any("physics:curvesStretchStiffness" in message for message in messages))
+        self.assertTrue(any("newton:curvesStretchDamping" in message for message in messages))
+        self.assertIn("graph_component", result["path_cable_attrs"]["/World/CableA"])
 
     def test_cable_resolved_density_reports_default_when_unauthored(self):
         """resolved_density reports the density actually used (the builder default), not None."""

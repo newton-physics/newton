@@ -161,7 +161,12 @@ def _warn_cable_rest_shape_effect(path: str) -> None:
 
 
 def _warn_geometry_authored_newton_curve_damping_attrs(prim, path: str) -> None:
-    """Warn for Newton curve damping attributes misplaced on curve geometry."""
+    """Warn for Newton curve damping attributes misplaced on curve geometry.
+
+    Args:
+        prim: Curve geometry prim to inspect.
+        path: Prim path to use in diagnostics.
+    """
     for name in _NEWTON_CURVE_DAMPING_ATTRS:
         attr = prim.GetAttribute(f"newton:{name}")
         if attr and attr.HasAuthoredValue():
@@ -233,20 +238,16 @@ def _cable_radius_from_material(material: dict[str, float] | None, linear_unit: 
 
 
 def _resolve_cable_structural_stiffnesses(
-    material: dict[str, float] | None, radius: float, linear_unit: float
-) -> tuple[float | None, float | None, float | None, float | None] | None:
+    material: dict[str, float], radius: float, linear_unit: float
+) -> tuple[float | None, float | None, float | None, float | None]:
     """Resolve material-level stretch, shear, bend, and twist structural stiffnesses.
 
     Per mode, an authored ``physics:curves*Stiffness`` wins, then the deprecated unprefixed
     modulus times its cross-section factor, then the AOUSD derivation from ``E`` and ``nu``.
     A material authoring *only* deprecated attributes keeps its former behavior instead: it
     converts what it authored, inherits shear from stretch and twist from bend, and leaves an
-    unresolved mode ``None`` so that rod-builder default stands. Returns ``None`` when no curve
-    material applies, which leaves every rod-builder default.
+    unresolved mode ``None`` so that the rod-builder default stands.
     """
-    if material is None:
-        return None
-
     area = math.pi * radius**2
     area_moment = 0.25 * math.pi * radius**4
     polar_moment = 0.5 * math.pi * radius**4
@@ -288,11 +289,13 @@ def _resolve_cable_structural_stiffnesses(
 
 
 def _resolve_cable_structural_dampings(
-    material: dict[str, float] | None,
+    material: dict[str, float],
 ) -> tuple[float | None, float | None, float | None, float | None]:
-    """Resolve independently authored Newton stretch, shear, bend, and twist structural damping."""
-    if material is None:
-        return None, None, None, None
+    """Resolve independently authored Newton stretch, shear, bend, and twist structural damping.
+
+    Args:
+        material: Validated curve-material values.
+    """
     return tuple(material.get(name) for name in _NEWTON_CURVE_DAMPING_ATTRS)
 
 
@@ -311,10 +314,19 @@ def _apply_local_rod_material_gains(
     ``segment_rest_lengths[i]`` is the rest length of the segment body ``bodies[i]``. A curve
     material resolves every current AOUSD stiffness independently. Newton damping is independently
     optional per mode, so an unauthored mode leaves the rod-builder default unchanged.
+
+    Args:
+        builder: Model builder containing the imported rod joints.
+        bodies: Segment body indices corresponding to ``segment_rest_lengths``.
+        joints: Rod joint indices to update.
+        segment_rest_lengths: Rest length of each segment body.
+        material: Validated curve-material values, or ``None`` when no supported material applies.
+        radius: Cable radius in stage distance units.
+        linear_unit: Meters per stage distance unit.
     """
-    structural_stiffnesses = _resolve_cable_structural_stiffnesses(material, radius, linear_unit)
-    if structural_stiffnesses is None:
+    if material is None:
         return
+    structural_stiffnesses = _resolve_cable_structural_stiffnesses(material, radius, linear_unit)
     structural_dampings = _resolve_cable_structural_dampings(material)
     if not any(value is not None for value in (*structural_stiffnesses, *structural_dampings)):
         return
@@ -602,7 +614,10 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
 
         rep = curve_recs[comp_paths[0]]
         for key in comp_paths:
-            _warn_legacy_curve_material(key, curve_recs[key].material)
+            rec = curve_recs[key]
+            _warn_geometry_authored_material_attrs(rec.prim, key, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
+            _warn_geometry_authored_newton_curve_damping_attrs(rec.prim, key)
+            _warn_legacy_curve_material(key, rec.material)
         if not _cable_thickness_is_authored(rep.material):
             _warn_default_cable_radius(comp_paths[0], rep.radius, linear_unit)
         # A welded graph necessarily flattens its curves to one representative radius, density,

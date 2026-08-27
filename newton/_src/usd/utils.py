@@ -2154,6 +2154,14 @@ def _read_deformable_material(
     ``(-1, 0.5]``. The ``-inf`` simulator-default sentinel used by stiffness, damping, Young's
     modulus, and thickness is silently dropped. Other out-of-range or non-finite values are dropped
     with a warning.
+
+    Args:
+        prim: Prim whose bound physics material is resolved.
+        read_attr: Callable that reads an attribute from the bound material.
+        api_schema: Applied material API required on the bound material.
+        attr_names: Attribute names to read and validate.
+        attr_namespace: Namespace used when reporting invalid attributes.
+        material_prim: Previously resolved bound material, if available.
     """
     if material_prim is None:
         material_prim = _find_physics_material_prim(prim)
@@ -2232,6 +2240,10 @@ def _get_curve_deformable_material(
     applied. Returns ``None`` if the bound material does not declare
     ``PhysicsCurvesDeformableMaterialAPI``. See :func:`_read_deformable_material` for
     value-validation rules.
+
+    Args:
+        prim: Curve prim whose bound physics material is read.
+        read_attr: Callable that reads an AOUSD attribute from the bound material.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None:
