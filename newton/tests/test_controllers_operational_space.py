@@ -1097,10 +1097,35 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         current_pose = wp.transform_identity()
         desired_pose = wp.transform(wp.vec3(0.1, -0.05, 0.02), wp.quat_identity())
         zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        rng = np.random.default_rng(2)
-        jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
-        random_matrix = rng.standard_normal((7, 7)).astype(np.float32)
-        mass_matrix = (random_matrix @ random_matrix.T + 7 * np.eye(7, dtype=np.float32)).reshape(1, 7, 7)
+        # A fixed, well-conditioned Jacobian and a fixed, genuinely coupled SPD mass matrix
+        # (A @ A^T + 5*I for a fixed, non-diagonal A) -- rather than a random Gram matrix, whose
+        # poor conditioning would amplify the float32 rounding difference between this kernel's
+        # Cholesky-based inverse and numpy's LU-based one enough to need a much looser tolerance
+        # below to avoid test flakiness.
+        jacobian = np.array(
+            [
+                [2, 0, 0, 1, 0, 1, 0],
+                [0, 3, 0, 0, 1, 0, 1],
+                [0, 0, 1, 2, 1, 0, 0],
+                [1, 1, 0, 0, 0, 3, 1],
+                [0, 1, 2, 1, 0, 0, 1],
+                [1, 0, 1, 0, 2, 1, 0],
+            ],
+            dtype=np.float32,
+        ).reshape(1, 6, 7)
+        mass_matrix_seed = np.array(
+            [
+                [1, 0, 1, 0, 0, 1, 0],
+                [0, 1, 0, 1, 0, 0, 1],
+                [1, 0, 1, 0, 1, 0, 0],
+                [0, 1, 0, 2, 0, 1, 0],
+                [0, 0, 1, 0, 1, 0, 1],
+                [1, 1, 0, 1, 0, 2, 0],
+                [0, 0, 0, 0, 1, 0, 1],
+            ],
+            dtype=np.float32,
+        )
+        mass_matrix = (mass_matrix_seed @ mass_matrix_seed.T + 5.0 * np.eye(7, dtype=np.float32)).reshape(1, 7, 7)
 
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
@@ -1117,7 +1142,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         lambda_inv = jacobian[0] @ mass_matrix_inv @ jacobian[0].T
         operational_space_mass_matrix = np.linalg.inv(lambda_inv)
         expected = jacobian[0].T @ (operational_space_mass_matrix @ (kp * pose_error))
-        np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
+        np.testing.assert_allclose(outs.joint_f.numpy(), expected, rtol=1e-4, atol=1e-4)
 
     def test_rejects_under_six_dof_with_inertia_decoupling(self):
         """Fewer than 6 controlled DOFs with inertial decoupling raises at construction, not silently at runtime."""
