@@ -15,7 +15,7 @@ Two complementary tests share this file as the canonical friction benchmark:
   * ``test_friction_stopping_distance`` — sliding boxes on flat ground decelerate
     under kinetic Coulomb friction and stop at d = v0^2 / (2 mu g). Provides
     the precise kinetic-friction oracle for Coulomb-cone solvers and a tight
-    empirical regression envelope for VBD's penalty-friction model.
+    empirical regression envelope for compliant-ALM VBD contact friction.
 """
 
 import math
@@ -49,7 +49,8 @@ RAMP_HZ = 0.05
 BOX_HX = 0.2
 BOX_HY = 0.2
 BOX_HZ = 0.05
-BOX_GAP = 0.001  # initial offset above the ramp surface to avoid penalty pop-out
+BOX_GAP = 0.001  # initial offset above the ramp surface to avoid initial contact transient
+VBD_STOPPING_CONTACT_KE = 1.0e6  # Near-rigid normal for VBD kinetic-friction oracle
 
 SIM_DT = 1.0 / 60.0
 SIM_SUBSTEPS = 30
@@ -57,13 +58,12 @@ SETTLE_FRAMES = 30  # 0.5 s, lets the contact-stiffness transient decay
 MEASURE_FRAMES = 15  # 0.25 s window for sliding cells to accumulate a measurable displacement
 VIEWER_FRAMES = 600
 
-# Sweeps. Non-VBD solvers cover a wide mu range; VBD's penalty friction
-# saturates above mu ~ 0.30, so it gets a narrower sweep with looser
-# thresholds (see _VBD_THRESHOLDS). Angles are capped at 40 deg because
-# constraint-solver friction enforcement on a steep slope from rest is
-# noisy near 50 deg. mu=1.00 therefore exercises only the static side.
-# Quantitative kinetic-friction validation for Coulomb-cone solvers lives in
-# test_friction_stopping_distance, which is unaffected by these caps.
+# Sweeps. Non-VBD solvers cover a wide mu range. VBD uses a denser low-mu
+# sweep around the static/sliding transition, where finite-step errors are
+# easiest to expose (see _VBD_THRESHOLDS). Higher-mu kinetic accuracy is
+# covered by test_friction_stopping_distance. Angles are capped at 40 deg
+# because constraint-solver friction enforcement on a steep slope from rest
+# is noisy near 50 deg. mu=1.00 therefore exercises only the static side.
 _DEFAULT_MUS = (0.10, 0.30, 0.50, 0.70, 1.00)
 _DEFAULT_ANGLES_DEG = (3.0, 10.0, 20.0, 30.0, 40.0)
 _VBD_MUS = (0.10, 0.15, 0.20, 0.25, 0.30)
@@ -73,8 +73,7 @@ _VBD_ANGLES_DEG = (5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0)
 # Thresholds. Below-crit cells: |v| < v_rest AND post-settle disp < eps_pos.
 # Above-crit cells: post-settle disp >= min_slide (a sanity bound — the precise
 # kinetic-friction oracle is in test_friction_stopping_distance). VBD gets a
-# wider deadband and looser static thresholds because AVBD's penalty friction
-# is fuzzy near the static/kinetic boundary.
+# wider deadband and looser static thresholds near the static/kinetic boundary.
 class _Thresholds(NamedTuple):
     margin_deg: float
     v_rest: float
@@ -83,8 +82,8 @@ class _Thresholds(NamedTuple):
 
 
 _DEFAULT_THRESHOLDS = _Thresholds(margin_deg=2.0, v_rest=0.10, eps_pos=0.02, min_slide=0.02)
-# VBD's min_slide is loose: AVBD penalty-friction creeps borderline cells a few mm
-# in 0.25 s rather than sliding fully.
+# VBD's min_slide is loose: finite-step / finite-iteration contact error can
+# creep borderline cells a few mm in 0.25 s rather than sliding fully.
 _VBD_THRESHOLDS = _Thresholds(margin_deg=5.0, v_rest=0.12, eps_pos=0.10, min_slide=0.005)
 
 # --- Stopping-distance config ---
@@ -118,16 +117,16 @@ def build_friction_grid(device, mus, angles_deg, contact_kf=0.0):
 
     box_ids = []
     for row, mu in enumerate(mus):
-        cfg = newton.ModelBuilder.ShapeConfig()
-        cfg.mu = mu
-        cfg.ke = 1.0e5
-        cfg.kd = 1.0e3
-        cfg.kf = contact_kf
-        cfg.gap = 0.0
-        cfg.color = _ROW_COLORS[row % len(_ROW_COLORS)]
-
         row_box_ids = []
         for col, angle_deg in enumerate(angles_deg):
+            cfg = newton.ModelBuilder.ShapeConfig(collision_group=col + len(mus) * row + 1)
+            cfg.mu = mu
+            cfg.ke = 1.0e5
+            cfg.kd = 1.0e3
+            cfg.kf = contact_kf
+            cfg.gap = 0.0
+            cfg.color = _ROW_COLORS[row % len(_ROW_COLORS)]
+
             angle = math.radians(angle_deg)
             ramp_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(angle))
             ramp_center = wp.vec3(float(col * COL_PITCH), float(row * ROW_PITCH), float(GRID_Z))
@@ -153,7 +152,11 @@ def build_friction_grid(device, mus, angles_deg, contact_kf=0.0):
         box_ids.append(row_box_ids)
 
     builder.color()  # required for VBD
-    return builder.finalize(device=device), box_ids
+    model = builder.finalize(device=device)
+    # Set conservative limit on number of contacts to avoid unnecessary allocations and work
+    total_boxes = sum(len(row) for row in box_ids)
+    model.rigid_contact_max = 8 * total_boxes
+    return model, box_ids
 
 
 def simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames):
@@ -220,7 +223,7 @@ def test_friction_ramp(test, device, solver_fn, mus, angles_deg, thresholds, nat
     assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box_ids, thresholds)
 
 
-def build_stopping_distance_scene(device):
+def build_stopping_distance_scene(device, contact_ke=1.0e5):
     """Boxes on per-box static ground patches with matching mu.
 
     Newton averages mu across the two contact shapes, so a shared ground would
@@ -233,9 +236,9 @@ def build_stopping_distance_scene(device):
 
     box_ids = []
     for i, mu in enumerate(STOPPING_MUS):
-        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg = newton.ModelBuilder.ShapeConfig(collision_group=i + 1)
         cfg.mu = mu
-        cfg.ke = 1.0e5
+        cfg.ke = contact_ke
         cfg.kd = 0.0
         cfg.kf = 0.0
         cfg.gap = 0.0
@@ -267,10 +270,15 @@ def build_stopping_distance_scene(device):
         box_ids.append(box_id)
 
     builder.color()  # required for VBD
-    return builder.finalize(device=device), box_ids
+    model = builder.finalize(device=device)
+    # Set conservative limit on number of contacts to avoid unnecessary allocations and work
+    model.rigid_contact_max = 8 * len(box_ids)
+    return model, box_ids
 
 
-def test_friction_stopping_distance(test, device, solver_fn, rel_tol, rest_speed_max, native_contacts=False):
+def test_friction_stopping_distance(
+    test, device, solver_fn, rel_tol, rest_speed_max, native_contacts=False, contact_ke=1.0e5
+):
     """Verify a sliding box stops at d = v0^2 / (2 mu g).
 
     Three boxes at mu in STOPPING_MUS settle on matching ground patches, then
@@ -279,7 +287,7 @@ def test_friction_stopping_distance(test, device, solver_fn, rel_tol, rest_speed
     distance against the analytical value and check average planar motion over
     a short trailing rest window.
     """
-    model, box_ids = build_stopping_distance_scene(device)
+    model, box_ids = build_stopping_distance_scene(device, contact_ke=contact_ke)
     solver = solver_fn(model)
 
     state_0 = model.state()
@@ -368,9 +376,9 @@ cuda_devices = get_selected_cuda_test_devices()
 # Featherstone and SemiImplicit use viscous (kf) friction rather than Coulomb,
 # so the critical-angle criterion does not apply; excluded here.
 # stopping_distance_rel_tol: per-solver tolerance on d_measured/d_expected. Coulomb-cone
-# solvers (XPBD, MuJoCo) hit ~0.05-0.2% in practice. VBD uses penalty friction with
-# low-velocity regularization and saturation, so keep a small empirical margin
-# above the precise Coulomb stopping-distance oracle.
+# solvers (XPBD, MuJoCo) hit ~0.05-0.2% in practice. VBD still has finite-step and
+# finite-iteration error, so keep a small empirical margin above the precise
+# Coulomb stopping-distance oracle.
 _SOLVERS = {
     "xpbd": {
         "factory": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
@@ -439,17 +447,53 @@ _SOLVERS = {
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
     "vbd": {
-        "factory": lambda model: newton.solvers.SolverVBD(model, iterations=40, rigid_contact_k_start=1.0e5),
+        "factory": lambda model: newton.solvers.SolverVBD(
+            model,
+            iterations=40,
+            rigid_compliant_alm=True,
+        ),
         "mus": _VBD_MUS,
         "angles_deg": _VBD_ANGLES_DEG,
         "thresholds": _VBD_THRESHOLDS,
+        "stopping_distance_contact_ke": VBD_STOPPING_CONTACT_KE,
         "stopping_distance_rel_tol": 0.02,
+        "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
+    },
+    "kamino": {
+        "factory": newton.solvers.SolverKamino,
+        "mus": _DEFAULT_MUS,
+        "angles_deg": _DEFAULT_ANGLES_DEG,
+        "thresholds": _DEFAULT_THRESHOLDS,
+        "stopping_distance_rel_tol": 0.01,
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
 }
 
 
 class TestRigidFrictionRamp(unittest.TestCase):
+    def test_simulation_groups_use_separate_suites(self):
+        """Keep the two long-running simulation groups independently schedulable."""
+        ramp_tests = {name for name in dir(TestRigidFrictionRamp) if name.startswith("test_friction_ramp_")}
+        stopping_tests = {
+            name
+            for name in dir(TestRigidFrictionStoppingDistance)
+            if name.startswith("test_friction_stopping_distance_")
+        }
+        self.assertTrue(ramp_tests)
+        self.assertTrue(stopping_tests)
+        self.assertFalse(
+            any(name.startswith("test_friction_stopping_distance_") for name in dir(TestRigidFrictionRamp))
+        )
+
+        self.assertIsNot(_RAMP_SUITES["kamino"], _RAMP_SUITES["vbd"])
+        self.assertIsNot(_STOPPING_SUITES["kamino"], _STOPPING_SUITES["vbd"])
+
+    def test_kamino_ramp_uses_full_grid(self):
+        """Keep the full Kamino coefficient and angle sweep."""
+        cfg = _SOLVERS["kamino"]
+        self.assertEqual(cfg["mus"], _DEFAULT_MUS)
+        self.assertEqual(cfg["angles_deg"], _DEFAULT_ANGLES_DEG)
+
     @unittest.skip("Visual debugging - run manually to view simulation")
     def test_view_friction_grid_xpbd(self):
         self._run_viewer("xpbd")
@@ -463,6 +507,10 @@ class TestRigidFrictionRamp(unittest.TestCase):
         self._run_viewer("mujoco_warp")
 
     @unittest.skip("Visual debugging - run manually to view simulation")
+    def test_view_friction_grid_kamino(self):
+        self._run_viewer("kamino")
+
+    @unittest.skip("Visual debugging - run manually to view simulation")
     def test_view_stopping_distance_xpbd(self):
         self._run_stopping_distance_viewer("xpbd")
 
@@ -473,6 +521,10 @@ class TestRigidFrictionRamp(unittest.TestCase):
     @unittest.skip("Visual debugging - run manually to view simulation")
     def test_view_stopping_distance_mujoco_warp(self):
         self._run_stopping_distance_viewer("mujoco_warp")
+
+    @unittest.skip("Visual debugging - run manually to view simulation")
+    def test_view_stopping_distance_kamino(self):
+        self._run_stopping_distance_viewer("kamino")
 
     def _run_viewer(self, solver_name):
         device = wp.get_device("cuda:0")
@@ -522,7 +574,9 @@ class TestRigidFrictionRamp(unittest.TestCase):
         device = wp.get_device("cuda:0")
         cfg = _SOLVERS[solver_name]
 
-        model, box_ids = build_stopping_distance_scene(device)
+        model, box_ids = build_stopping_distance_scene(
+            device, contact_ke=cfg.get("stopping_distance_contact_ke", 1.0e5)
+        )
         solver = cfg["factory"](model)
         state_0 = model.state()
         state_1 = model.state()
@@ -570,6 +624,35 @@ class TestRigidFrictionRamp(unittest.TestCase):
             print("\nStopped by user.")
 
 
+class TestRigidFrictionStoppingDistance(unittest.TestCase):
+    """Stopping-distance simulations scheduled independently from ramp simulations."""
+
+
+class TestRigidFrictionRampKamino(unittest.TestCase):
+    """Kamino ramp simulation scheduled independently."""
+
+
+class TestRigidFrictionRampVBD(unittest.TestCase):
+    """VBD ramp simulation scheduled independently."""
+
+
+class TestRigidFrictionStoppingDistanceKamino(unittest.TestCase):
+    """Kamino stopping-distance simulation scheduled independently."""
+
+
+class TestRigidFrictionStoppingDistanceVBD(unittest.TestCase):
+    """VBD stopping-distance simulation scheduled independently."""
+
+
+_RAMP_SUITES = {
+    "kamino": TestRigidFrictionRampKamino,
+    "vbd": TestRigidFrictionRampVBD,
+}
+_STOPPING_SUITES = {
+    "kamino": TestRigidFrictionStoppingDistanceKamino,
+    "vbd": TestRigidFrictionStoppingDistanceVBD,
+}
+
 for device in devices:
     for solver_name, cfg in _SOLVERS.items():
         if device.is_cpu and solver_name.startswith("mujoco_warp"):
@@ -577,7 +660,7 @@ for device in devices:
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
         add_function_test(
-            TestRigidFrictionRamp,
+            _RAMP_SUITES.get(solver_name, TestRigidFrictionRamp),
             f"test_friction_ramp_{solver_name}",
             test_friction_ramp,
             devices=[device],
@@ -592,7 +675,7 @@ for device in devices:
         if not cfg.get("run_stopping_distance", True):
             continue
         add_function_test(
-            TestRigidFrictionRamp,
+            _STOPPING_SUITES.get(solver_name, TestRigidFrictionStoppingDistance),
             f"test_friction_stopping_distance_{solver_name}",
             test_friction_stopping_distance,
             devices=[device],
@@ -601,6 +684,7 @@ for device in devices:
             rel_tol=cfg["stopping_distance_rel_tol"],
             rest_speed_max=cfg["stopping_distance_rest_speed_max"],
             native_contacts=cfg.get("native_contacts", False),
+            contact_ke=cfg.get("stopping_distance_contact_ke", 1.0e5),
         )
 
 

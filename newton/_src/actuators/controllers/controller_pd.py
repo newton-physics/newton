@@ -10,6 +10,23 @@ import warp as wp
 from .base import Controller
 
 
+@wp.func
+def _pd_evaluate_force(
+    q: wp.float64,
+    qd: wp.float64,
+    target_q: wp.float64,
+    target_qd: wp.float64,
+    feedforward: wp.float64,
+    params: wp.array2d[float],
+    i: wp.int32,
+) -> wp.float64:
+    """Uniform force entry point for the implicit solver (params = [kp, kd, const])."""
+    kp = wp.float64(params[i, 0])
+    kd = wp.float64(params[i, 1])
+    const = wp.float64(params[i, 2])
+    return const + feedforward + kp * (target_q - q) + kd * (target_qd - qd)
+
+
 @wp.kernel
 def _pd_effort_kernel(
     current_pos: wp.array[float],
@@ -86,6 +103,29 @@ class ControllerPD(Controller):
         self.kp = kp
         self.kd = kd
         self.const_effort = const_effort
+        self._param_pack: wp.array2d[float] | None = None
+
+    evaluate_force = _pd_evaluate_force
+
+    def bind_params(self) -> wp.array2d[float]:
+        # Same pack every time: a new one would detach later writes from the solve.
+        if self._param_pack is not None:
+            return self._param_pack
+        pack = wp.zeros(
+            (len(self.kp), 3),
+            dtype=float,
+            device=self.kp.device,
+            requires_grad=self.kp.requires_grad,
+        )
+        pack[:, 0].assign(self.kp)
+        pack[:, 1].assign(self.kd)
+        if self.const_effort is not None:
+            pack[:, 2].assign(self.const_effort)
+        self.kp = pack[:, 0]
+        self.kd = pack[:, 1]
+        self.const_effort = pack[:, 2]
+        self._param_pack = pack
+        return pack
 
     def is_stateful(self) -> bool:
         return False

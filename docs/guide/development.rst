@@ -4,9 +4,15 @@
 Development
 ===========
 
-This document is a guide for developers who want to contribute to the project or understand its internal workings in more detail.
+This document covers environment setup and operational workflows for developers
+who want to contribute to Newton or understand its internal workings.
 
-Please refer to `CONTRIBUTING.md <https://github.com/newton-physics/governance/blob/main/CONTRIBUTING.md>`_ for how to best contribute to Newton and relevant legal information (CLA).
+See the repository's
+`CONTRIBUTING.md <https://github.com/newton-physics/newton/blob/main/CONTRIBUTING.md>`_
+for contribution and pull-request workflows. The
+`governance contribution guidelines <https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md>`_
+cover legal requirements, project roles, and approval authority. Code and
+public API changes must follow the :doc:`source_code_guidelines`.
 
 Installation
 ------------
@@ -492,9 +498,14 @@ docs with Sphinx, and deploy to the corresponding directory on ``gh-pages``. Upd
 API documentation
 -----------------
 
-Newton's API reference is auto-generated from the ``__all__`` lists of its public modules.
-The script ``docs/generate_api.py`` produces reStructuredText files under ``docs/api/``
-that Sphinx processes via ``autosummary`` to create individual pages for every public symbol.
+The :ref:`source-code-guidelines` define the canonical-export and ``__all__``
+requirements. The following procedure publishes that API in Newton's reference
+documentation.
+
+The API reference is auto-generated from the ``__all__`` lists of Newton's
+public modules. The script ``docs/generate_api.py`` produces reStructuredText
+files under ``docs/api/`` that Sphinx processes via ``autosummary`` to create
+individual pages for every public symbol.
 
 Whenever you add, remove, or rename a public symbol in one of the public modules
 (``newton``, ``newton.geometry``, ``newton.solvers``, ``newton.sensors``, etc.),
@@ -522,19 +533,20 @@ After running the script, rebuild the documentation to verify the result (see
 
 .. note::
 
-    Only symbols listed in a module's ``__all__`` (or, as a fallback, its public
-    attributes) are included. If a new class or function in ``newton/_src/`` should
-    be visible to users, re-export it through the appropriate public module first.
+    Only symbols listed in a Newton public module's ``__all__`` are supported
+    public API. ``docs/generate_api.py`` rejects modules that do not define
+    ``__all__`` as a list or tuple so undeclared attributes cannot be published
+    accidentally. Export a user-facing symbol from ``newton/_src/`` through
+    its canonical public module before generating the API pages.
 
 .. _experimental-features:
 
 Experimental features
 ^^^^^^^^^^^^^^^^^^^^^
 
-Mark user-facing experimental API with the ``.. experimental::`` directive in
-the public docstring or concept page where users encounter it. The directive is
-the user-facing compatibility marker; do not add a separate policy page or
-inline prose block for the same status.
+The :ref:`source-code-guidelines` define the experimental public API contract.
+Use the ``.. experimental::`` directive in the public docstring or concept page
+selected by that policy.
 
 With no body, the directive renders Newton's standard notice:
 
@@ -559,20 +571,11 @@ names the exact scope:
 
                 The ``"sticky"`` mode may change without prior notice.
 
-When adding or changing experimental public API:
+When documenting experimental public API:
 
-- keep the marker in the public docs or docstring, not just in comments;
 - keep status tables and summaries concise; use plain text such as
   ``experimental`` instead of linking every status label to the marker;
-- describe any relevant limitations in the concept docs;
 - run ``uv run python docs/generate_api.py`` when public API symbols change.
-
-Use a domain-local experimental namespace only for a cohesive new subsystem
-that can reasonably live behind an opt-in import path, for example
-``newton.solvers.experimental.<feature>``. Do not move existing public classes
-such as solver backends into an experimental namespace just to communicate
-implementation maturity. Mark the specific class, behavior, option, or concept
-instead.
 
 Testing documentation code snippets
 -----------------------------------
@@ -632,15 +635,6 @@ creation commands, and Towncrier's non-mutating ``--draft`` preview are
 documented in the `changelog fragment guide
 <https://github.com/newton-physics/newton/blob/main/changelog/README.md>`__.
 
-Style Guide
------------
-
-- Follow PEP 8 for Python code.
-- Use Google-style docstrings (compatible with Napoleon extension).
-- Write clear, concise commit messages.
-- Keep pull requests focused on a single feature or bug fix.
-- Use kebab-case instead of snake_case for command line arguments, e.g. ``--use-cuda-graph`` instead of ``--use_cuda_graph``.
-
 Writing examples
 ----------------
 
@@ -664,17 +658,17 @@ class with the following interface:
             ...
 
         def test_final(self):
-            """Validate the final simulation state. Required for CI."""
+            """Optionally validate the simulation state after the example completes."""
             ...
 
         def test_post_step(self):
             """Optional per-step validation, called after every step() in test mode."""
             ...
 
-Every example **must** implement ``test_final()`` (or ``test_post_step()``, or both).
-The test harness runs examples with ``--viewer null --test`` and calls these methods to
-verify simulation correctness. An example that implements neither will raise
-``NotImplementedError`` in CI.
+Every example must implement ``test_final()`` or ``test_post_step()``; it may
+implement both. In test mode, ``test_post_step()`` runs after each simulation
+step and ``test_final()`` runs after the example completes. An example that
+implements neither raises ``NotImplementedError`` in CI.
 
 Discovery and registration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^

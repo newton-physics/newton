@@ -14,26 +14,55 @@ from .base import Clamping
 
 @wp.func
 def _interp_1d(
-    x: float,
+    x: Any,
     xs: wp.array[float],
     ys: wp.array[float],
+    xs_off: int,
+    ys_off: int,
     n: int,
-) -> float:
-    """Linearly interpolate (x -> y) from sorted sample arrays, clamping at boundaries."""
+):
+    """Linearly interpolate (x -> y) from sorted samples, holding at the ends.
+
+    Generic in the scalar type of *x*, so the explicit kernel (float32) and the
+    implicit solve (float64) share one implementation; the samples are float32
+    and are cast on read, since Warp does not promote across types. ``xs`` and
+    ``ys`` may be the same array at two offsets, as in the packed clamp row.
+    """
     if n <= 0:
-        return 0.0
-    if x <= xs[0]:
-        return ys[0]
-    if x >= xs[n - 1]:
-        return ys[n - 1]
+        return type(x)(0.0)
+    if x <= type(x)(xs[xs_off]):
+        return type(x)(ys[ys_off])
+    if x >= type(x)(xs[xs_off + n - 1]):
+        return type(x)(ys[ys_off + n - 1])
     for k in range(n - 1):
-        if xs[k + 1] >= x:
-            dx = xs[k + 1] - xs[k]
-            if dx == 0.0:
-                return ys[k]
-            t = (x - xs[k]) / dx
-            return ys[k] + t * (ys[k + 1] - ys[k])
-    return ys[n - 1]
+        x1 = type(x)(xs[xs_off + k + 1])
+        if x1 >= x:
+            x0 = type(x)(xs[xs_off + k])
+            y0 = type(x)(ys[ys_off + k])
+            y1 = type(x)(ys[ys_off + k + 1])
+            if x1 == x0:
+                return y0
+            return y0 + (x - x0) / (x1 - x0) * (y1 - y0)
+    return type(x)(ys[ys_off + n - 1])
+
+
+@wp.func
+def _evaluate_position_based_clamp(
+    value: wp.float64,
+    q: wp.float64,
+    qd: wp.float64,
+    params: wp.array2d[float],
+    i: int,
+    base: int,
+) -> wp.float64:
+    """Implicit-solve entry point; params row is ``[K, positions[K], efforts[K]]``.
+
+    Inside the implicit solve ``q`` is the predicted end-of-step position, so
+    the position-dependent limit is enforced self-consistently.
+    """
+    n = int(params[i, base])
+    limit = _interp_1d(q, params[i], params[i], base + 1, base + 1 + n, n)
+    return wp.clamp(value, -limit, limit)
 
 
 @wp.kernel
@@ -49,7 +78,7 @@ def _position_based_clamp_kernel(
     """Position-dependent clamping via interpolated lookup table: read src, write dst."""
     i = wp.tid()
     state_idx = state_indices[i]
-    limit = _interp_1d(current_pos[state_idx], lookup_positions, lookup_efforts, lookup_size)
+    limit = _interp_1d(current_pos[state_idx], lookup_positions, lookup_efforts, 0, 0, lookup_size)
     dst[i] = wp.clamp(src[i], -limit, limit)
 
 
@@ -207,6 +236,31 @@ class ClampingPositionBased(Clamping):
         self.lookup_size = len(positions)
         self.lookup_positions = wp.array(np.array(positions, dtype=np.float32), dtype=wp.float32, device=device)
         self.lookup_efforts = wp.array(np.array(efforts, dtype=np.float32), dtype=wp.float32, device=device)
+        self._num_actuators = num_actuators
+
+    evaluate_clamp = _evaluate_position_based_clamp
+
+    def param_width(self) -> int:
+        return 1 + 2 * self.lookup_size
+
+    def bind_params(self, block: wp.array2d[float]) -> None:
+        """Copy the lookup table into *block*.
+
+        Unlike the other clamps this copies rather than aliases, so edits to
+        :attr:`lookup_efforts` after the implicit mode is installed are not
+        seen by the solve. Reinstall the mode to pick them up.
+        """
+        # Same row per actuator: [size, positions..., efforts...].
+        if self.lookup_positions is None:
+            raise RuntimeError("ClampingPositionBased.bind_params() requires finalize() to have run")
+        row = np.concatenate(
+            [
+                np.array([float(self.lookup_size)], dtype=np.float32),
+                self.lookup_positions.numpy(),
+                self.lookup_efforts.numpy(),
+            ]
+        ).astype(np.float32)
+        block.assign(np.tile(row, (self._num_actuators, 1)))
 
     def modify_forces(
         self,

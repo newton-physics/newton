@@ -1459,10 +1459,11 @@ class ViewerBase(ABC):
             name: Instance path/name (e.g., "/world/spheres").
             geo_type: Geometry type value from :class:`newton.GeoType`.
             geo_scale: Geometry scale parameters:
-                - Sphere: float radius
-                - Capsule/Cylinder/Cone: (radius, height)
-                - Plane: (width, length) or float for both
-                - Box: (x_extent, y_extent, z_extent) or float for all
+                - Sphere: float radius [m]
+                - Capsule/Cone: (radius [m], half-height [m])
+                - Cylinder: (end radius [m], half-height [m], barrel radius [m])
+                - Plane: (width [m], length [m]) or float [m] for both
+                - Box: (x_extent [m], y_extent [m], z_extent [m]) or float [m] for all
             xforms: wp.array[wp.transform] of instance transforms
             colors: wp.array[wp.vec3] or None (broadcasted if length 1)
             materials: wp.array[wp.vec4] or None (broadcasted if length 1)
@@ -1651,7 +1652,14 @@ class ViewerBase(ABC):
 
         elif geo_type == newton.GeoType.CYLINDER:
             radius, half_height = geo_scale[:2]
-            mesh = newton.Mesh.create_cylinder(radius, half_height, up_axis=newton.Axis.Z, compute_inertia=False)
+            barrel_radius = geo_scale[2] if len(geo_scale) > 2 else 0.0
+            mesh = newton.Mesh.create_cylinder(
+                radius,
+                half_height,
+                up_axis=newton.Axis.Z,
+                barrel_radius=barrel_radius,
+                compute_inertia=False,
+            )
 
         elif geo_type == newton.GeoType.CONE:
             radius, half_height = geo_scale[:2]
@@ -1720,6 +1728,7 @@ class ViewerBase(ABC):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1744,6 +1753,7 @@ class ViewerBase(ABC):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
         """
         pass
 
@@ -1929,7 +1939,7 @@ class ViewerBase(ABC):
         """
         return
 
-    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray, *, fullscreen: bool = False) -> None:
         """
         Log an image (or batch of images) for display in the viewer.
 
@@ -1947,9 +1957,12 @@ class ViewerBase(ABC):
                 Accepted dtypes: ``uint8`` (values in ``[0, 255]``) or
                 ``float32`` (values in ``[0, 1]``). Values outside the range
                 are clipped.
+            fullscreen: In :class:`~newton.viewer.ViewerGL`, display the image
+                as the main viewer surface for the current frame instead of
+                rendering the 3D scene. Other backends ignore this option.
 
         The base implementation is a no-op. Backends that render images
-        (currently only :class:`ViewerGL`) override this method.
+        (currently only :class:`~newton.viewer.ViewerGL`) override this method.
         """
         return
 
@@ -2279,6 +2292,10 @@ class ViewerBase(ABC):
         shape_geo_is_solid = self.model.shape_is_solid.numpy()
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
+        mujoco_attributes = getattr(self.model, "mujoco", None)
+        site_size_is_display = getattr(mujoco_attributes, "site_size_is_display", None)
+        if site_size_is_display is not None:
+            site_size_is_display = site_size_is_display.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_display_color = self.model.shape_color.numpy() if self.model.shape_color is not None else None
         shape_sdf_index = self._shape_sdf_index_host
@@ -2295,6 +2312,9 @@ class ViewerBase(ABC):
             geo_thickness = float(shape_geo_thickness[s])
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
+
+            if geo_type == newton.GeoType.CYLINDER and site_size_is_display is not None and site_size_is_display[s]:
+                geo_scale[2] = 0.0
 
             # Mesh-class shapes can carry signed scale. When det(scale) < 0 the GPU
             # mirrors the geometry, which reverses screen-space triangle winding;
