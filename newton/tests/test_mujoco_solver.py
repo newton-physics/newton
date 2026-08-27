@@ -6946,6 +6946,37 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert_np_equal(tendon_joint, expected_joint, tol=0)
         assert_np_equal(tendon_coef, expected_coef, tol=1e-6)
 
+    def test_invalid_tendon_joint_range_remains_unowned(self):
+        """Keep a tendon unowned when its joint range exceeds the available rows."""
+        mjcf = """
+            <mujoco model="robot">
+              <worldbody>
+                <body name="root">
+                  <body name="link">
+                    <joint name="hinge" type="hinge"/>
+                    <geom type="sphere" size="0.1"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                  </body>
+                </body>
+              </worldbody>
+              <tendon>
+                <fixed name="tendon">
+                  <joint joint="hinge" coef="1"/>
+                </fixed>
+              </tendon>
+            </mujoco>
+            """
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        builder.add_mjcf(mjcf)
+        builder.custom_attributes["mujoco:tendon_joint_adr"].values = [1, 1]
+        builder.custom_attributes["mujoco:tendon_joint_num"].values = [2, 1]
+
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:tendon"].numpy(), [-1, 1])
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_tendon_actuator_resolution_when_actuator_comes_first(self):
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt

@@ -833,14 +833,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         for joint_address, joint_count, wrap_address, wrap_count in zip(
             joint_addresses, joint_counts, wrap_addresses, wrap_counts, strict=True
         ):
-            owners = {
-                owner
-                for owner in joint_owners[int(joint_address) : int(joint_address) + int(joint_count)]
-                if owner >= 0
-            }
-            owners.update(
-                owner for owner in wrap_owners[int(wrap_address) : int(wrap_address) + int(wrap_count)] if owner >= 0
-            )
+            joint_start = int(joint_address)
+            joint_count_int = int(joint_count)
+            joint_end = joint_start + joint_count_int
+            wrap_start = int(wrap_address)
+            wrap_count_int = int(wrap_count)
+            wrap_end = wrap_start + wrap_count_int
+            if (
+                joint_start < 0
+                or joint_count_int < 0
+                or joint_end > len(joint_owners)
+                or wrap_start < 0
+                or wrap_count_int < 0
+                or wrap_end > len(wrap_owners)
+            ):
+                tendon_owners.append(-1)
+                continue
+
+            owners = {owner for owner in joint_owners[joint_start:joint_end] if owner >= 0}
+            owners.update(owner for owner in wrap_owners[wrap_start:wrap_end] if owner >= 0)
             tendon_owners.append(owners.pop() if len(owners) == 1 else -1)
         return tendon_owners
 
