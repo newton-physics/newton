@@ -1255,7 +1255,7 @@ class PADMMSolver:
             problem.delassus.gemv(
                 x=self._data.state.y,
                 y=self._data.info.v_plus,
-                world_mask=wp.ones((problem.data.num_worlds,), dtype=wp.int32, device=self.device),
+                world_mask=wp.ones((problem.data.num_worlds,), dtype=wp.bool, device=self.device),
                 alpha=1.0,
                 beta=1.0,
             )
