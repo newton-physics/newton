@@ -18,6 +18,7 @@ newton.geometry
    BroadPhaseSAP
    HydroelasticSDF
    NarrowPhase
+   ParticleSurface
    TriMeshCollisionInfo
 
 .. rubric:: Functions
@@ -42,6 +43,7 @@ newton.geometry
    compute_inertia_shape
    compute_offset_mesh
    create_empty_sdf_data
+   extract_particle_surface
    get_edge_colliding_edges
    get_edge_colliding_edges_count
    get_edge_collision_buffer_edge_index
