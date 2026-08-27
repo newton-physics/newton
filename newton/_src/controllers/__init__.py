@@ -9,4 +9,5 @@ __all__ = [
     "ControllerBase",
     "ControllerJointImpedance",
     "ControllerJointImpedanceModelFree",
+    "export_controller_graph",
 ]

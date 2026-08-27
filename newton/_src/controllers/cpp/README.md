@@ -11,10 +11,9 @@ side (`newton.controllers.export_controller_graph`) is covered by the Python tes
 ## Export a controller
 
 ```python
-from newton.controllers import ControllerJointImpedance, export_controller_graph, select_joints
+from newton.controllers import ControllerJointImpedance, export_controller_graph
 
-selection = select_joints(model)
-controller = ControllerJointImpedance(model, joint_selection=selection, ...)
+controller = ControllerJointImpedance(model, ...)
 inputs, outputs = controller.input(), controller.output()
 
 export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path="joint_impedance")
