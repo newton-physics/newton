@@ -3836,6 +3836,10 @@ def refresh_joint_material_params(
     ``joint_target_kd`` (see ``_init_joint_penalty_k`` for the same formulas at construction
     time).
 
+    Stiffness slots are reseeded only where the effective stiffness actually changed, so a
+    slot the caller did not touch keeps whatever legacy AVBD ramping has accumulated in
+    ``joint_penalty_k``. Damping is written unconditionally: it has no ramp state.
+
     Stiffness covers ROD (all four material slots) and the drive/limit slot(s) of REVOLUTE,
     PRISMATIC, and D6. Only legacy AVBD reads those non-ROD slots; compliant ALM gathers the
     same coefficients live from the model each solve (see ``_gather_joint_axis_drive_limit``).
@@ -3859,11 +3863,12 @@ def refresh_joint_material_params(
     if jt == JointType.ROD:
         for s in range(4):  # 0=stretch, 1=shear, 2=bend, 3=twist
             ke = joint_target_ke[dof0 + s]
-            joint_material_k[c0 + s] = ke
-            seed = legacy_lin_k_start if s < 2 else legacy_ang_k_start
-            seeded = wp.min(seed, ke) if seed >= 0.0 else ke
-            joint_penalty_k[c0 + s] = seeded
-            joint_penalty_k_min[c0 + s] = seeded
+            if joint_material_k[c0 + s] != ke:
+                joint_material_k[c0 + s] = ke
+                seed = legacy_lin_k_start if s < 2 else legacy_ang_k_start
+                seeded = wp.min(seed, ke) if seed >= 0.0 else ke
+                joint_penalty_k[c0 + s] = seeded
+                joint_penalty_k_min[c0 + s] = seeded
             joint_penalty_kd[c0 + s] = joint_target_kd[dof0 + s]
         return
 
@@ -3882,12 +3887,13 @@ def refresh_joint_material_params(
     slot0 = c0 + 2  # drive/limit slots follow the 2 structural slots (see _init_joint_penalty_k)
     for axis in range(linear_count + angular_count):
         dof = dof0 + axis
-        seed = legacy_lin_k_start if axis < linear_count else legacy_ang_k_start
         ke = wp.max(joint_target_ke[dof], joint_limit_ke[dof])
-        seeded = wp.min(seed, ke) if seed >= 0.0 else ke
-        joint_material_k[slot0 + axis] = ke
-        joint_penalty_k[slot0 + axis] = seeded
-        joint_penalty_k_min[slot0 + axis] = seeded
+        if joint_material_k[slot0 + axis] != ke:
+            seed = legacy_lin_k_start if axis < linear_count else legacy_ang_k_start
+            seeded = wp.min(seed, ke) if seed >= 0.0 else ke
+            joint_material_k[slot0 + axis] = ke
+            joint_penalty_k[slot0 + axis] = seeded
+            joint_penalty_k_min[slot0 + axis] = seeded
 
 
 # -----------------------------

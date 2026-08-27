@@ -5893,6 +5893,79 @@ def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
     test.assertAlmostEqual(material_k_at(j_revolute, 2), max(100.0, 5000.0))
 
 
+def _notify_joint_dof_properties_preserves_unchanged_penalty_ramp(test, device):
+    """Verify only slots whose effective stiffness changed are reseeded.
+
+    ``ModelFlags`` documents the notification as updating only the necessary components, so a
+    slot the caller did not touch must keep whatever legacy AVBD ramping has accumulated in
+    ``joint_penalty_k`` -- including slots on other joints.
+    """
+    model, state0, state1, control, _rod_bodies = _build_cable_chain(
+        device,
+        num_links=6,
+        bend_stiffness=5.0e1,
+        bend_damping=1.0,
+        segment_length=0.2,
+    )
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    # beta > 0 enables the legacy AVBD ramp; it is the state this selective reseed protects.
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False, rigid_avbd_beta=5.0)
+
+    sim_substeps = 10
+    sim_dt = (1.0 / 60.0) / sim_substeps
+    for _ in range(10):
+        for _substep in range(sim_substeps):
+            state0.clear_forces()
+            collision_pipeline.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, sim_dt)
+            state0, state1 = state1, state0
+
+    ramped = solver.joint_penalty_k.numpy().copy()
+    ramped_min = solver.joint_penalty_k_min.numpy().copy()
+    test.assertTrue(
+        np.any(ramped > ramped_min + 1.0e-6),
+        msg="precondition: stepping should have ramped joint_penalty_k above its floor",
+    )
+
+    joint_type = model.joint_type.numpy()
+    rod_joints = [j for j in range(model.joint_count) if joint_type[j] == int(newton.JointType.ROD)]
+    test.assertGreater(len(rod_joints), 1, msg="need several joints to check cross-joint preservation")
+
+    edited = rod_joints[0]
+    bend_slot = int(solver.joint_constraint_start.numpy()[edited]) + 2
+    ang_seed = solver.rigid_joint_angular_k_start
+    new_ke = 5.0e2
+    expected = min(ang_seed, new_ke)
+    test.assertGreater(
+        float(ramped[bend_slot]),
+        expected + 1.0e-6,
+        msg="precondition: the edited slot must have ramped, so reseeding it is observable",
+    )
+
+    dof0 = int(model.joint_qd_start.numpy()[edited])
+    joint_target_ke = model.joint_target_ke.numpy()
+    joint_target_ke[dof0 + 2] = new_ke  # bend on the first rod joint only
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    refreshed = solver.joint_penalty_k.numpy()
+    refreshed_min = solver.joint_penalty_k_min.numpy()
+    test.assertAlmostEqual(float(refreshed[bend_slot]), expected)
+
+    others = [i for i in range(len(refreshed)) if i != bend_slot]
+    np.testing.assert_array_equal(
+        refreshed[others],
+        ramped[others],
+        err_msg="slots whose stiffness did not change must keep their ramped joint_penalty_k",
+    )
+    np.testing.assert_array_equal(
+        refreshed_min[others],
+        ramped_min[others],
+        err_msg="slots whose stiffness did not change must keep their joint_penalty_k_min",
+    )
+
+
 def _notify_joint_dof_properties_validates_compliant_materials(test, device):
     """Verify a live edit to invalid coefficients is rejected under compliant ALM.
 
@@ -6698,6 +6771,12 @@ add_function_test(
     TestCable,
     "test_notify_joint_dof_properties_refreshes_drive_limit_material_k",
     _notify_joint_dof_properties_refreshes_drive_limit_material_k,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_preserves_unchanged_penalty_ramp",
+    _notify_joint_dof_properties_preserves_unchanged_penalty_ramp,
     devices=devices,
 )
 add_function_test(

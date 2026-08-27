@@ -1758,6 +1758,9 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Damping is ROD-only -- other joint types read drive damping live from
         ``joint_target_kd`` at step time rather than caching it here.
+
+        Stiffness slots are reseeded only where the effective stiffness changed, so untouched
+        slots keep any legacy AVBD ramp they have accumulated.
         """
         if self.model.joint_count == 0:
             return
