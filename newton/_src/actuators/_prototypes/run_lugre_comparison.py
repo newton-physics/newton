@@ -1,60 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""LuGre friction: MuJoCo's own actuator against Newton's.
+"""Compare a custom Newton LuGre controller with MuJoCo's LuGre actuator.
 
-THE CLAIM THIS SUPPORTS
-    LuGre and Dahl friction can be modelled in Newton today, by writing a
-    custom actuator controller. No change to Newton is required.
+LuGre friction can be implemented with Newton's public actuator API.
 
-    One approach reproduces MuJoCo's modelling choices. Another evaluates the
-    force using the deflection advanced within the step, which may improve
-    behaviour for some models and timesteps. This comparison illustrates the
-    alternatives; it does not establish that either is generally more accurate.
+The example applies the same torque sequence to one joint in both simulations.
+It covers sticking, breakaway, sliding, reversal, and release.
 
-    Any improvement would be a property of the modelling choice, not of the
-    solver, and depends on the timestep resolving the bristle stiffness. The
-    relevant condition, dt*sqrt(sigma0/M), is printed on every run.
+The Newton runs use different ways of updating the LuGre deflection state.
+The ``ZOH, old z`` choice matches MuJoCo's method most closely. Differences
+from MuJoCo measure agreement with that method, not general accuracy.
 
-THE TEST
-    One joint follows the same applied-torque sequence in both simulations:
-    unloaded, below Coulomb friction, above static friction, reversed, then
-    unloaded again. This exercises stiction, breakaway, sliding, and reversal.
+This case mainly compares LuGre modelling choices. The implicit correction is
+only about 0.1%. See ``run_lugre_implicit_regime.py`` for a case where implicit
+actuation has a visible effect.
 
-MUJOCO
-    MuJoCo's real `<dcmotor lugre=...>` actuator, driven through the `mujoco`
-    package. The motor constant is set near zero so the only actuator force is
-    friction.
-
-NEWTON
-    A custom Controller running in Newton's implicit effort mode, stepped with
-    SolverMuJoCo. Four variants cover two modelling choices: how the contact
-    deflection is stepped, and which deflection the force is built from. The
-    ``ZOH, old z`` variant uses MuJoCo's pair of choices and closely agrees
-    with MuJoCo's own actuator in this test.
-
-SCOPE AND LIMITATIONS
-    Both sides treat the deflection state explicitly and the velocity
-    implicitly, so the friction model itself is not the difference. The
-    difference is how far the implicitness reaches.
-
-    MuJoCo forms one velocity derivative for the whole system and folds it into
-    the system solve, so every force present in the step is inside the implicit
-    update. Newton's actuator instead predicts the end-of-step velocity as
-    ``qd + A p``, from its own impulse alone. Gravity, contacts, other actuators
-    on the same articulation and joint drive applied outside the actuator are
-    all absent from that prediction, and the response ``A`` itself omits joint
-    damping, limits, friction, contacts and loop closures. These are the
-    documented limits of the implicit effort mode; see the "Effort Modes"
-    section of the Newton actuator documentation.
-
-    This benchmark does not expose them. There is no gravity and no contact,
-    and the applied torque is passed as feedforward so that it does enter the
-    prediction. For the implications in scenes with contacts, gravity, several
-    actuators, or other external forces, refer to the documented implicit
-    effort-mode limitations cited above. Note also that
-    :meth:`Controller.prepare_implicit` is not given the feedforward array, so
-    a state update cannot depend on it.
+The scene has no gravity or contacts. Applied torque is passed through the
+actuator so it is included in the actuator's velocity prediction. More complex
+scenes may differ because Newton's implicit actuator uses a simplified response
+that does not include every force acting during the solver step.
 
 Run::
 
@@ -85,10 +50,10 @@ FS = 1.5  # static level [N m]
 VS = 1.0e-3  # Stribeck velocity [rad/s]
 
 NEWTON_VARIANTS = {
-    "Newton (ZOH, old z)": (("zoh", "old"), "#e8913a", "--"),
-    "Newton (BE, old z)": (("be", "old"), "#f0c419", "--"),
-    "Newton (ZOH, new z)": (("zoh", "new"), "#4c9be8", "--"),
-    "Newton (BE, new z)": (("be", "new"), "#1f77b4", "-"),
+    "Newton (ZOH, old z)": (("zoh", "old", True), "#e8913a", "--"),
+    "Newton (BE, old z)": (("be", "old", True), "#f0c419", "--"),
+    "Newton (ZOH, new z)": (("zoh", "new", True), "#4c9be8", "--"),
+    "Newton (BE, new z)": (("be", "new", True), "#1f77b4", "-"),
 }
 
 
@@ -136,7 +101,7 @@ def run_mujoco():
     return v, float(m.dof_M0[0])
 
 
-def run_newton(z_method="zoh", force_z="old"):
+def run_newton(z_method="zoh", force_z="old", implicit=True):
     """Newton's actuator in the implicit effort mode, stepped by SolverMuJoCo."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0, 0.0, 0.0))
     link = builder.add_link()
@@ -159,12 +124,13 @@ def run_newton(z_method="zoh", force_z="old"):
     )
     actuator = Actuator(wp.array([dof], dtype=wp.uint32), controller=ctrl)
     oracle = ResponseOracle(model)
-    # Default tolerances stop at iteration 0 for this law, returning the explicit
-    # warm start. Tighten them so the numbers come from the implicit solve.
-    actuator.set_effort_mode_implicit(
-        response=oracle,
-        options=Actuator.ImplicitOptions(residual_tol=1e-12, update_tol=1e-12),
-    )
+    if implicit:
+        # Default tolerances stop the solve early, leaving a ~1e-3 relative gap
+        # to MuJoCo. Tighten them so the numbers come from the converged solve.
+        actuator.set_effort_mode_implicit(
+            response=oracle,
+            options=Actuator.ImplicitOptions(residual_tol=1e-12, update_tol=1e-12),
+        )
 
     solver = newton.solvers.SolverMuJoCo(model, integrator=INTEGRATOR)
     state_0, state_1 = model.state(), model.state()
@@ -208,11 +174,20 @@ def main():
 
     print(f"integrator = {INTEGRATOR}")
     print(f"dt = {DT}, Coulomb level = {FC} N·m, static level = {FS} N·m")
-    print(f"dt*sqrt(sigma0/M): {DT * (SIGMA0 / inertia_mj) ** 0.5:.2f}  (needs to be near 1 or below)")
+    crit = DT * (SIGMA0 / inertia_mj) ** 0.5
+    k = SIGMA1 + SIGMA2
+    a = 1.0 / inertia_nt
+    print(f"dt*sqrt(sigma0/M) = {crit:.2f}   ({2 * np.pi / crit:.1f} steps per contact oscillation)")
+    print("   both deflection schemes are unconditionally stable, so this is an accuracy")
+    print("   number, not a stability requirement")
+    print(
+        f"dt*k*A = {DT * k * a:.4f}   (implicit correction is {100.0 * DT * k * a / (1.0 + DT * k * a):.1f} % of the force;"
+    )
+    print("   see run_lugre_implicit_regime.py for a regime where this dominates)")
     print(f"inertia: MuJoCo {inertia_mj:.7f}, Newton {inertia_nt:.7f} kg·m²")
-    print(f"{'':>26} | {'peak |v| [rad/s]':>17} | {'final v [rad/s]':>17} | {'max diff vs MJ':>14}")
+    print(f"{'':>28} | {'peak |v| [rad/s]':>17} | {'final v [rad/s]':>17} | {'diff vs MJ (fidelity)':>21}")
     for name, (v, _color, _ls) in results.items():
-        print(f"{name:>26} | {np.max(np.abs(v)):17.6e} | {v[-1]:17.6e} | {np.max(np.abs(v - v_mj)):14.3e}")
+        print(f"{name:>28} | {np.max(np.abs(v)):17.6e} | {v[-1]:17.6e} | {np.max(np.abs(v - v_mj)):21.3e}")
 
     fig, (ax_torque, ax) = plt.subplots(2, 1, figsize=(10, 7), sharex=True, layout="constrained")
     ax_torque.step(t, torque, where="post", color="black")
@@ -228,10 +203,7 @@ def main():
     ax.axhline(0.0, color="gray", lw=0.8)
     ax.set_xlabel("time [s]")
     ax.set_ylabel("joint velocity [rad/s]")
-    ax.set_title(
-        f"LuGre friction step response, dt = {DT} s\n"
-        "stiction, breakaway, sliding, reversal, and release"
-    )
+    ax.set_title(f"LuGre friction step response, dt = {DT} s\nstiction, breakaway, sliding, reversal, and release")
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
     fig.savefig("lugre_comparison.png", dpi=110)
