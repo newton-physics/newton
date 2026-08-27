@@ -190,12 +190,19 @@ Warp array on the viewer device:
 
 .. note::
 
-    On a machine without a display, pyglet must also be put in headless mode. pyglet binds its
-    display backend the first time that backend is imported, and Newton imports pyglet's window
-    and display modules when the first :class:`~newton.viewer.ViewerGL` is constructed, so the
-    option has to be set before that point. Otherwise the snippet above fails with
-    ``pyglet.display.xlib.NoSuchDisplayException: Cannot connect to "None"`` on Linux, since
-    pyglet defaults to Xlib. Either set the environment variable::
+    pyglet also has to be in headless mode on a machine without a display, since it defaults to
+    Xlib on Linux and has nothing to connect to. A headless :class:`~newton.viewer.ViewerGL`
+    selects pyglet's headless backend itself when the session exposes neither ``DISPLAY`` nor
+    ``WAYLAND_DISPLAY``, so the snippet above runs as written. A session that has a display keeps
+    the default backend, and so does a windowed viewer.
+
+    The check is on the variables, not on a live connection, so a session that inherits a stale
+    ``DISPLAY`` — a container started from a desktop shell, for example — still fails with
+    ``NoSuchDisplayException``. Choose the backend explicitly there. pyglet binds the backend while
+    the module is imported and cannot rebind afterwards, so this cannot be recovered by retrying.
+
+    To choose the backend yourself — for the case above, or to render headlessly on a machine that
+    does have a display — set the environment variable::
 
         PYGLET_HEADLESS=1 python your_script.py
 
@@ -207,6 +214,10 @@ Warp array on the viewer device:
         pyglet.options["headless"] = True
 
         viewer = newton.viewer.ViewerGL(headless=True)
+
+    Either has to come first: pyglet binds its display backend the first time that backend is
+    imported, and Newton imports pyglet's window and display modules when the first
+    :class:`~newton.viewer.ViewerGL` is constructed.
 
     On a machine with several GPUs, ``PYGLET_HEADLESS_DEVICE`` (or
     ``pyglet.options["headless_device"]``) selects which one renders; it defaults to ``0``,

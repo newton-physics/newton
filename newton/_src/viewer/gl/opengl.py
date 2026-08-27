@@ -943,6 +943,23 @@ class MeshInstancerGL:
         gl.glBindVertexArray(0)
 
 
+def needs_pyglet_headless_backend(headless: bool | None) -> bool:
+    """Return whether pyglet has to use its headless backend to open a window.
+
+    Only Linux is reported, and only for a headless viewer on a session that
+    exposes neither an X nor a Wayland display: pyglet defaults to Xlib there
+    and has nothing to connect to. A windowed viewer, a session with a
+    display, and every other platform are left to pyglet's own defaults.
+
+    Args:
+        headless: Whether the viewer was asked for headless rendering.
+    """
+    if not headless or not sys.platform.startswith("linux"):
+        return False
+
+    return not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")
+
+
 class RendererGL:
     gl = None  # Class-level variable to hold the imported module
     _fallback_texture = None  # 1x1 white texture bound when no albedo is set (suppresses macOS GL warning)
@@ -1020,6 +1037,13 @@ class RendererGL:
 
             # disable error checking for performance
             pyglet.options["debug_gl"] = False
+
+            # A headless viewer has no window to show, so on a machine that
+            # offers no display there is nothing for the default Xlib backend
+            # to connect to. Select the headless backend for that case before
+            # the first window is opened, which is where pyglet binds it.
+            if needs_pyglet_headless_backend(headless) and not pyglet.options["headless"]:
+                pyglet.options["headless"] = True
 
             # try imports
             from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: F401
