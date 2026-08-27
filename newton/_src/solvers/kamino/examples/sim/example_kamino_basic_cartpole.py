@@ -16,6 +16,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
 
@@ -31,6 +32,18 @@ class Example:
         self.world_count = args.world_count if args else 1
         self.viewer = viewer
         self.device = wp.get_device()
+        self.actuated = args.actuated if args else False
+        self.time = wp.zeros((self.world_count,), device=self.device)
+
+        video_output_filename = getattr(args, "video_path", None)
+        self.record_video = enable_recording(
+            viewer=self.viewer,
+            record_video=args.record_video if args else False,
+            start_clip=True,
+            output_path=video_output_filename if video_output_filename is not None else "recording.mp4",
+            max_frames=getattr(args, "max_video_frames", 1000),
+            fps=self.fps,
+        )
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -118,6 +131,9 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            if self.actuated:
+                self._advance_time()
+                self._apply_actuation()
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.solver.update_contacts(self.contacts, self.state_0)
@@ -159,6 +175,59 @@ class Example:
                 ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
             )
 
+    def _advance_time(self):
+        """Advances the current simulation time by ``dt``."""
+
+        @wp.kernel
+        def advance_time_kernel(dt: wp.float32, time: wp.array[wp.float32]):
+            """Advance the time in each world."""
+            wid = wp.tid()
+            time[wid] += dt
+
+        wp.launch(
+            advance_time_kernel,
+            dim=self.model.world_count,
+            inputs=[self.sim_dt, self.time],
+            device=self.device,
+        )
+
+    def _apply_actuation(self):
+        """Apply a (random) actuation to each world."""
+
+        @wp.kernel
+        def actuation_kernel(
+            time: wp.array[wp.float32],
+            joint_f: wp.array[wp.float32],
+        ):
+            # Retrieve the world index from the thread ID
+            wid = wp.tid()
+
+            # Define the time window for the active external force profile
+            t_start = wp.float32(1.0)
+            t_end = wp.float32(3.1)
+
+            # Apply a time-dependent force
+            t = time[wid]
+            if t >= 0.0 and t < t_start:
+                joint_f[wid * 2 + 0] = 1.0 * wp.randf(wp.uint32(wid) + wp.uint32(t), -1.0, 1.0)
+                joint_f[wid * 2 + 1] = 0.0
+            elif t > t_start and t < t_end:
+                joint_f[wid * 2 + 0] = 10.0
+                joint_f[wid * 2 + 1] = 0.0
+            else:
+                joint_f[wid * 2 + 0] = -10.0
+                joint_f[wid * 2 + 1] = 0.0
+
+        wp.launch(
+            actuation_kernel,
+            dim=self.model.world_count,
+            inputs=[
+                self.time,
+                self.control.joint_f,
+            ],
+            device=self.device,
+        )
+
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
@@ -170,6 +239,30 @@ class Example:
             default=False,
             help="Load the basic cartpole from USD.",
         )
+        parser.add_argument(
+            "--actuated",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Actuate the cartpole with random inputs.",
+        )
+        parser.add_argument(
+            "--record-video",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Record a video of the viewer, up to 1000 frames.",
+        )
+        parser.add_argument(
+            "--video-path",
+            type=str,
+            default=None,
+            help="Output video path (defaults to 'recording.mp4').",
+        )
+        parser.add_argument(
+            "--max-video-frames",
+            type=int,
+            default=1000,
+            help="Maximum number of frames recorded for the video (defaults to 1000).",
+        )
         return parser
 
 
@@ -178,3 +271,5 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
+    if hasattr(viewer, "finish_clip"):
+        viewer.finish_clip()

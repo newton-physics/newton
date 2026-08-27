@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example for basic boxes hinged system
+# Example for basic box pendulum system.
 #
-# Shows how to simulate a basic boxes hinged with multiple worlds using SolverKamino.
+# Shows how to simulate a basic box pendulum with multiple worlds using SolverKamino.
 #
-# Command: python -m newton.examples kamino_basic_boxes_hinged --world-count 16
+# Command: python -m newton.examples kamino_basic_box_pendulum --world-count 16
 #
 ###########################################################################
 
@@ -16,6 +16,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
 
@@ -31,6 +32,17 @@ class Example:
         self.world_count = args.world_count if args else 1
         self.viewer = viewer
         self.device = wp.get_device()
+        self.actuated = args.actuated if args else False
+
+        video_output_filename = getattr(args, "video_path", None)
+        self.record_video = enable_recording(
+            viewer=self.viewer,
+            record_video=args.record_video if args else False,
+            start_clip=True,
+            output_path=video_output_filename if video_output_filename is not None else "recording.mp4",
+            max_frames=getattr(args, "max_video_frames", 1000),
+            fps=self.fps,
+        )
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -38,11 +50,11 @@ class Example:
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
 
-        # Load the basic boxes hinged either from USD or by manually building it
+        # Load the basic box pendulum either from USD or by manually building it
         # with the builder API, depending on the command-line argument `--from-usd`
         if args is not None and args.from_usd:
-            # Load the basic boxes hinged USD and add it to the builder
-            asset_file = get_kamino_basics_asset("boxes_hinged.usda")
+            # Load the basic box pendulum USD and add it to the builder
+            asset_file = get_kamino_basics_asset("box_pendulum.usda")
             robot_builder.add_usd(
                 asset_file,
                 joint_ordering=None,
@@ -52,14 +64,22 @@ class Example:
                 hide_collision_shapes=False,
             )
         else:
-            # Manually build the basic boxes hinged using the builder API
-            basics.build_boxes_hinged(builder=robot_builder)
+            # Manually build the basic box pendulum using the builder API
+            basics.build_box_pendulum(builder=robot_builder)
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
+
+        # Enable implicit PD control if actuation is enabled
+        if self.actuated:
+            builder.joint_target_mode = [
+                mode if mode == newton.JointTargetMode.NONE else newton.JointTargetMode.VELOCITY
+                for mode in builder.joint_target_mode
+            ]
+            builder.joint_target_kd = [10.0] * len(builder.joint_target_kd)
 
         # Create the model from the builder
         self.model = builder.finalize(skip_validation_joints=True)
@@ -69,9 +89,9 @@ class Example:
         solver_config.use_collision_detector = True
         solver_config.use_fk_solver = False
         solver_config.dynamics.preconditioning = True
-        solver_config.padmm.primal_tolerance = 1e-4
-        solver_config.padmm.dual_tolerance = 1e-4
-        solver_config.padmm.compl_tolerance = 1e-4
+        solver_config.padmm.primal_tolerance = 1e-6
+        solver_config.padmm.dual_tolerance = 1e-6
+        solver_config.padmm.compl_tolerance = 1e-6
         solver_config.padmm.max_iterations = 200
         solver_config.padmm.rho_0 = 0.1
         solver_config.padmm.use_acceleration = True
@@ -88,6 +108,10 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
 
+        # Apply constant velocity as animation target
+        if self.actuated:
+            self.control.joint_target_qd.fill_(1.0)
+
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
 
@@ -102,9 +126,9 @@ class Example:
         # If only a single-world is created, set initial
         # camera position for better view of the system
         if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
-            camera_pos = wp.vec3(-0.5, -5.2, 1.8)
-            pitch = -15.0
-            yaw = 90.0
+            camera_pos = wp.vec3(-2.0, -2.0, 1.0)
+            pitch = -5.0
+            yaw = 45.0
             self.viewer.set_camera(camera_pos, pitch, yaw)
 
     def capture(self):
@@ -168,7 +192,31 @@ class Example:
             "--from-usd",
             action=argparse.BooleanOptionalAction,
             default=True,
-            help="Load the basic boxes hinged from USD.",
+            help="Load the basic box pendulum from USD.",
+        )
+        parser.add_argument(
+            "--actuated",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Actuate the pendulum with a fixed velocity target.",
+        )
+        parser.add_argument(
+            "--record-video",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Record a video of the viewer, up to 1000 frames.",
+        )
+        parser.add_argument(
+            "--video-path",
+            type=str,
+            default=None,
+            help="Output video path (defaults to 'recording.mp4').",
+        )
+        parser.add_argument(
+            "--max-video-frames",
+            type=int,
+            default=1000,
+            help="Maximum number of frames recorded for the video (defaults to 1000).",
         )
         return parser
 
@@ -178,3 +226,5 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
+    if hasattr(viewer, "finish_clip"):
+        viewer.finish_clip()
