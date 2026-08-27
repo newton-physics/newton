@@ -6746,9 +6746,9 @@ class ModelBuilder:
         src: Mesh | Gaussian | Heightfield | Any | None = None,
         is_static: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds a generic collision shape to the model.
 
@@ -6768,9 +6768,9 @@ class ModelBuilder:
             src: The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH`. Defaults to `None`.
             is_static: If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If `None`, mesh-backed shapes fall back to :attr:`~newton.Mesh.color`; otherwise the per-shape palette sequence is used.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity. Mesh-backed shapes fall back to :attr:`~newton.Mesh.opacity`.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated (e.g., "shape_N"). Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity. Mesh-backed shapes fall back to :attr:`~newton.Mesh.opacity`.
 
         Returns:
             The index of the newly added shape.
@@ -6964,7 +6964,6 @@ class ModelBuilder:
 
         return shape
 
-    @deprecate_nonkeyword_arguments
     def add_shape_plane(
         self,
         plane: Vec4 | None = (0.0, 0.0, 1.0, 0.0),
@@ -6975,9 +6974,9 @@ class ModelBuilder:
         body: int = -1,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """
         Adds a plane collision shape to the model.
@@ -6998,9 +6997,9 @@ class ModelBuilder:
             body: The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If `None`, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
 
         Returns:
             The index of the newly added shape.
@@ -7034,15 +7033,14 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_ground_plane(
         self,
         *,
         height: float = 0.0,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = _DEFAULT_GROUND_PLANE_COLOR,
-        label: str | None = None,
         opacity: float | None = None,
+        label: str | None = None,
     ) -> int:
         """Adds a ground plane collision shape to the model.
 
@@ -7050,8 +7048,8 @@ class ModelBuilder:
             height: The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. Defaults to the ground plane color ``(0.125, 0.125, 0.15)``. Pass ``None`` to use the per-shape palette color instead.
-            label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
+            label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
 
         Returns:
             The index of the newly added shape.
@@ -7066,7 +7064,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_sphere(
         self,
         body: int,
@@ -7076,9 +7073,9 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds a sphere collision shape or site to a body.
 
@@ -7089,9 +7086,9 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If `None`, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
 
         Returns:
             The index of the newly added shape or site.
@@ -7115,7 +7112,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_ellipsoid(
         self,
         body: int,
@@ -7127,9 +7123,9 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds an ellipsoid collision shape or site to a body.
 
@@ -7149,9 +7145,9 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
 
         Returns:
             The index of the newly added shape or site.
@@ -7194,7 +7190,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_box(
         self,
         body: int,
@@ -7206,9 +7201,9 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds a box collision shape or site to a body.
 
@@ -7223,9 +7218,9 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
 
         Returns:
             The index of the newly added shape or site.
@@ -7249,7 +7244,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_capsule(
         self,
         body: int,
@@ -7260,9 +7254,9 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds a capsule collision shape or site to a body.
 
@@ -7276,9 +7270,9 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
 
         Returns:
             The index of the newly added shape or site.
@@ -7307,7 +7301,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_cylinder(
         self,
         body: int,
@@ -7319,9 +7312,9 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds a cylinder collision shape or site to a body.
 
@@ -7338,9 +7331,9 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
 
         Returns:
             The index of the newly added shape or site.
@@ -7369,7 +7362,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_cone(
         self,
         body: int,
@@ -7380,9 +7372,9 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds a cone collision shape to a body.
 
@@ -7397,9 +7389,9 @@ class ModelBuilder:
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
 
         Returns:
             The index of the newly added shape.
@@ -7428,7 +7420,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_mesh(
         self,
         body: int,
@@ -7438,9 +7429,9 @@ class ModelBuilder:
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds a triangle mesh collision shape to a body.
 
@@ -7451,9 +7442,9 @@ class ModelBuilder:
             scale: The scale of the mesh. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.color` when available.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.opacity` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.opacity` when available.
 
         Returns:
             The index of the newly added shape.
@@ -7474,7 +7465,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_convex_hull(
         self,
         body: int,
@@ -7484,9 +7474,9 @@ class ModelBuilder:
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds a convex hull collision shape to a body.
 
@@ -7497,9 +7487,9 @@ class ModelBuilder:
             scale: The scale of the convex hull. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.color` when available.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.opacity` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.opacity` when available.
 
         Returns:
             The index of the newly added shape.
@@ -7520,7 +7510,6 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_heightfield(
         self,
         *,
@@ -7529,9 +7518,9 @@ class ModelBuilder:
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds a heightfield (2D elevation grid) collision shape to the model.
 
@@ -7545,9 +7534,9 @@ class ModelBuilder:
             scale: Per-instance scale applied to the heightfield extents (``hx``, ``hy``, ``min_z``, ``max_z``). Lets the same :class:`Heightfield` asset be reused at different sizes across shapes. Defaults to ``None``, which is treated as ``(1.0, 1.0, 1.0)``.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
 
         Returns:
             The index of the newly added shape.
@@ -7571,7 +7560,6 @@ class ModelBuilder:
             opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_gaussian(
         self,
         body: int,
@@ -7582,9 +7570,9 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         collision_proxy: str | Mesh | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        opacity: float | None = None,
     ) -> int:
         """Adds a Gaussian splat shape to a body.
 
@@ -7606,10 +7594,10 @@ class ModelBuilder:
                 - ``"convex_hull"``: auto-generate convex hull from Gaussian positions.
                 - A :class:`Mesh` instance: use the provided mesh as collision proxy.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: Optional unique label for identifying the shape.
             custom_attributes: Dictionary of custom attribute values for SHAPE
                 frequency attributes.
-            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
 
         Returns:
             The index of the Gaussian shape.
