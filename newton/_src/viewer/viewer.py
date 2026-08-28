@@ -712,6 +712,7 @@ class ViewerBase(ABC):
 
         # Clear shape instance batches but preserve geometry cache
         self._shape_instances = {}
+        prev_gaussian_instances = list(self._gaussian_instances)
         self._gaussian_instances = []
         self._sdf_isomesh_instances = {}
         self._sdf_isomesh_populated = False
@@ -722,6 +723,12 @@ class ViewerBase(ABC):
         self._shape_to_batch = None
 
         self._populate_shapes()
+
+        # Hide Gaussian handles for worlds that are no longer visible.
+        new_gaussian_names = {name for name, *_ in self._gaussian_instances}
+        for name, gaussian, *_ in prev_gaussian_instances:
+            if name not in new_gaussian_names:
+                self.log_gaussian(name, gaussian, hidden=True)
         if self._user_spacing is not None:
             self.set_world_offsets(self._user_spacing)
         else:
@@ -2331,7 +2338,7 @@ class ViewerBase(ABC):
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
                     xform = wp.transform_expand(shape_transform[s])
-                    gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
+                    gname = self._qualify(f"/model/gaussians/gaussian_{s}")
                     self._gaussian_instances.append(
                         (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
                     )
