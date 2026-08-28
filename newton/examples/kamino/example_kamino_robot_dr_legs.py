@@ -347,6 +347,12 @@ class Example:
             default=False,
             help="Animation the model based on imported motion.",
         )
+        parser.add_argument(
+            "--joint-effort-limit",
+            type=float,
+            default=None,
+            help="Override effort limit for all joint DOFs (default: use USD values).",
+        )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)
         parser.set_defaults(use_graph_conditionals=True)
