@@ -287,12 +287,14 @@ void load_cpu_kernels(const std::filesystem::path& wrp_path, APICGraph* graph) {
         const char* module_binary_filename = warp.wp_apic_get_kernel_module_binary_filename(graph, i);
         const char* backward_name = warp.wp_apic_get_kernel_backward_name(graph, i);
 
-        // Prefer the exact module this kernel was recorded in. Two modules can
-        // legitimately export a symbol of the same name (a shared low-level
-        // kernel compiled into more than one Warp module), so scanning every
-        // loaded handle and taking the first match risks resolving the wrong
-        // module's copy; fall back to scanning only when the recorded module
-        // isn't found, for compatibility with older metadata.
+        // Resolve strictly from the module this kernel was recorded in. Two
+        // modules can legitimately export a symbol of the same name (a shared
+        // low-level kernel compiled into more than one Warp module), so
+        // scanning every loaded handle and taking the first match risks
+        // resolving the wrong module's copy. A .wrp captured by this same
+        // Warp install always records this correctly, so no fallback: if the
+        // symbol isn't found here, something is wrong with the artifact and
+        // that should surface as an error, not a guess.
         uint64_t forward_fn = 0;
         uint64_t backward_fn = 0;
         if (module_binary_filename) {
@@ -300,15 +302,6 @@ void load_cpu_kernels(const std::filesystem::path& wrp_path, APICGraph* graph) {
             if (found != loaded_handles.end()) {
                 forward_fn = clang.wp_lookup(found->second.c_str(), forward_name);
                 if (forward_fn && backward_name) backward_fn = clang.wp_lookup(found->second.c_str(), backward_name);
-            }
-        }
-        if (!forward_fn) {
-            for (const auto& [filename, handle] : loaded_handles) {
-                forward_fn = clang.wp_lookup(handle.c_str(), forward_name);
-                if (forward_fn) {
-                    if (backward_name) backward_fn = clang.wp_lookup(handle.c_str(), backward_name);
-                    break;
-                }
             }
         }
         if (!forward_fn) {
