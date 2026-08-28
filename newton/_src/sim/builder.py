@@ -188,7 +188,7 @@ def _model_array_dtypes() -> dict[str, Any]:
     return result
 
 
-# Excluded from array backing: finalization loops over these in Python, where NumPy elements box a scalar per access.
+# Kept as lists because finalize() reads them in Python loops; other looped fields measured too small to add.
 _FINALIZE_LIST_CONTROL_FLOW_FIELDS = frozenset({"shape_flags", "shape_type", "joint_type", "joint_dof_dim"})
 
 
@@ -2966,12 +2966,13 @@ class ModelBuilder:
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     def _project_target_q_to_dof(self) -> list[float] | np.ndarray:
-        """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn the coord-sized
-        :attr:`joint_target_q` buffer into a DOF-shaped one.
+        """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
+        the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped one.
 
-        Under :data:`newton.use_coord_layout_targets` ``False`` the builder stores raw per-axis angles (extrinsic
-        ZYX) in the first 3 quat slots and a placeholder ``1.0`` in the 4th — this method just slices the placeholder
-        off to produce the legacy DOF-shaped ``Model.joint_target_q``.
+        Under :data:`newton.use_coord_layout_targets` ``False`` the builder
+        stores raw per-axis angles (extrinsic ZYX) in the first 3 quat slots
+        and a placeholder ``1.0`` in the 4th — this method just slices the
+        placeholder off to produce the legacy DOF-shaped ``Model.joint_target_q``.
         """
         if isinstance(self.joint_target_q, np.ndarray):
             joint_types = np.asarray(self.joint_type, dtype=np.int32)
@@ -3099,8 +3100,8 @@ class ModelBuilder:
         """Replicate a builder and immediately finalize the resulting model.
 
         Equivalent to :meth:`replicate` followed by :meth:`finalize`, but faster, and leaves this builder unmodified.
-        Use the separate calls when the replicated data must be changed in between. Cyclic garbage collection is
-        suspended for the duration.
+        Use the separate calls when the replicated data must be changed in between. Replication and finalization
+        run in a single batched pass; subclass overrides of :meth:`replicate` or :meth:`finalize` are not invoked.
 
         Args:
             builder: The builder to replicate.
@@ -3121,15 +3122,13 @@ class ModelBuilder:
         Returns:
             The finalized replicated model.
         """
-        collect_garbage = gc.isenabled()
-        if collect_garbage:
+        restore_garbage_collection = gc.isenabled()
+        if restore_garbage_collection:
             gc.disable()
         scratch = None
         try:
             scratch = self._fork_for_finalize()
-            scratch._replicate(
-                builder, world_count, spacing, xforms=xforms, label_prefixes=label_prefixes, array_backed=True
-            )
+            scratch._replicate(builder, world_count, spacing, True, xforms=xforms, label_prefixes=label_prefixes)
             model = scratch._finalize(
                 device,
                 requires_grad=requires_grad,
@@ -3142,13 +3141,12 @@ class ModelBuilder:
             )
         finally:
             del scratch
-            if collect_garbage:
+            if restore_garbage_collection:
                 gc.enable()
-                gc.collect()
         return model
 
     def _fork_for_finalize(self) -> ModelBuilder:
-        """Create a single-use builder with independent mutable containers."""
+        """Create a single-use builder whose mutable containers are copies; their elements stay shared."""
         scratch = copy.copy(self)
         for name, value in vars(self).items():
             if isinstance(value, list):
@@ -3198,10 +3196,10 @@ class ModelBuilder:
         builder: ModelBuilder,
         world_count: int,
         spacing: tuple[float, float, float],
+        array_backed: bool = False,
         *,
         xforms: Sequence[Transform] | None,
         label_prefixes: Sequence[str | None] | None = None,
-        array_backed: bool = False,
     ) -> None:
         if world_count <= 0:
             return
@@ -3222,13 +3220,7 @@ class ModelBuilder:
 
         base_world = self.world_count
         worlds = list(range(base_world, base_world + world_count))
-        self._merge_builder_copies(
-            builder,
-            worlds,
-            xforms,
-            label_prefixes,
-            array_backed=array_backed,
-        )
+        self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed)
 
         self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
         self.world_count += world_count
@@ -3239,7 +3231,6 @@ class ModelBuilder:
         worlds: Sequence[int],
         xforms: Sequence[Transform | None],
         label_prefixes: Sequence[str | None],
-        *,
         array_backed: bool = False,
     ) -> None:
         if builder.up_axis != self.up_axis:
@@ -3317,8 +3308,7 @@ class ModelBuilder:
 
         world_range = np.arange(world_count, dtype=np.int64)
         start_arrays = {kind: base + world_range * counts[kind] for kind, base in bases.items()}
-        # muscle_point has no count attribute, so its base is the waypoint count. Read it from array_starts
-        # when muscle_bodies is array-backed: it was already resized above to hold the replicated worlds.
+        # Array backing already resized muscle_bodies, so its pre-merge length has to come from array_starts.
         muscle_point_base = array_starts.get("muscle_bodies", len(self.muscle_bodies))
         start_arrays["muscle_point"] = muscle_point_base + world_range * len(builder.muscle_bodies)
 
@@ -12199,7 +12189,7 @@ class ModelBuilder:
             )
             m.particle_flags = wp.array(particle_flags, dtype=wp.int32)
             m.particle_world = wp.array(self.particle_world, dtype=wp.int32)
-            m.particle_max_radius = np.max(self.particle_radius) if len(self.particle_radius) > 0 else 0.0
+            m.particle_max_radius = float(np.max(self.particle_radius)) if len(self.particle_radius) > 0 else 0.0
             m.particle_max_velocity = self.particle_max_velocity
 
             particle_colors = np.empty(self.particle_count, dtype=int)

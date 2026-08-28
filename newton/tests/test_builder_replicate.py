@@ -2,17 +2,74 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
+import os
+import tracemalloc
 import unittest
+from collections.abc import Callable
 from unittest import mock
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton import Mesh, Model, ModelBuilder
-from newton._src.sim.builder import _FINALIZE_LIST_CONTROL_FLOW_FIELDS, _model_array_dtypes
 from newton.actuators import ControllerPD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
+
+# Runtime handles rebuilt by every finalize(); they carry a device pointer rather than model data.
+_OPAQUE_MODEL_TYPES = (wp.Bvh, wp.HashGrid, wp.Mesh, wp.Volume)
+
+# finalize() writes only part of each of these, leaving the rest as uninitialized memory that varies per run.
+_UNINITIALIZED_MODEL_ATTRIBUTES = ("body_colors", "bvh_shape_enabled", "particle_colors")
+
+# The leading component is downloaded whole, because scenes reference sibling mesh directories.
+_ASSET_SCENES = (
+    "anybotics_anymal_c/urdf/anymal.urdf",
+    "anybotics_anymal_c/usd/anymal_c.usda",
+    "anybotics_anymal_d/usd/anymal_d.usda",
+    "apptronik_apollo/usd_structured/apptronik_apollo.usda",
+    "booster_t1/usd_structured/T1.usda",
+    "disneyresearch/dr_legs/usd/dr_legs.usda",
+    "disneyresearch/dr_legs/usd/dr_legs_with_boxes.usda",
+    "franka_emika_panda/urdf/fr3.urdf",
+    "franka_emika_panda/urdf/fr3_franka_hand.urdf",
+    "manipulation_objects/cup/model.usda",
+    "manipulation_objects/pad/model.usda",
+    "robotiq_2f85_v4/usd_structured/Dual_wrist_camera.usda",
+    "shadow_hand/usd_structured/left_shadow_hand.usda",
+    "style3d/avatars/Female.usd",
+    "style3d/garments/Female_T_Shirt.usd",
+    "unitree_g1/mjcf/g1_29dof_with_hand_rev_1_0.xml",
+    "unitree_g1/usd/g1_isaac.usd",
+    "unitree_g1/usd_structured/g1_29dof_with_hand_rev_1_0.usda",
+    "unitree_go2/usd/go2.usda",
+    "unitree_h1/mjcf/h1_with_hand.xml",
+    "unitree_h1/urdf/h1.urdf",
+    "unitree_h1/usd/h1_minimal.usda",
+    "unitree_h1/usd_structured/h1.usda",
+    "universal_robots_ur10/usd/ur10_instanceable.usda",
+    "universal_robots_ur5e/usd_structured/ur5e.usda",
+    "wonik_allegro/urdf/allegro_hand_description_left.urdf",
+    "wonik_allegro/usd_structured/allegro_left.usda",
+)
+
+# Folders the rest of the suite already downloads, so the default run fetches nothing extra.
+_DEFAULT_ASSET_SCENES = (
+    "anybotics_anymal_d/usd/anymal_d.usda",
+    "disneyresearch/dr_legs/usd/dr_legs.usda",
+    "franka_emika_panda/urdf/fr3_franka_hand.urdf",
+    "universal_robots_ur10/usd/ur10_instanceable.usda",
+)
+
+_MEMORY_SCENES = (
+    "anybotics_anymal_d/usd/anymal_d.usda",
+    "franka_emika_panda/urdf/fr3_franka_hand.urdf",
+    "universal_robots_ur10/usd/ur10_instanceable.usda",
+)
+
+# Also the length of the scenarios' xforms and label_prefixes.
+_REPLICATE_WORLD_COUNT = 4
 
 
 class TestModelBuilderReplicate(unittest.TestCase):
@@ -106,6 +163,19 @@ class TestModelBuilderReplicate(unittest.TestCase):
         return builder
 
     @staticmethod
+    def _make_destination_with_prefix(source: ModelBuilder) -> ModelBuilder:
+        """Destination carrying global entities, a pre-merged copy of ``source``, and one existing world."""
+        builder = ModelBuilder()
+        body = builder.add_body(label="global")
+        builder.add_shape_sphere(body, radius=0.1, label="global_shape")
+        builder.add_builder(source, label_prefix="prefix")
+        builder.begin_world()
+        existing = builder.add_body(label="existing")
+        builder.add_shape_box(existing, hx=0.1, hy=0.1, hz=0.1, label="existing_shape")
+        builder.end_world()
+        return builder
+
+    @staticmethod
     def _make_destination() -> ModelBuilder:
         builder = ModelBuilder()
         body = builder.add_body(label="global")
@@ -156,6 +226,41 @@ class TestModelBuilderReplicate(unittest.TestCase):
             for field in ("indices", "pos_indices", "controller_args", "delay_args", "clamping_args"):
                 self.assertEqual(getattr(expected_entry, field), getattr(actual_entry, field))
 
+    def assert_model_values_equal(self, expected, actual, path: str) -> None:
+        """Compare two finalized-model values, recursing through containers and objects that lack ``__eq__``."""
+        self.assertIs(type(expected), type(actual), path)
+
+        if isinstance(expected, _OPAQUE_MODEL_TYPES):
+            return
+        if isinstance(expected, wp.array):
+            self.assertEqual(expected.dtype, actual.dtype, path)
+            self.assertEqual(expected.shape, actual.shape, path)
+            expected, actual = expected.numpy(), actual.numpy()
+
+        if isinstance(expected, np.ndarray):
+            self.assertEqual(expected.dtype, actual.dtype, path)
+            if expected.dtype.kind == "f":
+                np.testing.assert_allclose(actual, expected, err_msg=path)
+            else:
+                np.testing.assert_array_equal(actual, expected, err_msg=path)
+        elif isinstance(expected, (float, np.floating)):
+            np.testing.assert_allclose(actual, expected, err_msg=path)
+        elif isinstance(expected, (bool, int, str, bytes, np.integer, np.bool_, set, frozenset, type(None))):
+            self.assertEqual(expected, actual, path)
+        elif isinstance(expected, (list, tuple)):
+            for index, (expected_item, actual_item) in enumerate(zip(expected, actual, strict=True)):
+                self.assert_model_values_equal(expected_item, actual_item, f"{path}[{index}]")
+        elif isinstance(expected, dict):
+            self.assertEqual(set(expected), set(actual), path)
+            for key in expected:
+                self.assert_model_values_equal(expected[key], actual[key], f"{path}[{key!r}]")
+        elif isinstance(expected, type) or type(expected).__eq__ is not object.__eq__:
+            self.assertEqual(expected, actual, path)
+        elif hasattr(expected, "__dict__"):
+            self.assert_model_values_equal(vars(expected), vars(actual), path)
+        else:
+            self.fail(f"{path}: unhandled type {type(expected).__name__}; add an explicit comparison")
+
     def test_replicate_matches_add_world_loop(self):
         world_count = 4
         for use_coord_layout_targets in (False, True):
@@ -188,104 +293,155 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
         self.assert_builder_merge_state_equal(expected, actual)
 
-    def test_replicate_and_finalize_matches_separate_calls(self):
-        """Match ordinary replication using an array-backed scratch builder."""
-        source = self._make_source()
+    def assert_models_equal(self, expected: Model, actual: Model) -> None:
+        """Compare every attribute of two finalized models."""
+        self.assertEqual(set(vars(expected)), set(vars(actual)))
+        for name in sorted(set(vars(expected)) - set(_UNINITIALIZED_MODEL_ATTRIBUTES)):
+            with self.subTest(attribute=name):
+                self.assert_model_values_equal(getattr(expected, name), getattr(actual, name), name)
+
+    def test_replicate_and_finalize_matches_every_model_attribute(self):
+        """Compare the whole model, over destination shapes, per-world placement, labels, and target layout."""
         xforms = [
             wp.transform((1.0, 2.0, 3.0), wp.quat_rpy(0.1, 0.2, 0.3)),
             wp.transform((-2.0, 1.0, 0.5), wp.quat_rpy(-0.2, 0.4, 0.1)),
+            wp.transform((0.5, -1.5, 2.0), wp.quat_rpy(0.3, -0.1, 0.2)),
+            wp.transform((-1.0, 0.5, -2.5), wp.quat_rpy(-0.1, -0.3, 0.4)),
         ]
+        prefixes = [f"/World/envs/env_{index}/Robot" for index in range(_REPLICATE_WORLD_COUNT)]
+        placed = {"xforms": xforms, "label_prefixes": prefixes}
+        spaced = {"spacing": (2.0, 3.0, 0.0)}
 
-        def make_destination_with_mutable_prefix() -> ModelBuilder:
-            destination = ModelBuilder()
-            body = destination.add_body(label="global")
-            destination.add_shape_sphere(body, radius=0.1, label="global_shape")
-            destination.add_builder(source, label_prefix="prefix")
-            destination.begin_world()
-            existing = destination.add_body(label="existing")
-            destination.add_shape_box(existing, hx=0.1, hy=0.1, hz=0.1, label="existing_shape")
-            destination.end_world()
-            return destination
+        # Prefixes on half of these, so the unprefixed label path stays covered.
+        scenarios = (
+            ("empty/spacing", False, spaced),
+            ("prefixed/xforms/labels", True, placed),
+            ("empty/xforms/labels", False, placed),
+            ("prefixed/spacing", True, spaced),
+        )
 
-        expected_builder = make_destination_with_mutable_prefix()
-        expected_builder.replicate(source, len(xforms), xforms=xforms)
-        expected = expected_builder.finalize(device="cpu")
+        for label, prefixed_destination, replicate_kwargs in scenarios:
+            with self.subTest(scenario=label), mock.patch("newton.use_coord_layout_targets", True):
+                # The target layout selects the joint_target_q merge frequency, so build under the patch.
+                source = self._make_source()
 
-        unchanged_builder = make_destination_with_mutable_prefix()
-        actual_builder = make_destination_with_mutable_prefix()
-        captured = {}
-        original_finalize = ModelBuilder._finalize
+                def make_destination(prefixed=prefixed_destination, source=source) -> ModelBuilder:
+                    return self._make_destination_with_prefix(source) if prefixed else ModelBuilder()
 
-        def capture_finalize(scratch, *args, **kwargs):
-            captured["scratch"] = scratch
-            return original_finalize(scratch, *args, **kwargs)
-
-        with mock.patch.object(ModelBuilder, "_finalize", autospec=True, side_effect=capture_finalize):
-            actual = actual_builder.replicate_and_finalize(source, len(xforms), xforms=xforms, device="cpu")
-
-        scratch = captured["scratch"]
-        self.assertIsNot(scratch, actual_builder)
-        array_backed = {name for name in _model_array_dtypes() if isinstance(getattr(scratch, name, None), np.ndarray)}
-        self.assertTrue(array_backed)
-        self.assertTrue(all(getattr(scratch, name).flags.c_contiguous for name in array_backed))
-        self.assertTrue(all(isinstance(getattr(scratch, name), list) for name in _FINALIZE_LIST_CONTROL_FLOW_FIELDS))
-
-        for name in array_backed:
-            with self.subTest(attribute=name, property="dtype"):
-                warp_dtype = _model_array_dtypes()[name]
-                scalar_dtype = getattr(warp_dtype, "_wp_scalar_type_", warp_dtype)
-                self.assertEqual(getattr(scratch, name).dtype, np.dtype(wp.dtype_to_numpy(scalar_dtype)))
-
-        self.assert_builder_merge_state_equal(unchanged_builder, actual_builder)
-        for name in array_backed:
-            with self.subTest(attribute=name):
-                self.assertEqual(getattr(actual, name).dtype, getattr(expected, name).dtype)
-                np.testing.assert_array_equal(getattr(expected, name).numpy(), getattr(actual, name).numpy())
-
-        self.assertEqual(expected.world_count, actual.world_count)
-        self.assertEqual(expected.shape_contact_pair_count, actual.shape_contact_pair_count)
-        np.testing.assert_array_equal(expected.shape_contact_pairs.numpy(), actual.shape_contact_pairs.numpy())
-
-    def test_replicate_and_finalize_matches_muscle_waypoints(self):
-        """Offset muscle waypoints by the pre-merge count, not the array-backed allocation length."""
-        source = self._make_source()
-
-        for prefix_worlds in (0, 1):
-            with self.subTest(prefix_worlds=prefix_worlds):
-                expected_builder = ModelBuilder()
-                actual_builder = ModelBuilder()
-                for _ in range(prefix_worlds):
-                    expected_builder.add_builder(source)
-                    actual_builder.add_builder(source)
-
-                expected_builder.replicate(source, 3, spacing=(2.0, 0.0, 0.0))
+                expected_builder = make_destination()
+                expected_builder.replicate(source, _REPLICATE_WORLD_COUNT, **replicate_kwargs)
                 expected = expected_builder.finalize(device="cpu")
-                actual = actual_builder.replicate_and_finalize(source, 3, spacing=(2.0, 0.0, 0.0), device="cpu")
 
-                for name in ("muscle_start", "muscle_bodies", "muscle_points"):
-                    with self.subTest(attribute=name):
-                        np.testing.assert_array_equal(getattr(expected, name).numpy(), getattr(actual, name).numpy())
+                unchanged_builder = make_destination()
+                actual_builder = make_destination()
+                actual = actual_builder.replicate_and_finalize(
+                    source, _REPLICATE_WORLD_COUNT, device="cpu", **replicate_kwargs
+                )
 
-    def test_replicate_and_finalize_matches_coord_layout_targets(self):
-        with mock.patch("newton.use_coord_layout_targets", True):
+                self.assert_builder_merge_state_equal(unchanged_builder, actual_builder)
+                self.assert_models_equal(expected, actual)
+
+    def test_replicate_and_finalize_matches_legacy_target_layout(self):
+        """Cover the DOF-shaped joint_target_q projection, which only runs while use_coord_layout_targets is
+        off. Delete this test together with that flag; every other case runs the coordinate layout."""
+        with mock.patch("newton.use_coord_layout_targets", False):
             source = self._make_source()
+            # BALL and DISTANCE drop their quat-w padding at different offsets than FREE.
+            spinner = source.add_link(label="spinner")
+            source.add_joint_ball(parent=-1, child=spinner, label="ball")
+            floater = source.add_link(label="floater")
+            source.add_joint_distance(parent=-1, child=floater, label="distance")
+
             expected_builder = ModelBuilder()
-            expected_builder.replicate(source, 3, spacing=(2.0, 3.0, 0.0))
+            expected_builder.replicate(source, _REPLICATE_WORLD_COUNT, spacing=(2.0, 3.0, 0.0))
             expected = expected_builder.finalize(device="cpu")
 
-            actual = ModelBuilder().replicate_and_finalize(source, 3, spacing=(2.0, 3.0, 0.0), device="cpu")
+            actual = ModelBuilder().replicate_and_finalize(
+                source, _REPLICATE_WORLD_COUNT, spacing=(2.0, 3.0, 0.0), device="cpu"
+            )
 
-        for name in ("joint_q", "joint_qd", "joint_target_q", "joint_target_qd"):
-            with self.subTest(attribute=name):
-                np.testing.assert_array_equal(getattr(expected, name).numpy(), getattr(actual, name).numpy())
+        self.assert_models_equal(expected, actual)
+
+    @staticmethod
+    def _import_asset_scene(scene: str) -> ModelBuilder:
+        """Import one newton-assets scene given its repository-relative path."""
+        folder, _, relative_path = scene.partition("/")
+        path = newton.utils.download_asset(folder) / relative_path
+        builder = ModelBuilder()
+        importers = {".urdf": builder.add_urdf, ".xml": builder.add_mjcf}
+        importers.get(path.suffix, builder.add_usd)(str(path))
+        return builder
+
+    @staticmethod
+    def _build_measuring_peaks(build: Callable[[], Model]) -> tuple[Model, dict[str, int]]:
+        """Build a model, reporting peak bytes allocated through Python and through Warp.
+
+        Warp allocates outside the Python allocator, so neither tracker sees the other's memory.
+        """
+        gc.collect()
+        with wp.ScopedMemoryTracker("replicate", print=False) as tracker:
+            tracker.clear()
+            tracemalloc.start()
+            try:
+                model = build()
+                peaks = {"python": tracemalloc.get_traced_memory()[1]}
+            finally:
+                tracemalloc.stop()
+            peaks["warp"] = wp._src.context.runtime.core.wp_alloc_tracker_get_peak_bytes()
+        return model, peaks
+
+    def test_replicate_and_finalize_matches_asset_scenes(self):
+        """Agree with separate calls on real assets. Set NEWTON_TEST_ALL_ASSETS to sweep every scene."""
+        scenes = _ASSET_SCENES if os.environ.get("NEWTON_TEST_ALL_ASSETS") else _DEFAULT_ASSET_SCENES
+        world_count = 2
+        for scene in scenes:
+            with self.subTest(asset=scene):
+                source = self._import_asset_scene(scene)
+
+                expected_builder = ModelBuilder()
+                expected_builder.replicate(source, world_count)
+                expected = expected_builder.finalize(device="cpu")
+
+                actual = ModelBuilder().replicate_and_finalize(source, world_count, device="cpu")
+
+                self.assert_models_equal(expected, actual)
+
+    def test_replicate_and_finalize_allocates_no_more_at_batch_size(self):
+        """Replicate one source covering every feature at a realistic batch size, and check the contiguous
+        arrays and the suspended collector cost no more memory than the separate calls do."""
+        source = self._make_source()
+        for scene in _MEMORY_SCENES:
+            source.add_builder(self._import_asset_scene(scene))
+
+        # The contiguous-array path repays its fixed cost past roughly 32 worlds; below that it peaks higher.
+        world_count = 64
+
+        def separate() -> Model:
+            destination = ModelBuilder()
+            destination.replicate(source, world_count)
+            return destination.finalize(device="cpu")
+
+        def combined() -> Model:
+            return ModelBuilder().replicate_and_finalize(source, world_count, device="cpu")
+
+        # BVHs are built once per mesh, so without this they land on whichever path is measured first.
+        ModelBuilder().replicate_and_finalize(source, 2, device="cpu")
+
+        expected, separate_peaks = self._build_measuring_peaks(separate)
+        actual, combined_peaks = self._build_measuring_peaks(combined)
+
+        self.assert_models_equal(expected, actual)
+        for allocator, separate_peak in separate_peaks.items():
+            with self.subTest(peak=allocator):
+                self.assertLessEqual(combined_peaks[allocator], separate_peak)
 
     def test_replicate_and_finalize_preserves_gc_state(self):
-        """Preserve disabled GC and otherwise collect once after finalization."""
+        """Restore the collector without forcing a collection, and leave an already-disabled one alone."""
         source = self._make_source()
 
         with mock.patch.object(gc, "collect", wraps=gc.collect) as collect:
             ModelBuilder().replicate_and_finalize(source, 2, device="cpu")
-        collect.assert_called_once_with()
+        collect.assert_not_called()
         self.assertTrue(gc.isenabled())
 
         gc.disable()
@@ -751,10 +907,3 @@ class TestModelBuilderReplicateLabelPrefixes(unittest.TestCase):
         """label_prefixes must have exactly one entry per replicated world."""
         with self.assertRaises(ValueError):
             ModelBuilder().replicate(self._source("root"), 2, label_prefixes=["only-one"])
-
-    def test_atomic_path_applies_the_same_prefixes(self):
-        """replicate_and_finalize() names each world exactly as replicate() does."""
-        prefixes = [f"/World/envs/env_{index}/Robot" for index in range(3)]
-        model = ModelBuilder().replicate_and_finalize(self._source(), 3, label_prefixes=prefixes, device="cpu")
-
-        self.assertEqual(list(model.shape_label), [f"{prefix}/box" for prefix in prefixes])
