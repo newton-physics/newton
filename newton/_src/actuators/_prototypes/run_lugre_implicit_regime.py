@@ -4,11 +4,7 @@
 """Show a case where implicit actuation makes a clear difference.
 
 This example uses a low joint inertia (0.1 kg·m²) and strong
-velocity-dependent friction (``sigma1 + sigma2 = 10``). With a 0.01 s
-timestep, this friction can change the joint velocity significantly during one
-step. This makes the difference between explicit and implicit actuation easy to
-see. The comparison example uses much higher inertia and weaker damping, so the
-difference is very small there.
+velocity-dependent friction (``sigma1 + sigma2 = 10``).
 
 Three runs are compared:
 
@@ -19,7 +15,6 @@ Three runs are compared:
 All runs use the same LuGre state update. Newton's implicit result should stay
 close to MuJoCo, while the explicit result has larger transient errors.
 
-This is a focused stress case, not a claim that implicit mode is always better.
 The scene has no gravity or contacts, and the torque drives the joint beyond
 breakaway. Gravity, contacts, and other forces can require a more complete
 velocity prediction than the one tested here.
