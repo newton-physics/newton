@@ -2577,6 +2577,65 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         np.testing.assert_allclose(tau_all, tau_motion + tau_wrench + tau_null, rtol=1e-4, atol=1e-4)
 
+    def test_step_partial_wrench_selection_is_rotated_by_the_resolved_tool_orientation(self):
+        """A partial (non-full) wrench selection is rotated using step()'s own FK-resolved tool orientation.
+
+        Only the tool-local X axis is force-controlled here; every other
+        axis defaults to motion-controlled. With zero pose and twist error,
+        the motion term is exactly zero everywhere regardless of selection,
+        isolating the wrench term as the only contributor. Since the arm's
+        joints all rotate about world Z, the tool's world orientation is a
+        pure Z rotation by ``theta1 + theta2`` -- already verified correct by
+        ``test_step_resolves_tool_pose_matching_forward_kinematics`` -- which
+        this test reuses directly to build the expected rotated selection
+        matrix, independent of :func:`_rotate_selection_matrix_kernel`.
+        """
+        device = wp.get_device()
+        model, _state, _tool_body, _transform = _build_two_link_arm_with_tool_site(device)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+            use_wrench_feedforward=True,
+            wrench_selection_axes_tool=wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+
+        theta1, theta2 = 0.3, -0.2
+        inputs.joint_q.assign(np.array([theta1, theta2], dtype=np.float32))
+        inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
+        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+        desired_wrench_world = np.array([3.0, -1.5, 0.4, 0.0, 0.0, 2.0], dtype=np.float32)
+        inputs.desired_wrench_world.assign(np.array([desired_wrench_world]))
+
+        # First step to read off the current tool pose, so the second step
+        # (the one actually measured) has exactly zero pose error.
+        inputs.desired_tool_pose_world.assign(np.zeros((1, 7), dtype=np.float32))
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        inputs.desired_tool_pose_world.assign(ctrl._tool_pose_world.numpy())
+
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        combined_angle = theta1 + theta2
+        cos_c, sin_c = np.cos(combined_angle), np.sin(combined_angle)
+        world_from_tool_rotation = np.array([[cos_c, -sin_c, 0.0], [sin_c, cos_c, 0.0], [0.0, 0.0, 1.0]])
+        # Local weight is 1 on linear X only, 0 everywhere else, so the
+        # angular block of the rotated selection matrix is exactly zero.
+        local_linear_selection = np.diag([1.0, 0.0, 0.0])
+        world_linear_selection = world_from_tool_rotation @ local_linear_selection @ world_from_tool_rotation.T
+
+        selected_wrench_world = np.zeros(6, dtype=np.float32)
+        selected_wrench_world[:3] = world_linear_selection @ desired_wrench_world[:3]
+
+        jacobian_tool_world = ctrl._jacobian_tool_world.numpy()[0]
+        expected_joint_f = jacobian_tool_world.T @ selected_wrench_world
+        np.testing.assert_allclose(outputs.joint_f.numpy(), expected_joint_f, rtol=1e-4, atol=1e-4)
+
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()
