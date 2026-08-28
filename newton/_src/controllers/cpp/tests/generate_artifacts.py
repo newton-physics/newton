@@ -187,11 +187,22 @@ def export_cpu_variant(out_dir: Path) -> np.ndarray:
 
 
 def main(out_dir: Path) -> int:
-    if not wp.is_cuda_available():
-        print("generate_artifacts: CUDA is required to capture a graph", file=sys.stderr)
-        return 1
-
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Capturing on the CPU never needs CUDA, so this artifact is always
+    # written -- it is what lets the C++ runtime's CPU replay path run in
+    # ordinary CPU-only CI, with no GPU involved anywhere.
+    cpu_expected = export_cpu_variant(out_dir)
+    (out_dir / "joint_impedance_cpu_expected.txt").write_text(
+        "\n".join(f"{value:.9g}" for value in cpu_expected) + "\n"
+    )
+    print("generate_artifacts: wrote joint_impedance_cpu.wrp")
+    print(f"                    CPU-captured torques: {cpu_expected}")
+
+    if not wp.is_cuda_available():
+        print("generate_artifacts: no CUDA device; skipping CUDA-captured artifacts", file=sys.stderr)
+        return 0
+
     device = wp.get_device()
 
     model = build_model(device)
@@ -220,19 +231,10 @@ def main(out_dir: Path) -> int:
     np.testing.assert_allclose(fleet_torques, FLEET_BLOCK @ (FLEET_STIFFNESS * FLEET_Q_DES), atol=1e-5)
     (out_dir / "mass_matrix_view_expected.txt").write_text("\n".join(f"{value:.9g}" for value in fleet_torques) + "\n")
 
-    cpu_expected = export_cpu_variant(out_dir)
-    (out_dir / "joint_impedance_cpu_expected.txt").write_text(
-        "\n".join(f"{value:.9g}" for value in cpu_expected) + "\n"
-    )
-
-    print(
-        "generate_artifacts: wrote joint_impedance.wrp, joint_impedance_views.wrp, "
-        "mass_matrix_view.wrp, joint_impedance_cpu.wrp"
-    )
+    print("generate_artifacts: wrote joint_impedance.wrp, joint_impedance_views.wrp, mass_matrix_view.wrp")
     print(f"                    reference torques {expected}")
     print(f"                    scattered into slots {VIEW_INDICES.tolist()} of {VIEW_SIM_DOFS}: {scattered}")
     print(f"                    model-free torques from a view-bound mass matrix: {fleet_torques}")
-    print(f"                    CPU-captured torques: {cpu_expected}")
     return 0
 
 

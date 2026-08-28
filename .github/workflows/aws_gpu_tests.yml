@@ -185,7 +185,8 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           cmake -S newton/_src/controllers/cpp -B build/controllers
           cmake --build build/controllers
-          ctest --test-dir build/controllers --output-on-failure
+          ctest --test-dir build/controllers --output-on-failure \
+            --output-junit "$GITHUB_WORKSPACE/build/controllers/ctest.xml"
 
       - name: Check disk space (post-test)
         if: always()
@@ -195,7 +196,9 @@ jobs:
         if: ${{ !cancelled() }}
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
-          paths: "rspec.xml"
+          paths: |
+            rspec.xml
+            build/controllers/ctest.xml
           show: "fail"
 
       - name: Upload coverage artifact

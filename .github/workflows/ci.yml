@@ -156,12 +156,22 @@ jobs:
           --no-cache-clear
           --start-directory asv/tests
           --junit-report-xml asv-rspec.xml
+      - name: Build and run C++ controller runtime tests (CPU only)
+        shell: bash
+        run: |
+          uv tool install "cmake==4.4.2"
+          export PATH="$HOME/.local/bin:$PATH"
+          cmake -S newton/_src/controllers/cpp -B build/controllers
+          cmake --build build/controllers
+          ctest --test-dir build/controllers --output-on-failure \
+            --output-junit "$GITHUB_WORKSPACE/build/controllers/ctest.xml"
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
           paths: |
             rspec.xml
             asv-rspec.xml
+            build/controllers/ctest.xml
           show: "fail"
         if: always()
       - name: Upload test results artifact
@@ -172,6 +182,7 @@ jobs:
           path: |
             rspec.xml
             asv-rspec.xml
+            build/controllers/ctest.xml
           retention-days: 1
           overwrite: true
       - name: Upload coverage artifact

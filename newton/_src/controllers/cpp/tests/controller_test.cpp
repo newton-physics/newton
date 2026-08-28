@@ -329,23 +329,38 @@ int main(int argc, char** argv) {
     const std::filesystem::path cpu_wrp = artifacts / "joint_impedance_cpu.wrp";
     const std::filesystem::path cpu_reference = artifacts / "joint_impedance_cpu_expected.txt";
 
-    if (!std::filesystem::exists(wrp) || !std::filesystem::exists(views_wrp)
-        || !std::filesystem::exists(mass_matrix_wrp) || !std::filesystem::exists(reference)
-        || !std::filesystem::exists(mass_matrix_reference) || !std::filesystem::exists(cpu_wrp)
-        || !std::filesystem::exists(cpu_reference)) {
-        std::cerr << "Missing artifacts in " << artifacts << "; run generate_artifacts.py first.\n";
+    if (!std::filesystem::exists(cpu_wrp) || !std::filesystem::exists(cpu_reference)) {
+        std::cerr << "Missing CPU artifacts in " << artifacts << "; run generate_artifacts.py first.\n";
         return 1;
     }
 
+    // generate_artifacts.py always writes the CPU-captured artifact, but only
+    // writes the CUDA-captured ones when a CUDA device is available -- which a
+    // CPU-only CI runner (Windows, macOS, plain Linux) never has. Skip the
+    // CUDA-only tests in that case rather than fail on a missing artifact.
+    const bool have_cuda_artifacts = std::filesystem::exists(wrp) && std::filesystem::exists(views_wrp)
+        && std::filesystem::exists(mass_matrix_wrp) && std::filesystem::exists(reference)
+        && std::filesystem::exists(mass_matrix_reference);
+
     try {
-        test_buffers_are_sized_from_the_graph(wrp);
-        test_params_lists_every_parameter(wrp);
-        test_unknown_field_throws(wrp);
-        test_step_reports_a_bad_field_without_throwing(wrp);
-        test_step_matches_python(wrp, reference);
-        test_view_bound_ports_round_trip(views_wrp, reference);
-        test_view_bound_mass_matrix(mass_matrix_wrp, mass_matrix_reference);
+        // These four don't exercise device-specific compute, only the graph's
+        // parameter table and error handling, so either capture works; prefer
+        // whichever this machine actually has.
+        const std::filesystem::path& structural_wrp = have_cuda_artifacts ? wrp : cpu_wrp;
+        test_buffers_are_sized_from_the_graph(structural_wrp);
+        test_params_lists_every_parameter(structural_wrp);
+        test_unknown_field_throws(structural_wrp);
+        test_step_reports_a_bad_field_without_throwing(structural_wrp);
+
         test_cpu_step_matches_python(cpu_wrp, cpu_reference);
+
+        if (have_cuda_artifacts) {
+            test_step_matches_python(wrp, reference);
+            test_view_bound_ports_round_trip(views_wrp, reference);
+            test_view_bound_mass_matrix(mass_matrix_wrp, mass_matrix_reference);
+        } else {
+            std::cout << "\nNo CUDA artifacts present; skipping CUDA-only tests (CPU-only run).\n";
+        }
     } catch (const std::exception& error) {
         std::cerr << "FAILED: unexpected exception: " << error.what() << "\n";
         ++failures;
