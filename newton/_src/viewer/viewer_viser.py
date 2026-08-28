@@ -141,6 +141,7 @@ class ViewerViser(ViewerBase):
         self._plot_history_size = plot_history_size
         self._plane_meshes = {}
         self._plane_handles = {}
+        self._plane_geometry_keys = {}  # Cache of (count, widths, lengths, cell_sizes) per plane batch name
 
         super().__init__()
 
@@ -752,6 +753,7 @@ class ViewerViser(ViewerBase):
 
     def _remove_plane_handles(self, name: str):
         """Remove any plane-grid handles associated with an instance batch."""
+        self._plane_geometry_keys.pop(name, None)
         handle = self._plane_handles.pop(name, None)
         if handle is None:
             return
@@ -776,14 +778,22 @@ class ViewerViser(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         hidden: bool = False,
     ):
-        """Render plane instances as viser grids."""
-        self._remove_plane_handles(name)
+        """Render plane instances as viser grids.
 
+        Grid handles are cached by name and only recreated when the instance
+        count, extents, or cell sizes change; a pose-only update (the common case for a
+        static ground plane logged every frame) just moves the existing
+        handles instead of tearing them down and rebuilding, which avoids a
+        visible flicker as handles disappear and reappear over the websocket.
+        """
         if hidden or xforms is None:
+            for handle in self._plane_handles.get(name, ()):
+                handle.visible = False
             return
 
         xforms_np = self._to_numpy(xforms)
         if xforms_np is None or len(xforms_np) == 0:
+            self._remove_plane_handles(name)
             return
 
         xforms_np = np.asarray(xforms_np, dtype=np.float32)
@@ -796,8 +806,10 @@ class ViewerViser(ViewerBase):
         base_width = float(plane_info["width"])
         base_length = float(plane_info["length"])
 
-        handles = []
-        for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
+        widths = []
+        lengths = []
+        cell_sizes = []
+        for idx in range(len(positions)):
             width = base_width
             length = base_length
 
@@ -811,17 +823,41 @@ class ViewerViser(ViewerBase):
                 length *= sy
                 cell_size *= max(sx, sy)
 
+            widths.append(width)
+            lengths.append(length)
+            cell_sizes.append(cell_size)
+
+        geometry_key = (len(positions), tuple(widths), tuple(lengths), tuple(cell_sizes))
+        existing = self._plane_handles.get(name)
+
+        if (
+            existing is not None
+            and len(existing) == len(positions)
+            and self._plane_geometry_keys.get(name) == geometry_key
+        ):
+            # Only the pose changed (e.g. a body-attached plane, or the same
+            # static plane logged again this frame) -- move handles in place.
+            for handle, position, quat_wxyz in zip(existing, positions, quats_wxyz, strict=False):
+                handle.position = tuple(float(v) for v in position)
+                handle.wxyz = tuple(float(v) for v in quat_wxyz)
+                handle.visible = True
+            return
+
+        self._remove_plane_handles(name)
+
+        handles = []
+        for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
             # The plane's local frame has its normal along +Z, so the grid lies in the local XY plane.
             handle = self._call_scene_method(
                 self._server.scene.add_grid,
                 name=f"{name}/grid_{idx}",
-                width=width,
-                height=length,
+                width=widths[idx],
+                height=lengths[idx],
                 plane="xy",
                 cell_color=(150, 150, 150),
                 section_color=(110, 110, 110),
-                cell_size=cell_size,
-                section_size=cell_size,
+                cell_size=cell_sizes[idx],
+                section_size=cell_sizes[idx],
                 position=tuple(float(v) for v in position),
                 wxyz=tuple(float(v) for v in quat_wxyz),
             )
@@ -829,6 +865,7 @@ class ViewerViser(ViewerBase):
 
         if handles:
             self._plane_handles[name] = handles
+            self._plane_geometry_keys[name] = geometry_key
 
     @override
     def log_instances(
@@ -1435,6 +1472,9 @@ class ViewerViser(ViewerBase):
             xform_np = np.asarray(xform, dtype=np.float32)
             handle.position = xform_np[:3]
             handle.wxyz = self._quats_xyzw_to_wxyz(xform_np[3:7])
+        else:
+            handle.position = (0.0, 0.0, 0.0)
+            handle.wxyz = (1.0, 0.0, 0.0, 0.0)
 
     @override
     def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
