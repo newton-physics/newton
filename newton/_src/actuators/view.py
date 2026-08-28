@@ -31,6 +31,18 @@ class ActuatorView:
         mapping = next(iter(self._mappings.values()))
         self._full_mask = wp.full(mapping.shape[0], True, dtype=bool, device=mapping.device)
 
+    def get_actuator_dof_mapping(self, actuator: Actuator) -> wp.array2d[int]:
+        """Get the view-local DOF mapping for an actuator.
+
+        Args:
+            actuator: Actuator whose mapping to return.
+
+        Returns:
+            Mapping from view DOFs to actuator parameter indices. Unmapped DOFs
+            contain ``-1``.
+        """
+        return self._mappings[actuator]
+
     @classmethod
     def from_articulation_view(cls, articulation_view: ArticulationView, actuators: list[Actuator]) -> ActuatorView:
         """Build a view from an existing articulation view.

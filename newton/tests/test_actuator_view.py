@@ -127,6 +127,13 @@ class TestActuatorView(unittest.TestCase):
 
         np.testing.assert_array_equal(values.numpy(), [[10.0, 0.0, 20.0], [30.0, 0.0, 40.0]])
 
+    def test_get_actuator_dof_mapping_returns_view_mapping(self):
+        actuator = self.make_actuator([10.0, 20.0, 30.0, 40.0])
+        mapping = self.mapping()
+        view = actuator_api.ActuatorView({actuator: mapping})
+
+        self.assertIs(view.get_actuator_dof_mapping(actuator), mapping)
+
     def test_from_articulation_view_uses_explicit_actuators(self):
         source, actuator = self.make_articulation_view()
 
