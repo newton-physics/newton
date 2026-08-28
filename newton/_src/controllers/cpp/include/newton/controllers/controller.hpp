@@ -70,8 +70,11 @@ public:
     // Write the inputs and dt into the graph, launch it, read the outputs back.
     // Returns false without throwing if a field is not a parameter of this
     // graph, if its length does not match, or if the launch fails; last_error()
-    // then describes what went wrong. On failure the output buffer holds
-    // whatever it held before the call.
+    // then describes what went wrong. Output fields are read back one at a
+    // time, in unspecified order, so a failure partway through leaves earlier
+    // fields already overwritten with their new values and later fields at
+    // whatever they held before the call — output is not all-or-nothing on
+    // failure.
     //
     // Fill every element of each input field: for a view-bound field the graph
     // reads only the elements the view addressed, and ignores the rest. The
