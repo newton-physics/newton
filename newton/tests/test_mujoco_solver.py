@@ -4390,20 +4390,59 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         )
 
     def test_initial_forward_skips_mujoco_contacts(self):
-        """Newton-contact mode avoids transient MuJoCo collision detection."""
-        mujoco, _ = SolverMuJoCo.import_mujoco()
-        original_forward = mujoco.mj_forward
-        contact_disabled_during_forward: list[bool] = []
+        """Verify Newton-contact initialization skips transient MuJoCo collision detection."""
+        try:
+            mujoco, _ = SolverMuJoCo.import_mujoco()
+            original_forward = mujoco.mj_forward
+            contact_disabled_during_forward: list[bool] = []
 
-        def recording_forward(model, data):
-            contact_disabled_during_forward.append(bool(model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_CONTACT))
-            return original_forward(model, data)
+            def recording_forward(model, data):
+                contact_disabled_during_forward.append(
+                    bool(model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_CONTACT)
+                )
+                return original_forward(model, data)
 
-        with patch.object(mujoco, "mj_forward", side_effect=recording_forward):
-            solver = SolverMuJoCo(self.model, use_mujoco_contacts=False)
+            with patch.object(mujoco, "mj_forward", side_effect=recording_forward):
+                solver = SolverMuJoCo(self.model, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
 
         self.assertEqual(contact_disabled_during_forward, [True])
         self.assertFalse(solver.mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_CONTACT)
+
+    def test_newton_contact_defaults_preserve_generated_contacts(self):
+        """Preserve generated Newton contacts when sizing default MuJoCo buffers."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for sphere_index in range(60):
+            body = builder.add_body(
+                xform=wp.transform(
+                    wp.vec3(float(sphere_index % 10) * 2.0, float(sphere_index // 10) * 2.0, 0.45),
+                    wp.quat_identity(),
+                )
+            )
+            builder.add_shape_sphere(body=body, radius=0.5)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
+        generated_contact_count = int(contacts.rigid_contact_count.numpy()[0])
+
+        self.assertGreater(generated_contact_count, 48)
+        self.assertGreaterEqual(solver.mjw_data.naconmax, generated_contact_count)
+        self.assertGreaterEqual(solver.mjw_data.njmax, generated_contact_count * 4)
+
+        solver._convert_contacts_to_mjwarp(model, state, contacts)
+        injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertEqual(injected_contact_count, generated_contact_count)
 
     def test_sphere_rolls_without_slip_with_newton_contacts(self):
         radius = 0.1

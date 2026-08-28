@@ -32,6 +32,7 @@ from ...sim import (
     StateFlags,
 )
 from ...sim.articulation import eval_articulation_fk, eval_fk
+from ...sim.collide import _estimate_rigid_contact_max
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
@@ -7680,6 +7681,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
                 nconmax = 0
+            elif not self._use_mujoco_contacts:
+                # The initialization forward intentionally produces no contacts
+                # in this mode, so size MJWarp from Newton's collision budget.
+                if nconmax is None:
+                    newton_contact_max = model.rigid_contact_max or _estimate_rigid_contact_max(model)
+                    nconmax = (newton_contact_max + nworld - 1) // nworld
+
+                if njmax is None:
+                    max_contact_dim = max(
+                        1,
+                        int(np.max(self.mj_model.geom_condim, initial=1)),
+                        int(np.max(self.mj_model.pair_dim, initial=1)),
+                    )
+                    if self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
+                        constraint_rows_per_contact = max_contact_dim
+                    else:
+                        constraint_rows_per_contact = max(1, 2 * (max_contact_dim - 1))
+                    njmax = self.mj_data.nefc + nconmax * constraint_rows_per_contact
             elif nconmax is not None and nconmax < self.mj_data.ncon:
                 warnings.warn(
                     f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
