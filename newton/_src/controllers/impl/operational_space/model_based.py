@@ -46,13 +46,11 @@ class ControllerOperationalSpace(ControllerBase):
     it are visible to the controller immediately.
 
     **Joint selection.** ``articulations`` and ``joints`` select which DOFs
-    become the tool Jacobian's columns, following the same
-    :ref:`label-matching` convention and single-coordinate/single-DOF
-    restriction that :class:`~newton.controllers.ControllerJointImpedance`
-    uses, resolved with the same internal joint-selection logic: each is a
-    list of model indices and/or label patterns (or a single pattern),
+    become the tool Jacobian's columns, following :ref:`label-matching`: each
+    is a list of model indices and/or label patterns (or a single pattern),
     matched against :attr:`~newton.Model.articulation_label` and the leaf
-    component of :attr:`~newton.Model.joint_label` respectively.
+    component of :attr:`~newton.Model.joint_label` respectively. Only joints
+    spanning a single coordinate and a single DOF can be controlled.
 
     **Tool selection.** ``tool`` selects one Newton *site* per robot that
     ends up with controlled joints — the task frame every task-space port is
@@ -147,11 +145,16 @@ class ControllerOperationalSpace(ControllerBase):
         joint_qd_idx = joint_selection.qd_start
 
         # ------------------------------------------------------------------
-        # Validation of the two model-space index arrays select_joints
-        # returns. Identical to ControllerJointImpedance's block: OSC's
-        # Jacobian columns are resolved by the exact same "which DOFs does
-        # this robot control" problem that controller solves for its
-        # joint-space PD term.
+        # Validate the two model-space index arrays select_joints returns:
+        #   1. type/dtype/shape of q_start, then qd_start against its length
+        #   2. non-empty
+        #   3. both index within the model's coordinate/DOF space
+        #   4. qd_start has no duplicate DOF (a duplicate coordinate in
+        #      q_start alone cannot occur without one, given every joint
+        #      here is 1-coordinate/1-DOF and step 5 below)
+        #   5. q_start[i]/qd_start[i] name the same joint for every i
+        #   6. every joint belongs to a robot (articulation)
+        #   7. joints are grouped by robot, ascending
         # ------------------------------------------------------------------
         if not isinstance(joint_q_idx, wp.array):
             raise TypeError(f"joint_selection.q_start must be a wp.array, got {type(joint_q_idx).__name__}.")
@@ -217,6 +220,18 @@ class ControllerOperationalSpace(ControllerBase):
                 f"then robot 1's, ...); got robot order {owning_robot.tolist()}."
             )
 
+        # Packed-robot bookkeeping, derived from owning_robot's distinct
+        # values (model_robot_index_np) and their counts
+        # (controlled_dofs_per_robot_np):
+        #   - controlled_dofs_per_robot: the inner ModelFree's whole layout
+        #   - controlled_robot_count: packed slot count (vs. model_robot_count,
+        #     every articulation whether controlled or not)
+        #   - max_controlled_dofs: sizes every padded per-robot buffer
+        #   - self._model_robot_index: packed slot -> real model articulation
+        #     index, needed since eval_jacobian/eval_mass_matrix output is
+        #     addressed by model articulation number, not packed slot
+        #   - self._controlled_robot_mask: model_robot_count-length mask so
+        #     eval_fk/eval_jacobian/eval_mass_matrix skip uncontrolled robots
         model_robot_index_np, controlled_dofs_per_robot_np = np.unique(owning_robot, return_counts=True)
         model_robot_index_np = model_robot_index_np.astype(np.int32)
         controlled_dofs_per_robot_np = controlled_dofs_per_robot_np.astype(np.int32)
@@ -290,25 +305,23 @@ class ControllerOperationalSpace(ControllerBase):
         self._tool_body = wp.array(tool_body_np, dtype=wp.int32, device=self._device)
         self._tool_transform_body = wp.array(tool_transform_body, dtype=wp.transform, device=self._device)
 
-        # robot_link_idx: the tool body's row-block index within its
+        # robot_link_idx: the tool site's row-block index within its
         # articulation's eval_jacobian output. eval_articulation_jacobian
-        # writes link i's rows at [i*6 : i*6+6], where i is the position of
-        # the joint whose child is that body within the articulation's own
-        # joint range -- so this is (joint index of the tool body) minus
-        # (that articulation's first joint index).
-        joint_of_body_np = np.full(model.body_count, -1, dtype=np.int32)
-        joint_of_body_np[joint_child_np] = np.arange(joint_child_np.size, dtype=np.int32)
+        # writes link i's rows at [i*6 : i*6+6], where i is the position,
+        # within its articulation's own joint range, of the joint that moves
+        # the tool site's body -- so this is (that joint's index) minus
+        # (the articulation's first joint index).
+        body_to_joint_np = np.full(model.body_count, -1, dtype=np.int32)
+        body_to_joint_np[joint_child_np] = np.arange(joint_child_np.size, dtype=np.int32)
+        tool_site_joint_np = body_to_joint_np[tool_body_np]
         articulation_start_np = model.articulation_start.numpy()
-        robot_link_idx_np = (joint_of_body_np[tool_body_np] - articulation_start_np[model_robot_index_np]).astype(
-            np.int32
-        )
+        robot_link_idx_np = (tool_site_joint_np - articulation_start_np[model_robot_index_np]).astype(np.int32)
         self._robot_link_idx = wp.array(robot_link_idx_np, dtype=wp.int32, device=self._device)
         # ------------------------------------------------------------------
 
         # ------------------------------------------------------------------
-        # Dynamics buffers. Allocated up front, mirroring
-        # ControllerJointImpedance; populated by step() (not implemented
-        # yet).
+        # Dynamics buffers. Allocated up front; populated by step() (not
+        # implemented yet).
         # ------------------------------------------------------------------
         self._model_mass_matrix: wp.array3d[wp.float32] | None = None
         self._controlled_mass_matrix: wp.array3d[wp.float32] | None = None
@@ -384,8 +397,7 @@ class ControllerOperationalSpace(ControllerBase):
             requires_grad=self._requires_grad,
         )
 
-        # Pre-wired fields forwarded to the inner controller each step,
-        # mirroring ControllerJointImpedance's self._mf_input pattern. Live
+        # Pre-wired fields forwarded to the inner controller each step: live
         # indexed views of the whole-model/tool buffers above, so the inner
         # controller reads current contents with no index table of its own.
         self._mf_input = ControllerOperationalSpaceModelFree.Inputs()
