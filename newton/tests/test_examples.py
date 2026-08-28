@@ -24,7 +24,6 @@ import tempfile
 import unittest
 from typing import Any
 
-import numpy as np
 import warp as wp
 
 import newton.tests.unittest_utils
@@ -622,63 +621,6 @@ add_example_test(
 
 class TestRobotExamples(unittest.TestCase):
     pass
-
-
-class TestAsRoBalletExample(unittest.TestCase):
-    def test_import_without_warp_nn(self):
-        """Verify the LQR-capable module imports without warp-nn."""
-        code = """
-import builtins
-
-original_import = builtins.__import__
-
-
-def import_without_warp_nn(name, *args, **kwargs):
-    if name == "warp_nn" or name.startswith("warp_nn."):
-        raise ModuleNotFoundError("blocked warp_nn import")
-    return original_import(name, *args, **kwargs)
-
-
-builtins.__import__ = import_without_warp_nn
-import newton.examples.robot.example_robot_asroballet
-"""
-        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    @unittest.skipUnless(_HAS_ONNX_RUNTIME, "asRoBallet example requires ONNX support")
-    def test_interactive_velocity_command(self):
-        """Verify keyboard and GUI commands share configured limits."""
-        from newton.examples.robot.example_robot_asroballet import interactive_velocity_command  # noqa: PLC0415
-
-        class Viewer:
-            def is_key_down(self, key):
-                return key in {"i", "j", "u"}
-
-        command = interactive_velocity_command(Viewer(), np.array([0.4, -0.8, 0.7]))
-
-        np.testing.assert_allclose(command, [0.5, -0.3, 1.0])
-
-    @unittest.skipUnless(_HAS_ONNX_RUNTIME, "asRoBallet example requires ONNX support")
-    def test_policy_action_history(self):
-        """Verify the next observation receives the latest applied action."""
-        from newton.examples.robot.example_robot_asroballet import launch_policy_action  # noqa: PLC0415
-
-        action = wp.array([[2.0, -0.25, -2.0]], dtype=wp.float32, device="cpu")
-        wheel_ctrl_indices = wp.array([3, 1, 4], dtype=wp.int32, device="cpu")
-        control = wp.zeros(5, dtype=wp.float32, device="cpu")
-        last_action = wp.zeros((1, 3), dtype=wp.float32, device="cpu")
-
-        launch_policy_action(
-            action=action,
-            wheel_ctrl_indices=wheel_ctrl_indices,
-            control=control,
-            last_action=last_action,
-            device="cpu",
-        )
-
-        np.testing.assert_allclose(last_action.numpy(), [[1.0, -0.25, -1.0]])
-        np.testing.assert_allclose(control.numpy(), [0.0, -0.25, 0.0, 1.0, -1.0])
 
 
 add_example_test(

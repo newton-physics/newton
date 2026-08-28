@@ -1373,6 +1373,7 @@ class _PolicyController(_AsRoBalletController):
         self.update_station_mode()
 
     def test_final(self):
+        """Verify policy balance and applied-action feedback."""
         pose = self.state_0.body_q.numpy()[self.base_body]
         x, y, z, w = pose[3:7]
         roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
@@ -1380,6 +1381,9 @@ class _PolicyController(_AsRoBalletController):
 
         assert math.isfinite(roll) and math.isfinite(pitch), "Base orientation is non-finite."
         assert abs(roll) < 0.35 and abs(pitch) < 0.35, f"Base lost balance: roll={roll:.3f} rad, pitch={pitch:.3f} rad."
+        wheel_ctrl_indices = self.wheel_ctrl_indices.numpy()
+        applied_action = self.control.mujoco.ctrl.numpy()[wheel_ctrl_indices]
+        np.testing.assert_allclose(self.last_action.numpy()[0], applied_action)
 
 
 class Example:
