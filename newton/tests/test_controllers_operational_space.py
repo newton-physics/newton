@@ -2417,6 +2417,85 @@ class TestControllerOperationalSpace(unittest.TestCase):
             ctrl._controlled_mass_matrix.numpy()[0], expected_model_mass_matrix, rtol=1e-4, atol=1e-4
         )
 
+    def test_step_wrench_feedforward_matches_jacobian_transpose_force(self):
+        """step() forwards inputs.desired_wrench_world through to tau = J^T @ wrench.
+
+        Zero motion gains and an all-axes wrench selection isolate the
+        wrench feedforward term as the only contributor, so the output must
+        equal the tool Jacobian's transpose (already verified correct by
+        the forward-kinematics test above) applied to the fixed wrench.
+        """
+        device = wp.get_device()
+        model, _state, _tool_body, _transform = _build_two_link_arm_with_tool_site(device)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=0.0,
+            motion_damping=0.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+            use_wrench_feedforward=True,
+            wrench_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+
+        inputs.joint_q.assign(np.array([0.3, -0.2], dtype=np.float32))
+        inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
+        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_tool_pose_world.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+        desired_wrench_world = np.array([3.0, -1.5, 0.0, 0.0, 0.0, 2.0], dtype=np.float32)
+        inputs.desired_wrench_world.assign(np.array([desired_wrench_world]))
+
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        jacobian_tool_world = ctrl._jacobian_tool_world.numpy()[0]
+        expected_joint_f = jacobian_tool_world.T @ desired_wrench_world
+        np.testing.assert_allclose(outputs.joint_f.numpy(), expected_joint_f, rtol=1e-4, atol=1e-4)
+
+    def test_step_null_space_output_is_zero_when_posture_is_already_at_the_desired_posture_and_still(self):
+        """With zero task-space error and zero posture error, step() commands zero joint torque.
+
+        Zero motion gains remove the primary task's contribution entirely.
+        The posture PD term (``Kp * posture_error + Kd * posture_twist_error``)
+        is then exactly zero because the desired posture equals the current
+        one and both velocities are zero -- independent of the null-space
+        projector itself, so this checks that ``joint_q_des_null`` is
+        forwarded and compared against the correct (compact, controlled-DOF)
+        current posture, not the projector math.
+        """
+        device = wp.get_device()
+        model, _state, _tool_body, _transform = _build_seven_dof_arm_with_tool_site(device)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=0.0,
+            motion_damping=0.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+            use_null_space_control=True,
+            null_space_stiffness=100.0,
+            null_space_damping=10.0,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+
+        joint_q = np.array([0.3, -0.2, 0.5, 0.1, -0.4, 0.25, 0.2], dtype=np.float32)
+        inputs.joint_q.assign(joint_q)
+        inputs.joint_qd.assign(np.zeros(7, dtype=np.float32))
+        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_tool_pose_world.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+        # Every joint of this fixture is controlled, in order, so the compact
+        # posture target is exactly the same array as the model-space joint_q.
+        inputs.joint_q_des_null.assign(joint_q)
+        inputs.joint_qd_des_null.assign(np.zeros(7, dtype=np.float32))
+
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        np.testing.assert_allclose(outputs.joint_f.numpy(), np.zeros(7, dtype=np.float32), atol=1e-4)
+
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()
