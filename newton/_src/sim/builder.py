@@ -14,7 +14,8 @@ import os
 import warnings
 import weakref
 from collections import Counter, deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -67,7 +68,7 @@ from .graph_coloring import (
     combine_independent_coloring_plan,
     construct_particle_graph,
 )
-from .model import Model, _pack_shape_pair_codes
+from .model import Model, _DeformableGroup, _pack_shape_pair_codes
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -365,13 +366,13 @@ class ModelBuilder:
     }
 
     _BUILDER_GROUP_REFERENCES: ClassVar[dict[str, dict[str, Model.AttributeFrequency]]] = {
-        "cable": {
+        "curve": {
             "body_start": Model.AttributeFrequency.BODY,
             "body_end": Model.AttributeFrequency.BODY,
             "joint_start": Model.AttributeFrequency.JOINT,
             "joint_end": Model.AttributeFrequency.JOINT,
         },
-        "cloth": {
+        "surface": {
             "particle_start": Model.AttributeFrequency.PARTICLE,
             "particle_end": Model.AttributeFrequency.PARTICLE,
             "tri_start": Model.AttributeFrequency.TRIANGLE,
@@ -379,7 +380,7 @@ class ModelBuilder:
             "edge_start": Model.AttributeFrequency.EDGE,
             "edge_end": Model.AttributeFrequency.EDGE,
         },
-        "soft": {
+        "volume": {
             "particle_start": Model.AttributeFrequency.PARTICLE,
             "particle_end": Model.AttributeFrequency.PARTICLE,
             "tet_start": Model.AttributeFrequency.TETRAHEDRON,
@@ -1571,52 +1572,86 @@ class ModelBuilder:
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
 
-        # Deformable group registries: prim-path-labelled, world-tagged index ranges for each
-        # imported cable/cloth/volume (mirrors articulation_start/end/label/world). Ranges are
-        # [start, end) into the corresponding builder arrays, and replicate()/add_builder() carry
-        # them per world so each group stays indexable by path.
-        self._cable_label: list[str] = []
-        """Prim-path labels of imported cable groups."""
-        self._cable_world: list[int] = []
-        """World index of each cable group."""
-        self._cable_body_start: list[int] = []
-        """Inclusive body-range start of each cable group."""
-        self._cable_body_end: list[int] = []
-        """Exclusive body-range end of each cable group."""
-        self._cable_joint_start: list[int] = []
-        """Inclusive joint-range start of each cable group."""
-        self._cable_joint_end: list[int] = []
-        """Exclusive joint-range end of each cable group."""
+        # One entry describes each recorded deformable group. Public labels and worlds mirror
+        # articulation_label/articulation_world so applications can rebase identities before
+        # finalization. add_builder() and replicate() preserve the entries and assign their
+        # destination worlds. Private [start, end) ranges locate simulation data in builder
+        # arrays: rod-backed curves use bodies/joints, triangle surfaces use
+        # particles/triangles/edges, and tetrahedral volumes use particles/tets.
+        self.curve_label: list[str] = []
+        """Labels of rod-backed curve groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`curve_world`.
 
-        self._cloth_label: list[str] = []
-        """Prim-path labels of imported cloth groups."""
-        self._cloth_world: list[int] = []
-        """World index of each cloth group."""
-        self._cloth_particle_start: list[int] = []
-        """Inclusive particle-range start of each cloth group."""
-        self._cloth_particle_end: list[int] = []
-        """Exclusive particle-range end of each cloth group."""
-        self._cloth_tri_start: list[int] = []
-        """Inclusive triangle-range start of each cloth group."""
-        self._cloth_tri_end: list[int] = []
-        """Exclusive triangle-range end of each cloth group."""
-        self._cloth_edge_start: list[int] = []
-        """Inclusive edge-range start of each cloth group."""
-        self._cloth_edge_end: list[int] = []
-        """Exclusive edge-range end of each cloth group."""
+        .. experimental::
 
-        self._soft_label: list[str] = []
-        """Prim-path labels of imported soft (volume) groups."""
-        self._soft_world: list[int] = []
-        """World index of each soft group."""
-        self._soft_particle_start: list[int] = []
-        """Inclusive particle-range start of each soft group."""
-        self._soft_particle_end: list[int] = []
-        """Exclusive particle-range end of each soft group."""
-        self._soft_tet_start: list[int] = []
-        """Inclusive tetrahedron-range start of each soft group."""
-        self._soft_tet_end: list[int] = []
-        """Exclusive tetrahedron-range end of each soft group."""
+           Builder-time deformable group identities may change without notice.
+        """
+        self.curve_world: list[int] = []
+        """World index corresponding to each entry in :attr:`curve_label`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
+        self._curve_body_start: list[int] = []
+        """Inclusive body-range start of each curve group."""
+        self._curve_body_end: list[int] = []
+        """Exclusive body-range end of each curve group."""
+        self._curve_joint_start: list[int] = []
+        """Inclusive joint-range start of each curve group."""
+        self._curve_joint_end: list[int] = []
+        """Exclusive joint-range end of each curve group."""
+        self._curve_group_recording_suppressed: int = 0
+        """Nesting depth for private curve-group recording suppression."""
+
+        self.surface_label: list[str] = []
+        """Labels of triangle surface groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`surface_world`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
+        self.surface_world: list[int] = []
+        """World index corresponding to each entry in :attr:`surface_label`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
+        self._surface_particle_start: list[int] = []
+        """Inclusive particle-range start of each surface group."""
+        self._surface_particle_end: list[int] = []
+        """Exclusive particle-range end of each surface group."""
+        self._surface_tri_start: list[int] = []
+        """Inclusive triangle-range start of each surface group."""
+        self._surface_tri_end: list[int] = []
+        """Exclusive triangle-range end of each surface group."""
+        self._surface_edge_start: list[int] = []
+        """Inclusive edge-range start of each surface group."""
+        self._surface_edge_end: list[int] = []
+        """Exclusive edge-range end of each surface group."""
+
+        self.volume_label: list[str] = []
+        """Labels of tetrahedral volume groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`volume_world`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
+        self.volume_world: list[int] = []
+        """World index corresponding to each entry in :attr:`volume_label`.
+
+        .. experimental::
+
+           Builder-time deformable group identities may change without notice.
+        """
+        self._volume_particle_start: list[int] = []
+        """Inclusive particle-range start of each volume group."""
+        self._volume_particle_end: list[int] = []
+        """Exclusive particle-range end of each volume group."""
+        self._volume_tet_start: list[int] = []
+        """Inclusive tetrahedron-range start of each volume group."""
+        self._volume_tet_end: list[int] = []
+        """Exclusive tetrahedron-range end of each volume group."""
 
         self.joint_dof_count: int = 0
         """Total joint DoF count propagated to :attr:`Model.joint_dof_count`."""
@@ -3156,9 +3191,9 @@ class ModelBuilder:
         specs["joint_target_q"] = Model.AttributeSpec(target_q_frequency)
 
         for group, references in cls._BUILDER_GROUP_REFERENCES.items():
-            specs[f"_{group}_label"] = Model.AttributeSpec(group)
-            specs[f"_{group}_world"] = Model.AttributeSpec(group, references=Model.AttributeFrequency.WORLD)
-            declared_builder_attributes.update((f"_{group}_label", f"_{group}_world"))
+            specs[f"{group}_label"] = Model.AttributeSpec(group)
+            specs[f"{group}_world"] = Model.AttributeSpec(group, references=Model.AttributeFrequency.WORLD)
+            declared_builder_attributes.update((f"{group}_label", f"{group}_world"))
             for suffix, reference in references.items():
                 name = f"_{group}_{suffix}"
                 specs[name] = Model.AttributeSpec(
@@ -3377,50 +3412,64 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
 
-    def _record_cable_group(
+    def _record_curve_group(
         self,
-        label: str,
+        label: str | None,
         body_range: tuple[int, int],
         joint_range: tuple[int, int],
     ) -> None:
-        """Register an imported cable as an addressable, world-tagged group."""
-        self._cable_label.append(label)
-        self._cable_world.append(self.current_world)
-        self._cable_body_start.append(body_range[0])
-        self._cable_body_end.append(body_range[1])
-        self._cable_joint_start.append(joint_range[0])
-        self._cable_joint_end.append(joint_range[1])
+        """Register a curve as an addressable, world-tagged group."""
+        if self._curve_group_recording_suppressed:
+            return
+        label = label or f"curve_{len(self.curve_label)}"
+        self.curve_label.append(label)
+        self.curve_world.append(self.current_world)
+        self._curve_body_start.append(body_range[0])
+        self._curve_body_end.append(body_range[1])
+        self._curve_joint_start.append(joint_range[0])
+        self._curve_joint_end.append(joint_range[1])
 
-    def _record_cloth_group(
+    @contextmanager
+    def _suppress_curve_group_recording(self) -> Iterator[None]:
+        """Temporarily let internal callers choose a different curve grouping."""
+        self._curve_group_recording_suppressed += 1
+        try:
+            yield
+        finally:
+            self._curve_group_recording_suppressed -= 1
+
+    def _record_surface_group(
         self,
-        label: str,
+        label: str | None,
         particle_range: tuple[int, int],
         tri_range: tuple[int, int],
         edge_range: tuple[int, int],
     ) -> None:
-        """Register an imported cloth as an addressable, world-tagged group."""
-        self._cloth_label.append(label)
-        self._cloth_world.append(self.current_world)
-        self._cloth_particle_start.append(particle_range[0])
-        self._cloth_particle_end.append(particle_range[1])
-        self._cloth_tri_start.append(tri_range[0])
-        self._cloth_tri_end.append(tri_range[1])
-        self._cloth_edge_start.append(edge_range[0])
-        self._cloth_edge_end.append(edge_range[1])
+        """Register a surface as an addressable, world-tagged group."""
+        label = label or f"surface_{len(self.surface_label)}"
+        self.surface_label.append(label)
+        self.surface_world.append(self.current_world)
+        self._surface_particle_start.append(particle_range[0])
+        self._surface_particle_end.append(particle_range[1])
+        self._surface_tri_start.append(tri_range[0])
+        self._surface_tri_end.append(tri_range[1])
+        self._surface_edge_start.append(edge_range[0])
+        self._surface_edge_end.append(edge_range[1])
 
-    def _record_soft_group(
+    def _record_volume_group(
         self,
-        label: str,
+        label: str | None,
         particle_range: tuple[int, int],
         tet_range: tuple[int, int],
     ) -> None:
-        """Register an imported soft volume as an addressable, world-tagged group."""
-        self._soft_label.append(label)
-        self._soft_world.append(self.current_world)
-        self._soft_particle_start.append(particle_range[0])
-        self._soft_particle_end.append(particle_range[1])
-        self._soft_tet_start.append(tet_range[0])
-        self._soft_tet_end.append(tet_range[1])
+        """Register a volume as an addressable, world-tagged group."""
+        label = label or f"volume_{len(self.volume_label)}"
+        self.volume_label.append(label)
+        self.volume_world.append(self.current_world)
+        self._volume_particle_start.append(particle_range[0])
+        self._volume_particle_end.append(particle_range[1])
+        self._volume_tet_start.append(tet_range[0])
+        self._volume_tet_end.append(tet_range[1])
 
     # region importers
     def add_urdf(
@@ -5888,6 +5937,12 @@ class ModelBuilder:
             verbose: If True, print additional information about the collapsed joints.
             joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
                 the collapse process.
+
+        Note:
+            Deformable labels do not change which fixed joints are collapsed. A recorded curve
+            group remains selectable only if all of its segment bodies and joints survive. Pass
+            the relevant fixed joint through ``joints_to_keep`` when complete post-collapse
+            curve access is required.
         """
         joints_to_keep = set(joints_to_keep or ())
 
@@ -6326,36 +6381,56 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by rod
-        # joints (never fixed), so they are not collapsed and their ranges stay contiguous; only their
-        # indices shift as other bodies/joints are dropped. Cloth/volume ranges address particles and
-        # triangles/tets/edges, which fixed-joint collapse never touches, so they are left untouched.
-        def _remap_body_id(body_id: int) -> int:
-            # Cable bodies are linked only by non-fixed rod joints, so collapse must never
-            # merge or drop them; a violation would silently corrupt every recorded range.
-            assert body_id in body_remap, f"cable body {body_id} was collapsed; cable ranges would be corrupt"
-            return body_remap[body_id]
+        # Rebuild curve group ranges after reindexing. A group remains selectable only when
+        # every one of its simulation bodies and joints survived collapse; exposing a partial
+        # range would misrepresent the original curve topology.
+        curve_records = []
+        for label, world, body_start, body_end, joint_start, joint_end in zip(
+            self.curve_label,
+            self.curve_world,
+            self._curve_body_start,
+            self._curve_body_end,
+            self._curve_joint_start,
+            self._curve_joint_end,
+            strict=True,
+        ):
+            old_bodies = list(range(body_start, body_end))
+            old_joints = list(range(joint_start, joint_end))
+            new_bodies = [body_remap[body] for body in old_bodies if body in body_remap]
+            new_joints = [joint_remap[joint] for joint in old_joints if joint in joint_remap]
 
-        for i in range(len(self._cable_label)):
-            if self._cable_body_end[i] > self._cable_body_start[i]:
-                new_start = _remap_body_id(self._cable_body_start[i])
-                self._cable_body_start[i] = new_start
-                self._cable_body_end[i] = _remap_body_id(self._cable_body_end[i] - 1) + 1
-            if self._cable_joint_end[i] > self._cable_joint_start[i]:
-                first, last = self._cable_joint_start[i], self._cable_joint_end[i] - 1
-                assert first in joint_remap and last in joint_remap, (
-                    f"rod joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
+            bodies_complete = len(new_bodies) == len(old_bodies) and all(
+                body == new_bodies[0] + offset for offset, body in enumerate(new_bodies)
+            )
+            joints_complete = len(new_joints) == len(old_joints) and (
+                not new_joints or all(joint == new_joints[0] + offset for offset, joint in enumerate(new_joints))
+            )
+            if not old_bodies or not bodies_complete or not joints_complete:
+                warnings.warn(
+                    f"Curve group '{label}' is unavailable after collapse_fixed_joints because one or more "
+                    "of its segment bodies or joints were removed; pass the relevant fixed joint through "
+                    "joints_to_keep to preserve the complete group.",
+                    UserWarning,
+                    stacklevel=2,
                 )
-                self._cable_joint_start[i] = joint_remap[first]
-                self._cable_joint_end[i] = joint_remap[last] + 1
+                continue
+
+            if new_joints:
+                remapped_joint_range = (new_joints[0], new_joints[-1] + 1)
             else:
-                # A welded-graph curve owns no tree joints, but its empty [b, b) boundary must
-                # still shift with the retained joints, else it can point past the collapsed
-                # joint array. Map b to the number of retained joints below it.
-                boundary = self._cable_joint_start[i]
-                new_boundary = sum(1 for old_joint in joint_remap if old_joint < boundary)
-                self._cable_joint_start[i] = new_boundary
-                self._cable_joint_end[i] = new_boundary
+                # A welded-graph curve owns no tree joints. Shift its empty insertion
+                # boundary by the number of retained joints below the old boundary.
+                new_boundary = sum(1 for old_joint in joint_remap if old_joint < joint_start)
+                remapped_joint_range = (new_boundary, new_boundary)
+
+            curve_records.append((label, world, new_bodies[0], new_bodies[-1] + 1, *remapped_joint_range))
+
+        self.curve_label = [record[0] for record in curve_records]
+        self.curve_world = [record[1] for record in curve_records]
+        self._curve_body_start = [record[2] for record in curve_records]
+        self._curve_body_end = [record[3] for record in curve_records]
+        self._curve_joint_start = [record[4] for record in curve_records]
+        self._curve_joint_end = [record[5] for record in curve_records]
 
         def remap_articulation_reference(value: Any) -> Any:
             if isinstance(value, bool):
@@ -8081,8 +8156,10 @@ class ModelBuilder:
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
-            label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
-                retain the historical ``{label}_cable_{n}`` form for compatibility.
+            label: Optional label prefix for bodies, shapes, joints, and the selectable curve
+                group. If None, the group receives a generated ``curve_N`` label. See
+                :class:`~newton.selection.DeformableView`. Generated joint labels retain the
+                historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
@@ -8174,25 +8251,30 @@ class ModelBuilder:
         # We use wrap_in_articulation=False and let add_rod manage articulation wrapping so that:
         # - open chains are wrapped into a single articulation (tree), and
         # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
-        link_bodies, link_joints = self.add_rod_graph(
-            node_positions=positions_wp,
-            edges=edges,
-            radius=radius,
-            cfg=cfg,
-            stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
-            shear_stiffness=shear_stiffness,
-            shear_damping=shear_damping,
-            bend_stiffness=bend_stiffness,
-            bend_damping=bend_damping,
-            twist_stiffness=twist_stiffness,
-            twist_damping=twist_damping,
-            label=label,
-            wrap_in_articulation=False,
-            quaternions=quaternions,
-            color=color,
-            body_frame_origin=body_frame_origin,
-        )
+        start_body = self.body_count
+        start_joint = self.joint_count
+        # add_rod records its own group below, after the optional loop-closing joint,
+        # so a closed rod's group covers that joint too.
+        with self._suppress_curve_group_recording():
+            link_bodies, link_joints = self.add_rod_graph(
+                node_positions=positions_wp,
+                edges=edges,
+                radius=radius,
+                cfg=cfg,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=stretch_damping,
+                shear_stiffness=shear_stiffness,
+                shear_damping=shear_damping,
+                bend_stiffness=bend_stiffness,
+                bend_damping=bend_damping,
+                twist_stiffness=twist_stiffness,
+                twist_damping=twist_damping,
+                label=label,
+                wrap_in_articulation=False,
+                quaternions=quaternions,
+                color=color,
+                body_frame_origin=body_frame_origin,
+            )
 
         # Wrap all joints into an articulation if requested.
         if wrap_in_articulation and link_joints:
@@ -8251,6 +8333,8 @@ class ModelBuilder:
                     enabled=True,
                 )
                 link_joints.append(j_loop)
+
+        self._record_curve_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return link_bodies, link_joints
 
@@ -8320,8 +8404,10 @@ class ModelBuilder:
                 ``bend_stiffness``.
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations. Generated
-                joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
+            label: Optional label prefix for bodies, shapes, joints, articulations, and the
+                selectable curve group. If None, the group receives a generated ``curve_N``
+                label. See :class:`~newton.selection.DeformableView`. Generated joint labels retain
+                the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
             quaternions: Optional per-edge orientations in world space. If provided, must have
@@ -8349,6 +8435,8 @@ class ModelBuilder:
         Raises:
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
         """
+        start_body = self.body_count
+        start_joint = self.joint_count
         if cfg is None:
             cfg = self.default_shape_cfg
 
@@ -8670,6 +8758,8 @@ class ModelBuilder:
                                 if not self.shape_flags[sj] & ShapeFlags.COLLIDE_SHAPES:
                                     continue
                                 self.add_shape_collision_filter_pair(int(si), int(sj))
+
+        self._record_curve_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return edge_bodies, all_joints
 
@@ -9390,8 +9480,9 @@ class ModelBuilder:
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
-                via :meth:`add_cloth_mesh` so a mesh-quality warning can identify
-                this cloth.
+                via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
+                The same name labels the selectable surface group; if None, the group receives
+                a generated ``surface_N`` label. See :class:`~newton.selection.DeformableView`.
         """
 
         def grid_index(x, y, dim_x):
@@ -9519,8 +9610,9 @@ class ModelBuilder:
                 pipeline.)
             label: Optional name forwarded to
                 :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
-                warning emitted with ``validate_mesh=True`` can identify
-                this cloth.
+                warning emitted with ``validate_mesh=True`` can identify this cloth.
+                The same name labels the selectable surface group; if None, the group receives
+                a generated ``surface_N`` label. See :class:`~newton.selection.DeformableView`.
 
         Note:
             The mesh should be two-manifold.
@@ -9613,6 +9705,13 @@ class ModelBuilder:
 
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
+
+        self._record_surface_group(
+            label,
+            (start_vertex, len(self.particle_q)),
+            (start_tri, end_tri),
+            (edge_range.start, edge_range.stop),
+        )
 
     @deprecate_nonkeyword_arguments
     def add_particle_grid(
@@ -9749,7 +9848,7 @@ class ModelBuilder:
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
         label: str | None = None,
-    ):
+    ) -> None:
         """Helper to create a rectangular tetrahedral FEM grid
 
         Creates a regular grid of FEM tetrahedra and surface triangles. Useful for example
@@ -9784,10 +9883,8 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
-            label: Optional name reserved for forwarding to mesh-quality
-                diagnostics. Currently unused by ``add_soft_grid`` (the
-                generated grid is degenerate-free by construction); kept
-                for signature consistency with the other ``add_*`` helpers.
+            label: Optional name for the selectable volume group. If None, the group receives
+                a generated ``volume_N`` label. See :class:`~newton.selection.DeformableView`.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -9795,8 +9892,8 @@ class ModelBuilder:
             elastic forces. Set the triangle stiffness parameters above to non-zero values if you
             want the surface to behave like a thin skin.
         """
-        del label  # currently unused; kept on the signature for API parity
         start_vertex = len(self.particle_q)
+        start_tet = self.tet_count
 
         mass = cell_x * cell_y * cell_z * density
 
@@ -9890,6 +9987,8 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
+        self._record_volume_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
+
     @deprecate_nonkeyword_arguments
     def add_soft_mesh(
         self,
@@ -9958,9 +10057,10 @@ class ModelBuilder:
                 tetrahedra, sliver tetrahedra, and non-manifold faces, and
                 emit warnings. See :func:`newton.utils.validate_tet_mesh`.
             label: Optional name forwarded to
-                :func:`newton.utils.validate_tet_mesh` so a mesh-quality
-                warning emitted with ``validate_mesh=True`` can identify
-                this soft body.
+                :func:`newton.utils.validate_tet_mesh` so a mesh-quality warning emitted with
+                ``validate_mesh=True`` can identify this soft body. The same name labels the
+                selectable volume group; if None, the group receives a generated ``volume_N``
+                label. See :class:`~newton.selection.DeformableView`.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -10044,6 +10144,7 @@ class ModelBuilder:
                     tri_custom[attr_name] = arr
 
         start_vertex = len(self.particle_q)
+        start_tet = self.tet_count
 
         pos = wp.vec3(pos[0], pos[1], pos[2])
         # add particles
@@ -10108,6 +10209,8 @@ class ModelBuilder:
             # add surface mesh edges (for collision)
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
+
+        self._record_volume_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
@@ -12644,6 +12747,41 @@ class ModelBuilder:
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
+
+            # Combine public group identities and private simulation ranges into finalized
+            # records. DeformableView is the public interface for selecting those records and
+            # accessing their state and topology.
+            deformable_groups: list[_DeformableGroup] = []
+
+            def _append_deformable_group_records(
+                family: str,
+                kinds: tuple[tuple[str, str], ...],
+            ) -> None:
+                labels = getattr(self, f"{family}_label")
+                worlds = getattr(self, f"{family}_world")
+                for i, label in enumerate(labels):
+                    deformable_groups.append(
+                        _DeformableGroup(
+                            id=len(deformable_groups),
+                            family=family,
+                            label=label,
+                            world=worlds[i],
+                            ranges={
+                                public_kind: (
+                                    getattr(self, f"_{family}_{private_kind}_start")[i],
+                                    getattr(self, f"_{family}_{private_kind}_end")[i],
+                                )
+                                for private_kind, public_kind in kinds
+                            },
+                        )
+                    )
+
+            _append_deformable_group_records("curve", (("body", "body"), ("joint", "joint")))
+            _append_deformable_group_records(
+                "surface", (("particle", "particle"), ("tri", "triangle"), ("edge", "edge"))
+            )
+            _append_deformable_group_records("volume", (("particle", "particle"), ("tet", "tetrahedron")))
+            m._deformable_groups = tuple(deformable_groups)
 
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)

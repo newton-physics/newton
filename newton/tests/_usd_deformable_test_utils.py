@@ -167,10 +167,11 @@ def group_labels(builder, family):
     """Prim-path labels of a deformable family's imported groups (``cable``/``cloth``/``soft``).
 
     The single seam through which tests locate deformable groups: it reads the builder
-    registries, so a change to how group metadata is stored or exposed only touches this
-    helper, not the tests.
+    registry (which the importer populates regardless of what ``Model`` exposes), so a
+    reshape of the experimental ``Model`` group API only touches this helper, not the tests.
     """
-    return list(getattr(builder, f"_{family}_label"))
+    family = {"cable": "curve", "cloth": "surface", "soft": "volume"}[family]
+    return list(getattr(builder, f"{family}_label"))
 
 
 def group_range(builder, family, label, kind, world=None):
@@ -180,12 +181,16 @@ def group_range(builder, family, label, kind, world=None):
     ``particle``/``tet`` for soft volumes. See :func:`group_labels` for why tests must resolve
     ranges through this seam.
     """
-    labels = getattr(builder, f"_{family}_label")
-    worlds = getattr(builder, f"_{family}_world")
+    registry_family = {"cable": "curve", "cloth": "surface", "soft": "volume"}[family]
+    labels = getattr(builder, f"{registry_family}_label")
+    worlds = getattr(builder, f"{registry_family}_world")
     matches = [i for i, group_label in enumerate(labels) if group_label == label]
     if world is not None:
         matches = [i for i in matches if worlds[i] == world]
     if len(matches) != 1:
         raise LookupError(f"{len(matches)} {family} groups labelled '{label}' (world={world})")
     (i,) = matches
-    return getattr(builder, f"_{family}_{kind}_start")[i], getattr(builder, f"_{family}_{kind}_end")[i]
+    return (
+        getattr(builder, f"_{registry_family}_{kind}_start")[i],
+        getattr(builder, f"_{registry_family}_{kind}_end")[i],
+    )

@@ -623,6 +623,9 @@ If you run the examples from a source checkout with uv, use
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/selection/example_selection_deformables.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_selection_deformables.jpg" alt="Selection Deformables">
+      </a>
     </td>
     <td align="center" width="33%">
     </td>
@@ -632,6 +635,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples selection_multiple</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples selection_deformables</code>
     </td>
     <td align="center" width="33%">
     </td>
