@@ -3,6 +3,7 @@
 
 """Tests for the actuator drive API migration."""
 
+import typing
 import unittest
 import warnings
 
@@ -14,6 +15,17 @@ import newton.actuators as actuators
 
 class TestActuatorDriveAPI(unittest.TestCase):
     """Verify canonical actuator names and deprecated compatibility aliases."""
+
+    def test_response_oracle_public_method_type_hints(self):
+        """Keep ResponseOracle's public methods fully annotated."""
+        self.assertEqual(
+            typing.get_type_hints(actuators.ResponseOracle.__init__),
+            {"model": newton.Model, "return": type(None)},
+        )
+        self.assertEqual(
+            typing.get_type_hints(actuators.ResponseOracle.refresh),
+            {"state": newton.State, "return": type(None)},
+        )
 
     def test_public_base_names_and_deprecated_aliases(self):
         """Expose Base-suffixed names and warn for deprecated aliases."""
