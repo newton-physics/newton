@@ -66,6 +66,7 @@ from .rigid_vbd_kernels import (
     init_body_particle_contacts,
     init_rod_rest_bend_twist,
     refresh_body_structural_k,
+    refresh_joint_material_params,
     reset_rigid_state,
     snapshot_body_body_contact_history,
     solve_rigid_body,
@@ -157,13 +158,19 @@ class SolverVBD(SolverBase, CouplingInterface):
           is read live. After changing enable flags, call
           :meth:`notify_model_changed` with
           :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to refresh derived contact
-          conditioning. Structural-slot material, constraint layout, and rest-angle
-          offsets are captured at construction; rebuild ``SolverVBD`` after changing
-          them.
+          conditioning. Structural-slot material (``rigid_joint_linear_ke``/
+          ``rigid_joint_angular_ke``), constraint layout, and rest-angle offsets are
+          captured at construction; rebuild ``SolverVBD`` after changing them.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
           for REVOLUTE, PRISMATIC, D6 (as drives), and ROD (as stretch, shear,
           bend, and twist stiffness and damping).
-          VBD interprets ``kd`` as absolute damping in physical units.
+          VBD interprets ``kd`` as absolute damping in physical units. ROD values are cached in
+          solver-owned buffers at construction; after editing them call
+          :meth:`notify_model_changed` with
+          :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` to refresh that cache. REVOLUTE,
+          PRISMATIC, and D6 drive/limit coefficients are gathered live from the model on every
+          solve and need no notification -- except on the deprecated legacy AVBD path, whose
+          cached penalty state the same flag refreshes.
         - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints.
@@ -1024,10 +1031,19 @@ class SolverVBD(SolverBase, CouplingInterface):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         self._apply_module_options()
         refresh_structural_k = (
-            bool(flags & ModelFlags.JOINT_PROPERTIES) and self._integrates_rigid_bodies and self.model.joint_count > 0
+            bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
+            and self._integrates_rigid_bodies
+            and self.model.joint_count > 0
         )
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
+        if flags & ModelFlags.JOINT_DOF_PROPERTIES and self._integrates_rigid_bodies and self.model.joint_count > 0:
+            if self.rigid_compliant_alm:
+                self._validate_compliant_joint_dof_materials()
+            # Must run before _refresh_structural_k() below: that summary reads
+            # joint_material_k as an input, so a stale material_k here would
+            # produce a stale body_structural_k that is harder to spot.
+            self._refresh_joint_material_params()
         if refresh_structural_k:
             self._refresh_structural_k()
         if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES):
@@ -1484,8 +1500,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             (joint_penalty_k, joint_penalty_k_min, joint_material_k, joint_rho,
             joint_penalty_kd, joint_is_hard) tuple:
               - joint_penalty_k:       mutable legacy solver penalty per constraint scalar.
-              - joint_penalty_k_min:   frozen floor for the mutable legacy solver penalty.
-              - joint_material_k:      frozen material stiffness (= slot-specific ke).
+              - joint_penalty_k_min:   floor for the mutable legacy solver penalty; refreshed
+                                       by ``notify_model_changed(JOINT_DOF_PROPERTIES)``.
+              - joint_material_k:      material stiffness (= slot-specific ke); refreshed
+                                       by ``notify_model_changed(JOINT_DOF_PROPERTIES)``.
               - joint_rho:             zeroed solver-owned storage; compliant ALM fills
                                        structural slots automatically each step.
               - joint_penalty_kd:      damping coefficient per constraint scalar.
@@ -1702,14 +1720,19 @@ class SolverVBD(SolverBase, CouplingInterface):
         own summary before combining endpoints.
         Direction- and chain-blind by design: it bounds neighborhood stiffness to
         condition rho and never enters a force law.
-        Structural material and topology are construction-time state. The summary
-        is refreshed in place after a notified joint-enable change.
+        Topology and the non-rod structural constants are construction-time state. The summary
+        is refreshed in place after a notified joint-enable change, and after a
+        ``JOINT_DOF_PROPERTIES`` change to rod stretch/shear stiffness, which feeds it.
         """
         self.body_structural_k = wp.empty(self.model.body_count, dtype=float, device=self.device)
         self._refresh_structural_k()
 
     def _refresh_structural_k(self) -> None:
-        """Refresh the enable-dependent structural summary without reallocating it."""
+        """Refresh the structural summary in place, without reallocating it.
+
+        Depends on joint-enable flags and on rod stretch/shear ``joint_material_k``, so it is
+        rerun for both ``JOINT_PROPERTIES`` and ``JOINT_DOF_PROPERTIES``.
+        """
         self.body_structural_k.zero_()
         if self.model.joint_count == 0:
             return
@@ -1726,6 +1749,46 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.joint_material_k,
             ],
             outputs=[self.body_structural_k],
+            device=self.device,
+        )
+
+    def _refresh_joint_material_params(self) -> None:
+        """Refresh ``joint_target_ke``/``joint_target_kd``-derived material stiffness and damping.
+
+        Stiffness covers ROD and the drive/limit slot(s) of REVOLUTE, PRISMATIC, and D6; its
+        penalty and floor are reseeded alongside. Only legacy AVBD reads those non-ROD slots --
+        compliant ALM gathers the same coefficients live from the model each solve. Not covered:
+        BALL, FIXED, and REVOLUTE/PRISMATIC/D6's structural slots, which come from the
+        solver-wide ``rigid_joint_linear_ke``/``rigid_joint_angular_ke`` constants.
+
+        Damping is ROD-only -- other joint types read drive damping live from
+        ``joint_target_kd`` at step time rather than caching it here.
+
+        Stiffness slots are reseeded only where the effective stiffness changed, so untouched
+        slots keep any legacy AVBD ramp they have accumulated.
+        """
+        if self.model.joint_count == 0:
+            return
+        wp.launch(
+            kernel=refresh_joint_material_params,
+            dim=self.model.joint_count,
+            inputs=[
+                self.model.joint_type,
+                self.model.joint_qd_start,
+                self.model.joint_dof_dim,
+                self.joint_constraint_start,
+                self.model.joint_target_ke,
+                self.model.joint_target_kd,
+                self.model.joint_limit_ke,
+                self.rigid_joint_linear_k_start if self.rigid_joint_linear_k_start is not None else -1.0,
+                self.rigid_joint_angular_k_start if self.rigid_joint_angular_k_start is not None else -1.0,
+            ],
+            outputs=[
+                self.joint_material_k,
+                self.joint_penalty_k,
+                self.joint_penalty_k_min,
+                self.joint_penalty_kd,
+            ],
             device=self.device,
         )
 

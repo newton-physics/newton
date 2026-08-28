@@ -3817,7 +3817,7 @@ class ModelBuilder:
                 * - ``"path_soft_map"``
                   - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
                 * - ``"path_cable_attrs"``
-                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the imported rod cannot express (e.g. shear / twist). ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the component identifier. Present only with ``return_deformable_results=True``.
+                  - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_attrs"``
                   - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``). Present only with ``return_deformable_results=True``.
                 * - ``"path_soft_attrs"``
@@ -5648,32 +5648,58 @@ class ModelBuilder:
             **kwargs,
         )
 
-    def _set_joint_rod_stiffnesses(
+    def _set_joint_rod_material_gains(
         self,
         joint: int,
         *,
-        stretch_stiffness: float | None,
-        shear_stiffness: float | None,
-        bend_stiffness: float | None,
-        twist_stiffness: float | None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
     ) -> None:
-        """Overwrite each non-None stiffness and its inferred target mode, in :meth:`add_joint_rod` axis order."""
+        """Overwrite non-None material gains and target modes in :meth:`add_joint_rod` slot order.
+
+        Args:
+            joint: Rod joint index.
+            stretch_stiffness: Per-joint stretch stiffness [N/m], or ``None`` to preserve it.
+            stretch_damping: Per-joint stretch damping [N·s/m], or ``None`` to preserve it.
+            shear_stiffness: Per-joint shear stiffness [N/m], or ``None`` to preserve it.
+            shear_damping: Per-joint shear damping [N·s/m], or ``None`` to preserve it.
+            bend_stiffness: Per-joint bend stiffness [N·m/rad], or ``None`` to preserve it.
+            bend_damping: Per-joint bend damping [N·m·s/rad], or ``None`` to preserve it.
+            twist_stiffness: Per-joint twist stiffness [N·m/rad], or ``None`` to preserve it.
+            twist_damping: Per-joint twist damping [N·m·s/rad], or ``None`` to preserve it.
+        """
         joint_type = self.joint_type[joint]
         joint_dof_dim = self.joint_dof_dim[joint]
         if joint_type != JointType.ROD or joint_dof_dim != (2, 2):
             raise ValueError(
-                "_set_joint_rod_stiffnesses() expected the four-slot ROD layout "
+                "_set_joint_rod_material_gains() expected the four-slot ROD layout "
                 f"(2 linear, 2 angular); got joint type {JointType(joint_type).name} with dimensions "
                 f"{joint_dof_dim}. Update the ROD material-slot mapping when changing its slot layout."
             )
         dof_start = self.joint_qd_start[joint]
-        for offset, stiffness in enumerate((stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)):
-            if stiffness is not None:
+        stiffnesses = (stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)
+        dampings = (stretch_damping, shear_damping, bend_damping, twist_damping)
+        for offset, (stiffness, damping) in enumerate(zip(stiffnesses, dampings, strict=True)):
+            if stiffness is not None or damping is not None:
                 dof = dof_start + offset
-                damping = self.joint_target_kd[dof]
-                self.joint_target_ke[dof] = stiffness
+                if stiffness is not None:
+                    self.joint_target_ke[dof] = stiffness
+                if damping is not None:
+                    self.joint_target_kd[dof] = damping
+                resolved_stiffness = self.joint_target_ke[dof]
+                resolved_damping = self.joint_target_kd[dof]
                 self.joint_target_mode[dof] = int(
-                    JointTargetMode.from_gains(stiffness, damping, has_drive=stiffness != 0.0 or damping != 0.0)
+                    JointTargetMode.from_gains(
+                        resolved_stiffness,
+                        resolved_damping,
+                        has_drive=resolved_stiffness != 0.0 or resolved_damping != 0.0,
+                    )
                 )
 
     def add_constraint_mimic(
