@@ -1,1 +1,1 @@
-Add display opacity to rigid shapes, cloth, soft bodies, and viewer mesh instances; preserve it through asset import and tetrahedral-mesh file round-trips.
+Add display color and opacity to cloth and soft-body surface triangles, display opacity to rigid shapes and viewer mesh instances, and preserve appearance through asset import.

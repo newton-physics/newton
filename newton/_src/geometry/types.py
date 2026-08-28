@@ -1790,7 +1790,6 @@ class TetMesh:
             "k_lambda",
             "k_damp",
             "density",
-            "opacity",
             "__custom_names__",
             "__custom_freqs__",
         }
@@ -1809,7 +1808,6 @@ class TetMesh:
         custom_attributes: (
             "dict[str, np.ndarray] | dict[str, tuple[np.ndarray, Model.AttributeFrequency]] | None"
         ) = None,
-        opacity: float | None = None,
     ):
         """Construct a TetMesh from vertex positions and tet connectivity.
 
@@ -1827,7 +1825,6 @@ class TetMesh:
                 :class:`~newton.Model.AttributeFrequency`. Each value can be
                 either a bare array (frequency auto-inferred from length) or a
                 ``(array, frequency)`` tuple.
-            opacity: Optional surface display opacity in [0, 1].
         """
         self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
         self._tet_indices = np.array(tet_indices, dtype=np.int32).flatten()
@@ -1849,7 +1846,6 @@ class TetMesh:
         self._k_lambda = self._broadcast_material(k_lambda, tet_count, "k_lambda")
         self._k_damp = self._broadcast_material(k_damp, tet_count, "k_damp")
         self._density = density
-        self._opacity = None if opacity is None else float(opacity)
         # Compute surface triangles from boundary faces (before custom attrs so tri_count is available)
         self._surface_tri_indices = self._compute_surface_triangles()
         tri_count = len(self._surface_tri_indices) // 3
@@ -2031,15 +2027,6 @@ class TetMesh:
         """Uniform density [kg/m^3] or None."""
         return self._density
 
-    @property
-    def opacity(self) -> float | None:
-        """Optional surface display opacity in [0, 1]."""
-        return self._opacity
-
-    @opacity.setter
-    def opacity(self, value: float | None):
-        self._opacity = None if value is None else float(value)
-
     # ---- Factory methods ---------------------------------------------------
 
     @staticmethod
@@ -2126,9 +2113,8 @@ class TetMesh:
             for key in ("k_mu", "k_lambda", "k_damp"):
                 if key in data:
                     kwargs[key] = data[key]
-            for key in ("density", "opacity"):
-                if key in data:
-                    kwargs[key] = float(data[key])
+            if "density" in data:
+                kwargs["density"] = float(data["density"])
             known_keys = {
                 "vertices",
                 "tet_indices",
@@ -2136,7 +2122,6 @@ class TetMesh:
                 "k_lambda",
                 "k_damp",
                 "density",
-                "opacity",
                 "__custom_names__",
                 "__custom_freqs__",
             }
@@ -2186,12 +2171,12 @@ class TetMesh:
 
         # Read material arrays from cell data
         kwargs: dict = {}
-        material_keys = {"k_mu", "k_lambda", "k_damp", "density", "opacity"}
+        material_keys = {"k_mu", "k_lambda", "k_damp", "density"}
         if m.cell_data and tet_cell_idx is not None:
             for key in material_keys:
                 if key in m.cell_data:
                     arr = np.asarray(m.cell_data[key][tet_cell_idx], dtype=np.float32)
-                    if key in ("density", "opacity"):
+                    if key == "density":
                         if arr.size > 1 and not np.allclose(arr, arr[0]):
                             raise ValueError(
                                 f"Non-uniform per-element {key} found in '{filename}'. "
@@ -2242,8 +2227,6 @@ class TetMesh:
                 save_dict["k_damp"] = self._k_damp
             if self._density is not None:
                 save_dict["density"] = np.array(self._density)
-            if self._opacity is not None:
-                save_dict["opacity"] = np.array(self._opacity)
             custom_names = []
             custom_freqs = []
             for k, (arr, freq) in self.custom_attributes.items():
@@ -2268,8 +2251,6 @@ class TetMesh:
                 cell_data[name] = [arr]
         if self._density is not None:
             cell_data["density"] = [np.full(self.tet_count, self._density, dtype=np.float32)]
-        if self._opacity is not None:
-            cell_data["opacity"] = [np.full(self.tet_count, self._opacity, dtype=np.float32)]
 
         # Save custom attributes as point or cell data based on frequency
         from ..sim.model import Model as _Model  # noqa: PLC0415

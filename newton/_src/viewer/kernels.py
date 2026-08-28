@@ -218,6 +218,19 @@ def flag_changed_floats(
 
 
 @wp.kernel
+def flag_changed_vec3s(
+    current: wp.array[wp.vec3],
+    cached: wp.array[wp.vec3],
+    changed: wp.array[wp.int32],
+):
+    """Set changed[0] when any vector differs between the two arrays."""
+    tid = wp.tid()
+    delta = current[tid] - cached[tid]
+    if wp.dot(delta, delta) != 0.0:
+        changed[0] = 1
+
+
+@wp.kernel
 def estimate_world_extents(
     shape_transform: wp.array[wp.transform],
     shape_body: wp.array[int],

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import unittest
 import warnings
 from unittest.mock import MagicMock, Mock, patch
@@ -11,7 +12,12 @@ import warp as wp
 import newton
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.gl.shaders import _with_shader_define, shape_fragment_shader
-from newton._src.viewer.viewer import _DEFAULT_LAYER_ID, MAX_TRIANGLE_OPACITY_GROUPS, Layer
+from newton._src.viewer.viewer import (
+    _DEFAULT_LAYER_ID,
+    MAX_TRIANGLE_APPEARANCE_GROUPS,
+    MAX_TRIANGLE_OPACITY_GROUPS,
+    Layer,
+)
 from newton._src.viewer.viewer_gl import ViewerGL, _compute_shape_vbo_xforms
 from newton.viewer import ViewerNull
 
@@ -31,12 +37,13 @@ class _ShapeColorProbe(ViewerNull):
         self.last_opacities = None if opacities is None else opacities.numpy().copy()
 
 
-class _TriangleOpacityProbe(ViewerNull):
-    """Captures mesh opacity values passed through ``log_mesh``."""
+class _TriangleAppearanceProbe(ViewerNull):
+    """Capture mesh appearance values passed through ``log_mesh``."""
 
     def __init__(self):
-        """Initialize the probe with storage for mesh opacity values."""
+        """Initialize the probe with storage for mesh appearance values."""
         super().__init__(num_frames=1)
+        self.mesh_colors = {}
         self.mesh_opacities = {}
 
     def log_mesh(
@@ -49,10 +56,12 @@ class _TriangleOpacityProbe(ViewerNull):
         texture=None,
         hidden=False,
         backface_culling=True,
+        color=None,
         opacity=None,
     ):
-        """Capture opacity for visible triangle mesh logs."""
+        """Capture color and opacity for visible triangle mesh logs."""
         if not hidden:
+            self.mesh_colors[name] = color
             self.mesh_opacities[name] = opacity
 
 
@@ -77,8 +86,8 @@ class TestShapeColors(unittest.TestCase):
         indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
         return newton.Mesh(vertices, indices, color=color, opacity=opacity)
 
-    def _make_soft_tet_mesh(self, opacity=None):
-        """Create a one-tet deformable mesh with optional surface opacity."""
+    def _make_soft_tet_mesh(self):
+        """Create a one-tet deformable mesh."""
         vertices = np.array(
             [
                 (0.0, 0.0, 0.0),
@@ -89,7 +98,7 @@ class TestShapeColors(unittest.TestCase):
             dtype=np.float32,
         )
         indices = np.array([0, 1, 2, 3], dtype=np.int32)
-        return newton.TetMesh(vertices, indices, opacity=opacity)
+        return newton.TetMesh(vertices, indices)
 
     def test_collision_shape_without_explicit_color_uses_palette_by_default(self):
         """Verify collision shapes use the per-shape palette sequence by default."""
@@ -185,6 +194,39 @@ class TestShapeColors(unittest.TestCase):
                 self.assertEqual(len(builder.tri_indices), 0)
                 self.assertEqual(len(builder.tri_opacity), 0)
 
+    def test_triangle_color_rejects_invalid_values_before_mutation(self):
+        """Reject malformed triangle colors before appending geometry."""
+        invalid_colors = ((0.1, 0.2), (-0.1, 0.2, 0.3), (0.1, 1.1, 0.3), (0.1, float("nan"), 0.3))
+        for invalid_color in invalid_colors:
+            with self.subTest(color=invalid_color):
+                builder = newton.ModelBuilder()
+                for position in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+                    builder.add_particle(pos=position, vel=(0.0, 0.0, 0.0), mass=1.0)
+
+                with self.assertRaisesRegex(ValueError, "Triangle color"):
+                    builder.add_triangle(0, 1, 2, color=invalid_color)
+
+                self.assertEqual(len(builder.tri_indices), 0)
+                self.assertEqual(len(builder.tri_color), 0)
+
+    def test_triangle_surface_appearance_arguments_are_adjacent_keyword_only(self):
+        """Keep color immediately before opacity on every surface-triangle builder API."""
+        method_names = (
+            "add_triangle",
+            "add_triangles",
+            "add_cloth_grid",
+            "add_cloth_mesh",
+            "add_soft_grid",
+            "add_soft_mesh",
+        )
+        for method_name in method_names:
+            with self.subTest(method=method_name):
+                parameters = list(inspect.signature(getattr(newton.ModelBuilder, method_name)).parameters.values())
+                color_index = next(index for index, parameter in enumerate(parameters) if parameter.name == "color")
+                self.assertEqual(parameters[color_index + 1].name, "opacity")
+                self.assertEqual(parameters[color_index].kind, inspect.Parameter.KEYWORD_ONLY)
+                self.assertEqual(parameters[color_index + 1].kind, inspect.Parameter.KEYWORD_ONLY)
+
     def test_triangle_opacity_array_rejects_wrong_length_before_mutation(self):
         """Reject mismatched triangle opacity arrays before appending geometry."""
         builder = newton.ModelBuilder()
@@ -198,7 +240,7 @@ class TestShapeColors(unittest.TestCase):
         self.assertEqual(len(builder.tri_opacity), 0)
 
     def test_cloth_opacity_defaults_to_opaque(self):
-        """Verify cloth triangles default to fully opaque display opacity."""
+        """Use the canonical color and opaque alpha for unstyled cloth triangles."""
         builder = newton.ModelBuilder()
         builder.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
@@ -214,6 +256,12 @@ class TestShapeColors(unittest.TestCase):
         model = builder.finalize(device=self.device)
 
         self.assertEqual(model.tri_count, 2)
+        np.testing.assert_allclose(
+            model.tri_color.numpy(),
+            np.tile([0.7, 0.5, 0.3], (2, 1)),
+            atol=1e-6,
+            rtol=1e-6,
+        )
         np.testing.assert_allclose(
             model.tri_opacity.numpy(),
             np.ones(2, dtype=np.float32),
@@ -221,8 +269,8 @@ class TestShapeColors(unittest.TestCase):
             rtol=1e-6,
         )
 
-    def test_cloth_grid_stores_explicit_opacity(self):
-        """Verify cloth helper opacity is stored per generated surface triangle."""
+    def test_cloth_grid_stores_explicit_surface_appearance(self):
+        """Store cloth color and opacity on every generated surface triangle."""
         builder = newton.ModelBuilder()
         builder.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
@@ -233,29 +281,44 @@ class TestShapeColors(unittest.TestCase):
             cell_x=1.0,
             cell_y=1.0,
             mass=1.0,
+            color=(0.3, 0.5, 0.7),
             opacity=0.4,
         )
 
         model = builder.finalize(device=self.device)
 
         self.assertEqual(model.tri_count, 2)
+        np.testing.assert_allclose(
+            model.tri_color.numpy(),
+            np.tile([0.3, 0.5, 0.7], (2, 1)),
+            atol=1e-6,
+            rtol=1e-6,
+        )
         np.testing.assert_allclose(model.tri_opacity.numpy(), [0.4, 0.4], atol=1e-6, rtol=1e-6)
 
-    def test_soft_mesh_uses_tet_mesh_opacity_when_opacity_is_none(self):
-        """Verify soft meshes inherit display opacity from their TetMesh."""
+    def test_soft_mesh_stores_explicit_surface_appearance(self):
+        """Store soft-mesh color and opacity on every generated surface triangle."""
         builder = newton.ModelBuilder()
-        mesh = self._make_soft_tet_mesh(opacity=0.35)
+        mesh = self._make_soft_tet_mesh()
         builder.add_soft_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
             rot=wp.quat_identity(),
             scale=1.0,
             vel=wp.vec3(0.0, 0.0, 0.0),
             mesh=mesh,
+            color=(0.2, 0.4, 0.6),
+            opacity=0.35,
         )
 
         model = builder.finalize(device=self.device)
 
         self.assertEqual(model.tri_count, 4)
+        np.testing.assert_allclose(
+            model.tri_color.numpy(),
+            np.tile([0.2, 0.4, 0.6], (4, 1)),
+            atol=1e-6,
+            rtol=1e-6,
+        )
         np.testing.assert_allclose(
             model.tri_opacity.numpy(),
             np.full(4, 0.35, dtype=np.float32),
@@ -263,31 +326,36 @@ class TestShapeColors(unittest.TestCase):
             rtol=1e-6,
         )
 
-    def test_explicit_soft_mesh_opacity_overrides_tet_mesh_opacity(self):
-        """Verify explicit soft mesh opacity overrides opacity embedded in TetMesh."""
+    def test_soft_mesh_defaults_to_opaque_surface_appearance(self):
+        """Use the canonical color and opaque alpha for an unstyled soft mesh."""
         builder = newton.ModelBuilder()
-        mesh = self._make_soft_tet_mesh(opacity=0.35)
+        mesh = self._make_soft_tet_mesh()
         builder.add_soft_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
             rot=wp.quat_identity(),
             scale=1.0,
             vel=wp.vec3(0.0, 0.0, 0.0),
             mesh=mesh,
-            opacity=0.75,
         )
 
         model = builder.finalize(device=self.device)
 
         self.assertEqual(model.tri_count, 4)
         np.testing.assert_allclose(
+            model.tri_color.numpy(),
+            np.tile([0.7, 0.5, 0.3], (4, 1)),
+            atol=1e-6,
+            rtol=1e-6,
+        )
+        np.testing.assert_allclose(
             model.tri_opacity.numpy(),
-            np.full(4, 0.75, dtype=np.float32),
+            np.ones(4, dtype=np.float32),
             atol=1e-6,
             rtol=1e-6,
         )
 
-    def test_viewer_logs_triangle_mesh_opacity_from_model(self):
-        """Verify triangle mesh logging passes model triangle opacity to viewers."""
+    def test_viewer_logs_triangle_mesh_appearance_from_model(self):
+        """Pass model triangle color and opacity to viewers."""
         builder = newton.ModelBuilder()
         builder.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
@@ -298,16 +366,18 @@ class TestShapeColors(unittest.TestCase):
             cell_x=1.0,
             cell_y=1.0,
             mass=1.0,
+            color=(0.2, 0.4, 0.6),
             opacity=0.4,
         )
         model = builder.finalize(device=self.device)
         state = model.state()
 
-        viewer = _TriangleOpacityProbe()
+        viewer = _TriangleAppearanceProbe()
         viewer.set_model(model)
         viewer.log_state(state)
 
         self.assertIn("/model/triangles", viewer.mesh_opacities)
+        np.testing.assert_allclose(viewer.mesh_colors["/model/triangles"], (0.2, 0.4, 0.6), atol=1e-6, rtol=1e-6)
         np.testing.assert_allclose(viewer.mesh_opacities["/model/triangles"], 0.4, atol=1e-6, rtol=1e-6)
 
     def test_viewer_warns_for_wrong_triangle_opacity_count(self):
@@ -329,10 +399,10 @@ class TestShapeColors(unittest.TestCase):
         viewer.set_model(model)
 
         with self.assertWarnsRegex(UserWarning, "3 values for 2 triangles"):
-            groups, _ = viewer._get_triangle_opacity_groups()
+            groups, _ = viewer._get_triangle_appearance_groups()
 
         self.assertEqual(len(groups), 1)
-        self.assertEqual(groups[0][2], 1.0)
+        self.assertEqual(groups[0][3], 1.0)
 
     def test_viewer_caps_continuous_triangle_opacity_groups(self):
         """Bound draw-call growth for continuously varying triangle opacity."""
@@ -357,11 +427,40 @@ class TestShapeColors(unittest.TestCase):
         viewer.set_model(model)
 
         with self.assertWarnsRegex(UserWarning, "quantizing"):
-            groups, _ = viewer._get_triangle_opacity_groups()
+            groups, _ = viewer._get_triangle_appearance_groups()
 
         self.assertLessEqual(len(groups), MAX_TRIANGLE_OPACITY_GROUPS)
 
-    def test_viewer_caches_triangle_opacity_groups_until_mutated(self):
+    def test_viewer_caps_continuous_triangle_appearance_groups(self):
+        """Bound draw-call growth for continuously varying triangle colors and opacity."""
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=5,
+            dim_y=4,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+        )
+        model = builder.finalize(device=self.device)
+        values = np.linspace(0.0, 1.0, model.tri_count, dtype=np.float32)
+        model.tri_color = wp.array(
+            np.column_stack((values, values[::-1], np.mod(values * 3.0, 1.0))),
+            dtype=wp.vec3,
+            device=self.device,
+        )
+        model.tri_opacity = wp.array(values, dtype=wp.float32, device=self.device)
+        viewer = ViewerNull()
+        viewer.set_model(model)
+
+        with self.assertWarnsRegex(UserWarning, "quantizing"):
+            groups, _ = viewer._get_triangle_appearance_groups()
+
+        self.assertLessEqual(len(groups), MAX_TRIANGLE_APPEARANCE_GROUPS)
+
+    def test_viewer_caches_triangle_appearance_groups_until_opacity_mutates(self):
         """Reuse triangle groups until an in-place opacity mutation occurs."""
         builder = newton.ModelBuilder()
         builder.add_cloth_grid(
@@ -381,19 +480,45 @@ class TestShapeColors(unittest.TestCase):
         viewer = ViewerNull()
         viewer.set_model(model)
 
-        groups_first, _ = viewer._get_triangle_opacity_groups()
-        groups_second, stale_second = viewer._get_triangle_opacity_groups()
+        groups_first, _ = viewer._get_triangle_appearance_groups()
+        groups_second, stale_second = viewer._get_triangle_appearance_groups()
         self.assertIs(groups_second, groups_first)
         self.assertEqual(stale_second, [])
 
         # An in-place mutation must invalidate the cached groups.
         opacities[:] = 0.75
         wp.copy(model.tri_opacity, wp.array(opacities, dtype=wp.float32, device=self.device))
-        groups_third, stale_third = viewer._get_triangle_opacity_groups()
+        groups_third, stale_third = viewer._get_triangle_appearance_groups()
         self.assertIsNot(groups_third, groups_first)
         self.assertEqual(len(groups_third), 1)
-        self.assertAlmostEqual(groups_third[0][2], 0.75, places=6)
+        self.assertAlmostEqual(groups_third[0][3], 0.75, places=6)
         self.assertEqual(stale_third, groups_first)
+
+    def test_viewer_invalidates_triangle_appearance_groups_when_color_mutates(self):
+        """Rebuild triangle groups after an in-place color mutation."""
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+        )
+        model = builder.finalize(device=self.device)
+        viewer = ViewerNull()
+        viewer.set_model(model)
+
+        groups_first, _ = viewer._get_triangle_appearance_groups()
+        colors = np.tile([0.1, 0.2, 0.3], (model.tri_count, 1)).astype(np.float32)
+        wp.copy(model.tri_color, wp.array(colors, dtype=wp.vec3, device=self.device))
+        groups_second, stale_second = viewer._get_triangle_appearance_groups()
+
+        self.assertIsNot(groups_second, groups_first)
+        np.testing.assert_allclose(groups_second[0][2], (0.1, 0.2, 0.3), atol=1e-6, rtol=1e-6)
+        self.assertEqual(stale_second, groups_first)
 
     def test_opaque_and_transparent_shapes_use_separate_batches(self):
         """Separate opaque and transparent instances into render-pass batches."""

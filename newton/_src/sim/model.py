@@ -544,6 +544,7 @@ class Model:
         "tri_activations": AttributeSpec(AttributeFrequency.TRIANGLE),
         "tri_materials": AttributeSpec(AttributeFrequency.TRIANGLE),
         "tri_areas": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_color": AttributeSpec(AttributeFrequency.TRIANGLE),
         "tri_opacity": AttributeSpec(AttributeFrequency.TRIANGLE),
         "edge_indices": AttributeSpec(
             AttributeFrequency.EDGE,
@@ -1019,6 +1020,8 @@ class Model:
         Stored per-element; kernels multiply by rest area internally."""
         self.tri_areas: wp.array[wp.float32] | None = None
         """Triangle element rest areas [m²], shape [tri_count], float."""
+        self.tri_color: wp.array[wp.vec3] | None = None
+        """Triangle surface display colors [0, 1], shape [tri_count], vec3."""
         self.tri_opacity: wp.array[wp.float32] | None = None
         """Triangle surface display opacity [0, 1], shape [tri_count], float."""
 

@@ -2020,8 +2020,6 @@ def get_tetmesh(
         # density too; a plain rigid-style physics material is a valid source.
         density = _get_physics_material_density(material_prim)
 
-    material_props = resolve_material_properties_for_prim(prim)
-
     if not _load_custom_attributes:
         return TetMesh(
             vertices=vertices,
@@ -2029,7 +2027,6 @@ def get_tetmesh(
             k_mu=k_mu,
             k_lambda=k_lambda,
             density=density,
-            opacity=material_props.get("opacity"),
         )
 
     # Read custom primvars and attributes (per-vertex, per-tet, etc.)
@@ -2095,7 +2092,6 @@ def get_tetmesh(
         k_mu=k_mu,
         k_lambda=k_lambda,
         density=density,
-        opacity=material_props.get("opacity"),
     )
     tri_count = len(result.surface_tri_indices) // 3
     for name, value in custom_attributes.items():

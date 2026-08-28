@@ -13073,8 +13073,8 @@ def Xform "Body" (
         self.assertAlmostEqual(loaded_mesh.opacity, 0.2, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_display_opacity_primvar_loads_as_tet_mesh_opacity(self):
-        """Load a TetMesh displayOpacity primvar as opacity."""
+    def test_tet_mesh_display_appearance_imports_to_surface_triangles(self):
+        """Import TetMesh display color and opacity onto generated surface triangles."""
         from pxr import Sdf, Usd, UsdGeom
 
         stage = Usd.Stage.CreateInMemory()
@@ -13091,11 +13091,21 @@ def Xform "Body" (
         UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
             "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
         ).Set([0.44])
+        UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
+            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
+        ).Set([(0.2, 0.4, 0.6)])
 
         loaded_mesh = usd.get_tetmesh(tet_mesh.GetPrim())
+        expected_color = usd_utils.resolve_material_properties_for_prim(tet_mesh.GetPrim())["color"]
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
 
-        self.assertAlmostEqual(loaded_mesh.opacity, 0.44, places=6)
+        self.assertFalse(hasattr(loaded_mesh, "opacity"))
         self.assertNotIn("displayOpacity", loaded_mesh.custom_attributes)
+        self.assertNotIn("displayColor", loaded_mesh.custom_attributes)
+        self.assertEqual(builder.tri_count, 4)
+        np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (4, 1)), atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(builder.tri_opacity, np.full(4, 0.44), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_primitive_collider_drawability_follows_purpose_not_material(self):
@@ -14324,13 +14334,12 @@ class TestTetMesh(unittest.TestCase):
         tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
         with self.assertWarnsRegex(
             DeprecationWarning,
-            "Passing 'k_mu', 'k_lambda', 'k_damp', 'density', 'custom_attributes', 'opacity' positionally",
+            "Passing 'k_mu', 'k_lambda', 'k_damp', 'density', 'custom_attributes' positionally",
         ):
-            tet_mesh = newton.TetMesh(vertices, tet_indices, 1.0, 2.0, 3.0, 4.0, None, 0.5)
+            tet_mesh = newton.TetMesh(vertices, tet_indices, 1.0, 2.0, 3.0, 4.0, None)
 
         assert_np_equal(tet_mesh.k_mu, np.array([1.0], dtype=np.float32))
         self.assertEqual(tet_mesh.density, 4.0)
-        self.assertEqual(tet_mesh.opacity, 0.5)
 
     def test_tetmesh_basic(self):
         """Test TetMesh construction from raw arrays."""
@@ -14795,18 +14804,13 @@ def Xform "World"
 
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
-        tm = newton.TetMesh(vertices, tet_indices, k_mu=1000.0, k_lambda=2000.0, density=40.0, opacity=0.25)
+        tm = newton.TetMesh(vertices, tet_indices, k_mu=1000.0, k_lambda=2000.0, density=40.0)
 
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as f:
             path = f.name
 
         try:
             tm.save(path)
-            with np.load(path) as data:
-                self.assertIn("opacity", data.files)
-                self.assertNotIn("__newton_opacity__", data.files)
-                self.assertNotIn("__opacity__", data.files)
-
             tm2 = newton.TetMesh.create_from_file(path)
 
             assert_np_equal(tm2.vertices, tm.vertices)
@@ -14814,7 +14818,6 @@ def Xform "World"
             assert_np_equal(tm2.k_mu, tm.k_mu)
             assert_np_equal(tm2.k_lambda, tm.k_lambda)
             self.assertAlmostEqual(tm2.density, 40.0)
-            self.assertAlmostEqual(tm2.opacity, 0.25)
         finally:
             os.unlink(path)
 
@@ -14837,7 +14840,6 @@ def Xform "World"
             k_mu=1000.0,
             k_lambda=2000.0,
             density=40.0,
-            opacity=0.35,
             custom_attributes={
                 "regionId": per_tet_region,
                 "newton_opacity": third_party_opacity,
@@ -14862,7 +14864,6 @@ def Xform "World"
             assert_np_equal(tm2.k_mu, np.array([1000.0, 1000.0], dtype=np.float32))
             assert_np_equal(tm2.k_lambda, np.array([2000.0, 2000.0], dtype=np.float32))
             self.assertAlmostEqual(tm2.density, 40.0)
-            self.assertAlmostEqual(tm2.opacity, 0.35)
 
             # Custom attributes round-trip (check values, not just keys)
             self.assertIn("regionId", tm2.custom_attributes)
@@ -14889,7 +14890,6 @@ def Xform "World"
             "k_lambda",
             "k_damp",
             "density",
-            "opacity",
             "__custom_names__",
             "__custom_freqs__",
         ):

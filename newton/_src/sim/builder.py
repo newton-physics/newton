@@ -89,6 +89,16 @@ def _validate_opacity(value: Any, value_name: str) -> float:
     return opacity
 
 
+def _validate_color(value: Any, value_name: str) -> tuple[float, float, float]:
+    """Return a finite RGB display color with components in [0, 1]."""
+    color = np.asarray(value, dtype=np.float32)
+    if color.shape != (3,):
+        raise ValueError(f"{value_name} must contain exactly 3 values, got shape {color.shape}.")
+    if np.any(~np.isfinite(color)) or np.any(color < 0.0) or np.any(color > 1.0):
+        raise ValueError(f"{value_name} must contain finite values in [0, 1], got {color.tolist()!r}.")
+    return (float(color[0]), float(color[1]), float(color[2]))
+
+
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 _SCALAR_GRAVITY_DEPRECATION_MSG = (
@@ -316,6 +326,7 @@ class ModelBuilder:
     """
 
     _DEFAULT_GROUND_PLANE_COLOR = (0.125, 0.125, 0.15)
+    _DEFAULT_TRI_COLOR = (0.7, 0.5, 0.3)
     _SHAPE_COLOR_PALETTE = (
         # Paul Tol - Bright 9
         (68, 119, 170),  # blue
@@ -1428,6 +1439,8 @@ class ModelBuilder:
         """Triangle material rows accumulated for :attr:`Model.tri_materials`."""
         self.tri_areas: list[float] = []
         """Triangle rest areas [m^2] accumulated for :attr:`Model.tri_areas`."""
+        self.tri_color: list[Vec3] = []
+        """Triangle surface display colors accumulated for :attr:`Model.tri_color`."""
         self.tri_opacity: list[float] = []
         """Triangle surface display opacities accumulated for :attr:`Model.tri_opacity`."""
 
@@ -8927,8 +8940,9 @@ class ModelBuilder:
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
-        custom_attributes: dict[str, Any] | None = None,
+        color: Vec3 | None = None,
         opacity: float | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> float:
         """Adds a triangular FEM element between three particles in the system.
 
@@ -8944,8 +8958,9 @@ class ModelBuilder:
             tri_kd: The damping coefficient of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangle. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangle. If None, the default value (:attr:`default_tri_lift`) is used.
-            custom_attributes: Dictionary of custom attribute names to values.
+            color: Display color in [0, 1]. If None, the default triangle color is used.
             opacity: Display opacity in [0, 1]. If None, the triangle is fully opaque.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
             The area of the triangle
@@ -8959,6 +8974,10 @@ class ModelBuilder:
         tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
         tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
         tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+        resolved_color = _validate_color(
+            self._DEFAULT_TRI_COLOR if color is None else color,
+            "Triangle color",
+        )
         resolved_opacity = _validate_opacity(1.0 if opacity is None else opacity, "Triangle opacity")
 
         # compute basis for 2D rest pose
@@ -8992,6 +9011,7 @@ class ModelBuilder:
             self.tri_activations.append(0.0)
             self.tri_materials.append((tri_ke, tri_ka, tri_kd, tri_drag, tri_lift))
             self.tri_areas.append(area)
+            self.tri_color.append(resolved_color)
             self.tri_opacity.append(resolved_opacity)
 
             # Process custom attributes
@@ -9016,8 +9036,9 @@ class ModelBuilder:
         tri_kd: list[float] | None = None,
         tri_drag: list[float] | None = None,
         tri_lift: list[float] | None = None,
-        custom_attributes: dict[str, Any] | None = None,
+        color: Vec3 | list[Vec3] | np.ndarray | None = None,
         opacity: float | list[float] | np.ndarray | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> list[float]:
         """Adds triangular FEM elements between groups of three particles in the system.
 
@@ -9033,9 +9054,11 @@ class ModelBuilder:
             tri_kd: The damping coefficient of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangles. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangles. If None, the default value (:attr:`default_tri_lift`) is used.
-            custom_attributes: Dictionary of custom attribute names to values.
+            color: Display color in [0, 1]. If a single RGB value, applied to all
+                triangles. If array-like, RGB values are applied per triangle.
             opacity: Display opacity in [0, 1]. If scalar, applied to all triangles.
                 If array-like, values are applied per triangle.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
             The areas of the triangles
@@ -9095,6 +9118,19 @@ class ModelBuilder:
 
         inds = np.concatenate((i_[valid_inds, None], j_[valid_inds, None], k_[valid_inds, None]), axis=-1)
 
+        color_arr = np.asarray(self._DEFAULT_TRI_COLOR if color is None else color, dtype=np.float32)
+        if color_arr.shape == (3,):
+            color_arr = np.broadcast_to(color_arr, (len(areas), 3))
+        elif color_arr.shape != (len(areas), 3):
+            raise ValueError(
+                f"Triangle color arrays must contain one RGB value or exactly {len(areas)} RGB values, "
+                f"got shape {color_arr.shape}."
+            )
+        invalid_color = (~np.isfinite(color_arr)) | (color_arr < 0.0) | (color_arr > 1.0)
+        if np.any(invalid_color):
+            invalid_row = color_arr[np.flatnonzero(np.any(invalid_color, axis=1))[0]]
+            raise ValueError(f"Triangle color must contain finite values in [0, 1], got {invalid_row.tolist()!r}.")
+
         opacity_arr = np.asarray(1.0 if opacity is None else opacity, dtype=np.float32).reshape(-1)
         if opacity_arr.size == 1:
             opacity_arr = np.full(len(areas), float(opacity_arr[0]), dtype=np.float32)
@@ -9134,6 +9170,7 @@ class ModelBuilder:
                 strict=False,
             )
         )
+        self.tri_color.extend(color_arr[valid_inds].tolist())
         self.tri_opacity.extend(opacity_arr[valid_inds].tolist())
         areas_list = areas.tolist()
         self.tri_areas.extend(areas[valid_inds].tolist())
@@ -9462,11 +9499,12 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        color: Vec3 | None = None,
+        opacity: float | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
         label: str | None = None,
-        opacity: float | None = None,
     ):
         """Helper to create a regular planar cloth grid
 
@@ -9490,6 +9528,7 @@ class ModelBuilder:
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify
                 this cloth.
+            color: Display color in [0, 1] for the cloth surface.
             opacity: Display opacity in [0, 1] for the cloth surface.
         """
 
@@ -9538,6 +9577,7 @@ class ModelBuilder:
             spring_ke=spring_ke,
             spring_kd=spring_kd,
             particle_radius=particle_radius,
+            color=color,
             opacity=opacity,
             custom_attributes_particles=custom_attributes_particles,
             custom_attributes_triangles=custom_attributes_triangles,
@@ -9586,13 +9626,14 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        color: Vec3 | None = None,
+        opacity: float | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
         custom_attributes_springs: dict[str, Any] | None = None,
         validate_mesh: bool = False,
         label: str | None = None,
-        opacity: float | None = None,
     ) -> None:
         """Helper to create a cloth model from a regular triangle mesh
 
@@ -9607,6 +9648,8 @@ class ModelBuilder:
             indices: A list of triangle indices, 3 entries per-face
             density: The density per-area of the mesh
             particle_radius: The particle_radius which controls particle based collisions.
+            color: Display color in [0, 1] for the cloth surface.
+            opacity: Display opacity in [0, 1] for the cloth surface.
             custom_attributes_particles: Dictionary of custom attribute names to values for the particles.
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
@@ -9622,7 +9665,6 @@ class ModelBuilder:
                 :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
                 warning emitted with ``validate_mesh=True`` can identify
                 this cloth.
-            opacity: Display opacity in [0, 1] for the cloth surface.
 
         Note:
             The mesh should be two-manifold.
@@ -9680,6 +9722,7 @@ class ModelBuilder:
             tri_kd=[tri_kd] * num_tris,
             tri_drag=[tri_drag] * num_tris,
             tri_lift=[tri_lift] * num_tris,
+            color=color,
             opacity=opacity,
             custom_attributes=custom_attributes_triangles,
         )
@@ -9851,8 +9894,9 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
-        label: str | None = None,
+        color: Vec3 | None = None,
         opacity: float | None = None,
+        label: str | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
 
@@ -9888,11 +9932,12 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
+            color: Display color in [0, 1] for the generated surface mesh.
+            opacity: Display opacity in [0, 1] for the generated surface mesh.
             label: Optional name reserved for forwarding to mesh-quality
                 diagnostics. Currently unused by ``add_soft_grid`` (the
                 generated grid is degenerate-free by construction); kept
                 for signature consistency with the other ``add_*`` helpers.
-            opacity: Display opacity in [0, 1] for the generated surface mesh.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -9987,6 +10032,7 @@ class ModelBuilder:
                 tri_kd=tri_kd,
                 tri_drag=tri_drag,
                 tri_lift=tri_lift,
+                color=color,
                 opacity=opacity,
             )
         end_tri = len(self.tri_indices)
@@ -10020,9 +10066,10 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        color: Vec3 | None = None,
+        opacity: float | None = None,
         validate_mesh: bool = False,
         label: str | None = None,
-        opacity: float | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh.
 
@@ -10061,6 +10108,8 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
+            color: Display color in [0, 1] for the generated surface mesh.
+            opacity: Display opacity in [0, 1] for the generated surface mesh.
             validate_mesh: If True, check for inverted or small-volume
                 tetrahedra, sliver tetrahedra, and non-manifold faces, and
                 emit warnings. See :func:`newton.utils.validate_tet_mesh`.
@@ -10068,8 +10117,6 @@ class ModelBuilder:
                 :func:`newton.utils.validate_tet_mesh` so a mesh-quality
                 warning emitted with ``validate_mesh=True`` can identify
                 this soft body.
-            opacity: Display opacity in [0, 1] for the generated surface mesh.
-                Overrides ``mesh.opacity`` if both are provided.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -10100,8 +10147,6 @@ class ModelBuilder:
                 k_lambda = mesh.k_lambda
             if k_damp is None:
                 k_damp = mesh.k_damp
-            if opacity is None:
-                opacity = mesh.opacity
 
         if vertices is None or indices is None:
             raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
@@ -10123,8 +10168,6 @@ class ModelBuilder:
             k_lambda = self.default_tet_k_lambda
         if k_damp is None:
             k_damp = self.default_tet_k_damp
-        if opacity is None:
-            opacity = 1.0
 
         num_tets = int(len(indices) / 4)
         k_mu_arr = np.broadcast_to(np.asarray(k_mu, dtype=np.float32).flatten(), num_tets)
@@ -10213,6 +10256,7 @@ class ModelBuilder:
                 tri_kd=tri_kd,
                 tri_drag=tri_drag,
                 tri_lift=tri_lift,
+                color=color,
                 opacity=opacity,
                 custom_attributes=tr_custom,
             )
@@ -12505,6 +12549,7 @@ class ModelBuilder:
             m.tri_activations = _to_wp_array(self.tri_activations, wp.float32, requires_grad=requires_grad)
             m.tri_materials = _to_wp_array(self.tri_materials, wp.float32, requires_grad=requires_grad)
             m.tri_areas = _to_wp_array(self.tri_areas, wp.float32, requires_grad=requires_grad)
+            m.tri_color = _to_wp_array(self.tri_color, wp.vec3, requires_grad=False)
             m.tri_opacity = _to_wp_array(self.tri_opacity, wp.float32, requires_grad=False)
 
             # ---------------------

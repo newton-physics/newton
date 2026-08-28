@@ -26,6 +26,7 @@ from .kernels import (
     compute_hydro_contact_surface_lines,
     estimate_world_extents,
     flag_changed_floats,
+    flag_changed_vec3s,
     repack_shape_colors,
     repack_shape_opacities,
     transform_points,
@@ -33,6 +34,8 @@ from .kernels import (
 from .utils import OPAQUE_OPACITY_THRESHOLD
 
 MAX_TRIANGLE_OPACITY_GROUPS = 32
+MAX_TRIANGLE_APPEARANCE_GROUPS = MAX_TRIANGLE_OPACITY_GROUPS
+_DEFAULT_TRIANGLE_COLOR = (0.7, 0.5, 0.3)
 
 #: Sentinel layer id used when no user-defined layer has been activated.
 #: Preserves the legacy behavior of unprefixed object names so that existing
@@ -541,9 +544,13 @@ class ViewerBase(ABC):
 
         # Shape instance batches (shape hash -> ShapeInstances)
         layer._shape_instances = {}
-        layer._triangle_opacity_groups: list[tuple[str, wp.array[wp.int32], float]] | None = None
-        layer._triangle_opacity_signature: tuple[int, str] | None = None
+        layer._triangle_appearance_groups: (
+            list[tuple[str, wp.array[wp.int32], tuple[float, float, float], float]] | None
+        ) = None
+        layer._triangle_appearance_signature: tuple[int, str] | None = None
+        layer._triangle_color_cached: wp.array[wp.vec3] | None = None
         layer._triangle_opacity_cached: wp.array[wp.float32] | None = None
+        layer._triangle_color_change_flag: wp.array[wp.int32] | None = None
         layer._triangle_opacity_change_flag: wp.array[wp.int32] | None = None
         # Inertia box wireframe line vertices (12 lines per body)
         layer._inertia_box_points0 = None
@@ -746,9 +753,11 @@ class ViewerBase(ABC):
         self._slot_to_shape_wp = None
         self._shape_to_batch = None
         self._shape_transparent_mask = None
-        self._triangle_opacity_groups = None
-        self._triangle_opacity_signature = None
+        self._triangle_appearance_groups = None
+        self._triangle_appearance_signature = None
+        self._triangle_color_cached = None
         self._triangle_opacity_cached = None
+        self._triangle_color_change_flag = None
         self._triangle_opacity_change_flag = None
 
         self._populate_shapes()
@@ -3097,32 +3106,81 @@ class ViewerBase(ABC):
         )
         return bool(self._triangle_opacity_change_flag.numpy()[0])
 
-    def _get_triangle_opacity_groups(
+    def _triangle_colors_changed(self) -> bool:
+        """Detect ``Model.tri_color`` mutations without downloading the full array on CUDA."""
+        current = self.model.tri_color
+        cached = self._triangle_color_cached
+        if cached is None or len(cached) != len(current):
+            return True
+        if not current.device.is_cuda:
+            return not np.array_equal(current.numpy(), cached.numpy())
+        if self._triangle_color_change_flag is None:
+            self._triangle_color_change_flag = wp.zeros(1, dtype=wp.int32, device=current.device)
+        else:
+            self._triangle_color_change_flag.zero_()
+        wp.launch(
+            flag_changed_vec3s,
+            dim=len(current),
+            inputs=[current, cached, self._triangle_color_change_flag],
+            device=current.device,
+            record_tape=False,
+        )
+        return bool(self._triangle_color_change_flag.numpy()[0])
+
+    def _get_triangle_appearance_groups(
         self,
     ) -> tuple[
-        list[tuple[str, wp.array[wp.int32], float]],
-        list[tuple[str, wp.array[wp.int32], float]],
+        list[tuple[str, wp.array[wp.int32], tuple[float, float, float], float]],
+        list[tuple[str, wp.array[wp.int32], tuple[float, float, float], float]],
     ]:
-        """Return cached triangle index groups split by display opacity."""
+        """Return cached triangle index groups split by display color and opacity."""
         if self.model is None or not self.model.tri_count:
-            stale_groups = self._triangle_opacity_groups or []
-            self._triangle_opacity_groups = []
-            self._triangle_opacity_signature = None
+            stale_groups = self._triangle_appearance_groups or []
+            self._triangle_appearance_groups = []
+            self._triangle_appearance_signature = None
+            self._triangle_color_cached = None
             self._triangle_opacity_cached = None
             return [], stale_groups
 
-        # Fast path: reuse cached groups unless tri_opacity itself was mutated.
-        # The change check runs on device, avoiding a per-frame download + hash
-        # of the full opacity array.
-        if self._triangle_opacity_groups is not None and self._triangle_opacity_signature is not None:
-            if self.model.tri_opacity is None:
-                cache_valid = self._triangle_opacity_cached is None
+        # Fast path: reuse cached groups unless an appearance array was mutated.
+        # The change checks run on device, avoiding per-frame downloads and hashes.
+        if self._triangle_appearance_groups is not None and self._triangle_appearance_signature is not None:
+            if self.model.tri_color is None:
+                color_cache_valid = self._triangle_color_cached is None
             else:
-                cache_valid = self._triangle_opacity_cached is not None and not self._triangle_opacities_changed()
-            if cache_valid:
-                return self._triangle_opacity_groups, []
+                color_cache_valid = self._triangle_color_cached is not None and not self._triangle_colors_changed()
+            if self.model.tri_opacity is None:
+                opacity_cache_valid = self._triangle_opacity_cached is None
+            else:
+                opacity_cache_valid = (
+                    self._triangle_opacity_cached is not None and not self._triangle_opacities_changed()
+                )
+            if color_cache_valid and opacity_cache_valid:
+                return self._triangle_appearance_groups, []
 
         tri_count = self.model.tri_count
+        default_color = np.array(_DEFAULT_TRIANGLE_COLOR, dtype=np.float32)
+        if self.model.tri_color is None:
+            colors = np.broadcast_to(default_color, (tri_count, 3)).copy()
+        else:
+            colors = self.model.tri_color.numpy().astype(np.float32).reshape(-1, 3)
+            if len(colors) == 1:
+                colors = np.broadcast_to(colors[0], (tri_count, 3)).copy()
+            elif len(colors) != tri_count:
+                warnings.warn(
+                    f"Model.tri_color has {len(colors)} values for {tri_count} triangles; "
+                    "rendering all triangles with the default color.",
+                    stacklevel=2,
+                )
+                colors = np.broadcast_to(default_color, (tri_count, 3)).copy()
+            elif not np.all(np.isfinite(colors)):
+                warnings.warn(
+                    "Model.tri_color contains non-finite values; replacing them with display-safe values.",
+                    stacklevel=2,
+                )
+                colors = np.nan_to_num(colors, nan=0.0, posinf=1.0, neginf=0.0)
+            colors = np.clip(colors, 0.0, 1.0)
+
         if self.model.tri_opacity is None:
             opacities = np.ones(tri_count, dtype=np.float32)
         else:
@@ -3154,56 +3212,81 @@ class ViewerBase(ABC):
                 np.rint(opacities * (MAX_TRIANGLE_OPACITY_GROUPS - 1)) / (MAX_TRIANGLE_OPACITY_GROUPS - 1)
             ).astype(np.float32)
 
+        appearances = np.column_stack((colors, opacities))
+        unique_appearance_count = len(np.unique(appearances, axis=0))
+        if unique_appearance_count > MAX_TRIANGLE_APPEARANCE_GROUPS:
+            warnings.warn(
+                f"Model triangle appearance contains {unique_appearance_count} unique values; quantizing to at most "
+                f"{MAX_TRIANGLE_APPEARANCE_GROUPS} display groups.",
+                stacklevel=2,
+            )
+            active_channels = np.flatnonzero(np.ptp(appearances, axis=0) > 0.0)
+            levels = max(2, int(MAX_TRIANGLE_APPEARANCE_GROUPS ** (1.0 / len(active_channels))))
+            for channel in active_channels:
+                channel_min = float(np.min(appearances[:, channel]))
+                channel_range = float(np.max(appearances[:, channel]) - channel_min)
+                normalized = (appearances[:, channel] - channel_min) / channel_range
+                appearances[:, channel] = channel_min + (
+                    np.rint(normalized * (levels - 1)) / (levels - 1) * channel_range
+                )
         signature = (
             tri_count,
-            hashlib.blake2s(np.ascontiguousarray(opacities, dtype=np.float32).tobytes(), digest_size=8).hexdigest(),
+            hashlib.blake2s(np.ascontiguousarray(appearances, dtype=np.float32).tobytes(), digest_size=8).hexdigest(),
         )
-        if signature == self._triangle_opacity_signature and self._triangle_opacity_groups is not None:
-            return self._triangle_opacity_groups, []
+        if signature == self._triangle_appearance_signature and self._triangle_appearance_groups is not None:
+            return self._triangle_appearance_groups, []
 
-        stale_groups = self._triangle_opacity_groups or []
+        stale_groups = self._triangle_appearance_groups or []
         tri_indices_np = self.model.tri_indices.numpy().astype(np.int32).reshape(-1, 3)
 
-        if np.all(opacities == opacities[0]):
+        unique_appearances, appearance_ids = np.unique(appearances, axis=0, return_inverse=True)
+        if len(unique_appearances) == 1:
+            appearance = unique_appearances[0]
             groups = [
                 (
                     "/model/triangles",
                     self.model.tri_indices.flatten(),
-                    float(opacities[0]),
+                    (float(appearance[0]), float(appearance[1]), float(appearance[2])),
+                    float(appearance[3]),
                 )
             ]
         else:
             groups = []
-            for group_idx, opacity_value in enumerate(np.unique(opacities)):
-                tri_ids = np.flatnonzero(opacities == opacity_value)
+            for group_idx, appearance in enumerate(unique_appearances):
+                tri_ids = np.flatnonzero(appearance_ids == group_idx)
                 group_indices_np = tri_indices_np[tri_ids].reshape(-1)
                 digest = hashlib.blake2s(group_indices_np.tobytes(), digest_size=4).hexdigest()
                 group_indices = wp.array(group_indices_np, dtype=wp.int32, device=self.device)
-                groups.append((f"/model/triangles/opacity_{group_idx}_{digest}", group_indices, float(opacity_value)))
+                color = (float(appearance[0]), float(appearance[1]), float(appearance[2]))
+                groups.append(
+                    (f"/model/triangles/appearance_{group_idx}_{digest}", group_indices, color, float(appearance[3]))
+                )
 
-        self._triangle_opacity_groups = groups
-        self._triangle_opacity_signature = signature
+        self._triangle_appearance_groups = groups
+        self._triangle_appearance_signature = signature
+        self._triangle_color_cached = wp.clone(self.model.tri_color) if self.model.tri_color is not None else None
         self._triangle_opacity_cached = wp.clone(self.model.tri_opacity) if self.model.tri_opacity is not None else None
         return groups, stale_groups
 
     def _log_triangles(self, state: newton.State):
         if self.model.tri_count:
-            groups, stale_groups = self._get_triangle_opacity_groups()
-            visible_paths = {name for name, _, _ in groups}
+            groups, stale_groups = self._get_triangle_appearance_groups()
+            visible_paths = {name for name, _, _, _ in groups}
             points = self._apply_layer_transform_to_points(state.particle_q)
             hidden = not self.show_triangles or self._layer_force_hidden()
 
-            for name, indices, opacity in groups:
+            for name, indices, color, opacity in groups:
                 self.log_mesh(
                     self._qualify(name),
                     points,
                     indices,
                     hidden=hidden,
                     backface_culling=False,
+                    color=color,
                     opacity=opacity,
                 )
 
-            for name, indices, opacity in stale_groups:
+            for name, indices, color, opacity in stale_groups:
                 if name not in visible_paths:
                     self.log_mesh(
                         self._qualify(name),
@@ -3211,6 +3294,7 @@ class ViewerBase(ABC):
                         indices,
                         hidden=True,
                         backface_culling=False,
+                        color=color,
                         opacity=opacity,
                     )
 
