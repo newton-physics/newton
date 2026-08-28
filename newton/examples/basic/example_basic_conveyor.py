@@ -25,6 +25,7 @@ BELT_RING_RADIUS = 1.8
 BELT_HALF_WIDTH = 0.24
 BELT_HALF_THICKNESS = 0.04
 BELT_MESH_SEGMENTS = 96
+BELT_COLLISION_SEGMENTS = 16
 RAIL_WALL_THICKNESS = 0.035
 RAIL_HEIGHT = 0.16
 RAIL_BASE_OVERLAP = 0.01
@@ -152,11 +153,13 @@ def advance_time(sim_time: wp.array[wp.float32], dt: float):
 
 class Example:
     def __init__(self, viewer, args=None):
+        solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
+        self.solver_type = solver_type
         newton.use_coord_layout_targets = True
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 2 if solver_type == "kamino" else 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -257,12 +260,46 @@ class Example:
             is_kinematic=True,
             label="conveyor_belt",
         )
+        # Keep the smooth render mesh while avoiding an oversized mesh-contact system in DVI.
+        belt_mesh_cfg = belt_cfg
+        if solver_type == "kamino":
+            belt_mesh_cfg = belt_cfg.copy()
+            belt_mesh_cfg.has_shape_collision = False
+            belt_mesh_cfg.has_particle_collision = False
         self.belt_shape = builder.add_shape_mesh(
             self.belt_body,
             mesh=belt_mesh,
-            cfg=belt_cfg,
+            cfg=belt_mesh_cfg,
             label="conveyor_belt_mesh",
         )
+        self.belt_collision_shapes = [self.belt_shape]
+        if solver_type == "kamino":
+            belt_collision_cfg = belt_cfg.copy()
+            belt_collision_cfg.is_visible = False
+            collision_half_angle = math.pi / BELT_COLLISION_SEGMENTS
+            collision_half_tangent = belt_outer_radius * math.tan(collision_half_angle)
+            # Include the inner-arc sagitta so adjacent finite patches do not leave collision gaps.
+            collision_half_radial = BELT_HALF_WIDTH + belt_inner_radius * (1.0 - math.cos(collision_half_angle))
+            self.belt_collision_shapes = []
+            for segment in range(BELT_COLLISION_SEGMENTS):
+                angle = 2.0 * math.pi * segment / BELT_COLLISION_SEGMENTS
+                self.belt_collision_shapes.append(
+                    builder.add_shape_plane(
+                        body=self.belt_body,
+                        xform=wp.transform(
+                            p=wp.vec3(
+                                BELT_RING_RADIUS * math.cos(angle),
+                                BELT_RING_RADIUS * math.sin(angle),
+                                BELT_HALF_THICKNESS,
+                            ),
+                            q=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle + 0.5 * math.pi),
+                        ),
+                        width=collision_half_tangent,
+                        length=collision_half_radial,
+                        cfg=belt_collision_cfg,
+                        label=f"conveyor_belt_collision_plane_{segment}",
+                    )
+                )
         self.belt_joint = builder.add_joint_revolute(
             parent=-1,
             child=self.belt_body,
@@ -285,9 +322,11 @@ class Example:
                 cfg=rail_cfg,
                 label=rail_label,
             )
-            builder.add_shape_collision_filter_pair(self.belt_shape, rail_shape)
+            for belt_collision_shape in self.belt_collision_shapes:
+                builder.add_shape_collision_filter_pair(belt_collision_shape, rail_shape)
         # Belt should only interact with dynamic rigid bags.
-        builder.add_shape_collision_filter_pair(self.belt_shape, ground_shape)
+        for belt_collision_shape in self.belt_collision_shapes:
+            builder.add_shape_collision_filter_pair(belt_collision_shape, ground_shape)
 
         self.bag_bodies = []
         belt_top_z = BELT_CENTER_Z + BELT_HALF_THICKNESS
@@ -340,10 +379,12 @@ class Example:
             builder.add_articulation([builder.add_joint_free(bag_body)], label=f"bag_{i}")
             self.bag_bodies.append(bag_body)
 
+        if solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
+
         builder.color()
         self.model = builder.finalize()
 
-        solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
         if solver_type == "vbd":
             self.solver = newton.solvers.SolverVBD(
                 self.model,
@@ -351,14 +392,36 @@ class Example:
                 rigid_compliant_alm=True,
                 rigid_body_contact_buffer_size=512,
             )
+        elif solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.use_collision_detector = True
+            # The full bag set can briefly exceed 256 contacts at segment seams.
+            solver_config.collision_detector.max_contacts_per_world = 384
+            solver_config.collision_detector.max_contacts_per_pair = 4
+            solver_config.collision_detector.max_triangle_pairs = 16384
+            solver_config.integrator = "moreau"
+            solver_config.dvi.max_alternating_iterations = 1
+            solver_config.dvi.bilateral_solve_interval = 1
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.collision_pipeline.contacts()
+        if solver_type == "kamino":
+            self.collision_pipeline = None
+            self.contacts = newton.Contacts(
+                self.model.rigid_contact_max,
+                0,
+                device=self.model.device,
+                requested_attributes=self.model.get_requested_contact_attributes(),
+            )
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         # Ensure body state is initialized from model joint buffers.
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
@@ -374,11 +437,15 @@ class Example:
         self.capture()
 
     def capture(self):
-        with wp.ScopedCapture() as capture:
-            self.simulate()
-        self.graph = capture.graph
+        if wp.get_device().is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
 
     def simulate(self):
+        contacts = None if self.solver_type == "kamino" else self.contacts
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
@@ -405,8 +472,9 @@ class Example:
                 body_flag_filter=newton.BodyFlags.KINEMATIC,
             )
 
-            self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            if self.collision_pipeline is not None:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
+            self.solver.step(self.state_0, self.state_1, self.control, contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
             wp.launch(advance_time, dim=1, inputs=[self.sim_time_wp, self.sim_dt], device=self.model.device)
@@ -421,21 +489,32 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        if self.contacts is not None:
+            if self.solver_type == "kamino" and self.viewer.show_contacts:
+                self.solver.update_contacts(self.contacts, self.state_0)
+            self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     def test_final(self):
         body_q = self.state_0.body_q.numpy()
+        shape_scale = self.model.shape_scale.numpy()
         belt_z = float(body_q[self.belt_body][2])
         assert abs(belt_z - BELT_CENTER_Z) < 0.15, f"Belt body drifted off the conveyor plane: z={belt_z:.4f}"
+        for shape_idx in self.belt_collision_shapes:
+            assert shape_scale[shape_idx][0] > 0.0 and shape_scale[shape_idx][1] > 0.0, (
+                f"Belt collision shape {shape_idx} must have finite extents."
+            )
 
         for body_idx in self.bag_bodies:
             x = float(body_q[body_idx][0])
             y = float(body_q[body_idx][1])
             z = float(body_q[body_idx][2])
             assert np.isfinite(x) and np.isfinite(y) and np.isfinite(z), f"Bag {body_idx} has non-finite pose values."
-            assert z > -0.5, f"Bag body {body_idx} fell through the floor: z={z:.4f}"
-            assert abs(x) < 4.0 and abs(y) < 4.0, f"Bag body {body_idx} left the scene bounds: ({x:.3f}, {y:.3f})"
+            assert z > BELT_CENTER_Z, f"Bag body {body_idx} fell through the conveyor: z={z:.4f}"
+            radius = math.hypot(x, y)
+            assert BELT_RING_RADIUS - 0.5 < radius < BELT_RING_RADIUS + 0.5, (
+                f"Bag body {body_idx} left the conveyor annulus: radius={radius:.3f}"
+            )
 
 
 if __name__ == "__main__":
@@ -443,7 +522,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--solver",
         type=str,
-        choices=["xpbd", "vbd"],
+        choices=["xpbd", "vbd", "kamino"],
         default="xpbd",
         help="Solver backend to use.",
     )

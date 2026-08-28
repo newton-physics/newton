@@ -154,10 +154,12 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 4
-        self.collide_every = 2 if args.solver == "mujoco" else 1  # re-collide every K substeps
+        self.collide_every = 1 if args.solver == "xpbd" else 2  # re-collide every K substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
+        if self.world_count is None:
+            self.world_count = 8 if args.solver == "kamino" else 20
         self.viewer = viewer
         self.solver_type = args.solver
         self.test_mode = args.test
@@ -193,6 +195,8 @@ class Example:
         world_builder = self._build_nut_bolt_scene()
 
         main_scene = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(main_scene)
         main_scene.default_shape_cfg.gap = 0.001 * self.scene_scale
         # Add ground plane at z = ground_plane_offset.
         # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d.
@@ -258,6 +262,12 @@ class Example:
                 if self.deterministic_solver
                 else wp.DeterministicMode.NOT_GUARANTEED,
             )
+        elif self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.dvi.max_alternating_iterations = 4
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             raise ValueError(f"Unknown solver '{self.solver_type}'")
 
@@ -473,7 +483,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
-        parser.set_defaults(world_count=20)
+        parser.set_defaults(world_count=None)
         parser.add_argument(
             "--deterministic",
             action=argparse.BooleanOptionalAction,
@@ -497,9 +507,9 @@ class Example:
         parser.add_argument(
             "--solver",
             type=str,
-            choices=["xpbd", "mujoco"],
+            choices=["xpbd", "mujoco", "kamino"],
             default="mujoco",
-            help="Solver to use: 'xpbd' or 'mujoco'.",
+            help="Solver to use: 'xpbd', 'mujoco', or 'kamino'.",
         )
         parser.add_argument(
             "--num-per-world",

@@ -45,8 +45,11 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
+        self.solver_type = getattr(args, "solver", "mujoco")
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
 
         # add ground plane
         builder.add_ground_plane()
@@ -103,12 +106,24 @@ class Example:
 
         self.imu = newton.sensors.SensorIMU(self.model, self.imu_sites)
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.use_collision_detector = True
+            solver_config.integrator = "moreau"
+            solver_config.dvi.max_alternating_iterations = 8
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+        if self.solver_type == "kamino":
+            self.contacts = newton.CollisionPipeline(self.model).contacts()
+        else:
+            self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
 
         self.buffer = wp.zeros(self.n_cubes, dtype=wp.vec3)
         self.colors = wp.zeros(self.n_cubes, dtype=wp.vec3)
@@ -181,7 +196,9 @@ class Example:
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
+    viewer, args = newton.examples.init(parser)
 
     # Create viewer and run
     newton.examples.run(Example(viewer, args), args)

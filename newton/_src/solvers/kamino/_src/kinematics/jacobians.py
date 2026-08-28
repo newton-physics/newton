@@ -537,6 +537,7 @@ def _build_joint_jacobians_dense(
     model_joints_coords_offset: wp.array[wp.int32],
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_num_dynamic_cts: wp.array[wp.int32],
+    model_joints_num_kinematic_cts: wp.array[wp.int32],
     model_joints_num_friction_cts: wp.array[wp.int32],
     model_joints_dynamic_cts_offset: wp.array[wp.int32],
     model_joints_kinematic_cts_offset: wp.array[wp.int32],
@@ -567,6 +568,7 @@ def _build_joint_jacobians_dense(
     bid_F = model_joints_bid_F[jid]
     dofs_offset = model_joints_dofs_offset[jid]
     num_dyn_cts = model_joints_num_dynamic_cts[jid]
+    num_kin_cts = model_joints_num_kinematic_cts[jid]
     num_friction_cts = model_joints_num_friction_cts[jid]
     dyn_cts_offset = model_joints_dynamic_cts_offset[jid]
     kin_cts_offset = model_joints_kinematic_cts_offset[jid]
@@ -615,7 +617,18 @@ def _build_joint_jacobians_dense(
         store_joint_dofs_jacobian_dense(dof_type, J_jdc_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data)
 
     # Store joint kinematic constraint jacobians
-    store_joint_cts_jacobian_dense(dof_type, J_jkc_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data)
+    if num_kin_cts > 0:
+        store_joint_cts_jacobian_dense(
+            dof_type,
+            J_jkc_row_start,
+            nbd,
+            bio,
+            bid_B,
+            bid_F,
+            JT_B_j,
+            JT_F_j,
+            jac_cts_data,
+        )
 
     # Friction rows use the DoF-direction Jacobian.
     if num_friction_cts > 0:
@@ -711,14 +724,15 @@ def _build_joint_jacobians_sparse(
 
     # Store the constraint Jacobian block
     kinematic_nzb_offset = 0 if num_dyn_cts == 0 else (2 * num_dofs if bid_B > -1 else num_dofs)
-    store_joint_cts_jacobian_sparse(
-        dof_type,
-        bid_B > -1,
-        JT_B_j,
-        JT_F_j,
-        jacobian_cts_nzb_offsets[jid] + kinematic_nzb_offset,
-        jacobian_cts_nzb_values,
-    )
+    if num_kin_cts > 0:
+        store_joint_cts_jacobian_sparse(
+            dof_type,
+            bid_B > -1,
+            JT_B_j,
+            JT_F_j,
+            jacobian_cts_nzb_offsets[jid] + kinematic_nzb_offset,
+            jacobian_cts_nzb_values,
+        )
 
     friction_nzb_offset = kinematic_nzb_offset + (2 * num_kin_cts if bid_B > -1 else num_kin_cts)
     if num_friction_cts > 0:
@@ -1567,6 +1581,7 @@ class DenseSystemJacobians:
                     model.joints.coords_offset,
                     model.joints.dofs_offset,
                     model.joints.num_dynamic_cts,
+                    model.joints.num_kinematic_cts,
                     model.joints.num_friction_cts,
                     model.joints.dynamic_cts_offset,
                     model.joints.kinematic_cts_offset,

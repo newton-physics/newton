@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 import warp as wp
 
 from .....core.types import override
+from .....sim import BodyFlags
 from .types import Descriptor
 
 ###
@@ -186,6 +187,9 @@ class RigidBodiesModel:
     Shape of ``(num_bodies,)``.
     """
 
+    effective_inv_m_i: wp.array[wp.float32] | None = None
+    """Inverse mass used by dynamics after applying body motion flags."""
+
     i_I_i: wp.array[wp.mat33f] | None = None
     """
     Local moment of inertia of each body.
@@ -197,6 +201,9 @@ class RigidBodiesModel:
     Inverse of the local moment of inertia of each body.
     Shape of ``(num_bodies,)``.
     """
+
+    flags: wp.array[wp.int32] | None = None
+    """Newton body motion flags, when the model was converted from Newton."""
 
     ###
     # Initial State
@@ -383,10 +390,13 @@ def transform_body_inertial_properties(
 @wp.kernel
 def _update_body_inertias(
     # Inputs:
+    model_bodies_flags_in: wp.array[wp.int32],  # None also supported
+    model_bodies_inv_m_i_in: wp.array[wp.float32],
     model_bodies_i_I_i_in: wp.array[wp.mat33f],
     model_bodies_inv_i_I_i_in: wp.array[wp.mat33f],
     state_bodies_q_i_in: wp.array[wp.transformf],
     # Outputs:
+    model_bodies_effective_inv_m_i_out: wp.array[wp.float32],
     state_bodies_I_i_out: wp.array[wp.mat33f],
     state_bodies_inv_I_i_out: wp.array[wp.mat33f],
 ):
@@ -397,11 +407,16 @@ def _update_body_inertias(
     p_i = state_bodies_q_i_in[bid]
     i_I_i = model_bodies_i_I_i_in[bid]
     inv_i_I_i = model_bodies_inv_i_I_i_in[bid]
+    inv_m_i = model_bodies_inv_m_i_in[bid]
+    if model_bodies_flags_in and (model_bodies_flags_in[bid] & int(BodyFlags.KINEMATIC)) != 0:
+        inv_m_i = 0.0
+        inv_i_I_i = wp.mat33f(0.0)
 
     # Compute the moment of inertia matrices in world coordinates
     I_i, inv_I_i = transform_body_inertial_properties(p_i, i_I_i, inv_i_I_i)
 
     # Store results in the output arrays
+    model_bodies_effective_inv_m_i_out[bid] = inv_m_i
     state_bodies_I_i_out[bid] = I_i
     state_bodies_inv_I_i_out[bid] = inv_I_i
 
@@ -562,10 +577,13 @@ def update_body_inertias(model: RigidBodiesModel, data: RigidBodiesData):
         dim=model.num_bodies,
         inputs=[
             # Inputs:
+            model.flags,
+            model.inv_m_i,
             model.i_I_i,
             model.inv_i_I_i,
             data.q_i,
             # Outputs:
+            model.effective_inv_m_i,
             data.I_i,
             data.inv_I_i,
         ],

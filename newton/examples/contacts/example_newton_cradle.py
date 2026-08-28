@@ -32,7 +32,7 @@ SUBSTEPS = {
     "vbd": 10,
     "mujoco": 10,
     "featherstone": 20,
-    "kamino": 5,
+    "kamino": 4,
 }
 SOLVER_CHOICES = ("xpbd", "vbd", "mujoco", "featherstone", "kamino")
 NATIVE_CONTACT_SOLVERS = {"mujoco", "kamino"}
@@ -150,9 +150,25 @@ class Example:
         elif self.solver_name == "featherstone":
             self.solver = newton.solvers.SolverFeatherstone(self.model, angular_damping=0.0)
         elif self.solver_name == "kamino":
-            solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model,
+                dynamics_solver="dvi",
+                sparse_dynamics=True,
+                sparse_jacobian=True,
+            )
             solver_config.use_collision_detector = True
+            solver_config.integrator = "moreau"
+            solver_config.dvi.omega = 1.0
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.bilateral_solve_interval = 8
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+            self.contacts = newton.Contacts(
+                self.model.rigid_contact_max,
+                0,
+                device=self.model.device,
+                requested_attributes=self.model.get_requested_contact_attributes(),
+            )
         else:
             raise ValueError(f"Unknown solver: {self.solver_name}")
         self.state_0 = self.model.state()
@@ -165,7 +181,7 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
+        if wp.get_device().is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -173,7 +189,7 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             if self.solver_name in NATIVE_CONTACT_SOLVERS:
@@ -182,7 +198,10 @@ class Example:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
                 contacts = self.contacts
             self.solver.step(self.state_0, self.state_1, self.control, contacts, self.sim_dt)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            if self.sim_substeps % 2 == 1 and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         if self.graph:
@@ -202,7 +221,9 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        if self.solver_name not in NATIVE_CONTACT_SOLVERS:
+        if self.solver_name == "kamino" and self.viewer.show_contacts:
+            self.solver.update_contacts(self.contacts, self.state_0)
+        if self.contacts is not None:
             self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 

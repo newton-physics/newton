@@ -6,10 +6,11 @@
 #
 # Shows how to programmatically create a variety of
 # collision shapes using the newton.ModelBuilder() API.
-# Supports XPBD (default) and VBD solvers.
+# Supports XPBD (default), VBD, and Kamino DVI solvers.
 #
 # Command: python -m newton.examples basic_shapes
 # With VBD: python -m newton.examples basic_shapes --solver vbd
+# With Kamino DVI: python -m newton.examples basic_shapes --solver kamino
 #
 #
 ###########################################################################
@@ -24,18 +25,20 @@ import newton.usd
 
 class Example:
     def __init__(self, viewer, args):
+        self.viewer = viewer
+        self.solver_type = args.solver if hasattr(args, "solver") and args.solver else "xpbd"
+
         newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 5
+        self.sim_substeps = 6 if self.solver_type == "kamino" else 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.viewer = viewer
-        self.solver_type = args.solver if hasattr(args, "solver") and args.solver else "xpbd"
-
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
 
         builder.default_shape_cfg.mu = 1.0  # Friction coefficient
 
@@ -108,6 +111,16 @@ class Example:
                 iterations=5,
                 rigid_compliant_alm=True,
             )
+        elif self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model,
+                dynamics_solver="dvi",
+                sparse_dynamics=True,
+                sparse_jacobian=True,
+            )
+            solver_config.dynamics.cull_speculative_contacts = False
+            solver_config.dvi.max_alternating_iterations = 2
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)
 
@@ -115,8 +128,16 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.collision_pipeline.contacts()
+        if self.solver_type == "kamino":
+            self.collision_interval = 2
+            self.collision_pipeline = newton.CollisionPipeline(
+                self.model,
+                speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
+            )
+            self.contacts = self.collision_pipeline.contacts()
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -137,13 +158,21 @@ class Example:
         self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.collision_pipeline.collide(self.state_0, self.contacts)
+            if self.solver_type == "kamino":
+                if substep % self.collision_interval == 0:
+                    self.collision_pipeline.collide(
+                        self.state_0,
+                        self.contacts,
+                        dt=self.collision_interval * self.sim_dt,
+                    )
+            else:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -222,11 +251,18 @@ class Example:
             lambda q, qd: q[2] > -0.05 and abs(q[0]) < 0.1 and abs(q[1] - 4.0) < 0.1,
             [5],
         )
+        if self.solver_type == "kamino":
+            self.solver.update_contacts(self.contacts, self.state_0)
+            if int(self.contacts.rigid_contact_count.numpy()[0]) == 0:
+                raise ValueError("Kamino did not export contacts for visualization")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        if self.contacts is not None:
+            if self.solver_type == "kamino" and self.viewer.show_contacts:
+                self.solver.update_contacts(self.contacts, self.state_0)
+            self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
 
@@ -237,8 +273,8 @@ if __name__ == "__main__":
         "--solver",
         type=str,
         default="xpbd",
-        choices=["vbd", "xpbd"],
-        help="Solver type: xpbd (default) or vbd",
+        choices=["vbd", "xpbd", "kamino"],
+        help="Solver type: xpbd (default), vbd, or kamino",
     )
 
     viewer, args = newton.examples.init(parser)

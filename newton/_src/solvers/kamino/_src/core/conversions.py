@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from .....geometry import ShapeFlags
+from .....sim import BodyFlags
 from .....sim.model import Model
 from ....coupled.model_view import ModelView
 from ..utils import logger as msg
@@ -77,6 +78,20 @@ class StructuralUpdateViolation(IntEnum):
 ###
 # Kernels
 ###
+
+
+@wp.kernel
+def effective_body_inverse_mass_kernel(
+    body_flags: wp.array[wp.int32],
+    body_inv_mass: wp.array[wp.float32],
+    effective_inv_mass: wp.array[wp.float32],
+):
+    """Copy inverse mass while masking kinematic bodies."""
+    body_id = wp.tid()
+    if (body_flags[body_id] & int(BodyFlags.KINEMATIC)) != 0:
+        effective_inv_mass[body_id] = 0.0
+    else:
+        effective_inv_mass[body_id] = body_inv_mass[body_id]
 
 
 @wp.func
@@ -437,6 +452,8 @@ def joint_conversion_kernel(
     # Inputs:
     model_joint_world: wp.array[wp.int32],
     model_joint_world_start: wp.array[wp.int32],
+    model_joint_parent: wp.array[wp.int32],
+    model_joint_child: wp.array[wp.int32],
     model_joint_type: wp.array[wp.int32],
     model_joint_target_mode: wp.array[wp.int32],
     model_joint_dof_dim: wp.array2d[wp.int32],
@@ -450,6 +467,8 @@ def joint_conversion_kernel(
     model_joint_friction: wp.array[wp.float32],
     joint_limit_lower: wp.array[wp.float32],
     joint_limit_upper: wp.array[wp.float32],
+    model_body_inv_mass: wp.array[wp.float32],
+    model_body_flags: wp.array[wp.int32],
     # Outputs:
     joint_jid: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
@@ -502,6 +521,18 @@ def joint_conversion_kernel(
     assert act_type_j >= 0, "Joint actuation type must be valid"
     joint_act_type[joint_id] = act_type_j
 
+    # Constraints between immovable bodies cannot affect the motion and produce
+    # structurally singular Delassus rows.
+    parent_bid = model_joint_parent[joint_id]
+    child_bid = model_joint_child[joint_id]
+    has_dynamic_body = (
+        model_body_inv_mass[child_bid] > 0.0 and (model_body_flags[child_bid] & int(BodyFlags.KINEMATIC)) == 0
+    )
+    if parent_bid >= 0:
+        has_dynamic_body = has_dynamic_body or (
+            model_body_inv_mass[parent_bid] > 0.0 and (model_body_flags[parent_bid] & int(BodyFlags.KINEMATIC)) == 0
+        )
+
     # Infer if the joint requires dynamic constraints
     is_dynamic_j = joint_requires_dynamic_constraints(
         dofs_start_j,
@@ -513,8 +544,9 @@ def joint_conversion_kernel(
     )
 
     # Set joint dimensions
-    joint_num_kinematic_cts[joint_id] = ncts_j
-    if is_dynamic_j:
+    if has_dynamic_body:
+        joint_num_kinematic_cts[joint_id] = ncts_j
+    if has_dynamic_body and is_dynamic_j:
         joint_num_dynamic_cts[joint_id] = ndofs_j
     joint_num_bilateral_cts[joint_id] = joint_num_dynamic_cts[joint_id] + joint_num_kinematic_cts[joint_id]
 
@@ -1327,6 +1359,17 @@ def convert_rigid_bodies(
     # COM world poses (joint attachment vectors are COM-relative).
     q_i_0 = wp.empty((model.body_count,), dtype=wp.transformf, device=model.device)
     convert_body_origin_to_com(model.body_com, model.body_q, q_i_0)
+    effective_inv_mass = wp.empty_like(model.body_inv_mass)
+    wp.launch(
+        kernel=effective_body_inverse_mass_kernel,
+        dim=model.body_count,
+        inputs=[
+            model.body_flags,
+            model.body_inv_mass,
+            effective_inv_mass,
+        ],
+        device=model.device,
+    )
 
     # Fill in size data for bodies
     model_size.sum_of_num_bodies = model.body_count
@@ -1359,9 +1402,11 @@ def convert_rigid_bodies(
         bid=body_bid,  # TODO: Remove
         m_i=model.body_mass,
         inv_m_i=model.body_inv_mass,
+        effective_inv_m_i=effective_inv_mass,
         i_r_com_i=model.body_com,
         i_I_i=model.body_inertia,
         inv_i_I_i=model.body_inv_inertia,
+        flags=model.body_flags,
         q_i_0=q_i_0,
         u_i_0=model.body_qd,
     )
@@ -1434,6 +1479,8 @@ def convert_joints(
             # Inputs:
             model.joint_world,
             model.joint_world_start,
+            model.joint_parent,
+            model.joint_child,
             model.joint_type,
             model.joint_target_mode,
             model.joint_dof_dim,
@@ -1447,6 +1494,8 @@ def convert_joints(
             model.joint_friction,
             model.joint_limit_lower,
             model.joint_limit_upper,
+            model.body_inv_mass,
+            model.body_flags,
             # Outputs:
             joint_jid,
             joint_dof_type,
