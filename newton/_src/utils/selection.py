@@ -1959,6 +1959,7 @@ class ArticulationView:
                 where ``dofs_per_world`` is the total number of DOFs in the view.
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
+        mask = self._resolve_world_mask(mask)
         if self._get_actuator_dof_mapping(actuator).shape[1] == 0:
             return
         self.get_actuator_view([actuator])._set_parameter_array(actuator, getattr(component, name), values, mask)
