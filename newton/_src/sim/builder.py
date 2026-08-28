@@ -16,7 +16,7 @@ import warnings
 import weakref
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
@@ -3157,29 +3157,18 @@ class ModelBuilder:
                 setattr(scratch, name, set(value))
 
         scratch.body_shapes = {body: list(shapes) for body, shapes in self.body_shapes.items()}
-        scratch.joint_parents = {body: list(joints) for body, joints in self.joint_parents.items()}
         scratch.joint_children = {body: list(joints) for body, joints in self.joint_children.items()}
 
-        scratch.custom_attributes = {}
-        for key, attribute in self.custom_attributes.items():
-            values = attribute.values
-            if isinstance(values, list):
-                values = list(values)
-            elif isinstance(values, dict):
-                values = dict(values)
-            scratch.custom_attributes[key] = replace(attribute, values=values)
+        def fork_record(record: Any) -> Any:
+            copies = {}
+            for field in fields(record):
+                value = getattr(record, field.name)
+                if isinstance(value, (list, dict)):
+                    copies[field.name] = copy.copy(value)
+            return replace(record, **copies)
 
-        scratch.actuator_entries = {
-            key: replace(
-                entry,
-                indices=list(entry.indices),
-                pos_indices=list(entry.pos_indices),
-                controller_args=list(entry.controller_args),
-                delay_args=list(entry.delay_args),
-                clamping_args=list(entry.clamping_args),
-            )
-            for key, entry in self.actuator_entries.items()
-        }
+        scratch.custom_attributes = {key: fork_record(value) for key, value in self.custom_attributes.items()}
+        scratch.actuator_entries = {key: fork_record(value) for key, value in self.actuator_entries.items()}
 
         filter_pairs = self._shape_collision_filter_pairs
         if isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs):
