@@ -247,6 +247,10 @@ def test_operational_space_mass_matrix_matches_numpy(test, device):
             wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
             wp.array([0], dtype=wp.int32, device=device),  # robot_articulation: one robot, articulation 0
             wp.array([5], dtype=wp.int32, device=device),  # robot_link_idx: tool_body is link 5 (the 6th joint's child)
+            wp.array(
+                [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
+            ),  # local_dof_idx: every DOF controlled, in order
+            wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
         ],
         outputs=[jacobian_tool_world],
         device=device,
@@ -383,6 +387,10 @@ def test_jacobian_tool_shift_matches_twist(test, device):
             coordinate_change_body_from_tool_arr,
             wp.array([0], dtype=wp.int32, device=device),  # robot_articulation: one robot, articulation 0
             wp.array([1], dtype=wp.int32, device=device),  # robot_link_idx: tool_body is link 1 (the 2nd joint's child)
+            wp.array(
+                [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
+            ),  # local_dof_idx: every DOF controlled, in order
+            wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
         ],
         outputs=[jacobian_tool_world],
         device=device,
@@ -391,6 +399,79 @@ def test_jacobian_tool_shift_matches_twist(test, device):
     # Compare: jacobian_tool_world @ joint_qd should reproduce the ground-truth twist.
     predicted_twist = jacobian_tool_world.numpy()[0] @ joint_qd
     np.testing.assert_allclose(predicted_twist, tool_twist_world.numpy()[0], atol=1e-6)
+
+
+def test_jacobian_tool_shift_local_dof_idx_remaps_non_prefix_subset(test, device):
+    """local_dof_idx correctly remaps a non-prefix, non-contiguous controlled-DOF subset.
+
+    Controls joints [0, 1, 3, 5, 6] of the 7-joint arm -- skipping joints 2
+    and 4 -- so the controlled DOFs are not the first N columns of the
+    articulation's own Jacobian. Each compact output column must equal the
+    full-Jacobian column local_dof_idx maps it to, not the column at its own
+    compact index.
+    """
+    model, state, tool_body, coordinate_change_body_from_tool = _build_seven_dof_arm_with_tool_site(device)
+    device = model.device
+
+    state.joint_q.assign([0.3, -0.4, 0.6, 0.2, -0.5, 0.35, 0.15])
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    jacobian_com_world = newton.eval_jacobian(model, state)
+
+    tool_body_arr = wp.array([tool_body], dtype=wp.int32, device=device)
+    coordinate_change_body_from_tool_arr = wp.array(
+        [coordinate_change_body_from_tool], dtype=wp.transform, device=device
+    )
+    robot_articulation_arr = wp.array([0], dtype=wp.int32, device=device)
+    robot_link_idx_arr = wp.array([6], dtype=wp.int32, device=device)  # tool_body is link 6 (the 7th joint's child)
+
+    # Ground truth: the full, every-DOF-controlled shift, already verified
+    # correct by test_jacobian_tool_shift_matches_twist/finite_difference.
+    full_dof_count = model.max_dofs_per_articulation
+    jacobian_tool_world_full = wp.zeros((1, 6, full_dof_count), dtype=float, device=device)
+    wp.launch(
+        _shift_jacobian_to_tool_kernel,
+        dim=(1, full_dof_count),
+        inputs=[
+            jacobian_com_world,
+            state.body_q,
+            model.body_com,
+            tool_body_arr,
+            coordinate_change_body_from_tool_arr,
+            robot_articulation_arr,
+            robot_link_idx_arr,
+            wp.array([np.arange(full_dof_count, dtype=np.int32)], dtype=wp.int32, device=device),
+            wp.array([full_dof_count], dtype=wp.int32, device=device),
+        ],
+        outputs=[jacobian_tool_world_full],
+        device=device,
+    )
+
+    # Under test: only joints [0, 1, 3, 5, 6] controlled, 5 compact columns.
+    controlled_local_dofs = [0, 1, 3, 5, 6]
+    controlled_dof_count = len(controlled_local_dofs)
+    local_dof_idx = wp.array([controlled_local_dofs], dtype=wp.int32, device=device)
+    controlled_dofs_per_robot = wp.array([controlled_dof_count], dtype=wp.int32, device=device)
+    jacobian_tool_world_compact = wp.zeros((1, 6, controlled_dof_count), dtype=float, device=device)
+    wp.launch(
+        _shift_jacobian_to_tool_kernel,
+        dim=(1, controlled_dof_count),
+        inputs=[
+            jacobian_com_world,
+            state.body_q,
+            model.body_com,
+            tool_body_arr,
+            coordinate_change_body_from_tool_arr,
+            robot_articulation_arr,
+            robot_link_idx_arr,
+            local_dof_idx,
+            controlled_dofs_per_robot,
+        ],
+        outputs=[jacobian_tool_world_compact],
+        device=device,
+    )
+
+    expected = jacobian_tool_world_full.numpy()[0][:, controlled_local_dofs]
+    np.testing.assert_allclose(jacobian_tool_world_compact.numpy()[0], expected, atol=1e-6)
 
 
 def test_jacobian_tool_shift_matches_finite_difference(test, device):
@@ -436,6 +517,10 @@ def test_jacobian_tool_shift_matches_finite_difference(test, device):
             wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
             wp.array([0], dtype=wp.int32, device=device),  # robot_articulation: one robot, articulation 0
             wp.array([1], dtype=wp.int32, device=device),  # robot_link_idx: tool_body is link 1 (the 2nd joint's child)
+            wp.array(
+                [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
+            ),  # local_dof_idx: every DOF controlled, in order
+            wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
         ],
         outputs=[jacobian_tool_world],
         device=device,
@@ -655,6 +740,10 @@ def test_jacobian_times_jacobian_transpose_matches_numpy(test, device):
             wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
             wp.array([0], dtype=wp.int32, device=device),
             wp.array([6], dtype=wp.int32, device=device),  # tool_body is link 6 (the 7th joint's child)
+            wp.array(
+                [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
+            ),  # local_dof_idx: every DOF controlled, in order
+            wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
         ],
         outputs=[jacobian_tool_world],
         device=device,
@@ -718,6 +807,10 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
             coordinate_change_body_from_tool_arr,
             wp.array([0], dtype=wp.int32, device=device),
             wp.array([6], dtype=wp.int32, device=device),  # tool_body is link 6 (the 7th joint's child)
+            wp.array(
+                [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
+            ),  # local_dof_idx: every DOF controlled, in order
+            wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
         ],
         outputs=[jacobian_tool_world],
         device=device,
@@ -940,6 +1033,12 @@ add_function_test(
     TestOperationalSpaceKernels,
     "test_jacobian_tool_shift_matches_twist",
     test_jacobian_tool_shift_matches_twist,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_jacobian_tool_shift_local_dof_idx_remaps_non_prefix_subset",
+    test_jacobian_tool_shift_local_dof_idx_remaps_non_prefix_subset,
     devices=devices,
 )
 add_function_test(
@@ -2115,6 +2214,95 @@ class TestControllerOperationalSpace(unittest.TestCase):
                 motion_damping=1.0,
                 use_gravity_compensation=False,
             )
+
+    def test_step_resolves_tool_pose_matching_forward_kinematics(self):
+        """step() resolves the tool pose from joint_q, matching a hand-derived planar forward-kinematics formula.
+
+        For the two-link planar arm, joint 1 rotates body 1 (and everything
+        downstream of it) about Z by theta1; joint 2 further rotates body 2
+        about Z by theta2, with body 2's origin fixed one unit along body 1's
+        rotated X axis. So body 2's origin is at
+        ``(cos(theta1), sin(theta1), 0)`` and its orientation is
+        ``Rot_z(theta1 + theta2)``; the tool site is a further fixed offset
+        from body 2's origin, rotated by that same combined angle.
+        """
+        device = wp.get_device()
+        model, _state, _tool_body, coordinate_change_body_from_tool = _build_two_link_arm_with_tool_site(device)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+
+        theta1, theta2 = 0.3, -0.2
+        inputs.joint_q.assign(np.array([theta1, theta2], dtype=np.float32))
+        inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
+        inputs.desired_tool_pose_world.assign(np.zeros((1, 7), dtype=np.float32))
+        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+
+        combined_angle = theta1 + theta2
+        body2_origin_world = np.array([np.cos(theta1), np.sin(theta1), 0.0])
+        cos_c, sin_c = np.cos(combined_angle), np.sin(combined_angle)
+        site_local = np.array(coordinate_change_body_from_tool)[:3]
+        site_offset_world = np.array(
+            [
+                cos_c * site_local[0] - sin_c * site_local[1],
+                sin_c * site_local[0] + cos_c * site_local[1],
+                site_local[2],
+            ]
+        )
+        expected_tool_position_world = body2_origin_world + site_offset_world
+        expected_tool_orientation_world = np.array(
+            [0.0, 0.0, np.sin(combined_angle / 2.0), np.cos(combined_angle / 2.0)]
+        )
+
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        computed_tool_pose_world = ctrl._tool_pose_world.numpy()[0]
+        np.testing.assert_allclose(computed_tool_pose_world[:3], expected_tool_position_world, rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(computed_tool_pose_world[3:], expected_tool_orientation_world, rtol=1e-4, atol=1e-4)
+
+    def test_step_output_is_zero_when_tool_is_already_at_the_desired_pose_and_still(self):
+        """With zero pose error and zero twist error, step() commands zero joint torque.
+
+        Task-space impedance (``use_inertia_decoupling=False``) computes the
+        commanded force directly as ``Kp * pose_error + Kd * twist_error``, so
+        driving both errors to exactly zero must drive the output to exactly
+        zero, independent of the gain values themselves.
+        """
+        device = wp.get_device()
+        model, _state, _tool_body, _transform = _build_two_link_arm_with_tool_site(device)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+
+        inputs.joint_q.assign(np.array([0.3, -0.2], dtype=np.float32))
+        inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
+        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+
+        # First step: read off the current tool pose so it can be fed back in
+        # as the desired pose for a second step with exactly zero pose error.
+        inputs.desired_tool_pose_world.assign(np.zeros((1, 7), dtype=np.float32))
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        inputs.desired_tool_pose_world.assign(ctrl._tool_pose_world.numpy())
+
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        np.testing.assert_allclose(outputs.joint_f.numpy(), np.zeros(2, dtype=np.float32), atol=1e-4)
 
 
 if __name__ == "__main__":

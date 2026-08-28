@@ -9,10 +9,6 @@ inertial decoupling is enabled) :func:`newton.eval_mass_matrix` on the
 supplied model each step, resolves each robot's tool-point pose, twist, and
 Jacobian from a Newton *site*, then delegates the control law to an inner
 :class:`ControllerOperationalSpaceModelFree` instance.
-
-This increment implements only the constructor: robot and tool-site
-selection, validation, and buffer allocation. :meth:`step` is not
-implemented yet.
 """
 
 from __future__ import annotations
@@ -23,12 +19,16 @@ import numpy as np
 import warp as wp
 
 from newton._src.geometry.flags import ShapeFlags
+from newton._src.sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
+from newton._src.sim.inverse_dynamics import eval_inverse_dynamics_passive
 from newton._src.sim.model import Model
 
 from ....utils.selection import get_name_from_label, match_labels
 from ...controller import ControllerBase
 from ...joint_selection import select_joints
 from ...utils import _validate_array
+from .._common import _gather_mass_matrix_blocks_kernel, _read_port
+from ._common import _shift_jacobian_to_tool_kernel, _tool_pose_and_twist_kernel
 from .model_free import ControllerOperationalSpaceModelFree
 
 
@@ -102,6 +102,50 @@ class ControllerOperationalSpace(ControllerBase):
         null_space_damping: Forwarded unchanged.
     """
 
+    class Inputs:
+        """Input struct returned by :meth:`~ControllerOperationalSpace.input`.
+
+        ``joint_q``/``joint_qd`` cover the whole model, since forward
+        kinematics depends on uncontrolled joints too. Every other field is
+        forwarded to the inner :class:`ControllerOperationalSpaceModelFree`
+        unchanged -- see its docstring for shapes and units. Optional fields
+        are ``None`` when the corresponding feature is disabled at
+        construction.
+        """
+
+        joint_q: wp.array[wp.float32] | wp.indexedarray[wp.float32]
+        """Current joint positions [m or rad], shape [model.joint_coord_count]."""
+        joint_qd: wp.array[wp.float32] | wp.indexedarray[wp.float32]
+        """Current joint velocities [m/s or rad/s], shape [model.joint_dof_count]."""
+        desired_tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
+        """Desired world pose of the tool frame, shape [controlled_robot_count]."""
+        desired_twist_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
+        """Desired tool twist (linear, angular) in world coordinates [m/s, rad/s], shape [controlled_robot_count]."""
+        motion_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
+        """Task-space position/orientation-error gain Kp, shape [controlled_robot_count]. ``None`` when baked at construction."""
+        motion_damping: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
+        """Task-space velocity-error gain Kd, shape [controlled_robot_count]. ``None`` when baked at construction."""
+        desired_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
+        """Desired contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count]. ``None`` unless wrench control is enabled."""
+        measured_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
+        """Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count]. ``None`` unless ``use_wrench_feedback=True``."""
+        wrench_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
+        """Contact-wrench proportional feedback gain Kp, shape [controlled_robot_count]. ``None`` when baked at construction, or when ``use_wrench_feedback=False``."""
+        joint_q_des_null: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Desired joint positions for the null-space posture task [m or rad], compact, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_control=True``."""
+        joint_qd_des_null: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Desired joint velocities for the null-space posture task [m/s or rad/s], compact, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_control=True``."""
+        null_space_stiffness: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Joint-space posture position-error gain Kp, compact, shape [total_controlled_dofs]. ``None`` when baked at construction, or when ``use_null_space_control=False``."""
+        null_space_damping: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Joint-space posture velocity-error gain Kd, compact, shape [total_controlled_dofs]. ``None`` when baked at construction, or when ``use_null_space_control=False``."""
+
+    class Outputs:
+        """Output struct returned by :meth:`~ControllerOperationalSpace.output`."""
+
+        joint_f: wp.array[wp.float32] | wp.indexedarray[wp.float32]
+        """Joint torque command [N or N·m], compact, shape [total_controlled_dofs]."""
+
     def __init__(
         self,
         model: Model,
@@ -133,7 +177,20 @@ class ControllerOperationalSpace(ControllerBase):
         self._requires_grad = model.requires_grad
         self._use_inertia = bool(use_inertia_decoupling)
         self._use_gravity = bool(use_gravity_compensation)
+        self._use_wrench_feedforward = bool(use_wrench_feedforward)
+        self._use_wrench_feedback = bool(use_wrench_feedback)
+        self._use_wrench = self._use_wrench_feedforward or self._use_wrench_feedback
         self._use_null_space = bool(use_null_space_control)
+
+        # Whether each gain is read live from inputs each step (None baked
+        # value) or fixed at construction, exactly as the caller passed it --
+        # tracked here rather than read off the inner ModelFree controller,
+        # since that decision belongs to this constructor's own arguments.
+        self._motion_stiffness_is_live = motion_stiffness is None
+        self._motion_damping_is_live = motion_damping is None
+        self._wrench_stiffness_is_live = self._use_wrench_feedback and wrench_stiffness is None
+        self._null_stiffness_is_live = self._use_null_space and null_space_stiffness is None
+        self._null_damping_is_live = self._use_null_space and null_space_damping is None
 
         self._model = model
         self._model_state = model.state(requires_grad=self._requires_grad)
@@ -320,12 +377,23 @@ class ControllerOperationalSpace(ControllerBase):
         # ------------------------------------------------------------------
 
         # ------------------------------------------------------------------
-        # Dynamics buffers. Allocated up front; populated by step() (not
-        # implemented yet).
+        # Dynamics buffers. Allocated up front; populated by step().
         # ------------------------------------------------------------------
+        # local_dof_idx (packed robot slot, padded column -> DOF index within
+        # that robot's own articulation) is needed unconditionally: the
+        # Jacobian shift below uses it too, not just the mass-matrix gather.
+        self._local_dof_idx = wp.array(
+            self._compute_local_dof_idx(
+                qd_idx_np=qd_idx_np,
+                model_robot_index_np=model_robot_index_np,
+                controlled_dofs_per_robot_np=controlled_dofs_per_robot_np,
+            ),
+            dtype=wp.int32,
+            device=self._device,
+        )
+
         self._model_mass_matrix: wp.array3d[wp.float32] | None = None
         self._controlled_mass_matrix: wp.array3d[wp.float32] | None = None
-        self._local_dof_idx: wp.array2d[wp.int32] | None = None
         if self._use_inertia:
             model_max_dofs = model.max_dofs_per_articulation
             self._model_mass_matrix = wp.zeros(
@@ -339,15 +407,6 @@ class ControllerOperationalSpace(ControllerBase):
                 dtype=wp.float32,
                 device=self._device,
                 requires_grad=self._requires_grad,
-            )
-            self._local_dof_idx = wp.array(
-                self._compute_local_dof_idx(
-                    qd_idx_np=qd_idx_np,
-                    model_robot_index_np=model_robot_index_np,
-                    controlled_dofs_per_robot_np=controlled_dofs_per_robot_np,
-                ),
-                dtype=wp.int32,
-                device=self._device,
             )
 
         self._gravity_flat: wp.array[wp.float32] | None = None
@@ -482,14 +541,209 @@ class ControllerOperationalSpace(ControllerBase):
     def is_graphable(self) -> bool:
         return True
 
-    def input(self):
-        """Not implemented yet -- see the module docstring."""
-        raise NotImplementedError("ControllerOperationalSpace.input() is not implemented yet.")
+    def input(self) -> Inputs:
+        """Return a pre-allocated :class:`Inputs` with zero-initialised arrays."""
+        device = self._device
+        requires_grad = self._requires_grad
+        robot_count = self._controlled_robot_count
 
-    def output(self):
-        """Not implemented yet -- see the module docstring."""
-        raise NotImplementedError("ControllerOperationalSpace.output() is not implemented yet.")
+        inputs = ControllerOperationalSpace.Inputs()
+        inputs.joint_q = wp.zeros(self._coord_count, dtype=wp.float32, device=device, requires_grad=requires_grad)
+        inputs.joint_qd = wp.zeros(self._dof_count, dtype=wp.float32, device=device, requires_grad=requires_grad)
+        inputs.desired_tool_pose_world = wp.zeros(
+            robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad
+        )
+        inputs.desired_twist_world = wp.zeros(
+            robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad
+        )
+        inputs.motion_stiffness = (
+            wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
+            if self._motion_stiffness_is_live
+            else None
+        )
+        inputs.motion_damping = (
+            wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
+            if self._motion_damping_is_live
+            else None
+        )
+        inputs.desired_wrench_world = (
+            wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
+            if self._use_wrench
+            else None
+        )
+        inputs.measured_wrench_world = (
+            wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
+            if self._use_wrench_feedback
+            else None
+        )
+        inputs.wrench_stiffness = (
+            wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
+            if self._wrench_stiffness_is_live
+            else None
+        )
+        inputs.joint_q_des_null = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space
+            else None
+        )
+        inputs.joint_qd_des_null = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space
+            else None
+        )
+        inputs.null_space_stiffness = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._null_stiffness_is_live
+            else None
+        )
+        inputs.null_space_damping = (
+            wp.zeros(self._total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._null_damping_is_live
+            else None
+        )
+        return inputs
 
-    def step(self, *, inputs, outputs, dt):
-        """Not implemented yet -- see the module docstring."""
-        raise NotImplementedError("ControllerOperationalSpace.step() is not implemented yet.")
+    def output(self) -> Outputs:
+        """Return a pre-allocated :class:`Outputs` with a compact torque array."""
+        outputs = ControllerOperationalSpace.Outputs()
+        outputs.joint_f = self._model_free.output().joint_f
+        return outputs
+
+    def step(
+        self,
+        *,
+        inputs: Inputs,
+        outputs: Outputs,
+        dt: float | wp.array[wp.float32],
+    ) -> None:
+        """Run one operational-space control step.
+
+        Computes forward kinematics and the enabled dynamics terms from
+        ``model``, resolves the tool pose/twist/Jacobian from each robot's
+        tool site, then delegates the control law to the inner
+        :class:`ControllerOperationalSpaceModelFree`.
+
+        Args:
+            inputs: Populated :class:`Inputs` struct.
+            outputs: :class:`Outputs` struct to write torques into.
+            dt: Unused. Accepted for API compatibility.
+        """
+        for port, name, length in (
+            (inputs.joint_q, "inputs.joint_q", self._coord_count),
+            (inputs.joint_qd, "inputs.joint_qd", self._dof_count),
+        ):
+            _validate_array(
+                array=port, name=name, dtype=wp.float32, shape=(length,), device=self._device, allow_indexed=True
+            )
+
+        # A port belonging to a disabled/baked feature is never forwarded to
+        # the inner controller below, so writing one would go unnoticed.
+        # getattr because a caller may leave the field unset rather than None.
+        for name, enabled, switch in (
+            ("motion_stiffness", self._motion_stiffness_is_live, "a live motion_stiffness"),
+            ("motion_damping", self._motion_damping_is_live, "a live motion_damping"),
+            ("desired_wrench_world", self._use_wrench, "use_wrench_feedforward or use_wrench_feedback"),
+            ("measured_wrench_world", self._use_wrench_feedback, "use_wrench_feedback"),
+            ("wrench_stiffness", self._wrench_stiffness_is_live, "a live wrench_stiffness"),
+            ("joint_q_des_null", self._use_null_space, "use_null_space_control"),
+            ("joint_qd_des_null", self._use_null_space, "use_null_space_control"),
+            ("null_space_stiffness", self._null_stiffness_is_live, "a live null_space_stiffness"),
+            ("null_space_damping", self._null_damping_is_live, "a live null_space_damping"),
+        ):
+            if not enabled and getattr(inputs, name, None) is not None:
+                raise ValueError(
+                    f"inputs.{name} is set, but the controller was built without {switch}, so the value "
+                    f"would be ignored."
+                )
+
+        # Whole-model reads: an uncontrolled joint still moves its own body,
+        # and hence the tool pose/twist/Jacobian/dynamics of every controlled
+        # joint downstream of it.
+        _read_port(inputs.joint_q, self._model_state.joint_q, self._coord_count, self._device)
+        _read_port(inputs.joint_qd, self._model_state.joint_qd, self._dof_count, self._device)
+
+        eval_fk(
+            self._model,
+            self._model_state.joint_q,
+            self._model_state.joint_qd,
+            self._model_state,
+            mask=self._controlled_robot_mask,
+        )
+        eval_jacobian(self._model, self._model_state, J=self._jacobian_com_world, mask=self._controlled_robot_mask)
+
+        wp.launch(
+            _tool_pose_and_twist_kernel,
+            dim=self._controlled_robot_count,
+            inputs=[
+                self._model_state.body_q,
+                self._model_state.body_qd,
+                self._model.body_com,
+                self._tool_body,
+                self._tool_transform_body,
+            ],
+            outputs=[self._tool_pose_world, self._tool_twist_world],
+            device=self._device,
+        )
+        wp.launch(
+            _shift_jacobian_to_tool_kernel,
+            dim=(self._controlled_robot_count, self._max_controlled_dofs),
+            inputs=[
+                self._jacobian_com_world,
+                self._model_state.body_q,
+                self._model.body_com,
+                self._tool_body,
+                self._tool_transform_body,
+                self._model_robot_index,
+                self._robot_link_idx,
+                self._local_dof_idx,
+                self._controlled_dofs_per_robot,
+            ],
+            outputs=[self._jacobian_tool_world],
+            device=self._device,
+        )
+
+        if self._use_inertia:
+            eval_mass_matrix(
+                self._model, self._model_state, H=self._model_mass_matrix, mask=self._controlled_robot_mask
+            )
+            wp.launch(
+                _gather_mass_matrix_blocks_kernel,
+                dim=(self._controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
+                inputs=[
+                    self._model_mass_matrix,
+                    self._model_robot_index,
+                    self._local_dof_idx,
+                    self._controlled_dofs_per_robot,
+                ],
+                outputs=[self._controlled_mass_matrix],
+                device=self._device,
+            )
+
+        if self._use_gravity:
+            eval_inverse_dynamics_passive(
+                self._model, self._model_state, gravity_force=self._gravity_flat, mask=self._controlled_robot_mask
+            )
+
+        # Forward the remaining ports onto the inner controller's pre-wired
+        # input struct, then delegate the control law to it.
+        self._mf_input.desired_tool_pose_world = inputs.desired_tool_pose_world
+        self._mf_input.desired_twist_world = inputs.desired_twist_world
+        if self._motion_stiffness_is_live:
+            self._mf_input.motion_stiffness = inputs.motion_stiffness
+        if self._motion_damping_is_live:
+            self._mf_input.motion_damping = inputs.motion_damping
+        if self._use_wrench:
+            self._mf_input.desired_wrench_world = inputs.desired_wrench_world
+        if self._use_wrench_feedback:
+            self._mf_input.measured_wrench_world = inputs.measured_wrench_world
+        if self._wrench_stiffness_is_live:
+            self._mf_input.wrench_stiffness = inputs.wrench_stiffness
+        if self._use_null_space:
+            self._mf_input.joint_q_des_null = inputs.joint_q_des_null
+            self._mf_input.joint_qd_des_null = inputs.joint_qd_des_null
+        if self._null_stiffness_is_live:
+            self._mf_input.null_space_stiffness = inputs.null_space_stiffness
+        if self._null_damping_is_live:
+            self._mf_input.null_space_damping = inputs.null_space_damping
+
+        self._model_free.step(inputs=self._mf_input, outputs=outputs, dt=dt)
