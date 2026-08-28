@@ -82,6 +82,7 @@ struct WarpApi {
     decltype(&::wp_apic_get_num_kernels) wp_apic_get_num_kernels = nullptr;
     decltype(&::wp_apic_get_kernel_key) wp_apic_get_kernel_key = nullptr;
     decltype(&::wp_apic_get_kernel_module_hash) wp_apic_get_kernel_module_hash = nullptr;
+    decltype(&::wp_apic_get_kernel_module_binary_filename) wp_apic_get_kernel_module_binary_filename = nullptr;
     decltype(&::wp_apic_get_kernel_forward_name) wp_apic_get_kernel_forward_name = nullptr;
     decltype(&::wp_apic_get_kernel_backward_name) wp_apic_get_kernel_backward_name = nullptr;
     decltype(&::wp_apic_register_loaded_cpu_kernel) wp_apic_register_loaded_cpu_kernel = nullptr;
@@ -137,6 +138,8 @@ const WarpApi& warp_api() {
         resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_num_kernels", result.wp_apic_get_num_kernels);
         resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_kernel_key", result.wp_apic_get_kernel_key);
         resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_kernel_module_hash", result.wp_apic_get_kernel_module_hash);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_kernel_module_binary_filename",
+                result.wp_apic_get_kernel_module_binary_filename);
         resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_kernel_forward_name",
                 result.wp_apic_get_kernel_forward_name);
         resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_kernel_backward_name",
@@ -251,15 +254,20 @@ void load_cpu_kernels(const std::filesystem::path& wrp_path, APICGraph* graph) {
     const WarpClangApi& clang = warp_clang_api();
     const WarpApi& warp = warp_api();
 
-    std::vector<std::string> loaded_handles;
+    // Keyed by the module's binary filename (e.g. "wp_newton..._1ee0c42.cpu....o"),
+    // matching what wp_apic_get_kernel_module_binary_filename() below reports for
+    // each kernel -- mirrors Warp's own Python capture_load(), which keys the same
+    // way for the same reason (see below).
+    std::unordered_map<std::string, std::string> loaded_handles;
     if (std::filesystem::is_directory(modules_dir)) {
         for (const auto& entry : std::filesystem::directory_iterator(modules_dir)) {
             if (entry.path().extension() != ".o") continue;
+            const std::string filename = entry.path().filename().string();
             const std::string handle = "wp_apic_" + entry.path().stem().string();
             if (clang.wp_load_obj(entry.path().string().c_str(), handle.c_str(), false) != 0) {
                 throw std::runtime_error("Failed to load CPU module " + entry.path().string());
             }
-            loaded_handles.push_back(handle);
+            loaded_handles.emplace(filename, handle);
         }
     }
 
@@ -276,15 +284,31 @@ void load_cpu_kernels(const std::filesystem::path& wrp_path, APICGraph* graph) {
         const char* forward_name = warp.wp_apic_get_kernel_forward_name(graph, i);
         if (!kernel_key || !forward_name) continue;
         const char* module_hash = warp.wp_apic_get_kernel_module_hash(graph, i);
+        const char* module_binary_filename = warp.wp_apic_get_kernel_module_binary_filename(graph, i);
         const char* backward_name = warp.wp_apic_get_kernel_backward_name(graph, i);
 
+        // Prefer the exact module this kernel was recorded in. Two modules can
+        // legitimately export a symbol of the same name (a shared low-level
+        // kernel compiled into more than one Warp module), so scanning every
+        // loaded handle and taking the first match risks resolving the wrong
+        // module's copy; fall back to scanning only when the recorded module
+        // isn't found, for compatibility with older metadata.
         uint64_t forward_fn = 0;
         uint64_t backward_fn = 0;
-        for (const auto& handle : loaded_handles) {
-            forward_fn = clang.wp_lookup(handle.c_str(), forward_name);
-            if (forward_fn) {
-                if (backward_name) backward_fn = clang.wp_lookup(handle.c_str(), backward_name);
-                break;
+        if (module_binary_filename) {
+            const auto found = loaded_handles.find(module_binary_filename);
+            if (found != loaded_handles.end()) {
+                forward_fn = clang.wp_lookup(found->second.c_str(), forward_name);
+                if (forward_fn && backward_name) backward_fn = clang.wp_lookup(found->second.c_str(), backward_name);
+            }
+        }
+        if (!forward_fn) {
+            for (const auto& [filename, handle] : loaded_handles) {
+                forward_fn = clang.wp_lookup(handle.c_str(), forward_name);
+                if (forward_fn) {
+                    if (backward_name) backward_fn = clang.wp_lookup(handle.c_str(), backward_name);
+                    break;
+                }
             }
         }
         if (!forward_fn) {
