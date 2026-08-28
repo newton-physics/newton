@@ -1415,14 +1415,14 @@ class SolverKamino(SolverBase, CouplingInterface):
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
         massless_body = violations[self._kamino.StructuralUpdateViolation.MASSLESS]
         friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
+        effort_joint = violations[self._kamino.StructuralUpdateViolation.EFFORT_CTS]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
             raise RuntimeError(
-                f"Changing dynamic constraint topology for joint {joint} "
+                f"Changing joint dynamics allocation for joint {joint} "
                 f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
-                "The dynamic constraint topology changes if armature, damping, target stiffness, or target damping are updated to non-zero values, while they were zero when creating the solver. "
-                "The opposite is also true: if the values are updated to zero, while they were non-zero when creating the solver, the dynamic constraint topology also changes."
+                "This occurs when armature, damping, or unbounded implicit-PD gains cross zero on a DoF."
             )
 
         if limit_dof != sentinel:
@@ -1435,8 +1435,17 @@ class SolverKamino(SolverBase, CouplingInterface):
         if friction_joint != sentinel:
             joint = int(friction_joint)
             raise RuntimeError(
-                f"Changing joint friction row topology for joint {joint} "
-                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
+                f"Changing joint friction allocation for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "Enabling or disabling friction on a DoF requires recreation."
+            )
+
+        if effort_joint != sentinel:
+            joint = int(effort_joint)
+            raise RuntimeError(
+                f"Changing effort-limit allocation for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "Adding or removing bounded implicit PD on a DoF requires recreation."
             )
 
         if actuation_joint != sentinel:

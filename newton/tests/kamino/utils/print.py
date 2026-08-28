@@ -38,6 +38,8 @@ def print_model_size(model: ModelKamino):
     print(f"model.size.max_of_num_bounded_joint_cts: {model.size.max_of_num_bounded_joint_cts}")
     print(f"model.size.sum_of_num_friction_joint_cts: {model.size.sum_of_num_friction_joint_cts}")
     print(f"model.size.max_of_num_friction_joint_cts: {model.size.max_of_num_friction_joint_cts}")
+    print(f"model.size.sum_of_num_effort_joint_cts: {model.size.sum_of_num_effort_joint_cts}")
+    print(f"model.size.max_of_num_effort_joint_cts: {model.size.max_of_num_effort_joint_cts}")
     print(f"model.size.sum_of_max_total_cts: {model.size.sum_of_max_total_cts}")
     print(f"model.size.max_of_max_total_cts: {model.size.max_of_max_total_cts}")
 
@@ -67,11 +69,12 @@ def print_model_info(model: ModelKamino):
     print(f"model.info.num_actuated_joint_coords: {model.info.num_actuated_joint_coords}")
     print(f"model.info.num_actuated_joint_dofs: {model.info.num_actuated_joint_dofs}")
     print("-------------------------------------------------------------------------------")
-    print(f"model.info.num_bilateral_joint_cts: {model.info.num_joint_bilateral_cts}")
+    print(f"model.info.num_joint_bilateral_cts: {model.info.num_joint_bilateral_cts}")
     print(f"model.info.num_joint_dynamic_cts: {model.info.num_joint_dynamic_cts}")
     print(f"model.info.num_joint_kinematic_cts: {model.info.num_joint_kinematic_cts}")
     print(f"model.info.num_joint_bounded_cts: {model.info.num_joint_bounded_cts}")
     print(f"model.info.num_joint_friction_cts: {model.info.num_joint_friction_cts}")
+    print(f"model.info.num_joint_effort_cts: {model.info.num_joint_effort_cts}")
     print(f"model.info.max_limit_cts: {model.info.max_limit_cts}")
     print(f"model.info.max_contact_cts: {model.info.max_contact_cts}")
     print(f"model.info.max_total_cts: {model.info.max_total_cts}")
@@ -97,12 +100,14 @@ def print_model_info(model: ModelKamino):
     print(f"model.info.joint_kinematic_cts_offset: {model.info.joint_kinematic_cts_offset}")
     print(f"model.info.joint_bounded_cts_offset: {model.info.joint_bounded_cts_offset}")
     print(f"model.info.joint_friction_cts_offset: {model.info.joint_friction_cts_offset}")
+    print(f"model.info.joint_effort_cts_offset: {model.info.joint_effort_cts_offset}")
     print("-------------------------------------------------------------------------------")
     print(f"model.info.total_cts_offset: {model.info.total_cts_offset}")
     print(f"model.info.joint_dynamic_cts_group_offset: {model.info.joint_dynamic_cts_group_offset}")
     print(f"model.info.joint_kinematic_cts_group_offset: {model.info.joint_kinematic_cts_group_offset}")
     print(f"model.info.joint_bounded_cts_group_offset: {model.info.joint_bounded_cts_group_offset}")
     print(f"model.info.joint_friction_cts_group_offset: {model.info.joint_friction_cts_group_offset}")
+    print(f"model.info.joint_effort_cts_group_offset: {model.info.joint_effort_cts_group_offset}")
 
 
 def print_model_constraint_info(model: ModelKamino):
@@ -111,11 +116,12 @@ def print_model_constraint_info(model: ModelKamino):
     print(f"model.info.max_limits: {model.info.max_limits}")
     print(f"model.info.max_contacts: {model.info.max_contacts}")
     print("-------------------------------------------------------------------------------")
-    print(f"model.info.num_bilateral_joint_cts: {model.info.num_joint_bilateral_cts}")
+    print(f"model.info.num_joint_bilateral_cts: {model.info.num_joint_bilateral_cts}")
     print(f"model.info.num_joint_dynamic_cts: {model.info.num_joint_dynamic_cts}")
     print(f"model.info.num_joint_kinematic_cts: {model.info.num_joint_kinematic_cts}")
     print(f"model.info.num_joint_bounded_cts: {model.info.num_joint_bounded_cts}")
     print(f"model.info.num_joint_friction_cts: {model.info.num_joint_friction_cts}")
+    print(f"model.info.num_joint_effort_cts: {model.info.num_joint_effort_cts}")
     print(f"model.info.max_limit_cts: {model.info.max_limit_cts}")
     print(f"model.info.max_contact_cts: {model.info.max_contact_cts}")
     print(f"model.info.max_total_cts: {model.info.max_total_cts}")
@@ -137,12 +143,14 @@ def print_model_constraint_info(model: ModelKamino):
     print(f"model.info.joint_kinematic_cts_offset: {model.info.joint_kinematic_cts_offset}")
     print(f"model.info.joint_bounded_cts_offset: {model.info.joint_bounded_cts_offset}")
     print(f"model.info.joint_friction_cts_offset: {model.info.joint_friction_cts_offset}")
+    print(f"model.info.joint_effort_cts_offset: {model.info.joint_effort_cts_offset}")
     print("-------------------------------------------------------------------------------")
     print(f"model.info.total_cts_offset: {model.info.total_cts_offset}")
     print(f"model.info.joint_dynamic_cts_group_offset: {model.info.joint_dynamic_cts_group_offset}")
     print(f"model.info.joint_kinematic_cts_group_offset: {model.info.joint_kinematic_cts_group_offset}")
     print(f"model.info.joint_bounded_cts_group_offset: {model.info.joint_bounded_cts_group_offset}")
     print(f"model.info.joint_friction_cts_group_offset: {model.info.joint_friction_cts_group_offset}")
+    print(f"model.info.joint_effort_cts_group_offset: {model.info.joint_effort_cts_group_offset}")
 
 
 def print_model_bodies(model: ModelKamino, inertias=True, initial_states=True):
@@ -190,6 +198,7 @@ def print_model_joints(
         print(f"model.joints.num_kinematic_cts: {model.joints.num_kinematic_cts}")
         print(f"model.joints.num_bounded_cts: {model.joints.num_bounded_cts}")
         print(f"model.joints.num_friction_cts: {model.joints.num_friction_cts}")
+        print(f"model.joints.num_effort_cts: {model.joints.num_effort_cts}")
     if offsets:
         print(f"model.joints.coords_offset: {model.joints.coords_offset}")
         print(f"model.joints.dofs_offset: {model.joints.dofs_offset}")
@@ -202,9 +211,11 @@ def print_model_joints(
         print(f"model.joints.kinematic_cts_offset: {model.joints.kinematic_cts_offset}")
         print(f"model.joints.bounded_cts_offset: {model.joints.bounded_cts_offset}")
         print(f"model.joints.friction_cts_offset: {model.joints.friction_cts_offset}")
+        print(f"model.joints.effort_cts_offset: {model.joints.effort_cts_offset}")
         print(f"model.joints.dynamic_cts_offset_total_cts: {model.joints.dynamic_cts_offset_total_cts}")
         print(f"model.joints.kinematic_cts_offset_total_cts: {model.joints.kinematic_cts_offset_total_cts}")
         print(f"model.joints.friction_cts_offset_total_cts: {model.joints.friction_cts_offset_total_cts}")
+        print(f"model.joints.effort_cts_offset_total_cts: {model.joints.effort_cts_offset_total_cts}")
     if parameters:
         print(f"model.joints.B_r_Bj: {model.joints.B_r_Bj}")
         print(f"model.joints.F_r_Fj: {model.joints.F_r_Fj}")
@@ -221,6 +232,9 @@ def print_model_joints(
         print(f"model.joints.f_j: {model.joints.f_j}")
         print(f"model.joints.k_p_j: {model.joints.k_p_j}")
         print(f"model.joints.k_d_j: {model.joints.k_d_j}")
+        print(f"model.joints.dynamic_cts_axis: {model.joints.dynamic_cts_axis}")
+        print(f"model.joints.friction_cts_axis: {model.joints.friction_cts_axis}")
+        print(f"model.joints.effort_cts_axis: {model.joints.effort_cts_axis}")
 
 
 # TODO: RENAME print_data_info
@@ -263,6 +277,7 @@ def print_data(data: DataKamino, info=True):
     print(f"data.joints.lambda_kin_j: {data.joints.lambda_kin_j}")
     print(f"data.joints.lambda_dyn_j: {data.joints.lambda_dyn_j}")
     print(f"data.joints.lambda_f_j: {data.joints.lambda_f_j}")
+    print(f"data.joints.lambda_tau_j: {data.joints.lambda_tau_j}")
     print(f"data.joints.m_j: {data.joints.m_j}")
     print(f"data.joints.inv_m_j: {data.joints.inv_m_j}")
     print(f"data.joints.q_j_ref: {data.joints.q_j_ref}")

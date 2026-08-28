@@ -1366,11 +1366,12 @@ def build_all_joints_test_model(
         base_joint = copy.deepcopy(builder.joints[0][0])
         if make_floating_base:
             base_joint.dof_type = JointDoFType.FREE
+            base_joint.dof_act_types = [base_joint.act_type] * base_joint.dof_type.num_dofs
             base_joint.__post_init__()  # Will correctly populate joint dynamics etc.
         builder_alt.add_joint_descriptor(base_joint)
         joint = copy.deepcopy(builder.joints[0][1])
         if make_actuated:
-            joint.act_type = JointActuationType.FORCE
+            joint.dof_act_types = [JointActuationType.FORCE] * joint.num_dofs
         if make_damped:
             joint.b_j = joint.num_dofs * [5e-5]
         builder_alt.add_joint_descriptor(joint)

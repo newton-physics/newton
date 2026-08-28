@@ -650,6 +650,8 @@ class TestJointBodyStateConversions(unittest.TestCase):
         state = model.state()
         wp.copy(state.q_i, data.bodies.q_i)
         wp.copy(state.u_i, data.bodies.u_i)
+        for lambda_j in (state.lambda_kin_j, state.lambda_dyn_j, state.lambda_f_j, state.lambda_tau_j):
+            lambda_j.fill_(1.0)
         all_worlds_mask = wp.ones(shape=model.size.num_worlds, dtype=wp.bool, device=model.device)
         reset_joints_state_from_bodies_state(model, state, world_mask=all_worlds_mask)
 
@@ -657,6 +659,8 @@ class TestJointBodyStateConversions(unittest.TestCase):
         # Note: both functions are correcting coords w.r.t. initial coords, so values are directly comparable
         np.testing.assert_allclose(state.q_j.numpy(), data.joints.q_j.numpy(), rtol=rtol, atol=atol)
         np.testing.assert_allclose(state.dq_j.numpy(), data.joints.dq_j.numpy(), rtol=rtol, atol=atol)
+        for lambda_j in (state.lambda_kin_j, state.lambda_dyn_j, state.lambda_f_j, state.lambda_tau_j):
+            np.testing.assert_array_equal(lambda_j.numpy(), 0.0)
 
 
 ###
