@@ -6,11 +6,23 @@
 #include <apic.h>
 #include <warp.h>
 
+#include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+
+// warp-clang.so's object-loading API (wp_load_obj / wp_lookup) resolves a CPU
+// graph's compiled kernels at replay time, mirroring what Warp's own Python
+// capture_load() does via ctypes. Warp does not ship a header for these; the
+// signatures are copied from warp/native/clang/clang.cpp.
+extern "C" {
+int wp_load_obj(const char* object_file, const char* module_name, bool use_legacy_linker);
+uint64_t wp_lookup(const char* dll_name, const char* function_name);
+}
 
 namespace newton::controllers {
 namespace {
@@ -66,6 +78,81 @@ bool get_param(APICGraph* graph, const std::string& name, std::span<float> data,
     return true;
 }
 
+// Reads the device a .wrp graph was captured for directly out of its 64-byte
+// file header, without touching Warp at all. wp_apic_load_graph() does not
+// itself read or validate this field (it trusts the device_type its caller
+// passes in), so this is what makes device detection possible: peek the file
+// before deciding how to load it.
+APICDeviceType read_device_type(const std::filesystem::path& wrp_path) {
+    std::ifstream file(wrp_path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Failed to open " + wrp_path.string());
+    }
+    APICFileHeader header{};
+    file.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!file || file.gcount() != static_cast<std::streamsize>(sizeof(header))) {
+        throw std::runtime_error(wrp_path.string() + " is too short to be a .wrp file");
+    }
+    if (std::memcmp(header.magic, "WRP1", sizeof(header.magic)) != 0) {
+        throw std::runtime_error(wrp_path.string() + " is not a .wrp file (bad magic)");
+    }
+    return static_cast<APICDeviceType>(header.device_type);
+}
+
+// Loads every compiled kernel a CPU-captured graph references, mirroring
+// Warp's own Python capture_load(): wp_load_obj() JITs each <path>_modules/*.o
+// into an in-memory module, then wp_lookup() resolves each kernel's forward /
+// backward symbol so wp_apic_register_loaded_cpu_kernel() can wire it into the
+// graph before replay.
+void load_cpu_kernels(const std::filesystem::path& wrp_path, APICGraph* graph) {
+    std::filesystem::path modules_dir = wrp_path;
+    modules_dir.replace_extension();
+    modules_dir += "_modules";
+
+    std::vector<std::string> loaded_handles;
+    if (std::filesystem::is_directory(modules_dir)) {
+        for (const auto& entry : std::filesystem::directory_iterator(modules_dir)) {
+            if (entry.path().extension() != ".o") continue;
+            const std::string handle = "wp_apic_" + entry.path().stem().string();
+            if (wp_load_obj(entry.path().string().c_str(), handle.c_str(), false) != 0) {
+                throw std::runtime_error("Failed to load CPU module " + entry.path().string());
+            }
+            loaded_handles.push_back(handle);
+        }
+    }
+
+    const int num_kernels = wp_apic_get_num_kernels(graph);
+    if (loaded_handles.empty() && num_kernels > 0) {
+        throw std::runtime_error(
+            "No CPU modules found in " + modules_dir.string() + ", but the graph contains "
+            + std::to_string(num_kernels) + " kernel(s). Ensure the .wrp file and its _modules directory are intact."
+        );
+    }
+
+    for (int i = 0; i < num_kernels; ++i) {
+        const char* kernel_key = wp_apic_get_kernel_key(graph, i);
+        const char* forward_name = wp_apic_get_kernel_forward_name(graph, i);
+        if (!kernel_key || !forward_name) continue;
+        const char* module_hash = wp_apic_get_kernel_module_hash(graph, i);
+        const char* backward_name = wp_apic_get_kernel_backward_name(graph, i);
+
+        uint64_t forward_fn = 0;
+        uint64_t backward_fn = 0;
+        for (const auto& handle : loaded_handles) {
+            forward_fn = wp_lookup(handle.c_str(), forward_name);
+            if (forward_fn) {
+                if (backward_name) backward_fn = wp_lookup(handle.c_str(), backward_name);
+                break;
+            }
+        }
+        if (!forward_fn) {
+            throw std::runtime_error(std::string("Failed to resolve CPU kernel ") + kernel_key + " (" + forward_name + ")");
+        }
+        wp_apic_register_loaded_cpu_kernel(graph, kernel_key, module_hash, reinterpret_cast<void*>(forward_fn),
+                                            backward_fn ? reinterpret_cast<void*>(backward_fn) : nullptr);
+    }
+}
+
 ControllerBuffer buffer_for_prefix(APICGraph* graph, std::string_view prefix) {
     const int count = wp_apic_get_num_params(graph);
     ControllerBuffer buffer;
@@ -84,6 +171,7 @@ ControllerBuffer buffer_for_prefix(APICGraph* graph, std::string_view prefix) {
 }  // namespace
 
 struct Controller::Impl {
+    APICDeviceType device_type{APIC_DEVICE_CUDA};
     void* context{nullptr};
     APICGraph* graph{nullptr};
     std::string last_error;
@@ -100,23 +188,34 @@ Controller::Controller(const std::filesystem::path& wrp_path) : impl_(new Impl()
     if (wp_init(nullptr) != 0) {
         throw_warp_error("Warp runtime initialization failed");
     }
-    if (!wp_is_cuda_enabled()) {
-        throw std::runtime_error("Warp was built without CUDA support");
-    }
-    if (wp_cuda_device_get_count() <= 0) {
-        throw std::runtime_error("No CUDA devices available");
-    }
 
-    impl_->context = wp_cuda_device_get_primary_context(0);
-    if (!impl_->context) {
-        throw std::runtime_error("Failed to get the CUDA primary context for device 0");
-    }
-    wp_cuda_context_set_current(impl_->context);
-
+    impl_->device_type = read_device_type(wrp_path);
     const std::string path = wrp_path.string();
-    impl_->graph = wp_apic_load_graph(impl_->context, path.c_str(), APIC_DEVICE_CUDA);
-    if (!impl_->graph) {
-        throw_warp_error("Failed to load a controller graph from " + path);
+
+    if (impl_->device_type == APIC_DEVICE_CUDA) {
+        if (!wp_is_cuda_enabled()) {
+            throw std::runtime_error("Warp was built without CUDA support");
+        }
+        if (wp_cuda_device_get_count() <= 0) {
+            throw std::runtime_error("No CUDA devices available");
+        }
+
+        impl_->context = wp_cuda_device_get_primary_context(0);
+        if (!impl_->context) {
+            throw std::runtime_error("Failed to get the CUDA primary context for device 0");
+        }
+        wp_cuda_context_set_current(impl_->context);
+
+        impl_->graph = wp_apic_load_graph(impl_->context, path.c_str(), APIC_DEVICE_CUDA);
+        if (!impl_->graph) {
+            throw_warp_error("Failed to load a controller graph from " + path);
+        }
+    } else {
+        impl_->graph = wp_apic_load_graph(nullptr, path.c_str(), APIC_DEVICE_CPU);
+        if (!impl_->graph) {
+            throw_warp_error("Failed to load a controller graph from " + path);
+        }
+        load_cpu_kernels(wrp_path, impl_->graph);
     }
 }
 
@@ -153,11 +252,18 @@ bool Controller::step(const ControllerBuffer& input, ControllerBuffer& output, f
         return false;
     }
 
-    if (!wp_apic_launch(impl_->graph, nullptr)) {
-        impl_->last_error = warp_detail("Launch failed");
-        return false;
+    if (impl_->device_type == APIC_DEVICE_CUDA) {
+        if (!wp_apic_launch(impl_->graph, nullptr)) {
+            impl_->last_error = warp_detail("Launch failed");
+            return false;
+        }
+        wp_cuda_context_synchronize(impl_->context);
+    } else {
+        if (!wp_apic_cpu_replay_graph(impl_->graph)) {
+            impl_->last_error = warp_detail("CPU replay failed");
+            return false;
+        }
     }
-    wp_cuda_context_synchronize(impl_->context);
 
     for (auto& [field, values] : output.fields) {
         if (!get_param(impl_->graph, "output." + field, values, impl_->last_error)) {

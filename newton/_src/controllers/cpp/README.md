@@ -22,12 +22,15 @@ export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, p
 This writes `joint_impedance.wrp` and `joint_impedance_modules/`. Both must ship
 together — the modules directory holds the compiled kernels.
 
-Requires CUDA to load and step a graph: this C++ runtime binds CUDA device 0
-unconditionally and has no CPU code path. Capture itself is not CUDA-specific —
-`export_controller_graph` and `warp.capture_load`/`capture_launch` all work on a
-CPU device from Python — but replaying a *loaded* graph without a Python
-interpreter also needs each kernel's compiled `.o` resolved through Warp's LLVM
-JIT (`warp-clang`), which this runtime does not yet do.
+The device to replay on is not something you choose here — it is read directly
+out of the `.wrp` file's own header, which records whichever device
+`export_controller_graph` captured on. A `device="cuda"` capture binds CUDA
+device 0 and replays there; a `device="cpu"` capture never touches CUDA. A
+graph replays only on the device it was captured for — the compiled kernels in
+`joint_impedance_modules/` are architecture-specific (PTX/cubin for CUDA, an
+LLVM-JIT'd object file for CPU), so there is no "record once, replay anywhere."
+CPU replay resolves those kernels through Warp's LLVM JIT (`warp-clang`),
+linked automatically as part of this build — see `FindWarp.cmake`.
 
 ## Build
 

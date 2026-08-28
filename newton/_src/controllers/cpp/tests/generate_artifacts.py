@@ -163,6 +163,29 @@ def export_model_free_mass_matrix_view(device, out_dir: Path) -> np.ndarray:
     return torques
 
 
+def export_cpu_variant(out_dir: Path) -> np.ndarray:
+    """Export the same controller captured on the CPU instead of CUDA.
+
+    Exercises the C++ runtime's device auto-detection: it reads the device a
+    .wrp graph was captured for out of the file's own header, rather than
+    being told, so a CPU-captured graph must load and replay correctly
+    without a CUDA device ever entering the picture.
+    """
+    model = build_model("cpu")
+    controller = build_controller(model, "cpu")
+    inputs, outputs = controller.input(), controller.output()
+    inputs.joint_q.assign(Q)
+    inputs.joint_qd.assign(QD)
+    inputs.joint_q_des.assign(Q_DES)
+    inputs.joint_qd_des.assign(QD_DES)
+
+    controller.step(inputs=inputs, outputs=outputs, dt=DT)
+    expected = outputs.joint_f.numpy().copy()
+
+    export_controller_graph(controller=controller, inputs=inputs, outputs=outputs, path=out_dir / "joint_impedance_cpu")
+    return expected
+
+
 def main(out_dir: Path) -> int:
     if not wp.is_cuda_available():
         print("generate_artifacts: CUDA is required to capture a graph", file=sys.stderr)
@@ -197,10 +220,19 @@ def main(out_dir: Path) -> int:
     np.testing.assert_allclose(fleet_torques, FLEET_BLOCK @ (FLEET_STIFFNESS * FLEET_Q_DES), atol=1e-5)
     (out_dir / "mass_matrix_view_expected.txt").write_text("\n".join(f"{value:.9g}" for value in fleet_torques) + "\n")
 
-    print("generate_artifacts: wrote joint_impedance.wrp, joint_impedance_views.wrp, mass_matrix_view.wrp")
+    cpu_expected = export_cpu_variant(out_dir)
+    (out_dir / "joint_impedance_cpu_expected.txt").write_text(
+        "\n".join(f"{value:.9g}" for value in cpu_expected) + "\n"
+    )
+
+    print(
+        "generate_artifacts: wrote joint_impedance.wrp, joint_impedance_views.wrp, "
+        "mass_matrix_view.wrp, joint_impedance_cpu.wrp"
+    )
     print(f"                    reference torques {expected}")
     print(f"                    scattered into slots {VIEW_INDICES.tolist()} of {VIEW_SIM_DOFS}: {scattered}")
     print(f"                    model-free torques from a view-bound mass matrix: {fleet_torques}")
+    print(f"                    CPU-captured torques: {cpu_expected}")
     return 0
 
 

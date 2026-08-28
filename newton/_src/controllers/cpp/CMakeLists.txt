@@ -23,7 +23,7 @@ add_library(newton_controllers STATIC src/controller.cpp)
 
 target_compile_features(newton_controllers PUBLIC cxx_std_20)
 target_include_directories(newton_controllers PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(newton_controllers PUBLIC warp::runtime)
+target_link_libraries(newton_controllers PUBLIC warp::runtime warp::clang)
 
 # warp.so defers its Python C API references to runtime (-Wl,-z,lazy) so that
 # non-Python hosts can load it. Tell the static linker to do the same instead of

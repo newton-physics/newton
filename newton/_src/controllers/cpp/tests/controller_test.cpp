@@ -195,6 +195,36 @@ void test_step_matches_python(const std::filesystem::path& wrp, const std::files
     }
 }
 
+// Same model, inputs, and expected torques as test_step_matches_python, but
+// the .wrp was captured on the CPU. Controller reads the device to replay on
+// straight out of the file header, so this exercises that auto-detection: no
+// device_type is passed in anywhere, and no CUDA device is required at all.
+void test_cpu_step_matches_python(const std::filesystem::path& wrp, const std::filesystem::path& reference_path) {
+    std::cout << "\n=== test_cpu_step_matches_python ===\n";
+    const std::vector<float> expected = read_reference(reference_path);
+    check(expected.size() == kControlledDofs, "reference file holds one torque per controlled DOF");
+    if (expected.size() != kControlledDofs) return;
+
+    newton::controllers::Controller controller{wrp};
+    auto input = controller.input();
+    auto output = controller.output();
+
+    input["joint_q"] = kJointQ;
+    input["joint_qd"] = kJointQd;
+    input["joint_q_des"] = kJointQDes;
+    input["joint_qd_des"] = kJointQdDes;
+
+    check(controller.step(input, output, kDt), "CPU step succeeds: " + controller.last_error());
+
+    print_vector("python (CPU) controller joint_f", expected);
+    print_vector("C++ (CPU) controller joint_f   ", output["joint_f"]);
+
+    for (std::size_t dof = 0; dof < expected.size(); ++dof) {
+        check_close(output["joint_f"][dof], expected[dof], 1e-3f,
+                    "CPU joint_f[" + std::to_string(dof) + "] matches the Python controller");
+    }
+}
+
 void test_view_bound_ports_round_trip(const std::filesystem::path& wrp,
                                       const std::filesystem::path& reference_path) {
     std::cout << "\n=== test_view_bound_ports_round_trip ===\n";
@@ -296,10 +326,13 @@ int main(int argc, char** argv) {
     const std::filesystem::path reference = artifacts / "joint_impedance_expected.txt";
     const std::filesystem::path mass_matrix_wrp = artifacts / "mass_matrix_view.wrp";
     const std::filesystem::path mass_matrix_reference = artifacts / "mass_matrix_view_expected.txt";
+    const std::filesystem::path cpu_wrp = artifacts / "joint_impedance_cpu.wrp";
+    const std::filesystem::path cpu_reference = artifacts / "joint_impedance_cpu_expected.txt";
 
     if (!std::filesystem::exists(wrp) || !std::filesystem::exists(views_wrp)
         || !std::filesystem::exists(mass_matrix_wrp) || !std::filesystem::exists(reference)
-        || !std::filesystem::exists(mass_matrix_reference)) {
+        || !std::filesystem::exists(mass_matrix_reference) || !std::filesystem::exists(cpu_wrp)
+        || !std::filesystem::exists(cpu_reference)) {
         std::cerr << "Missing artifacts in " << artifacts << "; run generate_artifacts.py first.\n";
         return 1;
     }
@@ -312,6 +345,7 @@ int main(int argc, char** argv) {
         test_step_matches_python(wrp, reference);
         test_view_bound_ports_round_trip(views_wrp, reference);
         test_view_bound_mass_matrix(mass_matrix_wrp, mass_matrix_reference);
+        test_cpu_step_matches_python(cpu_wrp, cpu_reference);
     } catch (const std::exception& error) {
         std::cerr << "FAILED: unexpected exception: " << error.what() << "\n";
         ++failures;

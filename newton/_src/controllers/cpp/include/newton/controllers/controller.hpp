@@ -35,11 +35,16 @@ struct ControllerBuffer {
 // A controller step, loaded from a .wrp graph written by
 // newton.controllers.export_controller_graph.
 //
-// Construction initialises the Warp runtime, binds CUDA device 0, and loads the
-// graph, throwing std::runtime_error if any of that fails. The <path>_modules
-// directory written beside the .wrp file must be present. Once constructed,
-// step() reports failure by returning false rather than throwing, so it is safe
-// to call from a control loop that cannot afford an exception.
+// Construction initialises the Warp runtime and loads the graph, throwing
+// std::runtime_error if any of that fails. The <path>_modules directory
+// written beside the .wrp file must be present. Once constructed, step()
+// reports failure by returning false rather than throwing, so it is safe to
+// call from a control loop that cannot afford an exception.
+//
+// The device to replay on is read out of the .wrp file itself, not supplied by
+// the caller: a CUDA-captured graph binds CUDA device 0, a CPU-captured graph
+// stays on the CPU and never touches CUDA. Either way the two devices are
+// mutually exclusive — a graph replays only on the device it was captured on.
 class Controller {
 public:
     explicit Controller(const std::filesystem::path& wrp_path);
