@@ -23,17 +23,17 @@ add_library(newton_controllers STATIC src/controller.cpp)
 
 target_compile_features(newton_controllers PUBLIC cxx_std_20)
 target_include_directories(newton_controllers PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(newton_controllers PUBLIC warp::runtime warp::clang)
+target_include_directories(newton_controllers PRIVATE "${WARP_INCLUDE_DIR}")
 
-# warp.so defers its Python C API references to runtime (-Wl,-z,lazy) so that
-# non-Python hosts can load it. Tell the static linker to do the same instead of
-# failing on symbols it cannot resolve.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_options(newton_controllers INTERFACE "LINKER:--unresolved-symbols=ignore-in-shared-libs")
-endif()
-
-get_filename_component(WARP_BIN_DIR "${WARP_LIBRARY}" DIRECTORY)
-set_target_properties(newton_controllers PROPERTIES BUILD_RPATH "${WARP_BIN_DIR}")
+# warp.so and warp-clang.so are dlopen()'d/LoadLibrary()'d at runtime, not
+# linked -- see FindWarp.cmake for why. CMAKE_DL_LIBS is dl on Linux (needed
+# for dlopen/dlsym) and empty elsewhere (LoadLibrary/GetProcAddress live in
+# kernel32.dll, always linked on Windows; macOS's libSystem always has dlopen).
+target_link_libraries(newton_controllers PUBLIC ${CMAKE_DL_LIBS})
+target_compile_definitions(newton_controllers PRIVATE
+    "NEWTON_WARP_LIBRARY=\"${WARP_LIBRARY}\""
+    "NEWTON_WARP_CLANG_LIBRARY=\"${WARP_CLANG_LIBRARY}\""
+)
 
 option(NEWTON_CONTROLLERS_BUILD_TESTS "Build the C++ controller runtime tests" ON)
 if(NEWTON_CONTROLLERS_BUILD_TESTS)

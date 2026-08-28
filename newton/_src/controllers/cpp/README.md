@@ -29,13 +29,24 @@ device 0 and replays there; a `device="cpu"` capture never touches CUDA. A
 graph replays only on the device it was captured for — the compiled kernels in
 `joint_impedance_modules/` are architecture-specific (PTX/cubin for CUDA, an
 LLVM-JIT'd object file for CPU), so there is no "record once, replay anywhere."
-CPU replay resolves those kernels through Warp's LLVM JIT (`warp-clang`),
-linked automatically as part of this build — see `FindWarp.cmake`.
+CPU replay resolves those kernels through Warp's LLVM JIT (`warp-clang`).
 
 ## Build
 
 Needs CMake 3.24+, a C++20 compiler, and Newton's environment on the same
-machine (the build locates `warp.so` and Warp's headers through it).
+machine (the build locates Warp's headers and libraries through it).
+
+`warp.so`/`.dylib`/`.dll` and `warp-clang.so`/`.dylib`/`.dll` are loaded at
+runtime (`dlopen`/`LoadLibrary`), not linked at build time. This is not a
+Windows-specific workaround — the pip wheel does not ship a Windows import
+library (`.lib`) for either, only the DLL itself, and neither Warp's Python
+bindings (`ctypes`) nor its own reference C++ consumers
+(github.com/erwincoumans/warp_cpp) link them conventionally on any platform
+either. `GetProcAddress`/`dlsym` resolve symbols directly out of the loaded
+module's own export table, so no `.lib` is needed. The absolute paths to both
+libraries are resolved once at CMake-configure time (`FindWarp.cmake`) and
+baked into the build; nothing needs to be on `PATH`, `LD_LIBRARY_PATH`, or
+`DYLD_LIBRARY_PATH` at runtime.
 
 ```bash
 uv sync

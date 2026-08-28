@@ -1,11 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
-# Locate warp-lang from Newton's uv environment and expose warp::runtime and
-# warp::clang. warp::clang is the LLVM-JIT backend (warp-clang.so/.dylib/.dll)
-# that resolves a CPU-captured graph's compiled kernels at replay time; it
-# ships alongside warp.so in every uv-installed warp-lang package, so it is
-# required just like the runtime library itself.
+# Locate warp-lang from Newton's uv environment: its headers (WARP_INCLUDE_DIR),
+# its runtime library (WARP_LIBRARY, warp.so/.dylib/.dll), and its LLVM-JIT
+# backend (WARP_CLANG_LIBRARY, warp-clang.so/.dylib/.dll), which resolves a
+# CPU-captured graph's compiled kernels at replay time.
+#
+# Neither library is exposed as a linkable IMPORTED target: the pip wheel does
+# not ship an import library (.lib) for either on Windows, so this build
+# dlopen()s/LoadLibrary()s them at runtime instead of linking at build time --
+# on every platform, not just Windows, matching how Warp's own C++ consumers
+# do it (see github.com/erwincoumans/warp_cpp). WARP_LIBRARY / WARP_CLANG_LIBRARY
+# are only used to bake absolute paths into the build via
+# target_compile_definitions (see CMakeLists.txt) and to fail fast here with a
+# clear message if either is missing, rather than a cryptic dlopen error later.
 #
 # Run `uv sync` before configuring. Override discovery with
 # -DWARP_ROOT=/path/to/site-packages/warp or -DWARP_PYTHON=/path/to/python
@@ -71,23 +79,6 @@ if(NOT EXISTS "${_warp_clang_library}")
     message(FATAL_ERROR
         "Warp's LLVM-JIT backend not found at ${_warp_clang_library}\n"
         "Reinstall with: uv sync")
-endif()
-
-if(NOT TARGET warp::runtime)
-    add_library(warp::runtime UNKNOWN IMPORTED GLOBAL)
-    set_target_properties(warp::runtime PROPERTIES
-        IMPORTED_LOCATION "${_warp_library}"
-        IMPORTED_NO_SONAME TRUE
-        INTERFACE_INCLUDE_DIRECTORIES "${WARP_INCLUDE_DIR}"
-    )
-endif()
-
-if(NOT TARGET warp::clang)
-    add_library(warp::clang UNKNOWN IMPORTED GLOBAL)
-    set_target_properties(warp::clang PROPERTIES
-        IMPORTED_LOCATION "${_warp_clang_library}"
-        IMPORTED_NO_SONAME TRUE
-    )
 endif()
 
 set(WARP_ROOT "${_warp_root}" CACHE PATH "Root of the uv-installed warp package")
