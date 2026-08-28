@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -14,11 +15,31 @@ from newton._src.viewer.gl import opengl
 # pyglet in headless mode, which is the configuration the selection exists for.
 _DISPLAY_VARS = ("DISPLAY", "WAYLAND_DISPLAY", "PYGLET_HEADLESS")
 
+# Exit code the subprocess reserves for a host that cannot render at all, which
+# the backend selection can do nothing about. Every other non-zero exit is a
+# failure of the behavior under test.
+_UNAVAILABLE_EXIT_CODE = 3
+
 _CONSTRUCT_HEADLESS_VIEWER = textwrap.dedent(
-    """
+    f"""
+    import sys
+
     import newton.viewer
 
-    viewer = newton.viewer.ViewerGL(width=64, height=48, headless=True)
+    # The pyglet errors that mean the machine offers no usable GL, kept apart
+    # from a real failure. NoSuchDisplayException is deliberately absent: it is
+    # exactly the failure this test exists to catch.
+    UNAVAILABLE = {{"ConfigException", "ContextException", "MissingFunctionException", "NoSuchConfigException"}}
+
+    try:
+        viewer = newton.viewer.ViewerGL(width=64, height=48, headless=True)
+    except Exception as exc:
+        error_type = type(exc)
+        if error_type.__module__.startswith("pyglet.") and error_type.__name__ in UNAVAILABLE:
+            print(f"VIEWER_UNAVAILABLE: {{error_type.__name__}}: {{exc}}")
+            sys.exit({_UNAVAILABLE_EXIT_CODE})
+        raise
+
     try:
         print("VIEWER_CONSTRUCTED")
     finally:
@@ -84,6 +105,8 @@ class TestViewerGLHeadlessWithoutDisplay(unittest.TestCase):
             self.skipTest("session has a display, so the headless backend is not selected")
         if not sys.platform.startswith("linux"):
             self.skipTest("pyglet only defaults to Xlib on Linux")
+        if importlib.util.find_spec("pyglet") is None:
+            self.skipTest("ViewerGL dependencies not available: pyglet is not installed")
 
         env = {key: value for key, value in os.environ.items() if key not in _DISPLAY_VARS}
         result = subprocess.run(
@@ -95,15 +118,16 @@ class TestViewerGLHeadlessWithoutDisplay(unittest.TestCase):
             check=False,
         )
 
+        if result.returncode == _UNAVAILABLE_EXIT_CODE:
+            self.skipTest(f"ViewerGL backend not available:\n{result.stdout}")
+
         if result.returncode != 0:
             self.assertNotIn(
                 "NoSuchDisplayException",
                 result.stderr,
                 "ViewerGL(headless=True) must not ask pyglet for a display it cannot have",
             )
-            # Anything else means this machine cannot render at all, which the
-            # backend selection can do nothing about.
-            self.skipTest(f"ViewerGL backend not available:\n{result.stderr}")
+            self.fail(f"ViewerGL(headless=True) failed without a display:\n{result.stdout}\n{result.stderr}")
 
         self.assertIn("VIEWER_CONSTRUCTED", result.stdout)
 
