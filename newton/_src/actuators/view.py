@@ -107,10 +107,11 @@ class ActuatorView:
         if mapping.shape[1] == 0:
             return
 
+        expected_shape = (*mapping.shape, *parameter.shape[1:])
         if not is_array(values):
-            values = wp.array(values, dtype=parameter.dtype, shape=mapping.shape, device=mapping.device, copy=False)
-        if values.shape != mapping.shape:
-            raise ValueError(f"Expected values shape {mapping.shape}, got {values.shape}")
+            values = wp.array(values, dtype=parameter.dtype, shape=expected_shape, device=mapping.device, copy=False)
+        if values.shape[:2] != expected_shape[:2]:
+            raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
 
         if mask is None:
             mask = self._full_mask

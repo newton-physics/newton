@@ -52,11 +52,15 @@ class TestActuatorView(unittest.TestCase):
         body = template.add_link()
         joint = template.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
         template.add_articulation([joint], label="robot")
-        template.add_actuator(ControllerPD, index=template.joint_qd_start[joint], kp=100.0)
+        template.add_actuator(ControllerPD, index=template.joint_qd_start[joint], kp=100.0, delay_steps=2)
         builder = newton.ModelBuilder()
         builder.replicate(template, 2)
         model = builder.finalize()
         return ArticulationView(model, "robot"), model.actuators[0]
+
+    def make_empty_articulation_view(self) -> tuple[ArticulationView, Actuator]:
+        source, actuator = self.make_articulation_view()
+        return ArticulationView(source.model, "robot", include_joints=[]), actuator
 
     def test_public_actuator_module_exports_view(self):
         self.assertTrue(hasattr(actuator_api, "ActuatorView"))
@@ -140,6 +144,25 @@ class TestActuatorView(unittest.TestCase):
         self.assertIs(first, second)
         values = first.get_actuator_parameter(actuator, "controller", "kp")
         np.testing.assert_array_equal(values.numpy(), [[100.0], [100.0]])
+
+    def test_legacy_get_zero_dofs_returns_float(self):
+        source, actuator = self.make_empty_articulation_view()
+
+        values = source.get_actuator_parameter(actuator, actuator.delay, "delay_steps")
+
+        self.assertEqual(values.shape, (2, 0))
+        self.assertEqual(values.dtype, wp.float32)
+
+    def test_legacy_set_zero_dofs_skips_parameter_lookup(self):
+        source, actuator = self.make_empty_articulation_view()
+
+        parameter_was_read = False
+        try:
+            source.set_actuator_parameter(actuator, object(), "missing", [])
+        except AttributeError:
+            parameter_was_read = True
+
+        self.assertFalse(parameter_was_read)
 
 
 if __name__ == "__main__":

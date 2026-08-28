@@ -1928,6 +1928,8 @@ class ArticulationView:
             ``dofs_per_world`` is the total number of DOFs in the view (not
             just the actuated subset).
         """
+        if self._get_actuator_dof_mapping(actuator).shape[1] == 0:
+            return wp.empty((self.world_count, 0), dtype=float, device=self.device)
         return self.get_actuator_view([actuator])._get_parameter_array(actuator, getattr(component, name))
 
     def set_actuator_parameter(
@@ -1957,4 +1959,6 @@ class ArticulationView:
                 where ``dofs_per_world`` is the total number of DOFs in the view.
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
+        if self._get_actuator_dof_mapping(actuator).shape[1] == 0:
+            return
         self.get_actuator_view([actuator])._set_parameter_array(actuator, getattr(component, name), values, mask)
