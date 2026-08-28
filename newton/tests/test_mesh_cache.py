@@ -42,20 +42,18 @@ class TestMeshCache(unittest.TestCase):
         mesh.invalidate_cache()
         self.assertNotEqual(hash(mesh), old_hash)
 
-    def test_texture_mapping_is_copied_without_changing_physics_hash(self):
-        """Copy texture-coordinate settings without changing physical mesh identity."""
+    def test_texture_transform_is_copied_without_changing_physics_hash(self):
+        """Copy a texture transform without changing physical mesh identity."""
         mesh = _make_tet_mesh()
         physics_hash = hash(mesh)
         mesh.texture_transform = ((0.5, 0.25, 0.25), (-1.0, 2.0, -0.75))
-        mesh.texture_coordinate_source = Mesh.TextureCoordinateSource.WORLD
         self.assertEqual(hash(mesh), physics_hash)
 
         copied = mesh.copy()
         self.assertEqual(copied.texture_transform, mesh.texture_transform)
-        self.assertEqual(copied.texture_coordinate_source, mesh.texture_coordinate_source)
         self.assertEqual(hash(copied), hash(mesh))
 
-        copied.texture_coordinate_source = Mesh.TextureCoordinateSource.OBJECT
+        copied.texture_transform = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
         self.assertEqual(hash(copied), hash(mesh))
 
 

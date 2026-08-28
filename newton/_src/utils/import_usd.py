@@ -1058,6 +1058,22 @@ def parse_usd(
 
         return body0_info, body1_info
 
+    def _apply_visual_material(mesh: Mesh, material_props: dict[str, Any]) -> None:
+        """Apply one resolved USD visual material to its owning mesh."""
+        texture = material_props.get("texture")
+        if texture is not None:
+            mesh.texture = texture
+        if mesh.texture is not None:
+            # Textures provide albedo; do not tint them with the shape palette.
+            mesh.color = (1.0, 1.0, 1.0)
+        elif material_props.get("color") is not None:
+            mesh.color = material_props["color"]
+
+        for key in ("roughness", "metallic", "texture_transform"):
+            value = material_props.get(key)
+            if value is not None:
+                setattr(mesh, key, value)
+
     def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
         """Load a renderable mesh without changing physics mass properties."""
         material_props = _get_material_props_cached(prim)
@@ -1084,42 +1100,9 @@ def parse_usd(
         else:
             mesh = physics_mesh.copy(recompute_inertia=False)
         _apply_visual_material(mesh, material_props)
-        _log_uvless_texture(mesh, path_name)
+        if mesh.texture is not None and mesh.uvs is None:
+            logger.info("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
         return mesh
-
-    def _apply_visual_material(mesh: Mesh, material_props: dict[str, Any]) -> None:
-        """Apply one resolved USD visual material to its owning mesh."""
-        texture = material_props.get("texture")
-        if texture is not None:
-            mesh.texture = texture
-        if mesh.texture is not None:
-            # Textures provide albedo; do not tint them with the shape palette.
-            mesh.color = (1.0, 1.0, 1.0)
-        elif material_props.get("color") is not None:
-            mesh.color = material_props["color"]
-
-        for key in (
-            "roughness",
-            "metallic",
-            "texture_transform",
-            "texture_coordinate_source",
-        ):
-            value = material_props.get(key)
-            if value is not None:
-                setattr(mesh, key, value)
-
-    def _log_uvless_texture(mesh: Mesh, path_name: str, *, subset: bool = False) -> None:
-        """Report how a textured mesh without authored UVs will be sampled."""
-        if mesh.texture is None or mesh.uvs is not None:
-            return
-        label = "Mesh material subset" if subset else "Mesh"
-        if mesh.texture_coordinate_source == Mesh.TextureCoordinateSource.UV:
-            logger.info("%s %s has a texture but no UV coordinates; texture sampling is disabled.", label, path_name)
-        else:
-            source = mesh.texture_coordinate_source.name.lower()
-            logger.info(
-                "%s %s has a texture but no UVs; texture will use %s-space coordinates.", label, path_name, source
-            )
 
     def _get_face_material_subsets(prim: Usd.Prim) -> list[Usd.Prim]:
         """Return face-based material subsets authored directly under a mesh prim."""
@@ -1215,7 +1198,11 @@ def parse_usd(
         )
 
         _apply_visual_material(submesh, material_props)
-        _log_uvless_texture(submesh, path_name, subset=True)
+        if submesh.texture is not None and submesh.uvs is None:
+            logger.info(
+                "Mesh material subset %s has a texture but no UV coordinates; texture sampling is disabled.",
+                path_name,
+            )
         return submesh
 
     def _get_visual_material_subset_meshes(prim: Usd.Prim) -> list[tuple[str, Mesh]]:

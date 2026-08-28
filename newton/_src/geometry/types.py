@@ -167,25 +167,6 @@ class Mesh:
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
-    class TextureCoordinateSource(enum.IntEnum):
-        """Coordinate source used to sample a mesh texture.
-
-        .. experimental::
-
-            Object- and world-space texture coordinates are currently supported
-            only by :class:`~newton.viewer.ViewerGL`. They are a Newton viewer
-            extension, not OpenUSD shader nodes.
-        """
-
-        UV = 0
-        """Use the mesh's authored UV coordinates."""
-
-        OBJECT = 1
-        """Generate cubic coordinates in object space."""
-
-        WORLD = 2
-        """Generate cubic coordinates in world space."""
-
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
@@ -201,7 +182,6 @@ class Mesh:
         texture: str | np.ndarray | None = None,
         *,
         texture_transform: Sequence[Sequence[float]] | np.ndarray = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
-        texture_coordinate_source: int = TextureCoordinateSource.UV,
         sdf: "SDF | None" = None,
     ):
         """
@@ -225,9 +205,7 @@ class Mesh:
             texture: Optional texture path/URL or image data (H, W, C).
             texture_transform: Affine texture-coordinate transform as two rows
                 ``((m00, m01, tx), (m10, m11, ty))``. It is applied to the
-                selected coordinates as ``(u', v') = M @ (u, v) + t``.
-            texture_coordinate_source: Coordinate source from
-                :class:`Mesh.TextureCoordinateSource`.
+                authored UV coordinates as ``(u', v') = M @ (u, v) + t``.
             sdf: Optional prebuilt SDF object owned by this mesh.
         """
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
@@ -242,7 +220,6 @@ class Mesh:
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
         self.texture_transform = texture_transform
-        self.texture_coordinate_source = texture_coordinate_source
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -830,7 +807,6 @@ class Mesh:
             roughness=self._roughness,
             metallic=self._metallic,
             texture_transform=self._texture_transform,
-            texture_coordinate_source=self._texture_coordinate_source,
         )
         if not recompute_inertia:
             m.inertia = self.inertia
@@ -1566,7 +1542,7 @@ class Mesh:
 
     @property
     def texture_transform(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-        """Affine transform applied to the selected texture coordinates."""
+        """Affine transform applied to the authored UV coordinates."""
         return self._texture_transform
 
     @texture_transform.setter
@@ -1578,18 +1554,6 @@ class Mesh:
         if matrix.shape != (2, 3) or not np.all(np.isfinite(matrix)):
             raise ValueError("texture_transform must be a finite 2-by-3 matrix.")
         self._texture_transform = tuple(tuple(float(component) for component in row) for row in matrix)
-
-    @property
-    def texture_coordinate_source(self) -> TextureCoordinateSource:
-        """Coordinate source used to sample this mesh's texture."""
-        return self._texture_coordinate_source
-
-    @texture_coordinate_source.setter
-    def texture_coordinate_source(self, value: int):
-        try:
-            self._texture_coordinate_source = self.TextureCoordinateSource(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Invalid texture_coordinate_source: {value!r}.") from exc
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:

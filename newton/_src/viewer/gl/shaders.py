@@ -51,22 +51,15 @@ layout (location = 7) in vec3 aObjectColor;
 // material properties
 layout (location = 8) in vec4 aMaterial;
 
-// rows of the 2-D linear transform; translation.xy and coordinate source
-layout (location = 9) in vec4 aTextureLinear;
-layout (location = 10) in vec3 aTextureOffsetSource;
-
 uniform mat4 view;
 uniform mat4 projection;
 uniform vec3 view_pos;
 
 out vec3 Normal;
 out vec3 LocalPos;
-out vec3 LocalNormal;
 out vec2 TexCoord;
 out vec3 ObjectColor;
 out vec4 Material;
-flat out vec4 TextureLinear;
-flat out vec3 TextureOffsetSource;
 
 void main()
 {
@@ -87,12 +80,9 @@ void main()
     mat3 normalMatrix = transpose(inverse(rotation));
     if (determinant(rotation) < 0.0) normalMatrix = -normalMatrix;
     Normal = normalMatrix * aNormal;
-    LocalNormal = aNormal;
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
     Material = aMaterial;
-    TextureLinear = aTextureLinear;
-    TextureOffsetSource = aTextureOffsetSource;
 }
 """
 
@@ -102,12 +92,9 @@ out vec4 FragColor;
 
 in vec3 Normal;
 in vec3 LocalPos;
-in vec3 LocalNormal;
 in vec2 TexCoord;
 in vec3 ObjectColor;
 in vec4 Material;
-flat in vec4 TextureLinear;
-flat in vec3 TextureOffsetSource;
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -161,28 +148,6 @@ float checker(vec2 uv)
 
     vec2 i = (bump(p1) - bump(p0)) / width;
     return i.x * i.y + (1.0 - i.x) * (1.0 - i.y);
-}
-
-vec2 CubicProjection(vec3 position, vec3 normal)
-{
-    vec3 dominant = abs(normal);
-    if (dominant.x >= dominant.y && dominant.x >= dominant.z)
-        return normal.x >= 0.0 ? position.yz : vec2(-position.y, position.z);
-    if (dominant.y >= dominant.z)
-        return normal.y >= 0.0 ? vec2(-position.x, position.z) : position.xz;
-    return normal.z >= 0.0 ? position.xy : vec2(-position.x, position.y);
-}
-
-vec2 TextureCoordinates(vec3 camera_to_fragment)
-{
-    vec2 uv = TexCoord;
-    int coordinate_source = int(TextureOffsetSource.z + 0.5);
-    if (coordinate_source == 1)
-        uv = CubicProjection(LocalPos, LocalNormal);
-    else if (coordinate_source == 2)
-        uv = CubicProjection(camera_to_fragment + view_pos, Normal);
-
-    return vec2(dot(TextureLinear.xy, uv), dot(TextureLinear.zw, uv)) + TextureOffsetSource.xy;
 }
 
 vec2 poissonDisk[16] = vec2[](
@@ -338,7 +303,7 @@ void main()
     vec3 albedo = pow(ObjectColor, vec3(2.2));
     if (texture_enable > 0.5)
     {
-        vec3 tex_color = texture(albedo_map, TextureCoordinates(camera_to_fragment)).rgb;
+        vec3 tex_color = texture(albedo_map, TexCoord).rgb;
         albedo *= pow(tex_color, vec3(2.2));
     }
 

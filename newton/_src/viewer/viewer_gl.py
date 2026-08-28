@@ -381,18 +381,7 @@ class ViewerGL(ViewerBase):
         # are remapped in set_model() to per-instance render scales (radius, radius, half_height).
         if geo_type == nt.GeoType.CAPSULE:
             geo_scale = (1.0, 1.0)
-        geometry_hash = super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src, mirror)
-        texture_mapping = ()
-        if isinstance(geo_src, nt.Mesh) and geo_src.texture is not None:
-            texture_mapping = (geo_src.texture_transform, int(geo_src.texture_coordinate_source))
-        return hash((geometry_hash, texture_mapping))
-
-    @override
-    def _apply_mesh_texture_mapping(self, name: str, mesh: nt.Mesh) -> None:
-        """Apply texture-coordinate mapping to the GL mesh prototype."""
-        mesh_gl = self.objects[self._qualify(name)]
-        mesh_gl.texture_transform = mesh.texture_transform
-        mesh_gl.texture_coordinate_source = mesh.texture_coordinate_source
+        return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src, mirror)
 
     def _invalidate_pbo(self):
         """Invalidate PBO resources, forcing reallocation on next get_frame() call."""
@@ -1005,6 +994,7 @@ class ViewerGL(ViewerBase):
             self.objects[name].update(points, indices, normals, uvs, texture)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
 
