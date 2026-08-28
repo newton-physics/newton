@@ -249,7 +249,7 @@ def test_operational_space_mass_matrix_matches_numpy(test, device):
             wp.array([5], dtype=wp.int32, device=device),  # robot_link_idx: tool_body is link 5 (the 6th joint's child)
             wp.array(
                 [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
-            ),  # local_dof_idx: every DOF controlled, in order
+            ),  # articulation_dof_idx_of_padded_dof_idx: every DOF controlled, in order
             wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
         ],
         outputs=[jacobian_tool_world],
@@ -389,7 +389,7 @@ def test_jacobian_tool_shift_matches_twist(test, device):
             wp.array([1], dtype=wp.int32, device=device),  # robot_link_idx: tool_body is link 1 (the 2nd joint's child)
             wp.array(
                 [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
-            ),  # local_dof_idx: every DOF controlled, in order
+            ),  # articulation_dof_idx_of_padded_dof_idx: every DOF controlled, in order
             wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
         ],
         outputs=[jacobian_tool_world],
@@ -401,14 +401,14 @@ def test_jacobian_tool_shift_matches_twist(test, device):
     np.testing.assert_allclose(predicted_twist, tool_twist_world.numpy()[0], atol=1e-6)
 
 
-def test_jacobian_tool_shift_local_dof_idx_remaps_non_prefix_subset(test, device):
-    """local_dof_idx correctly remaps a non-prefix, non-contiguous controlled-DOF subset.
+def test_jacobian_tool_shift_articulation_dof_idx_of_padded_dof_idx_remaps_non_prefix_subset(test, device):
+    """articulation_dof_idx_of_padded_dof_idx correctly remaps a non-prefix, non-contiguous controlled-DOF subset.
 
     Controls joints [0, 1, 3, 5, 6] of the 7-joint arm -- skipping joints 2
     and 4 -- so the controlled DOFs are not the first N columns of the
     articulation's own Jacobian. Each compact output column must equal the
-    full-Jacobian column local_dof_idx maps it to, not the column at its own
-    compact index.
+    full-Jacobian column articulation_dof_idx_of_padded_dof_idx maps it to, not
+    the column at its own padded index.
     """
     model, state, tool_body, coordinate_change_body_from_tool = _build_seven_dof_arm_with_tool_site(device)
     device = model.device
@@ -449,7 +449,7 @@ def test_jacobian_tool_shift_local_dof_idx_remaps_non_prefix_subset(test, device
     # Under test: only joints [0, 1, 3, 5, 6] controlled, 5 compact columns.
     controlled_local_dofs = [0, 1, 3, 5, 6]
     controlled_dof_count = len(controlled_local_dofs)
-    local_dof_idx = wp.array([controlled_local_dofs], dtype=wp.int32, device=device)
+    articulation_dof_idx_of_padded_dof_idx = wp.array([controlled_local_dofs], dtype=wp.int32, device=device)
     controlled_dofs_per_robot = wp.array([controlled_dof_count], dtype=wp.int32, device=device)
     jacobian_tool_world_compact = wp.zeros((1, 6, controlled_dof_count), dtype=float, device=device)
     wp.launch(
@@ -463,7 +463,7 @@ def test_jacobian_tool_shift_local_dof_idx_remaps_non_prefix_subset(test, device
             coordinate_change_body_from_tool_arr,
             robot_articulation_arr,
             robot_link_idx_arr,
-            local_dof_idx,
+            articulation_dof_idx_of_padded_dof_idx,
             controlled_dofs_per_robot,
         ],
         outputs=[jacobian_tool_world_compact],
@@ -519,7 +519,7 @@ def test_jacobian_tool_shift_matches_finite_difference(test, device):
             wp.array([1], dtype=wp.int32, device=device),  # robot_link_idx: tool_body is link 1 (the 2nd joint's child)
             wp.array(
                 [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
-            ),  # local_dof_idx: every DOF controlled, in order
+            ),  # articulation_dof_idx_of_padded_dof_idx: every DOF controlled, in order
             wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
         ],
         outputs=[jacobian_tool_world],
@@ -742,7 +742,7 @@ def test_jacobian_times_jacobian_transpose_matches_numpy(test, device):
             wp.array([6], dtype=wp.int32, device=device),  # tool_body is link 6 (the 7th joint's child)
             wp.array(
                 [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
-            ),  # local_dof_idx: every DOF controlled, in order
+            ),  # articulation_dof_idx_of_padded_dof_idx: every DOF controlled, in order
             wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
         ],
         outputs=[jacobian_tool_world],
@@ -809,7 +809,7 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
             wp.array([6], dtype=wp.int32, device=device),  # tool_body is link 6 (the 7th joint's child)
             wp.array(
                 [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
-            ),  # local_dof_idx: every DOF controlled, in order
+            ),  # articulation_dof_idx_of_padded_dof_idx: every DOF controlled, in order
             wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
         ],
         outputs=[jacobian_tool_world],
@@ -1037,8 +1037,8 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_jacobian_tool_shift_local_dof_idx_remaps_non_prefix_subset",
-    test_jacobian_tool_shift_local_dof_idx_remaps_non_prefix_subset,
+    "test_jacobian_tool_shift_articulation_dof_idx_of_padded_dof_idx_remaps_non_prefix_subset",
+    test_jacobian_tool_shift_articulation_dof_idx_of_padded_dof_idx_remaps_non_prefix_subset,
     devices=devices,
 )
 add_function_test(

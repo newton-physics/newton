@@ -79,15 +79,21 @@ def _block_matrix_vector_multiply_kernel(
 def _gather_mass_matrix_blocks_kernel(
     model_mass_matrix: wp.array3d[wp.float32],  # (model_robot_count, model_max_dofs, model_max_dofs)
     model_robot_index: wp.array[wp.int32],  # (controlled_robot_count,) -> that robot's index in the model
-    local_dof_idx: wp.array2d[wp.int32],  # (controlled_robot_count, max_controlled_dofs) -> DOF index within its robot
+    articulation_dof_idx_of_padded_dof_idx: wp.array2d[
+        wp.int32
+    ],  # (controlled_robot_count, max_controlled_dofs) padded_dof_idx -> DOF index within its robot
     controlled_dofs_per_robot: wp.array[wp.int32],  # (controlled_robot_count,)
     out: wp.array3d[wp.float32],  # (controlled_robot_count, max_controlled_dofs, max_controlled_dofs)
 ):
-    robot, row, col = wp.tid()
-    if row >= controlled_dofs_per_robot[robot] or col >= controlled_dofs_per_robot[robot]:
+    robot, padded_row_dof_idx, padded_col_dof_idx = wp.tid()
+    if padded_row_dof_idx >= controlled_dofs_per_robot[robot] or padded_col_dof_idx >= controlled_dofs_per_robot[robot]:
         return
     model_robot = model_robot_index[robot]
-    out[robot, row, col] = model_mass_matrix[model_robot, local_dof_idx[robot, row], local_dof_idx[robot, col]]
+    articulation_row_dof_idx = articulation_dof_idx_of_padded_dof_idx[robot, padded_row_dof_idx]
+    articulation_col_dof_idx = articulation_dof_idx_of_padded_dof_idx[robot, padded_col_dof_idx]
+    out[robot, padded_row_dof_idx, padded_col_dof_idx] = model_mass_matrix[
+        model_robot, articulation_row_dof_idx, articulation_col_dof_idx
+    ]
 
 
 # wp.copy is not recordable under APIC graph capture when either side is

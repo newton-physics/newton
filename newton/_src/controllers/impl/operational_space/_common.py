@@ -88,9 +88,9 @@ def _shift_jacobian_to_tool_kernel(
     coordinate_change_body_from_tool: wp.array[wp.transform],  # (robot_count,) tool site's body-local transform
     robot_articulation: wp.array[wp.int32],  # (robot_count,) -> articulation index into jacobian_com_world
     robot_link_idx: wp.array[wp.int32],  # (robot_count,) -> row-block index of the tool's link, within its articulation
-    local_dof_idx: wp.array2d[
+    articulation_dof_idx_of_padded_dof_idx: wp.array2d[
         wp.int32
-    ],  # (robot_count, max_dofs) -> DOF index within jacobian_com_world's own column numbering
+    ],  # (robot_count, max_dofs) padded_dof_idx -> articulation_dof_idx, jacobian_com_world's own column numbering
     controlled_dofs_per_robot: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
     # outputs
     jacobian_tool_world: wp.array3d[
@@ -102,15 +102,16 @@ def _shift_jacobian_to_tool_kernel(
     A controlled robot's DOFs are not necessarily the first columns of its
     own articulation's Jacobian -- ``joints`` may select a non-prefix subset,
     or skip an uncontrolled joint interspersed among controlled ones -- so
-    ``local_dof_idx`` remaps each compact, padded output column to the actual
-    column ``jacobian_com_world`` stores it at.
+    ``articulation_dof_idx_of_padded_dof_idx`` remaps each padded output
+    column (``padded_dof_idx``) to the actual column ``jacobian_com_world``
+    stores it at (``articulation_dof_idx``).
     """
-    robot_idx, dof_idx = wp.tid()
-    if dof_idx >= controlled_dofs_per_robot[robot_idx]:
+    robot_idx, padded_dof_idx = wp.tid()
+    if padded_dof_idx >= controlled_dofs_per_robot[robot_idx]:
         return
     articulation_idx = robot_articulation[robot_idx]
     link_row_start = robot_link_idx[robot_idx] * 6
-    local_dof = local_dof_idx[robot_idx, dof_idx]
+    articulation_dof_idx = articulation_dof_idx_of_padded_dof_idx[robot_idx, padded_dof_idx]
 
     tool_body_idx = tool_body[robot_idx]
     coordinate_change_world_from_body = body_q[tool_body_idx]
@@ -120,19 +121,19 @@ def _shift_jacobian_to_tool_kernel(
     com_to_tool_offset_world = tool_point_world - body_com_world
 
     jacobian_column_com_world = wp.spatial_vector(
-        jacobian_com_world[articulation_idx, link_row_start + 0, local_dof],
-        jacobian_com_world[articulation_idx, link_row_start + 1, local_dof],
-        jacobian_com_world[articulation_idx, link_row_start + 2, local_dof],
-        jacobian_com_world[articulation_idx, link_row_start + 3, local_dof],
-        jacobian_com_world[articulation_idx, link_row_start + 4, local_dof],
-        jacobian_com_world[articulation_idx, link_row_start + 5, local_dof],
+        jacobian_com_world[articulation_idx, link_row_start + 0, articulation_dof_idx],
+        jacobian_com_world[articulation_idx, link_row_start + 1, articulation_dof_idx],
+        jacobian_com_world[articulation_idx, link_row_start + 2, articulation_dof_idx],
+        jacobian_com_world[articulation_idx, link_row_start + 3, articulation_dof_idx],
+        jacobian_com_world[articulation_idx, link_row_start + 4, articulation_dof_idx],
+        jacobian_com_world[articulation_idx, link_row_start + 5, articulation_dof_idx],
     )
     jacobian_column_tool_world = wp.spatial_vector(
         velocity_at_point(jacobian_column_com_world, com_to_tool_offset_world),
         wp.spatial_bottom(jacobian_column_com_world),
     )
     for row in range(6):
-        jacobian_tool_world[robot_idx, row, dof_idx] = jacobian_column_tool_world[row]
+        jacobian_tool_world[robot_idx, row, padded_dof_idx] = jacobian_column_tool_world[row]
 
 
 # ---------------------------------------------------------------------------
