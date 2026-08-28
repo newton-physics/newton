@@ -2496,6 +2496,87 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         np.testing.assert_allclose(outputs.joint_f.numpy(), np.zeros(7, dtype=np.float32), atol=1e-4)
 
+    def test_step_raises_when_wrench_port_written_but_wrench_control_disabled(self):
+        """step() raises, rather than silently ignoring, a wrench port set on a controller built without it."""
+        device = wp.get_device()
+        model, _state, _tool_body, _transform = _build_two_link_arm_with_tool_site(device)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+        )
+        inputs = ctrl.input()
+        inputs.joint_q.assign(np.array([0.3, -0.2], dtype=np.float32))
+        inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
+        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_tool_pose_world.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+        inputs.desired_wrench_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=inputs, outputs=ctrl.output(), dt=0.01)
+
+    def test_step_output_is_superposition_of_each_feature_run_independently(self):
+        """With every feature's law computed independently (via _add_term_kernel), the combined output sums.
+
+        Builds four controllers sharing the same joint configuration on the
+        redundant 7-DOF arm: motion only, wrench only, null-space-posture
+        only, and all three together. Since inertial decoupling is off
+        (task-space impedance) and the null-space projector depends only on
+        the (identical, across all four) Jacobian, each term's law doesn't
+        depend on whether the others are enabled, so the combined controller's
+        output must equal the exact sum of the three isolated ones.
+        """
+        device = wp.get_device()
+        model, _state, _tool_body, _transform = _build_seven_dof_arm_with_tool_site(device)
+
+        joint_q = np.array([0.3, -0.2, 0.5, 0.1, -0.4, 0.25, 0.2], dtype=np.float32)
+        joint_qd = np.zeros(7, dtype=np.float32)
+        desired_tool_pose_world = np.array([[0.1, -0.2, 0.3, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+        desired_twist_world = np.zeros((1, 6), dtype=np.float32)
+        desired_wrench_world = np.array([[3.0, -1.5, 0.0, 0.0, 0.0, 2.0]], dtype=np.float32)
+        joint_q_des_null = np.array([0.0, 0.1, -0.1, 0.2, -0.2, 0.0, 0.15], dtype=np.float32)
+        joint_qd_des_null = np.zeros(7, dtype=np.float32)
+        full_selection = wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+
+        def run(*, use_motion, use_wrench, use_null_space):
+            ctrl = ControllerOperationalSpace(
+                model,
+                tool="tool_site",
+                motion_stiffness=100.0 if use_motion else 0.0,
+                motion_damping=10.0 if use_motion else 0.0,
+                use_inertia_decoupling=False,
+                use_gravity_compensation=False,
+                use_wrench_feedforward=use_wrench,
+                wrench_selection_axes_tool=full_selection if use_wrench else None,
+                use_null_space_control=use_null_space,
+                null_space_stiffness=100.0 if use_null_space else None,
+                null_space_damping=10.0 if use_null_space else None,
+            )
+            inputs = ctrl.input()
+            outputs = ctrl.output()
+            inputs.joint_q.assign(joint_q)
+            inputs.joint_qd.assign(joint_qd)
+            inputs.desired_tool_pose_world.assign(desired_tool_pose_world)
+            inputs.desired_twist_world.assign(desired_twist_world)
+            if use_wrench:
+                inputs.desired_wrench_world.assign(desired_wrench_world)
+            if use_null_space:
+                inputs.joint_q_des_null.assign(joint_q_des_null)
+                inputs.joint_qd_des_null.assign(joint_qd_des_null)
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+            return outputs.joint_f.numpy()
+
+        tau_motion = run(use_motion=True, use_wrench=False, use_null_space=False)
+        tau_wrench = run(use_motion=False, use_wrench=True, use_null_space=False)
+        tau_null = run(use_motion=False, use_wrench=False, use_null_space=True)
+        tau_all = run(use_motion=True, use_wrench=True, use_null_space=True)
+
+        np.testing.assert_allclose(tau_all, tau_motion + tau_wrench + tau_null, rtol=1e-4, atol=1e-4)
+
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()
