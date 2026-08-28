@@ -19,7 +19,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 find_package(Warp REQUIRED)
 
-add_library(newton_controllers STATIC src/controller.cpp)
+add_library(newton_controllers STATIC src/controller.cpp src/dynamic_library.cpp)
 
 target_compile_features(newton_controllers PUBLIC cxx_std_20)
 target_include_directories(newton_controllers PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")

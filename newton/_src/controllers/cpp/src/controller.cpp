@@ -3,6 +3,8 @@
 
 #include <newton/controllers/controller.hpp>
 
+#include "dynamic_library.hpp"
+
 #include <apic.h>
 #include <warp.h>
 
@@ -14,12 +16,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
 
 // warp-clang.so's object-loading API (wp_load_obj / wp_lookup) resolves a CPU
 // graph's compiled kernels at replay time, mirroring what Warp's own Python
@@ -34,14 +30,13 @@ uint64_t wp_lookup(const char* dll_name, const char* function_name);
 // by CMake (see FindWarp.cmake), pointing at the uv-installed warp-lang
 // package's runtime and LLVM-JIT libraries.
 //
-// Both are loaded dynamically (dlopen/dlsym, or LoadLibrary/GetProcAddress on
-// Windows) rather than linked at build time. This isn't a Windows workaround:
-// Warp's own C++ consumers do the same on every platform (see
-// github.com/erwincoumans/warp_cpp), because the pip wheel simply does not
-// ship an import library (.lib) at all -- only the .dll/.so/.dylib. A .lib is
-// only needed for implicit (link-time) linking; GetProcAddress/dlsym resolve
-// symbols straight out of the loaded module's own export table, so no .lib is
-// needed for this approach on any platform.
+// Both are loaded dynamically (see dynamic_library.hpp) rather than linked at
+// build time. This isn't a Windows workaround: Warp's own C++ consumers do the
+// same on every platform (see github.com/erwincoumans/warp_cpp), because the
+// pip wheel simply does not ship an import library (.lib) at all -- only the
+// .dll/.so/.dylib. A .lib is only needed for implicit (link-time) linking;
+// GetProcAddress/dlsym resolve symbols straight out of the loaded module's own
+// export table, so no .lib is needed for this approach on any platform.
 #ifndef NEWTON_WARP_LIBRARY
 #error "NEWTON_WARP_LIBRARY must be defined by CMake (see FindWarp.cmake)"
 #endif
@@ -52,97 +47,102 @@ uint64_t wp_lookup(const char* dll_name, const char* function_name);
 namespace newton::controllers {
 namespace {
 
-void* load_library(const char* path) {
-#if defined(_WIN32)
-    return static_cast<void*>(LoadLibraryA(path));
-#else
-    return dlopen(path, RTLD_NOW);
-#endif
-}
-
-void* resolve_symbol(void* handle, const char* name) {
-#if defined(_WIN32)
-    return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), name));
-#else
-    return dlsym(handle, name);
-#endif
-}
-
-// dlerror()/GetLastError() are the only error sources available before any
-// Warp symbol (including wp_get_error_string) has been resolved.
-std::string platform_error_string() {
-#if defined(_WIN32)
-    const DWORD code = GetLastError();
-    char* message = nullptr;
-    FormatMessageA(
-        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code,
-        0, reinterpret_cast<char*>(&message), 0, nullptr
-    );
-    std::string result = message ? message : ("error code " + std::to_string(code));
-    if (message) LocalFree(message);
-    return result;
-#else
-    const char* detail = dlerror();
-    return detail ? detail : "unknown error";
-#endif
-}
+using detail::dynamic_library_last_error;
+using detail::dynamic_library_open;
+using detail::dynamic_library_resolve;
 
 // Every Warp entry point this runtime calls, resolved once and cached for the
-// life of the process. One line per symbol in the X-macro list below adds it
-// to the struct, the loader, and its typedef together.
-#define NEWTON_WARP_RUNTIME_SYMBOLS(X) \
-    X(wp_init) \
-    X(wp_get_error_string) \
-    X(wp_is_cuda_enabled) \
-    X(wp_cuda_device_get_count) \
-    X(wp_cuda_device_get_primary_context) \
-    X(wp_cuda_context_set_current) \
-    X(wp_cuda_context_synchronize) \
-    X(wp_apic_load_graph) \
-    X(wp_apic_destroy_graph) \
-    X(wp_apic_set_param) \
-    X(wp_apic_get_param) \
-    X(wp_apic_launch) \
-    X(wp_apic_cpu_replay_graph) \
-    X(wp_apic_get_num_params) \
-    X(wp_apic_get_param_name) \
-    X(wp_apic_get_param_size) \
-    X(wp_apic_get_num_kernels) \
-    X(wp_apic_get_kernel_key) \
-    X(wp_apic_get_kernel_module_hash) \
-    X(wp_apic_get_kernel_forward_name) \
-    X(wp_apic_get_kernel_backward_name) \
-    X(wp_apic_register_loaded_cpu_kernel)
-
-#define NEWTON_WARP_CLANG_SYMBOLS(X) \
-    X(wp_load_obj) \
-    X(wp_lookup)
-
-#define NEWTON_DECLARE_FN_PTR(name) decltype(&::name) name = nullptr;
+// life of the process. Each member is a function pointer typed by
+// decltype(&::name): the real function's signature, copied from its
+// declaration in warp.h/apic.h, rather than retyped by hand. That means a
+// mismatch (wrong argument type, wrong order) fails to *compile* the call
+// site below, instead of compiling silently and only breaking at runtime --
+// resolve()'s reinterpret_cast trusts whatever type it's given, so a
+// hand-written function pointer type would give it nothing to check against.
+// The leading `::` forces each name to resolve to the free function in
+// warp.h/apic.h, not the struct member of the same name being declared on
+// that same line.
 struct WarpApi {
-    NEWTON_WARP_RUNTIME_SYMBOLS(NEWTON_DECLARE_FN_PTR)
+    decltype(&::wp_init) wp_init = nullptr;
+    decltype(&::wp_get_error_string) wp_get_error_string = nullptr;
+    decltype(&::wp_is_cuda_enabled) wp_is_cuda_enabled = nullptr;
+    decltype(&::wp_cuda_device_get_count) wp_cuda_device_get_count = nullptr;
+    decltype(&::wp_cuda_device_get_primary_context) wp_cuda_device_get_primary_context = nullptr;
+    decltype(&::wp_cuda_context_set_current) wp_cuda_context_set_current = nullptr;
+    decltype(&::wp_cuda_context_synchronize) wp_cuda_context_synchronize = nullptr;
+    decltype(&::wp_apic_load_graph) wp_apic_load_graph = nullptr;
+    decltype(&::wp_apic_destroy_graph) wp_apic_destroy_graph = nullptr;
+    decltype(&::wp_apic_set_param) wp_apic_set_param = nullptr;
+    decltype(&::wp_apic_get_param) wp_apic_get_param = nullptr;
+    decltype(&::wp_apic_launch) wp_apic_launch = nullptr;
+    decltype(&::wp_apic_cpu_replay_graph) wp_apic_cpu_replay_graph = nullptr;
+    decltype(&::wp_apic_get_num_params) wp_apic_get_num_params = nullptr;
+    decltype(&::wp_apic_get_param_name) wp_apic_get_param_name = nullptr;
+    decltype(&::wp_apic_get_param_size) wp_apic_get_param_size = nullptr;
+    decltype(&::wp_apic_get_num_kernels) wp_apic_get_num_kernels = nullptr;
+    decltype(&::wp_apic_get_kernel_key) wp_apic_get_kernel_key = nullptr;
+    decltype(&::wp_apic_get_kernel_module_hash) wp_apic_get_kernel_module_hash = nullptr;
+    decltype(&::wp_apic_get_kernel_forward_name) wp_apic_get_kernel_forward_name = nullptr;
+    decltype(&::wp_apic_get_kernel_backward_name) wp_apic_get_kernel_backward_name = nullptr;
+    decltype(&::wp_apic_register_loaded_cpu_kernel) wp_apic_register_loaded_cpu_kernel = nullptr;
 };
+
 struct WarpClangApi {
-    NEWTON_WARP_CLANG_SYMBOLS(NEWTON_DECLARE_FN_PTR)
+    decltype(&::wp_load_obj) wp_load_obj = nullptr;
+    decltype(&::wp_lookup) wp_lookup = nullptr;
 };
-#undef NEWTON_DECLARE_FN_PTR
+
+// WarpApi/WarpClangApi start as all-nullptr slots (see above); this is what
+// fills one in with the address dynamic_library_open() actually loaded, by
+// looking up its name in the library's export table. Throws immediately
+// rather than leaving a null slot behind, since calling through a null
+// function pointer later would crash with no indication of which symbol was
+// missing.
+template <typename Fn>
+void resolve(void* handle, const char* library, const char* name, Fn& out) {
+    out = reinterpret_cast<Fn>(dynamic_library_resolve(handle, name));
+    if (!out) {
+        throw std::runtime_error(
+            "Failed to resolve symbol '" + std::string(name) + "' in " + library + ": " + dynamic_library_last_error()
+        );
+    }
+}
 
 const WarpApi& warp_api() {
     static const WarpApi api = [] {
-        void* handle = load_library(NEWTON_WARP_LIBRARY);
+        void* handle = dynamic_library_open(NEWTON_WARP_LIBRARY);
         if (!handle) {
             throw std::runtime_error(
-                "Failed to load " NEWTON_WARP_LIBRARY ": " + platform_error_string()
+                "Failed to load " NEWTON_WARP_LIBRARY ": " + dynamic_library_last_error()
             );
         }
         WarpApi result;
-#define NEWTON_RESOLVE(name) \
-        result.name = reinterpret_cast<decltype(&::name)>(resolve_symbol(handle, #name)); \
-        if (!result.name) { \
-            throw std::runtime_error("Failed to resolve symbol '" #name "' in " NEWTON_WARP_LIBRARY); \
-        }
-        NEWTON_WARP_RUNTIME_SYMBOLS(NEWTON_RESOLVE)
-#undef NEWTON_RESOLVE
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_init", result.wp_init);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_get_error_string", result.wp_get_error_string);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_is_cuda_enabled", result.wp_is_cuda_enabled);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_cuda_device_get_count", result.wp_cuda_device_get_count);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_cuda_device_get_primary_context",
+                result.wp_cuda_device_get_primary_context);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_cuda_context_set_current", result.wp_cuda_context_set_current);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_cuda_context_synchronize", result.wp_cuda_context_synchronize);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_load_graph", result.wp_apic_load_graph);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_destroy_graph", result.wp_apic_destroy_graph);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_set_param", result.wp_apic_set_param);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_param", result.wp_apic_get_param);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_launch", result.wp_apic_launch);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_cpu_replay_graph", result.wp_apic_cpu_replay_graph);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_num_params", result.wp_apic_get_num_params);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_param_name", result.wp_apic_get_param_name);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_param_size", result.wp_apic_get_param_size);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_num_kernels", result.wp_apic_get_num_kernels);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_kernel_key", result.wp_apic_get_kernel_key);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_kernel_module_hash", result.wp_apic_get_kernel_module_hash);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_kernel_forward_name",
+                result.wp_apic_get_kernel_forward_name);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_get_kernel_backward_name",
+                result.wp_apic_get_kernel_backward_name);
+        resolve(handle, NEWTON_WARP_LIBRARY, "wp_apic_register_loaded_cpu_kernel",
+                result.wp_apic_register_loaded_cpu_kernel);
         return result;
     }();
     return api;
@@ -152,27 +152,19 @@ const WarpApi& warp_api() {
 // resolve its compiled kernels; a CUDA-captured graph never touches it.
 const WarpClangApi& warp_clang_api() {
     static const WarpClangApi api = [] {
-        void* handle = load_library(NEWTON_WARP_CLANG_LIBRARY);
+        void* handle = dynamic_library_open(NEWTON_WARP_CLANG_LIBRARY);
         if (!handle) {
             throw std::runtime_error(
-                "Failed to load " NEWTON_WARP_CLANG_LIBRARY ": " + platform_error_string()
+                "Failed to load " NEWTON_WARP_CLANG_LIBRARY ": " + dynamic_library_last_error()
             );
         }
         WarpClangApi result;
-#define NEWTON_RESOLVE(name) \
-        result.name = reinterpret_cast<decltype(&::name)>(resolve_symbol(handle, #name)); \
-        if (!result.name) { \
-            throw std::runtime_error("Failed to resolve symbol '" #name "' in " NEWTON_WARP_CLANG_LIBRARY); \
-        }
-        NEWTON_WARP_CLANG_SYMBOLS(NEWTON_RESOLVE)
-#undef NEWTON_RESOLVE
+        resolve(handle, NEWTON_WARP_CLANG_LIBRARY, "wp_load_obj", result.wp_load_obj);
+        resolve(handle, NEWTON_WARP_CLANG_LIBRARY, "wp_lookup", result.wp_lookup);
         return result;
     }();
     return api;
 }
-
-#undef NEWTON_WARP_RUNTIME_SYMBOLS
-#undef NEWTON_WARP_CLANG_SYMBOLS
 
 [[noreturn]] void throw_warp_error(const std::string& what) {
     const char* detail = warp_api().wp_get_error_string();
