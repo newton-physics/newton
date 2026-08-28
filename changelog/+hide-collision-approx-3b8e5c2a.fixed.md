@@ -1,0 +1,1 @@
+Fix `hide_collision_shapes=True` in `ModelBuilder.add_usd()` not hiding viewport-drawn colliders that carry `physics:approximation`. Approximating such a collider splits its authored topology off as a separate visual shape, and that copy was produced regardless of the flag, so it stayed drawn and could not be hidden by the viewer's "Show Collision" toggle either.

@@ -19,10 +19,8 @@ from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_metrics import (
-    _SimulationMetricTracks,
-    collect_simulation_metrics,
-)
+from benchmark_metric_tracks import _SimulationMetricTracks
+from benchmark_metrics import collect_simulation_metrics
 
 
 class _SimulationMetricTracksMuJoCo(_SimulationMetricTracks):
@@ -331,6 +329,9 @@ class FastAllegro(_KpiBenchmark):
     environment = "None"
 
     def setup_cache(self):
+        if os.environ.get("NEWTON_ASV_PR_GATE"):
+            self.num_frames = 200
+            self.samples = 1
         return self._collect_metrics()
 
 

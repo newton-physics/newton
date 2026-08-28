@@ -284,11 +284,19 @@ class SolverKaminoImpl(SolverBase):
         if self._config.use_fk_solver:
             self._solver_fk = ForwardKinematicsSolver(model=self._model, config=self._config.fk)
 
-        # Create the time-integrator instance based on the config
+        # Contacts generated externally are evaluated at the start of a step, so they require
+        # Euler integration. Moreau-Jean is valid only with the internal mid-step detector.
         if self._config.integrator == "euler":
             self._integrator = IntegratorEuler(model=self._model)
         elif self._config.integrator == "moreau":
-            self._integrator = IntegratorMoreauJean(model=self._model)
+            if self._config.use_collision_detector:
+                self._integrator = IntegratorMoreauJean(model=self._model)
+            else:
+                msg.warning(
+                    "Falling back to the 'euler' integrator: 'moreau' requires "
+                    "`use_collision_detector=True` to generate contacts at the mid-point."
+                )
+                self._integrator = IntegratorEuler(model=self._model)
         else:
             raise ValueError(
                 f"Unsupported integrator type: Expected 'euler' or 'moreau', but got {self._config.integrator}."
@@ -499,6 +507,22 @@ class SolverKaminoImpl(SolverBase):
             )
         if isinstance(config.base_velocity, SolverKamino.ResetConfig.FromBaseU):
             _check_length(config.base_velocity.base_u, "config.base_velocity.base_u", self._model.size.num_worlds)
+
+        # Warn if any world does not have an assigned base body when base attributes are provided.
+        if (
+            not (
+                isinstance(config.base_pose, SolverKamino.ResetConfig.ToDefault)
+                or isinstance(config.base_pose, SolverKamino.ResetConfig.Preserve)
+            )
+            or not (
+                isinstance(config.base_velocity, SolverKamino.ResetConfig.ToDefault)
+                or isinstance(config.base_velocity, SolverKamino.ResetConfig.Preserve)
+            )
+        ) and self._model.info.has_world_without_base_body:
+            msg.warning(
+                "Some worlds have no free-floating base body assigned, possibly due to a non-free articulation root (fixed-base system). "
+                "Base pose/velocity resets will have no effect for those worlds."
+            )
 
         # Run the pre-reset callback if it has been set
         self._run_pre_reset_callback(state_out=state)
@@ -827,7 +851,10 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(self._data.joints.q_j, state_in.q_j)
         wp.copy(self._data.joints.q_j_p, state_in.q_j_p)
         wp.copy(self._data.joints.dq_j, state_in.dq_j)
-        wp.copy(self._data.joints.lambda_j, state_in.lambda_j)
+        wp.copy(self._data.joints.lambda_kin_j, state_in.lambda_kin_j)
+        wp.copy(self._data.joints.lambda_dyn_j, state_in.lambda_dyn_j)
+        wp.copy(self._data.joints.lambda_f_j, state_in.lambda_f_j)
+        wp.copy(self._data.joints.lambda_tau_j, state_in.lambda_tau_j)
         # Alias read-only control inputs
         self._data.joints.tau_j = control_in.tau_j
         self._data.joints.q_j_ref = control_in.q_j_ref
@@ -847,7 +874,10 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(state_out.q_j, self._data.joints.q_j)
         wp.copy(state_out.q_j_p, self._data.joints.q_j_p)
         wp.copy(state_out.dq_j, self._data.joints.dq_j)
-        wp.copy(state_out.lambda_j, self._data.joints.lambda_j)
+        wp.copy(state_out.lambda_kin_j, self._data.joints.lambda_kin_j)
+        wp.copy(state_out.lambda_dyn_j, self._data.joints.lambda_dyn_j)
+        wp.copy(state_out.lambda_f_j, self._data.joints.lambda_f_j)
+        wp.copy(state_out.lambda_tau_j, self._data.joints.lambda_tau_j)
 
     ###
     # Internals - Reset Operations
@@ -1111,7 +1141,7 @@ class SolverKaminoImpl(SolverBase):
         # If a collision detector is provided, use it to generate
         # update the set of active contacts at the current state
         if detector is not None:
-            detector.collide(data=self._data, state=state_in, contacts=contacts)
+            detector.collide(data=self._data, contacts=contacts)
 
         # If a limits container/detector is provided, run joint-limit
         # detection to generate active joint limits at the current state

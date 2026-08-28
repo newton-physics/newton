@@ -697,11 +697,20 @@ class Model:
         def add_deprecated_alias(self, name: str, getter: Callable[[], Any], message: str) -> None:
             """Add a deprecated attribute alias.
 
+            .. deprecated:: 1.6
+                Define an explicit property on a custom namespace instead.
+
             Args:
                 name: Alias name exposed on the namespace.
                 getter: Callable returning the canonical target object.
                 message: Deprecation warning message.
             """
+            warnings.warn(
+                "Model.AttributeNamespace.add_deprecated_alias() is deprecated; "
+                "define an explicit property on a custom namespace instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             if name in self.__dict__ or name in self._deprecated_aliases:
                 raise AttributeError(f"Attribute already exists: {self._name}.{name}")
             self._deprecated_aliases[name] = (getter, message)
@@ -821,9 +830,9 @@ class Model:
         self.shape_material_restitution: wp.array[wp.float32] | None = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
         self.shape_material_mu_torsional: wp.array[wp.float32] | None = None
-        """Shape torsional friction coefficient [dimensionless] (resistance to spinning at contact point), shape [shape_count], float."""
+        """Shape torsional friction coefficient [m] (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_mu_rolling: wp.array[wp.float32] | None = None
-        """Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float."""
+        """Shape rolling friction coefficient [m] (resistance to rolling motion), shape [shape_count], float."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Under the default linear pressure law, contact force scales with
@@ -929,11 +938,19 @@ class Model:
         self._mesh_keep_alive: list[wp.Mesh] = []
         """wp.Mesh objects referenced by :attr:`shape_source_ptr`, kept alive for the model's lifetime."""
 
-        # Mesh edge data (packed array + per-shape slice)
+        # Mesh edge data (packed arrays + per-shape slice)
         self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
+        self.mesh_edge_centers: wp.array[wp.vec4] | None = None
+        """Packed shape-scaled collision-edge centers and radii, shape [total_edge_count, 4] [m]."""
+        self.mesh_edge_halves: wp.array[wp.vec4] | None = None
+        """Packed collision-edge half-vectors and corner ownership, shape [total_edge_count, 4].
+
+        Components ``xyz`` are shape-scaled half-vectors [m]. Component ``w``
+        is a unitless internal endpoint-ownership code.
+        """
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
-        """Per-shape (start, count) into mesh_edge_indices, shape [shape_count]. (-1,0) if no edges."""
+        """Per-shape (start, count) into mesh edge arrays, shape [shape_count]. (-1,0) if no edges."""
         self._shape_mesh_properties: wp.array[wp.int32] | None = None
         """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
 
@@ -948,6 +965,8 @@ class Model:
         """Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF."""
 
         # Texture SDF storage
+        self._sdf_texture_paired_samples: bool = True
+        """Whether every texture SDF stores adjacent X samples together."""
         self._texture_sdf_data = None
         """Compact array of TextureSDFData structs, shape [num_sdfs]."""
         self._texture_sdf_coarse_textures: list = []
@@ -1103,7 +1122,7 @@ class Model:
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
         self.joint_type: wp.array[wp.int32] | None = None
         """Joint type, shape [joint_count], int."""
-        self._has_cable_joints: bool = False
+        self._has_rod_joints: bool = False
         self.joint_articulation: wp.array[wp.int32] | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
         self.joint_parent: wp.array[wp.int32] | None = None
@@ -1355,6 +1374,12 @@ class Model:
         self.custom_frequency_counts: dict[str, int] = {}
         """Counts for custom frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
 
+        self.custom_frequency_articulation: dict[str, wp.array[Any]] = {}
+        """Per-row articulation owners for articulation-scoped custom frequencies."""
+
+        self.custom_frequency_label_attributes: dict[str, str] = {}
+        """Attribute keys containing labels for custom-frequency rows."""
+
         self._requested_state_attributes: set[str] = set()
         self._collision_pipeline: CollisionPipeline | None = None
         # cached collision pipeline
@@ -1596,6 +1621,7 @@ class Model:
                 included in the BVH if any of its flags are set in the mask.
         """
         from ..geometry.bvh import (  # noqa: PLC0415
+            SHAPE_BOUNDS_BLOCK_DIM,
             compute_bvh_group_roots,
             compute_enabled_shapes,
             compute_shape_bvh_bounds_launch,
@@ -1611,9 +1637,10 @@ class Model:
         world_count_total = self.world_count + 1
 
         self.bvh_shape_bounds = wp.empty((shape_count, 2), dtype=wp.vec3f, ndim=2, device=device)
-        wp.launch(
+        wp.launch_tiled(
             kernel=compute_shape_local_bounds,
             dim=shape_count,
+            block_dim=SHAPE_BOUNDS_BLOCK_DIM,
             inputs=[
                 self.shape_type,
                 self.shape_source_ptr,

@@ -34,6 +34,7 @@ from .kernels import (
     _make_project_dual_convergence_accel_kernel,
     _project_to_feasible_cone,
     _reset_solver_data,
+    _scale_warmstart_forces,
     _update_delassus_proximal_regularization,
     _update_delassus_proximal_regularization_sparse,
     _warmstart_contact_constraints,
@@ -356,6 +357,27 @@ class PADMMSolver:
             case _:
                 raise ValueError(f"Invalid warmstart mode: {self._warmstart}")
 
+        self._scale_warmstart_forces(problem)
+
+    def _scale_warmstart_forces(self, problem: DualProblem):
+        """Scales the warm-started primal and slack force iterates."""
+        x_0 = self._data.state.x_p
+        y_0 = self._data.state.y_hat if self._use_acceleration else self._data.state.y_p
+        wp.launch(
+            kernel=_scale_warmstart_forces,
+            dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+            inputs=[
+                # Inputs:
+                problem.data.dim,
+                problem.data.vio,
+                self._data.config,
+                # Outputs:
+                x_0,
+                y_0,
+            ],
+            device=self.device,
+        )
+
     def solve(self, problem: DualProblem):
         """
         Solves the given dual problem using PADMM.
@@ -663,11 +685,26 @@ class PADMMSolver:
                 model.joints.wid,
                 model.joints.num_dynamic_cts,
                 model.joints.num_kinematic_cts,
-                model.joints.dynamic_cts_offset_joint_cts,
-                model.joints.kinematic_cts_offset_joint_cts,
+                model.joints.num_friction_cts,
+                model.joints.num_effort_cts,
+                model.joints.dofs_offset,
+                model.joints.dynamic_cts_offset,
+                model.joints.kinematic_cts_offset,
+                model.joints.friction_cts_offset,
+                model.joints.effort_cts_offset,
+                model.joints.friction_cts_axis,
+                model.joints.effort_cts_axis,
                 model.joints.dynamic_cts_offset_total_cts,
                 model.joints.kinematic_cts_offset_total_cts,
-                data.joints.lambda_j,
+                model.joints.friction_cts_offset_total_cts,
+                model.joints.effort_cts_offset_total_cts,
+                data.joints.lambda_dyn_j,
+                data.joints.lambda_kin_j,
+                data.joints.lambda_f_j,
+                data.joints.lambda_tau_j,
+                data.joints.dq_j,
+                data.joints.inv_m_a,
+                data.joints.dq_b_a,
                 problem.data.P,
                 # Outputs:
                 x_0,
@@ -1002,24 +1039,29 @@ class PADMMSolver:
         onto the feasible set defined by the constraint cone K.
 
         The kernel is parallelized over the number of worlds and the maximum
-        number of unilateral constraints, i.e. 1D limits and 3D contacts.
+        number of bounded-multiplier, limit, and contact entities.
 
         Args:
             problem: The dual forward dynamics problem to be solved.
         """
-        # Project to the feasible set defined by the cone K := R^{njd} x R_+^{nld} x K_{mu}^{nc}
+        # Project each bounded, limit, and contact entity onto its feasible set.
         wp.launch(
             kernel=_project_to_feasible_cone,
-            dim=(self._size.num_worlds, self._size.max_of_max_unilaterals),
+            dim=(self._size.num_worlds, self._size.max_of_max_inequalities),
             inputs=[
                 # Inputs:
+                problem.data.nbc,
                 problem.data.nl,
                 problem.data.nc,
+                problem.data.bcio,
                 problem.data.cio,
+                problem.data.bcgo,
                 problem.data.lcgo,
                 problem.data.ccgo,
                 problem.data.vio,
                 problem.data.mu,
+                problem.data.bound_lower,
+                problem.data.bound_upper,
                 self._data.status,
                 # Outputs:
                 self._data.state.y,
@@ -1030,26 +1072,31 @@ class PADMMSolver:
     def _update_complementarity_residuals(self, problem: DualProblem):
         """
         Launches a kernel to compute the complementarity residuals from the current state variables.
-        The kernel is parallelized over the number of worlds and the maximum number of unilateral constraints.
+        The kernel is parallelized over the number of worlds and the maximum number of inequality constraints.
 
         Args:
             problem: The dual forward dynamics problem to be solved.
         """
-        # Compute complementarity residual from the current state
+        # Compute complementarity residual from the current state.
         wp.launch(
             kernel=_compute_complementarity_residuals,
-            dim=(self._size.num_worlds, self._size.max_of_max_unilaterals),
+            dim=(self._size.num_worlds, self._size.max_of_max_inequalities),
             inputs=[
                 # Inputs:
+                problem.data.nbc,
                 problem.data.nl,
                 problem.data.nc,
                 problem.data.vio,
-                problem.data.uio,
+                problem.data.bcio,
+                problem.data.iio,
+                problem.data.bcgo,
                 problem.data.lcgo,
                 problem.data.ccgo,
                 self._data.status,
                 self._data.state.x,
                 self._data.state.z,
+                problem.data.bound_lower,
+                problem.data.bound_upper,
                 # Outputs:
                 self._data.residuals.r_compl,
             ],
@@ -1095,7 +1142,7 @@ class PADMMSolver:
             device=self.device,
         )
 
-        # Compute complementarity residual from the current state
+        # Compute complementarity residual from the current state.
         self._update_complementarity_residuals(problem)
 
     def _update_projection_dual_convergence_accel(self, problem: DualProblem):
@@ -1109,14 +1156,18 @@ class PADMMSolver:
             inputs=[
                 # Inputs:
                 problem.data.dim,
+                problem.data.nbc,
                 problem.data.nl,
                 problem.data.nc,
+                problem.data.bcio,
                 problem.data.cio,
+                problem.data.bcgo,
                 problem.data.lcgo,
                 problem.data.ccgo,
                 problem.data.vio,
-                problem.data.uio,
                 problem.data.mu,
+                problem.data.bound_lower,
+                problem.data.bound_upper,
                 problem.data.P,
                 self._data.config,
                 self._data.penalty,
@@ -1163,15 +1214,16 @@ class PADMMSolver:
             kernel=_make_compute_infnorm_residuals_kernel(
                 tile_size,
                 self._size.max_of_max_total_cts,
-                self._size.max_of_max_limits + 3 * self._size.max_of_max_contacts,
+                self._size.max_of_max_inequalities,
             ),
             dim=self._size.num_worlds,
             block_dim=block_dim,
             inputs=[
                 # Inputs:
+                problem.data.nbc,
                 problem.data.nl,
                 problem.data.nc,
-                problem.data.uio,
+                problem.data.iio,
                 problem.data.dim,
                 problem.data.vio,
                 self._data.config,
@@ -1211,7 +1263,7 @@ class PADMMSolver:
             problem.delassus.gemv(
                 x=self._data.state.y,
                 y=self._data.info.v_plus,
-                world_mask=wp.ones((problem.data.num_worlds,), dtype=wp.int32, device=self.device),
+                world_mask=wp.ones((problem.data.num_worlds,), dtype=wp.bool, device=self.device),
                 alpha=1.0,
                 beta=1.0,
             )
@@ -1221,9 +1273,12 @@ class PADMMSolver:
                 dim=self._size.num_worlds,
                 inputs=[
                     # Inputs:
+                    problem.data.nbc,
                     problem.data.nl,
                     problem.data.nc,
+                    problem.data.bcio,
                     problem.data.cio,
+                    problem.data.bcgo,
                     problem.data.lcgo,
                     problem.data.ccgo,
                     problem.data.dim,
@@ -1231,6 +1286,8 @@ class PADMMSolver:
                     problem.data.mu,
                     problem.data.v_f,
                     problem.data.P,
+                    problem.data.bound_lower,
+                    problem.data.bound_upper,
                     self._data.state.s,
                     self._data.state.x,
                     self._data.state.x_p,
@@ -1279,9 +1336,12 @@ class PADMMSolver:
                 dim=self._size.num_worlds,
                 inputs=[
                     # Inputs:
+                    problem.data.nbc,
                     problem.data.nl,
                     problem.data.nc,
+                    problem.data.bcio,
                     problem.data.cio,
+                    problem.data.bcgo,
                     problem.data.lcgo,
                     problem.data.ccgo,
                     problem.data.dim,
@@ -1291,6 +1351,8 @@ class PADMMSolver:
                     problem.data.v_f,
                     problem.data.D,
                     problem.data.P,
+                    problem.data.bound_lower,
+                    problem.data.bound_upper,
                     self._data.state.sigma,
                     self._data.state.s,
                     self._data.state.x,

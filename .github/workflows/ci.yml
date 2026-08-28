@@ -15,7 +15,7 @@ on:
       - release-*
 
 jobs:
-  minimal-import-test:
+  python-compatibility-test:
     if: github.event_name != 'push' || github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
     steps:
@@ -41,19 +41,19 @@ jobs:
           version: "0.11.26"
       - name: Test CI tooling
         run: uv run --no-project -m unittest discover -s scripts/ci/tests
-      - name: Test minimal import (Python 3.10)
-        run: uv run --python 3.10 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
-      - name: Test minimal import (Python 3.11)
-        run: uv run --python 3.11 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
-      - name: Test minimal import (Python 3.12)
-        run: uv run --python 3.12 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
-      - name: Test minimal import (Python 3.13)
-        run: uv run --python 3.13 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
-      - name: Test minimal import (Python 3.14)
-        run: uv run --python 3.14 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+      - name: Python compatibility (Python 3.10)
+        run: uv run --python 3.10 python -m unittest newton.tests.test_python_compatibility
+      - name: Python compatibility (Python 3.11)
+        run: uv run --python 3.11 python -m unittest newton.tests.test_python_compatibility
+      - name: Python compatibility (Python 3.12)
+        run: uv run --python 3.12 python -m unittest newton.tests.test_python_compatibility
+      - name: Python compatibility (Python 3.13)
+        run: uv run --python 3.13 python -m unittest newton.tests.test_python_compatibility
+      - name: Python compatibility (Python 3.14)
+        run: uv run --python 3.14 python -m unittest newton.tests.test_python_compatibility
 
   dependency-install-test:
-    needs: minimal-import-test
+    needs: python-compatibility-test
     strategy:
       fail-fast: false
       matrix:
@@ -149,10 +149,19 @@ jobs:
           --junit-report-xml rspec.xml
           --coverage
           --coverage-xml coverage.xml
+      - name: Run ASV harness unit tests
+        run: >
+          uv run --no-sync -m newton.tests
+          --strict-warnings
+          --no-cache-clear
+          --start-directory asv/tests
+          --junit-report-xml asv-rspec.xml
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
-          paths: "rspec.xml"
+          paths: |
+            rspec.xml
+            asv-rspec.xml
           show: "fail"
         if: always()
       - name: Upload test results artifact
@@ -160,7 +169,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: test-results-${{ matrix.os }}
-          path: rspec.xml
+          path: |
+            rspec.xml
+            asv-rspec.xml
           retention-days: 1
           overwrite: true
       - name: Upload coverage artifact
@@ -217,6 +228,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github
+            asv/tests
             newton
       - name: Download test results artifact
         id: download-test-results
@@ -235,7 +247,7 @@ jobs:
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
         with:
           disable_search: true
-          files: ./rspec.xml
+          files: ./rspec.xml,./asv-rspec.xml
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload coverage reports to Codecov

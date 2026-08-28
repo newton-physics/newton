@@ -7,7 +7,7 @@
 def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, density=None, collision=True):
     """Author a GeomBasisCurves marked as a curve deformable (cable).
 
-    Binds a minimal canonical curve-deformable material carrying ``thickness`` (and optional
+    Binds a minimal canonical curve-deformable material carrying ``curvesThickness`` (and optional
     ``density``) so the importer does not warn about an unauthored cable thickness. Pass
     ``thickness=None`` to leave the cable without a bound material, e.g. to exercise the
     default-radius fallback or a test's own material binding. ``collision`` authors an
@@ -27,7 +27,7 @@ def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, den
     if collision:
         curves.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
     if thickness is not None:
-        mat_attrs = {"thickness": thickness}
+        mat_attrs = {"curvesThickness": thickness}
         if density is not None:
             mat_attrs["density"] = density
         _bind_deformable_material(stage, curves.GetPrim(), f"{path}Mat", **mat_attrs)
@@ -59,6 +59,17 @@ def _bind_deformable_material(stage, prim, mat_path, *, namespace="physics", **a
     binding = UsdShade.MaterialBindingAPI.Apply(prim)
     binding.Bind(mat, materialPurpose="physics")
     return mat
+
+
+def _author_newton_curve_damping(material, **attrs):
+    """Apply the Newton curve-material API and author its damping attributes."""
+    from pxr import Sdf
+
+    prim = material.GetPrim()
+    prim.AddAppliedSchema("NewtonCurvesDeformableMaterialAPI")
+    for name, value in attrs.items():
+        prim.CreateAttribute(f"newton:{name}", Sdf.ValueTypeNames.Float).Set(value)
+    return material
 
 
 def _add_physics_attachment(

@@ -14,9 +14,8 @@ wp.config.log_level = wp.LOG_WARNING
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
+from benchmark_metric_tracks import _SimulationMetricTracks, _SimulationMetricTracksUnparameterized
 from benchmark_metrics import (
-    _SimulationMetricTracks,
-    _SimulationMetricTracksUnparameterized,
     collect_simulation_metrics,
 )
 
@@ -121,6 +120,7 @@ class _KpiBenchmark(_SimulationMetricTracks):
 
 
 class FastDRLegs(_FastBenchmark):
+    version = "2"  # effort limits now enforced for implicit PD (#3990) -> new ASV series
     num_frames = 25
     robot = "dr_legs"
     repeat = 2
@@ -128,6 +128,7 @@ class FastDRLegs(_FastBenchmark):
 
 
 class FastMetricsDRLegs(_SimulationMetricTracksUnparameterized):
+    version = "2"  # effort limits now enforced for implicit PD (#3990) -> new ASV series
     num_frames = 25
     robot = "dr_legs"
     samples = 2
@@ -144,6 +145,7 @@ class FastMetricsDRLegs(_SimulationMetricTracksUnparameterized):
 
 
 class KpiDRLegs(_KpiBenchmark):
+    version = "2"  # effort limits now enforced for implicit PD (#3990) -> new ASV series
     params: ClassVar[list[list[int]]] = [[4096]]
     num_frames = 25
     robot = "dr_legs"
@@ -158,10 +160,11 @@ class KpiDRLegs(_KpiBenchmark):
 class NotifyDRLegs:
     """Benchmark Kamino model notifications for 2048 DR Legs worlds."""
 
-    number = 10
-    repeat = 7
+    number = 1
+    repeat = 5
     rounds = 1
-    timeout = 3600
+    warmup_time = 0
+    timeout = 600
     world_count = 2048
 
     def setup(self):

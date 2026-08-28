@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import subprocess
 from typing import Any
+from urllib.parse import urlencode
 
 import numpy as np
 import warp as wp
@@ -193,6 +194,8 @@ class ViewerRerun(ViewerBase):
             if serve_web_viewer:
                 self._grpc_server_uri = rr.serve_grpc(grpc_port=grpc_port, default_blueprint=blueprint)
                 rr.serve_web_viewer(connect_to=self._grpc_server_uri, web_port=web_port)
+                query = urlencode({"url": self._grpc_server_uri})
+                print(f"Rerun web viewer running at: http://127.0.0.1:{web_port}/?{query}", flush=True)
             else:
                 rr.spawn(port=grpc_port)
 
@@ -255,6 +258,7 @@ class ViewerRerun(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
     ):
         """
         Log a mesh to rerun for visualization.
@@ -274,8 +278,11 @@ class ViewerRerun(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
         """
         name = self._qualify(name)
+        previous_mesh = self._meshes.get(name)
+        was_visible = isinstance(previous_mesh, dict) and previous_mesh.get("visible", False)
 
         if not hidden:
             assert isinstance(points, wp.array)
@@ -331,9 +338,12 @@ class ViewerRerun(ViewerBase):
             "texture_image": texture_image,
             "texture_buffer": texture_buffer,
             "texture_format": texture_format,
+            "visible": not hidden,
         }
 
         if hidden:
+            if was_visible:
+                rr.log(name, rr.Clear(recursive=False))
             return
 
         mesh_kwargs = {

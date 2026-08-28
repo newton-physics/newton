@@ -1,0 +1,1 @@
+Add opt-in speculative rigid contacts through `CollisionPipeline.SpeculativeContactConfig`, the `speculative_config` constructor argument, and per-call `CollisionPipeline.collide(..., dt=...)` horizon overrides, with continuous swept-AABB filtering and predictive contact reduction, and reject unsupported hydroelastic combinations.
