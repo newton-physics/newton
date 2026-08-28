@@ -99,6 +99,39 @@ def _validate_color(value: Any, value_name: str) -> tuple[float, float, float]:
     return (float(color[0]), float(color[1]), float(color[2]))
 
 
+def _broadcast_triangle_colors(value: Any, triangle_count: int, default_color: Vec3) -> np.ndarray:
+    """Return one validated RGB display color per triangle."""
+    colors = np.asarray(default_color if value is None else value, dtype=np.float32)
+    if colors.shape == (3,):
+        colors = np.broadcast_to(colors, (triangle_count, 3))
+    elif colors.shape != (triangle_count, 3):
+        raise ValueError(
+            f"Triangle color arrays must contain one RGB value or exactly {triangle_count} RGB values, "
+            f"got shape {colors.shape}."
+        )
+    invalid_color = (~np.isfinite(colors)) | (colors < 0.0) | (colors > 1.0)
+    if np.any(invalid_color):
+        invalid_row = colors[np.flatnonzero(np.any(invalid_color, axis=1))[0]]
+        raise ValueError(f"Triangle color must contain finite values in [0, 1], got {invalid_row.tolist()!r}.")
+    return colors
+
+
+def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray:
+    """Return one validated display opacity per triangle."""
+    opacities = np.asarray(1.0 if value is None else value, dtype=np.float32).reshape(-1)
+    if opacities.size == 1:
+        opacities = np.full(triangle_count, float(opacities[0]), dtype=np.float32)
+    elif opacities.size != triangle_count:
+        raise ValueError(
+            f"Triangle opacity arrays must contain one value or exactly {triangle_count} values, got {opacities.size}."
+        )
+    invalid_opacity = (~np.isfinite(opacities)) | (opacities < 0.0) | (opacities > 1.0)
+    if np.any(invalid_opacity):
+        invalid_value = float(opacities[np.flatnonzero(invalid_opacity)[0]])
+        raise ValueError(f"Triangle opacity must contain finite values in [0, 1], got {invalid_value!r}.")
+    return opacities
+
+
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 _SCALAR_GRAVITY_DEPRECATION_MSG = (
@@ -9118,31 +9151,8 @@ class ModelBuilder:
 
         inds = np.concatenate((i_[valid_inds, None], j_[valid_inds, None], k_[valid_inds, None]), axis=-1)
 
-        color_arr = np.asarray(self._DEFAULT_TRI_COLOR if color is None else color, dtype=np.float32)
-        if color_arr.shape == (3,):
-            color_arr = np.broadcast_to(color_arr, (len(areas), 3))
-        elif color_arr.shape != (len(areas), 3):
-            raise ValueError(
-                f"Triangle color arrays must contain one RGB value or exactly {len(areas)} RGB values, "
-                f"got shape {color_arr.shape}."
-            )
-        invalid_color = (~np.isfinite(color_arr)) | (color_arr < 0.0) | (color_arr > 1.0)
-        if np.any(invalid_color):
-            invalid_row = color_arr[np.flatnonzero(np.any(invalid_color, axis=1))[0]]
-            raise ValueError(f"Triangle color must contain finite values in [0, 1], got {invalid_row.tolist()!r}.")
-
-        opacity_arr = np.asarray(1.0 if opacity is None else opacity, dtype=np.float32).reshape(-1)
-        if opacity_arr.size == 1:
-            opacity_arr = np.full(len(areas), float(opacity_arr[0]), dtype=np.float32)
-        elif opacity_arr.size != len(areas):
-            raise ValueError(
-                f"Triangle opacity arrays must contain one value or exactly {len(areas)} values, "
-                f"got {opacity_arr.size}."
-            )
-        invalid_opacity = (~np.isfinite(opacity_arr)) | (opacity_arr < 0.0) | (opacity_arr > 1.0)
-        if np.any(invalid_opacity):
-            invalid_value = float(opacity_arr[np.flatnonzero(invalid_opacity)[0]])
-            raise ValueError(f"Triangle opacity must contain finite values in [0, 1], got {invalid_value!r}.")
+        color_arr = _broadcast_triangle_colors(color, len(areas), self._DEFAULT_TRI_COLOR)
+        opacity_arr = _broadcast_triangle_opacities(opacity, len(areas))
 
         tri_start = len(self.tri_indices)
         self.tri_indices.extend(inds.tolist())
@@ -9499,8 +9509,8 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
-        color: Vec3 | None = None,
-        opacity: float | None = None,
+        color: Vec3 | list[Vec3] | np.ndarray | None = None,
+        opacity: float | list[float] | np.ndarray | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
@@ -9528,8 +9538,12 @@ class ModelBuilder:
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify
                 this cloth.
-            color: Display color in [0, 1] for the cloth surface.
-            opacity: Display opacity in [0, 1] for the cloth surface.
+            color: Display color in [0, 1] for the cloth surface. If a single
+                RGB value, applied to all triangles. If array-like, RGB values
+                are applied per triangle.
+            opacity: Display opacity in [0, 1] for the cloth surface. If scalar,
+                applied to all triangles. If array-like, values are applied per
+                triangle.
         """
 
         def grid_index(x, y, dim_x):
@@ -9626,8 +9640,8 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
-        color: Vec3 | None = None,
-        opacity: float | None = None,
+        color: Vec3 | list[Vec3] | np.ndarray | None = None,
+        opacity: float | list[float] | np.ndarray | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
@@ -9648,8 +9662,12 @@ class ModelBuilder:
             indices: A list of triangle indices, 3 entries per-face
             density: The density per-area of the mesh
             particle_radius: The particle_radius which controls particle based collisions.
-            color: Display color in [0, 1] for the cloth surface.
-            opacity: Display opacity in [0, 1] for the cloth surface.
+            color: Display color in [0, 1] for the cloth surface. If a single
+                RGB value, applied to all triangles. If array-like, RGB values
+                are applied per triangle.
+            opacity: Display opacity in [0, 1] for the cloth surface. If scalar,
+                applied to all triangles. If array-like, values are applied per
+                triangle.
             custom_attributes_particles: Dictionary of custom attribute names to values for the particles.
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
@@ -9894,8 +9912,8 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
-        color: Vec3 | None = None,
-        opacity: float | None = None,
+        color: Vec3 | list[Vec3] | np.ndarray | None = None,
+        opacity: float | list[float] | np.ndarray | None = None,
         label: str | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
@@ -9932,8 +9950,12 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
-            color: Display color in [0, 1] for the generated surface mesh.
+            color: Display color in [0, 1] for the generated surface mesh. If a
+                single RGB value, applied to all triangles. If array-like, RGB
+                values are applied per triangle.
             opacity: Display opacity in [0, 1] for the generated surface mesh.
+                If scalar, applied to all triangles. If array-like, values are
+                applied per triangle.
             label: Optional name reserved for forwarding to mesh-quality
                 diagnostics. Currently unused by ``add_soft_grid`` (the
                 generated grid is degenerate-free by construction); kept
@@ -10022,7 +10044,9 @@ class ModelBuilder:
 
         # add surface triangles
         start_tri = len(self.tri_indices)
-        for _k, v in faces.items():
+        surface_colors = _broadcast_triangle_colors(color, len(faces), self._DEFAULT_TRI_COLOR)
+        surface_opacities = _broadcast_triangle_opacities(opacity, len(faces))
+        for face_index, v in enumerate(faces.values()):
             self.add_triangle(
                 v[0],
                 v[1],
@@ -10032,8 +10056,8 @@ class ModelBuilder:
                 tri_kd=tri_kd,
                 tri_drag=tri_drag,
                 tri_lift=tri_lift,
-                color=color,
-                opacity=opacity,
+                color=surface_colors[face_index],
+                opacity=surface_opacities[face_index],
             )
         end_tri = len(self.tri_indices)
 
@@ -10066,8 +10090,8 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
-        color: Vec3 | None = None,
-        opacity: float | None = None,
+        color: Vec3 | list[Vec3] | np.ndarray | None = None,
+        opacity: float | list[float] | np.ndarray | None = None,
         validate_mesh: bool = False,
         label: str | None = None,
     ) -> None:
@@ -10108,8 +10132,12 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
-            color: Display color in [0, 1] for the generated surface mesh.
+            color: Display color in [0, 1] for the generated surface mesh. If a
+                single RGB value, applied to all triangles. If array-like, RGB
+                values are applied per triangle.
             opacity: Display opacity in [0, 1] for the generated surface mesh.
+                If scalar, applied to all triangles. If array-like, values are
+                applied per triangle.
             validate_mesh: If True, check for inverted or small-volume
                 tetrahedra, sliver tetrahedra, and non-manifold faces, and
                 emit warnings. See :func:`newton.utils.validate_tet_mesh`.
@@ -10245,6 +10273,8 @@ class ModelBuilder:
         # add surface triangles
         start_tri = len(self.tri_indices)
         surf = surface_tri_indices.reshape(-1, 3)
+        surface_colors = _broadcast_triangle_colors(color, len(surf), self._DEFAULT_TRI_COLOR)
+        surface_opacities = _broadcast_triangle_opacities(opacity, len(surf))
         for ti, tri in enumerate(surf):
             tr_custom = {k: arr[ti] for k, arr in tri_custom.items()} if tri_custom else None
             self.add_triangle(
@@ -10256,8 +10286,8 @@ class ModelBuilder:
                 tri_kd=tri_kd,
                 tri_drag=tri_drag,
                 tri_lift=tri_lift,
-                color=color,
-                opacity=opacity,
+                color=surface_colors[ti],
+                opacity=surface_opacities[ti],
                 custom_attributes=tr_custom,
             )
         end_tri = len(self.tri_indices)

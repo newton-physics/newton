@@ -237,12 +237,25 @@ class Example:
         self.num_cloth_verts = len(self.cloth_verts)
         self.total_rows = self.spiral_rows + self.ext_rows
 
+        # Give both triangles in each quad the same checker color so the
+        # material pattern makes the rolling motion easier to follow.
+        checker_indices = np.indices((self.total_rows - 1, self.nv - 1)).sum(axis=0) % 2
+        checker_palette = np.array(((0.08, 0.24, 0.65), (0.9, 0.9, 0.9)), dtype=np.float32)
+        self.cloth_colors = np.repeat(checker_palette[checker_indices.reshape(-1)], 2, axis=0)
+
         # Generate cylinder meshes
         cylinder_segments = 128
         self.cyl1_verts, self.cyl1_faces = cylinder_mesh(radius=self.cyl1_radius, segments=cylinder_segments)
         self.cyl2_verts, self.cyl2_faces = cylinder_mesh(radius=self.cyl2_radius, segments=cylinder_segments)
         self.num_cyl1_verts = len(self.cyl1_verts)
         self.num_cyl2_verts = len(self.cyl2_verts)
+
+        # Alternate colors around the circumference in broad axial stripes.
+        # Each angular segment contributes two triangles, which share a color.
+        stripe_width = 8
+        stripe_indices = (np.arange(cylinder_segments) // stripe_width) % 2
+        stripe_palette = np.array(((0.55, 0.23, 0.07), (0.9, 0.48, 0.16)), dtype=np.float32)
+        self.roller_colors = np.repeat(stripe_palette[stripe_indices], 2, axis=0)
 
         # Add cloth mesh
         builder.add_cloth_mesh(
@@ -259,6 +272,7 @@ class Example:
             edge_ke=1e2,
             edge_kd=1.0e1,
             particle_radius=0.5,
+            color=self.cloth_colors,
         )
 
         # Add first cylinder
@@ -275,6 +289,7 @@ class Example:
             tri_kd=1.0e0,
             edge_ke=1e2,
             edge_kd=0.0,
+            color=self.roller_colors,
         )
 
         # Add second cylinder
@@ -291,6 +306,7 @@ class Example:
             tri_kd=1.0e0,
             edge_ke=1,
             edge_kd=0.01,
+            color=self.roller_colors,
         )
 
         # Add ground plane

@@ -296,6 +296,57 @@ class TestShapeColors(unittest.TestCase):
         )
         np.testing.assert_allclose(model.tri_opacity.numpy(), [0.4, 0.4], atol=1e-6, rtol=1e-6)
 
+    def test_cloth_grid_stores_per_triangle_surface_appearance(self):
+        """Store one color and opacity value per generated cloth triangle."""
+        colors = [(0.1, 0.2, 0.3), (0.7, 0.8, 0.9)]
+        opacities = [0.25, 0.75]
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+            color=colors,
+            opacity=opacities,
+        )
+
+        model = builder.finalize(device=self.device)
+
+        np.testing.assert_allclose(model.tri_color.numpy(), colors, atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(model.tri_opacity.numpy(), opacities, atol=1e-6, rtol=1e-6)
+
+    def test_soft_grid_stores_per_triangle_surface_appearance(self):
+        """Store one color and opacity value per generated soft-grid face."""
+        colors = np.linspace(0.1, 0.9, 36, dtype=np.float32).reshape(12, 3)
+        opacities = np.linspace(0.2, 0.8, 12, dtype=np.float32)
+        builder = newton.ModelBuilder()
+        builder.add_soft_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            cell_z=1.0,
+            density=1.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+            color=colors,
+            opacity=opacities,
+        )
+
+        model = builder.finalize(device=self.device)
+
+        np.testing.assert_allclose(model.tri_color.numpy(), colors, atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(model.tri_opacity.numpy(), opacities, atol=1e-6, rtol=1e-6)
+
     def test_soft_mesh_stores_explicit_surface_appearance(self):
         """Store soft-mesh color and opacity on every generated surface triangle."""
         builder = newton.ModelBuilder()
@@ -325,6 +376,29 @@ class TestShapeColors(unittest.TestCase):
             atol=1e-6,
             rtol=1e-6,
         )
+
+    def test_soft_mesh_stores_per_triangle_surface_appearance(self):
+        """Store one color and opacity value per extracted soft-mesh face."""
+        colors = np.array(
+            ((0.1, 0.2, 0.3), (0.2, 0.3, 0.4), (0.3, 0.4, 0.5), (0.4, 0.5, 0.6)),
+            dtype=np.float32,
+        )
+        opacities = np.array((0.2, 0.4, 0.6, 0.8), dtype=np.float32)
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            mesh=self._make_soft_tet_mesh(),
+            color=colors,
+            opacity=opacities,
+        )
+
+        model = builder.finalize(device=self.device)
+
+        np.testing.assert_allclose(model.tri_color.numpy(), colors, atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(model.tri_opacity.numpy(), opacities, atol=1e-6, rtol=1e-6)
 
     def test_soft_mesh_defaults_to_opaque_surface_appearance(self):
         """Use the canonical color and opaque alpha for an unstyled soft mesh."""
