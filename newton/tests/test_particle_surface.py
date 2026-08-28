@@ -377,6 +377,27 @@ def test_sparse_grid_handles_distant_particles(test, device):
     test.assertTrue(np.all(_sample_sparse_field(surface, [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]]) > 0.0))
 
 
+def test_fixed_capacity_single_thread_update(test, device):
+    """Complete a fixed-capacity field update with one grid-stride thread."""
+    positions = wp.zeros(1, dtype=wp.vec3, device=device)
+    radii = wp.array([0.1], dtype=wp.float32, device=device)
+    surface = ParticleSurface(
+        voxel_size=0.25,
+        kernel_radius=0.5,
+        smooth_lambda=0.0,
+        padding=0,
+        max_grid_cells=512,
+        device=device,
+    )
+    surface._workspace.launch_threads = 1
+
+    sparse_field = surface.update_field(positions, radii)
+
+    test.assertIsInstance(sparse_field, ParticleSurface.SparseField)
+    np.testing.assert_array_equal(sparse_field.per_world_status.numpy(), [0])
+    test.assertGreater(float(_sample_sparse_field(surface, [[0.0, 0.0, 0.0]])[0]), 0.0)
+
+
 def test_empty_particles(test, device):
     """Return an empty result for an empty particle set."""
     positions = wp.empty(0, dtype=wp.vec3, device=device)
@@ -744,6 +765,12 @@ add_function_test(
     TestParticleSurface,
     "test_sparse_grid_handles_distant_particles",
     test_sparse_grid_handles_distant_particles,
+    devices=devices,
+)
+add_function_test(
+    TestParticleSurface,
+    "test_fixed_capacity_single_thread_update",
+    test_fixed_capacity_single_thread_update,
     devices=devices,
 )
 add_function_test(TestParticleSurface, "test_empty_particles", test_empty_particles, devices=devices)
