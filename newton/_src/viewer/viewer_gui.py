@@ -818,7 +818,7 @@ class ViewerGui:
                         log_flag = imgui.SliderFlags_.logarithmic.value
                         base = float(viewer._contact_viz_scale_default) or 1.0
                         _, viewer.contact_viz_scale = imgui.slider_float(
-                            "Contact Scale",
+                            "Contact Relative Scale",
                             float(viewer.contact_viz_scale),
                             base * 0.01,
                             base * 100.0,
