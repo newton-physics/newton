@@ -2077,6 +2077,40 @@ def _build_heterogeneous_fleet_with_tool_sites(device):
     return model, robot_0_body, robot_1_body_3
 
 
+def _build_single_link_pendulum_with_tool_site(device):
+    """One revolute joint about Y, with gravity on, for a hand-derivable gravity-compensation check.
+
+    The joint rotates the body (and its COM) in the world XZ plane, so
+    gravity (along -Z) produces a nonzero torque about the joint axis at
+    every angle except the vertical (COM directly below the joint).
+
+    Returns:
+        Tuple of (model, state, tool_body, mass, com_distance_from_joint).
+    """
+    mass = 2.0
+    com_distance_from_joint = 0.5
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
+
+    body = builder.add_link(mass=mass)
+    # density=0 so the shape contributes no mass of its own -- the body's
+    # mass stays exactly the explicit `mass` above.
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+    builder.body_com[body] = wp.vec3(com_distance_from_joint, 0.0, 0.0)
+    joint = builder.add_joint_revolute(
+        parent=-1,
+        child=body,
+        axis=newton.Axis.Y,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([joint], label="pendulum")
+    builder.add_site(body, xform=wp.transform_identity(), label="tool_site")
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    return model, state, body, mass, com_distance_from_joint
+
+
 class TestControllerOperationalSpace(unittest.TestCase):
     def test_resolves_single_robot_selection(self):
         """A single-articulation model resolves controlled DOFs, tool body, and link index correctly."""
@@ -2303,6 +2337,85 @@ class TestControllerOperationalSpace(unittest.TestCase):
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
 
         np.testing.assert_allclose(outputs.joint_f.numpy(), np.zeros(2, dtype=np.float32), atol=1e-4)
+
+    def test_step_gravity_compensation_matches_pendulum_formula(self):
+        """step() gravity feedforward matches a hand-derived single-pendulum formula.
+
+        With the joint at angle theta, the COM is at world position
+        ``(L*cos(theta), 0, -L*sin(theta))`` (rotation about Y), so the
+        gravitational potential energy is ``U(theta) = -m * (0, 0, -g) .
+        com_world(theta) = -m*g*L*sin(theta)``, and the compensating joint
+        torque is ``g(theta) = dU/dtheta = -m*g*L*cos(theta)``.
+
+        Zero motion gains isolate the gravity feedforward term as the only
+        contributor to the output torque.
+        """
+        device = wp.get_device()
+        model, _state, _tool_body, mass, com_distance_from_joint = _build_single_link_pendulum_with_tool_site(device)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=0.0,
+            motion_damping=0.0,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=True,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+
+        theta = 0.4
+        gravitational_acceleration = 9.81
+        inputs.joint_q.assign(np.array([theta], dtype=np.float32))
+        inputs.joint_qd.assign(np.zeros(1, dtype=np.float32))
+        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+
+        # Desired pose is irrelevant here since motion gains are zero, but
+        # every field still has to be a valid transform.
+        inputs.desired_tool_pose_world.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        expected_gravity_torque = -mass * gravitational_acceleration * com_distance_from_joint * np.cos(theta)
+        np.testing.assert_allclose(outputs.joint_f.numpy(), [expected_gravity_torque], rtol=1e-4, atol=1e-4)
+
+    def test_step_controlled_mass_matrix_matches_model_mass_matrix(self):
+        """step() gathers the controlled-DOF mass matrix correctly from the model's own eval_mass_matrix.
+
+        For this fixture every DOF of the single articulation is controlled,
+        in order, so the gathered ``(1, 6, 6)`` block must equal exactly the
+        top-left ``6x6`` submatrix of the model's own mass matrix computed
+        independently via the public :func:`newton.eval_mass_matrix`.
+        """
+        device = wp.get_device()
+        model, state, _tool_body, _transform = _build_six_dof_arm_with_tool_site(device)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            use_inertia_decoupling=True,
+            use_gravity_compensation=False,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+
+        joint_q = np.array([0.3, -0.2, 0.5, 0.1, -0.4, 0.25], dtype=np.float32)
+        inputs.joint_q.assign(joint_q)
+        inputs.joint_qd.assign(np.zeros(6, dtype=np.float32))
+        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_tool_pose_world.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        state.joint_q.assign(joint_q)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        expected_model_mass_matrix = newton.eval_mass_matrix(model, state).numpy()[0, :6, :6]
+
+        np.testing.assert_allclose(
+            ctrl._controlled_mass_matrix.numpy()[0], expected_model_mass_matrix, rtol=1e-4, atol=1e-4
+        )
 
 
 if __name__ == "__main__":
