@@ -4,7 +4,8 @@
 ###########################################################################
 # Example Robot asRoBallet
 #
-# Demonstrates LQR and learned-policy control for a ball-balancing robot.
+# Demonstrates LQR and learned-policy control for the asRoBallet robot
+# (RSS 2026: https://arxiv.org/abs/2604.24916).
 #
 # Hold "i"/"k" to move forward/backward and "j"/"l" to move left/right.
 # Hold "u"/"o" to turn left/right. Nonzero velocity arguments select fixed
@@ -24,7 +25,6 @@ from pathlib import Path
 import numpy as np
 import warp as wp
 from scipy import linalg, signal
-from warp_nn.runtime import OnnxRuntime
 
 import newton
 import newton.examples
@@ -856,6 +856,8 @@ STATION_SWITCH_SETTLE_TIME = 0.2
 
 def load_policy_runtime(policy_path: str, device):
     """Load an exported policy through Warp-NN."""
+    from warp_nn.runtime import OnnxRuntime  # noqa: PLC0415
+
     return OnnxRuntime(policy_path, device=device)
 
 
@@ -1062,13 +1064,11 @@ def _apply_policy_action_kernel(
     action: wp.array2d[float],
     wheel_ctrl_indices: wp.array[int],
     control: wp.array[float],
-    current_action: wp.array2d[float],
     last_action: wp.array2d[float],
 ):
     wheel = wp.tid()
     value = wp.clamp(action[0, wheel], -1.0, 1.0)
-    last_action[0, wheel] = current_action[0, wheel]
-    current_action[0, wheel] = value
+    last_action[0, wheel] = value
     control[wheel_ctrl_indices[wheel]] = value
 
 
@@ -1185,7 +1185,6 @@ def launch_policy_action(
     action: wp.array2d[float],
     wheel_ctrl_indices: wp.array[int],
     control: wp.array[float],
-    current_action: wp.array2d[float],
     last_action: wp.array2d[float],
     device,
 ) -> None:
@@ -1193,7 +1192,7 @@ def launch_policy_action(
     wp.launch(
         _apply_policy_action_kernel,
         dim=ACTION_DIM,
-        inputs=[action, wheel_ctrl_indices, control, current_action, last_action],
+        inputs=[action, wheel_ctrl_indices, control, last_action],
         device=device,
     )
 
@@ -1255,7 +1254,6 @@ class _PolicyController(_AsRoBalletController):
             dtype=wp.float32,
             device=self.device,
         )
-        self.current_action = wp.zeros((1, ACTION_DIM), dtype=wp.float32, device=self.device)
         self.last_action = wp.zeros((1, ACTION_DIM), dtype=wp.float32, device=self.device)
         self.station_reference_position_xy = wp.zeros(1, dtype=wp.vec2, device=self.device)
         self.station_reference_yaw = wp.zeros(1, dtype=wp.float32, device=self.device)
@@ -1367,7 +1365,6 @@ class _PolicyController(_AsRoBalletController):
             action=action,
             wheel_ctrl_indices=self.wheel_ctrl_indices,
             control=self.control.mujoco.ctrl,
-            current_action=self.current_action,
             last_action=self.last_action,
             device=self.device,
         )
