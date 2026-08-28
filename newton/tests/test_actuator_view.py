@@ -9,8 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.actuators as actuator_api
-from newton.actuators import Actuator, ClampingMaxEffort, ControllerPD, Delay
+from newton.actuators import Actuator, ActuatorView, ClampingMaxEffort, ControllerPD, Delay
 from newton.selection import ArticulationView
 
 
@@ -40,8 +39,6 @@ class TestActuatorView(unittest.TestCase):
                 if max_effort is not None
                 else None
             ),
-            control_target_pos_attr="joint_target_q",
-            control_target_vel_attr="joint_target_qd",
         )
 
     def mapping(self) -> wp.array2d[int]:
@@ -62,13 +59,10 @@ class TestActuatorView(unittest.TestCase):
         source, actuator = self.make_articulation_view()
         return ArticulationView(source.model, "robot", include_joints=[]), actuator
 
-    def test_public_actuator_module_exports_view(self):
-        self.assertTrue(hasattr(actuator_api, "ActuatorView"))
-
     def test_get_gathers_requested_actuator(self):
         first = self.make_actuator([10.0, 20.0, 30.0, 40.0])
         second = self.make_actuator([50.0, 60.0, 70.0, 80.0])
-        view = actuator_api.ActuatorView(
+        view = ActuatorView(
             {
                 first: self.mapping(),
                 second: wp.array([[-1, 0, -1], [-1, 2, -1]], dtype=int, device=wp.get_device()),
@@ -81,7 +75,7 @@ class TestActuatorView(unittest.TestCase):
 
     def test_set_scatters_mapped_values(self):
         actuator = self.make_actuator([10.0, 20.0, 30.0, 40.0])
-        view = actuator_api.ActuatorView({actuator: self.mapping()})
+        view = ActuatorView({actuator: self.mapping()})
         values = wp.array([[11.0, 999.0, 21.0], [31.0, 999.0, 41.0]], dtype=wp.float32, device=wp.get_device())
 
         view.set_actuator_parameter(actuator, "controller", "kp", values)
@@ -90,7 +84,7 @@ class TestActuatorView(unittest.TestCase):
 
     def test_set_honors_world_mask(self):
         actuator = self.make_actuator([10.0, 20.0, 30.0, 40.0])
-        view = actuator_api.ActuatorView({actuator: self.mapping()})
+        view = ActuatorView({actuator: self.mapping()})
         values = wp.array([[11.0, 999.0, 21.0], [31.0, 999.0, 41.0]], dtype=wp.float32, device=wp.get_device())
 
         view.set_actuator_parameter(
@@ -109,7 +103,7 @@ class TestActuatorView(unittest.TestCase):
             delay_steps=[1, 2, 1, 2],
             max_effort=[100.0, 200.0, 300.0, 400.0],
         )
-        view = actuator_api.ActuatorView({actuator: self.mapping()})
+        view = ActuatorView({actuator: self.mapping()})
 
         delays = view.get_actuator_parameter(actuator, "delay", "delay_steps")
         efforts = view.get_actuator_parameter(actuator, "clamping.0", "max_effort")
@@ -117,38 +111,21 @@ class TestActuatorView(unittest.TestCase):
         np.testing.assert_array_equal(delays.numpy(), [[1, 0, 2], [1, 0, 2]])
         np.testing.assert_array_equal(efforts.numpy(), [[100.0, 0.0, 200.0], [300.0, 0.0, 400.0]])
 
-    def test_constructor_copies_mapping_dictionary(self):
-        actuator = self.make_actuator([10.0, 20.0, 30.0, 40.0])
-        mappings = {actuator: self.mapping()}
-        view = actuator_api.ActuatorView(mappings)
-        mappings.clear()
-
-        values = view.get_actuator_parameter(actuator, "controller", "kp")
-
-        np.testing.assert_array_equal(values.numpy(), [[10.0, 0.0, 20.0], [30.0, 0.0, 40.0]])
-
-    def test_get_actuator_dof_mapping_returns_view_mapping(self):
+    def test_get_actuator_dof_mapping_survives_source_dictionary_mutation(self):
         actuator = self.make_actuator([10.0, 20.0, 30.0, 40.0])
         mapping = self.mapping()
-        view = actuator_api.ActuatorView({actuator: mapping})
+        mappings = {actuator: mapping}
+        view = ActuatorView(mappings)
+        mappings.clear()
 
         self.assertIs(view.get_actuator_dof_mapping(actuator), mapping)
 
-    def test_from_articulation_view_uses_explicit_actuators(self):
+    def test_from_articulation_view_returns_cached_view(self):
         source, actuator = self.make_articulation_view()
 
-        view = actuator_api.ActuatorView.from_articulation_view(source, [actuator])
+        first = ActuatorView.from_articulation_view(source, [actuator])
 
-        values = view.get_actuator_parameter(actuator, "controller", "kp")
-        np.testing.assert_array_equal(values.numpy(), [[100.0], [100.0]])
-
-    def test_articulation_view_returns_cached_actuator_view(self):
-        source, actuator = self.make_articulation_view()
-
-        first = source.get_actuator_view([actuator])
-        second = source.get_actuator_view([actuator])
-
-        self.assertIs(first, second)
+        self.assertIs(first, source.get_actuator_view([actuator]))
         values = first.get_actuator_parameter(actuator, "controller", "kp")
         np.testing.assert_array_equal(values.numpy(), [[100.0], [100.0]])
 
@@ -163,13 +140,7 @@ class TestActuatorView(unittest.TestCase):
     def test_legacy_set_zero_dofs_skips_parameter_lookup(self):
         source, actuator = self.make_empty_articulation_view()
 
-        parameter_was_read = False
-        try:
-            source.set_actuator_parameter(actuator, object(), "missing", [])
-        except AttributeError:
-            parameter_was_read = True
-
-        self.assertFalse(parameter_was_read)
+        self.assertIsNone(source.set_actuator_parameter(actuator, object(), "missing", []))
 
 
 if __name__ == "__main__":
