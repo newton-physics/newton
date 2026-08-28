@@ -184,8 +184,8 @@ jobs:
           uv tool install "cmake==4.4.2"
           export PATH="$HOME/.local/bin:$PATH"
           cmake -S newton/_src/controllers/cpp -B build/controllers
-          cmake --build build/controllers
-          ctest --test-dir build/controllers --output-on-failure \
+          cmake --build build/controllers --config Release
+          ctest --test-dir build/controllers --build-config Release --output-on-failure \
             --output-junit "$GITHUB_WORKSPACE/build/controllers/ctest.xml"
 
       - name: Check disk space (post-test)
