@@ -2336,8 +2336,9 @@ def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):
 
     # The latch is solver-local so independently constructed solvers remain testable.
     for _ in range(2):
-        with test.assertWarnsRegex(DeprecationWarning, "legacy AVBD still honors it"):
+        with test.assertWarnsRegex(DeprecationWarning, "legacy AVBD still honors it") as warning:
             newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+        test.assertEqual(warning.filename, __file__)
 
 
 def _rigid_velocity_drive_preserves_legacy_damping_and_adds_compliant_support(test, device):

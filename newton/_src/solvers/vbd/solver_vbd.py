@@ -1539,7 +1539,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         "no solver-mode effect; legacy AVBD still honors it during the migration window.",
                         DeprecationWarning,
                         # Reaches the constructor call site through _init_rigid_system.
-                        stacklevel=5,
+                        stacklevel=4,
                     )
             else:
                 j_is_hard = np.ones(self.model.joint_count, dtype=np.int32)
