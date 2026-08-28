@@ -53,6 +53,16 @@ else()
     endif()
 endif()
 
+# Normalize to forward slashes: on Windows, _warp_root comes from Python's
+# pathlib, which prints backslashes (C:\Users\...). That's fine for CMake's own
+# EXISTS/execute_process calls, but WARP_LIBRARY/WARP_CLANG_LIBRARY get baked
+# into C++ string literals via target_compile_definitions (see CMakeLists.txt),
+# where an unconverted backslash is a lexical hazard, not just a display quirk:
+# `\U` is the universal-character-name escape introducer, so a path segment
+# like `\Users` is parsed as the start of one and fails to compile outright,
+# not just a cosmetically wrong string.
+file(TO_CMAKE_PATH "${_warp_root}" _warp_root)
+
 set(WARP_INCLUDE_DIR "${_warp_root}/native")
 
 if(WIN32)
