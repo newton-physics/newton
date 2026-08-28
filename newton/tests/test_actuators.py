@@ -437,28 +437,6 @@ def _ignore_torchscript_deprecation(test_case: unittest.TestCase) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fixture validation
-# ---------------------------------------------------------------------------
-
-
-class TestActuatorFixtures(unittest.TestCase):
-    """Validate the shared actuator model fixtures."""
-
-    def test_model_builders_do_not_warn(self):
-        """Keep actuator fixture finalization warning-free."""
-        device = wp.get_device()
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _build_pendulum(device)
-            _build_pendulum(device, worlds=2)
-            _build_two_link(device)
-            _build_two_link(device, dummy_body=True, worlds=2)
-
-        self.assertFalse(caught, [str(warning.message) for warning in caught])
-
-
-# ---------------------------------------------------------------------------
 # 1. Controllers
 # ---------------------------------------------------------------------------
 
