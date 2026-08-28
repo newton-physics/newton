@@ -399,10 +399,17 @@ Controller& Controller::operator=(Controller&& other) noexcept {
     return *this;
 }
 
-ControllerBuffer Controller::input() const { return buffer_for_prefix(impl_->graph, "input."); }
-ControllerBuffer Controller::output() const { return buffer_for_prefix(impl_->graph, "output."); }
+ControllerBuffer Controller::input() const {
+    if (!impl_) throw std::logic_error("Controller has been moved from");
+    return buffer_for_prefix(impl_->graph, "input.");
+}
+ControllerBuffer Controller::output() const {
+    if (!impl_) throw std::logic_error("Controller has been moved from");
+    return buffer_for_prefix(impl_->graph, "output.");
+}
 
 bool Controller::step(const ControllerBuffer& input, ControllerBuffer& output, float dt) noexcept {
+    if (!impl_) return false;
     impl_->last_error.clear();
 
     for (const auto& [field, values] : input.fields) {
@@ -437,10 +444,12 @@ bool Controller::step(const ControllerBuffer& input, ControllerBuffer& output, f
 }
 
 const std::string& Controller::last_error() const noexcept {
-    return impl_->last_error;
+    static const std::string moved_from_error = "Controller has been moved from";
+    return impl_ ? impl_->last_error : moved_from_error;
 }
 
 std::vector<ParamInfo> Controller::params() const {
+    if (!impl_) throw std::logic_error("Controller has been moved from");
     const WarpApi& warp = warp_api();
     const int count = warp.wp_apic_get_num_params(impl_->graph);
     std::vector<ParamInfo> result;

@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -131,6 +132,38 @@ void test_unknown_field_throws(const std::filesystem::path& wrp) {
         threw = true;
     }
     check(threw, "reading an unknown field name throws std::out_of_range");
+}
+
+void test_moved_from_controller_fails_safely(const std::filesystem::path& wrp) {
+    std::cout << "\n=== test_moved_from_controller_fails_safely ===\n";
+    newton::controllers::Controller source{wrp};
+    newton::controllers::Controller moved_to{std::move(source)};
+
+    auto input = moved_to.input();
+    auto output = moved_to.output();
+
+    check(!source.step(input, output, kDt), "step on a moved-from Controller returns false rather than crashing");
+    check(source.last_error().find("moved") != std::string::npos,
+          "last_error explains the moved-from state, got: " + source.last_error());
+
+    bool input_threw = false;
+    try {
+        (void)source.input();
+    } catch (const std::logic_error&) {
+        input_threw = true;
+    }
+    check(input_threw, "input() on a moved-from Controller throws std::logic_error");
+
+    bool params_threw = false;
+    try {
+        (void)source.params();
+    } catch (const std::logic_error&) {
+        params_threw = true;
+    }
+    check(params_threw, "params() on a moved-from Controller throws std::logic_error");
+
+    // The moved-to Controller is unaffected and still works normally.
+    check(moved_to.last_error().empty(), "moved-to Controller starts with no error");
 }
 
 void test_step_reports_a_bad_field_without_throwing(const std::filesystem::path& wrp) {
@@ -343,13 +376,14 @@ int main(int argc, char** argv) {
         && std::filesystem::exists(mass_matrix_reference);
 
     try {
-        // These four don't exercise device-specific compute, only the graph's
+        // These five don't exercise device-specific compute, only the graph's
         // parameter table and error handling, so either capture works; prefer
         // whichever this machine actually has.
         const std::filesystem::path& structural_wrp = have_cuda_artifacts ? wrp : cpu_wrp;
         test_buffers_are_sized_from_the_graph(structural_wrp);
         test_params_lists_every_parameter(structural_wrp);
         test_unknown_field_throws(structural_wrp);
+        test_moved_from_controller_fails_safely(structural_wrp);
         test_step_reports_a_bad_field_without_throwing(structural_wrp);
 
         test_cpu_step_matches_python(cpu_wrp, cpu_reference);

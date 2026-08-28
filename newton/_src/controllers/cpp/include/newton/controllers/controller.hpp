@@ -52,6 +52,9 @@ public:
 
     Controller(const Controller&) = delete;
     Controller& operator=(const Controller&) = delete;
+    // A moved-from Controller holds no graph. input(), output(), and params()
+    // throw std::logic_error on one; step() returns false and last_error()
+    // explains why, matching how every other failure is reported.
     Controller(Controller&&) noexcept;
     Controller& operator=(Controller&&) noexcept;
 
@@ -64,17 +67,19 @@ public:
     // of that array, because the view carries no address of its own and the
     // indices it selects travel inside the graph. One buffer may hold fields of
     // both kinds; params() reports the length of each.
+    //
+    // Throws std::logic_error if this Controller has been moved from.
     ControllerBuffer input() const;
     ControllerBuffer output() const;
 
     // Write the inputs and dt into the graph, launch it, read the outputs back.
-    // Returns false without throwing if a field is not a parameter of this
-    // graph, if its length does not match, or if the launch fails; last_error()
-    // then describes what went wrong. Output fields are read back one at a
-    // time, in unspecified order, so a failure partway through leaves earlier
-    // fields already overwritten with their new values and later fields at
-    // whatever they held before the call — output is not all-or-nothing on
-    // failure.
+    // Returns false without throwing if this Controller has been moved from,
+    // if a field is not a parameter of this graph, if its length does not
+    // match, or if the launch fails; last_error() then describes what went
+    // wrong. Output fields are read back one at a time, in unspecified order,
+    // so a failure partway through leaves earlier fields already overwritten
+    // with their new values and later fields at whatever they held before the
+    // call — output is not all-or-nothing on failure.
     //
     // Fill every element of each input field: for a view-bound field the graph
     // reads only the elements the view addressed, and ignores the rest. The
@@ -86,7 +91,8 @@ public:
     // Why the last step() returned false. Empty if none has.
     const std::string& last_error() const noexcept;
 
-    // Every parameter the graph exposes, including "dt".
+    // Every parameter the graph exposes, including "dt". Throws
+    // std::logic_error if this Controller has been moved from.
     std::vector<ParamInfo> params() const;
 
 private:
