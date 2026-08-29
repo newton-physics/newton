@@ -12644,21 +12644,43 @@ class TestMuJoCoSolverOverflowState(unittest.TestCase):
             self.skipTest("Scene did not overflow rigid_contact_max")
 
     def test_overflow_resets_each_step(self):
-        """Overflow bits reflect the *current* step only — not accumulated from prior steps."""
-        # Step 1: overflow condition (tiny nconmax).
-        solver, _model, pipeline, s0, s1, ctrl, contacts = self._make_scene(n_balls=30, nconmax=1)
-        out1 = self._step(solver, pipeline, s0, s1, ctrl, contacts)
-        bits_step1 = int(out1.mujoco.overflow.numpy()[0])
+        """Overflow bits reflect the *current* step only — not accumulated from prior steps.
 
-        # Step 2: now with generous nconmax — recreate scene so naconmax is large.
-        solver2, _model2, pipeline2, s0b, s1b, ctrl2, contacts2 = self._make_scene(n_balls=5, nconmax=9999)
-        out2 = self._step(solver2, pipeline2, s0b, s1b, ctrl2, contacts2)
-        bits_step2 = int(out2.mujoco.overflow.numpy()[0])
+        Both steps use the *same* solver so the test exercises the per-step
+        reset inside ``SolverMuJoCo.step()`` (``d.overflow.zero_()``).
+        A separate solver would have its own ``mjw_data.overflow`` and could
+        never leak bits from a different solver's prior step.
+        """
+        solver, _model, pipeline, s0, s1, ctrl, contacts = self._make_scene(n_balls=30, nconmax=1)
+
+        # Step 1: contacts overflow condition — pipeline.collide() populates
+        # rigid_contact_count, which exceeds naconmax=1.
+        out1 = self._step(solver, pipeline, s0, s1, ctrl, contacts)
+        s0, s1 = s1, out1
+        bits_step1 = int(s0.mujoco.overflow.numpy()[0])
+
+        # Step 2: same solver, but pass a fresh Contacts object that has
+        # rigid_contact_count=0 (no collide() called).  If d.overflow were
+        # not zeroed before each step, mujoco-warp's |= accumulation would
+        # carry bits from step 1 into this output.
+        contacts_empty = pipeline.contacts()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            s0.clear_forces()
+            # Intentionally do NOT call pipeline.collide() — rigid_contact_count stays 0.
+            solver.step(s0, s1, ctrl, contacts_empty, 1.0 / 60.0)
+        bits_step2 = int(s1.mujoco.overflow.numpy()[0])
 
         nconmax_bit = int(OVERFLOW_SOLVER_NCONMAX)
-        if int(contacts.rigid_contact_count.numpy()[0]) > solver.mjw_data.naconmax:
-            self.assertTrue(bits_step1 & nconmax_bit, "Expected overflow in step 1")
-        self.assertEqual(bits_step2, 0, f"Overflow bits leaked across scenes: {bits_step2:#010x}")
+        rc = int(contacts.rigid_contact_count.numpy()[0])
+        if rc > solver.mjw_data.naconmax:
+            self.assertTrue(bits_step1 & nconmax_bit, "Expected NCONMAX overflow in step 1")
+        # Bits 16-17 must be zero — rigid_contact_count=0 cannot overflow anything.
+        self.assertEqual(
+            bits_step2 & (int(OVERFLOW_CONTACT_PIPELINE) | nconmax_bit),
+            0,
+            f"Newton overflow bits leaked into step 2: {bits_step2:#010x}",
+        )
 
     def test_overflow_works_inside_cuda_graph_capture(self):
         """CUDA graph capture must not crash, and overflow bits must be readable after replay."""
