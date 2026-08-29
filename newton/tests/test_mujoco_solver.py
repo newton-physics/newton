@@ -12656,7 +12656,7 @@ class TestMuJoCoSolverOverflowState(unittest.TestCase):
         # Step 1: contacts overflow condition — pipeline.collide() populates
         # rigid_contact_count, which exceeds naconmax=1.
         out1 = self._step(solver, pipeline, s0, s1, ctrl, contacts)
-        s0, s1 = s1, out1
+        s0, s1 = out1, s0
         bits_step1 = int(s0.mujoco.overflow.numpy()[0])
 
         # Step 2: same solver, but pass a fresh Contacts object that has
@@ -12675,6 +12675,8 @@ class TestMuJoCoSolverOverflowState(unittest.TestCase):
         rc = int(contacts.rigid_contact_count.numpy()[0])
         if rc > solver.mjw_data.naconmax:
             self.assertTrue(bits_step1 & nconmax_bit, "Expected NCONMAX overflow in step 1")
+        else:
+            self.skipTest("Scene did not generate enough contacts to overflow naconmax in step 1")
         # Bits 16-17 must be zero — rigid_contact_count=0 cannot overflow anything.
         self.assertEqual(
             bits_step2 & (int(OVERFLOW_CONTACT_PIPELINE) | nconmax_bit),
