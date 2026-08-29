@@ -3388,3 +3388,44 @@ def reset_joint_state_kernel(
     if joint_qd and i < dofs_per_world:
         di = worldid * dofs_per_world + i
         joint_qd[di] = default_joint_qd[di]
+
+
+# Newton-defined overflow bits written into state.mujoco.overflow.
+# Bits 0-15 are reserved for mujoco-warp's OverflowType bitmask (NEFC, NJMAX_NNZ,
+# BROADPHASE, NARROWPHASE, CCD, HFIELD, CONTACT_MATCH, NVMAX, EPA_HORIZON).
+OVERFLOW_CONTACT_PIPELINE = wp.constant(wp.int32(1 << 16))
+"""Collision pipeline overflowed: rigid_contact_count exceeded rigid_contact_max."""
+
+OVERFLOW_SOLVER_NCONMAX = wp.constant(wp.int32(1 << 17))
+"""Solver nconmax overflow: rigid_contact_count exceeded naconmax."""
+
+
+@wp.kernel
+def collect_overflow_kernel(
+    # Newton collision pipeline diagnostics
+    rigid_contact_count: wp.array[wp.int32],  # [1] — total contacts generated
+    rigid_contact_max: int,  # collision pipeline buffer capacity
+    naconmax: int,  # solver contact buffer capacity
+    # MuJoCo Warp per-world overflow bitmask (NEFC, NJMAX_NNZ, etc.)
+    mjw_overflow: wp.array[wp.int32],  # [nworld]
+    # Output — written into state.mujoco.overflow
+    overflow_out: wp.array[wp.int32],  # [nworld]
+):
+    """Collect overflow signals from the collision pipeline and solver into a per-world bitmask.
+
+    Runs with ``dim=nworld``. Thread 0 checks the global contact count against
+    both capacity limits and ORs the result into every world slot; all threads
+    independently OR in their world's mujoco-warp overflow bits.
+    """
+    worldid = wp.tid()
+
+    # Newton contact overflow: global count, same result for every world.
+    count = rigid_contact_count[0]
+    newton_bits = wp.int32(0)
+    if count > rigid_contact_max:
+        newton_bits = newton_bits | OVERFLOW_CONTACT_PIPELINE
+    if count > naconmax:
+        newton_bits = newton_bits | OVERFLOW_SOLVER_NCONMAX
+
+    # Merge Newton bits and this world's mujoco-warp bits into the output.
+    overflow_out[worldid] = newton_bits | mjw_overflow[worldid]
