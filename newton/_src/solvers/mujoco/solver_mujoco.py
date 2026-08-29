@@ -4086,6 +4086,53 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     @event_scope
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
+        """Advance the simulation by one timestep.
+
+        Follows a three-phase push-integrate-pull cycle:
+
+        1. **Push** — transfer ``state_in`` and ``control`` to MuJoCo's working
+           data.  When ``use_mujoco_contacts=False``, ``contacts`` are also
+           converted and fed to MuJoCo Warp before the integrator runs.
+        2. **Integrate** — run MuJoCo (CPU) or MuJoCo Warp (GPU) forward by
+           ``dt`` seconds.
+        3. **Pull** — populate ``state_out`` from the integrated MuJoCo data.
+           Contact points and forces are **not** written back automatically;
+           call :meth:`update_contacts` when you need them.
+
+        **Overflow detection** — capacity overflows (contacts dropped, constraint
+        buffer exceeded, broadphase clipped) are reported through
+        ``state_out.mujoco.overflow``, a per-world ``int32`` bitmask.  Opt in by
+        calling ``builder.request_state_attributes("mujoco:overflow")`` before
+        finalizing the model, then read the bitmask after each step (or after
+        :func:`warp.capture_launch` when using CUDA graphs)::
+
+            overflow = state_out.mujoco.overflow.numpy()
+            if overflow[0] & newton.solvers.OVERFLOW_SOLVER_NCONMAX:
+                # runtime contacts exceeded nconmax — increase nconmax
+                ...
+
+        Bits 0-15 carry MuJoCo Warp's own
+        :class:`mujoco_warp.OverflowType` flags (``NEFC``, ``NJMAX_NNZ``,
+        ``BROADPHASE``, ``NVMAX``, …).  Bit 16
+        (:data:`~newton.solvers.mujoco.kernels.OVERFLOW_CONTACT_PIPELINE`) is
+        set when the Newton collision pipeline dropped contacts beyond
+        ``rigid_contact_max``.  Bit 17
+        (:data:`~newton.solvers.mujoco.kernels.OVERFLOW_SOLVER_NCONMAX`) is set
+        when runtime contacts exceeded ``nconmax``.  The bitmask is reset to
+        zero at the start of every step so it always reflects the current step
+        only.
+
+        Args:
+            state_in: Input state for this step.
+            state_out: Output state written by this step.
+            control: Joint targets and feedforward forces.
+            contacts: Newton collision pipeline contacts.  Ignored when
+                ``use_mujoco_contacts=True`` (MuJoCo Warp runs its own
+                collision detection); bits 16-17 of ``state_out.mujoco.overflow``
+                are suppressed in that mode since the contacts object is not
+                used by the solver.
+            dt: Timestep in seconds.
+        """
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
