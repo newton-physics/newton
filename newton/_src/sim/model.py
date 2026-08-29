@@ -1374,6 +1374,12 @@ class Model:
         self.custom_frequency_counts: dict[str, int] = {}
         """Counts for custom frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
 
+        self.custom_frequency_articulation: dict[str, wp.array[Any]] = {}
+        """Per-row articulation owners for articulation-scoped custom frequencies."""
+
+        self.custom_frequency_label_attributes: dict[str, str] = {}
+        """Attribute keys containing labels for custom-frequency rows."""
+
         self._requested_state_attributes: set[str] = set()
         self._collision_pipeline: CollisionPipeline | None = None
         # cached collision pipeline

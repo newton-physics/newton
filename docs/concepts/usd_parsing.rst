@@ -172,11 +172,16 @@ The first release deliberately supports a narrow, predictable set of inputs:
   default when the array is empty. Thickness controls density volume, collision radius, and any
   stiffness derived from the isotropic material.
 
-  * For cables, each authored ``physics:curves*Stiffness`` is a structural stiffness;
-    each unauthored mode is derived independently from the shared isotropic properties and
-    geometry thickness. Newton divides each resolved structural
-    stiffness by that joint's own dual rest length
-    ``0.5 * (L_parent + L_child)``, so unevenly sampled curves keep per-joint accuracy.
+  * For cables, each authored ``physics:curves*Stiffness`` is a structural stiffness. A material
+    may additionally apply ``NewtonCurvesDeformableMaterialAPI`` to author independently optional
+    structural damping through ``newton:curves*Damping``. An unauthored stiffness mode is derived
+    from the shared isotropic properties and geometry thickness; an unauthored or ``-inf`` damping
+    mode leaves the rod-joint default unchanged. Newton discretizes both kinds of structural gain
+    using that joint's own dual rest length ``0.5 * (L_parent + L_child)``, so unevenly sampled
+    curves keep per-joint accuracy. Stretch and shear stiffness and damping have units of force and
+    force times time; bend and twist use force times distance squared and force times distance
+    squared times time. Newton damping requires the base
+    ``PhysicsCurvesDeformableMaterialAPI``; without it, the damping is ignored.
   * For surfaces, ``physics:surfaceStretchStiffness`` and
     ``physics:surfaceBendStiffness`` map directly to Newton's isotropic membrane and bending
     modes. An unauthored structural mode is derived independently from the shared isotropic
@@ -197,7 +202,8 @@ The first release deliberately supports a narrow, predictable set of inputs:
   The earlier unprefixed material stiffness attributes have a separate compatibility path. They
   retain their former modulus interpretation during the deprecation window; convert them to the
   appropriate family-prefixed structural stiffnesses. Both migrations emit an actionable
-  ``DeprecationWarning``.
+  ``DeprecationWarning``. The ``newton:curves*Damping`` attributes always use structural units and
+  remain independent per mode, including on a material using deprecated stiffness attributes.
 * Typed simulation-geometry ``physics:masses`` arrays. Every non-empty array must author
   ``physics:masses:elementType``: volume supports ``constant``, ``tetrahedron``, and ``point``;
   surface supports ``constant``, ``face``, and ``point``; curves support ``constant``, ``curve``,
@@ -211,7 +217,7 @@ The first release deliberately supports a narrow, predictable set of inputs:
 * Simulation points, topology, and normals are read at the USD default time. Newton builds the
   deformable at that pose. Missing cloth bend arrays use
   ``physics:restBendAnglesDefault = "flat"``; ``"restShape"`` retains the imported dihedral.
-  A cable's ``restShapePoints`` may affect stiffness normalization but never establishes an
+  A cable's ``restShapePoints`` may affect material-gain discretization but never establishes an
   initial strain state.
 * Point attachments only where the authored constraint can be represented without moving any
   geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
@@ -249,11 +255,11 @@ Known gaps of the experimental importer, tracked as follow-ups:
   warning. The supported cloth bend default uses the simulation geometry at the default time:
   ``flat`` sets zero rest dihedrals and ``restShape`` uses its imported dihedrals. For a cable,
   including one in a welded graph, valid ``restShapePoints`` supplies only the segment lengths
-  used to discretize material stiffness into joint stiffness; invalid values warn and fall back
-  to default-time ``points`` lengths. ``restNormals`` is not applied. The rod itself is still
-  built relaxed at the default-time ``points`` pose, and mass distribution also uses that
-  geometry. A body saved in a deformed pose therefore resumes relaxed at that pose instead of
-  springing back.
+  used to discretize structural stiffness and damping into per-joint gains; invalid values warn
+  and fall back to default-time ``points`` lengths. ``restNormals`` is not applied. The rod itself
+  is still built relaxed at the default-time ``points`` pose, and mass distribution also uses
+  that geometry. A body saved in a deformed pose therefore resumes relaxed at that pose instead
+  of springing back.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or
@@ -357,20 +363,22 @@ close a loop, so they stay outside the articulation.
     model = builder.finalize()  # cables are already wrapped and finalize-ready
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
-``path_cloth_attrs`` and ``path_soft_attrs``. Cable and cloth entries expose parsed ``material``
-values and ``resolved_density``; valid geometry ``masses`` / ``thicknesses`` arrays are preserved
-under ``simulation`` with their element type. The volume entry exposes ``resolved_density`` and
-typed masses (a volume material's ``youngsModulus`` / ``poissonsRatio`` are applied to the built
-soft body and not repeated there). Removed thickness names and earlier unprefixed material
-attributes remain in ``material`` when authored during their deprecation windows. This lets
-another solver rebuild the supported state without re-parsing the stage. A cable entry carries a
-``graph_component`` identifier only when the curve was welded into a rod graph; curves of one
-graph share it, and independent or fallback cables have no such key.
+``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to validated import metadata,
+independent of any solver. Cable and cloth entries expose validated authored ``material`` values
+and ``resolved_density``; valid geometry ``masses`` / ``thicknesses`` arrays are preserved under
+``simulation`` with their element type. The volume entry exposes ``resolved_density`` and typed
+masses (a volume material's ``youngsModulus`` / ``poissonsRatio`` are applied to the built soft
+body and not repeated there). Cable material metadata includes structural stiffness and damping.
+Removed thickness names and earlier unprefixed material attributes remain in ``material`` when
+authored during their deprecation windows; a cloth entry also keeps moduli its isotropic membrane
+cannot express. This lets another solver rebuild the supported state without re-parsing the stage.
+A cable entry carries a ``graph_component`` identifier only when the curve was welded into a rod
+graph; curves of one graph share it, and independent or fallback cables have no such key.
 
 .. note::
 
-   Solver tuning that is not part of the AOUSD schema (e.g. damping) is not imported; supply it
-   on the builder or model after import.
+   Solver tuning that is not part of the supported AOUSD schemas or a documented Newton schema
+   extension is not imported; supply it on the builder or model after import.
 
 Material Color Spaces
 ---------------------

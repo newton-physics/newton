@@ -18,6 +18,7 @@ from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_orig
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.conversions import convert_target_coords_to_target_dofs
+from newton._src.solvers.kamino._src.core.joints import JOINT_TAUMAX, DofActuationPath, JointActuationType
 from newton._src.solvers.kamino._src.core.materials import MaterialDescriptor
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
@@ -1260,6 +1261,7 @@ class TestModelConversions(unittest.TestCase):
         self.assertIs(state_newton_converted.joint_lambdas, state_kamino_converted.lambda_kin_j)
         self.assertIs(state_newton_converted.joint_lambdas_dyn, state_kamino_converted.lambda_dyn_j)
         self.assertIs(state_newton_converted.joint_lambdas_f, state_kamino_converted.lambda_f_j)
+        self.assertIs(state_newton_converted.joint_lambdas_tau, state_kamino_converted.lambda_tau_j)
 
     def test_40_control_conversions(self):
         """
@@ -1360,6 +1362,136 @@ class TestModelConversions(unittest.TestCase):
             control_newton,
             attributes=["joint_f", "joint_target_q", "joint_target_qd"],
         )
+
+    def test_50_model_conversions_per_dof_constraint_rows_and_actuation_paths(self):
+        """Map dynamic, effort, and friction properties to their configured DoFs."""
+        builder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        builder.begin_world()
+        body = builder.add_link()
+        joint = builder.add_joint_d6(
+            -1,
+            body,
+            angular_axes=[
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, armature=1.0),
+                ModelBuilder.JointDofConfig(
+                    axis=newton.Axis.Y,
+                    effort_limit=1.0,
+                    target_ke=100.0,
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                ),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, friction=0.5),
+            ],
+        )
+        builder.add_articulation([joint])
+        builder.end_world()
+
+        kamino = ModelKamino.from_newton(builder.finalize())
+
+        np.testing.assert_array_equal(kamino.joints.dynamic_cts_axis.numpy(), [0])
+        np.testing.assert_array_equal(kamino.joints.effort_cts_axis.numpy(), [1])
+        np.testing.assert_array_equal(kamino.joints.friction_cts_axis.numpy(), [2])
+        np.testing.assert_array_equal(
+            kamino.joints.dof_act_types.numpy(),
+            [
+                JointActuationType.PASSIVE,
+                JointActuationType.POSITION,
+                JointActuationType.PASSIVE,
+            ],
+        )
+        np.testing.assert_array_equal(
+            kamino.joints.dof_act_paths.numpy(),
+            [
+                DofActuationPath.DYNAMIC_CTS,
+                DofActuationPath.EFFORT_CTS,
+                DofActuationPath.BODY_WRENCHES,
+            ],
+        )
+        self.assertEqual(kamino.size.sum_of_num_dynamic_joint_cts, 1)
+        self.assertEqual(kamino.size.sum_of_num_effort_joint_cts, 1)
+        self.assertEqual(kamino.size.sum_of_num_friction_joint_cts, 1)
+
+    def test_51_model_conversions_effort_constraint_allocation(self):
+        """Allocate bounded implicit-PD rows and share dynamic rows as required."""
+        cases = (
+            ("bounded_implicit_pd", True, 1.0, False, 1, 0),
+            ("unbounded_implicit_pd", True, JOINT_TAUMAX, False, 0, 1),
+            ("finite_without_implicit_pd", False, 1.0, False, 0, 0),
+            ("bounded_implicit_pd_with_armature", True, 1.0, True, 1, 1),
+        )
+        for name, implicit_pd, effort_limit, dynamic_joints, expected_effort, expected_dynamic in cases:
+            with self.subTest(name=name):
+                builder = ModelBuilder()
+                SolverKamino.register_custom_attributes(builder)
+                basics_newton.build_box_pendulum(
+                    builder=builder,
+                    ground=False,
+                    implicit_pd=implicit_pd,
+                    dynamic_joints=dynamic_joints,
+                )
+                model = builder.finalize()
+                model.joint_effort_limit.assign([effort_limit])
+
+                kamino = ModelKamino.from_newton(model)
+
+                self.assertEqual(kamino.size.sum_of_num_effort_joint_cts, expected_effort)
+                self.assertEqual(kamino.size.sum_of_num_dynamic_joint_cts, expected_dynamic)
+                np.testing.assert_array_equal(kamino.joints.effort_cts_axis.numpy(), [0] * expected_effort)
+                np.testing.assert_array_equal(kamino.joints.dynamic_cts_axis.numpy(), [0] * expected_dynamic)
+
+    def test_52_model_conversions_multiworld_effort_offsets_follow_global_row_order(self):
+        """Prefix bounded rows globally while retaining per-world offsets."""
+        for friction in (0.0, 1.0):
+            with self.subTest(friction=friction):
+                builder = ModelBuilder()
+                SolverKamino.register_custom_attributes(builder)
+                for _ in range(2):
+                    basics_newton.build_box_pendulum(builder=builder, ground=False, implicit_pd=True)
+                model = builder.finalize()
+                model.joint_effort_limit.fill_(1.0)
+                if friction > 0.0:
+                    model.joint_friction.fill_(friction)
+
+                kamino = ModelKamino.from_newton(model)
+
+                num_friction = int(friction > 0.0)
+                num_effort = 1
+                num_bounded = num_friction + num_effort
+
+                np.testing.assert_array_equal(kamino.info.num_joint_effort_cts.numpy(), [num_effort, num_effort])
+                np.testing.assert_array_equal(kamino.info.joint_effort_cts_offset.numpy(), [0, num_effort])
+                np.testing.assert_array_equal(kamino.info.num_joint_friction_cts.numpy(), [num_friction, num_friction])
+                np.testing.assert_array_equal(kamino.info.joint_friction_cts_offset.numpy(), [0, num_friction])
+                np.testing.assert_array_equal(
+                    kamino.info.num_joint_bounded_cts.numpy(),
+                    [num_bounded, num_bounded],
+                )
+                np.testing.assert_array_equal(
+                    kamino.info.joint_bounded_cts_offset.numpy(),
+                    [0, num_bounded],
+                )
+
+                self.assertEqual(kamino.size.sum_of_num_effort_joint_cts, 2 * num_effort)
+                self.assertEqual(kamino.size.sum_of_num_friction_joint_cts, 2 * num_friction)
+                self.assertEqual(kamino.size.sum_of_num_bounded_joint_cts, 2 * num_bounded)
+
+                np.testing.assert_array_equal(
+                    kamino.joints.effort_cts_offset.numpy(),
+                    [0, num_effort, 2 * num_effort],
+                )
+                np.testing.assert_array_equal(
+                    kamino.joints.friction_cts_offset.numpy(),
+                    [0, num_friction, 2 * num_friction],
+                )
+                np.testing.assert_array_equal(
+                    kamino.joints.bounded_cts_offset.numpy(),
+                    [0, num_bounded, 2 * num_bounded],
+                )
+                np.testing.assert_array_equal(kamino.joints.effort_cts_axis.numpy(), [0, 0])
+                if num_friction:
+                    np.testing.assert_array_equal(kamino.joints.friction_cts_axis.numpy(), [0, 0])
+                else:
+                    np.testing.assert_array_equal(kamino.joints.friction_cts_axis.numpy(), [])
 
 
 ###

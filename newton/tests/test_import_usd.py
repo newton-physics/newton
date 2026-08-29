@@ -5,6 +5,7 @@ import builtins
 import contextlib
 import functools
 import hashlib
+import inspect
 import io
 import logging
 import math
@@ -32,6 +33,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
+from newton._src.usd import utils as usd_utils
 from newton._src.utils.color import color_linear_to_srgb
 from newton._src.utils.import_usd import _is_uniform_scale
 from newton.math import quat_between_axes
@@ -7567,7 +7569,7 @@ def Xform "Articulation" (
         return stage, shape_path
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_uvless_textured_visual_mesh_uses_projected_uvs(self):
+    def test_uvless_textured_visual_mesh_disables_uv_sampling(self):
         """Verify a full visual mesh retains its texture when UVs are unavailable."""
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
         builder = newton.ModelBuilder()
@@ -7579,10 +7581,10 @@ def Xform "Articulation" (
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture will use projected UVs", "\n".join(log_ctx.output))
+        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_uvless_textured_visual_mesh_subset_uses_projected_uvs(self):
+    def test_uvless_textured_visual_mesh_subset_disables_uv_sampling(self):
         """Verify a material subset retains its texture when UVs are unavailable."""
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=True)
         builder = newton.ModelBuilder()
@@ -7594,7 +7596,7 @@ def Xform "Articulation" (
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture will use projected UVs", "\n".join(log_ctx.output))
+        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
 
     def _build_custom_shader_mesh_stage(self, *, with_diffuse: bool):
         """Build a stage whose mesh binds a non-UsdPreviewSurface shader with map inputs.
@@ -7778,6 +7780,63 @@ def Xform "Articulation" (
         result = builder.add_usd(stage)
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
         self.assertIsNone(src.texture)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_transform2d_mapping_is_preserved(self):
+        """Preserve standard UsdTransform2d order and its upstream primvar reader."""
+        from pxr import Sdf, UsdGeom, UsdShade
+
+        stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
+        mesh = UsdGeom.Mesh(stage.GetPrimAtPath(shape_path))
+        st_1 = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "st_1", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+        )
+        authored_uvs = [(0.1, 0.2), (1.1, 0.2), (1.1, 1.2), (0.1, 1.2)]
+        st_1.Set(authored_uvs)
+
+        reader = UsdShade.Shader.Define(stage, "/Materials/Textured/TexcoordReader")
+        reader.CreateIdAttr("UsdPrimvarReader_float2")
+        reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st_1")
+        reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+        transform = UsdShade.Shader.Define(stage, "/Materials/Textured/Transform2d")
+        transform.CreateIdAttr("UsdTransform2d")
+        transform.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(reader.ConnectableAPI(), "result")
+        transform.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set((0.5, 2.0))
+        transform.CreateInput("rotation", Sdf.ValueTypeNames.Float).Set(30.0)
+        transform.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set((0.25, -0.75))
+        transform.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+        texture = UsdShade.Shader(stage.GetPrimAtPath("/Materials/Textured/Albedo"))
+        texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(transform.ConnectableAPI(), "result")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"][shape_path]]
+        np.testing.assert_allclose(src.uvs, authored_uvs, atol=1.0e-7)
+        np.testing.assert_allclose(
+            src.texture_transform,
+            (
+                (0.5 * math.cos(math.pi / 6), -2.0 * math.sin(math.pi / 6), 0.25),
+                (0.5 * math.sin(math.pi / 6), 2.0 * math.cos(math.pi / 6), -0.75),
+            ),
+            atol=1.0e-7,
+        )
+
+    def test_omnipbr_mapping_inputs_are_not_parsed(self):
+        """Keep OmniPBR texture-mapping adapters out of the USD importer."""
+        self.assertFalse(hasattr(usd_utils, "_is_omnipbr_shader"))
+        self.assertFalse(hasattr(usd_utils, "_extract_omnipbr_texture_mapping"))
+        importer_source = inspect.getsource(usd_utils)
+        for input_name in (
+            "texture_scale",
+            "texture_translate",
+            "texture_rotate",
+            "project_uvw",
+            "world_or_object",
+        ):
+            with self.subTest(input_name=input_name):
+                self.assertNotIn(input_name, importer_source)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_loads_alternate_texcoord_set(self):
@@ -8033,7 +8092,7 @@ def Xform "Articulation" (
 
         joined = "\n".join(log_ctx.output)
         self.assertIn("UV primvar length", joined)
-        self.assertIn("texture will use projected UVs", joined)
+        self.assertIn("texture sampling is disabled", joined)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_used_by_mass_properties(self):

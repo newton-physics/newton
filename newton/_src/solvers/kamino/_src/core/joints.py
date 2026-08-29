@@ -32,6 +32,7 @@ from .types import (
 ###
 
 __all__ = [
+    "DofActuationPath",
     "JointActuationType",
     "JointCorrectionMode",
     "JointDescriptor",
@@ -63,7 +64,12 @@ JOINT_DQMAX: float = 1e6
 """ Sentinel value indicating the maximum joint velocity limit."""
 
 JOINT_TAUMAX: float = 1e6
-""" Sentinel value indicating the maximum joint effort limit."""
+"""
+Sentinel matching the Newton ``ModelBuilder`` default ``effort_limit``.
+
+Values at or above this threshold are treated as unbounded for implicit-PD
+effort-row allocation (equivalent to ``inf`` for :func:`_has_effort_cts`).
+"""
 
 
 ###
@@ -192,6 +198,199 @@ class JointActuationType(IntEnum):
 
         # Return invalid actuation mode
         return -1
+
+    @staticmethod
+    def aggregate(dof_act_types: list[JointActuationType]) -> JointActuationType:
+        """Returns the coarse joint-level actuation classification.
+
+        Per-DoF actuation types are authoritative for dynamics and control. This
+        aggregate is used where Kamino needs only to distinguish passive joints
+        from actuated joints, such as forward kinematics and layout bookkeeping.
+        """
+        return max(dof_act_types, default=JointActuationType.PASSIVE)
+
+    @staticmethod
+    @wp.func
+    def aggregate_wp(
+        dof_start: int,
+        dof_end: int,
+        dof_act_types: wp.array[wp.int32],
+    ) -> int:
+        """
+        Returns the joint-level aggregate of per-DoF actuation types.
+
+        Note:
+            This is the warp-compatible equivalent to ``aggregate()``.
+
+        Args:
+            dof_start: Start index into ``dof_act_types`` (inclusive).
+            dof_end: End index into ``dof_act_types`` (exclusive).
+            dof_act_types: Kamino per-DoF actuation types, see ``JointActuationType``.
+
+        Returns:
+            The aggregated joint actuation type (see ``JointActuationType``).
+        """
+        aggregate = int(JointActuationType.PASSIVE)
+        for dof in range(dof_start, dof_end):
+            aggregate = max(aggregate, dof_act_types[dof])
+        return aggregate
+
+    @staticmethod
+    @wp.func
+    def aggregate_from_newton_wp(
+        dof_start: int,
+        dof_end: int,
+        target_mode: wp.array[wp.int32],
+    ) -> int:
+        """
+        Returns the joint-level aggregate of per-DoF Newton target modes.
+
+        Args:
+            dof_start: Start index into ``target_mode`` (inclusive).
+            dof_end: End index into ``target_mode`` (exclusive).
+            target_mode: Newton per-DoF joint target modes, see ``JointTargetMode``.
+
+        Returns:
+            The aggregated joint actuation type (see ``JointActuationType``),
+            or ``-1`` if any target mode is not supported.
+        """
+        aggregate = int(JointActuationType.PASSIVE)
+        for dof in range(dof_start, dof_end):
+            act_type = JointActuationType.from_newton_wp(target_mode[dof])
+            if act_type < 0:
+                return -1
+            aggregate = max(aggregate, act_type)
+        return aggregate
+
+
+class DofActuationPath(IntEnum):
+    """
+    An enumeration of inferred per-DoF actuation routing paths.
+
+    A path is derived from the DoF actuation type, armature, damping, implicit-PD
+    gains, and effort limit; it is not configured independently.
+    """
+
+    BODY_WRENCHES = 0
+    """Explicit ``tau_j`` applied through body wrenches, normally for ``FORCE`` actuation."""
+
+    DYNAMIC_CTS = 1
+    """Joint dynamics path for armature, damping, or unbounded implicit PD."""
+
+    EFFORT_CTS = 2
+    """Bounded implicit-PD path that enforces the DoF effort limit."""
+
+    @override
+    def __str__(self):
+        """Returns a string representation of the DoF actuation path."""
+        return f"DofActuationPath.{self.name} ({self.value})"
+
+    @override
+    def __repr__(self):
+        """Returns a string representation of the DoF actuation path."""
+        return self.__str__()
+
+
+def _has_implicit_pd(act_type: int, k_p: float, k_d: float) -> bool:
+    """Returns whether an axis has an active implicit-PD controller."""
+    if act_type == JointActuationType.VELOCITY:
+        return k_d > 0.0
+    return act_type in (
+        JointActuationType.POSITION,
+        JointActuationType.POSITION_VELOCITY,
+        JointActuationType.POSITION_VELOCITY_FORCE,
+    ) and (k_p > 0.0 or k_d > 0.0)
+
+
+def _has_missing_implicit_pd_gains(act_type: int, k_p: float, k_d: float) -> bool:
+    """Returns whether an implicit-PD actuation type has no effective gain."""
+    if act_type == JointActuationType.VELOCITY:
+        return k_d == 0.0
+    return (
+        act_type
+        in (
+            JointActuationType.POSITION,
+            JointActuationType.POSITION_VELOCITY,
+            JointActuationType.POSITION_VELOCITY_FORCE,
+        )
+        and k_p == 0.0
+        and k_d == 0.0
+    )
+
+
+def _validate_implicit_pd_gains(act_type: JointActuationType, k_p: float, k_d: float, *, label: str) -> None:
+    """Raises if an implicit-PD actuation type has no effective gain."""
+    if _has_missing_implicit_pd_gains(act_type, k_p, k_d):
+        raise ValueError(f"Invalid implicit-PD actuation: {act_type.name} requires a non-zero gain ({label}).")
+
+
+def _is_bounded_effort_limit(tau_max: float) -> bool:
+    """Return whether ``tau_max`` denotes a user-authored bounded effort limit."""
+    return np.isfinite(tau_max) and tau_max < JOINT_TAUMAX
+
+
+def _has_effort_cts(act_type: int, k_p: float, k_d: float, tau_max: float) -> bool:
+    """Returns whether an axis requires a bounded implicit-PD row."""
+    return _has_implicit_pd(act_type, k_p, k_d) and _is_bounded_effort_limit(tau_max)
+
+
+def _has_unbounded_implicit_pd(act_type: int, k_p: float, k_d: float, tau_max: float) -> bool:
+    """Returns whether an axis has unbounded implicit-PD (no finite effort bound)."""
+    return _has_implicit_pd(act_type, k_p, k_d) and not _is_bounded_effort_limit(tau_max)
+
+
+def _has_dynamic_cts(act_type: int, k_p: float, k_d: float, tau_max: float, armature: float, damping: float) -> bool:
+    """Returns whether an axis requires a dynamic row."""
+    return armature > 0.0 or damping > 0.0 or _has_unbounded_implicit_pd(act_type, k_p, k_d, tau_max)
+
+
+def _has_friction_cts(dof_type: JointDoFType, f_j: float) -> bool:
+    """Returns whether an axis has a Coulomb-friction constraint row."""
+    return dof_type != JointDoFType.FREE and f_j > 0.0
+
+
+@wp.func
+def has_implicit_pd_wp(act_type: int, k_p: float, k_d: float) -> bool:
+    """Warp-compatible implicit-PD classification for one joint DoF."""
+    if act_type == JointActuationType.VELOCITY:
+        return k_d > 0.0
+    return (
+        act_type == JointActuationType.POSITION
+        or act_type == JointActuationType.POSITION_VELOCITY
+        or act_type == JointActuationType.POSITION_VELOCITY_FORCE
+    ) and (k_p > 0.0 or k_d > 0.0)
+
+
+@wp.func
+def is_bounded_effort_limit_wp(tau_max: float) -> bool:
+    """Return whether ``tau_max`` denotes a user-authored bounded effort limit."""
+    # Checking against JOINT_TAUMAX is important, because the Newton ModelBuilder will insert
+    # JOINT_TAUMAX as a default value if no effort limit is specified.
+    return wp.isfinite(tau_max) and tau_max < JOINT_TAUMAX
+
+
+@wp.func
+def has_effort_cts_wp(act_type: int, k_p: float, k_d: float, tau_max: float) -> bool:
+    """Returns whether one joint DoF requires a bounded implicit-PD row."""
+    return has_implicit_pd_wp(act_type, k_p, k_d) and is_bounded_effort_limit_wp(tau_max)
+
+
+@wp.func
+def has_unbounded_implicit_pd_wp(act_type: int, k_p: float, k_d: float, tau_max: float) -> bool:
+    """Returns whether one joint DoF has unbounded implicit-PD (no finite effort bound)."""
+    return has_implicit_pd_wp(act_type, k_p, k_d) and not is_bounded_effort_limit_wp(tau_max)
+
+
+@wp.func
+def has_dynamic_cts_wp(act_type: int, k_p: float, k_d: float, tau_max: float, armature: float, damping: float) -> bool:
+    """Returns whether one joint DoF requires a dynamic row."""
+    return armature > 0.0 or damping > 0.0 or has_unbounded_implicit_pd_wp(act_type, k_p, k_d, tau_max)
+
+
+@wp.func
+def has_friction_cts_wp(dof_type: int, f_j: float) -> bool:
+    """Returns whether one joint DoF has a Coulomb-friction constraint row."""
+    return dof_type != JointDoFType.FREE and f_j > 0.0
 
 
 class JointCorrectionMode(IntEnum):
@@ -1027,6 +1226,42 @@ class JointDoFType(IntEnum):
 
     @staticmethod
     @wp.func
+    def dofs_axis_wp(dof_type: int, axis: int) -> int:
+        """
+        Returns the spatial twist component for a joint-local DoF axis.
+
+        Note:
+            This is the warp-compatible equivalent to ``dofs_axes[axis]``.
+
+        Args:
+            dof_type: The joint DoF type.
+            axis: Joint-local DoF index.
+
+        Returns:
+            Spatial twist component index in ``[0, 5]``.
+        """
+        if dof_type == JointDoFType.FREE:
+            return axis
+        if dof_type == JointDoFType.REVOLUTE:
+            return 3
+        if dof_type == JointDoFType.PRISMATIC:
+            return 0
+        if dof_type == JointDoFType.CYLINDRICAL:
+            return wp.where(axis == 0, 0, 3)
+        if dof_type == JointDoFType.UNIVERSAL:
+            return 3 + axis
+        if dof_type == JointDoFType.SPHERICAL:
+            return 3 + axis
+        if dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+            return 3 + axis
+        if dof_type == JointDoFType.CARTESIAN:
+            return axis
+        if dof_type == JointDoFType.FIXED:
+            return -1
+        return -1
+
+    @staticmethod
+    @wp.func
     def axes_matrix_from_joint_type(
         dof_type: int,
         dof_axes: mat63f,
@@ -1093,8 +1328,15 @@ class JointDescriptor(Descriptor):
     # Attributes
     ###
 
-    act_type: JointActuationType = JointActuationType.PASSIVE
-    """Actuation type of the joint."""
+    dof_act_types: list[JointActuationType] = field(default_factory=list)
+    """
+    Actuation type of each joint DoF.
+
+    This is the authoritative actuation representation for the joint. Its
+    length must equal :attr:`num_dofs`. :attr:`act_type` is a derived coarse
+    passive-versus-actuated classification for forward kinematics and layout
+    bookkeeping.
+    """
 
     fk_act_flag: int = -1
     """
@@ -1208,8 +1450,9 @@ class JointDescriptor(Descriptor):
     """
     Maximum effort (i.e. generalized force) limits of the joint.
 
-    If `None`, then no limits are applied
-    to the joint's generalized forces.
+    If ``None``, defaults to :data:`JOINT_TAUMAX` (unbounded). Values at or above
+    :data:`JOINT_TAUMAX` are treated as unbounded for implicit-PD effort-row
+    allocation, matching the Newton ``ModelBuilder`` default sentinel.
 
     If specified as a single float value, it will
     be applied uniformly to all DoFs of the joint.
@@ -1374,6 +1617,12 @@ class JointDescriptor(Descriptor):
     Coulomb joint friction constraints in its world.
     """
 
+    effort_cts_offset: int = -1
+    """
+    Index offset of this joint's effort-limit implicit-PD rows among all
+    effort-limit implicit-PD constraints in its world.
+    """
+
     ###
     # Properties
     ###
@@ -1432,7 +1681,7 @@ class JointDescriptor(Descriptor):
         """
         Returns the number of dynamic constraints introduced by this joint.
         """
-        return self.dof_type.num_dofs if self.is_dynamic or self.is_implicit_pd else 0
+        return len(self.dynamic_cts_axes())
 
     @property
     def num_kinematic_cts(self) -> int:
@@ -1444,12 +1693,17 @@ class JointDescriptor(Descriptor):
     @property
     def num_bounded_cts(self) -> int:
         """Returns the number of bounded-multiplier constraint rows introduced by this joint."""
-        return self.num_friction_cts
+        return self.num_friction_cts + self.num_effort_cts
 
     @property
     def num_friction_cts(self) -> int:
         """Returns the number of Coulomb joint friction rows introduced by this joint."""
-        return self.num_dofs if self.dof_type != JointDoFType.FREE and np.any(self.f_j) else 0
+        return len(self.friction_cts_axes())
+
+    @property
+    def num_effort_cts(self) -> int:
+        """Returns the number of effort-limit implicit-PD rows."""
+        return len(self.effort_cts_axes())
 
     @property
     def is_binary(self) -> bool:
@@ -1466,6 +1720,15 @@ class JointDescriptor(Descriptor):
         return self.bid_B == -1 or self.bid_F == -1
 
     @property
+    def act_type(self) -> JointActuationType:
+        """
+        Returns the joint-level passive-versus-actuated classification.
+
+        The aggregate is not used for per-DoF control or dynamics.
+        """
+        return JointActuationType.aggregate(self.dof_act_types)
+
+    @property
     def is_passive(self) -> bool:
         """
         Returns whether the joint is passive.
@@ -1479,19 +1742,29 @@ class JointDescriptor(Descriptor):
         """
         return self.act_type > JointActuationType.PASSIVE
 
-    @property
-    def is_dynamic(self) -> bool:
+    def dynamic_cts_axes(self) -> list[int]:
         """
-        Returns whether the joint's dynamics is simulated implicitly.
+        Returns sorted local DoF axes with joint dynamics.
         """
-        return np.any(self.a_j) or np.any(self.b_j)
+        return [axis for axis in range(self.num_dofs) if self._has_dynamic_cts(axis)]
 
-    @property
-    def is_implicit_pd(self) -> bool:
+    def friction_cts_axes(self) -> list[int]:
         """
-        Returns whether the joint's dynamics is simulated using implicit PD control.
+        Returns sorted local DoF axes with Coulomb friction.
         """
-        return np.any(self.k_p_j) or np.any(self.k_d_j)
+        return [axis for axis in range(self.num_dofs) if self._has_friction_cts(axis)]
+
+    def effort_cts_axes(self) -> list[int]:
+        """
+        Returns sorted local DoF axes with bounded implicit actuation.
+        """
+        return [axis for axis in range(self.num_dofs) if self._has_effort_cts(axis)]
+
+    def dof_act_paths(self) -> list[DofActuationPath]:
+        """
+        Returns the inferred per-DoF actuation routing for this joint.
+        """
+        return [self._actuation_path(axis) for axis in range(self.num_dofs)]
 
     def has_base_body(self, bid: int) -> bool:
         """
@@ -1527,24 +1800,17 @@ class JointDescriptor(Descriptor):
         # NOTE: This ensures that the UID is properly set before proceeding
         super().__post_init__()
 
+        if len(self.dof_act_types) != self.num_dofs:
+            raise ValueError(f"Invalid per-DoF actuation type length: {len(self.dof_act_types)} != {self.num_dofs}")
+        if not all(isinstance(act_type, JointActuationType) for act_type in self.dof_act_types):
+            raise TypeError("Invalid per-DoF actuation type. Must be `JointActuationType`.")
+        self.dof_act_types = list(self.dof_act_types)
+
         # Check if DoF type + actuation type are compatible
         if self.dof_type == JointDoFType.FREE and self.is_binary:
             raise ValueError(f"Invalid joint: FREE joints cannot be binary (name={self.name}, uid={self.uid}).")
         if self.act_type == JointActuationType.FORCE and self.dof_type == JointDoFType.FIXED:
             raise ValueError(f"Invalid joint: FIXED joints cannot be actuated (name={self.name}, uid={self.uid}).")
-
-        # Check if DoF type + dynamic/implicit PD settings are compatible
-        if self.is_implicit_pd and self.dof_type == JointDoFType.FREE:
-            raise ValueError(
-                f"Invalid joint: FREE joints cannot have implicit PD gains (name={self.name}, uid={self.uid})."
-            )
-        if self.is_dynamic and self.dof_type == JointDoFType.FIXED:
-            raise ValueError(f"Invalid joint: FIXED joints cannot be dynamic (name={self.name}, uid={self.uid}).")
-        if self.is_implicit_pd and self.dof_type == JointDoFType.FIXED:
-            raise ValueError(
-                f"Invalid joint: FIXED joints cannot have implicit PD gains (name={self.name}, uid={self.uid})."
-            )
-
         # Default the follower-side joint frame to the base-side one, which
         # is the convention for joints with aligned base/follower frames.
         if self.X_Fj is None:
@@ -1565,7 +1831,16 @@ class JointDescriptor(Descriptor):
 
         # Validate that the specified parameters are valid
         self._check_parameter_values()
+        for axis, act_type in enumerate(self.dof_act_types):
+            _validate_implicit_pd_gains(
+                act_type, self.k_p_j[axis], self.k_d_j[axis], label=f"name={self.name}, uid={self.uid}, DoF={axis}"
+            )
 
+        # Check if DoF type + dynamic/implicit PD settings are compatible.
+        if self.dof_type == JointDoFType.FREE and (self.num_dynamic_cts > 0 or self.num_effort_cts > 0):
+            raise ValueError(
+                f"Invalid joint: FREE joints cannot have dynamic or implicit PD DoFs (name={self.name}, uid={self.uid})."
+            )
         # TODO: Add support for missing multi-DOF joint types in the future.
         # Ensure that only revolute and prismatic joints are dynamically constrained
         supported_implicit_joint_types = (
@@ -1574,44 +1849,12 @@ class JointDescriptor(Descriptor):
             JointDoFType.GIMBAL,
             JointDoFType.GIMBAL_LEFT_HANDED,
         )
-        if (self.is_dynamic or self.is_implicit_pd) and self.dof_type not in supported_implicit_joint_types:
+        if (
+            self.num_dynamic_cts > 0 or self.num_effort_cts > 0
+        ) and self.dof_type not in supported_implicit_joint_types:
             raise ValueError(
                 "Invalid joint: Kamino currently supports dynamic/implicit joints "
                 f"for REVOLUTE, PRISMATIC, or GIMBAL types (name={self.name}, uid={self.uid})."
-            )
-
-        # TODO: Add more checks based on JointDoFType because how do we
-        # handle iterating in DoF-like CTS space when num_coords != num_dofs?
-        # Ensure that PD gains are only specified for actuated joints
-        if self.is_passive and (np.any(self.k_p_j) or np.any(self.k_d_j)):
-            raise ValueError(
-                f"Joint `{self.name}` has non-zero PD gains but the joint is defined as passive:"
-                f"\n  k_p_j: {self.k_p_j}"
-                f"\n  k_d_j: {self.k_d_j}"
-            )
-        if self.act_type == JointActuationType.FORCE and (np.any(self.k_p_j) or np.any(self.k_d_j)):
-            raise ValueError(
-                f"Joint `{self.name}` is defined as FORCE actuated but has non-zero PD gains:"
-                f"\n  k_p_j: {self.k_p_j}"
-                f"\n  k_d_j: {self.k_d_j}"
-            )
-        if self.act_type == JointActuationType.POSITION and not np.any(self.k_p_j):
-            raise ValueError(
-                f"Joint `{self.name}` is defined as POSITION actuated but has zero-valued PD gains:"
-                f"\n  k_p_j: {self.k_p_j}"
-                f"\n  k_d_j: {self.k_d_j}"
-            )
-        if self.act_type == JointActuationType.VELOCITY and not np.any(self.k_d_j):
-            raise ValueError(
-                f"Joint `{self.name}` is defined as VELOCITY actuated but has zero-valued PD gains:"
-                f"\n  k_p_j: {self.k_p_j}"
-                f"\n  k_d_j: {self.k_d_j}"
-            )
-        if self.act_type == JointActuationType.POSITION_VELOCITY and not (np.any(self.k_p_j) or np.any(self.k_d_j)):
-            raise ValueError(
-                f"Joint `{self.name}` is defined as POSITION_VELOCITY actuated but has zero-valued PD gains:"
-                f"\n  k_p_j: {self.k_p_j}"
-                f"\n  k_d_j: {self.k_d_j}"
             )
 
     @override
@@ -1623,6 +1866,7 @@ class JointDescriptor(Descriptor):
             f"uid: {self.uid},\n"
             "----------------------------------------------\n"
             f"act_type: {self.act_type},\n"
+            f"dof_act_types: {self.dof_act_types},\n"
             f"fk_act_flag: {self.fk_act_flag},\n"
             f"dof_type: {self.dof_type},\n"
             "----------------------------------------------\n"
@@ -1668,6 +1912,34 @@ class JointDescriptor(Descriptor):
     ###
     # Operations - Internal
     ###
+
+    def _has_dynamic_cts(self, axis: int) -> bool:
+        """Returns whether an axis has a dynamic constraint row."""
+        return _has_dynamic_cts(
+            self.dof_act_types[axis],
+            self.k_p_j[axis],
+            self.k_d_j[axis],
+            self.tau_j_max[axis],
+            self.a_j[axis],
+            self.b_j[axis],
+        )
+
+    def _has_friction_cts(self, axis: int) -> bool:
+        """Returns whether an axis has a Coulomb-friction constraint row."""
+        return _has_friction_cts(self.dof_type, self.f_j[axis])
+
+    def _has_effort_cts(self, axis: int) -> bool:
+        """Returns whether an axis has bounded implicit-PD actuation."""
+        return _has_effort_cts(self.dof_act_types[axis], self.k_p_j[axis], self.k_d_j[axis], self.tau_j_max[axis])
+
+    def _actuation_path(self, axis: int) -> DofActuationPath:
+        """Returns the actuation routing path for an axis."""
+        if self._has_effort_cts(axis):
+            return DofActuationPath.EFFORT_CTS
+        elif self._has_dynamic_cts(axis):
+            return DofActuationPath.DYNAMIC_CTS
+        else:
+            return DofActuationPath.BODY_WRENCHES
 
     @staticmethod
     def _check_dofs_array(
@@ -1799,8 +2071,31 @@ class JointsModel:
 
     act_type: wp.array[wp.int32] | None = None
     """
-    Joint actuation type ID of each joint.
+    Derived aggregate actuation type ID of each joint.
+
+    Each value is the maximum actuation type across the corresponding
+    :attr:`dof_act_types` slice.
+
     Shape of ``(num_joints,)``.
+    """
+
+    dof_act_types: wp.array[wp.int32] | None = None
+    """
+    Actuation type ID of each joint DoF.
+
+    This is the authoritative per-DoF actuation representation.
+    Shape of ``(sum_of_num_joint_dofs,)``.
+    """
+
+    dof_act_paths: wp.array[wp.int32] | None = None
+    """
+    Per-DoF actuation routing consumed by dynamics and wrench kernels.
+
+    Each entry is a :class:`DofActuationPath` value declaring whether
+    actuation for the DoF is applied through body wrenches, a dynamic row,
+    or an effort row.
+
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     fk_act_flag: wp.array[wp.int32] | None = None
@@ -1996,6 +2291,9 @@ class JointsModel:
     num_friction_cts: wp.array[wp.int32] | None = None
     """Number of Coulomb joint friction rows of each joint."""
 
+    num_effort_cts: wp.array[wp.int32] | None = None
+    """Number of effort-limit implicit-PD rows of each joint."""
+
     coords_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's coordinates block, in model-wide
@@ -2137,6 +2435,41 @@ class JointsModel:
     friction constraints count is encoded as ``friction_cts_offset[j+1] - friction_cts_offset[j]``.
     """
 
+    effort_cts_offset: wp.array[wp.int32] | None = None
+    """
+    Index offset of each joint's effort-limit implicit-PD constraints block, in model-wide
+    flattened joint effort constraints arrays.
+
+    Shape of ``(num_joints + 1,)``.
+
+    The last entry is the total joint effort constraints count, so that the per-joint
+    effort constraints count is encoded as ``effort_cts_offset[j+1] - effort_cts_offset[j]``.
+    """
+
+    dynamic_cts_axis: wp.array[wp.int32] | None = None
+    """
+    Joint-local DoF axis of each dynamic constraint row, in model-wide
+    flattened joint dynamic constraints arrays.
+
+    Shape of ``(sum_of_num_dynamic_joint_cts,)``.
+    """
+
+    friction_cts_axis: wp.array[wp.int32] | None = None
+    """
+    Joint-local DoF axis of each Coulomb-friction constraint row, in model-wide
+    flattened joint Coulomb-friction constraints arrays.
+
+    Shape of ``(sum_of_num_friction_cts,)``.
+    """
+
+    effort_cts_axis: wp.array[wp.int32] | None = None
+    """
+    Joint-local DoF axis of each effort-limit implicit-PD row, in model-wide
+    flattened joint effort constraints arrays.
+
+    Shape of ``(sum_of_num_effort_cts,)``.
+    """
+
     dynamic_cts_offset_total_cts: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's dynamic constraints block, in model-wide
@@ -2156,6 +2489,14 @@ class JointsModel:
     friction_cts_offset_total_cts: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's friction constraints block, in model-wide
+    flattened total constraints arrays (joints + bounded + limits + contacts).
+
+    Shape of ``(num_joints,)``.
+    """
+
+    effort_cts_offset_total_cts: wp.array[wp.int32] | None = None
+    """
+    Index offset of each joint's effort constraints block, in model-wide
     flattened total constraints arrays (joints + bounded + limits + contacts).
 
     Shape of ``(num_joints,)``.
@@ -2272,6 +2613,17 @@ class JointsData:
     Shape of ``(sum_of_num_friction_cts,)``.
     """
 
+    lambda_tau_j: wp.array[wp.float32] | None = None
+    """
+    Flat array of effort-limit implicit-PD Lagrange multipliers [N or N·m].
+
+    To access the multipliers of a specific joint ``j`` use ``model.joints.effort_cts_offset[j]``
+    as the start index. The per-joint row count is
+    ``model.joints.effort_cts_offset[j + 1] - model.joints.effort_cts_offset[j]``.
+
+    Shape of ``(sum_of_num_effort_cts,)``.
+    """
+
     ###
     # Dynamics
     ###
@@ -2282,12 +2634,16 @@ class JointsData:
     used for implicit integration of joint dynamics.
 
     Let ``m_j_0 := a_j + dt * b_j``, where ``dt`` is the simulation time step.
-    The actuation mode determines the remaining terms:
+    Unbounded implicit PD is included with passive armature and damping in the
+    joint dynamics constraint. The actuation type determines the remaining terms:
 
     - ``PASSIVE`` or ``FORCE``: ``m_j := m_j_0``
     - ``VELOCITY``: ``m_j := m_j_0 + dt * k_d_j``
     - ``POSITION``, ``POSITION_VELOCITY``, or ``POSITION_VELOCITY_FORCE``:
       ``m_j := m_j_0 + dt * k_d_j + dt^2 * k_p_j``
+
+    Joint dynamics sharing an axis with an effort-limit implicit-PD constraint are passive and
+    use ``m_j := m_j_0``.
 
     A non-zero minimum mass is enforced to avoid a
     division-by-zero failure.
@@ -2338,7 +2694,8 @@ class JointsData:
     h_j := a_j * dq_j^{-} + dt * tau_j_tot
     dq_b_j := inv_m_j * h_j
     ```
-    The actuation mode determines ``tau_j_tot``:
+    For unbounded implicit PD, the joint dynamics constraint includes
+    ``tau_j_tot`` according to the actuation type:
 
     - ``PASSIVE``: ``tau_j``
     - ``FORCE``: ``tau_j + tau_j_ff``
@@ -2349,10 +2706,47 @@ class JointsData:
     - ``POSITION_VELOCITY_FORCE``:
       ``tau_j + tau_j_ff + k_p_j * (q_j_ref - q_j^{-}) + k_d_j * dq_j_ref``
 
+    For bounded implicit PD, the effort-limit constraint supplies the actuator
+    contribution and ``tau_j_tot := 0`` in the passive joint dynamics constraint.
+
     For ``POSITION``, the ``dt * k_d_j`` term in :attr:`m_j` supplies derivative
     damping toward zero velocity without consuming ``dq_j_ref``.
 
     Shape of ``(sum_of_num_dynamic_joint_cts,)``.
+    """
+
+    inv_m_a: wp.array[wp.float32] | None = None
+    """
+    Inverse effective actuator inertia of each effort-limit implicit-PD row
+    [1/(N·s), 1/(N·m·s)].
+
+    ``inv_m_a := 1 / m_a`` with ``m_a = dt * k_d_j`` for
+    ``VELOCITY`` actuation and ``m_a = dt * k_d_j + dt^2 * k_p_j``
+    otherwise. A non-zero minimum ``m_a`` is enforced to avoid
+    division by zero.
+
+    Shape of ``(sum_of_num_effort_cts,)``.
+    """
+
+    dq_b_a: wp.array[wp.float32] | None = None
+    """
+    Velocity bias of each effort-limit implicit-PD row [m/s, rad/s].
+
+    ``dq_b_a := inv_m_a * dt * tau_j_tot``, where ``tau_j_tot`` includes
+    ``tau_j``, the feed-forward command when selected, and the position and
+    velocity reference terms for the DoF actuation type.
+
+    Shape of ``(sum_of_num_effort_cts,)``.
+    """
+
+    bound_a: wp.array[wp.float32] | None = None
+    """
+    Impulse bound of each effort-limit implicit-PD row [N·s, N·m·s].
+
+    ``bound_a := dt * tau_j_max``. Effort rows are allocated only when the
+    DoF participates in implicit PD with a finite ``tau_j_max``.
+
+    Shape of ``(sum_of_num_effort_cts,)``.
     """
 
     ###
@@ -2452,6 +2846,7 @@ class JointsData:
             self.q_j_p.zero_()
         self.dq_j.zero_()
         self.lambda_f_j.zero_()
+        self.lambda_tau_j.zero_()
 
     def reset_references(
         self,
@@ -2501,6 +2896,7 @@ class JointsData:
         self.lambda_kin_j.zero_()
         self.lambda_dyn_j.zero_()
         self.lambda_f_j.zero_()
+        self.lambda_tau_j.zero_()
 
     def clear_actuation_forces(self):
         """
