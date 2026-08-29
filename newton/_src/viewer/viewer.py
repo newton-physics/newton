@@ -810,9 +810,9 @@ class ViewerBase(ABC):
         """Set the camera position and orientation.
 
         Args:
-            pos: The position of the camera.
-            pitch: The pitch of the camera.
-            yaw: The yaw of the camera.
+            pos: Camera position [m].
+            pitch: Camera pitch angle [deg].
+            yaw: Camera yaw angle [deg].
         """
         return
 
@@ -823,16 +823,18 @@ class ViewerBase(ABC):
         pitch and yaw angles.
 
         Args:
-            pos: Camera position.
-            target: World-space point at which to aim the camera.
-            fov: Optional vertical field of view in degrees, when supported by
-                the viewer backend.
+            pos: Camera position [m].
+            target: World-space point at which to aim the camera [m].
+            fov: Optional vertical field of view [deg], when supported by the
+                viewer backend.
         """
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         target_np = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
+        if not np.all(np.isfinite(position)) or not np.all(np.isfinite(target_np)):
+            raise ValueError("Camera position and target must be finite")
         direction = target_np - position
         direction_norm = float(np.linalg.norm(direction))
-        if not np.isfinite(direction_norm) or direction_norm <= 1.0e-12:
+        if direction_norm <= 1.0e-12:
             self.set_camera(pos, pitch=0.0, yaw=0.0)
             return
 
@@ -1747,14 +1749,16 @@ class ViewerBase(ABC):
 
         Args:
             name: The name of the gizmo.
-            transform: The transform of the gizmo.
+            transform: Gizmo transform with translation [m] and a unitless
+                rotation quaternion.
             translate: Axes on which the translation handles are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
-            snap_to: Optional world transform to snap to when this gizmo is
+            snap_to: Optional world transform with translation [m] and a
+                unitless rotation quaternion to apply when this gizmo is
                 released by the user.
         """
         return

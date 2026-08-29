@@ -437,6 +437,7 @@ class TestViewerLayerBackends(unittest.TestCase):
         server.gui = Gui()
         server.on_client_connect = Mock()
         server.on_client_disconnect = Mock()
+        server.get_clients = Mock(return_value={})
         server.get_scene_serializer = Mock(return_value=None)
         server.stop = Mock()
 

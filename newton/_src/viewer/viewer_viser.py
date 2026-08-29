@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import collections
 import inspect
+import logging
 import os
 import queue
 import warnings
@@ -40,6 +41,8 @@ from .viewer import ViewerBase, is_jupyter_notebook
 
 # ViewerGL uses 0.07 clip-space units; 56 px matches that at an 800 px viewport.
 _GIZMO_SCALE_PX = 56.0
+
+_logger = logging.getLogger(__name__)
 
 
 class ViewerViser(ViewerBase):
@@ -443,6 +446,7 @@ class ViewerViser(ViewerBase):
         self.gizmo_is_using = False
         self._picking_controls: dict[str, Any] = {}
         self._picking_click_callbacks: dict[int, tuple[Any, Any]] = {}
+        self._active_picking_layer_id: str | None = None
         self._interaction_events: queue.SimpleQueue[tuple[Any, ...]] = queue.SimpleQueue()
         self._paused = False
         self._step_requested = False
@@ -608,6 +612,8 @@ class ViewerViser(ViewerBase):
         layer._packed_shape_world_xforms = None
         layer._packed_shape_groups = []
         layer._packed_shape_colors_host = None
+        layer._packed_shape_colors_device = None
+        layer._shape_colors_changed_device = None
 
     @override
     def set_model(self, model: newton.Model | None):
@@ -656,6 +662,8 @@ class ViewerViser(ViewerBase):
         self._packed_shape_groups = []
         self._packed_shape_world_xforms = None
         self._packed_shape_colors_host = None
+        self._packed_shape_colors_device = None
+        self._shape_colors_changed_device = None
         if total == 0:
             return
 
@@ -667,6 +675,9 @@ class ViewerViser(ViewerBase):
             self._packed_shape_groups.append((batch, offset, count))
             offset += count
         self._packed_shape_world_xforms = packed
+        if self.model_shape_color is not None:
+            self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
+            self._shape_colors_changed_device = wp.zeros(1, dtype=wp.int32, device=self.device)
 
     @override
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3) -> None:
@@ -1189,6 +1200,8 @@ class ViewerViser(ViewerBase):
         picking = getattr(layer, "picking", None) if layer is not None else None
         if release and picking is not None:
             picking.release()
+        if release and self._active_picking_layer_id == layer_id:
+            self._active_picking_layer_id = None
 
     def _create_picking_control(self, layer_id: str) -> None:
         """Create a translation-only handle at the current picking target."""
@@ -1227,10 +1240,13 @@ class ViewerViser(ViewerBase):
         layer = self._layers.get(layer_id)
         if layer is None or layer.picking is None or layer._last_state is None:
             return
+        if self._active_picking_layer_id not in (None, layer_id):
+            self._remove_picking_control(self._active_picking_layer_id, release=True)
         self._remove_picking_control(layer_id, release=True)
         origin, direction = self._transform_ray_to_layer(layer, ray_origin, ray_direction)
         layer.picking.pick(layer._last_state, origin, direction)
         if layer.picking.is_picking():
+            self._active_picking_layer_id = layer_id
             self._create_picking_control(layer_id)
 
     def _set_picking_target(self, layer_id: str, visual_target) -> None:
@@ -1643,9 +1659,9 @@ class ViewerViser(ViewerBase):
         the same camera setup as soon as they report camera state.
 
         Args:
-            pos: Requested camera position.
-            pitch: Requested camera pitch angle.
-            yaw: Requested camera yaw angle.
+            pos: Requested camera position in meters.
+            pitch: Requested camera pitch angle in degrees.
+            yaw: Requested camera yaw angle in degrees.
         """
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         front, up_direction = self._compute_camera_front_up(pitch, yaw)
@@ -1661,7 +1677,13 @@ class ViewerViser(ViewerBase):
 
     @override
     def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, fov: float | None = None):
-        """Set the camera position, orbit target, and optional field of view."""
+        """Set the camera position, orbit target, and optional field of view.
+
+        Args:
+            pos: Camera position in meters.
+            target: Orbit target in meters.
+            fov: Optional vertical field of view in degrees.
+        """
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         look_at = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
         if not np.all(np.isfinite(position)) or not np.all(np.isfinite(look_at)):
@@ -1708,10 +1730,12 @@ class ViewerViser(ViewerBase):
 
         Args:
             name: Unique gizmo path/name.
-            transform: Gizmo world transform, mutated in place on interaction.
+            transform: Gizmo world transform with translation in meters and a unitless quaternion,
+                mutated in place on interaction.
             translate: Axes on which translation handles are shown.
             rotate: Axes on which rotation rings are shown.
-            snap_to: Optional world transform applied when dragging ends.
+            snap_to: Optional world transform, with translation in meters and a unitless quaternion,
+                applied when dragging ends.
         """
         name = self._qualify(name)
         translate_axes = self._normalize_gizmo_axes(translate)
@@ -1946,12 +1970,6 @@ class ViewerViser(ViewerBase):
                 self._set_handle_property_if_changed(handle, "visible", False)
             return
 
-        shape_batch = self._shape_instance_batch(name)
-        if handles and shape_batch is not None and shape_batch.static:
-            for handle in handles:
-                self._set_handle_property_if_changed(handle, "visible", True)
-            return
-
         xforms_np = self._to_numpy(xforms)
         if xforms_np is None or len(xforms_np) == 0:
             for handle in handles:
@@ -2083,15 +2101,10 @@ class ViewerViser(ViewerBase):
 
         existing = self._instances.get(name) if name in self._scene_handles else None
         shape_batch = self._shape_instance_batch(name)
-        if existing is not None and shape_batch is not None and shape_batch.static:
-            positions = existing["positions"]
-            quats_wxyz = existing["wxyzs"]
-            num_instances = existing["count"]
-        else:
-            xforms_np = self._to_numpy(xforms)
-            num_instances = len(xforms_np)
-            positions = xforms_np[:, :3].astype(np.float32)
-            quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
+        xforms_np = self._to_numpy(xforms)
+        num_instances = len(xforms_np)
+        positions = xforms_np[:, :3].astype(np.float32)
+        quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
 
         if existing is not None and shape_batch is not None:
             batched_scales = existing["scales"]
@@ -2222,6 +2235,7 @@ class ViewerViser(ViewerBase):
         self._sync_shape_colors_from_model()
 
         from .kernels import update_model_shape_xforms  # noqa: PLC0415
+        from .viewer_viser_kernels import detect_shape_color_changes  # noqa: PLC0415
 
         wp.launch(
             kernel=update_model_shape_xforms,
@@ -2241,16 +2255,33 @@ class ViewerViser(ViewerBase):
         )
 
         packed_xforms = self._to_numpy(packed)
-        packed_colors = self._to_numpy(self.model_shape_color) if self.model_shape_color is not None else None
-        colors_changed = self.model_changed
-        if packed_colors is not None:
-            colors_changed = (
-                colors_changed
-                or self._packed_shape_colors_host is None
-                or not np.array_equal(self._packed_shape_colors_host, packed_colors)
+        packed_colors = None
+        colors_changed = self.model_changed or self._packed_shape_colors_host is None
+        if (
+            self.model_shape_color is not None
+            and not colors_changed
+            and self._packed_shape_colors_device is not None
+            and self._shape_colors_changed_device is not None
+        ):
+            self._shape_colors_changed_device.fill_(0)
+            wp.launch(
+                kernel=detect_shape_color_changes,
+                dim=len(self.model_shape_color),
+                inputs=[
+                    self.model_shape_color,
+                    self._packed_shape_colors_device,
+                ],
+                outputs=[self._shape_colors_changed_device],
+                device=self.device,
+                record_tape=False,
             )
-            if colors_changed:
-                self._packed_shape_colors_host = packed_colors.copy()
+            colors_changed = bool(self._shape_colors_changed_device.numpy()[0])
+        if self.model_shape_color is not None and colors_changed:
+            packed_colors = self._to_numpy(self.model_shape_color)
+            self._packed_shape_colors_host = packed_colors.copy()
+            if self._packed_shape_colors_device is None:
+                self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
+            wp.copy(self._packed_shape_colors_device, self.model_shape_color)
         layer_hidden = self._layer_force_hidden()
 
         for shapes, offset, count in self._packed_shape_groups:
@@ -2463,8 +2494,12 @@ class ViewerViser(ViewerBase):
         Args:
             state: Current simulation state.
         """
-        if self.picking_enabled and self.picking is not None:
-            self.picking._apply_picking_force(state)
+        if not self.picking_enabled or self._active_picking_layer_id is None:
+            return
+        layer = self._layers.get(self._active_picking_layer_id)
+        picking = getattr(layer, "picking", None) if layer is not None else None
+        if picking is not None and picking.is_picking():
+            picking._apply_picking_force(state)
 
     def save_recording(self):
         """
@@ -2729,11 +2764,12 @@ class ViewerViser(ViewerBase):
                     self._point_cloud_colors[name] = colors_val.copy()
                 self._set_handle_property_if_changed(existing_handle, "visible", True)
                 return
-            except Exception:
+            except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+                _logger.warning("Failed to update Viser point cloud %r in place; recreating it: %s", name, error)
                 try:
                     existing_handle.remove()
-                except Exception:
-                    pass
+                except (AttributeError, RuntimeError, TypeError, ValueError) as cleanup_error:
+                    _logger.warning("Failed to remove stale Viser point cloud %r: %s", name, cleanup_error)
                 self._scene_handles.pop(name, None)
                 self._point_cloud_colors.pop(name, None)
 
@@ -2741,8 +2777,8 @@ class ViewerViser(ViewerBase):
         if stale_handle is not None:
             try:
                 stale_handle.remove()
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError, ValueError) as cleanup_error:
+                _logger.warning("Failed to remove stale Viser scene handle %r: %s", name, cleanup_error)
 
         if colors_val is None:
             colors_val = np.full((n_points, 3), 255, dtype=np.uint8)
@@ -2855,8 +2891,14 @@ class ViewerViser(ViewerBase):
         return atlas, "png"
 
     @override
-    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
-        """Display a selected image stream in a persistent native Viser panel."""
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray, *, fullscreen: bool = False) -> None:
+        """Display a selected image stream in a persistent native Viser panel.
+
+        Args:
+            name: Image stream name.
+            image: Single image or image batch to display.
+            fullscreen: Accepted for viewer API compatibility and ignored by Viser.
+        """
         name = self._qualify(name)
         self._register_image_name(name)
         if name != self._selected_image_name:

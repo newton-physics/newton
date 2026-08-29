@@ -6,7 +6,7 @@ from __future__ import annotations
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
@@ -335,6 +335,7 @@ class _FakePicking:
         self.pick_state = _FakeArray(state)
         self.active = False
         self.applied = False
+        self.applied_states = []
         self.last_ray = None
 
     def pick(self, _state, ray_origin, ray_direction):
@@ -353,8 +354,9 @@ class _FakePicking:
         self.active = False
         self.pick_body.fill_(-1)
 
-    def _apply_picking_force(self, _state):
+    def _apply_picking_force(self, state):
         self.applied = True
+        self.applied_states.append(state)
 
 
 class TestViewerViserInteraction(unittest.TestCase):
@@ -435,7 +437,7 @@ class TestViewerViserInteraction(unittest.TestCase):
         depth = np.full((2, 2, 3, 4), 127, dtype=np.uint8)
         depth[..., 3] = 255
 
-        self.viewer.log_image("color", color)
+        self.viewer.log_image("color", color, fullscreen=True)
         image_handle = self.viewer._image_handle
         self.assertEqual(len(self.server.gui.images), 1)
         self.assertEqual(image_handle.image.shape, (2, 6, 3))
@@ -671,6 +673,7 @@ class TestViewerViserInteraction(unittest.TestCase):
             [wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity())],
             dtype=wp.transform,
         )
+        self.viewer._shape_instances[0] = SimpleNamespace(name="ground", static=True)
 
         self.viewer._log_plane_instances("ground", plane_info, first_xforms, None)
         handle = self.viewer._plane_handles["ground"][0]
@@ -756,20 +759,55 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.assertTrue(handle.visible)
 
     def test_model_shapes_use_packed_host_transfers(self):
-        """Transfer all model-shape transforms and colors in two arrays."""
+        """Compose packed transforms and skip unchanged full color transfers."""
+        device = "cuda:0" if sys.platform == "win32" and wp.is_cuda_available() else "cpu"
         builder = newton.ModelBuilder()
-        builder.add_shape_box(-1)
+        builder.begin_world()
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        )
+        dynamic_shape = builder.add_shape_box(
+            body,
+            xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()),
+        )
         builder.add_shape_sphere(-1)
-        model = builder.finalize(device="cpu")
+        builder.end_world()
+        model = builder.finalize(device=device)
         self.viewer.set_model(model)
+        self.viewer.world_offsets = wp.array((wp.vec3(3.0, 0.0, 0.0),), dtype=wp.vec3, device=device)
+        self.viewer.set_layer_transform(self.viewer.layer.layer_id, (4.0, 0.0, 0.0))
         state = model.state()
+        self.viewer._log_non_shape_state = Mock()
         self.viewer.log_state(state)
+
+        dynamic_slot = int(np.flatnonzero(self.viewer._slot_to_shape == dynamic_shape)[0])
+        packed_xforms = self.viewer._packed_shape_world_xforms.numpy()
+        np.testing.assert_allclose(packed_xforms[dynamic_slot, :3], (10.0, 0.0, 0.0))
+
+        static_batch = next(batch for batch, _offset, _count in self.viewer._packed_shape_groups if batch.static)
+        static_handle = self.viewer._scene_handles[static_batch.name]
+        np.testing.assert_allclose(self.viewer._instances[static_batch.name]["positions"][0], (7.0, 0.0, 0.0))
 
         with patch.object(self.viewer, "_to_numpy", wraps=self.viewer._to_numpy) as to_numpy:
             self.viewer.log_state(state)
 
         warp_transfers = [call.args[0] for call in to_numpy.call_args_list if isinstance(call.args[0], wp.array)]
         self.assertEqual(len(self.viewer._packed_shape_groups), 2)
+        self.assertEqual(len(warp_transfers), 1)
+
+        self.viewer.world_offsets = wp.array((wp.vec3(5.0, 0.0, 0.0),), dtype=wp.vec3, device=device)
+        self.viewer.set_layer_transform(self.viewer.layer.layer_id, (8.0, 0.0, 0.0))
+        self.viewer.log_state(state)
+
+        self.assertIs(self.viewer._scene_handles[static_batch.name], static_handle)
+        np.testing.assert_allclose(self.viewer._instances[static_batch.name]["positions"][0], (13.0, 0.0, 0.0))
+
+        model.shape_color[dynamic_shape : dynamic_shape + 1].fill_(wp.vec3(0.8, 0.2, 0.1))
+        with patch.object(self.viewer, "_to_numpy", wraps=self.viewer._to_numpy) as to_numpy:
+            self.viewer.log_state(state)
+        warp_transfers = [call.args[0] for call in to_numpy.call_args_list if isinstance(call.args[0], wp.array)]
         self.assertEqual(len(warp_transfers), 2)
 
     def test_gizmo_disappears_when_not_logged(self):
@@ -821,6 +859,23 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.viewer.begin_frame(0.2)
         self.assertFalse(picking.is_picking())
         self.assertTrue(control.removed)
+
+    def test_picking_force_uses_owning_layer_after_activation_changes(self):
+        """Keep applying a pick through the layer that received the click."""
+        self.viewer.activate("A")
+        picking_a = _FakePicking()
+        self.viewer.picking = picking_a
+        self.viewer._last_state = object()
+        self.viewer._start_picking("A", (0.0, 0.0, -1.0), (0.0, 0.0, 1.0))
+
+        self.viewer.activate("B")
+        picking_b = _FakePicking()
+        self.viewer.picking = picking_b
+        state = object()
+        self.viewer.apply_forces(state)
+
+        self.assertEqual(picking_a.applied_states, [state])
+        self.assertEqual(picking_b.applied_states, [])
 
     def test_scalar_logging_updates_rolling_plot(self):
         """Render logged scalars into a bounded rolling uPlot history."""
