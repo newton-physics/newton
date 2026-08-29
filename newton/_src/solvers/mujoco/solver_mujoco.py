@@ -69,6 +69,7 @@ from .kernels import (
     apply_mjc_free_joint_f_to_body_f_kernel,
     apply_mjc_qfrc_kernel,
     build_ref_q_kernel,
+    collect_overflow_kernel,
     convert_mj_coords_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
     convert_qfrc_actuator_from_mj_kernel,
@@ -3738,13 +3739,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 :class:`warp.DeterministicMode`, or ``None`` to inherit
                 ``wp.config.deterministic``.
             strict_capacity: If ``True``, raise a ``RuntimeError`` when the
-                Newton contact buffer is larger than MuJoCo Warp's ``nconmax``
-                (checked cheaply at every step without a GPU sync), and raise
-                again after each step if actual runtime contacts or solver
-                constraints overflowed (requires a GPU sync).  If ``False``
-                (default), emit a ``UserWarning`` on the capacity mismatch but
-                continue; runtime overflow is reported only via the device-side
-                ``wp.printf`` already present in the contact conversion kernel.
+                Newton contact pipeline buffer (``rigid_contact_max``) exceeds
+                MuJoCo Warp's ``nconmax``; the check runs at the start of every
+                step and requires no GPU sync.  If ``False`` (default), emit a
+                ``UserWarning`` on that same mismatch but continue.  Runtime
+                overflow (contacts dropped during a step) is always reported
+                GPU-side via a ``wp.printf`` message; to detect it in Python
+                without a GPU sync, request ``state.mujoco.overflow`` via
+                ``builder.request_state_attributes("mujoco:overflow")`` and
+                check the bitmask after each step.
         """
         super().__init__(model)
 
@@ -4100,25 +4103,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
                     self._convert_contacts_to_mjwarp(self.model, state_in, contacts)
-                if self._strict_capacity:
-                    self.mjw_data.overflow.zero_()
+                # Always clear d.overflow before the step so state.mujoco.overflow
+                # reflects only the current step (d.overflow uses |= accumulation).
+                self.mjw_data.overflow.zero_()
                 self._mujoco_warp_step()
-                if self._strict_capacity:
-                    contact_count = int(contacts.rigid_contact_count.numpy()[0])
-                    naconmax = self.mjw_data.naconmax
-                    if contact_count > naconmax:
-                        raise RuntimeError(
-                            f"Runtime contact count ({contact_count}) exceeded nconmax ({naconmax}); "
-                            f"contacts were silently clipped and the simulation result is invalid. "
-                            f"Pass nconmax>={contact_count} to SolverMuJoCo."
-                        )
-                    if self.mjw_data.overflow.numpy().any():
-                        raise RuntimeError(
-                            "MuJoCo Warp constraint buffer overflow (njmax or nefc exceeded); "
-                            "the simulation result is invalid. "
-                            "Pass a larger njmax to SolverMuJoCo."
-                        )
                 self._update_newton_state(self.model, state_out, self.mjw_data, state_prev=state_in)
+                # Write per-step overflow state into State if the attribute was requested.
+                overflow_out = getattr(getattr(state_out, "mujoco", None), "overflow", None)
+                if overflow_out is not None:
+                    wp.launch(
+                        collect_overflow_kernel,
+                        dim=self.mjw_data.nworld,
+                        inputs=[
+                            contacts.rigid_contact_count,
+                            contacts.rigid_contact_max,
+                            self.mjw_data.naconmax,
+                            self.mjw_data.overflow,
+                        ],
+                        outputs=[overflow_out],
+                        device=self.model.device,
+                    )
         self._step += 1
 
     @override
