@@ -4118,6 +4118,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_max,
                             self.mjw_data.naconmax,
+                            # 1 when Newton fed contacts in; 0 when MuJoCo Warp
+                            # ran its own collision detection (bits 16-17 are
+                            # meaningless on that path — rigid_contact_count may
+                            # be stale or zero).
+                            int(not self.mjw_model.opt.run_collision_detection),
                             self.mjw_data.overflow,
                         ],
                         outputs=[overflow_out],
