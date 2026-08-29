@@ -814,6 +814,55 @@ class TestPADMMSolver(unittest.TestCase):
         # Check solution
         check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
 
+    def test_08a_padmm_collect_info_matches_solution(self):
+        """Record consistent diagnostics for dense and sparse PADMM problems."""
+        info_vectors = {}
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                test = TestSetup(
+                    builder_fn=basics.build_box_on_plane,
+                    device=self.default_device,
+                    sparse=sparse,
+                )
+                solver = PADMMSolver(
+                    model=test.model,
+                    config=PADMMSolver.Config(
+                        primal_tolerance=1.0e3,
+                        dual_tolerance=1.0e3,
+                        compl_tolerance=1.0e3,
+                        max_iterations=8,
+                    ),
+                    warmstart=PADMMWarmStartMode.NONE,
+                    use_acceleration=False,
+                    use_graph_conditionals=False,
+                    collect_info=True,
+                )
+
+                test.build()
+                solver.reset()
+                solver.coldstart()
+                solver.solve(problem=test.problem)
+
+                info = solver.data.info
+                status = solver.data.status
+                solution = solver.data.solution
+                iterations = int(status.numpy()[0]["iterations"])
+
+                # History was written
+                self.assertTrue((info.norm_x.numpy()[:iterations] != 0.0).all())
+                np.testing.assert_array_equal(info.norm_x.numpy()[iterations:], 0.0)
+
+                # Solution is consistent with info
+                np.testing.assert_allclose(info.lambdas.numpy(), solution.lambdas.numpy())
+                np.testing.assert_allclose(info.v_aug.numpy(), info.v_plus.numpy() + info.s.numpy())
+
+                # Store info for dense-sparse comparison
+                info_vectors[sparse] = (info.v_plus.numpy(), info.v_aug.numpy(), info.s.numpy())
+
+        # Compare dense-sparse info
+        for dense_values, sparse_values in zip(info_vectors[False], info_vectors[True], strict=True):
+            np.testing.assert_allclose(dense_values, sparse_values, rtol=1e-5, atol=1e-6)
+
     def test_09_apadmm_restart_matches_bilateral_reference(self):
         """Match a NumPy reference across an APADMM solve whose final iteration restarts.
 

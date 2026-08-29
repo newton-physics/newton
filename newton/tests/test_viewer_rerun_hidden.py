@@ -6,6 +6,7 @@ import warnings
 from unittest.mock import Mock, patch
 
 import numpy as np
+import warp as wp
 
 # ruff: noqa: PLC0415
 
@@ -83,13 +84,16 @@ class TestViewerRerunHidden(unittest.TestCase):
         self.mock_rr.log.assert_not_called()
 
     def test_log_mesh_hidden_clears_previously_visible_entity(self):
+        """Clear a mesh entity when a visible mesh becomes hidden."""
         viewer = self._create_viewer()
-        viewer._meshes["mesh"] = {"visible": True}
 
-        points = self._make_mock_wp_array([[0, 0, 0], [1, 0, 0], [0, 1, 0]])
-        indices = self._make_mock_wp_array([0, 1, 2])
+        points = wp.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
 
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("mesh", points, indices)
+            self.mock_rr.log.reset_mock()
+            self.mock_rr.Clear.reset_mock()
             viewer.log_mesh("mesh", points, indices, hidden=True)
 
         self.mock_rr.Clear.assert_called_once_with(recursive=False)

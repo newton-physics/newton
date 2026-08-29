@@ -330,6 +330,7 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(visibility, "invisible")
 
     def test_log_mesh_dynamic_time_samples_topology(self):
+        """Time-sample changing mesh topology when dynamic is enabled."""
         viewer = self._make_viewer()
 
         points0 = wp.array(
@@ -358,6 +359,7 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(list(face_indices.Get(1)), [0, 1, 2, 0, 2, 3])
 
     def test_log_mesh_dynamic_clears_stale_normals(self):
+        """Clear normals when a later dynamic mesh update omits them."""
         viewer = self._make_viewer()
         points = wp.array(
             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],

@@ -1126,6 +1126,37 @@ class ModelBuilder:
                         yield {"joint": joint_path, "stiffness": prim.GetCustomDataByKey("stiffness")}
         """
 
+        articulation_owner_attribute: str | None = None
+        """Full key of the attribute that assigns each row to an articulation.
+
+        The key must be named ``<frequency>_articulation``.
+        The attribute must use this custom frequency, be assigned to the model,
+        and declare ``references="articulation"``. When provided,
+        :class:`~newton.selection.ArticulationView` automatically exposes every
+        array that uses this frequency.
+        """
+
+        articulation_owner_resolver: Callable[[ModelBuilder], Sequence[int]] | None = None
+        """Optional callback that computes the articulation owner for every row.
+
+        The callback runs before this builder is merged or finalized and its
+        results populate :attr:`articulation_owner_attribute`. This keeps
+        solver-specific ownership logic local to the custom-frequency
+        registration while preserving ordinary reference remapping. Rows whose
+        ownership was already remapped by a merge are preserved when later rows
+        are appended and resolved.
+        """
+
+        label_attribute: str | None = None
+        """Optional full key of a string attribute containing row labels.
+
+        The key must be named ``<frequency>_label``.
+        The attribute must use this custom frequency and be assigned to the model.
+        :class:`~newton.selection.ArticulationView` uses it to expose labels for
+        the template articulation. Builder merging applies ``label_prefix`` to
+        these values like other entity labels.
+        """
+
         def __post_init__(self):
             """Validate frequency naming and callback relationships."""
             if not self.name or ":" in self.name:
@@ -1134,6 +1165,21 @@ class ModelBuilder:
                 raise ValueError(f"namespace must be non-empty and colon-free, got '{self.namespace}'")
             if self.usd_entry_expander is not None and self.usd_prim_filter is None:
                 raise ValueError("usd_entry_expander requires usd_prim_filter")
+            if self.articulation_owner_resolver is not None and self.articulation_owner_attribute is None:
+                raise ValueError("articulation_owner_resolver requires articulation_owner_attribute")
+            for field_name, attribute_key, expected_key in (
+                (
+                    "articulation_owner_attribute",
+                    self.articulation_owner_attribute,
+                    f"{self.key}_articulation",
+                ),
+                ("label_attribute", self.label_attribute, f"{self.key}_label"),
+            ):
+                if attribute_key is not None and attribute_key != expected_key:
+                    raise ValueError(
+                        f"{field_name} for custom frequency '{self.key}' must be '{expected_key}', "
+                        f"got '{attribute_key}'"
+                    )
 
         @property
         def key(self) -> str:
@@ -1649,6 +1695,8 @@ class ModelBuilder:
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
         """Running counts for custom string frequencies used to size custom attribute arrays."""
+        self._custom_frequency_owner_resolved_counts: dict[str, int] = {}
+        """Row counts covered by the latest custom-frequency owner resolution."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
@@ -1750,6 +1798,9 @@ class ModelBuilder:
         return (
             existing.usd_prim_filter is incoming.usd_prim_filter
             and existing.usd_entry_expander is incoming.usd_entry_expander
+            and existing.articulation_owner_attribute == incoming.articulation_owner_attribute
+            and existing.articulation_owner_resolver is incoming.articulation_owner_resolver
+            and existing.label_attribute == incoming.label_attribute
         )
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
@@ -1866,7 +1917,9 @@ class ModelBuilder:
         if freq_key in self.custom_frequencies:
             existing = self.custom_frequencies[freq_key]
             if not self._custom_frequency_specs_match(existing, freq_obj):
-                raise ValueError(f"Custom frequency '{freq_key}' is already registered with different callbacks.")
+                raise ValueError(
+                    f"Custom frequency '{freq_key}' is already registered with different callbacks or metadata."
+                )
             # Already registered with equivalent callbacks - silently skip
             return
 
@@ -1898,6 +1951,136 @@ class ModelBuilder:
     def get_custom_frequency_keys(self) -> set[str]:
         """Return set of custom frequency keys (string frequencies) defined in this builder."""
         return set(self._custom_frequency_counts.keys())
+
+    @staticmethod
+    def _get_namespaced_attribute(source: Any, key: str) -> Any:
+        """Return an attribute addressed by its colon-delimited key."""
+        value = source
+        for component in key.split(":"):
+            value = getattr(value, component)
+        return value
+
+    def _resolve_custom_frequency_articulation_owners(self) -> None:
+        """Populate declared owner attributes using frequency-local callbacks."""
+        for frequency_key, frequency in self.custom_frequencies.items():
+            resolver = frequency.articulation_owner_resolver
+            if resolver is None:
+                continue
+
+            count = self._custom_frequency_counts.get(frequency_key, 0)
+            resolved_count = self._custom_frequency_owner_resolved_counts.get(frequency_key, 0)
+            if resolved_count == count:
+                continue
+            if resolved_count > count:
+                raise RuntimeError(
+                    f"Custom frequency '{frequency_key}' has {count} rows but tracks "
+                    f"{resolved_count} resolved owner rows"
+                )
+
+            owner_key = frequency.articulation_owner_attribute
+            assert owner_key is not None
+            owner_attribute = self.custom_attributes.get(owner_key)
+            if owner_attribute is None:
+                raise ValueError(
+                    f"Custom frequency '{frequency_key}' declares unknown articulation owner attribute '{owner_key}'"
+                )
+
+            resolved_owners = list(resolver(self))
+            if len(resolved_owners) != count:
+                raise ValueError(
+                    f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                    f"{len(resolved_owners)} values, expected {count}"
+                )
+            if resolved_count > 0:
+                if not isinstance(owner_attribute.values, list) or len(owner_attribute.values) < resolved_count:
+                    value_count = len(owner_attribute.values) if owner_attribute.values is not None else 0
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' has {value_count} values but "
+                        f"{resolved_count} merged rows must be preserved"
+                    )
+                owners = list(owner_attribute.values[:resolved_count])
+            else:
+                owners = []
+            for row in range(resolved_count, count):
+                owner = resolved_owners[row]
+                if not self._is_integer_scalar(owner):
+                    raise ValueError(
+                        f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                        f"non-integer value {owner!r} at row {row}"
+                    )
+                owner_index = int(owner)
+                if owner_index < -1 or owner_index >= self.articulation_count:
+                    raise ValueError(
+                        f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                        f"invalid articulation index {owner_index} at row {row}"
+                    )
+                owners.append(owner_index)
+            owner_attribute.values = owners
+            self._custom_frequency_owner_resolved_counts[frequency_key] = count
+
+    def _finalize_custom_frequency_metadata(self, model: Model, device: Devicelike | None) -> None:
+        """Materialize articulation ownership and label metadata on a model."""
+        for frequency_key, frequency in self.custom_frequencies.items():
+            owner_key = frequency.articulation_owner_attribute
+            if owner_key is not None:
+                owner_attribute = self.custom_attributes.get(owner_key)
+                if owner_attribute is None:
+                    raise ValueError(
+                        f"Custom frequency '{frequency_key}' declares unknown articulation owner attribute "
+                        f"'{owner_key}'"
+                    )
+                if owner_attribute.frequency != frequency_key:
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' uses frequency "
+                        f"'{owner_attribute.frequency}', expected '{frequency_key}'"
+                    )
+                if owner_attribute.assignment != Model.AttributeAssignment.MODEL:
+                    raise ValueError(f"Articulation owner attribute '{owner_key}' must be assigned to Model")
+                if owner_attribute.references != "articulation":
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' must declare references='articulation'"
+                    )
+                if not wp.types.type_is_int(owner_attribute.dtype):
+                    raise ValueError(f"Articulation owner attribute '{owner_key}' must use an integer dtype")
+
+                count = model.custom_frequency_counts.get(frequency_key, 0)
+                if count == 0:
+                    owners = wp.empty(0, dtype=owner_attribute.dtype, device=device)
+                else:
+                    owners = self._get_namespaced_attribute(model, owner_key)
+                    if not isinstance(owners, wp.array) or owners.ndim != 1:
+                        raise ValueError(f"Articulation owner attribute '{owner_key}' must be a 1-D Warp array")
+                    if len(owners) != count:
+                        raise ValueError(
+                            f"Articulation owner attribute '{owner_key}' has {len(owners)} values but "
+                            f"frequency '{frequency_key}' expects {count}"
+                        )
+                    owner_values = owners.numpy()
+                    invalid = np.flatnonzero((owner_values < -1) | (owner_values >= model.articulation_count))
+                    if len(invalid) > 0:
+                        row = int(invalid[0])
+                        raise ValueError(
+                            f"Articulation owner attribute '{owner_key}' contains invalid articulation "
+                            f"index {int(owner_values[row])} at row {row}"
+                        )
+                model.custom_frequency_articulation[frequency_key] = owners
+
+            label_key = frequency.label_attribute
+            if label_key is None:
+                continue
+            label_attribute = self.custom_attributes.get(label_key)
+            if label_attribute is None:
+                raise ValueError(f"Custom frequency '{frequency_key}' declares unknown label attribute '{label_key}'")
+            if label_attribute.frequency != frequency_key:
+                raise ValueError(
+                    f"Label attribute '{label_key}' uses frequency '{label_attribute.frequency}', "
+                    f"expected '{frequency_key}'"
+                )
+            if label_attribute.assignment != Model.AttributeAssignment.MODEL:
+                raise ValueError(f"Label attribute '{label_key}' must be assigned to Model")
+            if label_attribute.dtype is not str:
+                raise ValueError(f"Label attribute '{label_key}' must use dtype=str")
+            model.custom_frequency_label_attributes[frequency_key] = label_key
 
     def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
         """Append values to custom attributes with custom string frequencies.
@@ -3039,7 +3222,9 @@ class ModelBuilder:
         for freq_key, frequency in builder.custom_frequencies.items():
             existing = self.custom_frequencies.get(freq_key)
             if existing is not None and not self._custom_frequency_specs_match(existing, frequency):
-                raise ValueError(f"Custom frequency '{freq_key}' is already registered with different callbacks.")
+                raise ValueError(
+                    f"Custom frequency '{freq_key}' is already registered with different callbacks or metadata."
+                )
 
         for full_key, attr in builder.custom_attributes.items():
             merged = self.custom_attributes.get(full_key)
@@ -3632,7 +3817,7 @@ class ModelBuilder:
                 * - ``"path_soft_map"``
                   - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
                 * - ``"path_cable_attrs"``
-                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the imported rod cannot express (e.g. shear / twist). ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the component identifier. Present only with ``return_deformable_results=True``.
+                  - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_attrs"``
                   - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``). Present only with ``return_deformable_results=True``.
                 * - ``"path_soft_attrs"``
@@ -4051,6 +4236,11 @@ class ModelBuilder:
         world: int,
         label_prefix: str | None,
     ) -> None:
+        # Resolve source rows before ordinary reference remapping copies them.
+        # Resolve existing destination rows too, since its topology may have
+        # changed since the rows were first added.
+        builder._resolve_custom_frequency_articulation_owners()
+        self._resolve_custom_frequency_articulation_owners()
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
         # Builders allocate MJCF mask-domain IDs independently. Remap every
@@ -4220,15 +4410,37 @@ class ModelBuilder:
             else:
                 merged.values.update({index_offset + idx: value for idx, value in attr.values.items()})
 
-        if label_prefix and builder._equality_constraint_count > 0:
-            label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
-            if label_attr is not None and label_attr.values:
-                start = self._equality_constraint_count
-                for i in range(start, start + builder._equality_constraint_count):
-                    if i < len(label_attr.values):
-                        label = label_attr.values[i]
-                        if label:
-                            label_attr.values[i] = f"{label_prefix}/{label}"
+        if label_prefix:
+            for frequency_key, frequency in builder.custom_frequencies.items():
+                label_key = frequency.label_attribute
+                if label_key is None:
+                    continue
+                source_label_attribute = builder.custom_attributes.get(label_key)
+                if source_label_attribute is None or source_label_attribute.frequency != frequency_key:
+                    continue
+                label_attribute = self.custom_attributes.get(label_key)
+                if (
+                    label_attribute is None
+                    or not isinstance(label_attribute.values, list)
+                    or not label_attribute.values
+                ):
+                    continue
+                start = custom_frequency_offsets.get(frequency_key, 0)
+                count = builder._custom_frequency_counts.get(frequency_key, 0)
+                for row in range(start, min(start + count, len(label_attribute.values))):
+                    label = label_attribute.values[row]
+                    if label:
+                        label_attribute.values[row] = f"{label_prefix}/{label}"
+
+            if builder._equality_constraint_count > 0:
+                label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
+                if label_attr is not None and label_attr.values:
+                    start = self._equality_constraint_count
+                    for i in range(start, start + builder._equality_constraint_count):
+                        if i < len(label_attr.values):
+                            label = label_attr.values[i]
+                            if label:
+                                label_attr.values[i] = f"{label_prefix}/{label}"
 
         for freq_key, freq_obj in builder.custom_frequencies.items():
             if freq_key not in self.custom_frequencies:
@@ -4238,6 +4450,11 @@ class ModelBuilder:
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
+            frequency = builder.custom_frequencies.get(freq_key)
+            if frequency is not None and frequency.articulation_owner_resolver is not None:
+                # Source owner values were resolved above and remapped as regular
+                # articulation references, so the merged rows are already current.
+                self._custom_frequency_owner_resolved_counts[freq_key] = offset + builder_count
 
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
             self._add_custom_attribute_model_finalizer(key, finalizer)
@@ -5431,32 +5648,58 @@ class ModelBuilder:
             **kwargs,
         )
 
-    def _set_joint_rod_stiffnesses(
+    def _set_joint_rod_material_gains(
         self,
         joint: int,
         *,
-        stretch_stiffness: float | None,
-        shear_stiffness: float | None,
-        bend_stiffness: float | None,
-        twist_stiffness: float | None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
     ) -> None:
-        """Overwrite each non-None stiffness and its inferred target mode, in :meth:`add_joint_rod` axis order."""
+        """Overwrite non-None material gains and target modes in :meth:`add_joint_rod` slot order.
+
+        Args:
+            joint: Rod joint index.
+            stretch_stiffness: Per-joint stretch stiffness [N/m], or ``None`` to preserve it.
+            stretch_damping: Per-joint stretch damping [N·s/m], or ``None`` to preserve it.
+            shear_stiffness: Per-joint shear stiffness [N/m], or ``None`` to preserve it.
+            shear_damping: Per-joint shear damping [N·s/m], or ``None`` to preserve it.
+            bend_stiffness: Per-joint bend stiffness [N·m/rad], or ``None`` to preserve it.
+            bend_damping: Per-joint bend damping [N·m·s/rad], or ``None`` to preserve it.
+            twist_stiffness: Per-joint twist stiffness [N·m/rad], or ``None`` to preserve it.
+            twist_damping: Per-joint twist damping [N·m·s/rad], or ``None`` to preserve it.
+        """
         joint_type = self.joint_type[joint]
         joint_dof_dim = self.joint_dof_dim[joint]
         if joint_type != JointType.ROD or joint_dof_dim != (2, 2):
             raise ValueError(
-                "_set_joint_rod_stiffnesses() expected the four-slot ROD layout "
+                "_set_joint_rod_material_gains() expected the four-slot ROD layout "
                 f"(2 linear, 2 angular); got joint type {JointType(joint_type).name} with dimensions "
                 f"{joint_dof_dim}. Update the ROD material-slot mapping when changing its slot layout."
             )
         dof_start = self.joint_qd_start[joint]
-        for offset, stiffness in enumerate((stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)):
-            if stiffness is not None:
+        stiffnesses = (stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)
+        dampings = (stretch_damping, shear_damping, bend_damping, twist_damping)
+        for offset, (stiffness, damping) in enumerate(zip(stiffnesses, dampings, strict=True)):
+            if stiffness is not None or damping is not None:
                 dof = dof_start + offset
-                damping = self.joint_target_kd[dof]
-                self.joint_target_ke[dof] = stiffness
+                if stiffness is not None:
+                    self.joint_target_ke[dof] = stiffness
+                if damping is not None:
+                    self.joint_target_kd[dof] = damping
+                resolved_stiffness = self.joint_target_ke[dof]
+                resolved_damping = self.joint_target_kd[dof]
                 self.joint_target_mode[dof] = int(
-                    JointTargetMode.from_gains(stiffness, damping, has_drive=stiffness != 0.0 or damping != 0.0)
+                    JointTargetMode.from_gains(
+                        resolved_stiffness,
+                        resolved_damping,
+                        has_drive=resolved_stiffness != 0.0 or resolved_damping != 0.0,
+                    )
                 )
 
     def add_constraint_mimic(
@@ -7600,6 +7843,8 @@ class ModelBuilder:
         remeshed_shapes = set()
 
         if method == "coacd" or method == "vhacd":
+            empty_decomposition_shape = None
+            decomposition_failed = False
             try:
                 if method == "coacd":
                     # convex decomposition using CoACD
@@ -7653,6 +7898,15 @@ class ModelBuilder:
                                 decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
                         decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
+                        if raise_on_failure:
+                            empty_decomposition_shape = shape
+                            break
+                        warnings.warn(
+                            f"Remeshing with method '{method}' failed for shape {shape}: the backend returned no "
+                            "convex parts. Falling back to convex_hull.",
+                            stacklevel=2,
+                        )
+                        decomposition_failed = True
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
                     replacement_mesh = self.shape_source[shape].copy(
@@ -7721,6 +7975,15 @@ class ModelBuilder:
                     method = "convex_hull"
                     # kwargs were addressed to the failed decomposition method
                     remeshing_kwargs = {}
+            if empty_decomposition_shape is not None:
+                raise RuntimeError(
+                    f"Remeshing with method '{method}' failed for shape {empty_decomposition_shape}: "
+                    "the backend returned no convex parts."
+                )
+            if decomposition_failed:
+                method = "convex_hull"
+                # kwargs were addressed to the failed decomposition method
+                remeshing_kwargs = {}
 
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
@@ -12547,8 +12810,12 @@ class ModelBuilder:
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)
+            self._resolve_custom_frequency_articulation_owners()
+
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
+                m.custom_frequency_counts = dict(self._custom_frequency_counts)
+                self._finalize_custom_frequency_metadata(m, device)
                 m.bvh_build_shapes(
                     m,
                     bvh_constructor=self.default_bvh_cfg.shape_constructor,
@@ -12559,7 +12826,7 @@ class ModelBuilder:
 
             # Resolve authoritative counts for custom frequencies
             # Use incremental _custom_frequency_counts as primary source, with safety fallback
-            custom_frequency_counts: dict[str, int] = {}
+            custom_frequency_counts: dict[str, int] = dict(self._custom_frequency_counts)
             frequency_max_lens: dict[str, int] = {}  # Track max len(values) per frequency as fallback
 
             # First pass: collect max len(values) per frequency as fallback
@@ -12571,10 +12838,7 @@ class ModelBuilder:
 
             # Determine authoritative counts: prefer _custom_frequency_counts, fallback to max lens
             for freq_key, max_len in frequency_max_lens.items():
-                if freq_key in self._custom_frequency_counts:
-                    # Use authoritative incremental counter
-                    custom_frequency_counts[freq_key] = self._custom_frequency_counts[freq_key]
-                else:
+                if freq_key not in custom_frequency_counts:
                     # Safety fallback: use max observed length
                     custom_frequency_counts[freq_key] = max_len
 
@@ -12659,6 +12923,8 @@ class ModelBuilder:
                     custom_attr.namespace,
                     custom_attr.references,
                 )
+
+            self._finalize_custom_frequency_metadata(m, device)
 
             m.bvh_build_shapes(
                 m,

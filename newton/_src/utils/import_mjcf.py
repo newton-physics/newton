@@ -2898,6 +2898,9 @@ def parse_mjcf(
         "tendon_wrap_shape",
         "tendon_wrap_sidesite",
         "tendon_wrap_prm",
+        "tendon_articulation",
+        "tendon_joint_articulation",
+        "tendon_wrap_articulation",
     }
     builder_custom_attr_tendon: list[ModelBuilder.CustomAttribute] = [
         attr

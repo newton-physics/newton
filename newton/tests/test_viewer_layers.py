@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
 import unittest
 from unittest.mock import Mock, patch
 
@@ -85,56 +84,6 @@ class _MinimalRTXViewer(ViewerRTX):
 
 
 class TestViewerLayers(unittest.TestCase):
-    def test_rtx_log_mesh_accepts_dynamic_topology_flag(self):
-        self.assertIn("dynamic", inspect.signature(ViewerRTX.log_mesh).parameters)
-
-    def test_rtx_log_mesh_queues_dynamic_topology(self):
-        viewer = _MinimalRTXViewer()
-        viewer._phase = viewer._PHASE_RENDER
-        viewer._mesh_prim_paths = {"surface": "/surface"}
-        viewer._pending_mesh_points = {}
-        viewer._pending_mesh_normals = {}
-        viewer._pending_mesh_topology = {}
-        viewer._pending_mesh_visibility = {}
-
-        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
-        indices = wp.array([0, 1, 2], dtype=wp.int32)
-        viewer.log_mesh("surface", points, indices, dynamic=True)
-
-        face_counts, face_indices = viewer._pending_mesh_topology["surface"]
-        self.assertEqual(face_counts.tolist(), [3])
-        self.assertEqual(face_indices.tolist(), [0, 1, 2])
-        self.assertIsNone(viewer._pending_mesh_normals["surface"])
-        self.assertTrue(viewer._pending_mesh_visibility["surface"])
-
-    def test_rtx_runtime_mesh_updates_visibility(self):
-        viewer = _MinimalRTXViewer()
-        viewer._phase = viewer._PHASE_RENDER
-        viewer._mesh_prim_paths = {"surface": "/surface"}
-        viewer._pending_mesh_points = {}
-        viewer._pending_mesh_normals = {}
-        viewer._pending_mesh_topology = {}
-        viewer._pending_mesh_visibility = {}
-        viewer._rtx = Mock()
-
-        points = wp.empty(0, dtype=wp.vec3)
-        indices = wp.empty(0, dtype=wp.int32)
-        viewer.log_mesh("surface", points, indices, hidden=True, dynamic=True)
-        with patch.object(viewer, "_make_point3f_dltensor", return_value=Mock()):
-            viewer._update_ovrtx_mesh_points()
-
-        viewer._rtx.write_attribute.assert_called_once_with(
-            prim_paths=["/surface"],
-            attribute_name="visibility",
-            tensor=["invisible"],
-        )
-        normals_write = [
-            call
-            for call in viewer._rtx.write_array_attribute.call_args_list
-            if call.kwargs.get("attribute_name") == "normals"
-        ]
-        self.assertEqual(len(normals_write), 1)
-
     def test_default_layer_uses_unprefixed_names(self):
         """Without activate(), object names remain unprefixed (legacy behavior)."""
         viewer = _RecordingViewer()

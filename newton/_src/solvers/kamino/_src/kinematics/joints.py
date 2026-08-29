@@ -13,7 +13,7 @@ import warp as wp
 
 from .....sim.articulation import transform_3d_rotational_axes
 from ..core.data import DataKamino
-from ..core.joints import JointActuationType, JointCorrectionMode, JointDoFType
+from ..core.joints import DofActuationPath, JointActuationType, JointCorrectionMode, JointDoFType
 from ..core.math import FLOAT32_MAX, quat_log, quat_twist_angle
 from ..core.model import ModelKamino
 from ..core.types import (
@@ -812,19 +812,44 @@ def compute_joint_pose_and_relative_motion(
 
 
 @wp.func
+def joint_pd_spherical_position_error(
+    coords_offset: wp.int32,
+    data_joint_q_j: wp.array[wp.float32],
+    data_joint_q_j_ref: wp.array[wp.float32],
+) -> wp.vec3f:
+    """Return the 3D rotation-vector position error for a spherical joint."""
+    q_j = wp.quatf(
+        data_joint_q_j[coords_offset + 0],
+        data_joint_q_j[coords_offset + 1],
+        data_joint_q_j[coords_offset + 2],
+        data_joint_q_j[coords_offset + 3],
+    )
+    q_j_ref = wp.quatf(
+        data_joint_q_j_ref[coords_offset + 0],
+        data_joint_q_j_ref[coords_offset + 1],
+        data_joint_q_j_ref[coords_offset + 2],
+        data_joint_q_j_ref[coords_offset + 3],
+    )
+    return quat_log(q_j_ref * wp.quat_inverse(q_j))
+
+
+@wp.func
 def compute_and_write_joint_implicit_dynamics(
     # Constants:
     dt: wp.float32,
-    act_type: wp.int32,
+    dof_type: wp.int32,
     coords_offset: wp.int32,
     dofs_offset: wp.int32,
     num_dynamic_cts: wp.int32,
     dynamic_cts_offset: wp.int32,
+    dynamic_cts_axis: wp.array[wp.int32],
     # Inputs:
     model_joint_a_j: wp.array[wp.float32],
     model_joint_b_j: wp.array[wp.float32],
     model_joint_k_p_j: wp.array[wp.float32],
     model_joint_k_d_j: wp.array[wp.float32],
+    model_joint_dof_act_types: wp.array[wp.int32],
+    model_joint_dof_act_paths: wp.array[wp.int32],
     data_joint_q_j: wp.array[wp.float32],
     data_joint_dq_j: wp.array[wp.float32],
     data_joint_tau_j: wp.array[wp.float32],
@@ -838,15 +863,20 @@ def compute_and_write_joint_implicit_dynamics(
 ):
     # Iterate over the dynamic constraints of the joint and
     # compute and store the implicit dynamics intermediates.
+    q_j_err_spherical = wp.vec3f(0.0)
+    if dof_type == JointDoFType.SPHERICAL:
+        q_j_err_spherical = joint_pd_spherical_position_error(coords_offset, data_joint_q_j, data_joint_q_j_ref)
+
     for j in range(num_dynamic_cts):
-        coords_offset_j = coords_offset + j
-        dofs_offset_j = dofs_offset + j
         dynamic_cts_offset_j = dynamic_cts_offset + j
+        axis = dynamic_cts_axis[dynamic_cts_offset_j]
+        dofs_offset_j = dofs_offset + axis
+        act_type = model_joint_dof_act_types[dofs_offset_j]
+        include_actuation = model_joint_dof_act_paths[dofs_offset_j] == DofActuationPath.DYNAMIC_CTS
 
         # Retrieve the current joint state
         # TODO: How can we avoid the extra memory load and
         # instead just get them from `make_write_joint_data`?
-        q_j = data_joint_q_j[coords_offset_j]
         dq_j = data_joint_dq_j[dofs_offset_j]
 
         # Retrieve the implicit joint dynamics and PD control parameters
@@ -859,27 +889,33 @@ def compute_and_write_joint_implicit_dynamics(
         tau_j = data_joint_tau_j[dofs_offset_j]
 
         # Retrieve PD control references
-        pd_q_j_ref = data_joint_q_j_ref[coords_offset_j]
         pd_dq_j_ref = data_joint_dq_j_ref[dofs_offset_j]
         pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j] if data_joint_tau_j_ref else 0.0
+        if dof_type == JointDoFType.SPHERICAL:
+            q_j_err = q_j_err_spherical[axis]
+        else:
+            coord = coords_offset + axis
+            q_j_err = data_joint_q_j_ref[coord] - data_joint_q_j[coord]
 
-        # Compute the implicit joint dynamics intermediates
         m_j = a_j + dt * b_j
-        tau_j_tot = tau_j
-        if act_type == JointActuationType.FORCE:
-            tau_j_tot += pd_tau_j_ff
-        elif act_type == JointActuationType.POSITION:
-            m_j += dt * k_d_j + dt * dt * k_p_j
-            tau_j_tot += k_p_j * (pd_q_j_ref - q_j)
-        elif act_type == JointActuationType.VELOCITY:
-            m_j += dt * k_d_j
-            tau_j_tot += k_d_j * pd_dq_j_ref
-        elif act_type == JointActuationType.POSITION_VELOCITY:
-            m_j += dt * k_d_j + dt * dt * k_p_j
-            tau_j_tot += k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
-        elif act_type == JointActuationType.POSITION_VELOCITY_FORCE:
-            m_j += dt * k_d_j + dt * dt * k_p_j
-            tau_j_tot += pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
+        tau_j_tot = 0.0
+        if include_actuation:
+            tau_j_tot = tau_j
+            if act_type == JointActuationType.FORCE:
+                tau_j_tot += pd_tau_j_ff
+            elif act_type == JointActuationType.POSITION:
+                m_j += dt * k_d_j + dt * dt * k_p_j
+                tau_j_tot += k_p_j * q_j_err
+            elif act_type == JointActuationType.VELOCITY:
+                m_j += dt * k_d_j
+                tau_j_tot += k_d_j * pd_dq_j_ref
+            elif act_type == JointActuationType.POSITION_VELOCITY:
+                m_j += dt * k_d_j + dt * dt * k_p_j
+                tau_j_tot += k_p_j * q_j_err + k_d_j * pd_dq_j_ref
+            elif act_type == JointActuationType.POSITION_VELOCITY_FORCE:
+                m_j += dt * k_d_j + dt * dt * k_p_j
+                tau_j_tot += pd_tau_j_ff + k_p_j * q_j_err + k_d_j * pd_dq_j_ref
+
         # Enforce minimum mass to avoid division by zero
         m_j = wp.max(1e-6, m_j)
         inv_m_j = 1.0 / m_j
@@ -890,6 +926,90 @@ def compute_and_write_joint_implicit_dynamics(
         data_joint_m_j[dynamic_cts_offset_j] = m_j
         data_joint_inv_m_j[dynamic_cts_offset_j] = inv_m_j
         data_joint_dq_b_j[dynamic_cts_offset_j] = dq_b_j
+
+
+@wp.func
+def compute_and_write_joint_effort_dynamics(
+    # Constants:
+    dt: wp.float32,
+    dof_type: wp.int32,
+    coords_offset: wp.int32,
+    dofs_offset: wp.int32,
+    num_effort_cts: wp.int32,
+    effort_cts_offset: wp.int32,
+    effort_cts_axis: wp.array[wp.int32],
+    # Inputs:
+    model_joint_k_p_j: wp.array[wp.float32],
+    model_joint_k_d_j: wp.array[wp.float32],
+    model_joint_tau_j_max: wp.array[wp.float32],
+    model_joint_dof_act_types: wp.array[wp.int32],
+    data_joint_q_j: wp.array[wp.float32],
+    data_joint_tau_j: wp.array[wp.float32],
+    data_joint_q_j_ref: wp.array[wp.float32],
+    data_joint_dq_j_ref: wp.array[wp.float32],
+    data_joint_tau_j_ref: wp.array[wp.float32],  # Can be `None`
+    # Outputs:
+    data_joint_inv_m_a: wp.array[wp.float32],
+    data_joint_dq_b_a: wp.array[wp.float32],
+    data_joint_bound_a: wp.array[wp.float32],
+):
+    # Iterate over the effort constraints of the joint and
+    # compute and store the effort dynamics intermediates.
+    q_j_err_spherical = wp.vec3f(0.0)
+    if dof_type == JointDoFType.SPHERICAL:
+        q_j_err_spherical = joint_pd_spherical_position_error(coords_offset, data_joint_q_j, data_joint_q_j_ref)
+
+    for j in range(num_effort_cts):
+        effort_cts_offset_j = effort_cts_offset + j
+        axis = effort_cts_axis[effort_cts_offset_j]
+        dofs_offset_j = dofs_offset + axis
+        act_type = model_joint_dof_act_types[dofs_offset_j]
+
+        # Retrieve the effort limit and PD control parameters
+        k_p_j = model_joint_k_p_j[dofs_offset_j]
+        k_d_j = model_joint_k_d_j[dofs_offset_j]
+        tau_j_max = model_joint_tau_j_max[dofs_offset_j]
+
+        # Retrieve external load
+        tau_j = data_joint_tau_j[dofs_offset_j]
+
+        # Retrieve PD control references
+        pd_dq_j_ref = data_joint_dq_j_ref[dofs_offset_j]
+        pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j] if data_joint_tau_j_ref else 0.0
+        if dof_type == JointDoFType.SPHERICAL:
+            q_j_err = q_j_err_spherical[axis]
+        else:
+            coord = coords_offset + axis
+            q_j_err = data_joint_q_j_ref[coord] - data_joint_q_j[coord]
+
+        # All actuation types possible for effort constraints have an active k_d,
+        # even POSITION, which has k_d with zero reference.
+        # All except VELOCITY have an active k_p.
+        m_a = dt * k_d_j
+        if act_type != JointActuationType.VELOCITY:
+            m_a += dt * dt * k_p_j
+
+        # If the effort constraint exists, it always contains the actuation.
+        tau_j_tot = tau_j
+        if act_type == JointActuationType.POSITION:
+            tau_j_tot += k_p_j * q_j_err
+        elif act_type == JointActuationType.VELOCITY:
+            tau_j_tot += k_d_j * pd_dq_j_ref
+        elif act_type == JointActuationType.POSITION_VELOCITY:
+            tau_j_tot += k_p_j * q_j_err + k_d_j * pd_dq_j_ref
+        elif act_type == JointActuationType.POSITION_VELOCITY_FORCE:
+            tau_j_tot += pd_tau_j_ff + k_p_j * q_j_err + k_d_j * pd_dq_j_ref
+
+        # Enforce minimum effective actuator inertia to cap compliance and avoid division by zero.
+        m_a = wp.max(1e-6, m_a)
+        inv_m_a = 1.0 / m_a
+        dq_b_a = inv_m_a * dt * tau_j_tot
+        bound_a = dt * tau_j_max
+
+        # Store the resulting effort dynamics intermediates
+        data_joint_inv_m_a[effort_cts_offset_j] = inv_m_a
+        data_joint_dq_b_a[effort_cts_offset_j] = dq_b_a
+        data_joint_bound_a[effort_cts_offset_j] = bound_a
 
 
 ###
@@ -909,7 +1029,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         model_time_dt: wp.array[wp.float32],
         model_joint_wid: wp.array[wp.int32],
         model_joint_dof_type: wp.array[wp.int32],
-        model_joint_act_type: wp.array[wp.int32],
+        model_joint_dof_act_types: wp.array[wp.int32],
         model_joint_coords_offset: wp.array[wp.int32],
         model_joint_dofs_offset: wp.array[wp.int32],
         model_joint_dynamic_cts_offset: wp.array[wp.int32],
@@ -924,6 +1044,12 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         model_joint_b_j: wp.array[wp.float32],
         model_joint_k_p_j: wp.array[wp.float32],
         model_joint_k_d_j: wp.array[wp.float32],
+        model_joint_tau_j_max: wp.array[wp.float32],
+        model_joint_num_effort_cts: wp.array[wp.int32],
+        model_joint_effort_cts_offset: wp.array[wp.int32],
+        model_joint_dynamic_cts_axis: wp.array[wp.int32],
+        model_joint_effort_cts_axis: wp.array[wp.int32],
+        model_joint_dof_act_paths: wp.array[wp.int32],
         data_body_q_i: wp.array[wp.transformf],
         data_body_u_i: wp.array[wp.spatial_vectorf],
         data_joint_tau_j: wp.array[wp.float32],
@@ -940,6 +1066,9 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         data_joint_m_j: wp.array[wp.float32],
         data_joint_inv_m_j: wp.array[wp.float32],
         data_joint_dq_b_j: wp.array[wp.float32],
+        data_joint_inv_m_a: wp.array[wp.float32],
+        data_joint_dq_b_a: wp.array[wp.float32],
+        data_joint_bound_a: wp.array[wp.float32],
     ):
         # Retrieve the thread index
         jid = wp.tid()
@@ -947,7 +1076,6 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         # Retrieve the joint model data
         wid = model_joint_wid[jid]
         dof_type = model_joint_dof_type[jid]
-        act_type = model_joint_act_type[jid]
         bid_B = model_joint_bid_B[jid]
         bid_F = model_joint_bid_F[jid]
         B_r_Bj = model_joint_B_r_Bj[jid]
@@ -1005,15 +1133,18 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         # for the dynamic constraints of the joint
         compute_and_write_joint_implicit_dynamics(
             dt,
-            act_type,
+            dof_type,
             coords_offset,
             dofs_offset,
             num_dynamic_cts,
             dynamic_cts_offset,
+            model_joint_dynamic_cts_axis,
             model_joint_a_j,
             model_joint_b_j,
             model_joint_k_p_j,
             model_joint_k_d_j,
+            model_joint_dof_act_types,
+            model_joint_dof_act_paths,
             data_joint_q_j,
             data_joint_dq_j,
             data_joint_tau_j,
@@ -1023,6 +1154,29 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
             data_joint_m_j,
             data_joint_inv_m_j,
             data_joint_dq_b_j,
+        )
+        # Compute and store the effort dynamics
+        # for the effort constraints of the joint
+        compute_and_write_joint_effort_dynamics(
+            dt,
+            dof_type,
+            coords_offset,
+            dofs_offset,
+            model_joint_num_effort_cts[jid],
+            model_joint_effort_cts_offset[jid],
+            model_joint_effort_cts_axis,
+            model_joint_k_p_j,
+            model_joint_k_d_j,
+            model_joint_tau_j_max,
+            model_joint_dof_act_types,
+            data_joint_q_j,
+            data_joint_tau_j,
+            data_joint_q_j_ref,
+            data_joint_dq_j_ref,
+            data_joint_tau_j_ref,
+            data_joint_inv_m_a,
+            data_joint_dq_b_a,
+            data_joint_bound_a,
         )
 
     # Return the kernel
@@ -1162,7 +1316,7 @@ def compute_joints_data(
             model.time.dt,
             model.joints.wid,
             model.joints.dof_type,
-            model.joints.act_type,
+            model.joints.dof_act_types,
             model.joints.coords_offset,
             model.joints.dofs_offset,
             model.joints.dynamic_cts_offset,
@@ -1177,6 +1331,12 @@ def compute_joints_data(
             model.joints.b_j,
             model.joints.k_p_j,
             model.joints.k_d_j,
+            model.joints.tau_j_max,
+            model.joints.num_effort_cts,
+            model.joints.effort_cts_offset,
+            model.joints.dynamic_cts_axis,
+            model.joints.effort_cts_axis,
+            model.joints.dof_act_paths,
             data.bodies.q_i,
             data.bodies.u_i,
             data.joints.tau_j,
@@ -1193,6 +1353,9 @@ def compute_joints_data(
             data.joints.m_j,
             data.joints.inv_m_j,
             data.joints.dq_b_j,
+            data.joints.inv_m_a,
+            data.joints.dq_b_a,
+            data.joints.bound_a,
         ],
         device=model.device,
     )

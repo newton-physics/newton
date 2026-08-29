@@ -89,6 +89,7 @@ class ModelBuilderKamino:
         self._num_joint_dynamic_cts: int = 0
         self._num_joint_bounded_cts: int = 0
         self._num_joint_friction_cts: int = 0
+        self._num_joint_effort_cts: int = 0
 
         # Contact capacity settings
         self._max_contacts_per_pair: int | None = None
@@ -204,6 +205,11 @@ class ModelBuilderKamino:
     def num_friction_joint_cts(self) -> int:
         """Returns the number of Coulomb joint friction constraint rows contained in the model."""
         return self._num_joint_friction_cts
+
+    @property
+    def num_effort_joint_cts(self) -> int:
+        """Returns the number of effort-limit implicit-PD constraint rows contained in the model."""
+        return self._num_joint_effort_cts
 
     @property
     def worlds(self) -> list[WorldDescriptor]:
@@ -396,7 +402,7 @@ class ModelBuilderKamino:
 
     def add_joint(
         self,
-        act_type: JointActuationType,
+        act_type: JointActuationType | list[JointActuationType],
         dof_type: JointDoFType,
         bid_B: int,
         bid_F: int,
@@ -421,7 +427,8 @@ class ModelBuilderKamino:
         Add a joint entity to the model using explicit specifications.
 
         Args:
-            act_type: The actuation type of the joint.
+            act_type: Actuation type applied to every DoF, or the actuation
+                type of each DoF.
             dof_type: The degree of freedom type of the joint.
             bid_B: The index of the body on the "base" side of the joint.
             bid_F: The index of the body on the "follower" side of the joint.
@@ -446,13 +453,15 @@ class ModelBuilderKamino:
         Returns:
             The index of the newly added joint.
         """
-        # Check if the actuation type is valid
-        if not isinstance(act_type, JointActuationType):
-            raise TypeError(f"Invalid actuation type: {act_type}. Must be `JointActuationType`.")
-
         # Check if the DoF type is valid
         if not isinstance(dof_type, JointDoFType):
             raise TypeError(f"Invalid DoF type: {dof_type}. Must be `JointDoFType`.")
+        if isinstance(act_type, JointActuationType):
+            dof_act_types = [act_type] * dof_type.num_dofs
+        elif isinstance(act_type, list):
+            dof_act_types = act_type
+        else:
+            raise TypeError(f"Invalid actuation type: {act_type}. Must be `JointActuationType` or a list of them.")
 
         # Create a joint descriptor from the provided specifications
         # NOTE: Specifying a name is required by the base descriptor class,
@@ -461,7 +470,7 @@ class ModelBuilderKamino:
         joint = JointDescriptor(
             name=name if name is not None else f"joint_{self._num_joints}",
             uid=uid,
-            act_type=act_type,
+            dof_act_types=dof_act_types,
             dof_type=dof_type,
             bid_B=bid_B,
             bid_F=bid_F,
@@ -523,6 +532,7 @@ class ModelBuilderKamino:
         self._num_joint_kinematic_cts += joint.num_kinematic_cts
         self._num_joint_bounded_cts += joint.num_bounded_cts
         self._num_joint_friction_cts += joint.num_friction_cts
+        self._num_joint_effort_cts += joint.num_effort_cts
 
         # Return the new joint index
         return joint.jid
@@ -744,6 +754,7 @@ class ModelBuilderKamino:
             self._num_joint_kinematic_cts += world.num_kinematic_joint_cts
             self._num_joint_bounded_cts += world.num_bounded_joint_cts
             self._num_joint_friction_cts += world.num_friction_joint_cts
+            self._num_joint_effort_cts += world.num_effort_joint_cts
 
         # Update the number of worlds
         self._num_worlds += other._num_worlds
@@ -982,6 +993,7 @@ class ModelBuilderKamino:
         info_njkc = []
         info_nbc = []
         info_nfc = []
+        info_nec = []
         info_bio = []
         info_jio = []
         info_gio = []
@@ -997,6 +1009,7 @@ class ModelBuilderKamino:
         info_jkcio = []
         info_jbcio = []
         info_jfcio = []
+        info_jecio = []
         info_base_bid = []
         info_base_jid = []
 
@@ -1019,8 +1032,9 @@ class ModelBuilderKamino:
         joints_label = []
         joints_wid = []
         joints_jid = []
-        joints_dofid = []
-        joints_actid = []
+        joints_dof_type = []
+        joints_act_type = []
+        joints_dof_act_types = []
         joints_fk_act_flag = []
         joints_q_j_0 = []
         joints_dq_j_0 = []
@@ -1045,7 +1059,12 @@ class ModelBuilderKamino:
         joints_nkincts_j = []
         joints_nbccts_j = []
         joints_nfriccts_j = []
+        joints_neffortcts_j = []
         joints_ndyncts_j = []
+        joints_dof_act_paths = []
+        joints_dynamic_cts_axis = []
+        joints_friction_cts_axis = []
+        joints_effort_cts_axis = []
         joints_q_start = []
         joints_dq_start = []
         joints_pq_start = []
@@ -1057,6 +1076,7 @@ class ModelBuilderKamino:
         joints_kcts_start = []
         joints_bcts_start = []
         joints_fcts_start = []
+        joints_ects_start = []
 
         # Initialize the collision geometry data collections
         geoms_label = []
@@ -1105,6 +1125,7 @@ class ModelBuilderKamino:
                 info_njkc.append(world.num_kinematic_joint_cts)
                 info_nbc.append(world.num_bounded_joint_cts)
                 info_nfc.append(world.num_friction_joint_cts)
+                info_nec.append(world.num_effort_joint_cts)
                 info_bio.append(world.bodies_idx_offset)
                 info_jio.append(world.joints_idx_offset)
                 info_gio.append(world.geoms_idx_offset)
@@ -1123,6 +1144,7 @@ class ModelBuilderKamino:
                 info_jkcio.append(world.joint_kinematic_cts_idx_offset)
                 info_jbcio.append(world.joint_bounded_cts_idx_offset)
                 info_jfcio.append(world.joint_friction_cts_idx_offset)
+                info_jecio.append(world.joint_effort_cts_idx_offset)
                 info_base_bid.append((world.base_body_idx + world.bodies_idx_offset) if world.has_base_body else -1)
                 info_base_jid.append((world.base_joint_idx + world.joints_idx_offset) if world.has_base_joint else -1)
 
@@ -1153,8 +1175,10 @@ class ModelBuilderKamino:
                 joints_label.append(joint.name)
                 joints_wid.append(joint.wid)
                 joints_jid.append(joint.jid)
-                joints_dofid.append(joint.dof_type.value)
-                joints_actid.append(joint.act_type.value)
+                joints_dof_type.append(joint.dof_type.value)
+                joints_act_type.append(joint.act_type.value)
+                joints_dof_act_types.extend(act_type.value for act_type in joint.dof_act_types)
+                joints_dof_act_paths.extend(path.value for path in joint.dof_act_paths())
                 joints_fk_act_flag.append(joint.fk_act_flag)
                 joints_B_r_Bj.append(joint.B_r_Bj)
                 joints_F_r_Fj.append(joint.F_r_Fj)
@@ -1193,6 +1217,10 @@ class ModelBuilderKamino:
                 joints_nkincts_j.append(joint.num_kinematic_cts)
                 joints_nbccts_j.append(joint.num_bounded_cts)
                 joints_nfriccts_j.append(joint.num_friction_cts)
+                joints_neffortcts_j.append(joint.num_effort_cts)
+                joints_dynamic_cts_axis.extend(joint.dynamic_cts_axes())
+                joints_friction_cts_axis.extend(joint.friction_cts_axes())
+                joints_effort_cts_axis.extend(joint.effort_cts_axes())
                 joints_q_start.append(joint.coords_offset + world.joint_coords_idx_offset)
                 joints_dq_start.append(joint.dofs_offset + world.joint_dofs_idx_offset)
                 joints_pq_start.append(joint.passive_coords_offset + world.joint_passive_coords_idx_offset)
@@ -1204,6 +1232,7 @@ class ModelBuilderKamino:
                 joints_kcts_start.append(joint.kinematic_cts_offset + world.joint_kinematic_cts_idx_offset)
                 joints_bcts_start.append(joint.bounded_cts_offset + world.joint_bounded_cts_idx_offset)
                 joints_fcts_start.append(joint.friction_cts_offset + world.joint_friction_cts_idx_offset)
+                joints_ects_start.append(joint.effort_cts_offset + world.joint_effort_cts_idx_offset)
                 joints_bid_B.append(joint.bid_B + world_bio if joint.bid_B >= 0 else -1)
                 joints_bid_F.append(joint.bid_F + world_bio if joint.bid_F >= 0 else -1)
 
@@ -1219,6 +1248,7 @@ class ModelBuilderKamino:
             joints_kcts_start.append(self._num_joint_kinematic_cts)
             joints_bcts_start.append(self._num_joint_bounded_cts)
             joints_fcts_start.append(self._num_joint_friction_cts)
+            joints_ects_start.append(self._num_joint_effort_cts)
 
         # A helper function to collect model collision geometries data
         def collect_geometry_model_data():
@@ -1317,6 +1347,8 @@ class ModelBuilderKamino:
             max_of_num_bounded_joint_cts=max([world.num_bounded_joint_cts for world in self._worlds]),
             sum_of_num_friction_joint_cts=self._num_joint_friction_cts,
             max_of_num_friction_joint_cts=max([world.num_friction_joint_cts for world in self._worlds]),
+            sum_of_num_effort_joint_cts=self._num_joint_effort_cts,
+            max_of_num_effort_joint_cts=max([world.num_effort_joint_cts for world in self._worlds]),
             # Initialize inequality entity counts to zero
             sum_of_max_limits=0,
             max_of_max_limits=0,
@@ -1383,6 +1415,7 @@ class ModelBuilderKamino:
                 num_joint_kinematic_cts=to_warp_int32_array(info_njkc),
                 num_joint_bounded_cts=to_warp_int32_array(info_nbc),
                 num_joint_friction_cts=to_warp_int32_array(info_nfc),
+                num_joint_effort_cts=to_warp_int32_array(info_nec),
                 bodies_offset=to_warp_int32_array(info_bio),
                 joints_offset=to_warp_int32_array(info_jio),
                 geoms_offset=to_warp_int32_array(info_gio),
@@ -1398,6 +1431,7 @@ class ModelBuilderKamino:
                 joint_kinematic_cts_offset=to_warp_int32_array(info_jkcio),
                 joint_bounded_cts_offset=to_warp_int32_array(info_jbcio),
                 joint_friction_cts_offset=to_warp_int32_array(info_jfcio),
+                joint_effort_cts_offset=to_warp_int32_array(info_jecio),
                 base_body_index=to_warp_int32_array(info_base_bid),
                 base_joint_index=to_warp_int32_array(info_base_jid),
                 has_world_without_base_body=has_world_without_base_body,
@@ -1432,8 +1466,10 @@ class ModelBuilderKamino:
                 label=joints_label,
                 wid=to_warp_int32_array(joints_wid),
                 jid=to_warp_int32_array(joints_jid),
-                dof_type=to_warp_int32_array(joints_dofid),
-                act_type=to_warp_int32_array(joints_actid),
+                dof_type=to_warp_int32_array(joints_dof_type),
+                act_type=to_warp_int32_array(joints_act_type),
+                dof_act_types=to_warp_int32_array(joints_dof_act_types),
+                dof_act_paths=to_warp_int32_array(joints_dof_act_paths),
                 fk_act_flag=to_warp_int32_array(joints_fk_act_flag)
                 if any(act_flag != -1 for act_flag in joints_fk_act_flag)
                 else None,
@@ -1461,6 +1497,7 @@ class ModelBuilderKamino:
                 num_kinematic_cts=to_warp_int32_array(joints_nkincts_j),
                 num_bounded_cts=to_warp_int32_array(joints_nbccts_j),
                 num_friction_cts=to_warp_int32_array(joints_nfriccts_j),
+                num_effort_cts=to_warp_int32_array(joints_neffortcts_j),
                 coords_offset=to_warp_int32_array(joints_q_start),
                 dofs_offset=to_warp_int32_array(joints_dq_start),
                 passive_coords_offset=to_warp_int32_array(joints_pq_start),
@@ -1472,6 +1509,10 @@ class ModelBuilderKamino:
                 kinematic_cts_offset=to_warp_int32_array(joints_kcts_start),
                 bounded_cts_offset=to_warp_int32_array(joints_bcts_start),
                 friction_cts_offset=to_warp_int32_array(joints_fcts_start),
+                effort_cts_offset=to_warp_int32_array(joints_ects_start),
+                dynamic_cts_axis=to_warp_int32_array(joints_dynamic_cts_axis),
+                friction_cts_axis=to_warp_int32_array(joints_friction_cts_axis),
+                effort_cts_axis=to_warp_int32_array(joints_effort_cts_axis),
             )
 
             # Create the collision geometries model
@@ -1864,6 +1905,7 @@ class ModelBuilderKamino:
         joint_kinematic_cts_idx_offset: int = 0
         joint_bounded_cts_idx_offset: int = 0
         joint_friction_cts_idx_offset: int = 0
+        joint_effort_cts_idx_offset: int = 0
         # Iterate over each world and set their model offsets
         for world in self._worlds:
             # Set the offsets in the world descriptor to the current values
@@ -1882,6 +1924,7 @@ class ModelBuilderKamino:
             world.joint_kinematic_cts_idx_offset = int(joint_kinematic_cts_idx_offset)
             world.joint_bounded_cts_idx_offset = int(joint_bounded_cts_idx_offset)
             world.joint_friction_cts_idx_offset = int(joint_friction_cts_idx_offset)
+            world.joint_effort_cts_idx_offset = int(joint_effort_cts_idx_offset)
             # Update the offsets for the next world
             bodies_idx_offset += world.num_bodies
             joints_idx_offset += world.num_joints
@@ -1898,6 +1941,7 @@ class ModelBuilderKamino:
             joint_kinematic_cts_idx_offset += world.num_kinematic_joint_cts
             joint_bounded_cts_idx_offset += world.num_bounded_joint_cts
             joint_friction_cts_idx_offset += world.num_friction_joint_cts
+            joint_effort_cts_idx_offset += world.num_effort_joint_cts
 
     def _collect_geom_max_contact_hints(self) -> tuple[int, list[int]]:
         """
