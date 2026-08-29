@@ -3691,6 +3691,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
+        strict_capacity: bool = False,
     ):
         """
         Solver options (e.g., ``impratio``) follow this resolution priority:
@@ -3736,6 +3737,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
                 :class:`warp.DeterministicMode`, or ``None`` to inherit
                 ``wp.config.deterministic``.
+            strict_capacity: If ``True``, raise a ``RuntimeError`` when the
+                Newton contact buffer is larger than MuJoCo Warp's ``nconmax``
+                (checked cheaply at every step without a GPU sync), and raise
+                again after each step if actual runtime contacts or solver
+                constraints overflowed (requires a GPU sync).  If ``False``
+                (default), emit a ``UserWarning`` on the capacity mismatch but
+                continue; runtime overflow is reported only via the device-side
+                ``wp.printf`` already present in the contact conversion kernel.
         """
         super().__init__(model)
 
@@ -3786,6 +3795,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._initial_nv_awake = 0
         self._initial_model_sync = True
         self._deterministic = deterministic if deterministic is not None else wp.config.deterministic
+        self._strict_capacity = strict_capacity
         self._deterministic_max_records = 0
         if not use_mujoco_cpu:
             # MJWarp's step pipeline spans several modules (forward dynamics,
@@ -4090,7 +4100,24 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
                     self._convert_contacts_to_mjwarp(self.model, state_in, contacts)
+                if self._strict_capacity:
+                    self.mjw_data.overflow.zero_()
                 self._mujoco_warp_step()
+                if self._strict_capacity:
+                    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+                    naconmax = self.mjw_data.naconmax
+                    if contact_count > naconmax:
+                        raise RuntimeError(
+                            f"Runtime contact count ({contact_count}) exceeded nconmax ({naconmax}); "
+                            f"contacts were silently clipped and the simulation result is invalid. "
+                            f"Pass nconmax>={contact_count} to SolverMuJoCo."
+                        )
+                    if self.mjw_data.overflow.numpy().any():
+                        raise RuntimeError(
+                            "MuJoCo Warp constraint buffer overflow (njmax or nefc exceeded); "
+                            "the simulation result is invalid. "
+                            "Pass a larger njmax to SolverMuJoCo."
+                        )
                 self._update_newton_state(self.model, state_out, self.mjw_data, state_prev=state_in)
         self._step += 1
 
@@ -4509,6 +4536,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # path clamps count and rejects cid >= naconmax).  Launching more
         # threads than naconmax wastes GPU resources, so cap the grid size.
         naconmax = self.mjw_data.naconmax
+        if contacts.rigid_contact_max > naconmax:
+            msg = (
+                f"contacts.rigid_contact_max ({contacts.rigid_contact_max}) exceeds "
+                f"nconmax ({naconmax}); Newton contacts beyond the cap are silently "
+                f"discarded and results may be invalid. "
+                f"Pass nconmax>={contacts.rigid_contact_max} to SolverMuJoCo to avoid this."
+            )
+            if self._strict_capacity:
+                raise RuntimeError(msg)
+            warnings.warn(msg, UserWarning, stacklevel=4)
         launch_dim = min(contacts.rigid_contact_max, naconmax)
 
         # Grow the tid_to_cid buffer if the MJWarp data capacity changed after
