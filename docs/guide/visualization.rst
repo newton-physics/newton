@@ -791,7 +791,8 @@ option.
 
 **Camera and world layout:**
 
-Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera`:
+Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera`.
+``pitch`` and ``yaw`` are specified in degrees:
 
 .. code-block:: python
 
