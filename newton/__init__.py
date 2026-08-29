@@ -8,7 +8,7 @@ from ._src.core import (
     MAXVAL,
     Axis,
     AxisType,
-)
+)  # No change possible in this file for #3946; collision pipeline logic lives in newton/_src/sim/collision*.py and overloads in newton/_src/effects/collision/
 from ._version import __version__
 
 use_coord_layout_targets: bool = False
