@@ -934,17 +934,15 @@ def eval_ik(
 @wp.func
 def write_free_distance_motion_subspace(
     X_pa_world: wp.transform,
-    x_child_com_world: wp.vec3,
+    pivot_world: wp.vec3,
     qd_start: int,
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
 ):
     """Write the 6 motion-subspace columns for a FREE/DISTANCE joint.
 
-    Used by both the Featherstone inverse-dynamics path (``jcalc_motion``) and
-    the IK/Jacobian path (``jcalc_motion_subspace``) so they agree on the exact
-    column layout. Linear DOFs act at the child body's COM; angular DOFs are
-    world-aligned axes expressed through ``X_pa_world``.
+    Linear DOFs follow the parent-anchor axes. Angular columns describe
+    rotations about ``pivot_world`` as world-origin spatial twists.
 
     Args:
         X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
@@ -952,7 +950,7 @@ def write_free_distance_motion_subspace(
             This is *not* the classical Featherstone ``X_sc`` (spatial-to-
             child); Newton's FREE/DISTANCE joint coordinates live in the
             parent-anchor basis.
-        x_child_com_world: World-space position of the child body's COM.
+        pivot_world: World-space point about which angular columns rotate.
         qd_start: Starting velocity-DOF index for this joint.
         joint_S_s: Output spatial-vector subspace array; six slots starting at
             ``qd_start`` are overwritten.
@@ -964,9 +962,9 @@ def write_free_distance_motion_subspace(
     joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
     joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
     joint_S_s[qd_start + 2] = wp.spatial_vector(axis_world_z, wp.vec3())
-    joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, x_child_com_world), axis_world_x)
-    joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, x_child_com_world), axis_world_y)
-    joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, x_child_com_world), axis_world_z)
+    joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, pivot_world), axis_world_x)
+    joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, pivot_world), axis_world_y)
+    joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, pivot_world), axis_world_z)
 
 
 @wp.func
