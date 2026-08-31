@@ -2168,6 +2168,54 @@ def compute_angular_correction(
 
 
 @wp.kernel
+def mark_restitution_contacts(
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_thickness0: wp.array[float],
+    contact_thickness1: wp.array[float],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    # output
+    restitution_contact_active: wp.array[wp.int32],
+):
+    """Mark contacts that penetrate during position projection."""
+    tid = wp.tid()
+
+    if tid >= contact_count[0]:
+        return
+
+    shape_a = contact_shape0[tid]
+    shape_b = contact_shape1[tid]
+    if shape_a == shape_b:
+        return
+    body_a = -1
+    if shape_a >= 0:
+        body_a = shape_body[shape_a]
+    body_b = -1
+    if shape_b >= 0:
+        body_b = shape_body[shape_b]
+    if body_a == body_b:
+        return
+
+    X_wb_a = wp.transform_identity()
+    X_wb_b = wp.transform_identity()
+    if body_a >= 0:
+        X_wb_a = body_q[body_a]
+    if body_b >= 0:
+        X_wb_b = body_q[body_b]
+
+    bx_a = wp.transform_point(X_wb_a, contact_point0[tid])
+    bx_b = wp.transform_point(X_wb_b, contact_point1[tid])
+    d = contact_surface_separation(bx_a, bx_b, contact_normal[tid], contact_thickness0[tid], contact_thickness1[tid])
+    if d < 0.0:
+        restitution_contact_active[tid] = 1
+
+
+@wp.kernel
 def solve_body_contact_positions(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -2195,7 +2243,6 @@ def solve_body_contact_positions(
     deltas: wp.array[wp.spatial_vector],
     contact_inv_weight: wp.array[float],
     contact_impulse: wp.array[wp.spatial_vector],
-    restitution_contact_active: wp.array[wp.int32],
 ):
     tid = wp.tid()
 
@@ -2233,9 +2280,6 @@ def solve_body_contact_positions(
 
     if d >= 0.0:
         return
-
-    if restitution_contact_active:
-        restitution_contact_active[tid] = 1
 
     m_inv_a = 0.0
     m_inv_b = 0.0

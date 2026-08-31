@@ -25,6 +25,7 @@ from .kernels import (
     convert_contact_impulse_to_force,
     convert_joint_impulse_to_parent_f,
     copy_kinematic_body_state_kernel,
+    mark_restitution_contacts,
     select_manifold_contacts,
     solve_body_contact_positions,
     solve_body_joints,
@@ -689,6 +690,26 @@ class SolverXPBD(SolverBase, CouplingInterface):
                         if contact_impulse_iter is not None:
                             contact_impulse_iter.zero_()
 
+                        if restitution_contact_active is not None:
+                            wp.launch(
+                                kernel=mark_restitution_contacts,
+                                dim=contacts.rigid_contact_max,
+                                inputs=[
+                                    body_q,
+                                    model.shape_body,
+                                    contacts.rigid_contact_count,
+                                    contacts.rigid_contact_point0,
+                                    contacts.rigid_contact_point1,
+                                    contacts.rigid_contact_normal,
+                                    contacts.rigid_contact_margin0,
+                                    contacts.rigid_contact_margin1,
+                                    contacts.rigid_contact_shape0,
+                                    contacts.rigid_contact_shape1,
+                                ],
+                                outputs=[restitution_contact_active],
+                                device=model.device,
+                            )
+
                         wp.launch(
                             kernel=solve_body_contact_positions,
                             dim=contacts.rigid_contact_max,
@@ -720,7 +741,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                 body_deltas,
                                 rigid_contact_inv_weight,
                                 contact_impulse_iter,
-                                restitution_contact_active,
                             ],
                             device=model.device,
                         )
