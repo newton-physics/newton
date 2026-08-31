@@ -7684,21 +7684,32 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             elif not self._use_mujoco_contacts:
                 # The initialization forward intentionally produces no contacts
                 # in this mode, so size MJWarp from Newton's collision budget.
+                newton_contact_max = model.rigid_contact_max or _estimate_rigid_contact_max(model)
+                default_nconmax = (newton_contact_max + nworld - 1) // nworld
                 if nconmax is None:
-                    newton_contact_max = model.rigid_contact_max or _estimate_rigid_contact_max(model)
-                    nconmax = (newton_contact_max + nworld - 1) // nworld
+                    nconmax = default_nconmax
+                elif nconmax >= 0:
+                    nconmax = max(nconmax, default_nconmax)
 
+                max_contact_dim = max(
+                    1,
+                    int(np.max(self.mj_model.geom_condim, initial=1)),
+                    int(np.max(self.mj_model.pair_dim, initial=1)),
+                )
+                if self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
+                    constraint_rows_per_contact = max_contact_dim
+                else:
+                    constraint_rows_per_contact = max(1, 2 * (max_contact_dim - 1))
+
+                # MJWarp stores contacts in one heterogeneous buffer, so every
+                # contact can belong to one world even though nconmax is passed
+                # as a per-world allocation. Constraint rows are strictly
+                # per-world and must cover that concentrated global capacity.
+                default_njmax = self.mj_data.nefc + nconmax * nworld * constraint_rows_per_contact
                 if njmax is None:
-                    max_contact_dim = max(
-                        1,
-                        int(np.max(self.mj_model.geom_condim, initial=1)),
-                        int(np.max(self.mj_model.pair_dim, initial=1)),
-                    )
-                    if self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
-                        constraint_rows_per_contact = max_contact_dim
-                    else:
-                        constraint_rows_per_contact = max(1, 2 * (max_contact_dim - 1))
-                    njmax = self.mj_data.nefc + nconmax * constraint_rows_per_contact
+                    njmax = default_njmax
+                elif njmax >= 0:
+                    njmax = max(njmax, default_njmax)
             elif nconmax is not None and nconmax < self.mj_data.ncon:
                 warnings.warn(
                     f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",

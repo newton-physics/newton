@@ -4334,6 +4334,21 @@ class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
 
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
+    @staticmethod
+    def _build_grounded_spheres(sphere_count):
+        """Build a single-world model with separated spheres touching the ground."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for sphere_index in range(sphere_count):
+            body = builder.add_body(
+                xform=wp.transform(
+                    wp.vec3(float(sphere_index % 10) * 2.0, float(sphere_index // 10) * 2.0, 0.45),
+                    wp.quat_identity(),
+                )
+            )
+            builder.add_shape_sphere(body=body, radius=0.5)
+        return builder.finalize()
+
     def setUp(self):
         """Set up a simple model with a sphere and a plane."""
         builder = newton.ModelBuilder()
@@ -4412,17 +4427,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 
     def test_newton_contact_defaults_preserve_generated_contacts(self):
         """Preserve generated Newton contacts when sizing default MuJoCo buffers."""
-        builder = newton.ModelBuilder()
-        builder.add_ground_plane()
-        for sphere_index in range(60):
-            body = builder.add_body(
-                xform=wp.transform(
-                    wp.vec3(float(sphere_index % 10) * 2.0, float(sphere_index // 10) * 2.0, 0.45),
-                    wp.quat_identity(),
-                )
-            )
-            builder.add_shape_sphere(body=body, radius=0.5)
-        model = builder.finalize()
+        model = self._build_grounded_spheres(60)
 
         try:
             solver = SolverMuJoCo(model, use_mujoco_contacts=False)
@@ -4443,6 +4448,75 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         solver._convert_contacts_to_mjwarp(model, state, contacts)
         injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
         self.assertEqual(injected_contact_count, generated_contact_count)
+
+    def test_newton_contact_defaults_bound_explicit_capacities(self):
+        """Preserve Newton-derived lower bounds for explicit MuJoCo capacities."""
+        model = self._build_grounded_spheres(60)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
+        generated_contact_count = int(contacts.rigid_contact_count.numpy()[0])
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=16, njmax=16)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        self.assertGreater(generated_contact_count, 48)
+        self.assertGreater(model.rigid_contact_max, 16)
+        self.assertGreaterEqual(solver.mjw_data.naconmax, model.rigid_contact_max)
+        self.assertGreaterEqual(solver.mjw_data.njmax, model.rigid_contact_max * 4)
+
+        solver._convert_contacts_to_mjwarp(model, state, contacts)
+        injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertEqual(injected_contact_count, generated_contact_count)
+
+    def test_newton_contact_constraints_cover_uneven_worlds(self):
+        """Size per-world constraints for contacts concentrated in one world."""
+        sphere_count = 30
+        world = newton.ModelBuilder()
+        for sphere_index in range(sphere_count):
+            body = world.add_body(
+                xform=wp.transform(
+                    wp.vec3(float(sphere_index % 10) * 2.0, float(sphere_index // 10) * 2.0, 0.45),
+                    wp.quat_identity(),
+                )
+            )
+            world.add_shape_sphere(body=body, radius=0.5)
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_world(world, xform=wp.transform_identity())
+        builder.add_world(world, xform=wp.transform(wp.vec3(0.0, 0.0, 10.0), wp.quat_identity()))
+        model = builder.finalize()
+
+        state_0 = model.state()
+        state_1 = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=sphere_count)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_0, contacts)
+        generated_contact_count = int(contacts.rigid_contact_count.numpy()[0])
+
+        try:
+            solver = SolverMuJoCo(model, separate_worlds=True, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        self.assertEqual(generated_contact_count, sphere_count)
+        solver.step(state_0, state_1, model.control(), contacts, 1.0 / 240.0)
+
+        injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
+        contact_worlds = solver.mjw_data.contact.worldid.numpy()[:injected_contact_count]
+        contacts_per_world = np.bincount(contact_worlds, minlength=model.world_count)
+        constraints_per_world = solver.mjw_data.nefc.numpy()
+
+        self.assertEqual(injected_contact_count, generated_contact_count)
+        np.testing.assert_array_equal(contacts_per_world, [sphere_count, 0])
+        self.assertEqual(int(constraints_per_world[0]), sphere_count * 4)
+        self.assertLessEqual(int(np.max(constraints_per_world)), solver.mjw_data.njmax)
 
     def test_sphere_rolls_without_slip_with_newton_contacts(self):
         radius = 0.1
