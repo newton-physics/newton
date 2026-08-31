@@ -180,11 +180,13 @@ parameters, so they are preserved verbatim through the
 MJCF import nor USD import through the MuJoCo schema derives generic
 ``joint_limit_ke`` or ``joint_limit_kd`` values from ``solreflimit``; those
 gains retain Newton builder defaults or values supplied by a generic schema.
-An authored native value wins in :class:`SolverMuJoCo`, while the generic gains
-remain available to other solvers. Imported joints that did not author
-``solreflimit`` keep MuJoCo's implicit default ``(0.02, 1.0)`` until either
-generic gain is configured or edited, including edits made before constructing
-the solver, at which point the Newton force-space scaling above is used.
+An authored native value wins in :class:`~newton.solvers.SolverMuJoCo`, while
+the generic gains remain available to other solvers. Imported joints that did
+not author ``solreflimit`` keep MuJoCo's implicit default ``(0.02, 1.0)`` until
+either generic gain is configured or edited, including edits made before
+constructing the solver, at which point the Newton force-space scaling above is
+used. ``model.mujoco.solreflimit_gain_baseline`` records the generic gains seen
+at import time so that edits made before construction can be detected.
 
 ``model.mujoco.solreflimit_mode`` records how ``solreflimit`` should be
 interpreted: Newton force-space gains, a raw authored MuJoCo value, or an
