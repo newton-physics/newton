@@ -85,6 +85,31 @@ class TestUSDDeformableCable(unittest.TestCase):
                 if name == "zero_stiffness":
                     self.assertEqual(attrs["stiffness"], 0.0)
 
+    def test_attachment_weld_policy_rejects_invalid_gains(self):
+        """Reject invalid attachment gains without raising or consuming the junction as a weld."""
+        from pxr import Sdf
+
+        cases = (
+            ("malformed_stiffness", "stiffness", "bad", Sdf.ValueTypeNames.Token),
+            ("malformed_damping", "damping", "bad", Sdf.ValueTypeNames.Token),
+            ("negative_damping", "damping", -1.0, Sdf.ValueTypeNames.Float),
+        )
+        for case, name, value, value_type in cases:
+            with self.subTest(case=case):
+                stage = self._author_attached_cable_pair(gap=0.0)
+                attachment = stage.GetPrimAtPath("/World/Junction")
+                attachment.CreateAttribute(f"physics:{name}", value_type).Set(value)
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, "invalid PhysicsAttachment"):
+                    result = builder.add_usd(stage, return_deformable_results=True)
+
+                self.assertEqual(len(builder.articulation_label), 2)
+                self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/CableA"])
+                attrs = result["path_attachment_attrs"]["/World/Junction"]
+                self.assertEqual(attrs[name], value)
+                self.assertIn("unsupported_reason", attrs)
+
     def test_weld_tolerance_uses_attachment_point_radii(self):
         """Use the attached points' radii, independent of the first segment, to decide welding."""
         gap = 5.0e-4

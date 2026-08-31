@@ -553,10 +553,31 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # the attachment post-pass, which preserves it in path_attachment_attrs as
         # unsupported instead of silently snapping the geometry together.
         stiffness_val = deformable_read(prim, "stiffness")
+        damping_val = deformable_read(prim, "damping")
+        stiffness = (
+            math.inf
+            if stiffness_val is None
+            else usd._coerce_deformable_float(stiffness_val, prim, "stiffness", warn_on_failure=False)
+        )
+        damping = (
+            0.0
+            if damping_val is None
+            else usd._coerce_deformable_float(damping_val, prim, "damping", warn_on_failure=False)
+        )
+        # Invalid gains must reach the attachment pass instead of being consumed as topology.
+        # That pass records one detailed warning and preserves the authored metadata.
+        if (
+            stiffness is None
+            or damping is None
+            or math.isnan(stiffness)
+            or stiffness < 0.0
+            or not (math.isfinite(damping) and damping >= 0.0)
+        ):
+            continue
         # Hard means the proposal's +inf stiffness sentinel exactly; NaN, -inf, or finite
         # values (compliant or nonconforming) must not weld curves into shared topology.
-        # Damping does not affect hardness: it only applies when the constraint is not hard.
-        hard = stiffness_val is None or float(stiffness_val) == math.inf
+        # Valid damping does not affect hardness: it only applies when the constraint is not hard.
+        hard = stiffness == math.inf
         if not hard:
             warnings.warn(
                 f"{prim.GetPath()}: curve-to-curve attachment does not author a hard "

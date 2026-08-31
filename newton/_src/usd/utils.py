@@ -2217,8 +2217,15 @@ def _read_physics_attr(prim: Usd.Prim, name: str, compat_namespaces: Sequence[st
     return None
 
 
-def _coerce_deformable_float(value: Any, prim: Usd.Prim, name: str, *, attr_namespace: str = "physics") -> float | None:
-    """Return a numeric deformable scalar or warn and treat it as unauthored."""
+def _coerce_deformable_float(
+    value: Any,
+    prim: Usd.Prim,
+    name: str,
+    *,
+    attr_namespace: str = "physics",
+    warn_on_failure: bool = True,
+) -> float | None:
+    """Return a numeric deformable scalar, optionally warning when conversion fails."""
     if value is None:
         return None
     if isinstance(value, (bool, str, bytes)):
@@ -2228,7 +2235,7 @@ def _coerce_deformable_float(value: Any, prim: Usd.Prim, name: str, *, attr_name
             result = float(value)
         except (TypeError, ValueError, OverflowError):
             result = None
-    if result is None:
+    if result is None and warn_on_failure:
         warnings.warn(
             f"{prim.GetPath()}: invalid {attr_namespace}:{name} {value!r} (expected a numeric scalar); "
             "treating it as unauthored.",
