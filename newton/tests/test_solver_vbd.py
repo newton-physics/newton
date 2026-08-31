@@ -25,12 +25,14 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
     _alm_relaxed_ascent,
     _compliant_alm_coefficients,
+    _contact_angular_conditioning_scales,
     _contact_tangent_conditioning_scale,
     _joint_angular_rho_seed,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     compute_rigid_contact_forces,
     evaluate_angular_constraint_force_hessian,
+    evaluate_angular_contact_friction,
     evaluate_body_particle_contact,
     evaluate_linear_constraint_force_hessian,
     evaluate_rigid_contact_from_collision,
@@ -41,6 +43,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     update_duals_body_body_contacts,
     update_duals_joint,
 )
+from newton._src.solvers.vbd.vbd_coupling_kernels import _harvest_vbd_proxy_wrenches_kernel
 from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -306,6 +309,27 @@ def _eval_crossed_contact_tangent_pair_support_kernel(
 
 
 @wp.kernel
+def _eval_contact_angular_conditioning_kernel(
+    body_q: wp.array[wp.transform],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    body1: int,
+    result: wp.array[wp.vec2],
+):
+    """Evaluate torsional and rolling inverse-Delassus conditioning."""
+    torsional_rho, rolling_rho = _contact_angular_conditioning_scales(
+        0,
+        body1,
+        wp.vec3(0.0, 0.0, 1.0),
+        body_q,
+        body_inv_mass,
+        body_inv_inertia,
+        100.0,
+    )
+    result[0] = wp.vec2(torsional_rho, rolling_rho)
+
+
+@wp.kernel
 def _eval_compliant_sliding_contact_metric_kernel(
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
@@ -313,34 +337,81 @@ def _eval_compliant_sliding_contact_metric_kernel(
     force_out: wp.array[wp.vec3],
     hessian_out: wp.array[wp.mat33],
 ):
-    force_a, _torque_a, hessian_a, _hal_a, _haa_a, _force_b, _torque_b, _hessian_b, _hal_b, _haa_b = (
-        evaluate_rigid_contact_from_collision(
-            0,
-            -1,
-            body_q,
-            body_q_prev,
-            body_com,
-            wp.vec3(0.0),
-            wp.vec3(0.0),
-            wp.vec3(0.0),
-            wp.vec3(0.0),
-            wp.vec3(0.0, 0.0, 1.0),
-            0.01,
-            100.0,
-            1000.0,
-            100.0,
-            0.0,
-            wp.vec3(0.0),
-            0.5,
-            0.01,
-            0,
-            1,
-            0.01,
-            wp.vec3(0.0),
-        )
+    (
+        force_a,
+        _torque_a,
+        hessian_a,
+        _hal_a,
+        _haa_a,
+        _force_b,
+        _torque_b,
+        _hessian_b,
+        _hal_b,
+        _haa_b,
+        _pure_torque_b,
+    ) = evaluate_rigid_contact_from_collision(
+        0,
+        -1,
+        body_q,
+        body_q_prev,
+        body_com,
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(0.0, 0.0, 1.0),
+        0.01,
+        100.0,
+        1000.0,
+        100.0,
+        0.0,
+        wp.vec3(0.0),
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        wp.vec3(0.0),
+        0.01,
+        0,
+        1,
+        0.01,
+        wp.vec3(0.0),
     )
     force_out[0] = force_a
     hessian_out[0] = hessian_a
+
+
+@wp.kernel
+def _eval_angular_contact_friction_kernel(
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    normal: wp.array[wp.vec3],
+    mu_torsional: wp.array[float],
+    mu_rolling: wp.array[float],
+    use_angular_friction_multiplier: int,
+    torque_out: wp.array[wp.vec3],
+    hessian_out: wp.array[wp.mat33],
+):
+    """Evaluate angular contact torque and its rotational metric."""
+    torque, hessian = evaluate_angular_contact_friction(
+        -1,
+        0,
+        body_q,
+        body_q_prev,
+        normal[0],
+        100.0,
+        mu_torsional[0],
+        mu_rolling[0],
+        100.0,
+        100.0,
+        wp.vec3(0.0),
+        use_angular_friction_multiplier,
+        1.0e-2,
+        0.01,
+    )
+    torque_out[0] = torque
+    hessian_out[0] = hessian
 
 
 @wp.kernel
@@ -710,6 +781,7 @@ def _eval_rigid_contact_rigid_motion_kernel(
         _h_ll_b_damped,
         _h_al_b_damped,
         _h_aa_b_damped,
+        _pure_torque_b_damped,
     ) = evaluate_rigid_contact_from_collision(
         rigid_body_a,
         rigid_body_b,
@@ -728,6 +800,11 @@ def _eval_rigid_contact_rigid_motion_kernel(
         20.0,
         wp.vec3(0.0),
         0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        wp.vec3(0.0),
         0.01,
         0,
         0,
@@ -745,6 +822,7 @@ def _eval_rigid_contact_rigid_motion_kernel(
         _h_ll_b_undamped,
         _h_al_b_undamped,
         _h_aa_b_undamped,
+        _pure_torque_b_undamped,
     ) = evaluate_rigid_contact_from_collision(
         rigid_body_a,
         rigid_body_b,
@@ -763,6 +841,11 @@ def _eval_rigid_contact_rigid_motion_kernel(
         0.0,
         wp.vec3(0.0),
         0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        wp.vec3(0.0),
         0.01,
         0,
         0,
@@ -945,6 +1028,32 @@ def _rigid_joint_angular_rho_seed_uses_mean_mobility(test, device):
         np.testing.assert_allclose(rho.numpy(), [12.0], rtol=1.0e-6, atol=1.0e-6)
 
 
+def _rigid_contact_angular_conditioning_uses_world_pair_mobility(test, device):
+    """Verify angular conditioning uses both bodies' anisotropic inverse inertia."""
+    del test
+    with wp.ScopedDevice(device):
+        body_inv_mass = wp.ones(2, dtype=float, device=device)
+        body_inv_inertia = wp.array(
+            [np.diag([1.0, 2.0, 4.0]), np.diag([1.0, 2.0, 4.0])],
+            dtype=wp.mat33,
+            device=device,
+        )
+        result = wp.empty(1, dtype=wp.vec2, device=device)
+        body_q = wp.array(
+            [wp.transform_identity(), wp.transform_identity()],
+            dtype=wp.transform,
+            device=device,
+        )
+        wp.launch(
+            _eval_contact_angular_conditioning_kernel,
+            dim=1,
+            inputs=[body_q, body_inv_mass, body_inv_inertia, 1],
+            outputs=[result],
+            device=device,
+        )
+        np.testing.assert_allclose(result.numpy()[0], [12.5, 25.0], rtol=1.0e-6)
+
+
 def _rigid_contact_tangent_support_uses_pair_mobility_eigenvalue(test, device):
     """Verify tangent support preserves endpoint directions until after pair assembly."""
     del test
@@ -1040,6 +1149,43 @@ def _assert_rigid_compliant_alm_coefficients(device):
     np.testing.assert_array_equal(actual[positive_count:], [[0.0, 0.0, 1.0, 0.0]] * 2)
 
 
+def _angular_contact_friction_isolates_channels(test, device):
+    """Verify torsional and rolling torques independently reach their physical bounds."""
+    cases = (
+        (wp.vec3(0.0, 0.0, 1.0), 0.02, 0.0, np.array([0.0, 0.0, -2.0])),
+        (wp.vec3(1.0, 0.0, 0.0), 0.0, 0.03, np.array([-3.0, 0.0, 0.0])),
+    )
+    with wp.ScopedDevice(device):
+        for use_angular_friction_multiplier in (0, 1):
+            for axis, mu_torsional, mu_rolling, expected_torque in cases:
+                q_now = wp.quat_from_axis_angle(axis, 0.1)
+                body_q = wp.array([wp.transform(wp.vec3(0.0), q_now)], dtype=wp.transform, device=device)
+                body_q_prev = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+                normal = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=device)
+                torque = wp.zeros(1, dtype=wp.vec3, device=device)
+                hessian = wp.zeros(1, dtype=wp.mat33, device=device)
+
+                wp.launch(
+                    _eval_angular_contact_friction_kernel,
+                    dim=1,
+                    inputs=[
+                        body_q,
+                        body_q_prev,
+                        normal,
+                        wp.array([mu_torsional], dtype=float, device=device),
+                        wp.array([mu_rolling], dtype=float, device=device),
+                        use_angular_friction_multiplier,
+                    ],
+                    outputs=[torque, hessian],
+                    device=device,
+                )
+
+                np.testing.assert_allclose(torque.numpy()[0], expected_torque, rtol=1.0e-5, atol=1.0e-5)
+                hessian_np = hessian.numpy()[0]
+                np.testing.assert_allclose(hessian_np, hessian_np.T, rtol=1.0e-6, atol=1.0e-6)
+                test.assertGreaterEqual(float(np.linalg.eigvalsh(hessian_np).min()), -1.0e-5)
+
+
 def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
     """Verify step setup caps tangent rho with structural support, not D+S."""
     with wp.ScopedDevice(device):
@@ -1077,6 +1223,8 @@ def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
                 100.0,
                 1.0,
                 wp.array([1.0e9], dtype=float, device=device),
+                wp.zeros(1, dtype=float, device=device),
+                wp.zeros(1, dtype=float, device=device),
                 -1.0,
             ],
             outputs=[
@@ -1085,6 +1233,9 @@ def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
                 wp.zeros(1, dtype=wp.vec3, device=device),
                 wp.zeros(1, dtype=wp.vec3, device=device),
                 tangent_rho,
+                wp.zeros(1, dtype=float, device=device),
+                wp.zeros(1, dtype=float, device=device),
+                wp.zeros(1, dtype=wp.vec3, device=device),
             ],
             device=device,
         )
@@ -1106,17 +1257,23 @@ def _rigid_contact_history_restore_from_match_index(test, device):
         shape_ke = wp.array([100.0, 200.0], dtype=float, device=device)
         shape_kd = wp.array([1.0, 3.0], dtype=float, device=device)
         shape_mu = wp.array([0.25, 1.0], dtype=float, device=device)
+        shape_mu_torsional = wp.array([0.01, 0.04], dtype=float, device=device)
+        shape_mu_rolling = wp.array([1.0e-4, 9.0e-4], dtype=float, device=device)
         match_index = wp.array([2, -1, 0, -2], dtype=wp.int32, device=device)
 
         history = RigidContactHistory()
         history.lambda_ = wp.array([[0.5, 0.0, 1.0], [4.0, 5.0, 6.0], [0.0, 0.0, 7.0]], dtype=wp.vec3, device=device)
+        history.lambda_angular = wp.zeros(3, dtype=wp.vec3, device=device)
         history.penalty_k = wp.array([20.0, 30.0, 40.0], dtype=float, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3, device=device)
 
         penalty_k = wp.zeros(4, dtype=float, device=device)
         lam = wp.zeros(4, dtype=wp.vec3, device=device)
+        lam_angular = wp.zeros(4, dtype=wp.vec3, device=device)
         material_kd = wp.zeros(4, dtype=float, device=device)
         material_mu = wp.zeros(4, dtype=float, device=device)
+        material_mu_torsional = wp.zeros(4, dtype=float, device=device)
+        material_mu_rolling = wp.zeros(4, dtype=float, device=device)
         material_ke = wp.zeros(4, dtype=float, device=device)
 
         wp.launch(
@@ -1130,6 +1287,8 @@ def _rigid_contact_history_restore_from_match_index(test, device):
                 shape_ke,
                 shape_kd,
                 shape_mu,
+                shape_mu_torsional,
+                shape_mu_rolling,
                 1,
                 0,
                 0,
@@ -1145,8 +1304,11 @@ def _rigid_contact_history_restore_from_match_index(test, device):
             outputs=[
                 penalty_k,
                 lam,
+                lam_angular,
                 material_kd,
                 material_mu,
+                material_mu_torsional,
+                material_mu_rolling,
                 material_ke,
             ],
             device=device,
@@ -1157,19 +1319,21 @@ def _rigid_contact_history_restore_from_match_index(test, device):
         np.testing.assert_allclose(material_ke.numpy(), [150.0] * 4)
         np.testing.assert_allclose(material_kd.numpy(), [2.0] * 4)
         np.testing.assert_allclose(material_mu.numpy(), [0.5] * 4)
+        np.testing.assert_allclose(material_mu_torsional.numpy(), [0.02] * 4)
+        np.testing.assert_allclose(material_mu_rolling.numpy(), [3.0e-4] * 4)
 
 
 def _rigid_contact_history_compliant_alm_tangent_warmstart(test, device):
-    """Verify ALM sticky zeros tangent warm-start and latest cone-clips it."""
+    """Verify matched ALM linear and angular multipliers obey their friction bounds."""
     del test
     cases = (
         # sticky: restore penalty and lambda_n only; zero lambda_t
-        ("sticky", [[1.0, 2.0, 3.0]], [0.25, 1.0], 0, [[0.0, 0.0, 3.0]]),
+        ("sticky", [[1.0, 2.0, 3.0]], [0.25, 1.0], 0, [[0.0, 0.0, 3.0]], [[0.36, 0.48, 1.2]]),
         # latest: hist lambda_t=(3,4) length 5; mu=0.5, lambda_n=5 -> cone 2.5 -> (1.5, 2)
-        ("latest", [[3.0, 4.0, 5.0]], [0.5, 0.5], 1, [[1.5, 2.0, 5.0]]),
+        ("latest", [[3.0, 4.0, 5.0]], [0.5, 0.5], 1, [[1.5, 2.0, 5.0]], [[0.6, 0.8, 2.0]]),
     )
     with wp.ScopedDevice(device):
-        for _name, hist_lambda, shape_mu, latest, expected_lambda in cases:
+        for _name, hist_lambda, shape_mu, latest, expected_lambda, expected_lambda_angular in cases:
             contact_count = wp.array([1], dtype=int, device=device)
             shape0 = wp.array([0], dtype=int, device=device)
             shape1 = wp.array([1], dtype=int, device=device)
@@ -1178,13 +1342,17 @@ def _rigid_contact_history_compliant_alm_tangent_warmstart(test, device):
 
             history = RigidContactHistory()
             history.lambda_ = wp.array(hist_lambda, dtype=wp.vec3, device=device)
+            history.lambda_angular = wp.array([[3.0, 4.0, 5.0]], dtype=wp.vec3, device=device)
             history.penalty_k = wp.array([20.0], dtype=float, device=device)
             history.normal = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=device)
 
             penalty_k = wp.zeros(1, dtype=float, device=device)
             contact_lambda = wp.zeros(1, dtype=wp.vec3, device=device)
+            contact_lambda_angular = wp.zeros(1, dtype=wp.vec3, device=device)
             material_kd = wp.zeros(1, dtype=float, device=device)
             material_mu = wp.zeros(1, dtype=float, device=device)
+            material_mu_torsional = wp.zeros(1, dtype=float, device=device)
+            material_mu_rolling = wp.zeros(1, dtype=float, device=device)
             material_ke = wp.zeros(1, dtype=float, device=device)
 
             wp.launch(
@@ -1198,6 +1366,8 @@ def _rigid_contact_history_compliant_alm_tangent_warmstart(test, device):
                     wp.array([100.0, 200.0], dtype=float, device=device),
                     wp.array([1.0, 3.0], dtype=float, device=device),
                     wp.array(shape_mu, dtype=float, device=device),
+                    wp.array([0.4, 0.4], dtype=float, device=device),
+                    wp.array([0.2, 0.2], dtype=float, device=device),
                     0,
                     1,
                     latest,
@@ -1213,14 +1383,18 @@ def _rigid_contact_history_compliant_alm_tangent_warmstart(test, device):
                 outputs=[
                     penalty_k,
                     contact_lambda,
+                    contact_lambda_angular,
                     material_kd,
                     material_mu,
+                    material_mu_torsional,
+                    material_mu_rolling,
                     material_ke,
                 ],
                 device=device,
             )
             np.testing.assert_allclose(penalty_k.numpy(), [20.0])
             np.testing.assert_allclose(contact_lambda.numpy(), expected_lambda)
+            np.testing.assert_allclose(contact_lambda_angular.numpy(), expected_lambda_angular)
 
 
 def _rigid_contact_history_soft_restores_penalty_only(test, device):
@@ -1233,13 +1407,17 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
 
         history = RigidContactHistory()
         history.lambda_ = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3, device=device)
+        history.lambda_angular = wp.zeros(1, dtype=wp.vec3, device=device)
         history.penalty_k = wp.array([40.0], dtype=float, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
 
         penalty_k = wp.zeros(1, dtype=float, device=device)
         lam = wp.zeros(1, dtype=wp.vec3, device=device)
+        lam_angular = wp.zeros(1, dtype=wp.vec3, device=device)
         material_kd = wp.zeros(1, dtype=float, device=device)
         material_mu = wp.zeros(1, dtype=float, device=device)
+        material_mu_torsional = wp.zeros(1, dtype=float, device=device)
+        material_mu_rolling = wp.zeros(1, dtype=float, device=device)
         material_ke = wp.zeros(1, dtype=float, device=device)
 
         wp.launch(
@@ -1253,6 +1431,8 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
                 wp.array([100.0, 200.0], dtype=float, device=device),
                 wp.array([1.0, 3.0], dtype=float, device=device),
                 wp.array([0.25, 1.0], dtype=float, device=device),
+                wp.zeros(2, dtype=float, device=device),
+                wp.zeros(2, dtype=float, device=device),
                 0,
                 0,
                 0,
@@ -1268,8 +1448,11 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
             outputs=[
                 penalty_k,
                 lam,
+                lam_angular,
                 material_kd,
                 material_mu,
+                material_mu_torsional,
+                material_mu_rolling,
                 material_ke,
             ],
             device=device,
@@ -1422,6 +1605,8 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 body_q,
                 body_q_prev,
                 contact_mu,
+                wp.zeros(2, dtype=float, device=device),
+                wp.zeros(2, dtype=float, device=device),
                 zeros3,
                 0.0,
                 0,
@@ -1429,9 +1614,12 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 contact_ke,
                 contact_rho,
                 contact_rho,
+                wp.zeros(2, dtype=float, device=device),
+                wp.zeros(2, dtype=float, device=device),
                 0.0,
                 penalty_k,
                 contact_lambda,
+                wp.zeros(2, dtype=wp.vec3, device=device),
             ],
             device=device,
         )
@@ -1470,13 +1658,17 @@ def _rigid_contact_reset_ownership(test, device):
 
         history = RigidContactHistory()
         history.lambda_ = wp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=wp.vec3, device=device)
+        history.lambda_angular = wp.zeros(3, dtype=wp.vec3, device=device)
         history.penalty_k = wp.array([40.0, 50.0, 60.0], dtype=float, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3, device=device)
 
         penalty_k = wp.zeros(3, dtype=float, device=device)
         contact_lambda = wp.zeros(3, dtype=wp.vec3, device=device)
+        contact_lambda_angular = wp.zeros(3, dtype=wp.vec3, device=device)
         material_kd = wp.zeros(3, dtype=float, device=device)
         material_mu = wp.zeros(3, dtype=float, device=device)
+        material_mu_torsional = wp.zeros(3, dtype=float, device=device)
+        material_mu_rolling = wp.zeros(3, dtype=float, device=device)
         material_ke = wp.zeros(3, dtype=float, device=device)
 
         wp.launch(
@@ -1492,6 +1684,8 @@ def _rigid_contact_reset_ownership(test, device):
                 # Friction must admit the saved tangential dual (|lam_t| = 6.4 at
                 # lam_n = 6), otherwise the ALM restore is masked by cone projection.
                 wp.array([2.0] * 4, dtype=float, device=device),
+                wp.zeros(4, dtype=float, device=device),
+                wp.zeros(4, dtype=float, device=device),
                 0,
                 1,
                 1,
@@ -1507,8 +1701,11 @@ def _rigid_contact_reset_ownership(test, device):
             outputs=[
                 penalty_k,
                 contact_lambda,
+                contact_lambda_angular,
                 material_kd,
                 material_mu,
+                material_mu_torsional,
+                material_mu_rolling,
                 material_ke,
             ],
             device=device,
@@ -1885,7 +2082,7 @@ def _body_body_contact_damping_ignores_penalty_ramp(test, device):
         point0_world = wp.empty(4, dtype=wp.vec3, device=device)
         point1_world = wp.empty(4, dtype=wp.vec3, device=device)
         force_on_body1 = wp.empty(4, dtype=wp.vec3, device=device)
-
+        pure_torque_on_body1 = wp.empty(4, dtype=wp.vec3, device=device)
         wp.launch(
             compute_rigid_contact_forces,
             dim=4,
@@ -1910,15 +2107,27 @@ def _body_body_contact_damping_ignores_penalty_ramp(test, device):
                 material_ke,
                 material_kd,
                 material_mu,
+                wp.zeros(4, dtype=float, device=device),
+                wp.zeros(4, dtype=float, device=device),
                 contact_tangent_rho,
+                wp.zeros(4, dtype=float, device=device),
+                wp.zeros(4, dtype=float, device=device),
                 contact_lambda,
+                wp.zeros(4, dtype=wp.vec3, device=device),
                 contact_c0,
                 0.95,
                 0,
                 0,
                 0.01,
             ],
-            outputs=[body0, body1, point0_world, point1_world, force_on_body1],
+            outputs=[
+                body0,
+                body1,
+                point0_world,
+                point1_world,
+                force_on_body1,
+                pure_torque_on_body1,
+            ],
             device=device,
         )
 
@@ -2304,14 +2513,20 @@ def _rigid_compliant_alm_validates_drive_limit_damping(test, device):
 
 
 def _rigid_compliant_alm_validates_contact_materials(test, device):
-    """Verify compliant contact rejects invalid physical stiffness, damping, and friction."""
+    """Verify VBD rejects invalid rigid-contact material coefficients."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
     builder.color()
     model = builder.finalize(device=device)
 
-    for attribute in ("shape_material_ke", "shape_material_kd", "shape_material_mu"):
+    for attribute in (
+        "shape_material_ke",
+        "shape_material_kd",
+        "shape_material_mu",
+        "shape_material_mu_torsional",
+        "shape_material_mu_rolling",
+    ):
         array = getattr(model, attribute)
         original = array.numpy().copy()
         for invalid in (-1.0, np.inf):
@@ -2321,6 +2536,11 @@ def _rigid_compliant_alm_validates_contact_materials(test, device):
             with test.assertRaisesRegex(ValueError, f"model.{attribute}"):
                 newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
         array.assign(original)
+
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+    solver.set_rigid_history_update(False)
+    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    test.assertTrue(solver._update_rigid_history)
 
 
 def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):
@@ -3377,18 +3597,21 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
         contact_count = wp.array([2], dtype=int, device=device)
         normal = wp.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
         lam = wp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=wp.vec3, device=device)
+        lam_angular = wp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]], dtype=wp.vec3, device=device)
         penalty = wp.array([10.0, 20.0, 30.0], dtype=float, device=device)
 
         prev_lambda = wp.zeros(3, dtype=wp.vec3, device=device)
+        prev_lambda_angular = wp.zeros(3, dtype=wp.vec3, device=device)
         prev_penalty = wp.zeros(3, dtype=float, device=device)
         prev_normal = wp.zeros(3, dtype=wp.vec3, device=device)
 
         wp.launch(
             snapshot_body_body_contact_history,
             dim=3,
-            inputs=[contact_count, normal, lam, penalty],
+            inputs=[contact_count, normal, lam, lam_angular, penalty],
             outputs=[
                 prev_lambda,
+                prev_lambda_angular,
                 prev_penalty,
                 prev_normal,
             ],
@@ -3396,9 +3619,11 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
         )
 
         np.testing.assert_allclose(prev_lambda.numpy()[:2], lam.numpy()[:2])
+        np.testing.assert_allclose(prev_lambda_angular.numpy()[:2], lam_angular.numpy()[:2])
         np.testing.assert_allclose(prev_penalty.numpy()[:2], [10.0, 20.0])
         np.testing.assert_allclose(prev_normal.numpy()[:2], normal.numpy()[:2])
         np.testing.assert_allclose(prev_lambda.numpy()[2], [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(prev_lambda_angular.numpy()[2], [0.0, 0.0, 0.0])
         test.assertEqual(prev_penalty.numpy()[2], 0.0)
 
 
@@ -3418,6 +3643,8 @@ def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True,
     builder.default_shape_cfg.ke = 1.0e6
     builder.default_shape_cfg.kd = 0.0
     builder.default_shape_cfg.mu = 0.5
+    builder.default_shape_cfg.mu_torsional = 0.0
+    builder.default_shape_cfg.mu_rolling = 0.0
     builder.add_ground_plane()
 
     half = 0.5 * (math.pi / 2)
@@ -3458,6 +3685,108 @@ def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True,
 
     test.assertLess(v_y, -0.1, f"capsule failed to translate under axial spin (v_y={v_y:.4f}, omega_x={omega_x:.4f})")
     test.assertLess(omega_x, 4.0, f"axial spin failed to dissipate (omega_x={omega_x:.4f}, v_y={v_y:.4f})")
+
+
+def _simulate_vbd_angular_friction(device, channel, coefficient):
+    """Simulate rotation resisted by one angular contact-friction channel."""
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 5.0e5
+    builder.default_shape_cfg.kd = 100.0
+    builder.default_shape_cfg.mu = 0.0
+    builder.default_shape_cfg.mu_torsional = coefficient if channel == "torsional" else 0.0
+    builder.default_shape_cfg.mu_rolling = coefficient if channel == "rolling" else 0.0
+    builder.add_ground_plane()
+    if channel == "torsional":
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.1)
+        angular_axis = 5
+    else:
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.2), wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.2)
+        angular_axis = 3
+    builder.color()
+
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+        rigid_compliant_alm=True,
+    )
+    state_in = model.state()
+    state_out = model.state()
+    velocity = state_in.body_qd.numpy()
+    velocity[body, angular_axis] = 8.0
+    state_in.body_qd.assign(velocity)
+
+    dt = 1.0 / 120.0
+    for _ in range(30):
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, dt)
+        state_in, state_out = state_out, state_in
+
+    return float(abs(state_in.body_qd.numpy()[body, angular_axis]))
+
+
+def _angular_friction_slows_rotation_without_sliding(test, device):
+    """Verify each angular channel slows its matching rotation with sliding disabled."""
+    for channel in ("torsional", "rolling"):
+        unresisted = _simulate_vbd_angular_friction(device, channel, 0.0)
+        resisted = _simulate_vbd_angular_friction(device, channel, 0.05)
+        test.assertGreater(unresisted, 6.0, msg=channel)
+        test.assertLess(resisted, 0.7 * unresisted, msg=channel)
+
+
+def _vbd_proxy_harvest_preserves_total_contact_torque(test, device):
+    """Verify proxy harvesting adds the pure angular couple to existing point-force torque."""
+    with wp.ScopedDevice(device):
+        count = wp.array([1], dtype=wp.int32, device=device)
+        body0 = wp.array([0], dtype=wp.int32, device=device)
+        body1 = wp.array([1], dtype=wp.int32, device=device)
+        point0 = wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+        point1 = wp.array([[2.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+        force_on_body1 = wp.array([[0.0, 1.0, 0.0]], dtype=wp.vec3, device=device)
+        pure_torque_on_body1 = wp.array([[0.0, 0.0, 3.0]], dtype=wp.vec3, device=device)
+        inv_mass = wp.ones(2, dtype=float, device=device)
+        body_com = wp.zeros(2, dtype=wp.vec3, device=device)
+        body_q = wp.array([wp.transform_identity()] * 2, dtype=wp.transform, device=device)
+
+        for proxy_body, expected_wrench in (
+            (0, np.array([0.0, -1.0, 0.0, 0.0, 0.0, -4.0])),
+            (1, np.array([0.0, 1.0, 0.0, 0.0, 0.0, 5.0])),
+        ):
+            flags = np.zeros(2, dtype=np.int32)
+            flags[proxy_body] = int(newton.BodyFlags.PROXY)
+            mapping = np.full(2, -1, dtype=np.int32)
+            mapping[proxy_body] = 0
+            out_wrench = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+            wp.launch(
+                _harvest_vbd_proxy_wrenches_kernel,
+                dim=1,
+                inputs=[
+                    count,
+                    body0,
+                    body1,
+                    point0,
+                    point1,
+                    force_on_body1,
+                    pure_torque_on_body1,
+                    inv_mass,
+                    wp.array(flags, dtype=wp.int32, device=device),
+                    wp.array(mapping, dtype=wp.int32, device=device),
+                    int(newton.BodyFlags.PROXY),
+                    body_com,
+                    body_q,
+                ],
+                outputs=[out_wrench],
+                device=device,
+            )
+            np.testing.assert_allclose(
+                out_wrench.numpy()[0],
+                expected_wrench,
+                atol=1.0e-6,
+            )
 
 
 def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True, rigid_compliant_alm=False):
@@ -3785,6 +4114,12 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
+    "test_rigid_contact_angular_conditioning_uses_world_pair_mobility",
+    _rigid_contact_angular_conditioning_uses_world_pair_mobility,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
     "test_rigid_contact_tangent_support_uses_pair_mobility_eigenvalue",
     _rigid_contact_tangent_support_uses_pair_mobility_eigenvalue,
     devices=devices,
@@ -3793,6 +4128,12 @@ add_function_test(
     TestSolverVBD,
     "test_rigid_compliant_sliding_contact_has_solve_metric",
     _rigid_compliant_sliding_contact_has_solve_metric,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_angular_contact_friction_isolates_channels",
+    _angular_contact_friction_isolates_channels,
     devices=devices,
 )
 add_function_test(
@@ -4037,6 +4378,18 @@ add_function_test(
     _capsule_axial_spin_dissipates_via_friction,
     devices=devices,
     rigid_compliant_alm=True,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_angular_friction_slows_rotation_without_sliding",
+    _angular_friction_slows_rotation_without_sliding,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_vbd_proxy_harvest_preserves_total_contact_torque",
+    _vbd_proxy_harvest_preserves_total_contact_torque,
+    devices=devices,
 )
 add_function_test(
     TestSolverVBD,

@@ -151,6 +151,9 @@ class SolverVBD(SolverBase, CouplingInterface):
       ``rigid_compliant_alm`` is deprecated because the default will change to
       ``True``.
 
+    Rigid-rigid torsional and rolling friction consume shape ``mu_torsional``
+    and ``mu_rolling``; zero disables the corresponding channel.
+
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, ROD.
           DISTANCE joints are not supported.
@@ -333,8 +336,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             Common parameters:
 
             iterations: Number of VBD iterations per step.
-            friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
-                and rigid body contacts).
+            friction_epsilon: Friction-regularization speed. Sliding friction interprets it in m/s; legacy-soft angular
+                friction interprets it in rad/s. Hard/ALM angular friction does not use it.
             integrate_with_external_rigid_solver: Indicator for coupled rigid body-cloth simulation. When set to `True`,
                 the solver assumes rigid bodies are integrated by an external solver (one-way coupling).
 
@@ -817,6 +820,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         if self.rigid_compliant_alm:
             self._validate_compliant_contact_materials()
             self._validate_compliant_joint_dof_materials()
+        if self._integrates_rigid_bodies:
+            self._validate_angular_contact_materials()
 
         self.rigid_joint_linear_k_start = rigid_joint_linear_k_start if rigid_avbd_linear_beta > 0.0 else None
         self.rigid_joint_angular_k_start = rigid_joint_angular_k_start if rigid_avbd_angular_beta > 0.0 else None
@@ -925,12 +930,18 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.body_body_contact_material_ke = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_material_kd = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_material_mu = wp.zeros(0, dtype=float, device=self.device)
+            self.body_body_contact_material_mu_torsional = wp.zeros(0, dtype=float, device=self.device)
+            self.body_body_contact_material_mu_rolling = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_tangent_rho = wp.zeros(0, dtype=float, device=self.device)
+            self.body_body_contact_torsional_rho = wp.zeros(0, dtype=float, device=self.device)
+            self.body_body_contact_rolling_rho = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_lambda = wp.zeros(0, dtype=wp.vec3, device=self.device)
+            self.body_body_contact_lambda_angular = wp.zeros(0, dtype=wp.vec3, device=self.device)
             self.body_body_contact_C0 = wp.zeros(0, dtype=wp.vec3, device=self.device)
 
             # Rigid contact warm-start buffers.
             self._prev_contact_lambda = None
+            self._prev_contact_lambda_angular = None
             self._prev_contact_penalty_k = None
             self._prev_contact_normal = None
 
@@ -1015,6 +1026,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._rigid_contact_body1 = wp.full(0, -1, dtype=wp.int32, device=self.device)
         self._rigid_contact_point0_world = wp.zeros(0, dtype=wp.vec3, device=self.device)
         self._rigid_contact_point1_world = wp.zeros(0, dtype=wp.vec3, device=self.device)
+        self._rigid_contact_pure_torque_on_body1 = wp.zeros(0, dtype=wp.vec3, device=self.device)
         self._rigid_contact_zero_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         self._rigid_contact_zero_force = wp.zeros(0, dtype=wp.vec3, device=self.device)
 
@@ -1030,6 +1042,11 @@ class SolverVBD(SolverBase, CouplingInterface):
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         self._apply_module_options()
+        if flags & ModelFlags.SHAPE_PROPERTIES:
+            if self._integrates_rigid_bodies:
+                self._validate_angular_contact_materials()
+            # Force the next contact refresh to update its material caches.
+            self._update_rigid_history = True
         refresh_structural_k = (
             bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
             and self._integrates_rigid_bodies
@@ -1178,6 +1195,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     point0,
                     point1,
                     force_on_body1,
+                    self._rigid_contact_pure_torque_on_body1,
                     self.model.body_inv_mass,
                     self.model.body_flags,
                     body_local_to_proxy_global,
@@ -1347,8 +1365,13 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_body_contact_material_ke = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_material_kd = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_material_mu = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
+        self.body_body_contact_material_mu_torsional = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
+        self.body_body_contact_material_mu_rolling = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_tangent_rho = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
+        self.body_body_contact_torsional_rho = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
+        self.body_body_contact_rolling_rho = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_lambda = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
+        self.body_body_contact_lambda_angular = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
         self.body_body_contact_C0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
 
     def _validate_compliant_contact_materials(self) -> None:
@@ -1356,6 +1379,14 @@ class SolverVBD(SolverBase, CouplingInterface):
         if self.model.shape_count == 0:
             return
         for attribute in ("shape_material_ke", "shape_material_kd", "shape_material_mu"):
+            values = self._to_numpy(getattr(self.model, attribute), dtype=float)
+            _validate_compliant_alm_material_coefficient(values, f"model.{attribute}")
+
+    def _validate_angular_contact_materials(self) -> None:
+        """Validate shape coefficients consumed by torsional and rolling friction."""
+        if self.model.shape_count == 0:
+            return
+        for attribute in ("shape_material_mu_torsional", "shape_material_mu_rolling"):
             values = self._to_numpy(getattr(self.model, attribute), dtype=float)
             _validate_compliant_alm_material_coefficient(values, f"model.{attribute}")
 
@@ -1382,6 +1413,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Allocate fresh contact-history buffers."""
         cap = rigid_contact_max
         self._prev_contact_lambda = wp.zeros(cap, dtype=wp.vec3, device=self.device)
+        self._prev_contact_lambda_angular = wp.zeros(cap, dtype=wp.vec3, device=self.device)
         self._prev_contact_penalty_k = wp.zeros(cap, dtype=float, device=self.device)
         self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
 
@@ -2342,10 +2374,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_normal,
                 self.body_body_contact_lambda,
+                self.body_body_contact_lambda_angular,
                 self.body_body_contact_penalty_k,
             ],
             outputs=[
                 self._prev_contact_lambda,
+                self._prev_contact_lambda_angular,
                 self._prev_contact_penalty_k,
                 self._prev_contact_normal,
             ],
@@ -2566,6 +2600,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
                         history = RigidContactHistory()
                         history.lambda_ = self._prev_contact_lambda
+                        history.lambda_angular = self._prev_contact_lambda_angular
                         history.penalty_k = self._prev_contact_penalty_k
                         history.normal = self._prev_contact_normal
                         restore_compliant_tangent_warmstart = int(
@@ -2583,6 +2618,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                                 model.shape_material_ke,
                                 model.shape_material_kd,
                                 model.shape_material_mu,
+                                model.shape_material_mu_torsional,
+                                model.shape_material_mu_rolling,
                                 self.rigid_contact_hard,
                                 self.rigid_compliant_alm,
                                 restore_compliant_tangent_warmstart,
@@ -2598,8 +2635,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                             outputs=[
                                 self.body_body_contact_penalty_k,
                                 self.body_body_contact_lambda,
+                                self.body_body_contact_lambda_angular,
                                 self.body_body_contact_material_kd,
                                 self.body_body_contact_material_mu,
+                                self.body_body_contact_material_mu_torsional,
+                                self.body_body_contact_material_mu_rolling,
                                 self.body_body_contact_material_ke,
                             ],
                             device=self.device,
@@ -2614,18 +2654,23 @@ class SolverVBD(SolverBase, CouplingInterface):
                                 model.shape_material_ke,
                                 model.shape_material_kd,
                                 model.shape_material_mu,
+                                model.shape_material_mu_torsional,
+                                model.shape_material_mu_rolling,
                                 self.rigid_contact_k_start_value,
                             ],
                             outputs=[
                                 self.body_body_contact_penalty_k,
                                 self.body_body_contact_material_kd,
                                 self.body_body_contact_material_mu,
+                                self.body_body_contact_material_mu_torsional,
+                                self.body_body_contact_material_mu_rolling,
                                 self.body_body_contact_material_ke,
                             ],
                             dim=contact_launch_dim,
                             device=self.device,
                         )
                         self.body_body_contact_lambda.zero_()
+                        self.body_body_contact_lambda_angular.zero_()
 
                     # A fresh refresh supersedes the prior contact rows, so consume the
                     # pending reset (contact-reset state exists only with history on).
@@ -2668,6 +2713,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                         1.0 / (dt * dt),
                         self.rigid_avbd_gamma,
                         self.body_body_contact_material_ke,
+                        self.body_body_contact_material_mu_torsional,
+                        self.body_body_contact_material_mu_rolling,
                         self.rigid_contact_k_start_value,
                     ],
                     outputs=[
@@ -2676,6 +2723,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.body_body_contact_C0,
                         self.body_body_contact_lambda,
                         self.body_body_contact_tangent_rho,
+                        self.body_body_contact_torsional_rho,
+                        self.body_body_contact_rolling_rho,
+                        self.body_body_contact_lambda_angular,
                     ],
                     device=self.device,
                 )
@@ -3204,8 +3254,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.body_body_contact_material_ke,
                         self.body_body_contact_material_kd,
                         self.body_body_contact_material_mu,
+                        self.body_body_contact_material_mu_torsional,
+                        self.body_body_contact_material_mu_rolling,
                         self.body_body_contact_tangent_rho,
+                        self.body_body_contact_torsional_rho,
+                        self.body_body_contact_rolling_rho,
                         self.body_body_contact_lambda,
+                        self.body_body_contact_lambda_angular,
                         self.body_body_contact_C0,
                         self.rigid_contact_alpha,
                         self.rigid_contact_hard,
@@ -3319,6 +3374,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     state_in.body_q,
                     self.body_q_prev,
                     self.body_body_contact_material_mu,
+                    self.body_body_contact_material_mu_torsional,
+                    self.body_body_contact_material_mu_rolling,
                     self.body_body_contact_C0,
                     self.rigid_contact_alpha,
                     self.rigid_contact_hard,
@@ -3326,9 +3383,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_body_contact_material_ke,
                     self.body_body_contact_tangent_rho,
                     self.body_body_contact_normal_rho,
+                    self.body_body_contact_torsional_rho,
+                    self.body_body_contact_rolling_rho,
                     self.rigid_linear_beta,
                     self.body_body_contact_penalty_k,  # input/output
                     self.body_body_contact_lambda,  # input/output
+                    self.body_body_contact_lambda_angular,  # input/output
                 ],
                 device=self.device,
             )
@@ -3469,8 +3529,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                 getattr(self, "body_body_contact_material_ke", None),
                 getattr(self, "body_body_contact_material_kd", None),
                 getattr(self, "body_body_contact_material_mu", None),
+                getattr(self, "body_body_contact_material_mu_torsional", None),
+                getattr(self, "body_body_contact_material_mu_rolling", None),
                 getattr(self, "body_body_contact_tangent_rho", None),
+                getattr(self, "body_body_contact_torsional_rho", None),
+                getattr(self, "body_body_contact_rolling_rho", None),
                 getattr(self, "body_body_contact_lambda", None),
+                getattr(self, "body_body_contact_lambda_angular", None),
                 getattr(self, "body_body_contact_C0", None),
             )
         )
@@ -3484,6 +3549,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self._rigid_contact_body1.fill_(-1)
                 self._rigid_contact_point0_world.zero_()
                 self._rigid_contact_point1_world.zero_()
+                self._rigid_contact_pure_torque_on_body1.zero_()
             return (
                 self._rigid_contact_body0,
                 self._rigid_contact_body1,
@@ -3503,6 +3569,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._rigid_contact_body1 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
             self._rigid_contact_point0_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
             self._rigid_contact_point1_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+            self._rigid_contact_pure_torque_on_body1 = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
 
         wp.launch(
             kernel=compute_rigid_contact_forces,
@@ -3528,8 +3595,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.body_body_contact_material_ke,
                 self.body_body_contact_material_kd,
                 self.body_body_contact_material_mu,
+                self.body_body_contact_material_mu_torsional,
+                self.body_body_contact_material_mu_rolling,
                 self.body_body_contact_tangent_rho,
+                self.body_body_contact_torsional_rho,
+                self.body_body_contact_rolling_rho,
                 self.body_body_contact_lambda,
+                self.body_body_contact_lambda_angular,
                 self.body_body_contact_C0,
                 self.rigid_contact_alpha,
                 self.rigid_contact_hard,
@@ -3542,6 +3614,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self._rigid_contact_point0_world,
                 self._rigid_contact_point1_world,
                 contacts.rigid_contact_force,
+                self._rigid_contact_pure_torque_on_body1,
             ],
             device=self.device,
         )
