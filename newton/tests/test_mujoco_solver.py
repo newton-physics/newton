@@ -751,10 +751,25 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         centers_after = mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num, :3]
         self.assertGreater(float(np.max(np.abs(centers_after - centers_before))), 1e-4)
 
-        # Repeating the same update must not drift the bounds, since the refit is computed
-        # from the compiled boxes rather than from the previous result.
+        # Returning to a frame must reproduce that frame's bounds. Rotating a box into a new
+        # frame grows it into the enclosing box, which is not reversible, so a refit computed
+        # from the previous result would accumulate on every round trip.
         extents = mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num, 3:].copy()
+        body_inertia = model.body_inertia.numpy().copy()
+        rotated = body_inertia.copy()
+        angle = math.radians(30.0)
+        rot = np.array(
+            [
+                [math.cos(angle), -math.sin(angle), 0.0],
+                [math.sin(angle), math.cos(angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        rotated[0] = (rot @ body_inertia[0].astype(np.float64) @ rot.T).astype(body_inertia.dtype)
         for _ in range(4):
+            model.body_inertia.assign(rotated)
+            solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+            model.body_inertia.assign(body_inertia)
             solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
         assert_np_equal(mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num, 3:], extents, tol=1e-6)
 
