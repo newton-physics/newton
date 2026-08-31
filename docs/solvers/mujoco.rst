@@ -597,12 +597,19 @@ Multi-world support
 -------------------
 
 Constructing :class:`~newton.solvers.SolverMuJoCo` with
-``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a MuJoCo model from the **first world** only and
-replicates it across all worlds via ``mujoco_warp``. This requires
+``separate_worlds=True`` (the default for any multi-world model) builds
+a MuJoCo model from the **first world** only. The GPU backend replicates
+it through ``mujoco_warp``. The CPU backend shares that model across one
+independent ``MjData`` per Newton world and steps all of them synchronously.
+This requires
 all Newton worlds to be structurally identical (same bodies, joints,
 and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
 construction and raises ``ValueError`` on a mismatch.
+
+Calling :meth:`~newton.solvers.SolverMuJoCo.reset` with a world mask
+resets only the selected CPU or GPU runtime worlds. It does not change
+which worlds the next :meth:`~newton.solvers.SolverMuJoCo.step` advances;
+every step advances the complete batch.
 
 Bodies, joints, equality constraints, and mimic constraints cannot have
 a negative world index — assigning any of them to the global world
@@ -623,7 +630,8 @@ same three-phase cycle:
    converted before the integrator runs. The joint-state re-sync
    frequency can be controlled via the ``update_data_interval``
    kwarg for substepping schemes.
-2. **Integrate.** ``mujoco_warp`` steps the MuJoCo model forward by ``dt``.
+2. **Integrate.** The selected backend steps the MuJoCo model forward by ``dt``.
+   On CPU, each world's ``MjData`` is stepped once in world order.
 3. **Pull MuJoCo → Newton.** ``SolverMuJoCo._update_newton_state``
    populates the output ``State`` from the integrated MuJoCo data.
    Kinematic roots pass through unchanged from ``state_in`` (see
