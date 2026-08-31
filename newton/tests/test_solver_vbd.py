@@ -1039,8 +1039,9 @@ def _rigid_contact_angular_conditioning_uses_world_pair_mobility(test, device):
             device=device,
         )
         result = wp.empty(1, dtype=wp.vec2, device=device)
+        quarter_turn = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * math.pi)
         body_q = wp.array(
-            [wp.transform_identity(), wp.transform_identity()],
+            [wp.transform_identity(), wp.transform(wp.vec3(0.0), quarter_turn)],
             dtype=wp.transform,
             device=device,
         )
@@ -1051,7 +1052,9 @@ def _rigid_contact_angular_conditioning_uses_world_pair_mobility(test, device):
             outputs=[result],
             device=device,
         )
-        np.testing.assert_allclose(result.numpy()[0], [12.5, 25.0], rtol=1.0e-6)
+        # Torsion sums both z mobilities: 4+4=8. The quarter turn swaps the
+        # second body's x/y mobilities, so rolling sees diag(1,2)+diag(2,1)=3I.
+        np.testing.assert_allclose(result.numpy()[0], [12.5, 100.0 / 3.0], rtol=1.0e-6)
 
 
 def _rigid_contact_tangent_support_uses_pair_mobility_eigenvalue(test, device):
@@ -1150,14 +1153,26 @@ def _assert_rigid_compliant_alm_coefficients(device):
 
 
 def _angular_contact_friction_isolates_channels(test, device):
-    """Verify torsional and rolling torques independently reach their physical bounds."""
+    """Verify each angular channel's bound and saturated stateful solve metric."""
     cases = (
-        (wp.vec3(0.0, 0.0, 1.0), 0.02, 0.0, np.array([0.0, 0.0, -2.0])),
-        (wp.vec3(1.0, 0.0, 0.0), 0.0, 0.03, np.array([-3.0, 0.0, 0.0])),
+        (
+            wp.vec3(0.0, 0.0, 1.0),
+            0.02,
+            0.0,
+            np.array([0.0, 0.0, -2.0]),
+            np.diag([0.0, 0.0, 20.0]),
+        ),
+        (
+            wp.vec3(1.0, 0.0, 0.0),
+            0.0,
+            0.03,
+            np.array([-3.0, 0.0, 0.0]),
+            np.diag([30.0, 30.0, 0.0]),
+        ),
     )
     with wp.ScopedDevice(device):
         for use_angular_friction_multiplier in (0, 1):
-            for axis, mu_torsional, mu_rolling, expected_torque in cases:
+            for axis, mu_torsional, mu_rolling, expected_torque, expected_stateful_hessian in cases:
                 q_now = wp.quat_from_axis_angle(axis, 0.1)
                 body_q = wp.array([wp.transform(wp.vec3(0.0), q_now)], dtype=wp.transform, device=device)
                 body_q_prev = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
@@ -1184,6 +1199,8 @@ def _angular_contact_friction_isolates_channels(test, device):
                 hessian_np = hessian.numpy()[0]
                 np.testing.assert_allclose(hessian_np, hessian_np.T, rtol=1.0e-6, atol=1.0e-6)
                 test.assertGreaterEqual(float(np.linalg.eigvalsh(hessian_np).min()), -1.0e-5)
+                if use_angular_friction_multiplier == 1:
+                    np.testing.assert_allclose(hessian_np, expected_stateful_hessian, rtol=1.0e-5, atol=1.0e-5)
 
 
 def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
@@ -1323,21 +1340,21 @@ def _rigid_contact_history_restore_from_match_index(test, device):
         np.testing.assert_allclose(material_mu_rolling.numpy(), [3.0e-4] * 4)
 
 
-def _rigid_contact_history_compliant_alm_tangent_warmstart(test, device):
-    """Verify matched ALM linear and angular multipliers obey their friction bounds."""
+def _rigid_contact_history_compliant_alm_friction_warmstart(test, device):
+    """Verify matched ALM friction state is transported and bounded in the new frame."""
     del test
     cases = (
-        # sticky: restore penalty and lambda_n only; zero lambda_t
-        ("sticky", [[1.0, 2.0, 3.0]], [0.25, 1.0], 0, [[0.0, 0.0, 3.0]], [[0.36, 0.48, 1.2]]),
-        # latest: hist lambda_t=(3,4) length 5; mu=0.5, lambda_n=5 -> cone 2.5 -> (1.5, 2)
-        ("latest", [[3.0, 4.0, 5.0]], [0.5, 0.5], 1, [[1.5, 2.0, 5.0]], [[0.6, 0.8, 2.0]]),
+        # sticky: restore normal support only for linear friction; transport angular state.
+        ("sticky", [[1.0, 2.0, 3.0]], [0.25, 1.0], 0, [[0.0, 3.0, 0.0]], [[0.6, 1.2, 0.0]]),
+        # latest: transport linear and angular tangents before applying their current bounds.
+        ("latest", [[3.0, 4.0, 5.0]], [0.5, 0.5], 1, [[2.5, 5.0, 0.0]], [[1.0, 2.0, 0.0]]),
     )
     with wp.ScopedDevice(device):
         for _name, hist_lambda, shape_mu, latest, expected_lambda, expected_lambda_angular in cases:
             contact_count = wp.array([1], dtype=int, device=device)
             shape0 = wp.array([0], dtype=int, device=device)
             shape1 = wp.array([1], dtype=int, device=device)
-            normal = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=device)
+            normal = wp.array([wp.vec3(0.0, 1.0, 0.0)], dtype=wp.vec3, device=device)
             match_index = wp.array([0], dtype=wp.int32, device=device)
 
             history = RigidContactHistory()
@@ -1407,7 +1424,7 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
 
         history = RigidContactHistory()
         history.lambda_ = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3, device=device)
-        history.lambda_angular = wp.zeros(1, dtype=wp.vec3, device=device)
+        history.lambda_angular = wp.array([[4.0, 5.0, 6.0]], dtype=wp.vec3, device=device)
         history.penalty_k = wp.array([40.0], dtype=float, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
 
@@ -1460,6 +1477,7 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
 
         np.testing.assert_allclose(penalty_k.numpy(), [40.0])
         np.testing.assert_allclose(lam.numpy(), [[0.0, 0.0, 0.0]])
+        np.testing.assert_allclose(lam_angular.numpy(), [[0.0, 0.0, 0.0]])
 
 
 def _rigid_contact_history_capture_requires_preallocation(test, device):
@@ -3747,8 +3765,8 @@ def _angular_friction_slows_rotation_without_sliding(test, device):
         test.assertLess(resisted, 0.7 * unresisted, msg=channel)
 
 
-def _vbd_proxy_harvest_preserves_total_contact_torque(test, device):
-    """Verify proxy harvesting adds the pure angular couple to existing point-force torque."""
+def _vbd_proxy_harvest_adds_pure_contact_torque(test, device):
+    """Verify proxy harvesting adds the pure angular couple to point-force torque."""
     with wp.ScopedDevice(device):
         count = wp.array([1], dtype=wp.int32, device=device)
         body0 = wp.array([0], dtype=wp.int32, device=device)
@@ -4105,8 +4123,8 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_rigid_contact_history_compliant_alm_tangent_warmstart",
-    _rigid_contact_history_compliant_alm_tangent_warmstart,
+    "test_rigid_contact_history_compliant_alm_friction_warmstart",
+    _rigid_contact_history_compliant_alm_friction_warmstart,
     devices=devices,
 )
 add_function_test(
@@ -4396,8 +4414,8 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_vbd_proxy_harvest_preserves_total_contact_torque",
-    _vbd_proxy_harvest_preserves_total_contact_torque,
+    "test_vbd_proxy_harvest_adds_pure_contact_torque",
+    _vbd_proxy_harvest_adds_pure_contact_torque,
     devices=devices,
 )
 add_function_test(

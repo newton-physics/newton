@@ -1518,8 +1518,7 @@ def evaluate_angular_contact_friction(
         torque_angular += n * lam_torsional
         if mu_torsional > 0.0 and torsional_rho > 0.0:
             if lam_torsional_trial_abs > torsional_limit:
-                # Use the trial multiplier for the saturated secant metric: retained
-                # state can remain at the bound as the angular increment vanishes.
+                # Use the full trial state so the metric stays finite as the increment vanishes.
                 torsional_solve_metric = torsional_rho * torsional_limit / lam_torsional_trial_abs
                 K_angular += torsional_solve_metric * n_outer
             else:
@@ -4978,7 +4977,8 @@ def init_body_body_contacts_alm(
                     )
                 lam_new += lam_t_new
             contact_lambda[i] = lam_new
-            # Transport the saved torsional/rolling split into the new contact frame.
+            # Sticky sliding history is carried through C0. Angular friction has no
+            # reference orientation, so matched hard/ALM rows retain its projected multiplier.
             lam_angular_hist = history.lambda_angular[slot]
             lam_torsional = n_new * wp.dot(lam_angular_hist, n_old)
             lam_rolling = lam_angular_hist - n_old * wp.dot(lam_angular_hist, n_old)
@@ -5145,6 +5145,7 @@ def step_body_body_contact_C0_lambda(
                 contact_normal_rho[i],
                 structural_support,
             )
+        # Stateful hard and ALM angular friction both require rotational conditioning.
         has_torsional_friction = contact_material_mu_torsional[i] > 0.0
         has_rolling_friction = contact_material_mu_rolling[i] > 0.0
         if has_torsional_friction or has_rolling_friction:
@@ -5587,8 +5588,6 @@ def accumulate_body_body_contacts_per_body(
         rolling_rho = contact_rolling_rho[contact_idx]
         contact_lam_angular = contact_lambda_angular[contact_idx]
 
-        # Endpoint torques already include the angular-friction couple; its
-        # separate value is only needed by the proxy point-force representation.
         (
             force_0,
             torque_0,
@@ -5779,8 +5778,7 @@ def compute_rigid_contact_forces(
     contact_mu_rolling = contact_material_mu_rolling[contact_idx]
     contact_lam_angular = contact_lambda_angular[contact_idx]
 
-    # Proxy harvesting reconstructs r x f at the proxy COM, so export the pure
-    # angular-friction couple instead of the total endpoint torque.
+    # Proxy harvesting reconstructs r x f, so export only the angular-friction couple.
     (
         _force_0,
         _torque_0,
@@ -6994,6 +6992,7 @@ def update_duals_body_body_contacts(
 
         has_angular_friction = contact_material_mu_torsional[idx] > 0.0 or contact_material_mu_rolling[idx] > 0.0
         if has_angular_friction:
+            # As for sliding, bound angular multipliers by the updated normal multiplier.
             normal_load = wp.max(wp.dot(contact_lambda[idx], n), 0.0)
 
             theta_rel = _relative_angular_displacement(body_id_0, body_id_1, body_q, body_q_prev)

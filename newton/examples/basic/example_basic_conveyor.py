@@ -156,9 +156,7 @@ class Example:
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = int(args.substeps) if args is not None and hasattr(args, "substeps") else 10
-        if self.sim_substeps <= 0:
-            raise ValueError(f"substeps must be positive, got {self.sim_substeps}")
+        self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -187,10 +185,6 @@ class Example:
         belt_cfg = newton.ModelBuilder.ShapeConfig(
             density=0.0,  # mass and inertia are authored explicitly on the belt body below
             mu=1.2,
-            # Shared XPBD/VBD scene material: the curved belt needs explicit
-            # angular resistance rather than the intentionally subtle rolling default.
-            mu_torsional=0.005,
-            mu_rolling=0.005,
             ke=1.0e5,  # vbd only
             kd=0.0,  # vbd only
             collision_group=BELT_COLLISION_GROUP,
@@ -203,9 +197,6 @@ class Example:
         )
         bag_cfg = newton.ModelBuilder.ShapeConfig(
             mu=1.0,
-            # Radius-like coefficients [m], consumed by both XPBD and VBD.
-            mu_torsional=0.005,
-            mu_rolling=0.005,
             ke=1.0e7,  # vbd only
             kd=1.0e4,  # vbd only
             restitution=0.0,
@@ -461,12 +452,6 @@ if __name__ == "__main__":
         type=float,
         default=BELT_SPEED,
         help="Conveyor tangential speed [m/s].",
-    )
-    parser.add_argument(
-        "--substeps",
-        type=int,
-        default=10,
-        help="Simulation substeps per rendered frame.",
     )
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)
