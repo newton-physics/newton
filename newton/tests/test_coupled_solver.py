@@ -3315,7 +3315,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         builder.add_particle(pos=(-0.02, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05, flags=flags)
         builder.add_particle(pos=(0.02, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05, flags=flags)
         model = builder.finalize(device="cpu")
-        solver = SolverXPBD(model=model, iterations=4, soft_contact_relaxation=1.0)
+        solver = SolverXPBD(model=model, iterations=4, soft_contact_relaxation=1.0, enable_restitution=True)
 
         state_0 = model.state()
         state_1 = model.state()
@@ -3339,7 +3339,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
             flags=int(newton.ParticleFlags.ACTIVE),
         )
         model = builder.finalize(device="cpu")
-        solver = SolverXPBD(model=model, iterations=4, soft_contact_relaxation=1.0)
+        solver = SolverXPBD(model=model, iterations=4, soft_contact_relaxation=1.0, enable_restitution=True)
 
         state_0 = model.state()
         state_1 = model.state()
@@ -3366,7 +3366,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         model = builder.finalize(device="cpu")
         view = ModelView(model, "xpbd")
         view.mark_proxy_bodies(wp.array([body], dtype=int, device=model.device))
-        solver = SolverXPBD(model=view, iterations=4, soft_contact_relaxation=1.0)
+        solver = SolverXPBD(model=view, iterations=4, soft_contact_relaxation=1.0, enable_restitution=True)
 
         state_0 = model.state()
         state_1 = model.state()

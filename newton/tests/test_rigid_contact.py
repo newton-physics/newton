@@ -431,7 +431,7 @@ def test_shape_collisions_gjk_mpr_multicontact(test, device, verbose=False):
     model = builder.finalize(device=device)
 
     # Use XPBD solver
-    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    solver = newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -544,7 +544,7 @@ def test_mesh_box_on_ground(test, device):
     model = builder.finalize(device=device)
 
     # Create solver and states
-    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    solver = newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -848,7 +848,7 @@ solvers = {
     "featherstone": newton.solvers.SolverFeatherstone,
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
-    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
+    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True),
     "semi_implicit": newton.solvers.SolverSemiImplicit,
     "kamino": newton.solvers.SolverKamino,
 }

@@ -92,7 +92,7 @@ class Example:
                     # collision, and exposes the proxy momentum change.
                     SolverCoupledProxy.Entry(
                         name="xpbd",
-                        solver=lambda v: SolverXPBD(model=v, **xpbd_kwargs),
+                        solver=lambda v: SolverXPBD(model=v, enable_restitution=True, **xpbd_kwargs),
                         particles=self.xpbd_particles,
                         configure_view=_configure_contact_only_xpbd_view,
                     ),
@@ -111,7 +111,7 @@ class Example:
                 ),
             )
         elif self.solver_type == "xpbd":
-            self.solver = SolverXPBD(model=self._contact_only_xpbd_view(), **xpbd_kwargs)
+            self.solver = SolverXPBD(model=self._contact_only_xpbd_view(), enable_restitution=True, **xpbd_kwargs)
         elif self.solver_type == "vbd":
             self.solver = SolverVBD(model=self.model, **vbd_kwargs)
         else:

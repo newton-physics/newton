@@ -46,6 +46,7 @@ def _make_solver(model, solver_name):
             model,
             iterations=10,
             soft_body_relaxation=0.7,
+            enable_restitution=True,
         )
 
     if solver_name == "vbd":

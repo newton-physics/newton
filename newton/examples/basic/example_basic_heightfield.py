@@ -74,7 +74,7 @@ class Example:
             self.use_mujoco_contacts = True
             self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
         else:
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10, enable_restitution=True)
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
 

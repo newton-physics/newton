@@ -397,7 +397,7 @@ solver (see also the :doc:`Introduction tutorial </tutorials/00_introduction>` a
     builder.add_shape_sphere(body, radius=0.5)
 
     model = builder.finalize()
-    solver = newton.solvers.SolverXPBD(model, iterations=5)
+    solver = newton.solvers.SolverXPBD(model, iterations=5, enable_restitution=True)
 
     state_0 = model.state()
     state_1 = model.state()
@@ -1501,7 +1501,7 @@ These are the common loop patterns:
     body = builder.add_body(xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()))
     builder.add_shape_sphere(body, radius=0.5)
     model = builder.finalize()
-    solver = newton.solvers.SolverXPBD(model, iterations=5)
+    solver = newton.solvers.SolverXPBD(model, iterations=5, enable_restitution=True)
     pipeline = CollisionPipeline(model, broad_phase="sap")
     state_0 = model.state()
     state_1 = model.state()

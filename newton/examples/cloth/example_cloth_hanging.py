@@ -127,6 +127,7 @@ class Example:
             self.solver = newton.solvers.SolverXPBD(
                 model=self.model,
                 iterations=self.iterations,
+                enable_restitution=True,
             )
         else:  # self.solver_type == "vbd"
             self.solver = newton.solvers.SolverVBD(

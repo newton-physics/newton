@@ -80,7 +80,7 @@ def _soft_solver_entry_args(soft_solver: str, args):
     if soft_solver == "semi_implicit":
         return "semi_implicit", SolverSemiImplicit, {}
     if soft_solver == "xpbd":
-        return "xpbd", SolverXPBD, {"iterations": args.xpbd_iterations}
+        return "xpbd", SolverXPBD, {"iterations": args.xpbd_iterations, "enable_restitution": True}
     if soft_solver == "vbd":
         return (
             "vbd",
@@ -202,6 +202,7 @@ class Example:
             self.solver = SolverXPBD(
                 model=self.model,
                 iterations=10,
+                enable_restitution=True,
             )
         elif self.solver_type == "vbd":
             self.solver = SolverVBD(

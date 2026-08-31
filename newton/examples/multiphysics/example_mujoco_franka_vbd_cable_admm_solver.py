@@ -234,6 +234,7 @@ class Example:
                 joint_linear_relaxation=joint_linear_relaxation,
                 joint_angular_relaxation=joint_angular_relaxation,
                 angular_damping=0.02,
+                enable_restitution=True,
             )
         raise ValueError(f"Unsupported payload kind {self.payload_kind!r}")
 

@@ -861,6 +861,7 @@ class ClothSim:
             self.solver = newton.solvers.SolverXPBD(
                 model=self.model,
                 iterations=self.iterations,
+                enable_restitution=True,
             )
         elif self.solver_name == "semi_implicit":
             self.solver = newton.solvers.SolverSemiImplicit(self.model)

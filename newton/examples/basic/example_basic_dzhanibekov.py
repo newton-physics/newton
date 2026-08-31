@@ -102,7 +102,7 @@ class Example:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
         elif self.solver_type == "xpbd":
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10, enable_restitution=True)
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
         elif self.solver_type == "mujoco":

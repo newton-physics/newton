@@ -8,6 +8,7 @@ Includes tests for particle-particle friction using relative velocity correctly.
 """
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -81,6 +82,7 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
     solver = newton.solvers.SolverXPBD(
         model=model,
         iterations=20,
+        enable_restitution=True,
     )
 
     state0 = model.state()
@@ -374,7 +376,7 @@ def test_optional_control_and_contacts(test, device):
     builder.add_ground_plane()
 
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverXPBD(model)
+    solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
     state_in = model.state()
     state_out = model.state()
 
@@ -432,7 +434,7 @@ def test_particle_particle_friction_with_relative_motion(test, device):
         model.particle_mu = mu
         model.particle_cohesion = 0.0
 
-        solver = newton.solvers.SolverXPBD(model=model, iterations=30)
+        solver = newton.solvers.SolverXPBD(model=model, iterations=30, enable_restitution=True)
 
         state0 = model.state()
         state1 = model.state()
@@ -479,7 +481,7 @@ def test_xpbd_particle_particle_contact_nan_guard(test, device):
     model.particle_mu = 1.0
     model.particle_cohesion = 0.0
 
-    solver = newton.solvers.SolverXPBD(model=model, iterations=1)
+    solver = newton.solvers.SolverXPBD(model=model, iterations=1, enable_restitution=True)
     state0 = model.state()
     state1 = model.state()
     collision_pipeline = newton.CollisionPipeline(model)
@@ -514,7 +516,7 @@ def test_xpbd_particle_particle_tiny_separation_contact_remains_active(test, dev
     model.particle_mu = 1.0
     model.particle_cohesion = 0.0
 
-    solver = newton.solvers.SolverXPBD(model=model, iterations=1)
+    solver = newton.solvers.SolverXPBD(model=model, iterations=1, enable_restitution=True)
     state0 = model.state()
     state1 = model.state()
     collision_pipeline = newton.CollisionPipeline(model)
@@ -686,7 +688,477 @@ def test_particle_shape_restitution_accounts_for_body_velocity(test, device):
     )
 
 
-def test_rigid_restitution_surface_gate_does_not_double_count_thickness(test, device):
+def test_restitution_flag_does_not_change_body_integration(test, device):
+    """Restitution must not select a different rigid-body integration path."""
+    builder = newton.ModelBuilder(gravity=(0.0, -10.0, 0.0), up_axis=newton.Axis.Y)
+    link = builder.add_link()
+    cfg = newton.ModelBuilder.ShapeConfig(restitution=1.0)
+    builder.add_shape_sphere(link, radius=0.01, cfg=cfg)
+    joint = builder.add_joint_revolute(
+        parent=-1,
+        child=link,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform(wp.vec3(0.0, 1.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+
+    q = model.joint_q.numpy()
+    q[model.joint_q_start.numpy()[0]] = 0.05
+    model.joint_q.assign(q)
+
+    states_disabled = [model.state(), model.state()]
+    states_enabled = [model.state(), model.state()]
+    for state in (states_disabled[0], states_enabled[0]):
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        solver_disabled = newton.solvers.SolverXPBD(model, enable_restitution=False)
+    solver_enabled = newton.solvers.SolverXPBD(model, enable_restitution=True)
+
+    for _ in range(200):
+        states_disabled[0].clear_forces()
+        states_enabled[0].clear_forces()
+        solver_disabled.step(states_disabled[0], states_disabled[1], None, None, 1.0e-3)
+        solver_enabled.step(states_enabled[0], states_enabled[1], None, None, 1.0e-3)
+        states_disabled.reverse()
+        states_enabled.reverse()
+
+    np.testing.assert_array_equal(states_enabled[0].body_q.numpy(), states_disabled[0].body_q.numpy())
+    np.testing.assert_array_equal(states_enabled[0].body_qd.numpy(), states_disabled[0].body_qd.numpy())
+
+
+def test_rigid_restitution_uses_integrated_velocity(test, device):
+    """Rigid restitution must use velocity after external forces are integrated."""
+    radius = 0.05
+    cfg = newton.ModelBuilder.ShapeConfig(restitution=1.0, mu=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_ground_plane(cfg=cfg)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+    model = builder.finalize(device=device)
+    with test.assertRaisesRegex(ValueError, "rigid_contact_restitution_iterations must be at least 1"):
+        newton.solvers.SolverXPBD(model, rigid_contact_restitution_iterations=0, enable_restitution=True)
+    solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+
+    state_in = model.state()
+    state_out = model.state()
+    mass = float(model.body_mass.numpy()[body])
+    body_f = np.zeros((model.body_count, 6), dtype=np.float32)
+    body_f[body, 2] = -10.0 * mass
+    state_in.body_f.assign(wp.array(body_f, dtype=wp.spatial_vector, device=device))
+
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, None, contacts, 1.0 / 60.0)
+
+    vz = float(state_out.body_qd.numpy()[body, 2])
+    test.assertGreater(vz, 0.1, f"Restitution should reflect the force-integrated impact velocity, got {vz:.4f} m/s")
+
+
+def test_rigid_restitution_zero_settles(test, device):
+    """A dropped restitution=0.0 sphere must settle while a restitution=1.0 sphere rebounds higher."""
+    radius = 0.05
+    drop_z = 0.3
+    fps, substeps = 60, 16
+    dt = 1.0 / fps / substeps
+    n_frames = 25
+
+    def simulate(restitution):
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.restitution = restitution
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
+        cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=restitution, mu=0.0)
+        builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+        model = builder.finalize(device=device)
+        solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        zs = []
+        for _ in range(n_frames):
+            for _ in range(substeps):
+                state_0.clear_forces()
+                collision_pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+            zs.append(float(state_0.body_q.numpy()[0][2]))
+        return zs
+
+    zs_inelastic = simulate(restitution=0.0)
+    zs_elastic = simulate(restitution=1.0)
+
+    # Inelastic run anchors contact_frame; min(post_impact) finds the true bottom
+    # since the frame sample may catch the sphere mid-descent at 2*radius.
+    contact_frame = next((i for i, z in enumerate(zs_inelastic) if z < 2.0 * radius), None)
+    test.assertIsNotNone(contact_frame, "Sphere never reached the ground in the simulation.")
+
+    post_impact_inelastic = zs_inelastic[contact_frame:]
+    post_impact_elastic = zs_elastic[contact_frame:]
+
+    # restitution=0.0: sphere must not rise above its post-impact minimum.
+    z_min_inelastic = min(post_impact_inelastic)
+    z_min_idx = post_impact_inelastic.index(z_min_inelastic)
+    bounced_up = any(z > z_min_inelastic + 0.001 for z in post_impact_inelastic[z_min_idx + 1 :])
+    test.assertFalse(
+        bounced_up,
+        msg=(
+            f"With restitution=0.0, sphere should not rise above its impact minimum "
+            f"(z_min={z_min_inelastic:.4f} m). Post-impact z values: {post_impact_inelastic}."
+        ),
+    )
+
+    # restitution=1.0: sphere must rise above its post-impact minimum.
+    z_min_elastic = min(post_impact_elastic)
+    z_min_idx_elastic = post_impact_elastic.index(z_min_elastic)
+    did_bounce = any(z > z_min_elastic + 0.005 for z in post_impact_elastic[z_min_idx_elastic + 1 :])
+    test.assertTrue(
+        did_bounce,
+        msg=(
+            f"With restitution=1.0, sphere should bounce back up after impact minimum "
+            f"(z_min={z_min_elastic:.4f} m). Post-impact z values: {post_impact_elastic}."
+        ),
+    )
+
+    # Elastic peak must be meaningfully higher than inelastic.
+    peak_inelastic = max(post_impact_inelastic)
+    peak_elastic = max(post_impact_elastic)
+    test.assertGreater(
+        peak_elastic,
+        peak_inelastic + 0.02,
+        msg=(
+            f"Elastic peak ({peak_elastic:.4f} m) should be > inelastic peak ({peak_inelastic:.4f} m) by at least 2 cm."
+        ),
+    )
+
+
+def test_rigid_restitution_elastic_no_explosion(test, device):
+    """A restitution=1.0 cylinder must rebound without single- or multi-contact energy gain."""
+    hz = 0.05
+    drop_z = 0.3
+
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=1.0, mu=0.0)
+    builder.add_shape_box(
+        -1,
+        xform=wp.transform(wp.vec3(0.0, 0.0, -hz), wp.quat_identity()),
+        hx=0.5,
+        hy=0.5,
+        hz=hz,
+        cfg=cfg,
+    )
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
+    builder.add_shape_cylinder(body=body, radius=0.1, half_height=hz, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    fps, substeps = 60, 16
+    dt = 1.0 / fps / substeps
+
+    z_history = []
+    for _ in range(60):
+        for _ in range(substeps):
+            state_0.clear_forces()
+            collision_pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+        z_history.append(float(state_0.body_q.numpy()[0][2]))
+
+    for i, z in enumerate(z_history):
+        test.assertTrue(
+            np.isfinite(z),
+            msg=f"Body Z is not finite at frame {i}: {z}. The bug caused explosion to ~1e29 m.",
+        )
+
+    max_z = max(z_history)
+    test.assertLess(
+        max_z,
+        1.05 * drop_z,
+        msg=(
+            f"With restitution=1.0, peak height should not exceed the {drop_z:.2f} m release height "
+            f"by more than 5%; got {max_z:.4f} m."
+        ),
+    )
+
+    # Positive rebound: guards against a fix that silently suppresses restitution —
+    # the finite/bound checks above would pass even if the cylinder just settled at z≈hz.
+    contact_idx = next((i for i, z in enumerate(z_history) if z < hz * 1.5), None)
+    test.assertIsNotNone(contact_idx, "Cylinder never contacted the ground — check simulation length.")
+    post_impact = z_history[contact_idx:]
+    z_min_body = min(post_impact)
+    z_min_body_idx = post_impact.index(z_min_body)
+    peak_after_impact = max(post_impact[z_min_body_idx:])
+    test.assertGreater(
+        peak_after_impact,
+        0.8 * drop_z,
+        msg=(
+            f"With restitution=1.0, the cylinder should recover at least 80% of its release height "
+            f"(z_min={z_min_body:.4f} m, peak after={peak_after_impact:.4f} m)."
+        ),
+    )
+
+
+def test_rigid_restitution_runs_with_requires_grad(test, device):
+    """Rigid restitution must bounce without exploding on both grad and non-grad paths."""
+    radius = 0.05
+    drop_z = 0.3
+    fps, substeps = 60, 16
+    dt = 1.0 / fps / substeps
+    n_frames = 50
+
+    def simulate(requires_grad):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
+        cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=1.0, mu=0.0)
+        builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+        model = builder.finalize(device=device)
+        solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+        state_0 = model.state(requires_grad=requires_grad)
+        state_1 = model.state(requires_grad=requires_grad)
+        control = model.control()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        zs = []
+        for _ in range(n_frames):
+            for _ in range(substeps):
+                state_0.clear_forces()
+                collision_pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+            zs.append(float(state_0.body_q.numpy()[0][2]))
+        return zs
+
+    zs_grad = simulate(requires_grad=True)
+    zs_no_grad = simulate(requires_grad=False)
+
+    # Anchor to the grad trajectory: the settling sphere reliably frames below 2*radius.
+    # The elastic no-grad sphere bounces within each frame and may never sample below
+    # 2*radius, so per-trajectory contact detection would fail to find a contact_frame.
+    contact_frame = next((i for i, z in enumerate(zs_grad) if z < 2.0 * radius), None)
+    test.assertIsNotNone(contact_frame, "Sphere never reached the ground in the simulation.")
+
+    post_impact_grad = zs_grad[contact_frame:]
+    post_impact_no_grad = zs_no_grad[contact_frame:]
+
+    def assert_rebounds(name, zs):
+        z_min = zs[0]
+        for z in zs[1:]:
+            if z > z_min + 0.001:
+                return
+            z_min = min(z_min, z)
+        test.fail(
+            f"With {name}, sphere should rise after an impact minimum "
+            f"(latest z_min={z_min:.4f} m). Post-impact z values: {zs}."
+        )
+
+    assert_rebounds("requires_grad=True", post_impact_grad)
+    assert_rebounds("requires_grad=False", post_impact_no_grad)
+
+    peak_grad = max(post_impact_grad)
+    peak_no_grad = max(post_impact_no_grad)
+    test.assertLess(
+        peak_grad,
+        2.0 * drop_z,
+        msg=(
+            f"With requires_grad=True, restitution should not explode above {2.0 * drop_z:.2f} m; "
+            f"peak was {peak_grad:.4f} m. Post-impact z values: {post_impact_grad}."
+        ),
+    )
+    test.assertLess(
+        peak_no_grad,
+        2.0 * drop_z,
+        msg=(
+            f"With requires_grad=False, restitution should not explode above {2.0 * drop_z:.2f} m; "
+            f"peak was {peak_no_grad:.4f} m. Post-impact z values: {post_impact_no_grad}."
+        ),
+    )
+
+
+def test_particle_shape_restitution_runs_with_requires_grad(test, device):
+    """A particle hit by a moving rigid box must receive a finite restitution impulse
+    on both grad and non-grad paths."""
+    builder = newton.ModelBuilder(up_axis="Y")
+
+    body_id = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_box(body=body_id, hx=1.0, hy=0.5, hz=1.0)
+
+    particle_radius = 0.1
+    builder.add_particle(
+        pos=(0.0, 0.5 + particle_radius, 0.0),
+        vel=(0.0, 0.0, 0.0),
+        mass=1.0,
+        radius=particle_radius,
+    )
+
+    for requires_grad in [False, True]:
+        model = builder.finalize(device=device, requires_grad=requires_grad)
+        model.set_gravity((0.0, 0.0, 0.0))
+        model.soft_contact_restitution = 1.0
+
+        solver = newton.solvers.SolverXPBD(model, iterations=10, enable_restitution=True)
+
+        state0 = model.state(requires_grad=requires_grad)
+        state1 = model.state(requires_grad=requires_grad)
+
+        body_vel = np.array([[0.0, 5.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+        state0.body_qd.assign(wp.array(body_vel, dtype=wp.spatial_vector, device=device))
+
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state0, contacts)
+        control = model.control()
+        solver.step(state0, state1, control, contacts, 1.0 / 60.0)
+
+        vel = state1.particle_qd.numpy()
+
+        label = f"requires_grad={requires_grad}"
+        test.assertTrue(
+            np.all(np.isfinite(vel)),
+            msg=f"[{label}] Particle velocity is not finite after restitution: {vel}",
+        )
+        test.assertGreater(
+            float(vel[0, 1]),
+            7.0,
+            msg=f"[{label}] Particle should receive restitution impulse (expected ~10 m/s, got {float(vel[0, 1]):.2f})",
+        )
+
+
+def test_rigid_restitution_elastic_box_on_plane(test, device):
+    """Restore the #1289 geometry: a restitution=1.0 box (4-corner manifold) on a
+    ground plane must rebound within elastic bounds. The 4-corner manifold was the
+    slowest-converging case for the previous contact-weighted Jacobi restitution;
+    the per-manifold solve converges it at the default iteration count."""
+    hz = 0.05
+    drop_z = 0.3
+
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=1.0, mu=0.0)
+    builder.add_ground_plane(cfg=cfg)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
+    builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=hz, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+    state_0 = model.state()
+    state_1 = model.state()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+
+    fps, substeps = 60, 16
+    dt = 1.0 / fps / substeps
+    n_frames = 50
+
+    z_history = []
+    for _ in range(n_frames):
+        for _ in range(substeps):
+            state_0.clear_forces()
+            collision_pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, None, contacts, dt)
+            state_0, state_1 = state_1, state_0
+        z = float(state_0.body_q.numpy()[body, 2])
+        test.assertTrue(np.isfinite(z), f"Body Z is not finite: {z}")
+        z_history.append(z)
+
+    max_z = max(z_history)
+    test.assertLess(max_z, 1.05 * drop_z, f"Elastic box gained energy: peak {max_z:.4f} m")
+
+    contact_idx = next((i for i, z in enumerate(z_history) if z < hz * 1.5), None)
+    test.assertIsNotNone(contact_idx, "Box never contacted the ground.")
+    post_impact = z_history[contact_idx:]
+    z_min = min(post_impact)
+    peak_after = max(post_impact[post_impact.index(z_min) :])
+    test.assertGreater(
+        peak_after,
+        0.8 * drop_z,
+        f"Box should recover >=80% of release height (z_min={z_min:.4f}, peak={peak_after:.4f}).",
+    )
+
+
+def test_rigid_restitution_multi_manifold_energy(test, device):
+    """An elastic body impacting two supports simultaneously (two manifolds
+    sharing it) must roughly conserve kinetic energy at the default outer
+    iteration count. Regression: re-freezing the restitution impulse lower
+    bound on every outer iteration let iteration 2 claw back iteration 1's
+    cross-manifold impulses (adhesive; ~23% KE loss in this scenario)."""
+    radius = 0.35
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    # heavy support / light support / falling body: strongly asymmetric masses
+    # maximize the cross-manifold coupling through the shared middle body
+    cfg_a = newton.ModelBuilder.ShapeConfig(restitution=1.0, mu=0.0, density=191.0)
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.4, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_sphere(body_a, radius=radius, cfg=cfg_a)
+    cfg_b = newton.ModelBuilder.ShapeConfig(restitution=1.0, mu=0.0, density=0.0191)
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.4, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_sphere(body_b, radius=radius, cfg=cfg_b)
+    # touching both supports with a 2 mm overlap
+    drop_y = float(np.sqrt((2.0 * radius) ** 2 - 0.4**2)) - 0.002
+    cfg_m = newton.ModelBuilder.ShapeConfig(restitution=1.0, mu=0.0, density=1.91)
+    body_m = builder.add_body(xform=wp.transform(wp.vec3(0.0, drop_y, 0.0), wp.quat_identity()))
+    builder.add_shape_sphere(body_m, radius=radius, cfg=cfg_m)
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(model, iterations=10, angular_damping=0.0, enable_restitution=True)
+    state_0 = model.state()
+    state_1 = model.state()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+
+    qd = state_0.body_qd.numpy()
+    qd[body_m, :3] = [0.0, -2.0, 0.0]
+    state_0.body_qd.assign(qd)
+
+    masses = model.body_mass.numpy()
+    inertia = 0.4 * masses * radius * radius  # solid spheres
+
+    def kinetic_energy(state):
+        qd = state.body_qd.numpy()
+        v2 = np.sum(qd[:, :3] ** 2, axis=1)
+        w2 = np.sum(qd[:, 3:] ** 2, axis=1)
+        return float(np.sum(0.5 * masses * v2) + np.sum(0.5 * inertia * w2))
+
+    ke_before = kinetic_energy(state_0)
+    state_0.clear_forces()
+    collision_pipeline.collide(state_0, contacts)
+    solver.step(state_0, state_1, None, contacts, 1.0 / 60.0)
+    ke_after = kinetic_energy(state_1)
+
+    ratio = ke_after / ke_before
+    test.assertGreater(
+        ratio,
+        0.9,
+        msg=(
+            f"Elastic two-support impact lost kinetic energy: KE ratio {ratio:.4f} "
+            f"(before {ke_before:.4f}, after {ke_after:.4f})."
+        ),
+    )
+    test.assertLess(
+        ratio,
+        1.1,
+        msg=(
+            f"Elastic two-support impact gained kinetic energy: KE ratio {ratio:.4f} "
+            f"(before {ke_before:.4f}, after {ke_after:.4f})."
+        ),
+    )
+
+
+def test_rigid_restitution_skips_inactive_contact(test, device):
+    """Rigid restitution must ignore contacts inactive in the positional solve."""
     body_q = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
     body_qd_prev = wp.array([wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
     body_qd = wp.array([wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
@@ -701,6 +1173,7 @@ def test_rigid_restitution_surface_gate_does_not_double_count_thickness(test, de
 
     shape_body = wp.array([0], dtype=wp.int32, device=device)
     contact_count = wp.array([1], dtype=wp.int32, device=device)
+    restitution_contact_active = wp.array([0], dtype=wp.int32, device=device)
     contact_normal = wp.array([wp.vec3(0.0, 1.0, 0.0)], dtype=wp.vec3, device=device)
     contact_shape0 = wp.array([0], dtype=wp.int32, device=device)
     contact_shape1 = wp.array([-1], dtype=wp.int32, device=device)
@@ -710,7 +1183,6 @@ def test_rigid_restitution_surface_gate_does_not_double_count_thickness(test, de
     contact_offset0 = wp.array([wp.vec3(0.0, 0.05, 0.0)], dtype=wp.vec3, device=device)
     contact_point1 = wp.array([wp.vec3(0.0, 0.06, 0.0)], dtype=wp.vec3, device=device)
     contact_offset1 = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
-    contact_inv_weight = wp.array([1.0], dtype=float, device=device)
     gravity = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
     deltas = wp.zeros(1, dtype=wp.spatial_vector, device=device)
 
@@ -718,7 +1190,6 @@ def test_rigid_restitution_surface_gate_does_not_double_count_thickness(test, de
         apply_rigid_restitution,
         dim=1,
         inputs=[
-            body_q,
             body_qd,
             body_q,
             body_qd_prev,
@@ -728,6 +1199,7 @@ def test_rigid_restitution_surface_gate_does_not_double_count_thickness(test, de
             body_world,
             shape_body,
             contact_count,
+            restitution_contact_active,
             contact_normal,
             contact_shape0,
             contact_shape1,
@@ -736,7 +1208,6 @@ def test_rigid_restitution_surface_gate_does_not_double_count_thickness(test, de
             contact_point1,
             contact_offset0,
             contact_offset1,
-            contact_inv_weight,
             gravity,
             1.0 / 60.0,
         ],
@@ -788,7 +1259,7 @@ def test_articulation_contact_drift(test, device):
     builder.add_ground_plane()
 
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverXPBD(model)
+    solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
 
     state_0 = model.state()
     state_1 = model.state()
@@ -911,7 +1382,7 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
     model = builder.finalize(device=device)
     model.request_contact_attributes("force")
 
-    solver = newton.solvers.SolverXPBD(model, iterations=32, rigid_contact_con_weighting=True)
+    solver = newton.solvers.SolverXPBD(model, iterations=32, rigid_contact_con_weighting=True, enable_restitution=True)
     state_in = model.state()
     state_out = model.state()
     control = model.control()
@@ -1062,7 +1533,7 @@ def test_xpbd_contact_force_zero_when_no_contact(test, device):
     model = builder.finalize(device=device)
     model.request_contact_attributes("force")
 
-    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    solver = newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True)
     state_in = model.state()
     state_out = model.state()
     control = model.control()
@@ -1099,7 +1570,7 @@ def test_xpbd_contact_force_zero_when_not_touching(test, device):
     model.set_gravity(wp.vec3(0.0, 0.0, 0.0))
     model.request_contact_attributes("force")
 
-    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    solver = newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True)
     state_in = model.state()
     state_out = model.state()
     control = model.control()
@@ -1133,7 +1604,7 @@ def test_xpbd_update_contacts_requires_force_attribute(test, device):
     builder.add_shape_sphere(body=body, radius=0.25)
     model = builder.finalize(device=device)
 
-    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    solver = newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True)
     state_in = model.state()
     state_out = model.state()
     control = model.control()
@@ -1208,7 +1679,7 @@ def _run_single_body_steady_state(test, device, joint_kind: str, parent_kinemati
     builder, child_link = _build_single_body_pendulum(joint_kind, parent_kinematic, gravity)
     model = builder.finalize(device=device)
 
-    solver = newton.solvers.SolverXPBD(model, iterations=8)
+    solver = newton.solvers.SolverXPBD(model, iterations=8, enable_restitution=True)
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -1332,7 +1803,7 @@ def test_xpbd_parent_force_chain_weight_propagation(test, device):
     builder.add_articulation([joint0, joint1])
     model = builder.finalize(device=device)
 
-    solver = newton.solvers.SolverXPBD(model, iterations=32)
+    solver = newton.solvers.SolverXPBD(model, iterations=32, enable_restitution=True)
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -1389,7 +1860,7 @@ def test_xpbd_parent_force_not_allocated(test, device):
     builder.add_articulation([joint])
     model = builder.finalize(device=device)
 
-    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    solver = newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True)
     state_in = model.state()
     state_out = model.state()
 
@@ -1417,7 +1888,7 @@ def test_xpbd_parent_force_zero_for_free_body(test, device):
     builder.add_articulation([joint])
     model = builder.finalize(device=device)
 
-    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    solver = newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True)
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -1482,7 +1953,7 @@ def test_xpbd_parent_f_centripetal_zero_g(test, device):
         joint_linear_compliance=0.0,
         joint_angular_compliance=0.0,
         angular_damping=0.0,
-        enable_restitution=False,
+        enable_restitution=True,
     )
 
     state_in = model.state()
@@ -1572,7 +2043,7 @@ def test_xpbd_parent_f_consistent_across_solvers(test, device):
     dt = 5e-3
     results = {}
     for name, make_solver in [
-        ("xpbd", lambda m: newton.solvers.SolverXPBD(m, iterations=8)),
+        ("xpbd", lambda m: newton.solvers.SolverXPBD(m, iterations=8, enable_restitution=True)),
         ("mujoco", lambda m: newton.solvers.SolverMuJoCo(m, use_mujoco_cpu=False)),
         ("featherstone", newton.solvers.SolverFeatherstone),
     ]:
@@ -1666,7 +2137,7 @@ def _newton_second_law_on_child(joint_kind, ic, *, dt, iters, device):
         joint_linear_compliance=0.0,
         joint_angular_compliance=0.0,
         angular_damping=0.0,
-        enable_restitution=False,
+        enable_restitution=True,
     )
     state_in = model.state()
     state_out = model.state()
@@ -1955,12 +2426,76 @@ add_function_test(
 
 add_function_test(
     TestSolverXPBD,
-    "test_rigid_restitution_surface_gate_does_not_double_count_thickness",
-    test_rigid_restitution_surface_gate_does_not_double_count_thickness,
+    "test_restitution_flag_does_not_change_body_integration",
+    test_restitution_flag_does_not_change_body_integration,
     devices=devices,
     check_output=False,
 )
 
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_uses_integrated_velocity",
+    test_rigid_restitution_uses_integrated_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_elastic_box_on_plane",
+    test_rigid_restitution_elastic_box_on_plane,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_multi_manifold_energy",
+    test_rigid_restitution_multi_manifold_energy,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_skips_inactive_contact",
+    test_rigid_restitution_skips_inactive_contact,
+    devices=devices,
+    check_output=False,
+)
+
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_zero_settles",
+    test_rigid_restitution_zero_settles,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_elastic_no_explosion",
+    test_rigid_restitution_elastic_no_explosion,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_runs_with_requires_grad",
+    test_rigid_restitution_runs_with_requires_grad,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_particle_shape_restitution_runs_with_requires_grad",
+    test_particle_shape_restitution_runs_with_requires_grad,
+    devices=devices,
+    check_output=False,
+)
 
 add_function_test(
     TestSolverXPBD,

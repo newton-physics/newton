@@ -1420,7 +1420,7 @@ def test_brick_pyramid_stability(test, device):
         broad_phase="nxn",
     )
     contacts = collision_pipeline.contacts()
-    solver = newton.solvers.SolverXPBD(model, iterations=10, rigid_contact_relaxation=0.8)
+    solver = newton.solvers.SolverXPBD(model, iterations=10, rigid_contact_relaxation=0.8, enable_restitution=True)
 
     # Simulate for a short time
     state_0 = model.state()

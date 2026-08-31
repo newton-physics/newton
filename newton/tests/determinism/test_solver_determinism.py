@@ -84,7 +84,7 @@ def _build_soft_body(device):
 
 def _make_particle_solver(model, solver_name):
     if solver_name == "xpbd":
-        return newton.solvers.SolverXPBD(model, iterations=5, deterministic=DETERMINISTIC_MODE)
+        return newton.solvers.SolverXPBD(model, iterations=5, deterministic=DETERMINISTIC_MODE, enable_restitution=True)
     if solver_name == "semi_implicit":
         return newton.solvers.SolverSemiImplicit(model, deterministic=DETERMINISTIC_MODE)
     if solver_name == "vbd":
@@ -258,13 +258,13 @@ class TestSolverDeterminismOptions(unittest.TestCase):
     def test_xpbd_resets_inherited_module_options(self):
         with wp.ScopedDevice("cpu"):
             model = _build_soft_body("cpu")
-            newton.solvers.SolverXPBD(model, deterministic=DETERMINISTIC_MODE)
+            newton.solvers.SolverXPBD(model, deterministic=DETERMINISTIC_MODE, enable_restitution=True)
             options = wp.get_module_options(module=xpbd_kernels)
             self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
             self.assertEqual(options["deterministic_max_records"], 0)
 
             wp.config.deterministic = wp.DeterministicMode.NOT_GUARANTEED
-            newton.solvers.SolverXPBD(model)
+            newton.solvers.SolverXPBD(model, enable_restitution=True)
             options = wp.get_module_options(module=xpbd_kernels)
             self.assertEqual(options["deterministic"], wp.DeterministicMode.NOT_GUARANTEED)
             self.assertEqual(options["deterministic_max_records"], 0)
@@ -311,7 +311,7 @@ class TestSolverDeterminismOptions(unittest.TestCase):
 
     def test_current_solver_skips_module_option_checks(self):
         model = newton.ModelBuilder().finalize(device="cpu")
-        solver = newton.solvers.SolverXPBD(model)
+        solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
         with mock.patch.object(wp, "get_module_options") as get_module_options:
             solver._apply_module_options()
         get_module_options.assert_not_called()
@@ -319,10 +319,15 @@ class TestSolverDeterminismOptions(unittest.TestCase):
     def test_live_solvers_reapply_module_options_before_step(self):
         with wp.ScopedDevice("cpu"):
             model = newton.ModelBuilder().finalize(device="cpu")
-            deterministic_solver = newton.solvers.SolverXPBD(model, deterministic=DETERMINISTIC_MODE)
+            deterministic_solver = newton.solvers.SolverXPBD(
+                model,
+                deterministic=DETERMINISTIC_MODE,
+                enable_restitution=True,
+            )
             default_solver = newton.solvers.SolverXPBD(
                 model,
                 deterministic=wp.DeterministicMode.NOT_GUARANTEED,
+                enable_restitution=True,
             )
             state_0, state_1 = model.state(), model.state()
 

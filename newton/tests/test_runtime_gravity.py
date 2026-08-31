@@ -171,7 +171,7 @@ def test_gravity_fallback(test, device):
     builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     model = builder.finalize(device=device)
-    solver = SolverXPBD(model)
+    solver = SolverXPBD(model, enable_restitution=True)
 
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -204,7 +204,7 @@ def test_runtime_gravity_with_cuda_graph(test, device):
         builder.add_particle(pos=(i * 0.5, 0.0, 2.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     model = builder.finalize(device=device)
-    solver = SolverXPBD(model)
+    solver = SolverXPBD(model, enable_restitution=True)
 
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -469,7 +469,7 @@ def test_set_gravity_per_world(test, device):
         builder.end_world()
 
     model = builder.finalize(device=device)
-    solver = SolverXPBD(model)
+    solver = SolverXPBD(model, enable_restitution=True)
 
     # Verify initial gravity is the same for both worlds
     gravity_np = model.gravity.numpy()
@@ -522,7 +522,7 @@ def test_set_gravity_array(test, device):
         builder.end_world()
 
     model = builder.finalize(device=device)
-    solver = SolverXPBD(model)
+    solver = SolverXPBD(model, enable_restitution=True)
 
     # Set curriculum gravity: gradually increase from 0 to full
     gravities = np.array([[0.0, 0.0, g * -9.81] for g in np.linspace(0.0, 1.0, world_count)], dtype=np.float32)
@@ -687,7 +687,7 @@ def test_replicate_gravity_simulation(test, device):
     worlds.replicate(robot, 2)
 
     model = worlds.finalize(device=device)
-    solver = SolverXPBD(model)
+    solver = SolverXPBD(model, enable_restitution=True)
 
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -764,7 +764,7 @@ def test_begin_world_gravity_parameter(test, device):
     np.testing.assert_allclose(gravity[-1], [0.0, 0.0, -9.81], atol=1e-6)
 
     # Verify simulation behavior
-    solver = SolverXPBD(model)
+    solver = SolverXPBD(model, enable_restitution=True)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     dt = 0.01
@@ -791,12 +791,12 @@ devices = get_test_devices()
 
 # Test with different solvers
 solvers_particles = {
-    "xpbd": SolverXPBD,
+    "xpbd": lambda model: SolverXPBD(model, enable_restitution=True),
     "semi_implicit": SolverSemiImplicit,
 }
 
 solvers_bodies = {
-    "xpbd": SolverXPBD,
+    "xpbd": lambda model: SolverXPBD(model, enable_restitution=True),
     "semi_implicit": SolverSemiImplicit,
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0),

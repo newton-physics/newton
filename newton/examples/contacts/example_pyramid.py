@@ -122,6 +122,7 @@ class Example:
             self.model,
             iterations=XPBD_ITERATIONS,
             rigid_contact_relaxation=XPBD_CONTACT_RELAXATION,
+            enable_restitution=True,
         )
 
         self.state_0 = self.model.state()

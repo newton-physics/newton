@@ -300,7 +300,7 @@ class ModelBuilder:
 
         state_0, state_1 = model.state(), model.state()
         control = model.control()
-        solver = SolverXPBD(model)
+        solver = SolverXPBD(model, enable_restitution=True)
         collision_pipeline = newton.CollisionPipeline(model)
         contacts = collision_pipeline.contacts()
 

@@ -864,7 +864,7 @@ solvers = {
         1e-3,  # Higher tolerance due to body origin velocity integration
     ),
     "xpbd": (
-        lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
+        lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0, enable_restitution=True),
         False,
         1e-4,  # Tighter tolerance - directly integrates CoM velocity
     ),

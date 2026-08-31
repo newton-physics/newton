@@ -381,7 +381,7 @@ cuda_devices = get_selected_cuda_test_devices()
 # Coulomb stopping-distance oracle.
 _SOLVERS = {
     "xpbd": {
-        "factory": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
+        "factory": lambda model: newton.solvers.SolverXPBD(model, iterations=10, enable_restitution=True),
         "mus": _DEFAULT_MUS,
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,

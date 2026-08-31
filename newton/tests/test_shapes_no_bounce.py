@@ -191,6 +191,7 @@ def test_shapes_never_exceed_initial_z(test, device):
         iterations=2,
         rigid_contact_relaxation=0.8,
         angular_damping=0.0,
+        enable_restitution=True,
     )
 
     state_0 = model.state()

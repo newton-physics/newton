@@ -95,7 +95,7 @@ class Example:
             )
         else:
             self.update_step_interval = 1
-            self.solver = newton.solvers.SolverXPBD(self.model)
+            self.solver = newton.solvers.SolverXPBD(self.model, enable_restitution=True)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

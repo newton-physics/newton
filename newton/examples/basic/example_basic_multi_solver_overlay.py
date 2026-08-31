@@ -172,7 +172,7 @@ class Example:
         # "Layers" group of the viewer sidebar. Each layer captures its own
         # CUDA graph on construction (where supported).
         specs = [
-            ("XPBD", (0.95, 0.45, 0.10), newton.solvers.SolverXPBD),
+            ("XPBD", (0.95, 0.45, 0.10), lambda m: newton.solvers.SolverXPBD(model=m, enable_restitution=True)),
             ("Featherstone", (0.20, 0.70, 0.95), newton.solvers.SolverFeatherstone),
             ("MuJoCo Warp", (0.50, 0.85, 0.30), newton.solvers.SolverMuJoCo),
         ]

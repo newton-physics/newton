@@ -59,7 +59,7 @@ class HeightfieldCollision:
 
         self.num_frames = 50
         self.model = _build_heightfield_scene(num_bodies=200, nrow=100, ncol=100)
-        self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
+        self.solver = newton.solvers.SolverXPBD(self.model, iterations=10, enable_restitution=True)
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
         self.state_0 = self.model.state()

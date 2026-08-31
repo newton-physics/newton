@@ -77,6 +77,7 @@ class Example:
                     name="xpbd",
                     solver=lambda v: SolverXPBD(
                         model=v,
+                        enable_restitution=True,
                         **{"iterations": args.xpbd_iterations, "soft_contact_relaxation": args.xpbd_contact_relaxation},
                     ),
                     particles=self.xpbd_particles,

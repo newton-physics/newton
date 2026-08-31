@@ -68,7 +68,7 @@ solvers = {
         solver="newton",
         ls_iterations=100,
     ),
-    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
+    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10, enable_restitution=True),
 }
 
 
