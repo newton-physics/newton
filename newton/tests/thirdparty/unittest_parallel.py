@@ -58,7 +58,7 @@ _KNOWN_WARNING_DEBT = (
             r"(?:test_collision_cloth|test_collision_pipeline|test_controllers_joint_impedance|"
             r"test_controllers_joint_selection|test_coupled_solver|test_custom_attributes|test_ik|test_ik_lbfgs|"
             r"test_import_mjcf|test_jacobian_mass_matrix|test_kinematic_links|test_model|test_mujoco_solver|"
-            r"test_off_origin_convex_hull_contacts|test_rigid_contact|test_sdf_usd)$"
+            r"test_off_origin_convex_hull_contacts|test_rigid_contact)$"
         ),
     },
     {

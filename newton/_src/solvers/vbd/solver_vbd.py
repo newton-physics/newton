@@ -1190,9 +1190,12 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
 
         if contacts.soft_contact_max > 0 and self.body_particle_contact_penalty_k.shape[0] >= contacts.soft_contact_max:
+            # Per-body, mirroring accumulate_body_particle_contacts_per_body: the harvest reads the
+            # same truncated adjacency list the destination solve consumed, so the reaction reported
+            # to the source is by construction the one the solve applied.
             wp.launch(
                 _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel,
-                dim=contacts.soft_contact_max,
+                dim=self.model.body_count * _NUM_CONTACT_THREADS_PER_BODY,
                 inputs=[
                     float(dt),
                     body_local_to_proxy_global,
@@ -1216,6 +1219,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                     contacts.soft_contact_normal,
                     self.model.shape_margin,
                     self.model.shape_body,
+                    self.body_particle_contact_buffer_pre_alloc,
+                    self.body_particle_contact_counts,
+                    self.body_particle_contact_indices,
                     out_body_f,
                 ],
                 device=self.device,

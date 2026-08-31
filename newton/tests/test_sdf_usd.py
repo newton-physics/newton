@@ -70,6 +70,10 @@ def _add_rigid_body(stage, path):
 
     prim = stage.DefinePrim(path, "Xform")
     UsdPhysics.RigidBodyAPI.Apply(prim)
+    # SDF tests do not exercise inertia, so keep their shared body fixture valid.
+    mass_api = UsdPhysics.MassAPI.Apply(prim)
+    mass_api.CreateMassAttr().Set(1.0)
+    mass_api.CreateDiagonalInertiaAttr().Set((1.0, 1.0, 1.0))
     return prim
 
 

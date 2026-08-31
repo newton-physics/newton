@@ -1203,6 +1203,9 @@ def _get_mesh_from_source(
         texture=material_source.texture if material_source is not None else None,
         metallic=material_source.metallic if material_source is not None else None,
         roughness=material_source.roughness if material_source is not None else None,
+        texture_transform=material_source.texture_transform
+        if material_source is not None
+        else ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
     )
 
 
@@ -1222,12 +1225,18 @@ def _material_surface_shader(material: UsdShade.Material | None) -> UsdShade.Sha
 
 
 def _uvtexture_reader_varname(texture_shader: UsdShade.Shader) -> str | None:
-    """Return the primvar name a ``UsdUVTexture`` reads via its ``st`` -> ``UsdPrimvarReader_float2``."""
+    """Return the primvar read by a ``UsdUVTexture``, through an optional ``UsdTransform2d``."""
     st_input = texture_shader.GetInput("st")
     source = st_input.GetConnectedSource() if st_input else None
     if not source:
         return None
     reader = UsdShade.Shader(source[0].GetPrim())
+    if reader.GetIdAttr().Get() == "UsdTransform2d":
+        transform_input = reader.GetInput("in")
+        source = transform_input.GetConnectedSource() if transform_input else None
+        if not source:
+            return None
+        reader = UsdShade.Shader(source[0].GetPrim())
     varname = reader.GetInput("varname")
     if not varname:
         return None
@@ -1769,6 +1778,9 @@ def get_mesh(
         texture=material_props.get("texture"),
         metallic=material_props.get("metallic"),
         roughness=material_props.get("roughness"),
+        texture_transform=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+        if material_props.get("texture_transform") is None
+        else material_props["texture_transform"],
     )
     if return_uv_indices:
         return mesh_out, uv_indices
@@ -2724,7 +2736,7 @@ def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> 
 
 def _empty_material_properties() -> dict[str, Any]:
     """Return an empty material properties dictionary."""
-    return {"color": None, "metallic": None, "roughness": None, "texture": None}
+    return {"color": None, "metallic": None, "roughness": None, "texture": None, "texture_transform": None}
 
 
 def _coerce_color(value: Any) -> tuple[float, float, float] | None:
@@ -2751,6 +2763,44 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _coerce_vec2(value: Any) -> tuple[float, float] | None:
+    """Coerce a value to a finite two-component tuple, or ``None``."""
+    if value is None:
+        return None
+    try:
+        result = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if result.size != 2 or not np.all(np.isfinite(result)):
+        return None
+    return (float(result[0]), float(result[1]))
+
+
+def _extract_usd_transform2d(
+    texture_shader: UsdShade.Shader,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    """Resolve the standard ``UsdTransform2d`` directly feeding a ``UsdUVTexture``."""
+    st_input = texture_shader.GetInput("st")
+    source = st_input.GetConnectedSource() if st_input else None
+    if not source:
+        return None
+    transform = UsdShade.Shader(source[0].GetPrim())
+    if transform.GetIdAttr().Get() != "UsdTransform2d":
+        return None
+
+    scale = _coerce_vec2(_get_input_value(transform, ("scale",))) or (1.0, 1.0)
+    translation = _coerce_vec2(_get_input_value(transform, ("translation",))) or (0.0, 0.0)
+    rotation = _coerce_float(_get_input_value(transform, ("rotation",)))
+    rotation = rotation if rotation is not None and math.isfinite(rotation) else 0.0
+    cosine, sine = math.cos(math.radians(rotation)), math.sin(math.radians(rotation))
+
+    # UsdTransform2d is scale, then counter-clockwise rotation, then translation.
+    return (
+        (cosine * scale[0], -sine * scale[1], translation[0]),
+        (sine * scale[0], cosine * scale[1], translation[1]),
+    )
+
+
 def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract material properties from a UsdPreviewSurface shader.
 
@@ -2759,7 +2809,8 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with scalar surface properties, texture data, and a standard
+        texture-coordinate transform.
     """
     properties = _empty_material_properties()
     if shader is None:
@@ -2774,6 +2825,8 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         if source:
             source_shader = UsdShade.Shader(source[0].GetPrim())
             properties["texture"] = _find_texture_in_shader(source_shader, prim)
+            if properties["texture"] is not None:
+                properties["texture_transform"] = _extract_usd_transform2d(source_shader)
             if properties["texture"] is None:
                 color_value, color_attr = _get_input_value_and_attr(
                     source_shader,
@@ -2915,7 +2968,8 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with scalar surface properties, texture data, and a standard
+        texture-coordinate transform.
     """
     properties = _extract_preview_surface_properties(shader, prim)
     if shader is None:
@@ -3105,7 +3159,8 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
         prim: The prim whose bound material should be inspected.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with scalar surface properties, texture data, and a standard
+        texture-coordinate transform.
     """
     if not prim or not prim.IsValid():
         return _empty_material_properties()

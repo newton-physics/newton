@@ -181,6 +181,7 @@ class Mesh:
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
         *,
+        texture_transform: Sequence[Sequence[float]] | np.ndarray = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
         sdf: "SDF | None" = None,
     ):
         """
@@ -202,6 +203,9 @@ class Mesh:
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
             texture: Optional texture path/URL or image data (H, W, C).
+            texture_transform: Affine texture-coordinate transform as two rows
+                ``((m00, m01, tx), (m10, m11, ty))``. It is applied to the
+                authored UV coordinates as ``(u', v') = M @ (u, v) + t``.
             sdf: Optional prebuilt SDF object owned by this mesh.
         """
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
@@ -215,6 +219,7 @@ class Mesh:
         self.color = color
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
+        self.texture_transform = texture_transform
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -801,6 +806,7 @@ class Mesh:
             else (self._texture.copy() if self._texture is not None else None),
             roughness=self._roughness,
             metallic=self._metallic,
+            texture_transform=self._texture_transform,
         )
         if not recompute_inertia:
             m.inertia = self.inertia
@@ -1533,6 +1539,21 @@ class Mesh:
         is reassigned.
         """
         return self._compute_texture_hash()
+
+    @property
+    def texture_transform(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """Affine transform applied to the authored UV coordinates."""
+        return self._texture_transform
+
+    @texture_transform.setter
+    def texture_transform(self, value: Sequence[Sequence[float]] | np.ndarray):
+        try:
+            matrix = np.asarray(value, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("texture_transform must be a finite 2-by-3 matrix.") from exc
+        if matrix.shape != (2, 3) or not np.all(np.isfinite(matrix)):
+            raise ValueError("texture_transform must be a finite 2-by-3 matrix.")
+        self._texture_transform = tuple(tuple(float(component) for component in row) for row in matrix)
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
