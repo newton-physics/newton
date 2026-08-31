@@ -165,8 +165,8 @@ Stateful Actuators
 Controllers that maintain internal state (e.g. :class:`ControllerPID` with an
 integral accumulator, or :class:`ControllerNeuralLSTM` with hidden/cell state) and
 actuators with a :class:`Delay` require explicit double-buffered state
-management.  Create two state objects with :meth:`Actuator.state` and swap them
-after each step:
+management.  Create two state objects with :meth:`Actuator.state` and pass them
+to every step:
 
 .. testcode:: actuator-usage
 
@@ -178,7 +178,18 @@ after each step:
    for step in range(3):
        control.joint_f.zero_()  # zero output before stepping actuators
        model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
-       state_0, state_1 = state_1, state_0
+
+:meth:`Actuator.step` writes the step's update into *state_1* and then publishes
+it back over *state_0* with a device copy, so the two objects hold the same
+advanced state when the step returns.  Both the exchange and the update are
+device operations, which is what makes a stateful actuator behave the same under
+CUDA graph capture as it does eagerly, whatever number of steps the captured
+region holds.
+
+Earlier releases advanced state only through a host-side
+``state_0, state_1 = state_1, state_0`` swap after each step.  That swap is no
+longer needed; it remains correct if kept, since both objects now hold the same
+state.
 
 Stateless actuators (e.g. a plain PD controller without delay) do not require
 state objects — simply omit them:
@@ -336,6 +347,11 @@ graphable.  For neural-network controllers it depends on the checkpoint
 backend: ONNX checkpoints are graphable, while Torch checkpoints are not due
 to framework interop overhead.  :meth:`Actuator.is_graphable` returns ``True``
 when all components can be captured in a CUDA graph.
+
+A graphable actuator is graphable for any number of steps in the captured
+region, including one.  Internal state — a :class:`Delay` buffer, a PID integral,
+LSTM hidden and cell state — is both advanced and exchanged on the device, so
+each replay carries it forward exactly as an eager loop of the same length does.
 
 Available Components
 --------------------

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from typing import Any
 
 import numpy as np
@@ -30,6 +30,32 @@ def _scatter_add_kernel(
     output[idx] = output[idx] + forces[i]
     if computed_output:
         computed_output[idx] = computed_output[idx] + computed_forces[i]
+
+
+def _publish_state(current: Any, advanced: Any) -> None:
+    """Copy an advanced state object back over the state the next step reads.
+
+    Warp arrays are copied with :func:`warp.copy`, so the exchange is a device
+    operation that a CUDA graph records and replays.  Fields that are not Warp
+    arrays — the Torch tensors :class:`ControllerNeuralLSTM.State` holds for a
+    Torch checkpoint — are rebound instead, which is how the controller itself
+    publishes them; that path is host-side and not graphable either way.
+
+    Args:
+        current: State the next step reads from.
+        advanced: State the step just wrote.
+    """
+    for field in fields(advanced):
+        src = getattr(advanced, field.name)
+        if src is None:
+            continue
+        dst = getattr(current, field.name)
+        if isinstance(src, wp.array):
+            wp.copy(dst, src)
+        elif is_dataclass(src):
+            _publish_state(dst, src)
+        else:
+            setattr(current, field.name, src)
 
 
 class Actuator:
@@ -274,6 +300,14 @@ class Actuator:
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
         5. **State updates** — controller state update, then delay
            buffer write (push current targets into ``next_state``).
+        6. **State publish** — copy the advanced state back over
+           ``current_act_state``, so both state objects hold it.
+
+        Step 6 makes the state exchange a device operation instead of a
+        host-side rebinding of the two state objects.  A captured region
+        therefore advances state on every replay, whatever number of steps it
+        holds; the ``state_0, state_1 = state_1, state_0`` swap of earlier
+        releases is no longer required and stays correct if kept.
 
         Args:
             sim_state: Simulation state with position/velocity arrays.
@@ -366,3 +400,7 @@ class Actuator:
                 current_act_state.delay_state,
                 next_act_state.delay_state,
             )
+
+        # --- 6. Publish the advanced state on-device ---
+        if self.is_stateful() and next_act_state is not current_act_state:
+            _publish_state(current_act_state, next_act_state)
