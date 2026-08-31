@@ -686,8 +686,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
-    # Deterministic contacts keep the pick-and-place check from flaking.
-    test_options={"usd_required": True, "num-frames": 720, "deterministic": True},
+    test_options={"usd_required": True, "num-frames": 720},
     use_viewer=True,
 )
 
