@@ -677,8 +677,9 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         builder.rigid_gap = 0.0
         builder.add_shape_mesh(body=-1, mesh=box(0.01, 0.01, 0.01))
         # Two shapes far apart in the body frame, so the principal axes differ from the compiled ones.
+        # add_body already yields a free-floating body; an explicit free joint would be a
+        # second root and is reported as an unsupported loop closure.
         obj = builder.add_body(xform=wp.transform(wp.vec3(0.049, 0.0, 0.0), wp.quat_identity()))
-        builder.add_joint_free(obj)
         builder.add_shape_mesh(body=obj, mesh=box(0.04, 0.01, 0.005))
         builder.add_shape_mesh(
             body=obj,
@@ -722,8 +723,9 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         builder = newton.ModelBuilder()
         builder.rigid_gap = 0.0
         builder.add_shape_mesh(body=-1, mesh=box(0.01, 0.01, 0.01))
+        # add_body already yields a free-floating body; an explicit free joint would be a
+        # second root and is reported as an unsupported loop closure.
         obj = builder.add_body(xform=wp.transform(wp.vec3(0.049, 0.0, 0.0), wp.quat_identity()))
-        builder.add_joint_free(obj)
         builder.add_shape_mesh(body=obj, mesh=box(0.04, 0.01, 0.005))
         builder.add_shape_mesh(
             body=obj,
