@@ -2184,6 +2184,7 @@ def update_dof_properties_kernel(
     joint_armature: wp.array[float],
     joint_friction: wp.array[float],
     joint_damping: wp.array[float],
+    joint_springdamper: wp.array[wp.vec2],
     dof_solimp: wp.array[vec5],
     dof_solref: wp.array[wp.vec2],
     # outputs
@@ -2208,7 +2209,10 @@ def update_dof_properties_kernel(
     if newton_body < 0 or (body_flags[newton_body] & BodyFlags.KINEMATIC) == 0:
         dof_armature[world, mjc_dof] = joint_armature[newton_dof]
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
-    if joint_damping:
+    has_compiled_springdamper = joint_springdamper and (
+        joint_springdamper[newton_dof][0] != 0.0 or joint_springdamper[newton_dof][1] != 0.0
+    )
+    if joint_damping and not has_compiled_springdamper:
         dof_damping[world, mjc_dof] = joint_damping[newton_dof]
     if dof_solimp:
         dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
@@ -2252,6 +2256,7 @@ def update_jnt_properties_kernel(
     joint_effort_limit: wp.array[float],
     solimplimit: wp.array[vec5],
     joint_stiffness: wp.array[float],
+    joint_springdamper: wp.array[wp.vec2],
     limit_margin: wp.array[float],
     # outputs
     jnt_solimp: wp.array2d[vec5],
@@ -2280,7 +2285,10 @@ def update_jnt_properties_kernel(
         jnt_solimp[world, mjc_jnt] = solimplimit[newton_dof]
 
     # Update passive stiffness
-    if joint_stiffness:
+    has_compiled_springdamper = joint_springdamper and (
+        joint_springdamper[newton_dof][0] != 0.0 or joint_springdamper[newton_dof][1] != 0.0
+    )
+    if joint_stiffness and not has_compiled_springdamper:
         jnt_stiffness[world, mjc_jnt] = joint_stiffness[newton_dof]
 
     # Update limit margin
