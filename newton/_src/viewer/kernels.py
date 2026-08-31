@@ -195,6 +195,42 @@ def repack_shape_colors(
 
 
 @wp.kernel
+def repack_shape_opacities(
+    shape_opacities: wp.array[wp.float32],
+    slot_to_shape: wp.array[wp.int32],
+    packed_shape_opacities: wp.array[wp.float32],
+):
+    """Repack model-order shape opacities into viewer batch order."""
+    tid = wp.tid()
+    packed_shape_opacities[tid] = wp.clamp(shape_opacities[slot_to_shape[tid]], 0.0, 1.0)
+
+
+@wp.kernel
+def flag_changed_floats(
+    current: wp.array[wp.float32],
+    cached: wp.array[wp.float32],
+    changed: wp.array[wp.int32],
+):
+    """Set changed[0] when any element differs between the two arrays."""
+    tid = wp.tid()
+    if current[tid] != cached[tid]:
+        changed[0] = 1
+
+
+@wp.kernel
+def flag_changed_vec3s(
+    current: wp.array[wp.vec3],
+    cached: wp.array[wp.vec3],
+    changed: wp.array[wp.int32],
+):
+    """Set changed[0] when any vector differs between the two arrays."""
+    tid = wp.tid()
+    delta = current[tid] - cached[tid]
+    if wp.dot(delta, delta) != 0.0:
+        changed[0] = 1
+
+
+@wp.kernel
 def estimate_world_extents(
     shape_transform: wp.array[wp.transform],
     shape_body: wp.array[int],
