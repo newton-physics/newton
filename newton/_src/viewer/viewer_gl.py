@@ -982,7 +982,7 @@ class ViewerGL(ViewerBase):
                 ),
             )
             if existing is not None:
-                replacement.color = existing.color
+                replacement.base_color = existing.base_color
                 replacement.material = existing.material
             try:
                 replacement.update(points, indices, normals, uvs, texture, vertex_colors)

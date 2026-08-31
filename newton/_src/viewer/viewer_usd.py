@@ -158,6 +158,20 @@ class ViewerUSD(ViewerBase):
         layer._instancers = {}  # instancer_name -> UsdGeom.PointInstancer
         layer._points = {}  # point_name -> UsdGeom.Points
         layer._texture_materials: dict[str, Any] = {}  # mesh_name -> UsdShade.Material
+        layer._display_colors = {}  # name -> last displayColor written, to skip identical samples
+
+    def _display_color_changed(self, name: str, colors) -> bool:
+        """Report whether this displayColor differs from the one last written.
+
+        Points are keyed every frame but colors are usually constant for a whole
+        take, so re-authoring an identical array would dominate the stage.
+        """
+        current = np.asarray(colors, dtype=np.float32)
+        previous = self._display_colors.get(name)
+        if previous is not None and previous.shape == current.shape and np.array_equal(previous, current):
+            return False
+        self._display_colors[name] = current.copy()
+        return True
 
     def _reset_stage(self):
         self.stage.GetRootLayer().Clear()
@@ -369,7 +383,8 @@ class ViewerUSD(ViewerBase):
             display_color = UsdGeom.PrimvarsAPI(mesh_prim).CreatePrimvar(
                 "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
             )
-            display_color.Set(colors_np, self._frame_index)
+            if self._display_color_changed(name, colors_np):
+                display_color.Set(colors_np, self._frame_index)
 
         # Create and bind a textured material only when both texture and UVs are
         # provided — a UsdUVTexture shader with no "st" primvar would sample
@@ -794,7 +809,8 @@ class ViewerUSD(ViewerBase):
                     primvar = UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
                         "displayColor", Sdf.ValueTypeNames.Color3fArray, color_interp, 1
                     )
-                primvar.Set(colors, self._frame_index)
+                if self._display_color_changed(name, colors):
+                    primvar.Set(colors, self._frame_index)
 
             instancer.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
             return instancer.GetPath()

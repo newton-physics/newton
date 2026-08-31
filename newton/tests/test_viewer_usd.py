@@ -402,6 +402,48 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(len(mesh.GetNormalsAttr().Get(0)), 3)
         self.assertEqual(list(mesh.GetNormalsAttr().Get(1)), [])
 
+    def test_display_color_is_authored_once_while_it_stays_constant(self):
+        """Skip re-authoring displayColor on frames where the colors did not change."""
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+            color=(0.86, 0.22, 0.20),
+        )
+        model = builder.finalize(device="cpu")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            viewer = ViewerUSD(output_path=os.path.join(tmp, "out.usda"), fps=30)
+            viewer.set_model(model)
+            checked, wrote = [], []
+            inner = viewer._display_color_changed
+
+            def counting(name, colors):
+                checked.append(name)
+                changed = inner(name, colors)
+                if changed:
+                    wrote.append(name)
+                return changed
+
+            viewer._display_color_changed = counting
+
+            state = model.state()
+            for _ in range(5):
+                viewer.begin_frame(0.0)
+                viewer.log_state(state)
+                viewer.end_frame()
+            viewer.close()
+
+        # Reached on every frame, authored only on the first one per sink.
+        self.assertGreaterEqual(len(checked), 5)
+        self.assertEqual(len(wrote), len(set(wrote)))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

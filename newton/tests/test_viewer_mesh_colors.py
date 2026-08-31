@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
@@ -138,6 +138,39 @@ class TestViewerMeshColors(unittest.TestCase):
         viewer.log_mesh("mesh", points, indices)
         self.assertEqual(mesh.color, mesh.base_color)
         self.assertIsNone(mesh.update.call_args.args[-1])
+
+    def test_gl_mesh_replacement_keeps_the_authored_base_color(self):
+        """Carry the authored uniform color onto a mesh replaced for a size change.
+
+        ``color`` is stored on ``base_color`` and re-derived into ``color`` on
+        every call, so a replacement that inherits only ``color`` is stamped
+        back to the constructor default on the next uncolored frame.
+        """
+        viewer = ViewerGL.__new__(ViewerGL)
+        existing = Mock()
+        existing.base_color = (1.0, 0.0, 0.0)
+        existing.material = (0.5, 0.0, 0.0, 0.0)
+        existing.dynamic = False
+        existing.num_points = 1
+        existing.num_indices = 3
+        viewer.objects = {"mesh": existing}
+        viewer._qualify = lambda name: name
+        viewer.device = "cpu"
+        viewer._cuda_interop_enabled = lambda kind: False
+
+        # Two points against the existing one forces the replace branch.
+        points = wp.array([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], dtype=wp.vec3)
+        indices = wp.array([0, 1, 0], dtype=wp.int32)
+
+        with patch("newton._src.viewer.viewer_gl.MeshGL") as mesh_cls:
+            replacement = mesh_cls.return_value
+            replacement.base_color = (0.7, 0.5, 0.3)
+            replacement.material = (0.5, 0.0, 0.0, 0.0)
+            viewer.log_mesh("mesh", points, indices)
+
+        self.assertEqual(replacement.base_color, (1.0, 0.0, 0.0))
+        self.assertEqual(replacement.color, (1.0, 0.0, 0.0))
+        existing.destroy.assert_called_once()
 
     def test_gl_texture_takes_precedence_over_vertex_colors(self):
         """Suppress vertex colors when a usable texture is supplied."""
