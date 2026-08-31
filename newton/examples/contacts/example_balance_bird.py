@@ -38,7 +38,6 @@ NATIVE_CONTACT_SOLVERS = {"mujoco", "kamino"}
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.solver_name = str(getattr(args, "solver", "xpbd")).lower()
 
