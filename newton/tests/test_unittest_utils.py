@@ -49,6 +49,21 @@ class TestStrictWarnings(unittest.TestCase):
 
         self.assertEqual(len(caught), 1)
 
+    def test_recorder_cast_warning_debt_is_not_an_error(self):
+        """Keep the known recorder cast warning visible without failing."""
+        with warnings.catch_warnings(record=True) as caught:
+            _enable_strict_warnings()
+
+            warnings.warn_explicit(
+                "invalid value encountered in cast",
+                RuntimeWarning,
+                "test_recorder.py",
+                1,
+                module="test_recorder",
+            )
+
+        self.assertEqual(len(caught), 1)
+
     def test_known_debt_module_does_not_allow_other_warnings(self):
         """Escalate unrelated warnings attributed to a known-debt module."""
         with warnings.catch_warnings():

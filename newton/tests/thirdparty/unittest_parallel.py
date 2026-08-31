@@ -74,6 +74,11 @@ _KNOWN_WARNING_DEBT = (
         "category": UserWarning,
         "module": r"test_import_usd$",
     },
+    {
+        "message": r"invalid value encountered in cast",
+        "category": RuntimeWarning,
+        "module": r"test_recorder$",
+    },
 )
 
 
