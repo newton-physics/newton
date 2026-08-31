@@ -809,7 +809,7 @@ def test_jacobian_times_jacobian_transpose_matches_numpy(test, device):
 
     jacobian_np = jacobian_tool_world.numpy()[0]
     expected = jacobian_np @ jacobian_np.T
-    np.testing.assert_allclose(jacobian_times_jacobian_transpose.numpy()[0], expected, atol=1e-3)
+    np.testing.assert_allclose(jacobian_times_jacobian_transpose.numpy()[0], expected, atol=1e-5)
 
 
 def test_null_space_projector_zeroes_task_response_only_when_dynamically_consistent(test, device):
@@ -954,9 +954,9 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
     np.testing.assert_allclose(
         dynamically_consistent_projector @ dynamically_consistent_projector,
         dynamically_consistent_projector,
-        atol=1e-3,
+        atol=1e-4,
     )
-    np.testing.assert_allclose(moore_penrose_projector @ moore_penrose_projector, moore_penrose_projector, atol=1e-3)
+    np.testing.assert_allclose(moore_penrose_projector @ moore_penrose_projector, moore_penrose_projector, atol=1e-4)
 
     # Only the dynamically-consistent projector zeroes J @ M^-1 @ N -- the
     # identity that guarantees tau_null = N @ M @ a never disturbs the task,
@@ -966,7 +966,7 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
     dynamically_consistent_response = jacobian_np @ mass_matrix_inv_np @ dynamically_consistent_projector
     moore_penrose_response = jacobian_np @ mass_matrix_inv_np @ moore_penrose_projector
 
-    np.testing.assert_allclose(dynamically_consistent_response, np.zeros((6, 7)), atol=1e-3)
+    np.testing.assert_allclose(dynamically_consistent_response, np.zeros((6, 7)), atol=1e-4)
     test.assertGreater(np.abs(moore_penrose_response).max(), 0.1)
 
 
