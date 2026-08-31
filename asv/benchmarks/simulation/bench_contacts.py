@@ -261,6 +261,9 @@ class FastExampleContactPyramidDefaults:
                 solver="xpbd",
                 test_mode=False,
             )
+        # Preserve the historical throughput workload while examples opt in
+        # to the future restitution default.
+        self.example.solver.enable_restitution = False
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

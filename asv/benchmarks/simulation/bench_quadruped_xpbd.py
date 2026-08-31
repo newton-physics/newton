@@ -29,8 +29,14 @@ def _create_example(num_frames, world_count):
     if hasattr(newton.examples, "default_args") and hasattr(Example, "create_parser"):
         args = newton.examples.default_args(Example.create_parser())
         args.world_count = world_count
-        return Example(newton.viewer.ViewerNull(num_frames=num_frames), args)
-    return Example(newton.viewer.ViewerNull(num_frames=num_frames), world_count)
+        example = Example(newton.viewer.ViewerNull(num_frames=num_frames), args)
+    else:
+        example = Example(newton.viewer.ViewerNull(num_frames=num_frames), world_count)
+
+    # Preserve the historical throughput workload while examples opt in to
+    # the future restitution default.
+    example.solver.enable_restitution = False
+    return example
 
 
 class FastExampleQuadrupedXPBD:
