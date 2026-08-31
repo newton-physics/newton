@@ -475,12 +475,11 @@ class TestUSDDeformableCable(unittest.TestCase):
         """Verify independent damping import, sentinel/default preservation, local discretization, and target modes."""
         pts = [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.6, 0.0, 1.0)]
         stage = _deformable_stage(up_axis="y")
-        curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
+        curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=0.02)
         mat = _bind_deformable_material(
             stage,
             curves.GetPrim(),
             "/World/CableMat",
-            curvesThickness=0.02,
             curvesStretchStiffness=0.0,
             curvesShearStiffness=0.0,
             curvesBendStiffness=0.0,
