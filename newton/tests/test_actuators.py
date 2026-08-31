@@ -4095,31 +4095,31 @@ class TestDelayGraphCapture(unittest.TestCase):
     "CUDA graph capture requires CUDA device with memory pools",
 )
 class TestControllerStateGraphCapture(unittest.TestCase):
-    """Verify controller state advances across graph replays for any captured step count.
+    """Controller state must advance per replay, not only for an even captured step count.
 
-    ``Actuator.step`` publishes the advanced state on-device, so a captured
-    region advances state on every replay whatever number of steps it holds.
-    An odd count above one used to discard the last step's update, and a single
-    captured step never advanced at all, because only the caller's host-side
-    name swap moved the state forward.
+    A PID with only ``ki`` set, held at a constant position error by a model no
+    solver moves, accumulates exactly ``ki * error * dt`` per actuator step
+    however the loop is chunked.  While only the caller's host-side swap
+    advanced state, an odd captured count above one discarded the last step's
+    update and a single captured step never advanced at all.
     """
 
     DT = 0.01
     KI = 1.0
     TARGET = 1.0
-    TOTAL_STEPS = 12
+    STEPS = 12
 
-    def _build(
-        self, device: wp.Device, implicit: bool
-    ) -> tuple[Actuator, ResponseOracle | None, newton.State, newton.Control]:
-        """PID with ki only, driving a pendulum that no solver moves.
+    def _integral_after_all_steps(self, implicit: bool, steps_per_graph: int | None) -> float:
+        """Run :attr:`STEPS` actuator steps, eagerly or as replays of a captured region.
 
-        The position error stays at :attr:`TARGET`, so the integral must grow by
-        exactly ``KI * TARGET * DT`` per actuator step however the loop is
-        chunked. Both effort modes advance the integral through the same
-        double-buffered state.
+        Args:
+            implicit: Solve the control law implicitly instead of explicitly.
+                Both effort modes advance the integral through the same state.
+            steps_per_graph: Steps per captured region, or ``None`` to run eagerly.
         """
+        device = wp.get_device()
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        # Mass and inertia only matter to the implicit response oracle.
         body = builder.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
         joint = builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
         builder.add_articulation([joint])
@@ -4127,23 +4127,14 @@ class TestControllerStateGraphCapture(unittest.TestCase):
         model = builder.finalize(device=device)
 
         actuator = model.actuators[0]
-        oracle = None
-        if implicit:
-            oracle = ResponseOracle(model)
+        oracle = ResponseOracle(model) if implicit else None
+        if oracle is not None:
             actuator.set_effort_mode_implicit(response=oracle)
-        state = model.state()
-        control = model.control()
-        control.joint_target_q.fill_(self.TARGET)
-        return actuator, oracle, state, control
+        state, control = model.state(), model.control()
+        control.joint_target_q.fill_(self.TARGET)  # joint_q stays 0, so the error is constant
+        s0, s1 = actuator.state(), actuator.state()
 
-    def _integral(self, act_state: Actuator.State) -> float:
-        return float(act_state.controller_state.integral.numpy()[0])
-
-    def _run(self, implicit: bool) -> None:
-        device = wp.get_device()
-        expected = self.KI * self.TARGET * self.DT * self.TOTAL_STEPS
-
-        def loop(actuator, oracle, state, control, s0, s1, steps):
+        def run(s0, s1, steps):
             """The documented stateful loop, host-side swap included."""
             for _ in range(steps):
                 control.joint_f.zero_()
@@ -4153,38 +4144,31 @@ class TestControllerStateGraphCapture(unittest.TestCase):
                 s0, s1 = s1, s0
             return s0, s1
 
-        actuator, oracle, state, control = self._build(device, implicit)
-        s0, s1 = actuator.state(), actuator.state()
-        s0, s1 = loop(actuator, oracle, state, control, s0, s1, self.TOTAL_STEPS)
-        eager = self._integral(s0)
-        self.assertAlmostEqual(eager, expected, places=6, msg="eager integral must accumulate every step")
-
-        for steps_per_graph in (1, 2, 3):
-            actuator, oracle, state, control = self._build(device, implicit)
-            s0, s1 = actuator.state(), actuator.state()
+        if steps_per_graph is None:
+            s0, s1 = run(s0, s1, self.STEPS)
+        else:
             # Module loading and lazy allocation have to happen before a capture.
-            s0, s1 = loop(actuator, oracle, state, control, s0, s1, 1)
+            s0, s1 = run(s0, s1, 1)
             s0.controller_state.integral.zero_()
             s1.controller_state.integral.zero_()
-
             with wp.ScopedCapture(device) as capture:
-                s0, s1 = loop(actuator, oracle, state, control, s0, s1, steps_per_graph)
-            for _ in range(self.TOTAL_STEPS // steps_per_graph):
+                s0, s1 = run(s0, s1, steps_per_graph)
+            for _ in range(self.STEPS // steps_per_graph):
                 wp.capture_launch(capture.graph)
-            wp.synchronize_device(device)
+        wp.synchronize_device(device)
+        return float(s0.controller_state.integral.numpy()[0])
 
-            self.assertAlmostEqual(
-                self._integral(s0),
-                eager,
-                places=6,
-                msg=f"{steps_per_graph} step(s) per graph must match eager over {self.TOTAL_STEPS} steps",
-            )
+    def _assert_integral_matches(self, implicit: bool) -> None:
+        expected = self.KI * self.TARGET * self.DT * self.STEPS
+        for steps_per_graph in (None, 1, 2, 3):
+            with self.subTest(steps_per_graph=steps_per_graph):
+                self.assertAlmostEqual(self._integral_after_all_steps(implicit, steps_per_graph), expected, places=6)
 
     def test_pid_integral_advances_per_replay_explicit(self):
-        self._run(implicit=False)
+        self._assert_integral_matches(implicit=False)
 
     def test_pid_integral_advances_per_replay_implicit(self):
-        self._run(implicit=True)
+        self._assert_integral_matches(implicit=True)
 
 
 # ---------------------------------------------------------------------------
