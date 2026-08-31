@@ -61,6 +61,40 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_primitive_shellinertia_matches_native_mujoco(self):
+        """Compute primitive shell mass properties like native MuJoCo."""
+        cases = {
+            "explicit_box": '<geom type="box" size="0.1 0.2 0.3" mass="2" shellinertia="true"/>',
+            "explicit_capsule": '<geom type="capsule" size="0.1 0.2" mass="2" shellinertia="true"/>',
+            "explicit_cylinder": '<geom type="cylinder" size="0.1 0.2" mass="2" shellinertia="true"/>',
+            "explicit_ellipsoid": '<geom type="ellipsoid" size="0.1 0.2 0.3" mass="2" shellinertia="true"/>',
+            "density_sphere": '<geom type="sphere" size="0.2" density="3" shellinertia="true"/>',
+        }
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+
+        for name, geom in cases.items():
+            with self.subTest(name=name):
+                mjcf = f"""
+<mujoco model="{name}">
+    <worldbody>
+        <body name="body">
+            {geom}
+        </body>
+    </worldbody>
+</mujoco>
+"""
+                native_model = mujoco.MjModel.from_xml_string(mjcf)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+
+                self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1], places=6)
+                np.testing.assert_allclose(
+                    np.diag(np.array(builder.body_inertia[0]).reshape(3, 3)),
+                    native_model.body_inertia[1],
+                    rtol=1.0e-6,
+                    atol=1.0e-8,
+                )
+
     def test_collision_shapes_hidden_by_default_even_without_same_body_visuals(self):
         mjcf = """
 <mujoco model="collision_visibility">
