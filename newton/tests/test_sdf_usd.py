@@ -17,6 +17,7 @@
 
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 import warp as wp
@@ -70,6 +71,10 @@ def _add_rigid_body(stage, path):
 
     prim = stage.DefinePrim(path, "Xform")
     UsdPhysics.RigidBodyAPI.Apply(prim)
+    # SDF tests do not exercise inertia, so keep their shared body fixture valid.
+    mass_api = UsdPhysics.MassAPI.Apply(prim)
+    mass_api.CreateMassAttr().Set(1.0)
+    mass_api.CreateDiagonalInertiaAttr().Set((1.0, 1.0, 1.0))
     return prim
 
 
@@ -86,6 +91,23 @@ def _add_collision_mesh(stage, path):
 
 class TestSDFUSDParsing(unittest.TestCase):
     """Tests for SDF attribute parsing from USD."""
+
+    def test_rigid_body_fixture_finalizes_without_warnings(self):
+        """Finalize the shared rigid-body fixture without warnings."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+        _add_rigid_body(stage, "/World/Body")
+        _add_collision_mesh(stage, "/World/Body/CollisionMesh")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            builder.finalize(device="cpu")
+
+        self.assertEqual(caught, [], f"unexpected warnings: {[str(warning.message) for warning in caught]}")
 
     def test_usd_sdf_mesh_attributes(self, device=None):
         """USD newton:sdf* attributes cause SDF to be built during finalize()."""
