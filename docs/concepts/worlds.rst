@@ -265,9 +265,9 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
    world_count: 4
    body_count: 8
 
-If the replicated builder needs no further modification, :meth:`~newton.ModelBuilder.replicate_and_finalize`
-performs both steps in one call and finalizes faster. The destination builder is left unmodified; use separate
-:meth:`~newton.ModelBuilder.replicate` and :meth:`~newton.ModelBuilder.finalize` calls when the replicated data
+If the replicated builder needs no further modification, :meth:`~newton.ModelBuilder.replicate_and_finalize` performs
+both steps in one call and is faster than calling them separately. The destination builder is left unmodified; use
+separate :meth:`~newton.ModelBuilder.replicate` and :meth:`~newton.ModelBuilder.finalize` calls when the replicated data
 must be changed in between.
 
 .. important::

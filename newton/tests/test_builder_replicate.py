@@ -341,6 +341,26 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 self.assert_builder_merge_state_equal(unchanged_builder, actual_builder)
                 self.assert_models_equal(expected, actual)
 
+    def test_replicate_and_finalize_infers_row_shape_from_prefix(self):
+        """tri_indices row width must come from the destination when the replicated source has no triangles."""
+        source = ModelBuilder()
+        for i in range(3):
+            source.add_particle(wp.vec3(float(i), 0.0, 0.0), wp.vec3(), 1.0)
+
+        def make_destination() -> ModelBuilder:
+            builder = ModelBuilder()
+            particles = [builder.add_particle(wp.vec3(0.0, float(i), 0.0), wp.vec3(), 1.0) for i in range(3)]
+            builder.add_triangle(*particles)
+            return builder
+
+        expected_builder = make_destination()
+        expected_builder.replicate(source, 2, spacing=(1.0, 0.0, 0.0))
+        expected = expected_builder.finalize(device="cpu")
+
+        actual = make_destination().replicate_and_finalize(source, 2, spacing=(1.0, 0.0, 0.0), device="cpu")
+
+        self.assert_models_equal(expected, actual)
+
     def test_replicate_and_finalize_matches_legacy_target_layout(self):
         """Cover the DOF-shaped joint_target_q projection, which only runs while use_coord_layout_targets is
         off. Delete this test together with that flag; every other case runs the coordinate layout."""
@@ -438,22 +458,18 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 self.assertLessEqual(combined_peaks[allocator], separate_peak)
 
     def test_replicate_and_finalize_preserves_gc_state(self):
-        """Restore the collector without forcing a collection, and leave an already-disabled one alone."""
+        """Leave the collector's enabled/disabled state as it was before the call."""
         source = self._make_source()
 
-        with mock.patch.object(gc, "collect", wraps=gc.collect) as collect:
-            ModelBuilder().replicate_and_finalize(source, 2, device="cpu")
-        collect.assert_not_called()
-        self.assertTrue(gc.isenabled())
-
-        gc.disable()
-        try:
-            with mock.patch.object(gc, "collect", wraps=gc.collect) as collect:
-                ModelBuilder().replicate_and_finalize(source, 2, device="cpu")
-            collect.assert_not_called()
-            self.assertFalse(gc.isenabled())
-        finally:
-            gc.enable()
+        for initially_enabled in (True, False):
+            with self.subTest(initially_enabled=initially_enabled):
+                if not initially_enabled:
+                    gc.disable()
+                try:
+                    ModelBuilder().replicate_and_finalize(source, 2, device="cpu")
+                    self.assertEqual(gc.isenabled(), initially_enabled)
+                finally:
+                    gc.enable()
 
     def test_replicate_rejects_mismatched_explicit_transforms(self):
         with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):

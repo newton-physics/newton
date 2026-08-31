@@ -188,7 +188,7 @@ def _model_array_dtypes() -> dict[str, Any]:
     return result
 
 
-# Kept as lists because finalize() reads them in Python loops; other looped fields measured too small to add.
+# Kept as lists because finalize() reads them in Python loops.
 _FINALIZE_LIST_CONTROL_FLOW_FIELDS = frozenset({"shape_flags", "shape_type", "joint_type", "joint_dof_dim"})
 
 
@@ -3100,8 +3100,10 @@ class ModelBuilder:
         """Replicate a builder and immediately finalize the resulting model.
 
         Equivalent to :meth:`replicate` followed by :meth:`finalize`, but faster, and leaves this builder unmodified.
-        Use the separate calls when the replicated data must be changed in between. Replication and finalization
-        run in a single batched pass; subclass overrides of :meth:`replicate` or :meth:`finalize` are not invoked.
+        Use the separate calls when the replicated data must be changed in between. Uses an array-backed merge
+        internally to avoid the list/array conversion cost of two separate calls; subclass overrides of
+        :meth:`replicate` or :meth:`finalize` are not invoked.
+        Garbage collection is disabled process-wide for the duration of the call and restored afterward.
 
         Args:
             builder: The builder to replicate.
@@ -3163,7 +3165,7 @@ class ModelBuilder:
             copies = {}
             for field in fields(record):
                 value = getattr(record, field.name)
-                if isinstance(value, (list, dict)):
+                if isinstance(value, (list, dict, set)):
                     copies[field.name] = copy.copy(value)
             return replace(record, **copies)
 
@@ -3342,7 +3344,7 @@ class ModelBuilder:
         shape_starts = starts("shape")
         body_starts = starts("body")
 
-        attribute_specs.pop("shape_transform", None)
+        attribute_specs.pop("shape_transform")
         shape_transform_start = array_starts.get("shape_transform", int(bases["shape"]))
         if "shape_transform" not in array_starts:
             self.shape_transform.extend(source_list("shape_transform") * world_count)
@@ -3369,7 +3371,7 @@ class ModelBuilder:
         joint_coord_starts = starts("joint_coord")
         joint_dof_starts = starts("joint_dof")
 
-        attribute_specs.pop("joint_X_p", None)
+        attribute_specs.pop("joint_X_p")
         attribute_specs.pop("joint_q")
         joint_X_p_start = array_starts.get("joint_X_p", int(bases["joint"]))
         if "joint_X_p" not in array_starts:
@@ -3422,7 +3424,7 @@ class ModelBuilder:
                 self.joint_parents.setdefault(new_child, []).append((new_parent, joint))
                 self.joint_children.setdefault(new_parent, []).append((new_child, joint))
 
-        attribute_specs.pop("body_q", None)
+        attribute_specs.pop("body_q")
         if counts["body"]:
             if translations_only:
                 body_q = np.tile(np.asarray(builder.body_q, dtype=np.float32).reshape((-1, 7)), (world_count, 1))
