@@ -70,7 +70,7 @@ Joint types
      - *(no joint)*
      - The distance constraint is dropped, but the body bookkeeping is
        handled like a free body (counted in MuJoCo's free-body slots).
-   * - :attr:`~newton.JointType.CABLE`
+   * - :attr:`~newton.JointType.ROD`
      - *unsupported*
      - Not forwarded to MuJoCo.
 
@@ -431,7 +431,7 @@ the relative motion of the two bodies according to the joint type:
 
 Other joint types used as loop closures
 (:attr:`~newton.JointType.PRISMATIC`, :attr:`~newton.JointType.FREE`,
-:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.CABLE`) emit a
+:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.ROD`) emit a
 warning and are silently skipped — the loop is *not* closed. A
 :attr:`~newton.JointType.D6` is dispatched by its degrees of freedom: one
 angular axis behaves as a revolute closure and three as a ball closure;
@@ -796,8 +796,17 @@ such as MJCF ``solreflimit`` or USD ``mjc:solreflimit`` remain in the
 joint-limit gains.
 
 MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
-The old ``model.mujoco.dof_passive_damping`` custom attribute remains
-a deprecated alias and emits a ``DeprecationWarning`` when accessed.
+When importing MuJoCo-authored USD, opt into that mapping explicitly::
+
+    from newton.usd import SchemaResolverMjc, SchemaResolverNewton
+
+    builder.add_usd(
+        stage,
+        schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+    )
+
+Registering MuJoCo custom attributes alone enables the ``model.mujoco``
+namespace but does not map ``mjc:damping`` to the built-in property.
 
 
 Unsupported MuJoCo features
@@ -826,11 +835,9 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **User data and arbitrary custom elements** (``<custom>``, ``<numeric>``,
   ``<text>``) — not imported. Newton-specific user data should use the
   Newton custom-attribute system instead.
-- **Actuator transmissions** — only ``joint``, ``tendon``, ``site``, and
-  ``body`` transmissions are supported (see
-  :class:`~newton.solvers.SolverMuJoCo.TrnType` for the enum). MuJoCo's
-  ``jointinparent`` and ``slidercrank`` transmissions are not converted;
-  actuators using them are skipped at construction with a warning.
+- **Actuator transmissions** — ``joint``, ``jointinparent``, ``tendon``,
+  ``site``, ``body``, and ``slidercrank`` transmissions are supported (see
+  :class:`~newton.solvers.SolverMuJoCo.TrnType` for the enum).
 
 Smaller limitations are documented inline where they are most relevant —
 see `Caveats`_ below for collision-radius, convex-hull fallback, and

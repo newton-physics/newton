@@ -20,6 +20,7 @@ from newton._src.solvers.kamino._src.core.state import StateKamino
 from newton._src.solvers.kamino._src.dynamics import DualProblem
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
+from newton._src.solvers.kamino._src.integrators import IntegratorEuler, IntegratorMoreauJean
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
@@ -34,6 +35,7 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.sampling import sample_world_mask
 from newton.tests.utils import basics
+from newton.tests.utils.testing import build_binary_revolute_joint_test
 
 ###
 # Module configs
@@ -146,7 +148,10 @@ def assert_states_equal(testcase: unittest.TestCase, state_0: StateKamino, state
     np.testing.assert_array_equal(state_0.q_j.numpy(), state_1.q_j.numpy())
     np.testing.assert_array_equal(state_0.q_j_p.numpy(), state_1.q_j_p.numpy())
     np.testing.assert_array_equal(state_0.dq_j.numpy(), state_1.dq_j.numpy())
-    np.testing.assert_array_equal(state_0.lambda_j.numpy(), state_1.lambda_j.numpy())
+    np.testing.assert_array_equal(state_0.lambda_kin_j.numpy(), state_1.lambda_kin_j.numpy())
+    np.testing.assert_array_equal(state_0.lambda_dyn_j.numpy(), state_1.lambda_dyn_j.numpy())
+    np.testing.assert_array_equal(state_0.lambda_f_j.numpy(), state_1.lambda_f_j.numpy())
+    np.testing.assert_array_equal(state_0.lambda_tau_j.numpy(), state_1.lambda_tau_j.numpy())
 
 
 def assert_states_close(testcase: unittest.TestCase, state_0: StateKamino, state_1: StateKamino):
@@ -158,7 +163,10 @@ def assert_states_close(testcase: unittest.TestCase, state_0: StateKamino, state
     np.testing.assert_allclose(state_0.q_j.numpy(), state_1.q_j.numpy(), rtol=rtol, atol=atol)
     np.testing.assert_allclose(state_0.q_j_p.numpy(), state_1.q_j_p.numpy(), rtol=rtol, atol=atol)
     np.testing.assert_allclose(state_0.dq_j.numpy(), state_1.dq_j.numpy(), rtol=rtol, atol=atol)
-    np.testing.assert_allclose(state_0.lambda_j.numpy(), state_1.lambda_j.numpy(), rtol=rtol, atol=atol)
+    np.testing.assert_allclose(state_0.lambda_kin_j.numpy(), state_1.lambda_kin_j.numpy(), rtol=rtol, atol=atol)
+    np.testing.assert_allclose(state_0.lambda_dyn_j.numpy(), state_1.lambda_dyn_j.numpy(), rtol=rtol, atol=atol)
+    np.testing.assert_allclose(state_0.lambda_f_j.numpy(), state_1.lambda_f_j.numpy(), rtol=rtol, atol=atol)
+    np.testing.assert_allclose(state_0.lambda_tau_j.numpy(), state_1.lambda_tau_j.numpy(), rtol=rtol, atol=atol)
 
 
 def assert_states_close_masked(
@@ -183,13 +191,20 @@ def assert_states_close_masked(
         world_mask: Per-world boolean mask.
         positions: Whether to compare position attributes, i.e. q_i, q_j, q_j_p (skipped if False).
         velocities: Whether to compare velocity attributes, i.e. u_i, dq_j (skipped if False).
-        forces: Whether to compare force attributes, i.e. w_i, w_i_e, lambda_j (skipped if False).
+        forces: Whether to compare force attributes, i.e. w_i, w_i_e, lambda_kin_j, lambda_dyn_j, lambda_f_j, lambda_tau_j (skipped if False).
         match_q_j_p_with_q_j: Whether to compare q_j_p against q_j in the reference (instead of q_j_p).
     """
     bodies_offset = model.info.bodies_offset.numpy()
     coords_offset = np.array([*model.info.joint_coords_offset.numpy(), model.size.sum_of_num_joint_coords])
     dofs_offset = np.array([*model.info.joint_dofs_offset.numpy(), model.size.sum_of_num_joint_dofs])
-    cts_offset = np.array([*model.info.joint_cts_offset.numpy(), model.size.sum_of_num_joint_cts])
+    kin_cts_offset = np.array(
+        [*model.info.joint_kinematic_cts_offset.numpy(), model.size.sum_of_num_kinematic_joint_cts]
+    )
+    dyn_cts_offset = np.array([*model.info.joint_dynamic_cts_offset.numpy(), model.size.sum_of_num_dynamic_joint_cts])
+    friction_cts_offset = np.array(
+        [*model.info.joint_friction_cts_offset.numpy(), model.size.sum_of_num_friction_joint_cts]
+    )
+    effort_cts_offset = np.array([*model.info.joint_effort_cts_offset.numpy(), model.size.sum_of_num_effort_joint_cts])
     world_mask_np = world_mask.numpy()
 
     # List state attributes to compare
@@ -207,7 +222,14 @@ def assert_states_close_masked(
         dof_attributes.append("dq_j")
     if forces:
         body_attributes.extend(["w_i", "w_i_e"])
-        cts_attributes.append("lambda_j")
+        cts_attributes.extend(
+            [
+                ("lambda_kin_j", kin_cts_offset),
+                ("lambda_dyn_j", dyn_cts_offset),
+                ("lambda_f_j", friction_cts_offset),
+                ("lambda_tau_j", effort_cts_offset),
+            ]
+        )
 
     for wid in range(model.size.num_worlds):
         # Select reference state based on world mask
@@ -240,21 +262,21 @@ def assert_states_close_masked(
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
-        for attr in cts_attributes:
+        for attr, offset in cts_attributes:
             np.testing.assert_allclose(
-                getattr(state, attr).numpy()[cts_offset[wid] : cts_offset[wid + 1]],
-                getattr(state_ref, attr).numpy()[cts_offset[wid] : cts_offset[wid + 1]],
+                getattr(state, attr).numpy()[offset[wid] : offset[wid + 1]],
+                getattr(state_ref, attr).numpy()[offset[wid] : offset[wid + 1]],
                 rtol=rtol,
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
         if positions and match_q_j_p_with_q_j:
             np.testing.assert_allclose(
-                state.q_j_p.numpy()[cts_offset[wid] : cts_offset[wid + 1]],
-                state_ref.q_j.numpy()[cts_offset[wid] : cts_offset[wid + 1]],
+                state.q_j_p.numpy()[coords_offset[wid] : coords_offset[wid + 1]],
+                state_ref.q_j.numpy()[coords_offset[wid] : coords_offset[wid + 1]],
                 rtol=rtol,
                 atol=atol,
-                err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
+                err_msg=f"\nWorld wid={wid}: attribute `q_j_p` mismatch:\n",
             )
 
 
@@ -273,7 +295,7 @@ def check_body_and_joint_state_consistency(
     np.testing.assert_equal(joint_u.shape[0], model.size.sum_of_num_joint_dofs)
 
     # Create a model data, and evaluate joint data given provided body states
-    data = model.data(unilateral_cts=False, device=model.device)
+    data = model.data(device=model.device)
     wp.copy(data.bodies.q_i, body_q)
     wp.copy(data.bodies.u_i, body_u)
     compute_joints_data(model=model, data=data, q_j_p=joint_q, correction=JointCorrectionMode.CONTINUOUS)
@@ -335,9 +357,9 @@ def step_solver(
     start_time = time.time()
     for step in range(num_steps):
         solver.step(state_in=state_p, state_out=state_n, control=control, contacts=contacts, detector=detector, dt=dt)
-        wp.synchronize()
         state_p.copy_from(state_n)
         if show_progress:
+            wp.synchronize()
             print_progress_bar(step + 1, num_steps, start_time, prefix="Progress", suffix="")
 
 
@@ -447,6 +469,60 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         self.assertEqual(model.rigid_contact_max, solver._contacts_kamino.model_max_contacts_host)
         self.assertEqual(pipeline.rigid_contact_max, solver._contacts_kamino.model_max_contacts_host)
 
+    def test_moreau_uses_internal_detection(self):
+        """Verify Moreau-Jean is selected with internal collision detection."""
+        model = self._make_three_world_model()
+        solver = SolverKamino(
+            model,
+            config=SolverKamino.Config(integrator="moreau", use_collision_detector=True),
+        )
+
+        self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
+
+    def test_moreau_detects_midpoint_contact(self):
+        """Verify Moreau-Jean detects contacts created at the midpoint."""
+        # Start the sphere surface 0.3 m above the zero-gap ground plane.
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        basics.build_sphere_on_plane(builder=builder, z_offset=0.3)
+        model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+        config = SolverKamino.Config(integrator="moreau", use_collision_detector=True)
+        solver = SolverKamino(model, config=config)
+
+        detector = solver._collision_detector_kamino
+        contacts = solver._contacts_kamino
+        assert detector is not None
+        assert contacts is not None
+        assert contacts.model_active_contacts is not None
+
+        # Establish that the step-start configuration has no contacts.
+        detector.collide(data=solver._solver_kamino._data, contacts=contacts)
+        self.assertEqual(int(contacts.model_active_contacts.numpy()[0]), 0)
+
+        state_in = model.state()
+        state_out = model.state()
+        assert state_in.body_qd is not None
+        # Over the first half-step, the sphere moves 0.35 m down and penetrates the plane.
+        state_in.body_qd.assign(np.array([[0.0, 0.0, -7.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+
+        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+
+        # This contact exists only if detection uses the midpoint rather than state_in.
+        self.assertGreater(int(contacts.model_active_contacts.numpy()[0]), 0)
+
+    def test_external_contacts_use_euler(self):
+        """Verify external-contact configurations warn and pick Euler."""
+        model = self._make_three_world_model()
+        with self.assertLogs(level="WARNING") as logs:
+            solver = SolverKamino(
+                model,
+                config=SolverKamino.Config(integrator="moreau", use_collision_detector=False),
+            )
+
+        self.assertIsInstance(solver._solver_kamino._integrator, IntegratorEuler)
+        self.assertTrue(any("Falling back to the 'euler' integrator" in message for message in logs.output))
+
     def test_external_collisions_preserve_explicit_rigid_contact_max(self):
         """Verify external collisions preserve an explicit contact capacity."""
         model = self._make_three_world_model()
@@ -461,6 +537,27 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         contacts = newton.CollisionPipeline(model).contacts()
         with self.assertNoLogs(level="WARNING"):
             solver.update_contacts(contacts, model.state())
+
+    def test_step_with_zero_max_contacts(self):
+        """Verify SolverKamino.step() succeeds when the model admits no possible contacts."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        build_binary_revolute_joint_test(builder=builder, ground=False)
+        model = builder.finalize(device=self.default_device)
+
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
+
+        # Check that collision detector was initialized, but no collision pipeline or contacts were
+        # assigned.
+        self.assertIsNotNone(solver._collision_detector_kamino)
+        self.assertEqual(solver._collision_detector_kamino._model_max_contacts, 0)
+        self.assertIsNone(solver._collision_detector_kamino._unified_pipeline)
+        self.assertIsNone(solver._collision_detector_kamino._primitive_pipeline)
+        self.assertIsNone(solver._contacts_kamino)
+
+        state_in = model.state()
+        state_out = model.state()
+        solver.step(state_in, state_out, None, None, dt=1.0 / 60.0)
 
 
 class TestSolverKaminoImpl(unittest.TestCase):
@@ -1160,8 +1257,10 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[single]: [init]: single_state_p.w_i:\n{single_state_p.w_i}\n\n")
         msg.info(f"[single]: [init]: single_state_p.q_j:\n{single_state_p.q_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.dq_j:\n{single_state_p.dq_j}\n\n")
-        msg.info(f"[single]: [init]: single_state_p.lambda_j:\n{single_state_p.lambda_j}\n\n")
-
+        msg.info(f"[single]: [init]: single_state_p.lambda_kin_j:\n{single_state_p.lambda_kin_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_dyn_j:\n{single_state_p.lambda_dyn_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_f_j:\n{single_state_p.lambda_f_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_tau_j:\n{single_state_p.lambda_tau_j}\n\n")
         # Create simulator and check if the initial state is consistent with the contents of the builder
         single_solver = SolverKaminoImpl(model=single_model)
         self.assertIsInstance(single_solver, SolverKaminoImpl)
@@ -1178,12 +1277,19 @@ class TestSolverKaminoImpl(unittest.TestCase):
         initial_u_i = single_state_p.u_i.numpy().copy()
         initial_q_j = single_state_p.q_j.numpy().copy()
         initial_dq_j = single_state_p.dq_j.numpy().copy()
+        initial_lambda_kin_j = single_state_p.lambda_kin_j.numpy().copy()
+        initial_lambda_dyn_j = single_state_p.lambda_dyn_j.numpy().copy()
         msg.info(f"[samples]: [single]: [init]: q_i (shape={initial_q_i.shape}):\n{initial_q_i}\n")
         msg.info(f"[samples]: [single]: [init]: u_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
         msg.info(f"[samples]: [single]: [init]: w_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
         msg.info(f"[samples]: [single]: [init]: q_j (shape={initial_q_j.shape}):\n{initial_q_j}\n")
         msg.info(f"[samples]: [single]: [init]: dq_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
-        msg.info(f"[samples]: [single]: [init]: lambda_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
+        msg.info(
+            f"[samples]: [single]: [init]: lambda_kin_j (shape={initial_lambda_kin_j.shape}):\n{initial_lambda_kin_j}\n"
+        )
+        msg.info(
+            f"[samples]: [single]: [init]: lambda_dyn_j (shape={initial_lambda_dyn_j.shape}):\n{initial_lambda_dyn_j}\n"
+        )
 
         # Set a simple control callback that applies control inputs
         # NOTE: We use this to disturb the system from its initial state
@@ -1195,8 +1301,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         for step in range(num_steps):
             # Execute a single simulation step
             single_solver.step(state_in=single_state_p, state_out=single_state_n, control=single_control, dt=0.001)
-            wp.synchronize()
             if self.verbose or self.progress:
+                wp.synchronize()
                 print_progress_bar(step + 1, num_steps, start_time, prefix="Progress", suffix="")
 
         # Collect the initial and final states
@@ -1205,13 +1311,25 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_w_i = single_state_n.w_i.numpy().copy()
         final_q_j = single_state_n.q_j.numpy().copy()
         final_dq_j = single_state_n.dq_j.numpy().copy()
-        final_lambda_j = single_state_n.lambda_j.numpy().copy()
+        final_lambda_kin_j = single_state_n.lambda_kin_j.numpy().copy()
+        final_lambda_dyn_j = single_state_n.lambda_dyn_j.numpy().copy()
+        final_lambda_f_j = single_state_n.lambda_f_j.numpy().copy()
+        final_lambda_tau_j = single_state_n.lambda_tau_j.numpy().copy()
         msg.info(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
         msg.info(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
         msg.info(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
         msg.info(f"[samples]: [single]: [final]: q_j (shape={final_q_j.shape}):\n{final_q_j}\n")
         msg.info(f"[samples]: [single]: [final]: dq_j (shape={final_dq_j.shape}):\n{final_dq_j}\n")
-        msg.info(f"[samples]: [single]: [final]: lambda_j (shape={final_lambda_j.shape}):\n{final_lambda_j}\n")
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_kin_j (shape={final_lambda_kin_j.shape}):\n{final_lambda_kin_j}\n"
+        )
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
+        )
+        msg.info(f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n")
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_tau_j (shape={final_lambda_tau_j.shape}):\n{final_lambda_tau_j}\n"
+        )
 
         # Tile the collected states for comparison against the multi-instance simulator
         multi_init_q_i = np.tile(initial_q_i, (num_worlds, 1))
@@ -1288,8 +1406,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         for step in range(num_steps):
             # Execute a single simulation step
             multi_solver.step(state_in=multi_state_p, state_out=multi_state_n, control=multi_control, dt=0.001)
-            wp.synchronize()
             if self.verbose or self.progress:
+                wp.synchronize()
                 print_progress_bar(step + 1, num_steps, start_time, prefix="Progress", suffix="")
 
         # Optional verbose output - enabled globally via self.verbose
@@ -1337,8 +1455,10 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[single]: [init]: single_state_p.w_i:\n{single_state_p.w_i}\n\n")
         msg.info(f"[single]: [init]: single_state_p.q_j:\n{single_state_p.q_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.dq_j:\n{single_state_p.dq_j}\n\n")
-        msg.info(f"[single]: [init]: single_state_p.lambda_j:\n{single_state_p.lambda_j}\n\n")
-
+        msg.info(f"[single]: [init]: single_state_p.lambda_kin_j:\n{single_state_p.lambda_kin_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_dyn_j:\n{single_state_p.lambda_dyn_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_f_j:\n{single_state_p.lambda_f_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_tau_j:\n{single_state_p.lambda_tau_j}\n\n")
         # Create a contacts container for the single-instance system
         _, single_world_max_contacts = single_builder.compute_required_contact_capacity(max_contacts_per_pair=16)
         single_contacts = ContactsKamino(capacity=single_world_max_contacts, device=single_model.device)
@@ -1364,7 +1484,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[samples]: [single]: [init]: w_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
         msg.info(f"[samples]: [single]: [init]: q_j (shape={initial_q_j.shape}):\n{initial_q_j}\n")
         msg.info(f"[samples]: [single]: [init]: dq_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
-        msg.info(f"[samples]: [single]: [init]: lambda_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
+        msg.info(f"[samples]: [single]: [init]: lambda_kin_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
 
         # Set a simple control callback that applies control inputs
         # NOTE: We use this to disturb the system from its initial state
@@ -1376,8 +1496,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         for step in range(num_steps):
             # Execute a single simulation step
             single_solver.step(single_state_p, single_state_n, single_control, contacts=single_contacts, dt=0.001)
-            wp.synchronize()
             if self.verbose or self.progress:
+                wp.synchronize()
                 print_progress_bar(step + 1, num_steps, start_time, prefix="Progress", suffix="")
 
         # Collect the initial and final states
@@ -1386,13 +1506,25 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_w_i = single_state_n.w_i.numpy().copy()
         final_q_j = single_state_n.q_j.numpy().copy()
         final_dq_j = single_state_n.dq_j.numpy().copy()
-        final_lambda_j = single_state_n.lambda_j.numpy().copy()
+        final_lambda_kin_j = single_state_n.lambda_kin_j.numpy().copy()
+        final_lambda_dyn_j = single_state_n.lambda_dyn_j.numpy().copy()
+        final_lambda_f_j = single_state_n.lambda_f_j.numpy().copy()
+        final_lambda_tau_j = single_state_n.lambda_tau_j.numpy().copy()
         msg.info(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
         msg.info(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
         msg.info(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
         msg.info(f"[samples]: [single]: [final]: q_j (shape={final_q_j.shape}):\n{final_q_j}\n")
         msg.info(f"[samples]: [single]: [final]: dq_j (shape={final_dq_j.shape}):\n{final_dq_j}\n")
-        msg.info(f"[samples]: [single]: [final]: lambda_j (shape={final_lambda_j.shape}):\n{final_lambda_j}\n")
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_kin_j (shape={final_lambda_kin_j.shape}):\n{final_lambda_kin_j}\n"
+        )
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
+        )
+        msg.info(f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n")
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_tau_j (shape={final_lambda_tau_j.shape}):\n{final_lambda_tau_j}\n"
+        )
 
         # Tile the collected states for comparison against the multi-instance simulator
         multi_init_q_i = np.tile(initial_q_i, (num_worlds, 1))
@@ -1473,8 +1605,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         for step in range(num_steps):
             # Execute a single simulation step
             multi_solver.step(multi_state_p, multi_state_n, multi_control, contacts=multi_contacts, dt=0.001)
-            wp.synchronize()
             if self.verbose or self.progress:
+                wp.synchronize()
                 print_progress_bar(step + 1, num_steps, start_time, prefix="Progress", suffix="")
 
         # Optional verbose output - enabled globally via self.verbose

@@ -19,6 +19,10 @@ from newton._src.solvers.kamino._src.linalg.utils.range import in_range_via_gaus
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
+from newton._src.solvers.kamino._src.solvers.padmm.math import (
+    project_to_coulomb_cone,
+    project_to_coulomb_dual_cone,
+)
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
@@ -150,11 +154,11 @@ def check_padmm_solution(
         error_dual_abs_inf = np.linalg.norm(v_plus_true - v_plus_wp_np[w], ord=np.inf)
 
         # Extract solver status
-        converged = True if status[w][0] == 1 else False
-        iterations = status[w][1]
-        r_p = status[w][2]
-        r_d = status[w][3]
-        r_c = status[w][4]
+        converged = bool(status[w]["converged"])
+        iterations = status[w]["iterations"]
+        r_p = status[w]["r_p"]
+        r_d = status[w]["r_d"]
+        r_c = status[w]["r_c"]
 
         # Optionally print relevant solver data
         if verbose:
@@ -320,7 +324,7 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool
 
     nw = solver.size.num_worlds
     status = solver.data.status.numpy()
-    iterations = [status[w][1] for w in range(nw)]
+    iterations = [status[w]["iterations"] for w in range(nw)]
     offsets_np = solver.data.info.offsets.numpy()
     num_rho_updates_np = extract_info_vectors(offsets_np, solver.data.info.num_rho_updates.numpy(), iterations)
     norm_s_np = extract_info_vectors(offsets_np, solver.data.info.norm_s.numpy(), iterations)
@@ -810,6 +814,55 @@ class TestPADMMSolver(unittest.TestCase):
         # Check solution
         check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
 
+    def test_08a_padmm_collect_info_matches_solution(self):
+        """Record consistent diagnostics for dense and sparse PADMM problems."""
+        info_vectors = {}
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                test = TestSetup(
+                    builder_fn=basics.build_box_on_plane,
+                    device=self.default_device,
+                    sparse=sparse,
+                )
+                solver = PADMMSolver(
+                    model=test.model,
+                    config=PADMMSolver.Config(
+                        primal_tolerance=1.0e3,
+                        dual_tolerance=1.0e3,
+                        compl_tolerance=1.0e3,
+                        max_iterations=8,
+                    ),
+                    warmstart=PADMMWarmStartMode.NONE,
+                    use_acceleration=False,
+                    use_graph_conditionals=False,
+                    collect_info=True,
+                )
+
+                test.build()
+                solver.reset()
+                solver.coldstart()
+                solver.solve(problem=test.problem)
+
+                info = solver.data.info
+                status = solver.data.status
+                solution = solver.data.solution
+                iterations = int(status.numpy()[0]["iterations"])
+
+                # History was written
+                self.assertTrue((info.norm_x.numpy()[:iterations] != 0.0).all())
+                np.testing.assert_array_equal(info.norm_x.numpy()[iterations:], 0.0)
+
+                # Solution is consistent with info
+                np.testing.assert_allclose(info.lambdas.numpy(), solution.lambdas.numpy())
+                np.testing.assert_allclose(info.v_aug.numpy(), info.v_plus.numpy() + info.s.numpy())
+
+                # Store info for dense-sparse comparison
+                info_vectors[sparse] = (info.v_plus.numpy(), info.v_aug.numpy(), info.s.numpy())
+
+        # Compare dense-sparse info
+        for dense_values, sparse_values in zip(info_vectors[False], info_vectors[True], strict=True):
+            np.testing.assert_allclose(dense_values, sparse_values, rtol=1e-5, atol=1e-6)
+
     def test_09_apadmm_restart_matches_bilateral_reference(self):
         """Match a NumPy reference across an APADMM solve whose final iteration restarts.
 
@@ -984,6 +1037,53 @@ class TestPADMMSolver(unittest.TestCase):
 
                 status = solver.data.status.numpy()
                 self.assertEqual([int(status[w][1]) for w in range(len(budgets))], budgets)
+
+    def assert_coulomb_cone_projection(self, cone: str, case: str, mu: float, x: list[float], expected: list[float]):
+        """Assert one primal or dual Coulomb cone projection."""
+        is_primal = cone == "primal"
+
+        @wp.kernel
+        def project(x: wp.array[wp.vec3f], mu: wp.array[wp.float32], y: wp.array[wp.vec3f]):
+            if wp.static(is_primal):
+                y[0] = project_to_coulomb_cone(x[0], mu[0])
+            else:
+                y[0] = project_to_coulomb_dual_cone(x[0], mu[0])
+
+        x_arg = wp.array(np.array([x], dtype=np.float32), dtype=wp.vec3f, device=self.default_device)
+        mu_arg = wp.array(np.array([mu], dtype=np.float32), dtype=wp.float32, device=self.default_device)
+        y = wp.zeros(1, dtype=wp.vec3f, device=self.default_device)
+        wp.launch(kernel=project, dim=1, inputs=[x_arg, mu_arg], outputs=[y], device=self.default_device)
+        with self.subTest(mu=mu, cone=cone, case=case):
+            np.testing.assert_allclose(y.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
+
+    def test_12_coulomb_cone_projections_handle_zero_friction(self):
+        """Handle the ray and half-space projections at zero friction."""
+        mu = 0.0
+
+        cone = "primal"
+        self.assert_coulomb_cone_projection(cone, "positive ray", mu, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+        self.assert_coulomb_cone_projection(cone, "polar", mu, [0.0, 0.0, -1.0], [0.0, 0.0, 0.0])
+        self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+
+        cone = "dual"
+        self.assert_coulomb_cone_projection(cone, "pos. half-space", mu, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+        self.assert_coulomb_cone_projection(cone, "polar", mu, [0.0, 0.0, -1.0], [0.0, 0.0, 0.0])
+        self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, -1.0], [1.0, 0.0, 0.0])
+
+    def test_13_coulomb_cone_projections_handle_all_branches(self):
+        """Handle interior, polar, and general projections at positive friction."""
+        for mu in (1.0e-6, 1.0, 1e6):
+            den = 1.0 + mu * mu
+
+            cone = "primal"
+            self.assert_coulomb_cone_projection(cone, "interior", mu, [0.5 * mu, 0.0, 1.0], [0.5 * mu, 0.0, 1.0])
+            self.assert_coulomb_cone_projection(cone, "polar", mu, [1.0, 0.0, -2.0 * mu], [0.0, 0.0, 0.0])
+            self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 0.0], [mu * mu / den, 0.0, mu / den])
+
+            cone = "dual"
+            self.assert_coulomb_cone_projection(cone, "interior", mu, [1.0, 0.0, 2.0 * mu], [1.0, 0.0, 2.0 * mu])
+            self.assert_coulomb_cone_projection(cone, "polar", mu, [1.0, 0.0, -2.0 / mu], [0.0, 0.0, 0.0])
+            self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 0.0], [1.0 / den, 0.0, mu / den])
 
 
 ###

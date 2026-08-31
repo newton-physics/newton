@@ -266,8 +266,8 @@ def eval_single_articulation_fk(
 
         # compute transform across the joint
         type = joint_type[i]
-        if type == JointType.CABLE:
-            # CABLE joints are skipped by generic forward kinematics.
+        if type == JointType.ROD:
+            # ROD joints are skipped by generic forward kinematics.
             continue
 
         X_pj = joint_X_p[i]
@@ -514,7 +514,7 @@ def eval_fk(
 
     .. note::
 
-        :attr:`~newton.JointType.CABLE` body transforms are not changed by
+        :attr:`~newton.JointType.ROD` body transforms are not changed by
         :func:`newton.eval_fk`; they are advanced directly by
         :class:`newton.solvers.SolverVBD`.
 
@@ -934,17 +934,15 @@ def eval_ik(
 @wp.func
 def write_free_distance_motion_subspace(
     X_pa_world: wp.transform,
-    x_child_com_world: wp.vec3,
+    pivot_world: wp.vec3,
     qd_start: int,
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
 ):
     """Write the 6 motion-subspace columns for a FREE/DISTANCE joint.
 
-    Used by both the Featherstone inverse-dynamics path (``jcalc_motion``) and
-    the IK/Jacobian path (``jcalc_motion_subspace``) so they agree on the exact
-    column layout. Linear DOFs act at the child body's COM; angular DOFs are
-    world-aligned axes expressed through ``X_pa_world``.
+    Linear DOFs follow the parent-anchor axes. Angular columns describe
+    rotations about ``pivot_world`` as world-origin spatial twists.
 
     Args:
         X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
@@ -952,7 +950,7 @@ def write_free_distance_motion_subspace(
             This is *not* the classical Featherstone ``X_sc`` (spatial-to-
             child); Newton's FREE/DISTANCE joint coordinates live in the
             parent-anchor basis.
-        x_child_com_world: World-space position of the child body's COM.
+        pivot_world: World-space point about which angular columns rotate.
         qd_start: Starting velocity-DOF index for this joint.
         joint_S_s: Output spatial-vector subspace array; six slots starting at
             ``qd_start`` are overwritten.
@@ -964,9 +962,9 @@ def write_free_distance_motion_subspace(
     joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
     joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
     joint_S_s[qd_start + 2] = wp.spatial_vector(axis_world_z, wp.vec3())
-    joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, x_child_com_world), axis_world_x)
-    joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, x_child_com_world), axis_world_y)
-    joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, x_child_com_world), axis_world_z)
+    joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, pivot_world), axis_world_x)
+    joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, pivot_world), axis_world_y)
+    joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, pivot_world), axis_world_z)
 
 
 @wp.func
@@ -1008,10 +1006,9 @@ def jcalc_motion_subspace(
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
 
-        CABLE joints are not currently supported. CABLE joints have complex,
-        configuration-dependent motion subspaces (dynamic stretch direction and
-        isotropic angular DOF) and are primarily designed for VBD solver.
-        If encountered, their Jacobian columns will remain zero.
+        ROD joints are not currently supported because their material slots do
+        not define generalized-coordinate motion subspaces. Their Jacobian
+        columns remain zero.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1501,7 +1498,7 @@ def eval_inverse_dynamics_force(
     ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
     ``joint_f`` is entirely in that world convention.
 
-    :attr:`~newton.JointType.CABLE` joints are not supported because their DOF
+    :attr:`~newton.JointType.ROD` joints are not supported because their material
     slots are constraints rather than generalized coordinates for this
     inverse-dynamics formulation.
 
@@ -1538,11 +1535,11 @@ def eval_inverse_dynamics_force(
             reading their mass-matrix, acceleration, or bias-force inputs.
 
     Raises:
-        ValueError: If the model contains a :attr:`~newton.JointType.CABLE`
+        ValueError: If the model contains a :attr:`~newton.JointType.ROD`
             joint or an input, output, or mask has an unexpected shape.
     """
-    if model._has_cable_joints:  # pyright: ignore[reportPrivateUsage]
-        raise ValueError("eval_inverse_dynamics_force() does not support JointType.CABLE joints.")
+    if model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+        raise ValueError("eval_inverse_dynamics_force() does not support JointType.ROD joints.")
 
     if model.articulation_count == 0:
         return

@@ -45,25 +45,32 @@ use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 use maximal coordinates.
 Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
-Cable joints
-^^^^^^^^^^^^
+Rod joints
+^^^^^^^^^^
 
-:attr:`newton.JointType.CABLE` is represented in Newton's joint data model, but
+Newton uses *cable* for the modeled object and *rod* for this discrete
+stretch/shear/bend/twist representation. A cable may be assembled from rod
+joints or modeled with another formulation. Cable centerline geometry uses
+``cable`` terminology. Per-segment orientation/twist frames, per-joint
+stiffness, and solver mechanics belong to the rod representation and use
+``rod`` terminology.
+
+:attr:`newton.JointType.ROD` is represented in Newton's joint data model, but
 it is not a conventional generalized-coordinate joint. Its four entries are
 VBD constraint/material slots defined by
 :class:`~newton.solvers.SolverVBD.JointSlot`: stretch (``STRETCH``, slot 0),
 shear (``SHEAR``, slot 1), bend (``BEND``, slot 2), and
-twist (``TWIST``, slot 3). These slots store independent per-cable stiffness
+twist (``TWIST``, slot 3). These slots store independent per-rod stiffness
 and damping through
 :attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`.
 Generic joint storage allocates matching ``joint_q`` / ``joint_qd`` entries, but
 they are not generalized coordinates or velocities that reconstruct the child
 body pose.
 
-Cable body poses and velocities are maximal-coordinate state stored in
+Rod body poses and velocities are maximal-coordinate state stored in
 :attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
 :class:`newton.solvers.SolverVBD`. Therefore :func:`newton.eval_fk` does not
-update cable child body transforms from ``joint_q`` / ``joint_qd``.
+update rod child body transforms from ``joint_q`` / ``joint_qd``.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
@@ -324,16 +331,16 @@ Joint types
      - Generic D6 joint with up to 3 translational and 3 rotational degrees of freedom
      - up to 6
      - up to 6
-   * - ``JointType.CABLE``
-     - Cable joint with 2 linear material slots (stretch/shear) and 2 angular
+   * - ``JointType.ROD``
+     - Rod joint with 2 linear material slots (stretch/shear) and 2 angular
        material slots (bend/twist)
      - 4
      - 4
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
-For ``JointType.CABLE``, both counts represent allocated material slots, not
-generalized coordinates or velocity DOFs; see `Cable joints`_.
+For ``JointType.ROD``, both counts represent allocated material slots, not
+generalized coordinates or velocity DOFs; see `Rod joints`_.
 
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^

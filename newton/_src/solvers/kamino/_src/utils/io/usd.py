@@ -1311,7 +1311,7 @@ class USDImporter:
         return JointDescriptor(
             name=name,
             uid=uid,
-            act_type=act_type,
+            dof_act_types=[act_type] * dof_type.num_dofs,
             dof_type=dof_type,
             bid_B=bid_B,
             bid_F=bid_F,
@@ -2056,7 +2056,7 @@ class USDImporter:
             joint_desc = JointDescriptor(
                 name=f"world_to_{root_body.name}" if use_articulation_root_name else f"joint_{builder.num_joints + 1}",
                 dof_type=JointDoFType.FREE,
-                act_type=JointActuationType.PASSIVE,
+                dof_act_types=[JointActuationType.PASSIVE] * JointDoFType.FREE.num_dofs,
                 bid_B=-1,
                 bid_F=root_body_index,
                 B_r_Bj=wp.transform_get_translation(root_body.q_i_0),

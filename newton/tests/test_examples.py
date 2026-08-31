@@ -662,6 +662,13 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
+    name="robot.example_robot_omniwheel",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 500},
+    use_viewer=True,
+)
+add_example_test(
+    TestRobotExamples,
     name="robot.example_robot_ur10",
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
@@ -942,6 +949,15 @@ add_example_test(
 
 add_example_test(
     TestMPMExamples,
+    name="mpm.example_mpm_granular",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 5, "from_usd": True},
+    use_viewer=True,
+    test_suffix="authored_usd",
+)
+
+add_example_test(
+    TestMPMExamples,
     name="mpm.example_mpm_multi_material",
     devices=cuda_test_devices,
     test_options={"num-frames": 10},
@@ -953,6 +969,21 @@ add_example_test(
     name="mpm.example_mpm_grain_rendering",
     devices=cuda_test_devices,
     test_options={"num-frames": 10},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_water_dam_break",
+    devices=cuda_test_devices,
+    test_options={
+        "num-frames": 10,
+        "voxel-size": 0.15,
+        "surface-voxel-size": 0.075,
+        "surface-max-grid-cells": 300_000,
+        "particles-per-cell": 1,
+        "world-count": 2,
+    },
     use_viewer=True,
 )
 

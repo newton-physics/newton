@@ -256,7 +256,7 @@ class TestKinematicsJoints(unittest.TestCase):
             # Set actuation type
             for joint in builder.all_joints:
                 if joint.act_type != JointActuationType.PASSIVE:
-                    joint.act_type = act_type
+                    joint.dof_act_types = [act_type] * joint.num_dofs
 
             # Create the model and state
             model = builder.finalize(device=self.default_device)
@@ -275,7 +275,7 @@ class TestKinematicsJoints(unittest.TestCase):
             msg.info("model.joints.b_j: %s", model.joints.b_j)
             msg.info("model.joints.k_p_j: %s", model.joints.k_p_j)
             msg.info("model.joints.k_d_j: %s\n", model.joints.k_d_j)
-            msg.info("model.joints.num_cts: %s", model.joints.num_cts)
+            msg.info("model.joints.num_bilateral_cts: %s", model.joints.num_bilateral_cts)
             msg.info("model.joints.num_dynamic_cts: %s", model.joints.num_dynamic_cts)
             msg.info("model.joints.num_kinematic_cts: %s", model.joints.num_kinematic_cts)
             msg.info("model.joints.dynamic_cts_offset: %s", model.joints.dynamic_cts_offset)
@@ -386,7 +386,7 @@ class TestKinematicsJoints(unittest.TestCase):
         )
         for joint in builder.all_joints:
             if joint.act_type == JointActuationType.POSITION_VELOCITY:
-                joint.act_type = JointActuationType.POSITION_VELOCITY_FORCE
+                joint.dof_act_types = [JointActuationType.POSITION_VELOCITY_FORCE] * joint.num_dofs
 
         # Create the model and data
         model = builder.finalize(device=self.default_device)
@@ -405,7 +405,7 @@ class TestKinematicsJoints(unittest.TestCase):
         msg.info("model.joints.b_j: %s", model.joints.b_j)
         msg.info("model.joints.k_p_j: %s", model.joints.k_p_j)
         msg.info("model.joints.k_d_j: %s\n", model.joints.k_d_j)
-        msg.info("model.joints.num_cts: %s", model.joints.num_cts)
+        msg.info("model.joints.num_bilateral_cts: %s", model.joints.num_bilateral_cts)
         msg.info("model.joints.num_dynamic_cts: %s", model.joints.num_dynamic_cts)
         msg.info("model.joints.num_kinematic_cts: %s", model.joints.num_kinematic_cts)
         msg.info("model.joints.dynamic_cts_offset: %s", model.joints.dynamic_cts_offset)

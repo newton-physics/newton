@@ -5624,6 +5624,30 @@ class TestMuJoCoValidation(unittest.TestCase):
             SolverMuJoCo(model, separate_worlds=True)
         self.assertIn("joint types mismatch at position", str(ctx.exception).lower())
 
+    def test_mismatched_joint_dof_counts_fails(self):
+        """Test that D6 joints with differing DOF layouts across worlds raises ValueError."""
+
+        # Both worlds use D6 joints but differ in DOF count
+        def make_robot(angular_axis_count):
+            robot = newton.ModelBuilder()
+            b1 = robot.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+            axes = [
+                newton.ModelBuilder.JointDofConfig(axis=a) for a in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+            ][:angular_axis_count]
+            j1 = robot.add_joint_d6(-1, b1, linear_axes=[], angular_axes=axes)
+            robot.add_articulation([j1])
+            robot.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+            return robot
+
+        main = newton.ModelBuilder()
+        main.add_world(make_robot(2))
+        main.add_world(make_robot(3))
+        model = main.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        self.assertIn("joint dof counts mismatch at position", str(ctx.exception).lower())
+
     def test_mismatched_shape_types_fails(self):
         """Test that different shape types at same position across worlds raises ValueError."""
         robot1 = newton.ModelBuilder()
@@ -5840,6 +5864,20 @@ class TestMuJoCoValidation(unittest.TestCase):
 
 
 class TestMuJoCoConversion(unittest.TestCase):
+    def test_setup_preserves_shape_scale(self):
+        """Preserve model shape scales while converting MuJoCo geometry sizes."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_cylinder(body, radius=0.1, half_height=0.5)
+        joint = builder.add_joint_free(body)
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        expected_shape_scale = model.shape_scale.numpy().copy()
+
+        SolverMuJoCo(model, use_mujoco_cpu=True)
+
+        np.testing.assert_array_equal(model.shape_scale.numpy(), expected_shape_scale)
+
     def test_no_shapes_separate_worlds_false(self):
         """Testing that an articulation without any shapes can be converted successfully when setting separate_worlds=False."""
         builder = newton.ModelBuilder()
@@ -6593,6 +6631,25 @@ class TestMuJoCoConversion(unittest.TestCase):
 
 
 class TestMuJoCoAttributes(unittest.TestCase):
+    def test_unresolved_usd_site_actuator_has_no_owner(self):
+        """Leave an unresolved USD site actuator unowned."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body)
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([joint])
+        builder.add_custom_values(
+            **{
+                "mujoco:actuator_trnid": wp.vec2i(0, -1),
+                "mujoco:actuator_trntype": int(SolverMuJoCo.TrnType.SITE),
+                "mujoco:actuator_target_label": "/World/missing_site",
+            }
+        )
+
+        self.assertEqual(SolverMuJoCo._shape_owners(builder), [0])
+        self.assertEqual(SolverMuJoCo._resolve_mujoco_actuator_owners(builder), [-1])
+
     def test_custom_attributes_from_code(self):
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
@@ -6911,6 +6968,37 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert_np_equal(tendon_joint, expected_joint, tol=0)
         assert_np_equal(tendon_coef, expected_coef, tol=1e-6)
 
+    def test_invalid_tendon_joint_range_remains_unowned(self):
+        """Keep a tendon unowned when its joint range exceeds the available rows."""
+        mjcf = """
+            <mujoco model="robot">
+              <worldbody>
+                <body name="root">
+                  <body name="link">
+                    <joint name="hinge" type="hinge"/>
+                    <geom type="sphere" size="0.1"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                  </body>
+                </body>
+              </worldbody>
+              <tendon>
+                <fixed name="tendon">
+                  <joint joint="hinge" coef="1"/>
+                </fixed>
+              </tendon>
+            </mujoco>
+            """
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        builder.add_mjcf(mjcf)
+        builder.custom_attributes["mujoco:tendon_joint_adr"].values = [1, 1]
+        builder.custom_attributes["mujoco:tendon_joint_num"].values = [2, 1]
+
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:tendon"].numpy(), [-1, 1])
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_tendon_actuator_resolution_when_actuator_comes_first(self):
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
@@ -6961,6 +7049,9 @@ class TestMuJoCoAttributes(unittest.TestCase):
         self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 1)
         self.assertEqual(model.custom_frequency_counts["mujoco:tendon_joint"], 1)
         self.assertEqual(model.mujoco.actuator_target_label[0], "/World/RobotA/fixed_tendon")
+        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:tendon"].numpy(), [0])
+        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:tendon_joint"].numpy(), [0])
+        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), [0])
 
         solver = SolverMuJoCo(model, separate_worlds=False)
         mujoco = SolverMuJoCo._mujoco
@@ -12449,6 +12540,74 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
         # Authored MuJoCo data should not silently switch to Newton scaling.
         self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_RAW)
+
+
+def _large_nv_mjcf(cone: str) -> str:
+    """Build an MJCF whose free joints put it over MuJoCo Warp's nv > 500 threshold."""
+    bodies = "".join(
+        f'<body name="b{i}" pos="{i * 0.5} 0 1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>'
+        for i in range(100)
+    )
+    return f'<mujoco><option cone="{cone}"/><worldbody>{bodies}</worldbody></mujoco>'
+
+
+class TestMuJoCoLinesearchBlockDim(unittest.TestCase):
+    def test_linesearch_block_dim_is_left_to_mujoco_warp(self):
+        """Leave MuJoCo Warp's line-search block dimension untouched.
+
+        Newton forced ``linesearch_iterative = 32`` after ``put_model()`` to work
+        around a CUDA registers-per-block failure that MuJoCo Warp has since capped
+        upstream. Upstream only assigns the field when ``nv > 500``, so a model over
+        that threshold is the only one whose value differs from the default and
+        therefore the only one that can detect the override coming back.
+        """
+        try:
+            _, mujoco_warp = SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_large_nv_mjcf("pyramidal"))
+        solver = SolverMuJoCo(builder.finalize())
+
+        self.assertGreater(solver.mj_model.nv, 500)
+        # Compare against upstream's own choice rather than a hard-coded 256, so the
+        # test keeps its meaning if MuJoCo Warp retunes the value.
+        expected = mujoco_warp.put_model(solver.mj_model).block_dim.linesearch_iterative
+        self.assertEqual(solver.mjw_model.block_dim.linesearch_iterative, expected)
+
+    def test_large_elliptic_model_steps_on_cuda(self):
+        """Step a large elliptic-cone model on CUDA without a kernel-launch failure.
+
+        The sizing assertion above cannot catch a runtime fault: the block dimension
+        only matters once the kernel launches. The original failure was CUDA error
+        701 in the elliptic line-search kernel, so this runs that path on a model
+        over the threshold. It exercises one architecture, not every architecture
+        that originally hit the limit.
+        """
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+        if not wp.get_device().is_cuda:
+            self.skipTest("block dimensions only constrain CUDA kernel launches")
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_large_nv_mjcf("elliptic"))
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        self.assertGreater(solver.mj_model.nv, 500)
+
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        for _ in range(5):
+            collision_pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+            state_0, state_1 = state_1, state_0
+        # Launch failures surface asynchronously, so force them to be raised here.
+        wp.synchronize()
 
 
 if __name__ == "__main__":

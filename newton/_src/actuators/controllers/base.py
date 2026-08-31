@@ -110,6 +110,61 @@ class Controller:
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute")
 
+    evaluate_force: ClassVar[wp.Function | None] = None
+    """``@wp.func`` form of this controller's force law, called inside the
+    implicit solve kernel (see :meth:`Actuator.set_effort_mode_implicit`).
+    ``None`` means the controller does not support implicit actuation.
+
+    Required signature (``float64``)::
+
+        evaluate_force(q, qd, target_q, target_qd, feedforward,
+                       params: wp.array2d[float], i: int) -> wp.float64
+
+    ``params[i]`` holds the controller's parameters for actuator slot ``i``;
+    see :meth:`bind_params`.
+    """
+
+    def bind_params(self) -> wp.array2d[float] | None:
+        """Build the per-actuator parameter pack and wire attributes to it.
+
+        Called once when the implicit effort mode is installed. Override to:
+
+        1. Pack the controller's parameters into a contiguous
+           ``(num_actuators, P)`` array — row ``i`` for actuator slot ``i``,
+           layout matching :attr:`evaluate_force`.
+        2. Re-point the controller's parameter arrays (e.g. ``kp``) at columns
+           of the pack so later writes stay visible.
+
+        ``None`` (the default) means the controller does not support implicit
+        actuation.
+        """
+        return None
+
+    def prepare_implicit(
+        self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        ctrl_state: Controller.State | None,
+        dt: float,
+        inv_mass: wp.array[float] | None = None,
+        device: wp.Device | None = None,
+    ) -> None:
+        """Refresh the parameter pack before an implicit solve step.
+
+        Called by the implicit effort mode once per step, before the solve
+        kernel. Controllers whose :attr:`evaluate_force` law needs per-step
+        preparation (e.g. a neural network linearized about the current
+        state) override this to rewrite the pack built by :meth:`bind_params`
+        in place. The default is a no-op — parameter-static laws like PD need
+        nothing here.
+        """
+
     def is_stateful(self) -> bool:
         """Return True if this controller maintains internal state."""
         raise NotImplementedError(f"{type(self).__name__} must implement is_stateful")
