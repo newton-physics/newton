@@ -18,23 +18,14 @@ Motion law (terms enabled at construction):
 
     F_motion = [Lambda if use_inertia_decoupling else I] · (Kp·pose_error + Kd·twist_error)
 
-``Kp``/``Kd`` are specified per-axis in the tool-local frame (so "stiff along
-the insertion axis" stays true as the tool reorients, instead of silently
-meaning whatever world axis the insertion axis started aligned with), while
-``pose_error``/``twist_error`` are computed in world coordinates. Rather than
-rotating ``Kp``/``Kd`` themselves into a world-frame 6x6 matrix (``R @
-diag(Kp) @ R^T``), :func:`_task_space_pd_kernel` rotates the errors into the
-tool frame instead, applies the diagonal gain there with a plain per-axis
-multiply, and rotates only the combined result back to world — algebraically
-identical, but without ever forming a 6x6 matrix, and with one shared
-rotate-back for both the ``Kp`` and ``Kd`` terms instead of one each.
+``pose_error``/``twist_error`` are the position/orientation and linear/angular
+velocity errors between the current and desired tool pose/twist. ``Kp``/``Kd``
+are specified per-axis in the tool-local frame, so e.g. "stiff along the
+insertion axis" stays true as the tool reorients.
 
 When ``use_partial_inertia_decoupling=True`` (only meaningful alongside
-``use_inertia_decoupling=True``), Lambda is computed as two independent 3x3
-inversions — the translational block from the Jacobian's first 3 rows, the
-rotational block from its last 3 — instead of one 6x6 inversion, ignoring
-the linear/angular coupling. Lambda ends up block-diagonal and is used
-exactly the same way afterward.
+``use_inertia_decoupling=True``), Lambda ignores the coupling between
+translational and rotational inertia, computing each independently.
 
 Wrench law, only when ``use_wrench_feedforward`` or ``use_wrench_feedback`` is
 enabled:
@@ -42,27 +33,21 @@ enabled:
     F_wrench = [desired_wrench if use_wrench_feedforward else 0]
              + [Kp·(desired_wrench - measured_wrench) if use_wrench_feedback else 0]
 
-where ``pose_error`` and ``twist_error`` are the task-space position/orientation
-and linear/angular velocity errors between the current and desired tool pose.
 ``desired_wrench`` is the feedforward term, commanded directly; the second
 term is a feedback correction toward that same setpoint from a measured
 wrench, e.g. a 6-axis force/torque sensor reading. Either may be used alone —
 ``use_wrench_feedback`` with ``use_wrench_feedforward=False`` regulates the
 measured wrench toward the setpoint with no separate feedforward term. The
-feedback ``Kp`` here is tool-local and applied the same
-rotate-error/apply-diagonal/rotate-result-back way the motion gains are.
+feedback ``Kp`` here is tool-local too.
 
-When wrench control is enabled, ``F_motion`` and ``F_wrench`` are each
-masked by a world-frame 6x6 selection matrix, itself rotated every step from
-a fixed tool-local selection the same way the gains are (since which axes
-are free to move vs. under force control is a property of the tool's
-current orientation, not a fixed world direction), mapped to joint torques
-separately, and summed there:
+When wrench control is enabled, each task axis is either motion- or
+force-controlled, per ``motion_selection_axes_tool``/
+``wrench_selection_axes_tool`` (also tool-local), and each term is mapped to
+joint torques separately and summed:
 
-    tau = J^T · (selection_motion_world · F_motion) + J^T · (selection_wrench_world · F_wrench)
+    tau = J^T · (S_motion · F_motion) + J^T · (S_wrench · F_wrench)
 
-Without wrench control, every axis is motion-controlled and no selection
-matrix is applied: ``tau = J^T · F_motion``.
+Without wrench control, every axis is motion-controlled: ``tau = J^T · F_motion``.
 
 When ``use_gravity_compensation=True``, ``inputs.gravity_force`` (the
 caller-supplied gravity generalized forces, compact over the controlled
@@ -74,20 +59,11 @@ is pursued only in directions that leave the task-space motion undisturbed:
     tau_null = N^T · [M(q)·a_posture if use_inertia_decoupling else a_posture]
     a_posture = Kp_null·(q_des_null - q) + Kd_null·(qd_des_null - qd)
 
-``N^T = I - J^T · jacobian_pinv_transpose`` is the null-space projector,
-built from whichever pseudo-inverse variant applies: the dynamically-consistent
-one (``Lambda·J·M(q)^-1``, reusing the same Lambda and mass-matrix inverse the
-motion term computes) when ``use_inertia_decoupling=True`` and
-``use_partial_inertia_decoupling=False``, or the kinematics-only Moore-Penrose
-one (``(J·J^T)^-1·J``) otherwise — the latter needs no mass matrix, so
-null-space control still works without inertial decoupling. A block-diagonal
-(partially-decoupled) Lambda does not have the property the
-dynamically-consistent formula needs, so partial decoupling always falls back
-to Moore-Penrose here too, even though a mass matrix is available. Only a
-robot with more controlled DOFs than task dimensions (6) has a nontrivial
-null space to work with.
-``tau_null`` is mapped through the same compact per-DOF layout as every
-other term here and summed into the joint torque the same way.
+``N^T`` is the null-space projector: dynamically consistent (accounting for
+the robot's own inertia) when ``use_inertia_decoupling=True`` and
+``use_partial_inertia_decoupling=False``, otherwise a kinematics-only
+(Moore-Penrose) projector. Only a robot with more controlled DOFs than task
+dimensions (6) has a nontrivial null space to work with.
 """
 
 from __future__ import annotations
@@ -237,10 +213,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
     robot 0's DOFs first, then robot 1's.
 
     Every port, of any dtype, may be bound either to a plain array or to an
-    indexed view of a simulation-sized array — including the
-    ``wp.transform``/``wp.spatial_vector`` ports (tool pose, tool twist,
-    gains), via the ``wp.transform``/``wp.spatial_vector`` gather kernels in
-    ``controllers/impl/_common.py``.
+    indexed view of a simulation-sized array.
 
     Array shapes and devices are validated on each direct call to
     :meth:`step`, but not when a captured graph is replayed, since the
@@ -267,14 +240,13 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             operational-space mass matrix is only invertible for a robot
             whose Jacobian can span all 6 task dimensions.
         motion_stiffness: Task-space position/orientation-error gain Kp,
-            per-axis in the tool-local frame, applied as the tool reorients
-            so e.g. "stiff along the insertion axis" stays true rather than
-            meaning whatever world axis the insertion axis started aligned
-            with. Units depend on ``use_inertia_decoupling``:
-            [1/s²] when enabled, since the spring-damper term is then a
-            task-space acceleration premultiplied by Lambda; otherwise [N/m]
-            on the position axes and [N·m/rad] on the orientation axes. Pass
-            a scalar to apply the same gain to every axis of every robot, a
+            per-axis in the tool-local frame (e.g. "stiff along the
+            insertion axis" stays meaningful as the tool reorients). Units
+            depend on ``use_inertia_decoupling``: [1/s²] when enabled, since
+            the spring-damper term is then a task-space acceleration
+            premultiplied by Lambda; otherwise [N/m] on the position axes
+            and [N·m/rad] on the orientation axes. Pass a scalar to apply
+            the same gain to every axis of every robot, a
             ``wp.spatial_vector`` to apply the same 6 per-axis gains to every
             robot, an array of shape [controlled_robot_count] to set them
             individually (one ``wp.spatial_vector`` of 6 gains per robot), or
@@ -285,10 +257,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             on the orientation axes. Same format as ``motion_stiffness``.
         use_inertia_decoupling: Premultiply the task-space spring-damper term
             by Lambda, the operational-space mass matrix.
-        use_partial_inertia_decoupling: Compute Lambda as two independent 3x3
-            inversions (translation, rotation) instead of one 6x6 inversion,
-            ignoring the linear/angular coupling. Only meaningful when
-            ``use_inertia_decoupling=True``.
+        use_partial_inertia_decoupling: Compute Lambda ignoring the coupling
+            between translational and rotational inertia. Only meaningful
+            when ``use_inertia_decoupling=True``.
         use_gravity_compensation: Add ``inputs.gravity_force`` directly to
             the summed joint torque.
         use_wrench_feedforward: Command the desired wrench directly, as a
@@ -307,9 +278,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             feedforward term.
         motion_selection_axes_tool: Diagonal selection weight per task axis
             (0/1, or any scalar weight), tool-local: (linear x, y, z, angular
-            x, y, z). Rotated into a world-frame selection matrix every step
-            and applied to the motion term before it is mapped to joint
-            torques. Pass a ``wp.spatial_vector`` to apply the same weights
+            x, y, z). Pass a ``wp.spatial_vector`` to apply the same weights
             to every robot, or an array of shape [controlled_robot_count] to
             set them individually. Only meaningful when wrench control is
             enabled; defaults to every axis motion-controlled,
@@ -331,12 +300,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         use_null_space_control: Pursue a secondary joint-space posture task
             in the null space of the primary task, so it does not disturb
             task-space motion. Requires every robot to have more than 6
-            controlled DOFs (redundant relative to the 6D task). Which
-            pseudo-inverse variant builds the null-space projector follows
-            ``use_inertia_decoupling``: dynamically-consistent (reusing the
-            motion term's Lambda and mass-matrix inverse) when it is
-            ``True``, or the kinematics-only Moore-Penrose variant (no mass
-            matrix needed) when it is ``False``.
+            controlled DOFs (redundant relative to the 6D task). The
+            null-space projector is dynamically consistent (accounts for the
+            robot's own inertia) when ``use_inertia_decoupling=True``, or a
+            kinematics-only (Moore-Penrose) projector otherwise.
         null_space_stiffness: Joint-space posture position-error gain Kp.
             Units depend on ``use_inertia_decoupling``: [1/s²] when enabled,
             since the posture PD term is then premultiplied by the mass
@@ -377,15 +344,15 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         desired_twist_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
         """Desired tool twist (linear, angular) in world coordinates [m/s, rad/s], shape [controlled_robot_count]."""
         motion_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Task-space position/orientation-error gain Kp, tool-local (applied in the tool's current orientation each step), shape [controlled_robot_count]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m] / [N·m/rad]. ``None`` when gains are baked at construction."""
+        """Task-space position/orientation-error gain Kp, tool-local, shape [controlled_robot_count]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m] / [N·m/rad]. ``None`` when gains are baked at construction."""
         motion_damping: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Task-space velocity-error gain Kd, tool-local (applied in the tool's current orientation each step), shape [controlled_robot_count]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] / [N·m·s/rad]. ``None`` when gains are baked at construction."""
+        """Task-space velocity-error gain Kd, tool-local, shape [controlled_robot_count]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] / [N·m·s/rad]. ``None`` when gains are baked at construction."""
         desired_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Desired contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count] — the feedforward term, and/or the feedback setpoint. ``None`` unless wrench control is enabled."""
         measured_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count], e.g. from a 6-axis force/torque sensor. ``None`` unless ``use_wrench_feedback=True``."""
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Contact-wrench proportional feedback gain Kp, tool-local (applied in the tool's current orientation each step), shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
+        """Contact-wrench proportional feedback gain Kp, tool-local, shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
         joint_q: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Current joint positions [m or rad], compact, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_control=True``."""
         joint_qd: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
