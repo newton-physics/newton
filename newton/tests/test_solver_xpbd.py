@@ -2248,7 +2248,10 @@ def test_xpbd_aligned_box_stack_remains_stable(test, device):
         builder.add_shape_box(body=body, hx=half_extent, hy=half_extent, hz=half_extent)
 
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverXPBD(model, iterations=4, enable_restitution=True)
+    # This regression isolates positional manifold stability from the
+    # separately tested restitution velocity pass.
+    with test.assertWarnsRegex(DeprecationWarning, r"enable_restitution=False.*deprecated"):
+        solver = newton.solvers.SolverXPBD(model, iterations=4, enable_restitution=False)
     state_in = model.state()
     state_out = model.state()
     control = model.control()

@@ -804,13 +804,13 @@ solvers_bodies = {
 }
 
 solvers_global_particles = {
-    "xpbd": SolverXPBD,
+    "xpbd": lambda model: SolverXPBD(model, enable_restitution=True),
     "semi_implicit": SolverSemiImplicit,
     "vbd": SolverVBD,
 }
 
 solvers_global_bodies = {
-    "xpbd": SolverXPBD,
+    "xpbd": lambda model: SolverXPBD(model, enable_restitution=True),
     "semi_implicit": SolverSemiImplicit,
     "vbd": lambda model: SolverVBD(model, rigid_compliant_alm=True),
     "mujoco_cpu": solvers_bodies["mujoco_cpu"],

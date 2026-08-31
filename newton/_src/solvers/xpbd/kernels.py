@@ -2615,12 +2615,12 @@ def build_restitution_manifolds(
     * ``contact_n_K``: contact normal and effective inverse mass
       ``K = m_inv + (r x n)^T I^-1 (r x n)`` summed over both bodies.
     * ``contact_axn_lo_target``: ``r_lo x n`` (world) and the restitution
-      target ``-e * rel_vel_old`` for an impact, or the anchored velocity for
-      an already-separating penetrating contact.
+      target ``-e * rel_vel_old`` for an impact, the anchored separating
+      velocity for an already-separating contact, or zero for a fully
+      inelastic impact.
     * ``contact_axn_hi_sigma``: ``r_hi x n`` (world) and the normal sign
-      ``sigma`` for the lower-indexed body (-1 when it is the shape0 side).
-      A magnitude of 2 marks an already-separating contact, which only needs
-      its positional correction removed on the first outer iteration.
+      ``sigma`` for the lower-indexed body (-1 when it is the shape0 side),
+      with the resting threshold packed into its magnitude.
     * ``contact_pos_depth``: world mid-surface contact point and the
       pre-solve penetration depth (larger = deeper), consumed by the
       best-K selection.
@@ -2721,22 +2721,15 @@ def build_restitution_manifolds(
     if inv_mass == 0.0:
         return
     impact_threshold = 2.0 * gravity_magnitude * dt
-    # Use a wider dead band on the separating side. Small velocity reversals
-    # across coupled resting manifolds otherwise feed positional jitter back
-    # through the restitution pass and destabilize stacks.
-    separating_threshold = 8.0 * impact_threshold
-    if rel_vel_old >= -impact_threshold and rel_vel_old <= separating_threshold:
-        return
-
-    target = rel_vel_old
-    sigma_record = 2.0 * sigma
+    target = 0.0
     if rel_vel_old < -impact_threshold:
         target = -restitution * rel_vel_old
-        sigma_record = sigma
+    elif rel_vel_old > impact_threshold:
+        target = rel_vel_old
 
     contact_n_K[tid] = wp.vec4(n[0], n[1], n[2], inv_mass)
     contact_axn_lo_target[tid] = wp.vec4(axn_lo[0], axn_lo[1], axn_lo[2], target)
-    contact_axn_hi_sigma[tid] = wp.vec4(axn_hi[0], axn_hi[1], axn_hi[2], sigma_record)
+    contact_axn_hi_sigma[tid] = wp.vec4(axn_hi[0], axn_hi[1], axn_hi[2], sigma * (1.0 + impact_threshold))
     bx_lo = contact_surface_point(X_lo, p_lo, o_lo)
     bx_hi = contact_surface_point(X_hi, p_hi, o_hi)
     p_mid = 0.5 * (bx_lo + bx_hi)
@@ -3039,12 +3032,13 @@ def solve_manifold_restitution(
             target = d_lot[3]
             d_his = contact_axn_hi_sigma[c]
             axn_hi = wp.vec3(d_his[0], d_his[1], d_his[2])
-            separating_contact = wp.abs(d_his[3]) > 1.5
-            if separating_contact and outer_iteration > 0:
-                continue
-            sigma = wp.sign(d_his[3])
+            sigma_threshold = d_his[3]
+            sigma = wp.sign(sigma_threshold)
+            impact_threshold = wp.abs(sigma_threshold) - 1.0
 
             rel_vel_new = sigma * (wp.dot(n, v_lo) + wp.dot(axn_lo, w_lo) - wp.dot(n, v_hi) - wp.dot(axn_hi, w_hi))
+            if target == 0.0 and wp.abs(rel_vel_new) <= impact_threshold:
+                continue
             dv = (target - rel_vel_new) / k_eff
             new_acc = wp.max(lambda_acc[k] + dv, lambda_min[k])
             d_lambda = new_acc - lambda_acc[k]

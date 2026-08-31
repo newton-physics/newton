@@ -138,7 +138,7 @@ class Example:
             self.contacts = self.collision_pipeline.contacts()
 
         if self.solver_name == "xpbd":
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10, enable_restitution=False)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10, enable_restitution=True)
         elif self.solver_name == "vbd":
             self.solver = newton.solvers.SolverVBD(
                 self.model,
