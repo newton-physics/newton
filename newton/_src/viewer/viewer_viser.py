@@ -7,8 +7,9 @@ import collections
 import inspect
 import os
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
 import numpy as np
@@ -19,6 +20,27 @@ import newton
 from ..core.types import override
 from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
+
+if TYPE_CHECKING:
+    import viser
+
+
+@dataclass(frozen=True, slots=True)
+class ViewerViserExtensionContext:
+    """Public Viser handles for application-owned scene and GUI content.
+
+    The context deliberately omits the underlying Viser server so extensions
+    cannot take over its lifecycle or other viewer-owned facilities.
+    """
+
+    scene: viser.SceneApi
+    """Viser scene interface used to add and update scene nodes."""
+
+    gui: viser.GuiApi
+    """Viser GUI interface used to add and update controls."""
+
+    initial_camera: viser.InitialCameraConfig
+    """Viser initial-camera configuration for newly connected clients."""
 
 
 class ViewerViser(ViewerBase):
@@ -158,6 +180,11 @@ class ViewerViser(ViewerBase):
 
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
+        self._extension_context = ViewerViserExtensionContext(
+            scene=self._server.scene,
+            gui=self._server.gui,
+            initial_camera=self._server.initial_camera,
+        )
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
@@ -187,6 +214,19 @@ class ViewerViser(ViewerBase):
 
         if self._serializer is not None and verbose:
             print(f"Recording to: {record_to_viser}")
+
+    @property
+    def extension_context(self) -> ViewerViserExtensionContext:
+        """Return public Viser handles for installing an application extension.
+
+        Newton retains ownership of the Viser server and its lifecycle. The
+        caller owns any nodes, controls, callbacks, and background work it adds
+        through this context.
+
+        Returns:
+            Stable scene, GUI, and initial-camera handles for this viewer.
+        """
+        return self._extension_context
 
     @override
     def clear_model(self):

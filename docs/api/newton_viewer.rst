@@ -22,3 +22,4 @@ newton.viewer
    ViewerRerun
    ViewerUSD
    ViewerViser
+   ViewerViserExtensionContext
