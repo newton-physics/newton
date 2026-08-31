@@ -151,6 +151,7 @@ def assert_states_equal(testcase: unittest.TestCase, state_0: StateKamino, state
     np.testing.assert_array_equal(state_0.lambda_kin_j.numpy(), state_1.lambda_kin_j.numpy())
     np.testing.assert_array_equal(state_0.lambda_dyn_j.numpy(), state_1.lambda_dyn_j.numpy())
     np.testing.assert_array_equal(state_0.lambda_f_j.numpy(), state_1.lambda_f_j.numpy())
+    np.testing.assert_array_equal(state_0.lambda_tau_j.numpy(), state_1.lambda_tau_j.numpy())
 
 
 def assert_states_close(testcase: unittest.TestCase, state_0: StateKamino, state_1: StateKamino):
@@ -165,6 +166,7 @@ def assert_states_close(testcase: unittest.TestCase, state_0: StateKamino, state
     np.testing.assert_allclose(state_0.lambda_kin_j.numpy(), state_1.lambda_kin_j.numpy(), rtol=rtol, atol=atol)
     np.testing.assert_allclose(state_0.lambda_dyn_j.numpy(), state_1.lambda_dyn_j.numpy(), rtol=rtol, atol=atol)
     np.testing.assert_allclose(state_0.lambda_f_j.numpy(), state_1.lambda_f_j.numpy(), rtol=rtol, atol=atol)
+    np.testing.assert_allclose(state_0.lambda_tau_j.numpy(), state_1.lambda_tau_j.numpy(), rtol=rtol, atol=atol)
 
 
 def assert_states_close_masked(
@@ -189,7 +191,7 @@ def assert_states_close_masked(
         world_mask: Per-world boolean mask.
         positions: Whether to compare position attributes, i.e. q_i, q_j, q_j_p (skipped if False).
         velocities: Whether to compare velocity attributes, i.e. u_i, dq_j (skipped if False).
-        forces: Whether to compare force attributes, i.e. w_i, w_i_e, lambda_kin_j, lambda_dyn_j, lambda_f_j (skipped if False).
+        forces: Whether to compare force attributes, i.e. w_i, w_i_e, lambda_kin_j, lambda_dyn_j, lambda_f_j, lambda_tau_j (skipped if False).
         match_q_j_p_with_q_j: Whether to compare q_j_p against q_j in the reference (instead of q_j_p).
     """
     bodies_offset = model.info.bodies_offset.numpy()
@@ -202,6 +204,7 @@ def assert_states_close_masked(
     friction_cts_offset = np.array(
         [*model.info.joint_friction_cts_offset.numpy(), model.size.sum_of_num_friction_joint_cts]
     )
+    effort_cts_offset = np.array([*model.info.joint_effort_cts_offset.numpy(), model.size.sum_of_num_effort_joint_cts])
     world_mask_np = world_mask.numpy()
 
     # List state attributes to compare
@@ -220,7 +223,12 @@ def assert_states_close_masked(
     if forces:
         body_attributes.extend(["w_i", "w_i_e"])
         cts_attributes.extend(
-            [("lambda_kin_j", kin_cts_offset), ("lambda_dyn_j", dyn_cts_offset), ("lambda_f_j", friction_cts_offset)]
+            [
+                ("lambda_kin_j", kin_cts_offset),
+                ("lambda_dyn_j", dyn_cts_offset),
+                ("lambda_f_j", friction_cts_offset),
+                ("lambda_tau_j", effort_cts_offset),
+            ]
         )
 
     for wid in range(model.size.num_worlds):
@@ -1251,7 +1259,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[single]: [init]: single_state_p.dq_j:\n{single_state_p.dq_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.lambda_kin_j:\n{single_state_p.lambda_kin_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.lambda_dyn_j:\n{single_state_p.lambda_dyn_j}\n\n")
-
+        msg.info(f"[single]: [init]: single_state_p.lambda_f_j:\n{single_state_p.lambda_f_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_tau_j:\n{single_state_p.lambda_tau_j}\n\n")
         # Create simulator and check if the initial state is consistent with the contents of the builder
         single_solver = SolverKaminoImpl(model=single_model)
         self.assertIsInstance(single_solver, SolverKaminoImpl)
@@ -1304,6 +1313,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_dq_j = single_state_n.dq_j.numpy().copy()
         final_lambda_kin_j = single_state_n.lambda_kin_j.numpy().copy()
         final_lambda_dyn_j = single_state_n.lambda_dyn_j.numpy().copy()
+        final_lambda_f_j = single_state_n.lambda_f_j.numpy().copy()
+        final_lambda_tau_j = single_state_n.lambda_tau_j.numpy().copy()
         msg.info(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
         msg.info(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
         msg.info(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
@@ -1314,6 +1325,10 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
         msg.info(
             f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
+        )
+        msg.info(f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n")
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_tau_j (shape={final_lambda_tau_j.shape}):\n{final_lambda_tau_j}\n"
         )
 
         # Tile the collected states for comparison against the multi-instance simulator
@@ -1442,7 +1457,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         msg.info(f"[single]: [init]: single_state_p.dq_j:\n{single_state_p.dq_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.lambda_kin_j:\n{single_state_p.lambda_kin_j}\n\n")
         msg.info(f"[single]: [init]: single_state_p.lambda_dyn_j:\n{single_state_p.lambda_dyn_j}\n\n")
-
+        msg.info(f"[single]: [init]: single_state_p.lambda_f_j:\n{single_state_p.lambda_f_j}\n\n")
+        msg.info(f"[single]: [init]: single_state_p.lambda_tau_j:\n{single_state_p.lambda_tau_j}\n\n")
         # Create a contacts container for the single-instance system
         _, single_world_max_contacts = single_builder.compute_required_contact_capacity(max_contacts_per_pair=16)
         single_contacts = ContactsKamino(capacity=single_world_max_contacts, device=single_model.device)
@@ -1492,6 +1508,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_dq_j = single_state_n.dq_j.numpy().copy()
         final_lambda_kin_j = single_state_n.lambda_kin_j.numpy().copy()
         final_lambda_dyn_j = single_state_n.lambda_dyn_j.numpy().copy()
+        final_lambda_f_j = single_state_n.lambda_f_j.numpy().copy()
+        final_lambda_tau_j = single_state_n.lambda_tau_j.numpy().copy()
         msg.info(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
         msg.info(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
         msg.info(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
@@ -1502,6 +1520,10 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
         msg.info(
             f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
+        )
+        msg.info(f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n")
+        msg.info(
+            f"[samples]: [single]: [final]: lambda_tau_j (shape={final_lambda_tau_j.shape}):\n{final_lambda_tau_j}\n"
         )
 
         # Tile the collected states for comparison against the multi-instance simulator

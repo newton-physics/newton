@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 from unittest import mock
 
@@ -23,6 +24,9 @@ def _build_revolute(
     limited: bool = False,
     friction: float | None = None,
     actuator_mode: newton.JointTargetMode = newton.JointTargetMode.NONE,
+    effort_limit: float = math.inf,
+    target_ke: float = 1.0,
+    target_kd: float = 1.0,
     body_com: wp.vec3f | None = None,
     shape_materials: tuple[tuple[float, float], ...] | None = None,
     has_shape_collision: bool = True,
@@ -81,8 +85,9 @@ def _build_revolute(
         armature=1.0 if dynamic else 0.0,
         friction=friction,
         damping=0.0,
-        target_ke=0.0,
-        target_kd=0.0,
+        effort_limit=effort_limit,
+        target_ke=target_ke,
+        target_kd=target_kd,
         actuator_mode=actuator_mode,
     )
     builder.add_articulation([jid])
@@ -91,7 +96,9 @@ def _build_revolute(
     return builder.finalize()
 
 
-def _build_gimbal() -> tuple[newton.Model, int]:
+def _build_gimbal(
+    angular_axes: list[newton.ModelBuilder.JointDofConfig] | None = None,
+) -> tuple[newton.Model, int]:
     """Build a minimal articulated three-axis D6 model for notify tests."""
     builder = newton.ModelBuilder()
     parent = builder.add_link(mass=1.0, inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
@@ -100,9 +107,8 @@ def _build_gimbal() -> tuple[newton.Model, int]:
     gimbal = builder.add_joint_d6(
         parent,
         child,
-        angular_axes=[
-            newton.ModelBuilder.JointDofConfig(axis=axis) for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
-        ],
+        angular_axes=angular_axes
+        or [newton.ModelBuilder.JointDofConfig(axis=axis) for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)],
     )
     builder.add_articulation([root, gimbal])
     return builder.finalize(device="cpu"), gimbal
@@ -549,6 +555,108 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
+    def test_effort_limit_value_edit_is_allowed(self):
+        """Allow finite effort-limit edits that preserve implicit-PD row topology."""
+        model = _build_revolute(
+            actuator_mode=newton.JointTargetMode.POSITION,
+            effort_limit=1.0,
+            target_ke=100.0,
+        )
+        solver = SolverKamino(model)
+        model.joint_effort_limit.assign([0.25])
+
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_effort_limit_finiteness_change_raises(self):
+        """Reject effort-limit edits that change implicit-PD row topology."""
+        for initial_limit, updated_limit in ((1.0, math.inf), (math.inf, 1.0)):
+            with self.subTest(initial_limit=initial_limit, updated_limit=updated_limit):
+                model = _build_revolute(
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                    effort_limit=initial_limit,
+                    target_ke=100.0,
+                )
+                solver = SolverKamino(model)
+                model.joint_effort_limit.assign([updated_limit])
+
+                with self.assertRaisesRegex(RuntimeError, "joint dynamics allocation"):
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_zero_gains_remove_effort_row_raises(self):
+        """Reject gain edits that remove an implicit-PD effort row."""
+        for initial_gain, updated_gain in ((100.0, 0.0),):
+            with self.subTest(initial_gain=initial_gain, updated_gain=updated_gain):
+                model = _build_revolute(
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                    effort_limit=1.0,
+                    target_ke=initial_gain,
+                )
+                solver = SolverKamino(model)
+                model.joint_target_ke.assign([updated_gain])
+                model.joint_target_kd.assign([0.0])
+
+                with self.assertRaisesRegex(RuntimeError, "effort-limit allocation"):
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_effort_row_removal_via_actuator_mode_raises(self):
+        """Reject actuator-mode edits that add or remove an effort row."""
+        modes = (
+            (newton.JointTargetMode.POSITION, newton.JointTargetMode.EFFORT),
+            (newton.JointTargetMode.EFFORT, newton.JointTargetMode.POSITION),
+        )
+        for initial_mode, updated_mode in modes:
+            with self.subTest(initial_mode=initial_mode, updated_mode=updated_mode):
+                model = _build_revolute(
+                    actuator_mode=initial_mode,
+                    effort_limit=1.0,
+                    target_ke=100.0,
+                )
+                solver = SolverKamino(model)
+                model.joint_target_mode.assign([updated_mode])
+
+                with self.assertRaisesRegex(RuntimeError, "effort-limit allocation"):
+                    solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
+
+    def test_moving_dynamic_row_between_dofs_raises(self):
+        """Reject moving a dynamic row between axes without changing its count."""
+        model, gimbal = _build_gimbal(
+            [
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, armature=1.0),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
+            ]
+        )
+        solver = SolverKamino(model)
+        dof_start = model.joint_qd_start.numpy()[gimbal]
+        armature = model.joint_armature.numpy()
+        armature[dof_start : dof_start + 3] = [0.0, 1.0, 0.0]
+        model.joint_armature.assign(armature)
+
+        with self.assertRaisesRegex(RuntimeError, "joint dynamics allocation"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_unbounded_implicit_pd_coefficient_edit_is_allowed(self):
+        """Allow an unbounded implicit-PD gain edit that preserves its dynamic row."""
+        model, gimbal = _build_gimbal(
+            [
+                newton.ModelBuilder.JointDofConfig(
+                    axis=newton.Axis.X,
+                    effort_limit=math.inf,
+                    target_ke=10.0,
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                ),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
+            ]
+        )
+        solver = SolverKamino(model)
+        dof_start = model.joint_qd_start.numpy()[gimbal]
+        target_ke = model.joint_target_ke.numpy()
+        target_ke[dof_start] = 20.0
+        model.joint_target_ke.assign(target_ke)
+
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
     def test_joint_friction_value_edit_is_allowed(self):
         """Allow friction edits when bounded rows were allocated at construction."""
         model = _build_revolute(friction=1.0)
@@ -567,7 +675,25 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver = SolverKamino(model, SolverKamino.Config(dynamics_solver="padmm"))
         model.joint_friction.assign([1.0])
 
-        with self.assertRaisesRegex(RuntimeError, "friction row topology"):
+        with self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_enabling_friction_on_unallocated_axis_raises(self):
+        """Reject friction enabled on an axis without a preallocated row."""
+        model, gimbal = _build_gimbal(
+            [
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, friction=1.0),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
+            ]
+        )
+        solver = SolverKamino(model, SolverKamino.Config(dynamics_solver="padmm"))
+        dof_start = model.joint_qd_start.numpy()[gimbal]
+        friction = model.joint_friction.numpy()
+        friction[dof_start + 1] = 1.0
+        model.joint_friction.assign(friction)
+
+        with self.assertRaisesRegex(RuntimeError, "joint friction allocation"):
             solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_limit_finiteness_change_raises(self):
@@ -659,6 +785,43 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
                     expected = solver._kamino.JointActuationType.from_newton(changed_mode)
                     self.assertEqual(solver._model_kamino.joints.act_type.numpy()[0], expected)
+
+    def test_per_dof_active_mode_changes_refresh_kamino_modes(self):
+        """Refresh each DoF actuation mode while retaining an active joint partition."""
+        model, gimbal = _build_gimbal()
+        dof_start = model.joint_qd_start.numpy()[gimbal]
+        target_modes = model.joint_target_mode.numpy()
+        target_modes[dof_start : dof_start + 3] = [
+            newton.JointTargetMode.POSITION,
+            newton.JointTargetMode.VELOCITY,
+            newton.JointTargetMode.EFFORT,
+        ]
+        model.joint_target_mode.assign(target_modes)
+        gains = np.ones(3, dtype=np.float32)
+        model.joint_target_ke.assign(gains)
+        model.joint_target_kd.assign(gains)
+        solver = SolverKamino(model)
+
+        target_modes[dof_start : dof_start + 3] = [
+            newton.JointTargetMode.VELOCITY,
+            newton.JointTargetMode.POSITION,
+            newton.JointTargetMode.EFFORT,
+        ]
+        model.joint_target_mode.assign(target_modes)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+        np.testing.assert_array_equal(
+            solver._model_kamino.joints.dof_act_types.numpy()[dof_start : dof_start + 3],
+            [
+                solver._kamino.JointActuationType.VELOCITY,
+                solver._kamino.JointActuationType.POSITION,
+                solver._kamino.JointActuationType.FORCE,
+            ],
+        )
+        self.assertEqual(
+            solver._model_kamino.joints.act_type.numpy()[gimbal],
+            solver._kamino.JointActuationType.VELOCITY,
+        )
 
     def test_fk_joint_frame_changes_propagate(self):
         """Joint and CoM notifications propagate to FK-owned frames."""

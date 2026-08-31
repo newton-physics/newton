@@ -79,6 +79,10 @@ class Example:
                 2.0 if mode != newton.JointTargetMode.NONE else 0.0 for mode in robot_builder.joint_target_mode
             ]
 
+        effort_limit_override = getattr(args, "joint_effort_limit", None) if args else None
+        if effort_limit_override is not None:
+            robot_builder.joint_effort_limit = [effort_limit_override] * robot_builder.joint_dof_count
+
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -342,6 +346,12 @@ class Example:
             action=argparse.BooleanOptionalAction,
             default=False,
             help="Animation the model based on imported motion.",
+        )
+        parser.add_argument(
+            "--joint-effort-limit",
+            type=float,
+            default=None,
+            help="Override effort limit for all joint DOFs (default: use USD values).",
         )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)

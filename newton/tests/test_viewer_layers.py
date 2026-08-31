@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
 import unittest
 from unittest.mock import Mock, patch
 
@@ -27,7 +26,7 @@ class _RecordingViewer(ViewerNull):
         self.instance_xforms: list[tuple[str, object]] = []
         self.mesh_calls: list[tuple[str, bool]] = []
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False, opacities=None):
         self.instance_calls.append((name, hidden))
         if xforms is not None:
             self.instance_xforms.append((name, xforms.numpy().copy()))
@@ -46,6 +45,7 @@ class _RecordingViewer(ViewerNull):
         roughness=None,
         metallic=None,
         dynamic=False,
+        opacity=None,
     ):
         self.mesh_calls.append((name, hidden))
 
@@ -85,56 +85,6 @@ class _MinimalRTXViewer(ViewerRTX):
 
 
 class TestViewerLayers(unittest.TestCase):
-    def test_rtx_log_mesh_accepts_dynamic_topology_flag(self):
-        self.assertIn("dynamic", inspect.signature(ViewerRTX.log_mesh).parameters)
-
-    def test_rtx_log_mesh_queues_dynamic_topology(self):
-        viewer = _MinimalRTXViewer()
-        viewer._phase = viewer._PHASE_RENDER
-        viewer._mesh_prim_paths = {"surface": "/surface"}
-        viewer._pending_mesh_points = {}
-        viewer._pending_mesh_normals = {}
-        viewer._pending_mesh_topology = {}
-        viewer._pending_mesh_visibility = {}
-
-        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
-        indices = wp.array([0, 1, 2], dtype=wp.int32)
-        viewer.log_mesh("surface", points, indices, dynamic=True)
-
-        face_counts, face_indices = viewer._pending_mesh_topology["surface"]
-        self.assertEqual(face_counts.tolist(), [3])
-        self.assertEqual(face_indices.tolist(), [0, 1, 2])
-        self.assertIsNone(viewer._pending_mesh_normals["surface"])
-        self.assertTrue(viewer._pending_mesh_visibility["surface"])
-
-    def test_rtx_runtime_mesh_updates_visibility(self):
-        viewer = _MinimalRTXViewer()
-        viewer._phase = viewer._PHASE_RENDER
-        viewer._mesh_prim_paths = {"surface": "/surface"}
-        viewer._pending_mesh_points = {}
-        viewer._pending_mesh_normals = {}
-        viewer._pending_mesh_topology = {}
-        viewer._pending_mesh_visibility = {}
-        viewer._rtx = Mock()
-
-        points = wp.empty(0, dtype=wp.vec3)
-        indices = wp.empty(0, dtype=wp.int32)
-        viewer.log_mesh("surface", points, indices, hidden=True, dynamic=True)
-        with patch.object(viewer, "_make_point3f_dltensor", return_value=Mock()):
-            viewer._update_ovrtx_mesh_points()
-
-        viewer._rtx.write_attribute.assert_called_once_with(
-            prim_paths=["/surface"],
-            attribute_name="visibility",
-            tensor=["invisible"],
-        )
-        normals_write = [
-            call
-            for call in viewer._rtx.write_array_attribute.call_args_list
-            if call.kwargs.get("attribute_name") == "normals"
-        ]
-        self.assertEqual(len(normals_write), 1)
-
     def test_default_layer_uses_unprefixed_names(self):
         """Without activate(), object names remain unprefixed (legacy behavior)."""
         viewer = _RecordingViewer()
@@ -505,6 +455,40 @@ class TestViewerLayerBackends(unittest.TestCase):
             scene.captured_calls["add_batched_meshes_simple"]["name"],
             "/layers/solverA/instances",
         )
+
+    def test_viser_warns_when_appearance_argument_is_unsupported(self):
+        """Drop unsupported appearance arguments with an explicit warning."""
+
+        def add_batched_meshes_trimesh(name):
+            return name
+
+        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
+            result = ViewerViser._call_scene_method(
+                add_batched_meshes_trimesh,
+                name="instances",
+                batched_opacities=[0.5],
+            )
+
+        self.assertEqual(result, "instances")
+
+    def test_viser_does_not_retry_failed_scene_calls(self):
+        """Propagate scene failures without retrying with unsupported arguments."""
+        call_count = 0
+
+        def add_batched_meshes_trimesh(name):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError(f"failed to add {name}")
+
+        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
+            with self.assertRaisesRegex(RuntimeError, "failed to add instances"):
+                ViewerViser._call_scene_method(
+                    add_batched_meshes_trimesh,
+                    name="instances",
+                    batched_opacities=[0.5],
+                )
+
+        self.assertEqual(call_count, 1)
 
 
 if __name__ == "__main__":

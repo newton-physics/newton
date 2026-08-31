@@ -40,6 +40,7 @@ from ..solvers.mujoco.utils import (
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
 from .import_utils import (
+    clamp_imported_opacity,
     collapse_massless_fixed_root_joints,
     is_xml_content,
     parse_custom_attributes,
@@ -1076,6 +1077,10 @@ def parse_mjcf(
                         float(rgba_values[2]),
                     )
                     shape_kwargs["color"] = material_color
+                if len(rgba_values) >= 4:
+                    opacity = clamp_imported_opacity(rgba_values[3], "MJCF geom rgba")
+                    if opacity is not None:
+                        shape_kwargs["opacity"] = opacity
 
             texture = None
             texture_name = material_info.get("texture")

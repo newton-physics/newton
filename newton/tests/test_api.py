@@ -192,13 +192,39 @@ class TestApi(unittest.TestCase):
 
         body_sig = inspect.signature(newton.ModelBuilder.add_body)
         link_sig = inspect.signature(newton.ModelBuilder.add_link)
-        shape_sig = inspect.signature(newton.ModelBuilder.add_shape_box)
         solver_sig = inspect.signature(newton.solvers.SolverSemiImplicit.__init__)
 
         self.assertEqual(body_sig.parameters["xform"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertEqual(link_sig.parameters["xform"].kind, inspect.Parameter.KEYWORD_ONLY)
-        self.assertEqual(shape_sig.parameters["xform"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertEqual(solver_sig.parameters["angular_damping"].kind, inspect.Parameter.KEYWORD_ONLY)
+
+    def test_shape_opacity_follows_color(self):
+        """Keep shape display arguments adjacent and keyword-only."""
+        import newton  # noqa: PLC0415
+
+        method_names = (
+            "add_shape",
+            "add_shape_plane",
+            "add_ground_plane",
+            "add_shape_sphere",
+            "add_shape_ellipsoid",
+            "add_shape_box",
+            "add_shape_capsule",
+            "add_shape_cylinder",
+            "add_shape_cone",
+            "add_shape_mesh",
+            "add_shape_convex_hull",
+            "add_shape_heightfield",
+            "add_shape_gaussian",
+        )
+
+        for method_name in method_names:
+            with self.subTest(method=method_name):
+                parameters = list(inspect.signature(getattr(newton.ModelBuilder, method_name)).parameters.values())
+                color_index = next(i for i, parameter in enumerate(parameters) if parameter.name == "color")
+                opacity = parameters[color_index + 1]
+                self.assertEqual(opacity.name, "opacity")
+                self.assertEqual(opacity.kind, inspect.Parameter.KEYWORD_ONLY)
 
 
 if __name__ == "__main__":

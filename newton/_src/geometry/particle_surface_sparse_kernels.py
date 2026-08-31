@@ -755,12 +755,12 @@ def dilate_topology_axis_hash(
                 neighbor = coordinate
                 neighbor[axis] += offset
                 source_address = _candidate_voxel_bit_address_hash(keys, neighbor)
-                source_word = source_address[0]
+                source_address_word = source_address[0]
                 source_bit = source_address[1]
                 if (
-                    source_word >= 0
-                    and source_word < source.shape[0]
-                    and (source[source_word] & wp.uint32(1 << source_bit)) != wp.uint32(0)
+                    source_address_word >= 0
+                    and source_address_word < source.shape[0]
+                    and (source[source_address_word] & wp.uint32(1 << source_bit)) != wp.uint32(0)
                 ):
                     occupied = wp.int32(1)
             if occupied != 0:

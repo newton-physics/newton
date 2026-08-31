@@ -5,6 +5,7 @@ import builtins
 import contextlib
 import functools
 import hashlib
+import inspect
 import io
 import logging
 import math
@@ -32,6 +33,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
+from newton._src.usd import utils as usd_utils
 from newton._src.utils.color import color_linear_to_srgb
 from newton._src.utils.import_usd import _is_uniform_scale
 from newton.math import quat_between_axes
@@ -7567,7 +7569,7 @@ def Xform "Articulation" (
         return stage, shape_path
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_uvless_textured_visual_mesh_uses_projected_uvs(self):
+    def test_uvless_textured_visual_mesh_disables_uv_sampling(self):
         """Verify a full visual mesh retains its texture when UVs are unavailable."""
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
         builder = newton.ModelBuilder()
@@ -7579,10 +7581,10 @@ def Xform "Articulation" (
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture will use projected UVs", "\n".join(log_ctx.output))
+        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_uvless_textured_visual_mesh_subset_uses_projected_uvs(self):
+    def test_uvless_textured_visual_mesh_subset_disables_uv_sampling(self):
         """Verify a material subset retains its texture when UVs are unavailable."""
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=True)
         builder = newton.ModelBuilder()
@@ -7594,7 +7596,7 @@ def Xform "Articulation" (
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture will use projected UVs", "\n".join(log_ctx.output))
+        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
 
     def _build_custom_shader_mesh_stage(self, *, with_diffuse: bool):
         """Build a stage whose mesh binds a non-UsdPreviewSurface shader with map inputs.
@@ -7778,6 +7780,63 @@ def Xform "Articulation" (
         result = builder.add_usd(stage)
         src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
         self.assertIsNone(src.texture)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_transform2d_mapping_is_preserved(self):
+        """Preserve standard UsdTransform2d order and its upstream primvar reader."""
+        from pxr import Sdf, UsdGeom, UsdShade
+
+        stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
+        mesh = UsdGeom.Mesh(stage.GetPrimAtPath(shape_path))
+        st_1 = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "st_1", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+        )
+        authored_uvs = [(0.1, 0.2), (1.1, 0.2), (1.1, 1.2), (0.1, 1.2)]
+        st_1.Set(authored_uvs)
+
+        reader = UsdShade.Shader.Define(stage, "/Materials/Textured/TexcoordReader")
+        reader.CreateIdAttr("UsdPrimvarReader_float2")
+        reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st_1")
+        reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+        transform = UsdShade.Shader.Define(stage, "/Materials/Textured/Transform2d")
+        transform.CreateIdAttr("UsdTransform2d")
+        transform.CreateInput("in", Sdf.ValueTypeNames.Float2).ConnectToSource(reader.ConnectableAPI(), "result")
+        transform.CreateInput("scale", Sdf.ValueTypeNames.Float2).Set((0.5, 2.0))
+        transform.CreateInput("rotation", Sdf.ValueTypeNames.Float).Set(30.0)
+        transform.CreateInput("translation", Sdf.ValueTypeNames.Float2).Set((0.25, -0.75))
+        transform.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+        texture = UsdShade.Shader(stage.GetPrimAtPath("/Materials/Textured/Albedo"))
+        texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(transform.ConnectableAPI(), "result")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"][shape_path]]
+        np.testing.assert_allclose(src.uvs, authored_uvs, atol=1.0e-7)
+        np.testing.assert_allclose(
+            src.texture_transform,
+            (
+                (0.5 * math.cos(math.pi / 6), -2.0 * math.sin(math.pi / 6), 0.25),
+                (0.5 * math.sin(math.pi / 6), 2.0 * math.cos(math.pi / 6), -0.75),
+            ),
+            atol=1.0e-7,
+        )
+
+    def test_omnipbr_mapping_inputs_are_not_parsed(self):
+        """Keep OmniPBR texture-mapping adapters out of the USD importer."""
+        self.assertFalse(hasattr(usd_utils, "_is_omnipbr_shader"))
+        self.assertFalse(hasattr(usd_utils, "_extract_omnipbr_texture_mapping"))
+        importer_source = inspect.getsource(usd_utils)
+        for input_name in (
+            "texture_scale",
+            "texture_translate",
+            "texture_rotate",
+            "project_uvw",
+            "world_or_object",
+        ):
+            with self.subTest(input_name=input_name):
+                self.assertNotIn(input_name, importer_source)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_loads_alternate_texcoord_set(self):
@@ -8033,7 +8092,7 @@ def Xform "Articulation" (
 
         joined = "\n".join(log_ctx.output)
         self.assertIn("UV primvar length", joined)
-        self.assertIn("texture will use projected UVs", joined)
+        self.assertIn("texture sampling is disabled", joined)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_used_by_mass_properties(self):
@@ -12390,7 +12449,7 @@ def Xform "Body" (
         self.assertFalse(flags_disabled_forced & ShapeFlags.VISIBLE)
 
     @staticmethod
-    def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
+    def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False, opacity=None):
         """Create a stage with a rigid body containing a collision mesh with PBR material."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
@@ -12426,6 +12485,8 @@ def Xform "Body" (
         shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set(color)
         shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
         shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+        if opacity is not None:
+            shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(opacity)
         material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
         UsdShade.MaterialBindingAPI.Apply(collision_mesh_prim).Bind(material)
 
@@ -12932,6 +12993,119 @@ def Xform "Body" (
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visible_collision_mesh_inherits_visual_material_opacity(self):
+        """Preserve resolved opacity on visible collider meshes."""
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75, opacity=0.42
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        self.assertAlmostEqual(mesh.opacity, 0.42, places=6)
+        self.assertAlmostEqual(builder.shape_opacity[collision_shape], 0.42, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_opacity_primvar_loads_as_mesh_opacity(self):
+        """Load a mesh displayOpacity primvar as opacity."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
+        mesh.CreatePointsAttr().Set(
+            [
+                (-0.5, 0.0, 0.0),
+                (0.5, 0.0, 0.0),
+                (0.0, 0.5, 0.0),
+                (0.0, 0.0, 0.5),
+            ]
+        )
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3, 3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+        ).Set([0.33])
+
+        loaded_mesh = usd.get_mesh(mesh.GetPrim())
+
+        self.assertAlmostEqual(loaded_mesh.opacity, 0.33, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_color_array_does_not_create_opacity(self):
+        """Keep RGB displayColor arrays from becoming opacity values."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
+        ).Set([(0.1, 0.2, 0.3), (0.4, 0.5, 0.6), (0.7, 0.8, 0.9)])
+
+        loaded_mesh = usd.get_mesh(mesh.GetPrim())
+
+        self.assertIsNone(loaded_mesh.opacity)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_varying_display_opacity_uses_first_value_and_warns(self):
+        """Warn and use the first varying displayOpacity value."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+        ).Set([0.2, 0.6, 0.8])
+
+        with self.assertWarnsRegex(UserWarning, "using the first value"):
+            loaded_mesh = usd.get_mesh(mesh.GetPrim())
+
+        self.assertAlmostEqual(loaded_mesh.opacity, 0.2, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_tet_mesh_display_appearance_imports_to_surface_triangles(self):
+        """Import TetMesh display color and opacity onto generated surface triangles."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        tet_mesh = UsdGeom.TetMesh.Define(stage, "/SoftTet")
+        tet_mesh.CreatePointsAttr().Set(
+            [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ]
+        )
+        tet_mesh.CreateTetVertexIndicesAttr().Set([(0, 1, 2, 3)])
+        UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
+            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+        ).Set([0.44])
+        UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
+            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
+        ).Set([(0.2, 0.4, 0.6)])
+
+        loaded_mesh = usd.get_tetmesh(tet_mesh.GetPrim())
+        expected_color = usd_utils.resolve_material_properties_for_prim(tet_mesh.GetPrim())["color"]
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertFalse(hasattr(loaded_mesh, "opacity"))
+        self.assertNotIn("displayOpacity", loaded_mesh.custom_attributes)
+        self.assertNotIn("displayColor", loaded_mesh.custom_attributes)
+        self.assertEqual(builder.tri_count, 4)
+        np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (4, 1)), atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(builder.tri_opacity, np.full(4, 0.44), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_primitive_collider_drawability_follows_purpose_not_material(self):
@@ -14149,6 +14323,24 @@ def Mesh "cube"
 
 
 class TestTetMesh(unittest.TestCase):
+    def test_tetmesh_keyword_only_deprecation_shim(self):
+        """Keep legacy TetMesh positional arguments working with a deprecation."""
+        signature = inspect.signature(newton.TetMesh)
+        parameters = list(signature.parameters.values())
+        self.assertEqual([parameter.name for parameter in parameters[:2]], ["vertices", "tet_indices"])
+        self.assertTrue(all(parameter.kind == inspect.Parameter.KEYWORD_ONLY for parameter in parameters[2:]))
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        with self.assertWarnsRegex(
+            DeprecationWarning,
+            "Passing 'k_mu', 'k_lambda', 'k_damp', 'density', 'custom_attributes' positionally",
+        ):
+            tet_mesh = newton.TetMesh(vertices, tet_indices, 1.0, 2.0, 3.0, 4.0, None)
+
+        assert_np_equal(tet_mesh.k_mu, np.array([1.0], dtype=np.float32))
+        self.assertEqual(tet_mesh.density, 4.0)
+
     def test_tetmesh_basic(self):
         """Test TetMesh construction from raw arrays."""
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
@@ -14640,6 +14832,7 @@ def Xform "World"
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
         tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
         per_tet_region = np.array([10, 20], dtype=np.int32)
+        third_party_opacity = np.array([0.2, 0.8], dtype=np.float32)
         per_vertex_temp = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float32)
         tm = newton.TetMesh(
             vertices,
@@ -14647,7 +14840,11 @@ def Xform "World"
             k_mu=1000.0,
             k_lambda=2000.0,
             density=40.0,
-            custom_attributes={"regionId": per_tet_region, "temperature": per_vertex_temp},
+            custom_attributes={
+                "regionId": per_tet_region,
+                "newton_opacity": third_party_opacity,
+                "temperature": per_vertex_temp,
+            },
         )
 
         with tempfile.NamedTemporaryFile(suffix=".vtk", delete=False) as f:
@@ -14670,10 +14867,13 @@ def Xform "World"
 
             # Custom attributes round-trip (check values, not just keys)
             self.assertIn("regionId", tm2.custom_attributes)
+            self.assertIn("newton_opacity", tm2.custom_attributes)
             self.assertIn("temperature", tm2.custom_attributes)
             region_arr, _region_freq = tm2.custom_attributes["regionId"]
+            opacity_arr, _opacity_freq = tm2.custom_attributes["newton_opacity"]
             temp_arr, _temp_freq = tm2.custom_attributes["temperature"]
             assert_np_equal(region_arr.flatten(), per_tet_region)
+            assert_np_equal(opacity_arr.flatten(), third_party_opacity)
             assert_np_equal(temp_arr.flatten(), per_vertex_temp)
         finally:
             os.unlink(path)
@@ -14683,7 +14883,16 @@ def Xform "World"
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
 
-        for reserved in ("vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"):
+        for reserved in (
+            "vertices",
+            "tet_indices",
+            "k_mu",
+            "k_lambda",
+            "k_damp",
+            "density",
+            "__custom_names__",
+            "__custom_freqs__",
+        ):
             with self.assertRaisesRegex(ValueError, "reserved", msg=f"Should reject reserved name '{reserved}'"):
                 newton.TetMesh(vertices, tet_indices, custom_attributes={reserved: np.array([1.0])})
 

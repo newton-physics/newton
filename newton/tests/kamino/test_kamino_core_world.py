@@ -105,7 +105,10 @@ class TestJointDescriptor(unittest.TestCase):
             msg.reset_log_level()
 
     def test_00_default_construction(self):
-        joint = JointDescriptor(name="test_joint")
+        joint = JointDescriptor(
+            name="test_joint",
+            dof_act_types=[JointActuationType.PASSIVE] * JointDoFType.FREE.num_dofs,
+        )
         self.assertIsInstance(joint, JointDescriptor)
         msg.info(f"joint: {joint}")
         self.assertEqual(joint.name, "test_joint")
@@ -146,13 +149,14 @@ class TestJointDescriptor(unittest.TestCase):
         self.assertEqual(joint.is_passive, True)
         self.assertEqual(joint.is_binary, False)
         self.assertEqual(joint.is_unary, True)
-        self.assertEqual(joint.is_dynamic, False)
+        self.assertEqual(joint.dynamic_cts_axes(), [])
 
-    def test_01_actuated_revolute_joint_with_effort_dynamics(self):
+    def test_01_actuated_revolute_joint_with_armature_and_damping(self):
+        """Verify armature and damping allocate a dynamic revolute row."""
         joint = JointDescriptor(
             name="test_joint_revolute_dynamic",
             dof_type=JointDoFType.REVOLUTE,
-            act_type=JointActuationType.FORCE,
+            dof_act_types=[JointActuationType.FORCE],
             bid_B=0,
             bid_F=1,
             a_j=1.0,
@@ -200,7 +204,7 @@ class TestJointDescriptor(unittest.TestCase):
         self.assertEqual(joint.is_passive, False)
         self.assertEqual(joint.is_binary, True)
         self.assertEqual(joint.is_unary, False)
-        self.assertEqual(joint.is_dynamic, True)
+        self.assertEqual(joint.dynamic_cts_axes(), [0])
 
 
 class TestGeometryDescriptor(unittest.TestCase):
@@ -440,7 +444,7 @@ class TestWorldDescriptor(unittest.TestCase):
         joint_0 = JointDescriptor(
             name="body_0_to_1",
             dof_type=JointDoFType.REVOLUTE,
-            act_type=JointActuationType.PASSIVE,
+            dof_act_types=[JointActuationType.PASSIVE],
             bid_B=body_0.bid,
             bid_F=body_1.bid,
         )
@@ -486,7 +490,7 @@ class TestWorldDescriptor(unittest.TestCase):
         joint_0 = JointDescriptor(
             name="body_0_to_1",
             dof_type=JointDoFType.REVOLUTE,
-            act_type=JointActuationType.PASSIVE,
+            dof_act_types=[JointActuationType.PASSIVE],
             bid_B=body_0.bid,
             bid_F=body_1.bid,
             a_j=1.0,
@@ -498,7 +502,7 @@ class TestWorldDescriptor(unittest.TestCase):
         self.assertEqual(joint_0.wid, world.wid)
         self.assertFalse(joint_0.is_actuated)
         self.assertTrue(joint_0.is_binary)
-        self.assertTrue(joint_0.is_dynamic)
+        self.assertEqual(joint_0.dynamic_cts_axes(), [0])
         self.assertTrue(joint_0.is_connected_to_body(body_0.bid))
         self.assertTrue(joint_0.is_connected_to_body(body_1.bid))
 
@@ -615,7 +619,7 @@ class TestWorldDescriptor(unittest.TestCase):
         joint_0 = JointDescriptor(
             name="body_0_to_1",
             dof_type=JointDoFType.REVOLUTE,
-            act_type=JointActuationType.PASSIVE,
+            dof_act_types=[JointActuationType.PASSIVE],
             bid_B=body_0.bid,
             bid_F=body_1.bid,
         )
@@ -626,7 +630,7 @@ class TestWorldDescriptor(unittest.TestCase):
         joint_1 = JointDescriptor(
             name="body_1_to_2",
             dof_type=JointDoFType.REVOLUTE,
-            act_type=JointActuationType.PASSIVE,
+            dof_act_types=[JointActuationType.PASSIVE],
             bid_F=body_2.bid,
         )
         world.add_joint(joint_1)

@@ -6668,6 +6668,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 num_dofs += 6
                 num_qpos += 7
                 num_mjc_joints += 1
+                for i in range(6):
+                    if joint_target_mode[qd_start + i] != int(JointTargetMode.NONE):
+                        warnings.warn(
+                            f"Free joint '{model.joint_label[j]}' has a non-NONE joint_target_mode but "
+                            "SolverMuJoCo cannot create actuators on free joints. "
+                            "Drive targets (joint_target_ke, joint_target_kd, joint_target_q) are silently ignored. "
+                            "Apply the desired wrench directly via Control.joint_f instead.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+                        break
             elif j_type == JointType.BALL:
                 ball_params = {
                     "name": name,
