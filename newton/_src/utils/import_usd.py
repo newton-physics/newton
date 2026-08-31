@@ -493,7 +493,7 @@ def parse_usd(
             * - ``"path_soft_map"``
               - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
             * - ``"path_cable_attrs"``
-              - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the imported rod cannot express (e.g. shear / twist). ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the component identifier. Present only with ``return_deformable_results=True``.
+              - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
             * - ``"path_cloth_attrs"``
               - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``). Present only with ``return_deformable_results=True``.
             * - ``"path_soft_attrs"``
@@ -736,9 +736,8 @@ def parse_usd(
     path_cable_map: dict[str, tuple[list[int], list[int]]] = {}
     path_cloth_map: dict[str, dict[str, tuple[int, int]]] = {}
     path_soft_map: dict[str, dict[str, tuple[int, int]]] = {}
-    # Solver-neutral deformable attributes per prim path: the parsed material moduli
-    # (including ones the VBD build ignores) and the resolved density, so a non-VBD
-    # consumer can rebuild the deformable without re-parsing the stage.
+    # Solver-neutral deformable attributes per prim path: parsed material properties and resolved
+    # density, so another consumer can rebuild the deformable without re-parsing the stage.
     path_cable_attrs: dict[str, dict[str, Any]] = {}
     path_cloth_attrs: dict[str, dict[str, Any]] = {}
     path_soft_attrs: dict[str, dict[str, Any]] = {}
@@ -1003,6 +1002,22 @@ def parse_usd(
 
         return body0_info, body1_info
 
+    def _apply_visual_material(mesh: Mesh, material_props: dict[str, Any]) -> None:
+        """Apply one resolved USD visual material to its owning mesh."""
+        texture = material_props.get("texture")
+        if texture is not None:
+            mesh.texture = texture
+        if mesh.texture is not None:
+            # Textures provide albedo; do not tint them with the shape palette.
+            mesh.color = (1.0, 1.0, 1.0)
+        elif material_props.get("color") is not None:
+            mesh.color = material_props["color"]
+
+        for key in ("roughness", "metallic", "texture_transform"):
+            value = material_props.get(key)
+            if value is not None:
+                setattr(mesh, key, value)
+
     def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
         """Load a renderable mesh without changing physics mass properties."""
         material_props = _get_material_props_cached(prim)
@@ -1028,19 +1043,9 @@ def parse_usd(
             mesh.has_inertia = physics_mesh.has_inertia
         else:
             mesh = physics_mesh.copy(recompute_inertia=False)
-        if texture is not None:
-            mesh.texture = texture
+        _apply_visual_material(mesh, material_props)
         if mesh.texture is not None and mesh.uvs is None:
-            logger.info("Mesh %s has a texture but no UVs; texture will use projected UVs.", path_name)
-        if mesh.texture is not None:
-            # The texture provides albedo, so avoid tinting it with a scalar color.
-            mesh.color = (1.0, 1.0, 1.0)
-        elif material_props.get("color") is not None:
-            mesh.color = material_props["color"]
-        if material_props.get("roughness") is not None:
-            mesh.roughness = material_props["roughness"]
-        if material_props.get("metallic") is not None:
-            mesh.metallic = material_props["metallic"]
+            logger.info("Mesh %s has a texture but no UV coordinates; texture sampling is disabled.", path_name)
         return mesh
 
     def _get_face_material_subsets(prim: Usd.Prim) -> list[Usd.Prim]:
@@ -1136,24 +1141,12 @@ def parse_usd(
             maxhullvert=mesh.maxhullvert,
         )
 
-        texture = material_props.get("texture")
-        if texture is not None:
-            submesh.texture = texture
+        _apply_visual_material(submesh, material_props)
         if submesh.texture is not None and submesh.uvs is None:
             logger.info(
-                "Mesh material subset %s has a texture but no UVs; texture will use projected UVs.",
+                "Mesh material subset %s has a texture but no UV coordinates; texture sampling is disabled.",
                 path_name,
             )
-
-        color = material_props.get("color")
-        if submesh.texture is not None:
-            submesh.color = (1.0, 1.0, 1.0)
-        elif color is not None:
-            submesh.color = color
-        if material_props.get("roughness") is not None:
-            submesh.roughness = material_props["roughness"]
-        if material_props.get("metallic") is not None:
-            submesh.metallic = material_props["metallic"]
         return submesh
 
     def _get_visual_material_subset_meshes(prim: Usd.Prim) -> list[tuple[str, Mesh]]:
@@ -3712,15 +3705,7 @@ def parse_usd(
                         # show_static. Mutating the shared cache entry is safe: both caches key on the
                         # prim path, so every consumer resolves the same values.
                         mesh = _get_mesh_cached(prim)
-                        if material_props.get("texture") is not None:
-                            mesh.texture = material_props["texture"]
-                            # A textured material resolves no scalar color, so add_shape()
-                            # would otherwise fall back to its palette and tint the texture.
-                            mesh.color = (1.0, 1.0, 1.0)
-                        if material_props.get("roughness") is not None:
-                            mesh.roughness = material_props["roughness"]
-                        if material_props.get("metallic") is not None:
-                            mesh.metallic = material_props["metallic"]
+                        _apply_visual_material(mesh, material_props)
                     mesh.maxhullvert = resolution.resolve_max_hull_vertices(
                         prim,
                         default=max_hull_vertices_default,

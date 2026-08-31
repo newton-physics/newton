@@ -17,6 +17,7 @@ from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_physics_attachment,
     _apply_deformable_body_api,
+    _author_newton_curve_damping,
     _bind_deformable_material,
     _deformable_stage,
     group_labels,
@@ -197,8 +198,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             model = builder.finalize()
             self.assertEqual(model.body_count, 5)
 
-    def test_welded_cable_material_maps_to_rod_graph_stiffness(self):
-        """Verify a welded cable graph discretizes structural stiffness with local rest lengths."""
+    def test_welded_cable_material_maps_to_rod_graph_gains(self):
+        """Verify a welded cable graph discretizes material gains with local rest lengths."""
         from pxr import Sdf, UsdGeom
 
         stage = self._author_attached_cable_pair(gap=0.0)
@@ -207,17 +208,26 @@ class TestUSDDeformableCable(unittest.TestCase):
         cable_a.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
             [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.3, 0.0, 1.0), (0.6, 0.0, 1.0)]
         )
-        thickness, stretch, shear, bend, twist = 0.02, 200.0, 300.0, 4.0, 5.0
+        thickness = 0.02
+        stiffnesses = (200.0, 300.0, 4.0, 5.0)
+        dampings = (20.0, 30.0, 0.4, 0.5)
         for suffix in ("A", "B"):
-            _bind_deformable_material(
+            mat = _bind_deformable_material(
                 stage,
                 stage.GetPrimAtPath(f"/World/Cable{suffix}"),
                 f"/World/CableMat{suffix}",
                 curvesThickness=thickness,
-                curvesStretchStiffness=stretch,
-                curvesShearStiffness=shear,
-                curvesBendStiffness=bend,
-                curvesTwistStiffness=twist,
+                curvesStretchStiffness=stiffnesses[0],
+                curvesShearStiffness=stiffnesses[1],
+                curvesBendStiffness=stiffnesses[2],
+                curvesTwistStiffness=stiffnesses[3],
+            )
+            _author_newton_curve_damping(
+                mat,
+                curvesStretchDamping=dampings[0],
+                curvesShearDamping=dampings[1],
+                curvesBendDamping=dampings[2],
+                curvesTwistDamping=dampings[3],
             )
 
         builder = newton.ModelBuilder()
@@ -237,9 +247,15 @@ class TestUSDDeformableCable(unittest.TestCase):
             joint_length = 0.5 * (
                 body_lengths[builder.joint_parent[joint_idx]] + body_lengths[builder.joint_child[joint_idx]]
             )
-            expected = tuple(value / joint_length for value in (stretch, shear, bend, twist))
+            expected_ke = tuple(value / joint_length for value in stiffnesses)
+            expected_kd = tuple(value / joint_length for value in dampings)
             dof_start = builder.joint_qd_start[joint_idx]
-            np.testing.assert_allclose(builder.joint_target_ke[dof_start : dof_start + 4], expected, rtol=1.0e-3)
+            np.testing.assert_allclose(builder.joint_target_ke[dof_start : dof_start + 4], expected_ke, rtol=1.0e-3)
+            np.testing.assert_allclose(builder.joint_target_kd[dof_start : dof_start + 4], expected_kd, rtol=1.0e-3)
+            self.assertEqual(
+                builder.joint_target_mode[dof_start : dof_start + 4],
+                [int(newton.JointTargetMode.POSITION)] * 4,
+            )
 
     def test_cable_material_maps_to_rod_stiffness(self):
         """Verify a bound curve-deformable material maps to radius and four per-joint stiffnesses.
@@ -398,8 +414,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(builder.joint_target_mode[dof0], int(newton.JointTargetMode.NONE))
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["curvesStretchStiffness"], 0.0)
 
-    def test_rod_stiffness_setter_rejects_incompatible_joint(self):
-        """Verify that local rod stiffness assignment rejects incompatible joints."""
+    def test_rod_material_gain_setter_rejects_incompatible_joint(self):
+        """Verify that local rod material-gain assignment rejects incompatible joints."""
         builder = newton.ModelBuilder()
         rod = builder.add_joint_rod(-1, builder.add_link())
         fixed = builder.add_joint_fixed(-1, builder.add_link())
@@ -411,11 +427,56 @@ class TestUSDDeformableCable(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "expected the four-slot ROD layout"):
-            builder._set_joint_rod_stiffnesses(fixed, **stiffnesses)
+            builder._set_joint_rod_material_gains(fixed, **stiffnesses)
 
         builder.joint_dof_dim[rod] = (3, 3)
         with self.assertRaisesRegex(ValueError, "expected the four-slot ROD layout"):
-            builder._set_joint_rod_stiffnesses(rod, **stiffnesses)
+            builder._set_joint_rod_material_gains(rod, **stiffnesses)
+
+    def test_curve_damping_import_is_per_mode_and_honors_sentinel(self):
+        """Verify independent damping import, sentinel/default preservation, local discretization, and target modes."""
+        pts = [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.6, 0.0, 1.0)]
+        stage = _deformable_stage(up_axis="y")
+        curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
+        mat = _bind_deformable_material(
+            stage,
+            curves.GetPrim(),
+            "/World/CableMat",
+            curvesThickness=0.02,
+            curvesStretchStiffness=0.0,
+            curvesShearStiffness=0.0,
+            curvesBendStiffness=0.0,
+            curvesTwistStiffness=0.0,
+        )
+        _author_newton_curve_damping(
+            mat,
+            curvesStretchDamping=6.0,
+            curvesBendDamping=-math.inf,
+            curvesTwistDamping=8.0,
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+        j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
+        for joint, joint_length in zip(range(j0, j1), (0.15, 0.2), strict=True):
+            dof0 = builder.joint_qd_start[joint]
+            expected = (6.0 / joint_length, 0.0, 0.0, 8.0 / joint_length)
+            np.testing.assert_allclose(builder.joint_target_kd[dof0 : dof0 + 4], expected, rtol=1.0e-3)
+            self.assertEqual(
+                builder.joint_target_mode[dof0 : dof0 + 4],
+                [
+                    int(newton.JointTargetMode.VELOCITY),
+                    int(newton.JointTargetMode.NONE),
+                    int(newton.JointTargetMode.NONE),
+                    int(newton.JointTargetMode.VELOCITY),
+                ],
+            )
+
+        material = result["path_cable_attrs"]["/World/Cable"]["material"]
+        self.assertEqual(material["curvesStretchDamping"], 6.0)
+        self.assertEqual(material["curvesTwistDamping"], 8.0)
+        self.assertNotIn("curvesShearDamping", material)
+        self.assertNotIn("curvesBendDamping", material)
 
     def test_cable_rest_length_from_rest_shape_points(self):
         """Verify ``restShapePoints`` supplies each rod joint's local dual rest length.
@@ -501,7 +562,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(builder.body_count, 0)
 
     def test_cable_material_without_family_api_is_ignored(self):
-        """A physics-bound material lacking PhysicsCurvesDeformableMaterialAPI is not read as a cable material."""
+        """Verify that a material without ``PhysicsCurvesDeformableMaterialAPI`` and its Newton damping are ignored."""
         from pxr import Sdf, UsdShade
 
         stage = _deformable_stage(up_axis="y")
@@ -509,8 +570,10 @@ class TestUSDDeformableCable(unittest.TestCase):
         curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
         # Material carries cable-shaped attributes but does NOT declare the family API.
         mat = UsdShade.Material.Define(stage, "/World/Mat")
+        mat.GetPrim().AddAppliedSchema("NewtonCurvesDeformableMaterialAPI")
         mat.GetPrim().CreateAttribute("physics:curvesStretchStiffness", Sdf.ValueTypeNames.Float).Set(200.0)
         mat.GetPrim().CreateAttribute("physics:curvesThickness", Sdf.ValueTypeNames.Float).Set(0.02)
+        mat.GetPrim().CreateAttribute("newton:curvesStretchDamping", Sdf.ValueTypeNames.Float).Set(20.0)
         UsdShade.MaterialBindingAPI.Apply(curves.GetPrim()).Bind(mat, materialPurpose="physics")
 
         builder = newton.ModelBuilder()
@@ -522,9 +585,10 @@ class TestUSDDeformableCable(unittest.TestCase):
         j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
         dof0 = builder.joint_qd_start[j0]
         self.assertEqual(builder.joint_target_ke[dof0], 1.0e5)  # add_rod default stretch stiffness
+        self.assertEqual(builder.joint_target_kd[dof0], 0.0)
 
-    def test_material_attr_authored_on_geometry_warns(self):
-        """Verify that deformable material properties authored on geometry warn and are ignored."""
+    def test_geometry_authored_material_attrs_warn_on_standalone_import(self):
+        """Verify that standalone import warns about and ignores geometry-authored material attributes."""
         from pxr import Sdf
 
         stage = _deformable_stage(up_axis="y")
@@ -532,10 +596,34 @@ class TestUSDDeformableCable(unittest.TestCase):
         curves = _add_cable_curve(stage, "/World/Cable", pts)
         # curvesStretchStiffness belongs on the bound material, not the curve geometry.
         curves.GetPrim().CreateAttribute("physics:curvesStretchStiffness", Sdf.ValueTypeNames.Float).Set(500.0)
+        curves.GetPrim().CreateAttribute("newton:curvesStretchDamping", Sdf.ValueTypeNames.Float).Set(50.0)
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "authored on the geometry"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             builder.add_usd(stage)
+        messages = [str(item.message) for item in caught]
+        self.assertTrue(any("physics:curvesStretchStiffness" in message for message in messages))
+        self.assertTrue(any("newton:curvesStretchDamping" in message for message in messages))
+
+    def test_geometry_authored_material_attrs_warn_on_welded_import(self):
+        """Verify that welded import warns about and ignores geometry-authored material attributes."""
+        from pxr import Sdf
+
+        stage = self._author_attached_cable_pair(gap=0.0)
+        prim = stage.GetPrimAtPath("/World/CableA")
+        prim.CreateAttribute("physics:curvesStretchStiffness", Sdf.ValueTypeNames.Float).Set(500.0)
+        prim.CreateAttribute("newton:curvesStretchDamping", Sdf.ValueTypeNames.Float).Set(50.0)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage, return_deformable_results=True)
+
+        messages = [str(item.message) for item in caught]
+        self.assertTrue(any("physics:curvesStretchStiffness" in message for message in messages))
+        self.assertTrue(any("newton:curvesStretchDamping" in message for message in messages))
+        self.assertIn("graph_component", result["path_cable_attrs"]["/World/CableA"])
 
     def test_cable_resolved_density_reports_default_when_unauthored(self):
         """resolved_density reports the density actually used (the builder default), not None."""
@@ -682,7 +770,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertGreater(np.linalg.det(np.array(builder.body_inertia[b]).reshape(3, 3)), 0.0)
 
     def test_malformed_material_values_warn_and_use_fallbacks(self):
-        """Verify that malformed AOUSD material values warn and use documented fallbacks."""
+        """Verify that malformed AOUSD and Newton material values warn and use documented fallbacks."""
         stage = _deformable_stage(up_axis="y")
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
@@ -695,13 +783,19 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         stage = _deformable_stage(up_axis="y")
         curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
-        _bind_deformable_material(
+        mat = _bind_deformable_material(
             stage,
             curves.GetPrim(),
             "/World/Mat",
             curvesThickness=0.02,
             youngsModulus=-1.0,
             curvesStretchStiffness=math.nan,
+        )
+        _author_newton_curve_damping(
+            mat,
+            curvesStretchDamping=-1.0,
+            curvesShearDamping=math.inf,
+            curvesBendDamping=-math.inf,
         )
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
@@ -710,7 +804,11 @@ class TestUSDDeformableCable(unittest.TestCase):
         messages = [str(item.message) for item in caught]
         self.assertTrue(any("invalid physics:youngsModulus" in message for message in messages))
         self.assertTrue(any("invalid physics:curvesStretchStiffness" in message for message in messages))
+        self.assertTrue(any("invalid newton:curvesStretchDamping" in message for message in messages))
+        self.assertTrue(any("invalid newton:curvesShearDamping" in message for message in messages))
+        self.assertFalse(any("invalid newton:curvesBendDamping" in message for message in messages))
         self.assertTrue(all(math.isfinite(value) for value in builder.joint_target_ke))
+        self.assertTrue(all(value == 0.0 for value in builder.joint_target_kd))
 
     def test_cable_density_segment_mass_is_cylinder_not_capsule(self):
         """A density-derived cable segment gets the cylinder mass m = rho*pi*r^2*L per segment

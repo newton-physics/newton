@@ -16,7 +16,6 @@ from .support_function import (
     GenericShapeData,
     GeoTypeEx,
     SupportMapDataProvider,
-    closest_point_on_triangle,
     pack_mesh_ptr,
     support_map,
     unpack_mesh_ptr,
@@ -276,57 +275,12 @@ def post_process_axial_on_discrete_contact(
     return contact_data
 
 
-@wp.func
-def post_process_triangle_contact(
-    contact_data: ContactData,
-    shape_a: GenericShapeData,
-    pos_a_adjusted: wp.vec3,
-    rot_a: wp.quat,
-    shape_b: GenericShapeData,
-    pos_b_adjusted: wp.vec3,
-    rot_b: wp.quat,
-) -> ContactData:
-    """Constrain heightfield-prism contacts to their physical triangle face."""
-    if shape_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM) and contact_data.contact_distance < 0.0:
-        normal_local = wp.cross(shape_a.scale, shape_a.auxiliary)
-        normal_length_sq = wp.length_sq(normal_local)
-        if normal_length_sq >= 1.0e-20:
-            normal_local = normal_local / wp.sqrt(normal_length_sq)
-            if normal_local[2] < 0.0:
-                normal_local = -normal_local
-            normal_world = wp.quat_rotate(rot_a, normal_local)
-
-            point_b_world = (
-                contact_data.contact_point_center
-                + 0.5 * contact_data.contact_distance * contact_data.contact_normal_a_to_b
-            )
-            point_b_local = wp.quat_rotate_inv(rot_a, point_b_world - pos_a_adjusted)
-            projected_b = point_b_local - wp.dot(point_b_local, normal_local) * normal_local
-            point_a = closest_point_on_triangle(
-                projected_b,
-                wp.vec3(0.0),
-                shape_a.scale,
-                shape_a.auxiliary,
-            )
-            distance = float(0.0)
-            if wp.length_sq(point_a - projected_b) < 1.0e-10:
-                distance = wp.dot(point_b_local - point_a, normal_local)
-            contact_data.contact_point_center = (
-                wp.quat_rotate(rot_a, point_a) + pos_a_adjusted + 0.5 * distance * normal_world
-            )
-            contact_data.contact_normal_a_to_b = normal_world
-            contact_data.contact_distance = distance
-
-    return post_process_axial_on_discrete_contact(
-        contact_data, shape_a, pos_a_adjusted, rot_a, shape_b, pos_b_adjusted, rot_b
-    )
-
-
 def create_compute_gjk_mpr_contacts(
     writer_func: Any,
     post_process_contact: Any = post_process_axial_on_discrete_contact,
     support_func: Any = None,
     use_precomputed_center: bool = False,
+    penetration_refiner: Any = None,
 ):
     """
     Factory function to create a compute_gjk_mpr_contacts function with a specific writer function.
@@ -336,6 +290,7 @@ def create_compute_gjk_mpr_contacts(
         post_process_contact: Function to post-process contact data
         support_func: Support mapping function (defaults to support_map)
         use_precomputed_center: Whether the geometry data supplies a cached center.
+        penetration_refiner: Optional physical-proxy result refinement function.
 
     Returns:
         A compute_gjk_mpr_contacts function with the writer function baked in
@@ -411,7 +366,11 @@ def create_compute_gjk_mpr_contacts(
         if wp.static(ENABLE_MULTI_CONTACT):
             wp.static(
                 create_solve_convex_multi_contact(
-                    support_func, writer_func, post_process_contact, use_precomputed_center
+                    support_func,
+                    writer_func,
+                    post_process_contact,
+                    use_precomputed_center,
+                    penetration_refiner,
                 )
             )(
                 shape_a_data,
@@ -432,7 +391,11 @@ def create_compute_gjk_mpr_contacts(
         else:
             wp.static(
                 create_solve_convex_single_contact(
-                    support_func, writer_func, post_process_contact, use_precomputed_center
+                    support_func,
+                    writer_func,
+                    post_process_contact,
+                    use_precomputed_center,
+                    penetration_refiner,
                 )
             )(
                 shape_a_data,

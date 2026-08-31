@@ -214,6 +214,7 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         model = builder.finalize()
         self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        np.testing.assert_array_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), [0])
         self.assertEqual(model.joint_target_mode.numpy()[dof], int(JointTargetMode.POSITION))
         np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.JOINT_TARGET])
         np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy(), [[dof, 0]])

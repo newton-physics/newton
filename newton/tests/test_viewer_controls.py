@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import sys
 import unittest
 from collections import namedtuple
@@ -188,6 +189,37 @@ class TestViewerGLNumFramesValidation(unittest.TestCase):
         """Verify a negative num_frames raises ValueError rather than silently rendering nothing."""
         with self.assertRaises(ValueError):
             ViewerGL(num_frames=-1)
+
+    def test_rejects_invalid_cuda_interop_mode(self):
+        """Reject CUDA interop values outside the public flag enum."""
+        for value in (True, 1, 1.5, "dynamic"):
+            with self.subTest(value=value), self.assertRaises(TypeError):
+                ViewerGL(enable_cuda_interop=value)  # type: ignore[arg-type]
+
+    def test_cuda_interop_defaults_to_dynamic_meshes(self):
+        """Enable CUDA interop for dynamic meshes by default."""
+        parameter = inspect.signature(ViewerGL).parameters["enable_cuda_interop"]
+        self.assertEqual(parameter.default, ViewerGL.CudaInterop.DYNAMIC_MESH)
+
+    def test_cuda_interop_flags_are_composable(self):
+        """Compose independent CUDA interop categories with bitwise flags."""
+        flags = ViewerGL.CudaInterop.POINTS | ViewerGL.CudaInterop.LINES
+        self.assertTrue(flags & ViewerGL.CudaInterop.POINTS)
+        self.assertTrue(flags & ViewerGL.CudaInterop.LINES)
+        self.assertFalse(flags & ViewerGL.CudaInterop.INSTANCES)
+        self.assertEqual(
+            ViewerGL.CudaInterop.ALL,
+            ViewerGL.CudaInterop.DYNAMIC_MESH
+            | ViewerGL.CudaInterop.STATIC_MESH
+            | ViewerGL.CudaInterop.POINTS
+            | ViewerGL.CudaInterop.INSTANCES
+            | ViewerGL.CudaInterop.LINES,
+        )
+
+    def test_rejects_unknown_cuda_interop_flags(self):
+        """Reject flag bits outside the supported CUDA interop categories."""
+        with self.assertRaises(ValueError):
+            ViewerGL(enable_cuda_interop=ViewerGL.CudaInterop(1 << 10))
 
 
 if __name__ == "__main__":

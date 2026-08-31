@@ -12,6 +12,8 @@ import warp as wp
 from .clamping.base import Clamping
 from .controllers.base import Controller
 from .delay import Delay
+from .effort_mode_explicit import _EffortModeExplicit
+from .effort_mode_implicit import ImplicitOptions, ResponseOracle, _EffortModeImplicit
 
 
 @wp.kernel
@@ -50,6 +52,9 @@ class Actuator:
 
         # Simulation loop
         actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
+
+    Effort is computed explicitly by default (control law evaluated at the
+    current state, zero-order hold over the step).
     """
 
     @dataclass
@@ -170,10 +175,8 @@ class Actuator:
         self._computed_forces = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
-        self._applied_forces = (
-            wp.zeros(self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
-            if self.clamping
-            else None
+        self._applied_forces = wp.zeros(
+            self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
 
         controller.finalize(self.device, self.num_actuators)
@@ -182,13 +185,60 @@ class Actuator:
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
 
+        self._effort_mode = _EffortModeExplicit(controller, self.clamping, self.device)
+
+    # To achieve public API Actuator.ImplicitOptions.
+    # Defining ImplicitOptions inside Actuator would create a circular import issue.
+    ImplicitOptions = ImplicitOptions
+
+    def set_effort_mode_implicit(
+        self,
+        response: ResponseOracle,
+        options: Actuator.ImplicitOptions | None = None,
+    ) -> None:
+        """Switch effort computation to implicit mode.
+
+        The control law is solved against the predicted end-of-step state
+        before the solver runs. See :ref:`effort-modes` for details on the
+        computation of effort in the implicit mode, its caveats, and its expected use.
+
+        Args:
+            response: :class:`~newton.actuators.ResponseOracle` supplying the
+                coupled effective inverse mass [1/kg or 1/(kg·m²)]. Refresh it
+                once per step before :meth:`step`.
+            options: Solver options; defaults to :class:`Actuator.ImplicitOptions`.
+
+        Raises:
+            NotImplementedError: The actuator was built with ``requires_grad=True``.
+                The implicit solve is not differentiable.
+        """
+        if self.requires_grad:
+            raise NotImplementedError(
+                "Implicit actuation is not differentiable: the Newton solve has no adjoint, "
+                "and the neural controllers open their own wp.Tape, which cannot nest inside "
+                "an outer tape. Build the Actuator with requires_grad=False."
+            )
+        self._effort_mode = _EffortModeImplicit(
+            self.controller,
+            self.clamping,
+            response,
+            options,
+            self.num_actuators,
+            self.device,
+            self.indices,
+        )
+
+    def set_effort_mode_explicit(self) -> None:
+        """Switch effort computation back to the default explicit mode."""
+        self._effort_mode = _EffortModeExplicit(self.controller, self.clamping, self.device)
+
     def is_stateful(self) -> bool:
         """Return True if delay or controller maintains internal state."""
         return self.delay is not None or self.controller.is_stateful()
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
-        return self.controller.is_graphable()
+        return self._effort_mode.is_graphable()
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
@@ -214,8 +264,11 @@ class Actuator:
         1. **Delay read** — read per-DOF delayed targets from
            ``current_state`` (falls back to current targets when
            the buffer is empty).
-        2. **Controller** — compute raw effort into ``_computed_forces``.
-        3. **Clamping** — clamp effort from computed → ``_applied_forces``.
+        2. **Effort** — raw effort into ``_computed_forces`` (explicit control
+           law, or the implicit end-of-step solve).
+        3. **Clamping** — bounded effort into ``_applied_forces``. Explicit
+           clamps after the control law; implicit enforces them inside the
+           solve.
         4. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
@@ -262,9 +315,10 @@ class Actuator:
             target_pos_indices = self._sequential_indices
             target_vel_indices = self._sequential_indices
 
-        # --- 2. Controller: compute raw effort ---
+        # --- 2+3. Effort mode: compute raw effort and clamp ---
         ctrl_state = current_act_state.controller_state if current_act_state else None
-        self.controller.compute(
+        output_forces = self._effort_mode.compute_force(
+            sim_state,
             positions,
             velocities,
             target_pos,
@@ -275,28 +329,10 @@ class Actuator:
             target_pos_indices,
             target_vel_indices,
             self._computed_forces,
+            self._applied_forces,
             ctrl_state,
             dt,
-            device=self.device,
         )
-
-        # --- 3. Clamping: computed → applied ---
-        if self.clamping:
-            src = self._computed_forces
-            for clamp in self.clamping:
-                clamp.modify_forces(
-                    src,
-                    self._applied_forces,
-                    positions,
-                    velocities,
-                    self.pos_indices,
-                    self.indices,
-                    device=self.device,
-                )
-                src = self._applied_forces
-            output_forces = self._applied_forces
-        else:
-            output_forces = self._computed_forces
 
         # --- 4. Scatter-add to output ---
         applied_output = getattr(sim_control, self.control_output_attr)
