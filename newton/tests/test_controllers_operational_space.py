@@ -45,6 +45,10 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
 
+# Operational frame coincides with world frame, for every test not
+# specifically exercising operational_frame_pose_world itself.
+_IDENTITY_TRANSFORM = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
 
 def _build_two_link_arm_with_tool_site(device):
     """Two-revolute-joint planar arm with a tool site offset from the tip body's COM.
@@ -660,43 +664,54 @@ def test_task_space_pd_matches_formula(test, device):
     np.testing.assert_allclose(desired_task_acceleration_world.numpy()[0], expected, atol=1e-5)
 
 
-def test_task_space_pd_applies_gain_in_tool_frame_not_world(test, device):
-    """Kp is applied in the tool frame, not directly to world-frame axes.
+def test_task_space_pd_applies_gain_in_operational_frame_not_world(test, device):
+    """The kernel's own responsibility is rotating its result from the operational frame back to world.
 
-    With the tool rotated 45 degrees about world Z and an anisotropic
-    tool-local Kp (stiff along local X only), tool-local X maps to a
-    world direction with equal X and Y components -- so a world-Y-only
-    pose error still produces a nonzero world-X component in the result.
-    Applying Kp directly to world axes (ignoring the tool's orientation)
-    would produce zero, since Kp's world-X entry is 0.
+    Upstream (_tool_state_to_operational_kernel, _pose_error_kernel) already
+    puts the pose/twist error in the operational frame before this kernel
+    runs, so this test feeds a pose error already expressed there and checks
+    only the remaining rotate-out: with the operational frame rotated 45
+    degrees about world Z and an anisotropic operational-frame-local Kp
+    (stiff along local X only), a purely-local-X error produces a world
+    result with equal X and Y components -- not purely along world X.
     """
     quat_45_about_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 4.0)
-    tool_pose_world = wp.array(
+    operational_frame_pose_world = wp.array(
         [wp.transform(wp.vec3(0.0, 0.0, 0.0), quat_45_about_z)], dtype=wp.transform, device=device
     )
     stiffness = wp.array([wp.spatial_vector(100.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
     damping = wp.array([wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
 
     zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    pose_error_world = wp.array(
-        [wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device
+    # A pose error purely along operational-frame-local X.
+    pose_error_operational = wp.array(
+        [wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device
     )
-    tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-    desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+    tool_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+    desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
 
     desired_task_acceleration_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _task_space_pd_kernel,
         dim=1,
-        inputs=[tool_pose_world, pose_error_world, tool_twist_world, desired_twist_world, stiffness, damping],
+        inputs=[
+            operational_frame_pose_world,
+            pose_error_operational,
+            tool_twist_operational,
+            desired_twist_operational,
+            stiffness,
+            damping,
+        ],
         outputs=[desired_task_acceleration_world],
         device=device,
     )
 
-    # R @ diag(100, 0, 0) @ R^T = 100 * outer(col_x, col_x), col_x = R @
-    # (1, 0, 0) = (cos45, sin45, 0) -- applied to a pose error of (0, 1, 0)
-    # gives 100 * col_x * col_x[1] = (50, 50, 0).
-    np.testing.assert_allclose(desired_task_acceleration_world.numpy()[0], [50.0, 50.0, 0.0, 0.0, 0.0, 0.0], atol=1e-4)
+    # accel_operational = kp .* pose_error_operational = (100, 0, 0). Rotated
+    # to world by 45 degrees about Z: 100 * (cos45, sin45, 0) = (70.7, 70.7, 0).
+    expected_world = 100.0 * np.array([np.cos(np.pi / 4.0), np.sin(np.pi / 4.0), 0.0])
+    np.testing.assert_allclose(
+        desired_task_acceleration_world.numpy()[0], [*expected_world, 0.0, 0.0, 0.0], atol=1e-4
+    )
 
 
 def test_apply_spatial_matrix_matches_matvec(test, device):
@@ -1144,8 +1159,8 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_task_space_pd_applies_gain_in_tool_frame_not_world",
-    test_task_space_pd_applies_gain_in_tool_frame_not_world,
+    "test_task_space_pd_applies_gain_in_operational_frame_not_world",
+    test_task_space_pd_applies_gain_in_operational_frame_not_world,
     devices=devices,
 )
 add_function_test(
@@ -1205,6 +1220,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             device=device,
         )
@@ -1216,8 +1232,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         outs = ctrl.output()
         ctrl.step(inputs=ins, outputs=outs, dt=0.01)
@@ -1232,6 +1248,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=kp,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             device=device,
         )
@@ -1244,8 +1261,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         outs = ctrl.output()
         ctrl.step(inputs=ins, outputs=outs, dt=0.01)
@@ -1262,6 +1279,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=kp,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=True,
             device=device,
         )
@@ -1301,8 +1319,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.mass_matrix = wp.array(mass_matrix, dtype=wp.float32, device=device)
         outs = ctrl.output()
@@ -1323,6 +1341,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=wp.array(np.array([3], dtype=np.int32), device=device),
                 motion_stiffness=1.0,
                 motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_inertia_decoupling=True,
                 device=device,
             )
@@ -1335,6 +1354,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([6, 8], dtype=np.int32), device=device),
             motion_stiffness=kp,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             device=device,
         )
@@ -1353,8 +1373,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array(current_poses, dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist, zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array(desired_poses, dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist, zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array(desired_poses, dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist, zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         outs = ctrl.output()
         ctrl.step(inputs=ins, outputs=outs, dt=0.01)
@@ -1375,6 +1395,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=None,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             device=device,
         )
@@ -1387,8 +1408,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.motion_stiffness = wp.array(
             [wp.spatial_vector(30.0, 30.0, 30.0, 5.0, 5.0, 5.0)], dtype=wp.spatial_vector, device=device
@@ -1408,6 +1429,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             device=device,
         )
@@ -1420,8 +1442,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
 
         # A larger simulation-sized joint-force array; only indices [2:9) belong to this robot.
@@ -1441,7 +1463,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         """Every input port, not just outputs.joint_f, may be bound to an indexed view of a larger array.
 
         Binds tool_pose_world, tool_twist_world,
-        desired_tool_pose_world, desired_twist_world, and
+        desired_tool_pose_operational, desired_twist_operational, and
         motion_stiffness/motion_damping (live) to views selecting robot 1 out
         of a larger 3-robot simulation-sized array, and checks the result
         matches a plain-array run with the same values.
@@ -1458,6 +1480,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=None,
             motion_damping=None,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             device=device,
         )
@@ -1480,8 +1503,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = sim_pose[selection]
         ins.tool_twist_world = sim_twist[selection]
-        ins.desired_tool_pose_world = sim_desired_pose[selection]
-        ins.desired_twist_world = sim_desired_twist[selection]
+        ins.desired_tool_pose_operational = sim_desired_pose[selection]
+        ins.desired_twist_operational = sim_desired_twist[selection]
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.motion_stiffness = sim_stiffness[selection]
         ins.motion_damping = sim_damping[selection]
@@ -1501,6 +1524,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
                 motion_stiffness=1.0,
                 motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_inertia_decoupling=False,
                 use_wrench_feedforward=True,
                 device=device,
@@ -1514,6 +1538,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
                 motion_stiffness=1.0,
                 motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_inertia_decoupling=False,
                 wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
                 device=device,
@@ -1527,6 +1552,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
                 motion_stiffness=1.0,
                 motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_inertia_decoupling=False,
                 use_wrench_feedback=True,
                 wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
@@ -1543,6 +1569,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
             motion_stiffness=kp,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_wrench_feedback=True,
             motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
@@ -1561,8 +1588,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.desired_wrench_world = wp.array([desired_wrench], dtype=wp.spatial_vector, device=device)
         ins.measured_wrench_world = wp.array([measured_wrench], dtype=wp.spatial_vector, device=device)
@@ -1590,6 +1617,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
             motion_stiffness=kp,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_wrench_feedforward=True,
             motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
@@ -1616,8 +1644,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.desired_wrench_world = wp.array([desired_wrench], dtype=wp.spatial_vector, device=device)
         outs = ctrl.output()
@@ -1651,6 +1679,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
             motion_stiffness=kp,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_wrench_feedforward=True,
             use_wrench_feedback=True,
@@ -1670,8 +1699,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.desired_wrench_world = wp.array([desired_wrench], dtype=wp.spatial_vector, device=device)
         ins.measured_wrench_world = wp.array([measured_wrench], dtype=wp.spatial_vector, device=device)
@@ -1693,6 +1722,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
             motion_stiffness=kp,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_wrench_feedback=True,
             motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
@@ -1711,8 +1741,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.desired_wrench_world = wp.array([desired_wrench], dtype=wp.spatial_vector, device=device)
         ins.measured_wrench_world = wp.array([measured_wrench], dtype=wp.spatial_vector, device=device)
@@ -1732,6 +1762,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=True,
             device=device,
@@ -1745,8 +1776,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.gravity_force = wp.array(gravity_force, dtype=wp.float32, device=device)
         outs = ctrl.output()
@@ -1761,6 +1792,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
             device=device,
@@ -1773,8 +1805,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.gravity_force = wp.zeros(7, dtype=wp.float32, device=device)
         outs = ctrl.output()
@@ -1789,6 +1821,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
                 motion_stiffness=1.0,
                 motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_inertia_decoupling=True,
                 use_null_space_control=True,
                 null_space_stiffness=1.0,
@@ -1810,6 +1843,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=True,
             use_null_space_control=True,
             null_space_stiffness=null_kp,
@@ -1855,8 +1889,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.mass_matrix = wp.array(mass_matrix, dtype=wp.float32, device=device)
         ins.joint_q = wp.array(joint_q, dtype=wp.float32, device=device)
@@ -1889,6 +1923,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_null_space_control=True,
             null_space_stiffness=null_kp,
@@ -1917,8 +1952,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.joint_q = wp.array(joint_q, dtype=wp.float32, device=device)
         ins.joint_qd = wp.array(joint_qd, dtype=wp.float32, device=device)
@@ -1943,6 +1978,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
                 motion_stiffness=1.0,
                 motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_inertia_decoupling=False,
                 use_partial_inertia_decoupling=True,
                 device=device,
@@ -1962,6 +1998,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=kp,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=True,
             use_partial_inertia_decoupling=True,
             device=device,
@@ -1999,8 +2036,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([desired_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([desired_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.mass_matrix = wp.array(mass_matrix, dtype=wp.float32, device=device)
         outs = ctrl.output()
@@ -2035,6 +2072,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=True,
             use_partial_inertia_decoupling=True,
             use_null_space_control=True,
@@ -2076,8 +2114,8 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
         ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-        ins.desired_tool_pose_world = wp.array([identity_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([identity_pose], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         ins.mass_matrix = wp.array(mass_matrix, dtype=wp.float32, device=device)
         ins.joint_q = wp.array(joint_q, dtype=wp.float32, device=device)
@@ -2202,6 +2240,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
         )
@@ -2228,6 +2267,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
         )
@@ -2251,6 +2291,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
                 tool="nonexistent_site",
                 motion_stiffness=1.0,
                 motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_gravity_compensation=False,
             )
 
@@ -2278,6 +2319,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
                 tool=["site_a", "site_b"],
                 motion_stiffness=1.0,
                 motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_gravity_compensation=False,
             )
 
@@ -2299,7 +2341,12 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             ControllerOperationalSpace(
-                model, tool="tool_site", motion_stiffness=1.0, motion_damping=1.0, use_gravity_compensation=False
+                model,
+                tool="tool_site",
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
+                use_gravity_compensation=False,
             )
 
     def test_tool_by_explicit_site_index(self):
@@ -2313,6 +2360,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool=site_index,
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
         )
@@ -2326,6 +2374,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
                 tool="tool_site",
                 motion_stiffness=1.0,
                 motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_gravity_compensation=False,
             )
 
@@ -2348,6 +2397,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
         )
@@ -2357,8 +2407,8 @@ class TestControllerOperationalSpace(unittest.TestCase):
         theta1, theta2 = 0.3, -0.2
         inputs.joint_q.assign(np.array([theta1, theta2], dtype=np.float32))
         inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
-        inputs.desired_tool_pose_world.assign(np.zeros((1, 7), dtype=np.float32))
-        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_tool_pose_operational.assign(np.zeros((1, 7), dtype=np.float32))
+        inputs.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
 
         combined_angle = theta1 + theta2
         body2_origin_world = np.array([np.cos(theta1), np.sin(theta1), 0.0])
@@ -2398,6 +2448,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
         )
@@ -2406,13 +2457,13 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         inputs.joint_q.assign(np.array([0.3, -0.2], dtype=np.float32))
         inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
-        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
 
         # First step: read off the current tool pose so it can be fed back in
         # as the desired pose for a second step with exactly zero pose error.
-        inputs.desired_tool_pose_world.assign(np.zeros((1, 7), dtype=np.float32))
+        inputs.desired_tool_pose_operational.assign(np.zeros((1, 7), dtype=np.float32))
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
-        inputs.desired_tool_pose_world.assign(ctrl._tool_pose_world.numpy())
+        inputs.desired_tool_pose_operational.assign(ctrl._tool_pose_world.numpy())
 
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
 
@@ -2438,6 +2489,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool="tool_site",
             motion_stiffness=0.0,
             motion_damping=0.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=True,
         )
@@ -2448,11 +2500,11 @@ class TestControllerOperationalSpace(unittest.TestCase):
         gravitational_acceleration = 9.81
         inputs.joint_q.assign(np.array([theta], dtype=np.float32))
         inputs.joint_qd.assign(np.zeros(1, dtype=np.float32))
-        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
 
         # Desired pose is irrelevant here since motion gains are zero, but
         # every field still has to be a valid transform.
-        inputs.desired_tool_pose_world.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+        inputs.desired_tool_pose_operational.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
 
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
 
@@ -2475,6 +2527,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=True,
             use_gravity_compensation=False,
         )
@@ -2484,8 +2537,8 @@ class TestControllerOperationalSpace(unittest.TestCase):
         joint_q = np.array([0.3, -0.2, 0.5, 0.1, -0.4, 0.25], dtype=np.float32)
         inputs.joint_q.assign(joint_q)
         inputs.joint_qd.assign(np.zeros(6, dtype=np.float32))
-        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
-        inputs.desired_tool_pose_world.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+        inputs.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_tool_pose_operational.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
 
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
 
@@ -2513,6 +2566,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool="tool_site",
             motion_stiffness=0.0,
             motion_damping=0.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
             use_wrench_feedforward=True,
@@ -2523,8 +2577,8 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         inputs.joint_q.assign(np.array([0.3, -0.2], dtype=np.float32))
         inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
-        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
-        inputs.desired_tool_pose_world.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+        inputs.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_tool_pose_operational.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
         desired_wrench_world = np.array([3.0, -1.5, 0.0, 0.0, 0.0, 2.0], dtype=np.float32)
         inputs.desired_wrench_world.assign(np.array([desired_wrench_world]))
 
@@ -2553,6 +2607,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool="tool_site",
             motion_stiffness=0.0,
             motion_damping=0.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
             use_null_space_control=True,
@@ -2565,8 +2620,8 @@ class TestControllerOperationalSpace(unittest.TestCase):
         joint_q = np.array([0.3, -0.2, 0.5, 0.1, -0.4, 0.25, 0.2], dtype=np.float32)
         inputs.joint_q.assign(joint_q)
         inputs.joint_qd.assign(np.zeros(7, dtype=np.float32))
-        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
-        inputs.desired_tool_pose_world.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+        inputs.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_tool_pose_operational.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
         # Every joint of this fixture is controlled, in order, so the compact
         # posture target is exactly the same array as the model-space joint_q.
         inputs.joint_q_des_null.assign(joint_q)
@@ -2586,14 +2641,15 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
         )
         inputs = ctrl.input()
         inputs.joint_q.assign(np.array([0.3, -0.2], dtype=np.float32))
         inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
-        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
-        inputs.desired_tool_pose_world.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+        inputs.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_tool_pose_operational.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
         inputs.desired_wrench_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
 
         with self.assertRaises(ValueError):
@@ -2615,8 +2671,8 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         joint_q = np.array([0.3, -0.2, 0.5, 0.1, -0.4, 0.25, 0.2], dtype=np.float32)
         joint_qd = np.zeros(7, dtype=np.float32)
-        desired_tool_pose_world = np.array([[0.1, -0.2, 0.3, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
-        desired_twist_world = np.zeros((1, 6), dtype=np.float32)
+        desired_tool_pose_operational = np.array([[0.1, -0.2, 0.3, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+        desired_twist_operational = np.zeros((1, 6), dtype=np.float32)
         desired_wrench_world = np.array([[3.0, -1.5, 0.0, 0.0, 0.0, 2.0]], dtype=np.float32)
         joint_q_des_null = np.array([0.0, 0.1, -0.1, 0.2, -0.2, 0.0, 0.15], dtype=np.float32)
         joint_qd_des_null = np.zeros(7, dtype=np.float32)
@@ -2628,6 +2684,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
                 tool="tool_site",
                 motion_stiffness=100.0 if use_motion else 0.0,
                 motion_damping=10.0 if use_motion else 0.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_inertia_decoupling=False,
                 use_gravity_compensation=False,
                 use_wrench_feedforward=use_wrench,
@@ -2640,8 +2697,8 @@ class TestControllerOperationalSpace(unittest.TestCase):
             outputs = ctrl.output()
             inputs.joint_q.assign(joint_q)
             inputs.joint_qd.assign(joint_qd)
-            inputs.desired_tool_pose_world.assign(desired_tool_pose_world)
-            inputs.desired_twist_world.assign(desired_twist_world)
+            inputs.desired_tool_pose_operational.assign(desired_tool_pose_operational)
+            inputs.desired_twist_operational.assign(desired_twist_operational)
             if use_wrench:
                 inputs.desired_wrench_world.assign(desired_wrench_world)
             if use_null_space:
@@ -2678,6 +2735,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             tool="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
             use_wrench_feedforward=True,
@@ -2689,15 +2747,15 @@ class TestControllerOperationalSpace(unittest.TestCase):
         theta1, theta2 = 0.3, -0.2
         inputs.joint_q.assign(np.array([theta1, theta2], dtype=np.float32))
         inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
-        inputs.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
         desired_wrench_world = np.array([3.0, -1.5, 0.4, 0.0, 0.0, 2.0], dtype=np.float32)
         inputs.desired_wrench_world.assign(np.array([desired_wrench_world]))
 
         # First step to read off the current tool pose, so the second step
         # (the one actually measured) has exactly zero pose error.
-        inputs.desired_tool_pose_world.assign(np.zeros((1, 7), dtype=np.float32))
+        inputs.desired_tool_pose_operational.assign(np.zeros((1, 7), dtype=np.float32))
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
-        inputs.desired_tool_pose_world.assign(ctrl._tool_pose_world.numpy())
+        inputs.desired_tool_pose_operational.assign(ctrl._tool_pose_world.numpy())
 
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
 

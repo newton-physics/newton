@@ -53,8 +53,9 @@ class ControllerOperationalSpace(ControllerBase):
     spanning a single coordinate and a single DOF can be controlled.
 
     **Tool selection.** ``tool`` selects one Newton *site* per robot that
-    ends up with controlled joints — the task frame every task-space port is
-    defined relative to. It follows the same
+    ends up with controlled joints — the point on the robot whose pose/twist
+    is controlled. This need not be the same frame commands are specified in
+    — see ``operational_frame_pose_world``. It follows the same
     ``list[index/pattern] | index | pattern`` shape as ``joints``, matched
     against the leaf component of each site's label. Every controlled robot
     must match exactly one site.
@@ -80,9 +81,11 @@ class ControllerOperationalSpace(ControllerBase):
             rejected. A joint named explicitly is not filtered this way and
             still raises ``ValueError`` if it is not 1-coordinate/1-DOF.
         tool: Site index(es) or label pattern(s) selecting each controlled
-            robot's task frame, as a list or as a single pattern. Required —
-            there is no default tool site. Raises if a controlled robot
-            matches zero or more than one site.
+            robot's controlled point, as a list or as a single pattern.
+            Required — there is no default tool site. Raises if a
+            controlled robot matches zero or more than one site.
+        operational_frame_pose_world: Forwarded unchanged; see
+            :class:`ControllerOperationalSpaceModelFree`.
         motion_stiffness: Forwarded to
             :class:`ControllerOperationalSpaceModelFree` unchanged; see its
             docstring for units, format, and the live-gain (``None``)
@@ -117,10 +120,12 @@ class ControllerOperationalSpace(ControllerBase):
         """Current joint positions [m or rad], shape [model.joint_coord_count]."""
         joint_qd: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Current joint velocities [m/s or rad/s], shape [model.joint_dof_count]."""
-        desired_tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
-        """Desired world pose of the tool frame, shape [controlled_robot_count]."""
-        desired_twist_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
-        """Desired tool twist (linear, angular) in world coordinates [m/s, rad/s], shape [controlled_robot_count]."""
+        operational_frame_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform] | None
+        """World pose of the operational frame, shape [controlled_robot_count]. ``None`` when fixed at construction."""
+        desired_tool_pose_operational: wp.array[wp.transform] | wp.indexedarray[wp.transform]
+        """Desired tool pose, relative to the operational frame, shape [controlled_robot_count]."""
+        desired_twist_operational: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
+        """Desired tool twist (linear, angular), components expressed in the operational frame [m/s, rad/s], shape [controlled_robot_count]."""
         motion_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Task-space position/orientation-error gain Kp, shape [controlled_robot_count]. ``None`` when baked at construction."""
         motion_damping: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
@@ -155,6 +160,7 @@ class ControllerOperationalSpace(ControllerBase):
         tool: list[int | str | re.Pattern[str]] | str | re.Pattern[str],
         motion_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
         motion_damping: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
+        operational_frame_pose_world: wp.array[wp.transform] | wp.transform | None,
         use_inertia_decoupling: bool = True,
         use_partial_inertia_decoupling: bool = False,
         use_gravity_compensation: bool = True,
@@ -186,6 +192,7 @@ class ControllerOperationalSpace(ControllerBase):
         # value) or fixed at construction, exactly as the caller passed it --
         # tracked here rather than read off the inner ModelFree controller,
         # since that decision belongs to this constructor's own arguments.
+        self._operational_frame_is_live = operational_frame_pose_world is None
         self._motion_stiffness_is_live = motion_stiffness is None
         self._motion_damping_is_live = motion_damping is None
         self._wrench_stiffness_is_live = self._use_wrench_feedback and wrench_stiffness is None
@@ -442,6 +449,7 @@ class ControllerOperationalSpace(ControllerBase):
             controlled_dofs_per_robot=controlled_dofs_per_robot,
             motion_stiffness=motion_stiffness,
             motion_damping=motion_damping,
+            operational_frame_pose_world=operational_frame_pose_world,
             use_inertia_decoupling=use_inertia_decoupling,
             use_partial_inertia_decoupling=use_partial_inertia_decoupling,
             use_gravity_compensation=use_gravity_compensation,
@@ -553,10 +561,15 @@ class ControllerOperationalSpace(ControllerBase):
         inputs = ControllerOperationalSpace.Inputs()
         inputs.joint_q = wp.zeros(self._coord_count, dtype=wp.float32, device=device, requires_grad=requires_grad)
         inputs.joint_qd = wp.zeros(self._dof_count, dtype=wp.float32, device=device, requires_grad=requires_grad)
-        inputs.desired_tool_pose_world = wp.zeros(
+        inputs.operational_frame_pose_world = (
+            wp.zeros(robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad)
+            if self._operational_frame_is_live
+            else None
+        )
+        inputs.desired_tool_pose_operational = wp.zeros(
             robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad
         )
-        inputs.desired_twist_world = wp.zeros(
+        inputs.desired_twist_operational = wp.zeros(
             robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad
         )
         inputs.motion_stiffness = (
@@ -729,8 +742,10 @@ class ControllerOperationalSpace(ControllerBase):
 
         # Forward the remaining ports onto the inner controller's pre-wired
         # input struct, then delegate the control law to it.
-        self._mf_input.desired_tool_pose_world = inputs.desired_tool_pose_world
-        self._mf_input.desired_twist_world = inputs.desired_twist_world
+        self._mf_input.desired_tool_pose_operational = inputs.desired_tool_pose_operational
+        self._mf_input.desired_twist_operational = inputs.desired_twist_operational
+        if self._operational_frame_is_live:
+            self._mf_input.operational_frame_pose_world = inputs.operational_frame_pose_world
         if self._motion_stiffness_is_live:
             self._mf_input.motion_stiffness = inputs.motion_stiffness
         if self._motion_damping_is_live:

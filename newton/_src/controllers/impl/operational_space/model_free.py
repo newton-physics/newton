@@ -19,9 +19,13 @@ Motion law (terms enabled at construction):
     F_motion = [Lambda if use_inertia_decoupling else I] · (Kp·pose_error + Kd·twist_error)
 
 ``pose_error``/``twist_error`` are the position/orientation and linear/angular
-velocity errors between the current and desired tool pose/twist. ``Kp``/``Kd``
-are specified per-axis in the tool-local frame, so e.g. "stiff along the
-insertion axis" stays true as the tool reorients.
+velocity errors between the current and desired tool pose/twist; the desired
+pose/twist are themselves specified relative to the operational frame
+(``operational_frame_pose_world``, fixed or time-varying), not directly in
+world coordinates. ``Kp``/``Kd`` are specified per-axis in that same
+operational frame, so e.g. "stiff along the insertion axis" stays true as
+the frame reorients — the operational frame need not coincide with the
+tool's own current orientation.
 
 When ``use_partial_inertia_decoupling=True`` (only meaningful alongside
 ``use_inertia_decoupling=True``), Lambda ignores the coupling between
@@ -38,12 +42,12 @@ term is a feedback correction toward that same setpoint from a measured
 wrench, e.g. a 6-axis force/torque sensor reading. Either may be used alone —
 ``use_wrench_feedback`` with ``use_wrench_feedforward=False`` regulates the
 measured wrench toward the setpoint with no separate feedforward term. The
-feedback ``Kp`` here is tool-local too.
+feedback ``Kp`` here is operational-frame-local too.
 
 When wrench control is enabled, each task axis is either motion- or
 force-controlled, per ``motion_selection_axes_tool``/
-``wrench_selection_axes_tool`` (also tool-local), and each term is mapped to
-joint torques separately and summed:
+``wrench_selection_axes_tool`` (still tool-local, not operational-frame
+-local), and each term is mapped to joint torques separately and summed:
 
     tau = J^T · (S_motion · F_motion) + J^T · (S_wrench · F_wrench)
 
@@ -94,6 +98,7 @@ from ._common import (
     _rotate_selection_matrix_kernel,
     _task_matrix_times_jacobian_kernel,
     _task_space_pd_kernel,
+    _tool_state_to_operational_kernel,
     _wrench_feedback_only_kernel,
     _wrench_feedforward_and_feedback_kernel,
 )
@@ -142,6 +147,27 @@ def _validate_gain_argument(value: Any, name: str, controlled_robot_count: int, 
     raise TypeError(
         f"{name} must be a float, a wp.spatial_vector, or a wp.array[wp.spatial_vector] of shape "
         f"(controlled_robot_count,), got {type(value).__name__}."
+    )
+
+
+def _validate_transform_argument(value: Any, name: str, controlled_robot_count: int, device: wp.DeviceLike) -> None:
+    """Validate a baked-transform constructor argument: a wp.transform, or a per-robot wp.array."""
+    if value is None:
+        return
+    if isinstance(value, wp.transform):
+        return
+    if isinstance(value, wp.array):
+        _validate_array(
+            array=value,
+            name=name,
+            dtype=wp.transform,
+            shape=(controlled_robot_count,),
+            device=device,
+        )
+        return
+    raise TypeError(
+        f"{name} must be a wp.transform, or a wp.array[wp.transform] of shape (controlled_robot_count,), "
+        f"got {type(value).__name__}."
     )
 
 
@@ -240,8 +266,8 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             operational-space mass matrix is only invertible for a robot
             whose Jacobian can span all 6 task dimensions.
         motion_stiffness: Task-space position/orientation-error gain Kp,
-            per-axis in the tool-local frame (e.g. "stiff along the
-            insertion axis" stays meaningful as the tool reorients). Units
+            per-axis in the operational frame (e.g. "stiff along the
+            insertion axis" stays meaningful as that frame reorients). Units
             depend on ``use_inertia_decoupling``: [1/s²] when enabled, since
             the spring-damper term is then a task-space acceleration
             premultiplied by Lambda; otherwise [N/m] on the position axes
@@ -251,12 +277,30 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             robot, an array of shape [controlled_robot_count] to set them
             individually (one ``wp.spatial_vector`` of 6 gains per robot), or
             ``None`` to read ``inputs.motion_stiffness`` each step.
-        motion_damping: Task-space velocity-error gain Kd, tool-local like
-            ``motion_stiffness``, [1/s] when ``use_inertia_decoupling`` is
-            enabled, otherwise [N·s/m] on the position axes and [N·m·s/rad]
-            on the orientation axes. Same format as ``motion_stiffness``.
+        motion_damping: Task-space velocity-error gain Kd, operational-frame-
+            local like ``motion_stiffness``, [1/s] when
+            ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] on the
+            position axes and [N·m·s/rad] on the orientation axes. Same
+            format as ``motion_stiffness``.
         use_inertia_decoupling: Premultiply the task-space spring-damper term
             by Lambda, the operational-space mass matrix.
+        operational_frame_pose_world: World pose of the operational frame —
+            the frame ``inputs.desired_tool_pose_operational``/
+            ``inputs.desired_twist_operational`` are expressed relative to,
+            and that ``motion_stiffness``/``motion_damping``/
+            ``wrench_stiffness`` are interpreted in. Need not coincide with
+            the tool's own current orientation (e.g. a frame aligned to a
+            work surface, tracked independently of how the tool is
+            oriented). Pass a ``wp.transform`` to apply the same fixed pose
+            to every robot, an array of shape [controlled_robot_count] to
+            set them individually (fixed for the controller's lifetime), or
+            ``None`` to read ``inputs.operational_frame_pose_world`` each
+            step for a time-varying frame. No default — pass
+            ``wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())``
+            explicitly for the operational frame to coincide with world
+            frame (``wp.transform_identity()`` does not type-check here —
+            it returns a dtype-generic transform, not the ``wp.float32``
+            one this controller's buffers use).
         use_partial_inertia_decoupling: Compute Lambda ignoring the coupling
             between translational and rotational inertia. Only meaningful
             when ``use_inertia_decoupling=True``.
@@ -293,8 +337,8 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             Usually the complement of ``motion_selection_axes_tool``, but
             that is not enforced — see its docstring above.
         wrench_stiffness: Contact-wrench proportional feedback gain Kp,
-            tool-local like ``motion_stiffness``, [N/m] on the force axes
-            and [N·m/rad] on the moment axes. Same format as
+            operational-frame-local like ``motion_stiffness``, [N/m] on the
+            force axes and [N·m/rad] on the moment axes. Same format as
             ``motion_stiffness``. Only meaningful when
             ``use_wrench_feedback=True``.
         use_null_space_control: Pursue a secondary joint-space posture task
@@ -339,20 +383,22 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         """Joint-space mass matrix over the controlled DOFs, shape [controlled_robot_count, max_controlled_dofs, max_controlled_dofs]; a robot with fewer than ``max_controlled_dofs`` DOFs leaves the trailing rows and columns unread. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
         gravity_force: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Gravity generalized forces [N or N·m], compact, shape [total_controlled_dofs]. ``None`` unless ``use_gravity_compensation=True``."""
-        desired_tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
-        """Desired world pose of the tool frame, shape [controlled_robot_count]."""
-        desired_twist_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
-        """Desired tool twist (linear, angular) in world coordinates [m/s, rad/s], shape [controlled_robot_count]."""
+        operational_frame_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform] | None
+        """World pose of the operational frame, shape [controlled_robot_count]. ``None`` when fixed at construction."""
+        desired_tool_pose_operational: wp.array[wp.transform] | wp.indexedarray[wp.transform]
+        """Desired tool pose, relative to the operational frame, shape [controlled_robot_count]."""
+        desired_twist_operational: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
+        """Desired tool twist (linear, angular), components expressed in the operational frame [m/s, rad/s], shape [controlled_robot_count]."""
         motion_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Task-space position/orientation-error gain Kp, tool-local, shape [controlled_robot_count]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m] / [N·m/rad]. ``None`` when gains are baked at construction."""
+        """Task-space position/orientation-error gain Kp, operational-frame-local, shape [controlled_robot_count]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m] / [N·m/rad]. ``None`` when gains are baked at construction."""
         motion_damping: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Task-space velocity-error gain Kd, tool-local, shape [controlled_robot_count]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] / [N·m·s/rad]. ``None`` when gains are baked at construction."""
+        """Task-space velocity-error gain Kd, operational-frame-local, shape [controlled_robot_count]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] / [N·m·s/rad]. ``None`` when gains are baked at construction."""
         desired_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Desired contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count] — the feedforward term, and/or the feedback setpoint. ``None`` unless wrench control is enabled."""
         measured_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count], e.g. from a 6-axis force/torque sensor. ``None`` unless ``use_wrench_feedback=True``."""
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Contact-wrench proportional feedback gain Kp, tool-local, shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
+        """Contact-wrench proportional feedback gain Kp, operational-frame-local, shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
         joint_q: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Current joint positions [m or rad], compact, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_control=True``."""
         joint_qd: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
@@ -378,6 +424,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         controlled_dofs_per_robot: wp.array[wp.int32],
         motion_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
         motion_damping: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
+        operational_frame_pose_world: wp.array[wp.transform] | wp.transform | None,
         use_inertia_decoupling: bool = True,
         use_partial_inertia_decoupling: bool = False,
         use_gravity_compensation: bool = True,
@@ -452,6 +499,9 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
 
         for name, value in (("motion_stiffness", motion_stiffness), ("motion_damping", motion_damping)):
             _validate_gain_argument(value, name, controlled_robot_count, self._device)
+        _validate_transform_argument(
+            operational_frame_pose_world, "operational_frame_pose_world", controlled_robot_count, self._device
+        )
 
         motion_selection_axes_tool_resolved = _validate_wrench_construction_arguments(
             use_wrench_feedforward=use_wrench_feedforward,
@@ -530,6 +580,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
 
         self._stiffness_baked = self._bake_gain(motion_stiffness)
         self._damping_baked = self._bake_gain(motion_damping)
+        self._operational_frame_baked = self._bake_transform(operational_frame_pose_world)
 
         def _pose_buf():
             return wp.zeros(
@@ -546,8 +597,19 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         # what array object the caller binds between steps.
         self._pose_buf = _pose_buf()
         self._twist_buf = _twist_buf()
-        self._desired_pose_buf = _pose_buf()
-        self._desired_twist_buf = _twist_buf()
+        self._operational_frame_buf: wp.array[wp.transform] | None = (
+            _pose_buf() if self._operational_frame_baked is None else None
+        )
+        # Raw ports, relative to the operational frame, fed straight into
+        # _pose_error_kernel/_task_space_pd_kernel alongside the tool's own
+        # state below -- no world-frame composition needed, since both sides
+        # of the error are already in the same (operational) frame.
+        self._desired_pose_operational_buf = _pose_buf()
+        self._desired_twist_operational_buf = _twist_buf()
+        # The tool's own current pose/twist, rotated into the operational
+        # frame once per step by _tool_state_to_operational_kernel.
+        self._tool_pose_operational_buf = _pose_buf()
+        self._tool_twist_operational_buf = _twist_buf()
         self._jacobian_buf = wp.zeros(
             (controlled_robot_count, 6, max_controlled_dofs),
             dtype=wp.float32,
@@ -768,6 +830,32 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         wp.copy(baked, value)
         return baked
 
+    def _bake_transform(self, value: wp.array[wp.transform] | wp.transform | None) -> wp.array[wp.transform] | None:
+        """Broadcast a wp.transform, or copy a per-robot array, into a fresh per-robot buffer.
+
+        Returns ``None`` for a live frame, which is read from the input
+        struct each step instead. A wp.array is already validated by
+        :func:`_validate_array`.
+        """
+        if value is None:
+            return None
+        if isinstance(value, wp.transform):
+            return wp.full(
+                self._controlled_robot_count,
+                value,
+                dtype=wp.transform,
+                device=self._device,
+                requires_grad=self._requires_grad,
+            )
+        baked = wp.zeros(
+            self._controlled_robot_count,
+            dtype=wp.transform,
+            device=self._device,
+            requires_grad=self._requires_grad,
+        )
+        wp.copy(baked, value)
+        return baked
+
     def _bake_axes(self, value: wp.array[wp.spatial_vector] | wp.spatial_vector) -> wp.array[wp.spatial_vector]:
         """Broadcast a wp.spatial_vector, or copy a per-robot array, of tool-local selection weights into a fresh buffer.
 
@@ -871,10 +959,15 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             if self._use_gravity
             else None
         )
-        inputs.desired_tool_pose_world = wp.zeros(
+        inputs.operational_frame_pose_world = (
+            wp.zeros(robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad)
+            if self._operational_frame_baked is None
+            else None
+        )
+        inputs.desired_tool_pose_operational = wp.zeros(
             robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad
         )
-        inputs.desired_twist_world = wp.zeros(
+        inputs.desired_twist_operational = wp.zeros(
             robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad
         )
         inputs.motion_stiffness = (
@@ -965,6 +1058,11 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         for name, enabled, switch in (
             ("mass_matrix", self._use_inertia, "use_inertia_decoupling"),
             ("gravity_force", self._use_gravity, "use_gravity_compensation"),
+            (
+                "operational_frame_pose_world",
+                self._operational_frame_baked is None,
+                "a live operational_frame_pose_world",
+            ),
             ("motion_stiffness", self._stiffness_baked is None, "a live motion_stiffness"),
             ("motion_damping", self._damping_baked is None, "a live motion_damping"),
             ("desired_wrench_world", self._use_wrench, "use_wrench_feedforward or use_wrench_feedback"),
@@ -1007,17 +1105,44 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             ),
             (inputs.tool_twist_world, "inputs.tool_twist_world", wp.spatial_vector, self._twist_buf),
             (
-                inputs.desired_tool_pose_world,
-                "inputs.desired_tool_pose_world",
+                inputs.desired_tool_pose_operational,
+                "inputs.desired_tool_pose_operational",
                 wp.transform,
-                self._desired_pose_buf,
+                self._desired_pose_operational_buf,
             ),
-            (inputs.desired_twist_world, "inputs.desired_twist_world", wp.spatial_vector, self._desired_twist_buf),
+            (
+                inputs.desired_twist_operational,
+                "inputs.desired_twist_operational",
+                wp.spatial_vector,
+                self._desired_twist_operational_buf,
+            ),
         ):
             _validate_array(
                 array=port, name=name, dtype=dtype, shape=(robot_count,), device=self._device, allow_indexed=True
             )
             _read_port(port, buf, robot_count, self._device)
+
+        if self._operational_frame_baked is None:
+            _validate_array(
+                array=inputs.operational_frame_pose_world,
+                name="inputs.operational_frame_pose_world",
+                dtype=wp.transform,
+                shape=(robot_count,),
+                device=self._device,
+                allow_indexed=True,
+            )
+            _read_port(inputs.operational_frame_pose_world, self._operational_frame_buf, robot_count, self._device)
+        operational_frame = (
+            self._operational_frame_baked if self._operational_frame_baked is not None else self._operational_frame_buf
+        )
+
+        wp.launch(
+            _tool_state_to_operational_kernel,
+            dim=robot_count,
+            inputs=[operational_frame, self._pose_buf, self._twist_buf],
+            outputs=[self._tool_pose_operational_buf, self._tool_twist_operational_buf],
+            device=self._device,
+        )
 
         if self._stiffness_baked is None:
             _validate_array(
@@ -1164,7 +1289,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         wp.launch(
             _pose_error_kernel,
             dim=robot_count,
-            inputs=[self._pose_buf, self._desired_pose_buf],
+            inputs=[self._tool_pose_operational_buf, self._desired_pose_operational_buf],
             outputs=[self._pose_error_buf],
             device=self._device,
         )
@@ -1172,10 +1297,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             _task_space_pd_kernel,
             dim=robot_count,
             inputs=[
-                self._pose_buf,
+                operational_frame,
                 self._pose_error_buf,
-                self._twist_buf,
-                self._desired_twist_buf,
+                self._tool_twist_operational_buf,
+                self._desired_twist_operational_buf,
                 stiffness,
                 damping,
             ],
@@ -1289,7 +1414,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 wp.launch(
                     wrench_command_kernel,
                     dim=robot_count,
-                    inputs=[self._pose_buf, self._desired_wrench_buf, self._measured_wrench_buf, wrench_stiffness],
+                    inputs=[operational_frame, self._desired_wrench_buf, self._measured_wrench_buf, wrench_stiffness],
                     outputs=[self._wrench_command_buf],
                     device=self._device,
                 )

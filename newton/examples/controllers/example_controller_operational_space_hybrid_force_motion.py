@@ -231,6 +231,8 @@ class Example:
             tool="tool_site",
             motion_stiffness=motion_stiffness,
             motion_damping=motion_damping,
+            # Commands/gains are interpreted directly in world coordinates.
+            operational_frame_pose_world=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             use_inertia_decoupling=True,
             use_gravity_compensation=True,
             use_wrench_feedforward=True,
@@ -256,7 +258,7 @@ class Example:
         # Constant across every step: bind once, before capture. desired_twist
         # is always zero -- sliders move quasi-statically, so no feedforward
         # velocity is needed.
-        self._input.desired_twist_world.assign(np.zeros((1, 6), dtype=np.float32))
+        self._input.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
         self._input.joint_q_des_null.assign(np.array(READY_POSE, dtype=np.float32))
         self._input.joint_qd_des_null.assign(np.zeros(ARM_DOFS, dtype=np.float32))
 
@@ -316,7 +318,7 @@ class Example:
         desired_pose = self._home_pose.copy()[None, :]
         desired_pose[0, 0] = self.desired_x
         desired_pose[0, 1] = self.desired_y
-        self._input.desired_tool_pose_world.assign(desired_pose)
+        self._input.desired_tool_pose_operational.assign(desired_pose)
         self._input.desired_wrench_world.assign(
             np.array([[0.0, 0.0, -self.desired_force, 0.0, 0.0, 0.0]], dtype=np.float32)
         )
