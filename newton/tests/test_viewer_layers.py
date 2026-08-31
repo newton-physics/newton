@@ -4,6 +4,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -45,6 +46,7 @@ class _RecordingViewer(ViewerNull):
         roughness=None,
         metallic=None,
         dynamic=False,
+        colors=None,
     ):
         self.mesh_calls.append((name, hidden))
 
@@ -373,6 +375,13 @@ class TestViewerLayerBackends(unittest.TestCase):
             }
             return Mock()
 
+        def add_mesh_trimesh(name, mesh):
+            captured_calls["add_mesh_trimesh"] = {
+                "name": name,
+                "mesh": mesh,
+            }
+            return Mock()
+
         def add_batched_meshes_simple(
             name,
             vertices,
@@ -398,6 +407,7 @@ class TestViewerLayerBackends(unittest.TestCase):
         scene = Mock()
         scene.captured_calls = captured_calls
         scene.add_mesh_simple = add_mesh_simple
+        scene.add_mesh_trimesh = add_mesh_trimesh
         scene.add_batched_meshes_simple = add_batched_meshes_simple
         scene.add_light_ambient = Mock()
         scene.configure_environment_map = Mock()
@@ -435,6 +445,22 @@ class TestViewerLayerBackends(unittest.TestCase):
 
         self.assertIn("/layers/solverA/mesh", viewer._meshes)
         self.assertEqual(scene.captured_calls["add_mesh_simple"]["name"], "/layers/solverA/mesh")
+
+    def test_viser_log_mesh_routes_vertex_colors_through_trimesh(self):
+        """Route per-vertex colors through Viser's color-preserving GLB path."""
+        viewer, scene = self._make_viser_viewer()
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.uint32)
+        colors = wp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=wp.vec3)
+
+        viewer.log_mesh("colored_mesh", points, indices, color=(1.0, 1.0, 0.0), colors=colors)
+
+        call = scene.captured_calls["add_mesh_trimesh"]
+        self.assertEqual(call["name"], "colored_mesh")
+        np.testing.assert_array_equal(
+            call["mesh"].visual.vertex_colors,
+            np.array([[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]], dtype=np.uint8),
+        )
 
     def test_viser_log_instances_uses_layer_namespace(self):
         viewer, scene = self._make_viser_viewer()

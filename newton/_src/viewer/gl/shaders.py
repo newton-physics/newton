@@ -38,6 +38,7 @@ shape_vertex_shader = """
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
+layout (location = 9) in vec3 aVertexColor;
 
 // column vectors of the instance transform matrix
 layout (location = 3) in vec4 aInstanceTransform0;
@@ -81,7 +82,7 @@ void main()
     if (determinant(rotation) < 0.0) normalMatrix = -normalMatrix;
     Normal = normalMatrix * aNormal;
     TexCoord = aTexCoord;
-    ObjectColor = aObjectColor;
+    ObjectColor = aObjectColor * aVertexColor;
     Material = aMaterial;
 }
 """

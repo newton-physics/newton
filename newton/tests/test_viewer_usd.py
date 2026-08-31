@@ -81,6 +81,31 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(interpolation, UsdGeom.Tokens.vertex)
         np.testing.assert_allclose(display_color, colors.numpy(), atol=1e-6)
 
+    def test_log_mesh_authors_vertex_display_colors(self):
+        """Author mesh display colors with vertex interpolation."""
+        viewer = self._make_viewer()
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        colors = wp.array(
+            [[1.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]],
+            dtype=wp.vec3,
+        )
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/colored_mesh", points, indices, color=(1.0, 1.0, 0.0), colors=colors)
+
+        mesh = UsdGeom.Mesh.Get(viewer.stage, "/root/colored_mesh")
+        display_color = UsdGeom.PrimvarsAPI(mesh).GetPrimvar("displayColor")
+        self.assertEqual(display_color.GetInterpolation(), UsdGeom.Tokens.vertex)
+        np.testing.assert_allclose(
+            np.asarray(display_color.Get(viewer._frame_index)),
+            colors.numpy(),
+            atol=1e-6,
+        )
+
     def test_reuses_existing_layer_for_same_output_path(self):
         temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
         temp_file.close()
@@ -376,6 +401,48 @@ class TestViewerUSD(unittest.TestCase):
         mesh = UsdGeom.Mesh.Get(viewer.stage, viewer._get_path("/dynamic_mesh"))
         self.assertEqual(len(mesh.GetNormalsAttr().Get(0)), 3)
         self.assertEqual(list(mesh.GetNormalsAttr().Get(1)), [])
+
+    def test_display_color_is_authored_once_while_it_stays_constant(self):
+        """Skip re-authoring displayColor on frames where the colors did not change."""
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+            color=(0.86, 0.22, 0.20),
+        )
+        model = builder.finalize(device="cpu")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            viewer = ViewerUSD(output_path=os.path.join(tmp, "out.usda"), fps=30)
+            viewer.set_model(model)
+            checked, wrote = [], []
+            inner = viewer._display_color_changed
+
+            def counting(name, colors):
+                checked.append(name)
+                changed = inner(name, colors)
+                if changed:
+                    wrote.append(name)
+                return changed
+
+            viewer._display_color_changed = counting
+
+            state = model.state()
+            for _ in range(5):
+                viewer.begin_frame(0.0)
+                viewer.log_state(state)
+                viewer.end_frame()
+            viewer.close()
+
+        # Reached on every frame, authored only on the first one per sink.
+        self.assertGreaterEqual(len(checked), 5)
+        self.assertEqual(len(wrote), len(set(wrote)))
 
 
 if __name__ == "__main__":

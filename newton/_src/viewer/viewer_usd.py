@@ -158,6 +158,20 @@ class ViewerUSD(ViewerBase):
         layer._instancers = {}  # instancer_name -> UsdGeom.PointInstancer
         layer._points = {}  # point_name -> UsdGeom.Points
         layer._texture_materials: dict[str, Any] = {}  # mesh_name -> UsdShade.Material
+        layer._display_colors = {}  # name -> last displayColor written, to skip identical samples
+
+    def _display_color_changed(self, name: str, colors) -> bool:
+        """Report whether this displayColor differs from the one last written.
+
+        Points are keyed every frame but colors are usually constant for a whole
+        take, so re-authoring an identical array would dominate the stage.
+        """
+        current = np.asarray(colors, dtype=np.float32)
+        previous = self._display_colors.get(name)
+        if previous is not None and previous.shape == current.shape and np.array_equal(previous, current):
+            return False
+        self._display_colors[name] = current.copy()
+        return True
 
     def _reset_stage(self):
         self.stage.GetRootLayer().Clear()
@@ -294,6 +308,7 @@ class ViewerUSD(ViewerBase):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Create a USD mesh prototype from vertex and index data.
@@ -314,6 +329,10 @@ class ViewerUSD(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
+            colors: Optional per-vertex RGB colors. Takes precedence over
+                ``color``. Valid textures with ``uvs`` take precedence over
+                ``colors``; handling of invalid or unsupported texture inputs
+                is backend-specific.
         """
 
         name = self._qualify(name)
@@ -322,6 +341,9 @@ class ViewerUSD(ViewerBase):
         points_np = points.numpy().astype(np.float32)
         indices_np = indices.numpy().astype(np.uint32)
         face_vertex_counts = [3] * (len(indices_np) // 3)
+        colors_np = colors.numpy().astype(np.float32) if colors is not None else None
+        if colors_np is not None and len(colors_np) != len(points_np):
+            raise ValueError("Number of colors must match number of points")
 
         if name not in self._meshes:
             self._ensure_scopes_for_path(self.stage, self._get_path(name))
@@ -356,6 +378,13 @@ class ViewerUSD(ViewerBase):
             pv_api = UsdGeom.PrimvarsAPI(mesh_prim)
             st_pv = pv_api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
             st_pv.Set(uvs_np)
+
+        if colors_np is not None and not (texture is not None and uvs is not None):
+            display_color = UsdGeom.PrimvarsAPI(mesh_prim).CreatePrimvar(
+                "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
+            )
+            if self._display_color_changed(name, colors_np):
+                display_color.Set(colors_np, self._frame_index)
 
         # Create and bind a textured material only when both texture and UVs are
         # provided — a UsdUVTexture shader with no "st" primvar would sample
@@ -780,7 +809,8 @@ class ViewerUSD(ViewerBase):
                     primvar = UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
                         "displayColor", Sdf.ValueTypeNames.Color3fArray, color_interp, 1
                     )
-                primvar.Set(colors, self._frame_index)
+                if self._display_color_changed(name, colors):
+                    primvar.Set(colors, self._frame_index)
 
             instancer.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
             return instancer.GetPath()

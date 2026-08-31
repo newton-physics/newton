@@ -115,6 +115,7 @@ def create_kernel(
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
         topology_particle_mask: wp.array[wp.bool],
+        particle_display_color: wp.array[wp.vec3f],
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
         triangle_mesh_group_roots: wp.array[wp.int32],
@@ -257,6 +258,21 @@ def create_kernel(
             albedo_color = wp.vec3f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 albedo_color = srgb_to_linear_wp(shape_colors[closest_hit.shape_index])
+            elif wp.static(state.has_particle_display_color):
+                if closest_hit.shape_index == raytrace.PARTICLES_SHAPE_ID:
+                    albedo_color = srgb_to_linear_wp(particle_display_color[closest_hit.particle_idx])
+                elif closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID:
+                    i0 = wp.mesh_get_index(triangle_mesh_id, closest_hit.face_idx * 3)
+                    i1 = wp.mesh_get_index(triangle_mesh_id, closest_hit.face_idx * 3 + 1)
+                    i2 = wp.mesh_get_index(triangle_mesh_id, closest_hit.face_idx * 3 + 2)
+                    # Interpolate authored display values before decoding, matching filtered
+                    # textures and viewer vertex colors at the shading boundary.
+                    display_color = (
+                        particle_display_color[i0] * closest_hit.bary_u
+                        + particle_display_color[i1] * closest_hit.bary_v
+                        + particle_display_color[i2] * (1.0 - closest_hit.bary_u - closest_hit.bary_v)
+                    )
+                    albedo_color = srgb_to_linear_wp(display_color)
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]

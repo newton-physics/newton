@@ -1432,6 +1432,7 @@ void main() {
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
+        colors: wp.array[wp.vec3] | None = None,
     ) -> None:
         """Log a mesh for rendering.
 
@@ -1451,6 +1452,10 @@ void main() {
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
+            colors: Optional per-vertex RGB colors. Takes precedence over
+                ``color``. Valid textures with ``uvs`` take precedence over
+                ``colors``; handling of invalid or unsupported texture inputs
+                is backend-specific.
         """
         name = self._qualify(name)
 
@@ -1468,6 +1473,7 @@ void main() {
                 roughness=roughness,
                 metallic=metallic,
                 dynamic=dynamic,
+                colors=colors,
             )
             self._mesh_prim_paths[name] = self._get_path(name)
         elif name in self._mesh_prim_paths:

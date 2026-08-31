@@ -439,6 +439,7 @@ class Model:
         "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_flags": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_world": AttributeSpec(AttributeFrequency.PARTICLE, references=AttributeFrequency.WORLD),
+        "particle_display_color": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_colors": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_world_start": AttributeSpec(
             AttributeFrequency.PARTICLE,
@@ -787,6 +788,15 @@ class Model:
         """Maximum particle velocity [m/s] (to prevent instability)."""
         self.particle_world: wp.array[wp.int32] | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
+        self.particle_display_color: wp.array[wp.vec3] | None = None
+        """Particle display RGB colors in [0, 1], shape [particle_count, 3], float.
+
+        This remains ``None`` when no particle has an authored color, allowing
+        renderers to retain their existing fallback appearance. Authoring any
+        particle materializes the whole array with white in the unauthored
+        entries, so a partially colored model leaves those fallbacks behind for
+        every particle, not only the colored ones.
+        """
         self.particle_world_start: wp.array[wp.int32] | None = None
         """Start index of the first particle per world, shape [world_count + 2], int.
 
@@ -1350,11 +1360,11 @@ class Model:
         self.constraint_mimic_count: int = 0
         """Total number of mimic constraints in the system."""
 
-        # indices of particles sharing the same color
+        # indices of particles sharing the same graph color
         self.particle_color_groups: list[wp.array[wp.int32]] = []
         """Coloring of all particles for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of particles sharing the same color."""
         self.particle_colors: wp.array[wp.int32] | None = None
-        """Color assignment for every particle."""
+        """Graph-color assignment for every particle, separate from :attr:`particle_display_color`."""
 
         self.body_color_groups: list[wp.array[wp.int32]] = []
         """Coloring of all rigid bodies for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of bodies sharing the same color."""

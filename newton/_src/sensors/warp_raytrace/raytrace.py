@@ -29,6 +29,7 @@ class ClosestHit:
     bary_u: wp.float32
     bary_v: wp.float32
     face_idx: wp.int32
+    particle_idx: wp.int32
     color: wp.vec3f
 
 
@@ -234,6 +235,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                         closest_hit.distance = hit_distance
                         closest_hit.normal = hit_normal
                         closest_hit.shape_index = PARTICLES_SHAPE_ID
+                        closest_hit.particle_idx = si
 
         return closest_hit
 
@@ -301,6 +303,10 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         closest_hit = ClosestHit()
         closest_hit.distance = max_distance
         closest_hit.shape_index = NO_HIT_SHAPE_ID
+        closest_hit.bary_u = 0.0
+        closest_hit.bary_v = 0.0
+        closest_hit.face_idx = -1
+        closest_hit.particle_idx = -1
         closest_hit.color = wp.vec3f(0.0)
 
         closest_hit = closest_hit_triangle_mesh(
@@ -474,6 +480,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                     if hit_dist > -1.0 and hit_dist < closest_hit.distance:
                         closest_hit.distance = hit_dist
                         closest_hit.shape_index = PARTICLES_SHAPE_ID
+                        closest_hit.particle_idx = si
 
         return closest_hit
 
@@ -494,7 +501,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                 if group_root < 0:
                     continue
 
-                hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh_no_normal(
+                hit_dist, _normal, bary_u, bary_v, face_idx = raycast.ray_intersect_mesh_no_normal(
                     ray_origin_world,
                     ray_dir_world,
                     wp.vec3f(1.0),
@@ -506,6 +513,9 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                 if hit_dist >= 0.0:
                     closest_hit.distance = hit_dist
                     closest_hit.shape_index = TRIANGLE_MESH_SHAPE_ID
+                    closest_hit.bary_u = bary_u
+                    closest_hit.bary_v = bary_v
+                    closest_hit.face_idx = face_idx
 
         return closest_hit
 
@@ -539,6 +549,10 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         closest_hit = ClosestHit()
         closest_hit.distance = max_distance
         closest_hit.shape_index = NO_HIT_SHAPE_ID
+        closest_hit.bary_u = 0.0
+        closest_hit.bary_v = 0.0
+        closest_hit.face_idx = -1
+        closest_hit.particle_idx = -1
 
         closest_hit = closest_hit_triangle_mesh_depth_only(
             closest_hit, triangle_mesh_id, triangle_mesh_group_roots, world_index, ray_origin_world, ray_dir_world
