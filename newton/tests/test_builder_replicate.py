@@ -354,11 +354,13 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
             expected_builder = ModelBuilder()
             expected_builder.replicate(source, _REPLICATE_WORLD_COUNT, spacing=(2.0, 3.0, 0.0))
-            expected = expected_builder.finalize(device="cpu")
+            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
+                expected = expected_builder.finalize(device="cpu")
 
-            actual = ModelBuilder().replicate_and_finalize(
-                source, _REPLICATE_WORLD_COUNT, spacing=(2.0, 3.0, 0.0), device="cpu"
-            )
+            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
+                actual = ModelBuilder().replicate_and_finalize(
+                    source, _REPLICATE_WORLD_COUNT, spacing=(2.0, 3.0, 0.0), device="cpu"
+                )
 
         self.assert_models_equal(expected, actual)
 
