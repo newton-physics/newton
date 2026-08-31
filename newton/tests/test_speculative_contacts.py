@@ -886,7 +886,9 @@ def test_speculative_contacts_prevent_dynamic_tunneling(test, device):
         state_in = model.state()
         state_out = model.state()
         pipeline.collide(state_in, contacts, dt=dt)
-        newton.solvers.SolverXPBD(model, iterations=5).step(state_in, state_out, None, contacts, dt)
+        newton.solvers.SolverXPBD(model, iterations=5, enable_restitution=True).step(
+            state_in, state_out, None, contacts, dt
+        )
         return float(state_out.body_q.numpy()[body, 2])
 
     test.assertLess(step(False), 0.0)

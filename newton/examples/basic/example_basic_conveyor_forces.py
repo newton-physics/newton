@@ -827,7 +827,7 @@ class Example:
                 rigid_body_contact_buffer_size=64,
             )
         else:
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=XPBD_ITERATIONS)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=XPBD_ITERATIONS, enable_restitution=True)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

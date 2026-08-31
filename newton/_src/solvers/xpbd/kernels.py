@@ -2189,7 +2189,6 @@ def solve_body_contact_positions(
     shape_material_mu: wp.array[float],
     shape_material_mu_torsional: wp.array[float],
     shape_material_mu_rolling: wp.array[float],
-    shape_material_restitution: wp.array[float],
     relaxation: float,
     dt: float,
     # outputs
@@ -2197,7 +2196,6 @@ def solve_body_contact_positions(
     contact_inv_weight: wp.array[float],
     contact_impulse: wp.array[wp.spatial_vector],
     restitution_contact_active: wp.array[wp.int32],
-    restitution_contact_inv_weight: wp.array[float],
 ):
     tid = wp.tid()
 
@@ -2237,13 +2235,7 @@ def solve_body_contact_positions(
         return
 
     if restitution_contact_active:
-        if restitution_contact_active[tid] == 0:
-            restitution_contact_active[tid] = 1
-            if restitution_contact_inv_weight:
-                if body_a >= 0:
-                    wp.atomic_add(restitution_contact_inv_weight, body_a, 1.0)
-                if body_b >= 0:
-                    wp.atomic_add(restitution_contact_inv_weight, body_b, 1.0)
+        restitution_contact_active[tid] = 1
 
     m_inv_a = 0.0
     m_inv_b = 0.0
@@ -2562,162 +2554,6 @@ def convert_joint_impulse_to_parent_f(
     wp.atomic_add(body_parent_f, id_c, wp.spatial_vector(f, tau))
 
 
-@wp.kernel
-def apply_rigid_restitution(
-    body_qd: wp.array[wp.spatial_vector],
-    body_q_pre_solve: wp.array[wp.transform],
-    body_qd_pre_solve: wp.array[wp.spatial_vector],
-    body_com: wp.array[wp.vec3],
-    body_m_inv: wp.array[float],
-    body_I_inv: wp.array[wp.mat33],
-    body_world: wp.array[wp.int32],
-    shape_body: wp.array[int],
-    contact_count: wp.array[int],
-    restitution_contact_active: wp.array[wp.int32],
-    contact_normal: wp.array[wp.vec3],
-    contact_shape0: wp.array[int],
-    contact_shape1: wp.array[int],
-    shape_material_restitution: wp.array[float],
-    contact_point0: wp.array[wp.vec3],
-    contact_point1: wp.array[wp.vec3],
-    contact_offset0: wp.array[wp.vec3],
-    contact_offset1: wp.array[wp.vec3],
-    gravity: wp.array[wp.vec3],
-    dt: float,
-    # outputs
-    deltas: wp.array[wp.spatial_vector],
-):
-    tid = wp.tid()
-
-    count = contact_count[0]
-    if tid >= count:
-        return
-    if restitution_contact_active[tid] == 0:
-        return
-    shape_a = contact_shape0[tid]
-    shape_b = contact_shape1[tid]
-    if shape_a == shape_b:
-        return
-    body_a = -1
-    body_b = -1
-
-    # use average contact material properties
-    mat_nonzero = 0
-    restitution = 0.0
-    if shape_a >= 0:
-        mat_nonzero += 1
-        restitution += shape_material_restitution[shape_a]
-        body_a = shape_body[shape_a]
-    if shape_b >= 0:
-        mat_nonzero += 1
-        restitution += shape_material_restitution[shape_b]
-        body_b = shape_body[shape_b]
-    if mat_nonzero > 0:
-        restitution /= float(mat_nonzero)
-    if restitution <= 0.0:
-        return
-    if body_a == body_b:
-        return
-
-    m_inv_a = 0.0
-    m_inv_b = 0.0
-    I_inv_a = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    I_inv_b = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    # body to world transform
-    X_wb_a_pre_solve = wp.transform_identity()
-    X_wb_b_pre_solve = wp.transform_identity()
-    # center of mass in body frame
-    com_a = wp.vec3(0.0)
-    com_b = wp.vec3(0.0)
-    # pre-solve velocity at contact points
-    v_a = wp.vec3(0.0)
-    v_b = wp.vec3(0.0)
-    # new velocity at contact points
-    v_a_new = wp.vec3(0.0)
-    v_b_new = wp.vec3(0.0)
-    # inverse mass used to compute the impulse
-    inv_mass = 0.0
-    gravity_magnitude = 0.0
-
-    if body_a >= 0:
-        X_wb_a_pre_solve = body_q_pre_solve[body_a]
-        m_inv_a = body_m_inv[body_a]
-        I_inv_a = body_I_inv[body_a]
-        com_a = body_com[body_a]
-
-    if body_b >= 0:
-        X_wb_b_pre_solve = body_q_pre_solve[body_b]
-        m_inv_b = body_m_inv[body_b]
-        I_inv_b = body_I_inv[body_b]
-        com_b = body_com[body_b]
-
-    # compute body position in world space
-    bx_a = contact_surface_point(X_wb_a_pre_solve, contact_point0[tid], contact_offset0[tid])
-    bx_b = contact_surface_point(X_wb_b_pre_solve, contact_point1[tid], contact_offset1[tid])
-
-    n = contact_normal[tid]
-
-    r_a = bx_a - wp.transform_point(X_wb_a_pre_solve, com_a)
-    r_b = bx_b - wp.transform_point(X_wb_b_pre_solve, com_b)
-
-    rxn_a = wp.vec3(0.0)
-    rxn_b = wp.vec3(0.0)
-    if body_a >= 0:
-        world_idx_a = body_world[body_a]
-        world_a_g = gravity[world_idx_a]
-        gravity_magnitude = wp.max(gravity_magnitude, wp.length(world_a_g))
-        v_a = velocity_at_point(body_qd_pre_solve[body_a], r_a)
-        v_a_new = velocity_at_point(body_qd[body_a], r_a)
-        q_a = wp.transform_get_rotation(X_wb_a_pre_solve)
-        rxn_a = wp.quat_rotate_inv(q_a, wp.cross(r_a, n))
-        # Eq. 2
-        inv_mass_a = m_inv_a + wp.dot(rxn_a, I_inv_a * rxn_a)
-        inv_mass += inv_mass_a
-    if body_b >= 0:
-        world_idx_b = body_world[body_b]
-        world_b_g = gravity[world_idx_b]
-        gravity_magnitude = wp.max(gravity_magnitude, wp.length(world_b_g))
-        v_b = velocity_at_point(body_qd_pre_solve[body_b], r_b)
-        v_b_new = velocity_at_point(body_qd[body_b], r_b)
-        q_b = wp.transform_get_rotation(X_wb_b_pre_solve)
-        rxn_b = wp.quat_rotate_inv(q_b, wp.cross(r_b, n))
-        # Eq. 3
-        inv_mass_b = m_inv_b + wp.dot(rxn_b, I_inv_b * rxn_b)
-        inv_mass += inv_mass_b
-
-    if inv_mass == 0.0:
-        return
-
-    # Eq. 29 — relative velocity of B w.r.t. A along the A-to-B normal
-    rel_vel_old = wp.dot(n, v_b - v_a)
-    rel_vel_new = wp.dot(n, v_b_new - v_a_new)
-
-    if rel_vel_old >= 0.0:
-        return
-
-    # Suppress velocity impulses for resting contacts using the paper's
-    # acceleration-based impact threshold (Section 3.6).
-    if -rel_vel_old <= 2.0 * gravity_magnitude * dt:
-        return
-
-    # Eq. 34. Parallel contact updates are averaged per body and iterated by
-    # the caller so contacts in the same manifold converge without overshoot.
-    dv = (-rel_vel_new - restitution * rel_vel_old) / inv_mass
-
-    # Eq. 33 — push A in -n direction, B in +n direction
-    if body_a >= 0:
-        dv_a = -dv
-        q_a = wp.transform_get_rotation(X_wb_a_pre_solve)
-        dq = wp.quat_rotate(q_a, I_inv_a * rxn_a * dv_a)
-        wp.atomic_add(deltas, body_a, wp.spatial_vector(n * m_inv_a * dv_a, dq))
-
-    if body_b >= 0:
-        dv_b = dv
-        q_b = wp.transform_get_rotation(X_wb_b_pre_solve)
-        dq = wp.quat_rotate(q_b, I_inv_b * rxn_b * dv_b)
-        wp.atomic_add(deltas, body_b, wp.spatial_vector(n * m_inv_b * dv_b, dq))
-
-
 # Maximum number of contacts the restitution solve keeps per manifold.
 # Manifolds larger than the cap are reduced to a bounded best-K subset by
 # select_manifold_contacts (deepest anchor + greedy position/normal spread),
@@ -2779,12 +2615,12 @@ def build_restitution_manifolds(
     * ``contact_n_K``: contact normal and effective inverse mass
       ``K = m_inv + (r x n)^T I^-1 (r x n)`` summed over both bodies.
     * ``contact_axn_lo_target``: ``r_lo x n`` (world) and the restitution
-      target ``-e * rel_vel_old`` for an impact, the anchored separating
-      velocity for an already-separating contact, or zero for a fully
-      inelastic impact.
+      target ``-e * rel_vel_old`` for an impact, or the anchored velocity for
+      an already-separating penetrating contact.
     * ``contact_axn_hi_sigma``: ``r_hi x n`` (world) and the normal sign
-      ``sigma`` for the lower-indexed body (-1 when it is the shape0 side),
-      with the resting threshold packed into its magnitude.
+      ``sigma`` for the lower-indexed body (-1 when it is the shape0 side).
+      A magnitude of 2 marks an already-separating contact, which only needs
+      its positional correction removed on the first outer iteration.
     * ``contact_pos_depth``: world mid-surface contact point and the
       pre-solve penetration depth (larger = deeper), consumed by the
       best-K selection.
@@ -2844,14 +2680,14 @@ def build_restitution_manifolds(
         I_inv_lo = body_I_inv[lo]
         com_lo = body_com[lo]
         qd_lo_pre = body_qd_pre_solve[lo]
-        gravity_magnitude = wp.max(gravity_magnitude, wp.length(gravity[wp.max(body_world[lo], 0)]))
+        gravity_magnitude = wp.max(gravity_magnitude, wp.length(gravity[body_world[lo]]))
     if hi >= 0:
         X_hi = body_q_pre_solve[hi]
         m_inv_hi = body_m_inv[hi]
         I_inv_hi = body_I_inv[hi]
         com_hi = body_com[hi]
         qd_hi_pre = body_qd_pre_solve[hi]
-        gravity_magnitude = wp.max(gravity_magnitude, wp.length(gravity[wp.max(body_world[hi], 0)]))
+        gravity_magnitude = wp.max(gravity_magnitude, wp.length(gravity[body_world[hi]]))
 
     p_lo = contact_point1[tid]
     o_lo = contact_offset1[tid]
@@ -2885,16 +2721,22 @@ def build_restitution_manifolds(
     if inv_mass == 0.0:
         return
     impact_threshold = 2.0 * gravity_magnitude * dt
-    target = 0.0
+    # Use a wider dead band on the separating side. Small velocity reversals
+    # across coupled resting manifolds otherwise feed positional jitter back
+    # through the restitution pass and destabilize stacks.
+    separating_threshold = 8.0 * impact_threshold
+    if rel_vel_old >= -impact_threshold and rel_vel_old <= separating_threshold:
+        return
+
+    target = rel_vel_old
+    sigma_record = 2.0 * sigma
     if rel_vel_old < -impact_threshold:
         target = -restitution * rel_vel_old
-    elif rel_vel_old > impact_threshold:
-        if restitution > 0.0:
-            target = rel_vel_old
+        sigma_record = sigma
 
     contact_n_K[tid] = wp.vec4(n[0], n[1], n[2], inv_mass)
     contact_axn_lo_target[tid] = wp.vec4(axn_lo[0], axn_lo[1], axn_lo[2], target)
-    contact_axn_hi_sigma[tid] = wp.vec4(axn_hi[0], axn_hi[1], axn_hi[2], sigma * (1.0 + impact_threshold))
+    contact_axn_hi_sigma[tid] = wp.vec4(axn_hi[0], axn_hi[1], axn_hi[2], sigma_record)
     bx_lo = contact_surface_point(X_lo, p_lo, o_lo)
     bx_hi = contact_surface_point(X_hi, p_hi, o_hi)
     p_mid = 0.5 * (bx_lo + bx_hi)
@@ -3100,7 +2942,7 @@ def solve_manifold_restitution(
     manifold's net velocity change is written to ``deltas`` with atomics and
     averaged per body by the caller over manifolds that fired
     (``body_manifold_count``). Restitution targets stay anchored to the
-    pre-solve velocities, matching :func:`apply_rigid_restitution` semantics.
+    pre-solve velocities throughout the substep.
     """
     tid = wp.tid()
 
@@ -3197,13 +3039,12 @@ def solve_manifold_restitution(
             target = d_lot[3]
             d_his = contact_axn_hi_sigma[c]
             axn_hi = wp.vec3(d_his[0], d_his[1], d_his[2])
-            sigma_threshold = d_his[3]
-            sigma = wp.sign(sigma_threshold)
-            impact_threshold = wp.abs(sigma_threshold) - 1.0
+            separating_contact = wp.abs(d_his[3]) > 1.5
+            if separating_contact and outer_iteration > 0:
+                continue
+            sigma = wp.sign(d_his[3])
 
             rel_vel_new = sigma * (wp.dot(n, v_lo) + wp.dot(axn_lo, w_lo) - wp.dot(n, v_hi) - wp.dot(axn_hi, w_hi))
-            if target == 0.0 and wp.abs(rel_vel_new) <= impact_threshold:
-                continue
             dv = (target - rel_vel_new) / k_eff
             new_acc = wp.max(lambda_acc[k] + dv, lambda_min[k])
             d_lambda = new_acc - lambda_acc[k]

@@ -883,7 +883,7 @@ class TestHeightfield(unittest.TestCase):
             builder.gravity = wp.vec3(0.0, 0.0, -9.81)
 
             model = builder.finalize()
-            solver = newton.solvers.SolverXPBD(model, iterations=10)
+            solver = newton.solvers.SolverXPBD(model, iterations=10, enable_restitution=True)
             pipeline = newton.CollisionPipeline(model)
             contacts = pipeline.contacts()
             state_0, state_1 = model.state(), model.state()

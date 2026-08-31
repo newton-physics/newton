@@ -96,7 +96,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
     .. code-block:: python
 
-        solver = newton.solvers.SolverXPBD(model)
+        solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
 
         # simulation loop
         for i in range(100):
@@ -181,8 +181,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
         if rigid_contact_restitution_iterations < 1:
             raise ValueError("rigid_contact_restitution_iterations must be at least 1")
         self.rigid_contact_restitution_iterations = rigid_contact_restitution_iterations
-        # Gauss-Seidel sweeps inside the per-manifold restitution solve
-        # (prototype knob, see kernels.solve_manifold_restitution).
+        # Fixed Gauss-Seidel sweeps inside the per-manifold restitution solve.
         self._restitution_manifold_inner_iterations = 8
         self.rigid_contact_con_weighting = rigid_contact_con_weighting
 
@@ -403,7 +402,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
         rigid_contact_inv_weight = None
         restitution_contact_active = None
-        restitution_contact_inv_weight = None
         restitution_manifold_key = None
         restitution_manifold_size = None
         restitution_manifold_contact = None
@@ -425,7 +423,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 rigid_contact_inv_weight = wp.zeros(model.body_count, dtype=float, device=model.device)
             if self.enable_restitution and self._rigid_restitution_enabled and model.body_count:
                 restitution_contact_active = wp.zeros(contacts.rigid_contact_max, dtype=wp.int32, device=model.device)
-                restitution_contact_inv_weight = wp.zeros(model.body_count, dtype=float, device=model.device)
                 # manifold hash table (one slot may host every contact, so
                 # capacity == contact capacity guarantees insertion succeeds)
                 restitution_manifold_key = wp.zeros(contacts.rigid_contact_max, dtype=wp.int64, device=model.device)
@@ -716,7 +713,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                 model.shape_material_mu,
                                 model.shape_material_mu_torsional,
                                 model.shape_material_mu_rolling,
-                                model.shape_material_restitution,
                                 self.rigid_contact_relaxation,
                                 dt,
                             ],
@@ -725,7 +721,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                 rigid_contact_inv_weight,
                                 contact_impulse_iter,
                                 restitution_contact_active,
-                                restitution_contact_inv_weight,
                             ],
                             device=model.device,
                         )
