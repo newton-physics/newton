@@ -79,8 +79,11 @@ to locate a joint's slice in the per-DOF arrays.
 
 For free and D6 joints, Newton stores linear DOFs before angular DOFs in per-axis arrays. In
 particular, floating-base slices of :attr:`newton.State.joint_qd`, :attr:`newton.Control.joint_f`,
-:attr:`newton.Control.joint_target_q`, and :attr:`newton.Control.joint_target_qd` use
+and :attr:`newton.Control.joint_target_qd` use
 ``(linear, angular)`` ordering, whereas ``warp.sim`` used ``(ang_vel, lin_vel)``.
+:attr:`newton.Control.joint_target_q` keeps that ordering but follows :attr:`newton.State.joint_q`:
+a free joint occupies 7 coordinates ``(position, quaternion)``, not 6 DOFs. It is DOF-shaped like
+the others only under the deprecated layout; see :ref:`joint-target-layout`.
 For public ``FREE`` and ``DISTANCE`` joints, :attr:`newton.State.joint_qd`
 stores the child-COM twist in the joint parent frame, while
 :attr:`newton.Control.joint_f` stores the world-frame COM wrench
