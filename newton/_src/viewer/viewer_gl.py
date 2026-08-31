@@ -514,14 +514,16 @@ class ViewerGL(ViewerBase):
 
         Args:
             name: Unique gizmo path/name.
-            transform: Gizmo world transform.
+            transform: Gizmo world transform with translation [m] and a
+                unitless rotation quaternion.
             translate: Axes on which the translation handles are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
-            snap_to: Optional world transform to snap to when this gizmo is
+            snap_to: Optional world transform with translation [m] and a
+                unitless rotation quaternion to apply when this gizmo is
                 released by the user.
         """
         axis_order = (Axis.X, Axis.Y, Axis.Z)
@@ -895,14 +897,32 @@ class ViewerGL(ViewerBase):
         Set the camera position, pitch, and yaw.
 
         Args:
-            pos: The camera position.
-            pitch: The camera pitch.
-            yaw: The camera yaw.
+            pos: Camera position [m].
+            pitch: Camera pitch angle [deg].
+            yaw: Camera yaw angle [deg].
         """
         self.camera.pos = self.camera._as_vec3(pos)
         self.camera.pitch = max(min(pitch, 89.0), -89.0)
         self.camera.yaw = (yaw + 180.0) % 360.0 - 180.0
         self.camera.sync_pivot_to_view()
+
+    @override
+    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, fov: float | None = None):
+        """Set the camera position, orbit target, and optional field of view.
+
+        Args:
+            pos: Camera position [m].
+            target: World-space orbit target [m].
+            fov: Optional vertical field of view [deg].
+        """
+        position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
+        target_np = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
+        if not np.all(np.isfinite(position)) or not np.all(np.isfinite(target_np)):
+            raise ValueError("Camera position and target must be finite")
+        self.camera.pos = self.camera._as_vec3(position)
+        self.camera.look_at(target_np)
+        if fov is not None:
+            self.camera.fov = float(fov)
 
     @override
     def log_mesh(

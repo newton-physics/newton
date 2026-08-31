@@ -1,0 +1,1 @@
+Add transform gizmos, live scalar plots and efficiently transported images, picking handles with anchor lines, native visualization and example controls, atomic frame updates, and an example browser to `ViewerViser`.

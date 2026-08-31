@@ -1,0 +1,1 @@
+Keep `ViewerViser` gizmos at a fixed screen size, scale contact visualization from rigid-shape dimensions, refresh cached static shapes after layer or world-layout changes, and route picking through the layer that owns the interaction.

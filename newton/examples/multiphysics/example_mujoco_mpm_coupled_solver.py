@@ -172,7 +172,7 @@ class Example:
         self.control = self.model.control()
 
         newton.examples.configure_coupled_view(self, args)
-        if isinstance(self.viewer, newton.viewer.ViewerGL):
+        if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
         self.viewer.show_particles = True
         self.show_impulses = False

@@ -184,6 +184,37 @@ def update_shape_xforms(
 
 
 @wp.kernel
+def update_model_shape_xforms(
+    shape_xforms: wp.array[wp.transform],
+    shape_parents: wp.array[int],
+    body_q: wp.array[wp.transform],
+    shape_worlds: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
+    slot_to_shape: wp.array[wp.int32],
+    world_xforms: wp.array[wp.transform],
+):
+    """Compute model shape transforms in viewer batch order."""
+    slot = wp.tid()
+    shape = slot_to_shape[slot]
+    shape_xform = shape_xforms[shape]
+    shape_parent = shape_parents[shape]
+
+    if shape_parent >= 0:
+        world_xform = wp.transform_multiply(body_q[shape_parent], shape_xform)
+    else:
+        world_xform = shape_xform
+
+    if world_offsets:
+        shape_world = shape_worlds[shape]
+        if shape_world >= 0 and shape_world < world_offsets.shape[0]:
+            offset = world_offsets[shape_world]
+            world_xform = wp.transform(world_xform.p + offset, world_xform.q)
+
+    world_xforms[slot] = wp.transform_multiply(layer_xform, world_xform)
+
+
+@wp.kernel
 def repack_shape_colors(
     shape_colors: wp.array[wp.vec3],
     slot_to_shape: wp.array[wp.int32],
@@ -211,8 +242,15 @@ def estimate_world_extents(
     # Get shape's world assignment
     world_idx = shape_world[tid]
 
-    # Skip global shapes (world -1) or invalid world indices
-    if world_idx < 0 or world_idx >= world_count:
+    # A regular single-world model stores its shapes as global (world -1).
+    # Attribute those shapes to its only world so they contribute to bounds.
+    # In replicated models global shapes remain outside the per-world layout.
+    if world_idx < 0:
+        if world_count == 1:
+            world_idx = 0
+        else:
+            return
+    elif world_idx >= world_count:
         return
 
     # Get collision radius and skip shapes with unreasonably large radii

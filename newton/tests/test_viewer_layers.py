@@ -362,6 +362,36 @@ class TestViewerLayerBackends(unittest.TestCase):
     def _make_viser_viewer(self):
         captured_calls = {}
 
+        class GuiHandle:
+            def __init__(self, value=None, disabled=False):
+                self.value = value
+                self.disabled = disabled
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def on_update(self, callback):
+                return callback
+
+            def on_click(self, callback):
+                return callback
+
+            def remove(self):
+                return None
+
+        class Gui:
+            def add_folder(self, _name, **_kwargs):
+                return GuiHandle()
+
+            def add_checkbox(self, _label, initial_value, **_kwargs):
+                return GuiHandle(initial_value)
+
+            def add_button(self, _label, **kwargs):
+                return GuiHandle(disabled=kwargs.get("disabled", False))
+
         def add_mesh_simple(name, vertices, faces, color, wireframe, side):
             captured_calls["add_mesh_simple"] = {
                 "name": name,
@@ -404,8 +434,10 @@ class TestViewerLayerBackends(unittest.TestCase):
 
         server = Mock()
         server.scene = scene
+        server.gui = Gui()
         server.on_client_connect = Mock()
         server.on_client_disconnect = Mock()
+        server.get_clients = Mock(return_value={})
         server.get_scene_serializer = Mock(return_value=None)
         server.stop = Mock()
 

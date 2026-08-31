@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import collections
 import inspect
+import logging
 import os
+import queue
 import warnings
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import numpy as np
@@ -16,9 +19,30 @@ import warp as wp
 
 import newton
 
-from ..core.types import override
+from ..core.types import Axis, override
 from ..utils.texture import load_texture, normalize_texture
+from .camera import Camera
+from .gl.image_logger import (
+    _atlas_layout,
+    _convert_to_packed_rgba_numpy,
+    _pack_rgba_warp,
+    _to_canonical_4d_wp,
+    _validate,
+)
+from .picking import Picking
+from .transform import (
+    transform_assign_position_wxyz,
+    transform_inverse,
+    transform_point,
+    transform_to_position_wxyz,
+    transform_vector,
+)
 from .viewer import ViewerBase, is_jupyter_notebook
+
+# ViewerGL uses 0.07 clip-space units; 56 px matches that at an 800 px viewport.
+_GIZMO_SCALE_PX = 56.0
+
+_logger = logging.getLogger(__name__)
 
 
 class ViewerViser(ViewerBase):
@@ -34,10 +58,285 @@ class ViewerViser(ViewerBase):
         - Jupyter notebook integration with inline display
         - Static HTML export for sharing visualizations
         - Interactive camera controls
+        - Interactive transform gizmos and live scalar plots
+        - Picking forces through click-to-create translation handles
+
+    Click a rendered body to create a picking handle at the hit point. Drag
+    the handle to apply a spring force; releasing the handle drops the body.
+    A cyan line connects the moving body anchor to the handle target.
     """
 
     _viser_module = None
+    _IMAGE_JPEG_QUALITY = 90
     _SH_C0 = 0.28209479177387814
+
+    class _ImmediateGuiAdapter:
+        """Translate the examples' immediate-mode controls to native Viser GUI handles."""
+
+        class WindowFlags_:
+            class _Flag:
+                value = 0
+
+            no_title_bar = _Flag()
+            no_mouse_inputs = _Flag()
+            no_scrollbar = _Flag()
+
+        _MISSING = object()
+
+        def __init__(self, viewer: ViewerViser):
+            self._viewer = viewer
+            self._callback_id = -1
+            self._widget_index = 0
+            # This is not an ImGui context. ViewerGL-only extensions can use
+            # this flag to decline registration while common controls still
+            # work through the callback argument.
+            self.is_available = False
+
+        def begin_callback(self, callback_id: int) -> None:
+            self._callback_id = callback_id
+            self._widget_index = 0
+
+        def end_callback(self) -> None:
+            stale = [
+                key
+                for key in self._viewer._example_gui_handles
+                if key[0] == self._callback_id and key[1] >= self._widget_index
+            ]
+            for key in stale:
+                _kind, handle = self._viewer._example_gui_handles.pop(key)
+                self._viewer._example_gui_pending.pop(key, None)
+                try:
+                    handle.remove()
+                except Exception:
+                    pass
+
+        def _next_handle(self, kind: str, create: Callable[[tuple[int, int]], Any]) -> tuple[tuple[int, int], Any]:
+            key = (self._callback_id, self._widget_index)
+            self._widget_index += 1
+            existing = self._viewer._example_gui_handles.get(key)
+            if existing is not None and existing[0] == kind:
+                return key, existing[1]
+            if existing is not None:
+                try:
+                    existing[1].remove()
+                except Exception:
+                    pass
+            handle = create(key)
+            self._viewer._example_gui_handles[key] = (kind, handle)
+            return key, handle
+
+        def _add(self, factory: Callable[[], Any]) -> Any:
+            folder = self._viewer._ensure_example_gui_folder()
+            with folder:
+                return factory()
+
+        @staticmethod
+        def _sync(handle: Any, name: str, value: Any) -> None:
+            if getattr(handle, name, None) != value:
+                setattr(handle, name, value)
+
+        def _consume(self, key: tuple[int, int], handle: Any, current: Any) -> tuple[bool, Any]:
+            value = self._viewer._example_gui_pending.pop(key, self._MISSING)
+            if value is self._MISSING:
+                self._sync(handle, "value", current)
+                return False, current
+            return True, value
+
+        def _queue_updates(self, handle: Any, key: tuple[int, int], cast: Callable[[Any], Any]) -> None:
+            @handle.on_update
+            def _on_update(event):
+                if event.client_id is not None:
+                    self._viewer._interaction_events.put(("example_gui", key, cast(event.target.value)))
+
+        @staticmethod
+        def _float_step(format: str | None, minimum: float, maximum: float) -> float:
+            if format is not None:
+                marker = format.find("%.")
+                suffix = format.find("f", marker + 2) if marker >= 0 else -1
+                if suffix > marker:
+                    precision = format[marker + 2 : suffix]
+                    if precision.isdigit():
+                        return 10.0 ** -int(precision)
+            return max(abs(float(maximum) - float(minimum)) / 100.0, 1.0e-6)
+
+        def text(self, value: Any) -> None:
+            content = str(value)
+
+            def create(_key):
+                return self._add(lambda: self._viewer._server.gui.add_markdown(content))
+
+            _key, handle = self._next_handle("text", create)
+            self._sync(handle, "content", content)
+
+        def separator(self) -> None:
+            self._next_handle("separator", lambda _key: self._add(self._viewer._server.gui.add_divider))
+
+        def checkbox(self, label: str, value: bool) -> tuple[bool, bool]:
+            def create(key):
+                handle = self._add(lambda: self._viewer._server.gui.add_checkbox(label, initial_value=bool(value)))
+                self._queue_updates(handle, key, bool)
+                return handle
+
+            key, handle = self._next_handle("checkbox", create)
+            self._sync(handle, "label", label)
+            changed, new_value = self._consume(key, handle, bool(value))
+            return changed, bool(new_value)
+
+        def radio_button(self, label: str, active: bool) -> bool:
+            def create(key):
+                handle = self._add(lambda: self._viewer._server.gui.add_checkbox(label, initial_value=bool(active)))
+                self._queue_updates(handle, key, bool)
+                return handle
+
+            key, handle = self._next_handle("radio", create)
+            self._sync(handle, "label", label)
+            changed, new_value = self._consume(key, handle, bool(active))
+            return changed and bool(new_value)
+
+        def slider_float(
+            self,
+            label: str,
+            value: float,
+            minimum: float,
+            maximum: float,
+            format: str = "%.3f",
+            **_kwargs,
+        ) -> tuple[bool, float]:
+            step = self._float_step(format, minimum, maximum)
+
+            def create(key):
+                handle = self._add(
+                    lambda: self._viewer._server.gui.add_slider(
+                        label,
+                        min=float(minimum),
+                        max=float(maximum),
+                        step=step,
+                        initial_value=float(value),
+                    )
+                )
+                self._queue_updates(handle, key, float)
+                return handle
+
+            key, handle = self._next_handle("slider_float", create)
+            self._sync(handle, "label", label)
+            self._sync(handle, "min", float(minimum))
+            self._sync(handle, "max", float(maximum))
+            self._sync(handle, "step", step)
+            changed, new_value = self._consume(key, handle, float(value))
+            return changed, float(new_value)
+
+        def slider_int(
+            self,
+            label: str,
+            value: int,
+            minimum: int,
+            maximum: int,
+            _format: str = "%d",
+            **_kwargs,
+        ) -> tuple[bool, int]:
+            def create(key):
+                handle = self._add(
+                    lambda: self._viewer._server.gui.add_slider(
+                        label,
+                        min=int(minimum),
+                        max=int(maximum),
+                        step=1,
+                        initial_value=int(value),
+                    )
+                )
+                self._queue_updates(handle, key, int)
+                return handle
+
+            key, handle = self._next_handle("slider_int", create)
+            self._sync(handle, "label", label)
+            self._sync(handle, "min", int(minimum))
+            self._sync(handle, "max", int(maximum))
+            changed, new_value = self._consume(key, handle, int(value))
+            return changed, int(new_value)
+
+        def input_float(
+            self,
+            label: str,
+            value: float,
+            _step: float = 0.0,
+            _step_fast: float = 0.0,
+            format: str = "%.3f",
+            **_kwargs,
+        ) -> tuple[bool, float]:
+            step = self._float_step(format, 0.0, 1.0)
+
+            def create(key):
+                handle = self._add(
+                    lambda: self._viewer._server.gui.add_number(
+                        label,
+                        initial_value=float(value),
+                        step=step,
+                    )
+                )
+                self._queue_updates(handle, key, float)
+                return handle
+
+            key, handle = self._next_handle("input_float", create)
+            self._sync(handle, "label", label)
+            self._sync(handle, "step", step)
+            changed, new_value = self._consume(key, handle, float(value))
+            return changed, float(new_value)
+
+        # Minimal no-op window helpers keep callbacks that add an optional
+        # ImGui overlay from failing when their shared controls are used.
+        @staticmethod
+        def ImVec2(x: float, y: float) -> tuple[float, float]:
+            return (float(x), float(y))
+
+        @staticmethod
+        def calc_text_size(value: str) -> tuple[float, float]:
+            return (float(len(value) * 7), 14.0)
+
+        @staticmethod
+        def set_next_window_pos(*_args, **_kwargs) -> None:
+            return None
+
+        @staticmethod
+        def set_next_window_size(*_args, **_kwargs) -> None:
+            return None
+
+        @staticmethod
+        def set_cursor_pos(*_args, **_kwargs) -> None:
+            return None
+
+        @staticmethod
+        def begin(*_args, **_kwargs) -> bool:
+            return True
+
+        @staticmethod
+        def end() -> None:
+            return None
+
+    @property
+    def picking_enabled(self) -> bool:
+        """Whether rendered bodies can be selected for force picking."""
+        return self._picking_enabled
+
+    @picking_enabled.setter
+    def picking_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        was_enabled = getattr(self, "_picking_enabled", False)
+        object.__setattr__(self, "_picking_enabled", enabled)
+
+        callbacks = getattr(self, "_picking_click_callbacks", None)
+        if callbacks is None or enabled == was_enabled:
+            return
+        if not enabled:
+            for handle, _callback in list(callbacks.values()):
+                self._detach_picking_callback(handle)
+            for layer_id in list(getattr(self, "_picking_controls", {})):
+                self._remove_picking_control(layer_id, release=True)
+            return
+
+        for name, instance in getattr(self, "_instances", {}).items():
+            handle = getattr(self, "_scene_handles", {}).get(name)
+            if handle is not None and instance.get("pickable", False):
+                self._attach_picking_callback(handle, instance["layer_id"])
 
     @classmethod
     def _get_viser(cls):
@@ -141,7 +440,40 @@ class ViewerViser(ViewerBase):
         self._plot_history_size = plot_history_size
         self._plane_meshes = {}
         self._plane_handles = {}
-        self._plane_geometry_keys = {}  # Cache of (count, widths, lengths, cell_sizes) per plane batch name
+        self._gizmo_handles: dict[str, dict[str, Any]] = {}
+        self._gizmo_seen: set[str] = set()
+        self._active_gizmos: set[str] = set()
+        self.gizmo_is_using = False
+        self._picking_controls: dict[str, Any] = {}
+        self._picking_click_callbacks: dict[int, tuple[Any, Any]] = {}
+        self._active_picking_layer_id: str | None = None
+        self._interaction_events: queue.SimpleQueue[tuple[Any, ...]] = queue.SimpleQueue()
+        self._paused = False
+        self._step_requested = False
+        self._reset_callback: Callable[[], None] | None = None
+        self._wireframe = False
+        self._viewer_option_handles: dict[str, Any] = {}
+        self._simulation_gui_handles: dict[str, Any] = {}
+        self._example_browser_folder: Any = None
+        self._example_browser_handles: dict[str, Any] = {}
+        self._example_browser_options: dict[str, str] = {}
+        self._example_switch_callback: Callable[[str], None] | None = None
+        self._frame_atomic_context: Any = None
+        self._loading_splash_text: str | None = None
+        self._loading_notification_handles: dict[int, Any] = {}
+        self._example_gui_callbacks: dict[int, tuple[Callable[[Any], None], str]] = {}
+        self._example_gui_handles: dict[tuple[int, int], tuple[str, Any]] = {}
+        self._example_gui_pending: dict[tuple[int, int], Any] = {}
+        self._example_gui_next_id = 0
+        self._example_gui_folder: Any = None
+        self._example_gui_adapter = self._ImmediateGuiAdapter(self)
+        self._logged_image_names: dict[str, None] = {}
+        self._image_atlas_buffers: dict[str, tuple[tuple[Any, ...], wp.array[Any]]] = {}
+        self._image_folder: Any = None
+        self._image_selector: Any = None
+        self._image_handle: Any = None
+        self._image_transport_format: Literal["jpeg", "png"] | None = None
+        self._selected_image_name: str | None = None
 
         super().__init__()
 
@@ -151,7 +483,9 @@ class ViewerViser(ViewerBase):
         # Store mesh data for instances
         self._meshes = {}
         self._instances = {}
+        self._shape_instance_batches_by_name = {}
         self._scene_handles = {}  # Track viser scene node handles
+        self._point_cloud_colors: dict[str, np.ndarray] = {}
         self._gaussian_splats = {}  # Track cached Gaussian splat upload keys, by name
         self._line_segment_counts = {}
         self._line_versions = {}
@@ -159,9 +493,12 @@ class ViewerViser(ViewerBase):
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._camera_fov_radians: float | None = None
+        self._camera_up_axis = 2
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
+        self._reset_camera_to_default(self._camera_up_axis)
 
         # Store configuration before any URL generation.
         self._port = port
@@ -184,6 +521,7 @@ class ViewerViser(ViewerBase):
 
         # Set up default scene
         self._setup_scene()
+        self._setup_gui()
 
         if self._serializer is not None and verbose:
             print(f"Recording to: {record_to_viser}")
@@ -192,6 +530,14 @@ class ViewerViser(ViewerBase):
     def clear_model(self):
         """Reset model-dependent state, including scalar plot buffers."""
         owns = self._is_layer_owned_path
+
+        self._clear_example_gui_callbacks()
+
+        self._remove_picking_control(self.layer.layer_id, release=True)
+        for name in list(self._gizmo_handles):
+            if owns(name):
+                self._remove_gizmo(name)
+
         for plane_name in list(self._plane_handles.keys()):
             if owns(plane_name):
                 self._remove_plane_handles(plane_name)
@@ -210,6 +556,7 @@ class ViewerViser(ViewerBase):
         for name, handle in list(getattr(self, "_scene_handles", {}).items()):
             if not owns(name):
                 continue
+            self._detach_picking_callback(handle)
             try:
                 handle.remove()
             except Exception:
@@ -217,6 +564,7 @@ class ViewerViser(ViewerBase):
             self._scene_handles.pop(name, None)
             self._instances.pop(name, None)
             self._meshes.pop(name, None)
+            self._point_cloud_colors.pop(name, None)
             self._gaussian_splats.pop(name, None)
             self._line_segment_counts.pop(name, None)
             self._line_versions.pop(name, None)
@@ -245,7 +593,102 @@ class ViewerViser(ViewerBase):
             if owns(name):
                 self._scalar_dirty.discard(name)
 
+        for name in list(self._logged_image_names):
+            if owns(name):
+                self._logged_image_names.pop(name, None)
+                self._image_atlas_buffers.pop(name, None)
+        self._sync_image_gui_after_clear()
+
         super().clear_model()
+        self._sync_gui_controls()
+
+    @override
+    def _init_extra_layer_state(self, layer):
+        """Initialize Viser-specific per-layer interaction state."""
+        super()._init_extra_layer_state(layer)
+        layer.picking = None
+        layer._last_state = None
+        layer._shape_instance_batches_by_name = {}
+        layer._packed_shape_world_xforms = None
+        layer._packed_shape_groups = []
+        layer._packed_shape_colors_host = None
+        layer._packed_shape_colors_device = None
+        layer._shape_colors_changed_device = None
+
+    @override
+    def set_model(self, model: newton.Model | None):
+        """Set the model and initialize interactive picking for it.
+
+        Args:
+            model: Model to visualize and interact with.
+        """
+        previous_up_axis = self._camera_up_axis
+        super().set_model(model)
+        self._build_packed_shape_arrays()
+        self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
+        if self.picking is not None:
+            self.picking.visible_worlds_mask = self._visible_worlds_mask
+
+        if model is not None:
+            try:
+                from ..geometry import raycast as _raycast_module  # noqa: PLC0415
+
+                wp.load_module(module=_raycast_module, device=model.device)
+                wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+            except Exception:
+                pass
+
+        up_axis = self._get_camera_up_axis()
+        if model is None or up_axis != previous_up_axis:
+            self._reset_camera_to_default(up_axis)
+
+    @override
+    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
+        """Set visible worlds and keep picking visibility in sync.
+
+        Args:
+            worlds: World indices to show, or ``None`` to show all worlds.
+        """
+        super().set_visible_worlds(worlds)
+        self._build_packed_shape_arrays()
+        if self.picking is not None:
+            self.picking.visible_worlds_mask = self._visible_worlds_mask
+
+    def _build_packed_shape_arrays(self) -> None:
+        """Pack model shape outputs for one kernel launch and host transfer."""
+        batches = list(self._shape_instances.values())
+        self._shape_instance_batches_by_name = {batch.name: batch for batch in batches}
+        total = sum(len(batch.xforms) for batch in batches)
+        self._packed_shape_groups = []
+        self._packed_shape_world_xforms = None
+        self._packed_shape_colors_host = None
+        self._packed_shape_colors_device = None
+        self._shape_colors_changed_device = None
+        if total == 0:
+            return
+
+        packed = wp.empty(total, dtype=wp.transform, device=self.device)
+        offset = 0
+        for batch in batches:
+            count = len(batch.xforms)
+            batch.world_xforms = packed[offset : offset + count]
+            self._packed_shape_groups.append((batch, offset, count))
+            offset += count
+        self._packed_shape_world_xforms = packed
+        if self.model_shape_color is not None:
+            self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
+            self._shape_colors_changed_device = wp.zeros(1, dtype=wp.int32, device=self.device)
+
+    @override
+    def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3) -> None:
+        """Set world offsets and keep picking coordinates in sync.
+
+        Args:
+            spacing: Spacing between worlds along each axis [m].
+        """
+        super().set_world_offsets(spacing)
+        if self.picking is not None:
+            self.picking.world_offsets = self.world_offsets
 
     def _setup_scene(self):
         """Set up the default scene configuration."""
@@ -254,6 +697,275 @@ class ViewerViser(ViewerBase):
 
         # remove HDR map
         self._server.scene.configure_environment_map(hdri=None)
+
+    def _begin_atomic_frame(self) -> None:
+        """Hold outgoing scene messages until the complete frame is ready."""
+        self._end_atomic_frame()
+        self._frame_atomic_context = self._server.atomic()
+        self._frame_atomic_context.__enter__()
+
+    def _end_atomic_frame(self) -> None:
+        """Publish a pending frame as one atomic Viser message group."""
+        context = self._frame_atomic_context
+        if context is None:
+            return
+        self._frame_atomic_context = None
+        context.__exit__(None, None, None)
+
+    def _setup_gui(self) -> None:
+        """Create native Viser controls for supported viewer settings."""
+        with self._server.gui.add_folder("Simulation", order=0.0):
+            pause = self._server.gui.add_checkbox("Pause", initial_value=self._paused)
+            step = self._server.gui.add_button("Step", disabled=True)
+            reset = self._server.gui.add_button("Reset", disabled=True)
+
+        @pause.on_update
+        def _on_pause(event):
+            if event.client_id is not None:
+                self._interaction_events.put(("viewer_option", "_paused", bool(event.target.value)))
+
+        @step.on_click
+        def _on_step(_event):
+            self._interaction_events.put(("step",))
+
+        @reset.on_click
+        def _on_reset(_event):
+            self._interaction_events.put(("reset",))
+
+        self._simulation_gui_handles = {"pause": pause, "step": step, "reset": reset}
+
+        options = (
+            ("show_visual", "Show Visual", None),
+            ("show_collision", "Show Collision", None),
+            (
+                "wireframe",
+                "Wireframe (untextured)",
+                "Viser exposes wireframe rendering for untextured meshes only.",
+            ),
+            ("show_ground", "Show Ground", None),
+            ("show_contacts", "Show Contacts", "Requires the example to log contacts."),
+            ("show_contact_normals", "Contact Normals", None),
+            ("show_contact_disks", "Contact Modes", None),
+            ("show_contact_forces", "Contact Forces", None),
+            ("show_joints", "Show Joints", None),
+            ("show_com", "Show Center of Mass", None),
+            ("show_particles", "Show Particles", None),
+            ("show_springs", "Show Springs", None),
+            ("show_triangles", "Show Cloth", None),
+            ("show_inertia_boxes", "Show Inertia Boxes", None),
+            ("picking_enabled", "Enable Picking", None),
+        )
+        with self._server.gui.add_folder("Visualization", order=10.0):
+            for attribute, label, hint in options:
+                value = self._wireframe if attribute == "wireframe" else bool(getattr(self, attribute))
+                handle = self._server.gui.add_checkbox(label, initial_value=value, hint=hint)
+
+                @handle.on_update
+                def _on_option(event, option=attribute):
+                    if event.client_id is not None:
+                        self._interaction_events.put(("viewer_option", option, bool(event.target.value)))
+
+                self._viewer_option_handles[attribute] = handle
+
+    @property
+    def ui(self) -> _ImmediateGuiAdapter:
+        """Return the example-GUI compatibility adapter.
+
+        The adapter intentionally reports ``is_available = False`` because it
+        is not a full ImGui context, while callbacks passed directly to
+        :meth:`register_ui_callback` can use its supported common controls.
+        """
+        return self._example_gui_adapter
+
+    def _ensure_example_gui_folder(self):
+        """Create the native folder that owns example-provided controls."""
+        if self._example_gui_folder is None:
+            self._example_gui_folder = self._server.gui.add_folder(
+                "Example Options",
+                order=30.0,
+                expand_by_default=True,
+            )
+        return self._example_gui_folder
+
+    def register_ui_callback(
+        self,
+        callback: Callable[[Any], None],
+        position: Literal["side", "stats", "free", "panel", "rendering"] = "side",
+    ) -> None:
+        """Register an example UI callback using native Viser controls.
+
+        The common immediate-mode controls used by Newton examples are mapped
+        to persistent Viser widgets. Viser has one control panel, so callback
+        positions are accepted for API compatibility and rendered together in
+        the ``Example Options`` folder.
+
+        Args:
+            callback: Function receiving an ImGui-compatible control adapter.
+            position: ViewerGL callback position retained for compatibility.
+        """
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        valid_positions = {"side", "stats", "free", "panel", "rendering"}
+        if position not in valid_positions:
+            raise ValueError(f"Invalid position '{position}'. Must be one of: {sorted(valid_positions)}")
+        callback_id = self._example_gui_next_id
+        self._example_gui_next_id += 1
+        self._example_gui_callbacks[callback_id] = (callback, position)
+
+    def _update_example_gui(self) -> None:
+        """Run example callbacks on the simulation thread and synchronize widgets."""
+        adapter = self._example_gui_adapter
+        for callback_id, (callback, _position) in tuple(self._example_gui_callbacks.items()):
+            adapter.begin_callback(callback_id)
+            try:
+                callback(adapter)
+            finally:
+                adapter.end_callback()
+
+    def _clear_example_gui_callbacks(self) -> None:
+        """Drop example-owned side/free callbacks when the model is cleared."""
+        removed_ids = {
+            callback_id
+            for callback_id, (_callback, position) in self._example_gui_callbacks.items()
+            if position in {"side", "free"}
+        }
+        for callback_id in removed_ids:
+            self._example_gui_callbacks.pop(callback_id, None)
+
+        for key in [key for key in self._example_gui_handles if key[0] in removed_ids]:
+            _kind, handle = self._example_gui_handles.pop(key)
+            self._example_gui_pending.pop(key, None)
+            try:
+                handle.remove()
+            except Exception:
+                pass
+
+        if not self._example_gui_handles and self._example_gui_folder is not None:
+            try:
+                self._example_gui_folder.remove()
+            except Exception:
+                pass
+            self._example_gui_folder = None
+
+    def _sync_gui_controls(self) -> None:
+        """Synchronize native GUI values with viewer state."""
+        for attribute, handle in getattr(self, "_viewer_option_handles", {}).items():
+            value = self._wireframe if attribute == "wireframe" else bool(getattr(self, attribute))
+            if handle.value != value:
+                handle.value = value
+
+        simulation = getattr(self, "_simulation_gui_handles", {})
+        if simulation:
+            if simulation["pause"].value != self._paused:
+                simulation["pause"].value = self._paused
+            step_disabled = not self._paused
+            if simulation["step"].disabled != step_disabled:
+                simulation["step"].disabled = step_disabled
+            reset_disabled = self._reset_callback is None
+            if simulation["reset"].disabled != reset_disabled:
+                simulation["reset"].disabled = reset_disabled
+
+    def _set_wireframe(self, enabled: bool) -> None:
+        """Set wireframe rendering on Viser mesh batches that support it."""
+        self._wireframe = bool(enabled)
+        for name, handle in self._scene_handles.items():
+            instance = self._instances.get(name)
+            if instance is None or instance["use_trimesh"]:
+                continue
+            try:
+                handle.wireframe = self._wireframe
+            except Exception:
+                pass
+
+    def configure_example_browser(
+        self,
+        tree: dict[str, list[tuple[str, str]]],
+        callback: Callable[[str], None],
+    ) -> None:
+        """Configure a native dropdown for switching Newton examples.
+
+        Args:
+            tree: Example names and module paths grouped by category.
+            callback: Function called with the selected module path.
+        """
+        if self._example_browser_folder is not None:
+            try:
+                self._example_browser_folder.remove()
+            except Exception:
+                pass
+
+        options = {
+            f"{category} / {name}": module_path
+            for category, examples in sorted(tree.items())
+            for name, module_path in examples
+        }
+        self._example_browser_options = options
+        self._example_switch_callback = callback
+        if not options:
+            self._example_browser_folder = None
+            self._example_browser_handles = {}
+            return
+
+        folder = self._server.gui.add_folder("Examples", order=20.0, expand_by_default=False)
+        with folder:
+            dropdown = self._server.gui.add_dropdown("Example", tuple(options), initial_value=next(iter(options)))
+            load = self._server.gui.add_button("Load Example")
+
+        @load.on_click
+        def _on_load(_event):
+            module_path = self._example_browser_options.get(dropdown.value)
+            if module_path is not None:
+                self._interaction_events.put(("example_switch", module_path))
+
+        self._example_browser_folder = folder
+        self._example_browser_handles = {"dropdown": dropdown, "load": load}
+
+    def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register the callback invoked by the native Reset button."""
+        self._reset_callback = callback
+        self._sync_gui_controls()
+
+    def _show_loading_notification(self, client: Any) -> None:
+        """Show the current loading message on one connected client."""
+        text = self._loading_splash_text
+        if text is None:
+            return
+
+        client_id = int(client.client_id)
+        previous = self._loading_notification_handles.pop(client_id, None)
+        if previous is not None:
+            try:
+                previous.remove()
+            except Exception:
+                pass
+
+        self._loading_notification_handles[client_id] = client.add_notification(
+            title="Newton",
+            body=text,
+            loading=True,
+            with_close_button=False,
+        )
+
+    def show_loading_splash(self, text: str | None = None) -> None:
+        """Display a loading notification over each connected Viser canvas.
+
+        Args:
+            text: Loading message. Defaults to ``"Loading..."``.
+        """
+        self._loading_splash_text = text or "Loading..."
+        for client in self._server.get_clients().values():
+            self._show_loading_notification(client)
+
+    def hide_loading_splash(self) -> None:
+        """Remove notifications created by :meth:`show_loading_splash`."""
+        self._loading_splash_text = None
+        handles = tuple(self._loading_notification_handles.values())
+        self._loading_notification_handles.clear()
+        for handle in handles:
+            try:
+                handle.remove()
+            except Exception:
+                pass
 
     @staticmethod
     def _call_scene_method(method, **kwargs):
@@ -264,6 +976,354 @@ class ViewerViser(ViewerBase):
             return method(**allowed)
         except Exception:
             return method(**kwargs)
+
+    @staticmethod
+    def _set_handle_property_if_changed(handle: Any, name: str, value: Any) -> None:
+        """Update a Viser property only when its serialized value changed."""
+        try:
+            current = getattr(handle, name)
+            if isinstance(current, (np.ndarray, tuple, list)) or isinstance(value, (np.ndarray, tuple, list)):
+                unchanged = np.array_equal(np.asarray(current), np.asarray(value))
+            else:
+                unchanged = current == value
+            if unchanged:
+                return
+        except Exception:
+            pass
+        setattr(handle, name, value)
+
+    @staticmethod
+    def _transform_to_viser(transform: wp.transform) -> tuple[np.ndarray, np.ndarray]:
+        """Return a Warp transform as Viser position and WXYZ rotation."""
+        return transform_to_position_wxyz(transform)
+
+    @staticmethod
+    def _assign_transform(transform: wp.transform, position, wxyz) -> None:
+        """Mutate a pass-by-reference Warp transform from Viser values."""
+        transform_assign_position_wxyz(transform, position, wxyz)
+
+    @staticmethod
+    def _normalize_gizmo_axes(axes: Sequence[Axis] | None) -> tuple[Axis, ...]:
+        """Normalize an optional axis sequence into stable XYZ order."""
+        axis_order = (Axis.X, Axis.Y, Axis.Z)
+        if axes is None:
+            return axis_order
+        enabled = {Axis.from_any(axis) for axis in axes}
+        return tuple(axis for axis in axis_order if axis in enabled)
+
+    @staticmethod
+    def _gizmo_scene_path(name: str, kind: str) -> str:
+        """Build an internal scene path for a user-named gizmo handle."""
+        return f"/__newton/gizmos/{name.lstrip('/')}/{kind}"
+
+    def _sync_gizmo_handles(self, entry: dict[str, Any]) -> None:
+        """Push a gizmo's current pass-by-reference transform to Viser."""
+        position, wxyz = self._transform_to_viser(entry["transform"])
+        for handle in entry["handles"].values():
+            handle.position = position
+            handle.wxyz = wxyz
+
+    def _remove_gizmo(self, name: str) -> None:
+        """Remove all Viser controls associated with one gizmo."""
+        entry = self._gizmo_handles.pop(name, None)
+        if entry is not None:
+            for handle in entry["handles"].values():
+                try:
+                    handle.remove()
+                except Exception:
+                    pass
+        self._active_gizmos.discard(name)
+        self.gizmo_is_using = bool(self._active_gizmos)
+
+    def _create_gizmo(
+        self,
+        name: str,
+        transform: wp.transform,
+        translate: tuple[Axis, ...],
+        rotate: tuple[Axis, ...],
+        snap_to: wp.transform | None,
+    ) -> dict[str, Any]:
+        """Create translation and rotation controls for one logged gizmo."""
+        position, wxyz = self._transform_to_viser(transform)
+        handles: dict[str, Any] = {}
+
+        def add_handle(kind: str, axes: tuple[Axis, ...], **kwargs):
+            active_axes = tuple(axis in axes for axis in (Axis.X, Axis.Y, Axis.Z))
+            handle = self._server.scene.add_transform_controls(
+                name=self._gizmo_scene_path(name, kind),
+                scale=_GIZMO_SCALE_PX,
+                fixed=True,
+                active_axes=active_axes,
+                depth_test=False,
+                position=position,
+                wxyz=wxyz,
+                **kwargs,
+            )
+
+            @handle.on_update
+            def _on_update(event, gizmo_name=name):
+                self._interaction_events.put(
+                    (
+                        "gizmo_update",
+                        gizmo_name,
+                        tuple(float(v) for v in event.target.position),
+                        tuple(float(v) for v in event.target.wxyz),
+                    )
+                )
+
+            @handle.on_drag_start
+            def _on_drag_start(_event, gizmo_name=name):
+                # Mark active immediately so the simulation thread cannot push
+                # its previous transform over an in-flight browser drag.
+                self._active_gizmos.add(gizmo_name)
+                self.gizmo_is_using = True
+                self._interaction_events.put(("gizmo_drag_start", gizmo_name))
+
+            @handle.on_drag_end
+            def _on_drag_end(_event, gizmo_name=name):
+                self._interaction_events.put(("gizmo_drag_end", gizmo_name))
+
+            handles[kind] = handle
+
+        if translate:
+            add_handle("translate", translate, disable_rotations=True)
+        if rotate:
+            add_handle("rotate", rotate, disable_axes=True, disable_sliders=True)
+
+        entry = {
+            "transform": transform,
+            "snap_to": snap_to,
+            "translate": translate,
+            "rotate": rotate,
+            "handles": handles,
+        }
+        self._gizmo_handles[name] = entry
+        return entry
+
+    def _attach_picking_callback(self, handle: Any, layer_id: str) -> None:
+        """Make a rendered instance batch start picking when clicked."""
+        handle_id = id(handle)
+        if not self.picking_enabled or handle_id in self._picking_click_callbacks or not hasattr(handle, "on_click"):
+            return
+
+        def _on_click(event, clicked_layer_id=layer_id):
+            if not self.picking_enabled:
+                return
+            self._interaction_events.put(
+                (
+                    "picking_click",
+                    clicked_layer_id,
+                    tuple(float(v) for v in event.ray_origin),
+                    tuple(float(v) for v in event.ray_direction),
+                )
+            )
+
+        callback = handle.on_click(_on_click)
+        self._picking_click_callbacks[handle_id] = (handle, callback)
+
+    def _shape_instance_batch(self, name: str):
+        """Return the model shape batch associated with a scene path, if any."""
+        batch = self._shape_instance_batches_by_name.get(name)
+        if batch is None:
+            batch = next((candidate for candidate in self._shape_instances.values() if candidate.name == name), None)
+            if batch is not None:
+                self._shape_instance_batches_by_name[name] = batch
+        return batch
+
+    def _is_pickable_instance(self, name: str) -> bool:
+        """Return whether an instance batch contains body-attached model shapes."""
+        batch = self._shape_instance_batch(name)
+        return batch is not None and not batch.static
+
+    def _detach_picking_callback(self, handle: Any) -> None:
+        """Remove picking behavior and Viser's clickable hover highlight."""
+        entry = self._picking_click_callbacks.pop(id(handle), None)
+        if entry is None or not hasattr(handle, "remove_click_callback"):
+            return
+        try:
+            handle.remove_click_callback(entry[1])
+        except Exception:
+            pass
+
+    @staticmethod
+    def _transform_ray_to_layer(layer, ray_origin, ray_direction) -> tuple[wp.vec3, wp.vec3]:
+        """Transform a visual-space ray into a layer's pre-transform space."""
+        layer_inv = transform_inverse(layer.xform)
+        origin = transform_point(
+            layer_inv,
+            wp.vec3(float(ray_origin[0]), float(ray_origin[1]), float(ray_origin[2])),
+        )
+        direction = transform_vector(
+            layer_inv,
+            wp.vec3(float(ray_direction[0]), float(ray_direction[1]), float(ray_direction[2])),
+        )
+        return origin, direction
+
+    @staticmethod
+    def _picking_world_offset(layer, picking: Picking) -> np.ndarray:
+        """Return the visual world offset for the currently picked body."""
+        offset = np.zeros(3, dtype=np.float32)
+        body_idx = int(picking.pick_body.numpy()[0])
+        if body_idx < 0 or layer.world_offsets is None or layer.world_offsets.shape[0] == 0:
+            return offset
+        if layer.model is None or layer.model.body_world is None:
+            return offset
+        world_idx = int(layer.model.body_world.numpy()[body_idx])
+        if 0 <= world_idx < layer.world_offsets.shape[0]:
+            offset[:] = layer.world_offsets.numpy()[world_idx]
+        return offset
+
+    @classmethod
+    def _picking_point_to_visual(cls, layer, picking: Picking, point) -> np.ndarray:
+        """Convert a physics-space picking point into Viser scene space."""
+        point_with_offset = np.asarray(point, dtype=np.float32) + cls._picking_world_offset(layer, picking)
+        visual = transform_point(
+            layer.xform,
+            wp.vec3(float(point_with_offset[0]), float(point_with_offset[1]), float(point_with_offset[2])),
+        )
+        return np.asarray(visual).copy()
+
+    def _picking_control_path(self, layer_id: str) -> str:
+        """Build a stable internal path for a layer's picking handle."""
+        segment = "default" if not self._layers[layer_id].name_prefix else "_".join(layer_id.split()).replace("/", "_")
+        return f"/__newton/picking/{segment}"
+
+    def _remove_picking_control(self, layer_id: str, *, release: bool) -> None:
+        """Remove one layer's picking handle and optionally release its body."""
+        handle = self._picking_controls.pop(layer_id, None)
+        if handle is not None:
+            try:
+                handle.remove()
+            except Exception:
+                pass
+        layer = self._layers.get(layer_id)
+        picking = getattr(layer, "picking", None) if layer is not None else None
+        if release and picking is not None:
+            picking.release()
+        if release and self._active_picking_layer_id == layer_id:
+            self._active_picking_layer_id = None
+
+    def _create_picking_control(self, layer_id: str) -> None:
+        """Create a translation-only handle at the current picking target."""
+        layer = self._layers[layer_id]
+        picking = layer.picking
+        pick_state = picking.pick_state.numpy()
+        target = self._picking_point_to_visual(layer, picking, pick_state[0]["picking_target_world"])
+        self._remove_picking_control(layer_id, release=False)
+        handle = self._server.scene.add_transform_controls(
+            name=self._picking_control_path(layer_id),
+            scale=_GIZMO_SCALE_PX,
+            fixed=True,
+            disable_rotations=True,
+            depth_test=False,
+            position=target,
+        )
+
+        @handle.on_update
+        def _on_update(event, picked_layer_id=layer_id):
+            self._interaction_events.put(
+                (
+                    "picking_target",
+                    picked_layer_id,
+                    tuple(float(v) for v in event.target.position),
+                )
+            )
+
+        @handle.on_drag_end
+        def _on_drag_end(_event, picked_layer_id=layer_id):
+            self._interaction_events.put(("picking_release", picked_layer_id))
+
+        self._picking_controls[layer_id] = handle
+
+    def _start_picking(self, layer_id: str, ray_origin, ray_direction) -> None:
+        """Raycast a click and show a Viser handle for a successful pick."""
+        layer = self._layers.get(layer_id)
+        if layer is None or layer.picking is None or layer._last_state is None:
+            return
+        if self._active_picking_layer_id not in (None, layer_id):
+            self._remove_picking_control(self._active_picking_layer_id, release=True)
+        self._remove_picking_control(layer_id, release=True)
+        origin, direction = self._transform_ray_to_layer(layer, ray_origin, ray_direction)
+        layer.picking.pick(layer._last_state, origin, direction)
+        if layer.picking.is_picking():
+            self._active_picking_layer_id = layer_id
+            self._create_picking_control(layer_id)
+
+    def _set_picking_target(self, layer_id: str, visual_target) -> None:
+        """Update a picking spring target from a Viser control position."""
+        layer = self._layers.get(layer_id)
+        if layer is None or layer.picking is None or not layer.picking.is_picking():
+            return
+        layer_inv = transform_inverse(layer.xform)
+        point_with_offset = transform_point(
+            layer_inv,
+            wp.vec3(float(visual_target[0]), float(visual_target[1]), float(visual_target[2])),
+        )
+        offset = self._picking_world_offset(layer, layer.picking)
+        target = np.asarray(point_with_offset).copy() - offset
+        pick_state = layer.picking.pick_state.numpy()
+        pick_state[0]["picking_target_world"] = target
+        layer.picking.pick_state.assign(pick_state)
+
+    def _process_interaction_events(self) -> None:
+        """Apply browser callbacks on the simulation thread between frames."""
+        while True:
+            try:
+                event = self._interaction_events.get_nowait()
+            except queue.Empty:
+                break
+
+            event_type = event[0]
+            if event_type == "gizmo_update":
+                _, name, position, wxyz = event
+                entry = self._gizmo_handles.get(name)
+                if entry is not None:
+                    self._assign_transform(entry["transform"], position, wxyz)
+                    self._sync_gizmo_handles(entry)
+            elif event_type == "gizmo_drag_start":
+                name = event[1]
+                if name in self._gizmo_handles:
+                    self._active_gizmos.add(name)
+                    self.gizmo_is_using = True
+            elif event_type == "gizmo_drag_end":
+                name = event[1]
+                entry = self._gizmo_handles.get(name)
+                if entry is not None and entry["snap_to"] is not None:
+                    entry["transform"][:] = entry["snap_to"]
+                    self._sync_gizmo_handles(entry)
+                self._active_gizmos.discard(name)
+                self.gizmo_is_using = bool(self._active_gizmos)
+            elif event_type == "picking_click":
+                _, layer_id, ray_origin, ray_direction = event
+                if self.picking_enabled:
+                    self._start_picking(layer_id, ray_origin, ray_direction)
+            elif event_type == "picking_target":
+                _, layer_id, visual_target = event
+                self._set_picking_target(layer_id, visual_target)
+            elif event_type == "picking_release":
+                self._remove_picking_control(event[1], release=True)
+            elif event_type == "viewer_option":
+                _, attribute, value = event
+                if attribute == "wireframe":
+                    self._set_wireframe(value)
+                else:
+                    setattr(self, attribute, value)
+            elif event_type == "example_gui":
+                _, key, value = event
+                if key in self._example_gui_handles:
+                    self._example_gui_pending[key] = value
+            elif event_type == "image_select":
+                name = event[1]
+                if name in self._logged_image_names:
+                    self._selected_image_name = name
+            elif event_type == "step":
+                self._step_requested = True
+            elif event_type == "reset":
+                if self._reset_callback is not None:
+                    self._reset_callback()
+            elif event_type == "example_switch":
+                if self._example_switch_callback is not None:
+                    self._example_switch_callback(event[1])
 
     @property
     def url(self) -> str:
@@ -454,13 +1514,16 @@ class ViewerViser(ViewerBase):
         return update_timestamp > 0.0
 
     def _handle_client_connect(self, client: Any):
-        """Apply cached camera settings to newly connected clients."""
+        """Apply cached camera and loading state to a newly connected client."""
         self._pending_camera_clients.discard(int(client.client_id))
         self._apply_camera_to_client(client)
+        self._show_loading_notification(client)
 
     def _handle_client_disconnect(self, client: Any):
-        """Clear pending camera state for disconnected clients."""
-        self._pending_camera_clients.discard(int(client.client_id))
+        """Clear pending client-specific state for a disconnected client."""
+        client_id = int(client.client_id)
+        self._pending_camera_clients.discard(client_id)
+        self._loading_notification_handles.pop(client_id, None)
 
     def _get_camera_up_axis(self) -> int:
         """Resolve the model up-axis as an integer index (0, 1, 2)."""
@@ -472,7 +1535,7 @@ class ViewerViser(ViewerBase):
         return int(up_axis)
 
     def _compute_camera_front_up(self, pitch: float, yaw: float) -> tuple[np.ndarray, np.ndarray]:
-        """Compute camera front and up vectors from pitch/yaw angles."""
+        """Compute camera front and world-up vectors from pitch/yaw angles."""
         pitch = float(np.clip(pitch, -89.0, 89.0))
         yaw = float(yaw)
         pitch_rad = np.deg2rad(pitch)
@@ -511,19 +1574,42 @@ class ViewerViser(ViewerBase):
             world_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
 
         front /= np.linalg.norm(front)
-        right = np.cross(front, world_up)
-        right_norm = np.linalg.norm(right)
-        if right_norm < 1.0e-8:
-            fallback_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-            if np.linalg.norm(np.cross(front, fallback_up)) < 1.0e-8:
-                fallback_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-            right = np.cross(front, fallback_up)
-            right_norm = np.linalg.norm(right)
-        right /= right_norm
+        return front, world_up
 
-        up = np.cross(right, front)
-        up /= np.linalg.norm(up)
-        return front, up
+    def _reset_camera_to_default(self, up_axis: int) -> None:
+        """Reset to the same initial pose and orbit pivot as ViewerGL."""
+        self._camera_up_axis = int(up_axis)
+        position = np.asarray(Camera.get_default_position(up_axis), dtype=np.float64)
+        front, up_direction = self._compute_camera_front_up(Camera.DEFAULT_PITCH, Camera.DEFAULT_YAW)
+        look_at = position + front * Camera.DEFAULT_PIVOT_DISTANCE
+        self._set_camera_request(position, look_at, up_direction, fov=Camera.DEFAULT_FOV)
+
+    def _set_camera_request(
+        self,
+        position: np.ndarray,
+        look_at: np.ndarray,
+        up_direction: np.ndarray,
+        *,
+        fov: float | None = None,
+    ) -> None:
+        """Cache and apply one camera request to the server and clients."""
+        self._camera_request = (position, look_at, up_direction)
+        self._camera_up_axis = self._get_camera_up_axis()
+        if fov is not None:
+            self._camera_fov_radians = float(np.deg2rad(fov))
+
+        if hasattr(self._server, "initial_camera"):
+            self._server.initial_camera.position = tuple(position.tolist())
+            self._server.initial_camera.look_at = tuple(look_at.tolist())
+            if hasattr(self._server.initial_camera, "up"):
+                self._server.initial_camera.up = tuple(up_direction.tolist())
+            elif hasattr(self._server.initial_camera, "up_direction"):
+                self._server.initial_camera.up_direction = tuple(up_direction.tolist())
+            if self._camera_fov_radians is not None and hasattr(self._server.initial_camera, "fov"):
+                self._server.initial_camera.fov = self._camera_fov_radians
+
+        for client in self._server.get_clients().values():
+            self._apply_camera_to_client(client)
 
     def _apply_camera_to_client(self, client: Any):
         """Apply the cached camera request to a connected client if ready."""
@@ -548,6 +1634,7 @@ class ViewerViser(ViewerBase):
 
         self._pending_camera_clients.discard(client_id)
         position, look_at, up_direction = self._camera_request
+        fov = self._camera_fov_radians
 
         # Keep camera updates synchronized to avoid transient jitter.
         if hasattr(client, "atomic"):
@@ -555,10 +1642,14 @@ class ViewerViser(ViewerBase):
                 client.camera.position = tuple(position.tolist())
                 client.camera.look_at = tuple(look_at.tolist())
                 client.camera.up_direction = tuple(up_direction.tolist())
+                if fov is not None:
+                    client.camera.fov = fov
         else:
             client.camera.position = tuple(position.tolist())
             client.camera.look_at = tuple(look_at.tolist())
             client.camera.up_direction = tuple(up_direction.tolist())
+            if fov is not None:
+                client.camera.fov = fov
 
     @override
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
@@ -568,25 +1659,41 @@ class ViewerViser(ViewerBase):
         the same camera setup as soon as they report camera state.
 
         Args:
-            pos: Requested camera position.
-            pitch: Requested camera pitch angle.
-            yaw: Requested camera yaw angle.
+            pos: Requested camera position in meters.
+            pitch: Requested camera pitch angle in degrees.
+            yaw: Requested camera yaw angle in degrees.
         """
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         front, up_direction = self._compute_camera_front_up(pitch, yaw)
-        look_at = position + front
-        self._camera_request = (position, look_at, up_direction)
+        if self._camera_request is None:
+            pivot_distance = Camera.DEFAULT_PIVOT_DISTANCE
+        else:
+            pivot_distance = max(
+                float(np.linalg.norm(self._camera_request[1] - position)),
+                Camera.MIN_PIVOT_DISTANCE,
+            )
+        look_at = position + front * pivot_distance
+        self._set_camera_request(position, look_at, up_direction)
 
-        if hasattr(self._server, "initial_camera"):
-            self._server.initial_camera.position = tuple(position.tolist())
-            self._server.initial_camera.look_at = tuple(look_at.tolist())
-            if hasattr(self._server.initial_camera, "up"):
-                self._server.initial_camera.up = tuple(up_direction.tolist())
-            elif hasattr(self._server.initial_camera, "up_direction"):
-                self._server.initial_camera.up_direction = tuple(up_direction.tolist())
+    @override
+    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, fov: float | None = None):
+        """Set the camera position, orbit target, and optional field of view.
 
-        for client in self._server.get_clients().values():
-            self._apply_camera_to_client(client)
+        Args:
+            pos: Camera position in meters.
+            target: Orbit target in meters.
+            fov: Optional vertical field of view in degrees.
+        """
+        position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
+        look_at = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
+        if not np.all(np.isfinite(position)) or not np.all(np.isfinite(look_at)):
+            raise ValueError("Camera position and target must be finite")
+        if np.linalg.norm(look_at - position) <= 1.0e-12:
+            super().set_camera_look_at(pos, target, fov)
+            return
+
+        _, up_direction = self._compute_camera_front_up(0.0, 0.0)
+        self._set_camera_request(position, look_at, up_direction, fov=fov)
 
     @staticmethod
     def _camera_query_from_request(camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None) -> str:
@@ -605,6 +1712,48 @@ class ViewerViser(ViewerBase):
             f"&initialCameraLookAt={_format_vec3(look_at)}"
             f"&initialCameraUp={_format_vec3(up_direction)}"
         )
+
+    @override
+    def log_gizmo(
+        self,
+        name: str,
+        transform: wp.transform,
+        *,
+        translate: Sequence[Axis] | None = None,
+        rotate: Sequence[Axis] | None = None,
+        snap_to: wp.transform | None = None,
+    ) -> None:
+        """Log or update an interactive Viser transform gizmo.
+
+        Translation arrows and rotation rings are separate, synchronized
+        controls so each operation can honor its own enabled-axis set.
+
+        Args:
+            name: Unique gizmo path/name.
+            transform: Gizmo world transform with translation in meters and a unitless quaternion,
+                mutated in place on interaction.
+            translate: Axes on which translation handles are shown.
+            rotate: Axes on which rotation rings are shown.
+            snap_to: Optional world transform, with translation in meters and a unitless quaternion,
+                applied when dragging ends.
+        """
+        name = self._qualify(name)
+        translate_axes = self._normalize_gizmo_axes(translate)
+        rotate_axes = self._normalize_gizmo_axes(rotate)
+        self._gizmo_seen.add(name)
+
+        entry = self._gizmo_handles.get(name)
+        if entry is not None and (entry["translate"] != translate_axes or entry["rotate"] != rotate_axes):
+            self._remove_gizmo(name)
+            entry = None
+        if entry is None:
+            entry = self._create_gizmo(name, transform, translate_axes, rotate_axes, snap_to)
+        else:
+            entry["transform"] = transform
+            entry["snap_to"] = snap_to
+
+        if name not in self._active_gizmos:
+            self._sync_gizmo_handles(entry)
 
     @override
     def log_mesh(
@@ -647,6 +1796,11 @@ class ViewerViser(ViewerBase):
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
 
+        existing_handle = self._scene_handles.get(name)
+        if hidden and existing_handle is not None:
+            self._set_handle_property_if_changed(existing_handle, "visible", False)
+            return
+
         # Convert to numpy arrays
         points_np = self._to_numpy(points).astype(np.float32)
         indices_np = self._to_numpy(indices).astype(np.uint32)
@@ -676,19 +1830,43 @@ class ViewerViser(ViewerBase):
                     stacklevel=2,
                 )
 
-        # Store mesh data for instancing
-        self._meshes[name] = {
+        mesh_color = (180, 180, 180) if color is None else tuple(color)
+        mesh_side = "double" if not backface_culling else "front"
+        mesh_data = {
             "points": points_np,
             "indices": indices_np,
             "uvs": uvs_np,
             "texture": texture_image,
             "trimesh": trimesh_mesh,
+            "color": mesh_color,
+            "side": mesh_side,
         }
+        existing_mesh = self._meshes.get(name)
+        self._meshes[name] = mesh_data
 
-        # Remove existing mesh if present
-        if name in self._scene_handles:
+        can_update = (
+            existing_handle is not None
+            and existing_mesh is not None
+            and existing_mesh.get("trimesh") is None
+            and trimesh_mesh is None
+            and existing_mesh["points"].shape == points_np.shape
+            and existing_mesh["indices"].shape == indices_np.shape
+            and existing_mesh.get("color") == mesh_color
+            and existing_mesh.get("side") == mesh_side
+        )
+        if can_update:
             try:
-                self._scene_handles[name].remove()
+                existing_handle.vertices = points_np
+                if not np.array_equal(existing_mesh["indices"], indices_np):
+                    existing_handle.faces = indices_np
+                self._set_handle_property_if_changed(existing_handle, "visible", True)
+                return
+            except Exception:
+                pass
+
+        if existing_handle is not None:
+            try:
+                existing_handle.remove()
             except Exception:
                 pass
             del self._scene_handles[name]
@@ -709,9 +1887,9 @@ class ViewerViser(ViewerBase):
                 name=name,
                 vertices=points_np,
                 faces=indices_np,
-                color=(180, 180, 180) if color is None else color,
+                color=mesh_color,
                 wireframe=False,
-                side="double" if not backface_culling else "front",
+                side=mesh_side,
             )
         self._scene_handles[name] = handle
 
@@ -753,12 +1931,12 @@ class ViewerViser(ViewerBase):
 
     def _remove_plane_handles(self, name: str):
         """Remove any plane-grid handles associated with an instance batch."""
-        self._plane_geometry_keys.pop(name, None)
         handle = self._plane_handles.pop(name, None)
         if handle is None:
             return
         handles = handle if isinstance(handle, (list, tuple)) else (handle,)
         for handle in handles:
+            self._detach_picking_callback(handle)
             try:
                 handle.remove()
             except Exception:
@@ -778,22 +1956,24 @@ class ViewerViser(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         hidden: bool = False,
     ):
-        """Render plane instances as viser grids.
+        """Render plane instances as persistent Viser grids.
 
-        Grid handles are cached by name and only recreated when the instance
-        count, extents, or cell sizes change; a pose-only update (the common case for a
-        static ground plane logged every frame) just moves the existing
-        handles instead of tearing them down and rebuilding, which avoids a
-        visible flicker as handles disappear and reappear over the websocket.
+        Update existing handles in place so pose and geometry changes do not
+        cause visible flicker or redundant websocket traffic.
         """
+        existing = self._plane_handles.get(name)
+        handles = (
+            list(existing) if isinstance(existing, (list, tuple)) else ([existing] if existing is not None else [])
+        )
         if hidden or xforms is None:
-            for handle in self._plane_handles.get(name, ()):
-                handle.visible = False
+            for handle in handles:
+                self._set_handle_property_if_changed(handle, "visible", False)
             return
 
         xforms_np = self._to_numpy(xforms)
         if xforms_np is None or len(xforms_np) == 0:
-            self._remove_plane_handles(name)
+            for handle in handles:
+                self._set_handle_property_if_changed(handle, "visible", False)
             return
 
         xforms_np = np.asarray(xforms_np, dtype=np.float32)
@@ -805,11 +1985,13 @@ class ViewerViser(ViewerBase):
 
         base_width = float(plane_info["width"])
         base_length = float(plane_info["length"])
+        infinite_grid = bool(plane_info.get("infinite", False))
 
-        widths = []
-        lengths = []
-        cell_sizes = []
-        for idx in range(len(positions)):
+        if len(handles) != len(positions):
+            self._remove_plane_handles(name)
+            handles = []
+
+        for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
             width = base_width
             length = base_length
 
@@ -823,49 +2005,36 @@ class ViewerViser(ViewerBase):
                 length *= sy
                 cell_size *= max(sx, sy)
 
-            widths.append(width)
-            lengths.append(length)
-            cell_sizes.append(cell_size)
-
-        geometry_key = (len(positions), tuple(widths), tuple(lengths), tuple(cell_sizes))
-        existing = self._plane_handles.get(name)
-
-        if (
-            existing is not None
-            and len(existing) == len(positions)
-            and self._plane_geometry_keys.get(name) == geometry_key
-        ):
-            # Only the pose changed (e.g. a body-attached plane, or the same
-            # static plane logged again this frame) -- move handles in place.
-            for handle, position, quat_wxyz in zip(existing, positions, quats_wxyz, strict=False):
-                handle.position = tuple(float(v) for v in position)
-                handle.wxyz = tuple(float(v) for v in quat_wxyz)
-                handle.visible = True
-            return
-
-        self._remove_plane_handles(name)
-
-        handles = []
-        for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
-            # The plane's local frame has its normal along +Z, so the grid lies in the local XY plane.
-            handle = self._call_scene_method(
-                self._server.scene.add_grid,
-                name=f"{name}/grid_{idx}",
-                width=widths[idx],
-                height=lengths[idx],
-                plane="xy",
-                cell_color=(150, 150, 150),
-                section_color=(110, 110, 110),
-                cell_size=cell_sizes[idx],
-                section_size=cell_sizes[idx],
-                position=tuple(float(v) for v in position),
-                wxyz=tuple(float(v) for v in quat_wxyz),
-            )
-            handles.append(handle)
+            if idx < len(handles):
+                handle = handles[idx]
+                self._set_handle_property_if_changed(handle, "position", position)
+                self._set_handle_property_if_changed(handle, "wxyz", quat_wxyz)
+                self._set_handle_property_if_changed(handle, "width", width)
+                self._set_handle_property_if_changed(handle, "height", length)
+                self._set_handle_property_if_changed(handle, "cell_size", cell_size)
+                self._set_handle_property_if_changed(handle, "section_size", cell_size)
+                self._set_handle_property_if_changed(handle, "infinite_grid", infinite_grid)
+                self._set_handle_property_if_changed(handle, "visible", True)
+            else:
+                # The plane's local frame has its normal along +Z, so the grid lies in the local XY plane.
+                handle = self._call_scene_method(
+                    self._server.scene.add_grid,
+                    name=f"{name}/grid_{idx}",
+                    width=width,
+                    height=length,
+                    plane="xy",
+                    cell_color=(210, 210, 210),
+                    section_color=(180, 180, 180),
+                    cell_size=cell_size,
+                    section_size=cell_size,
+                    infinite_grid=infinite_grid,
+                    position=tuple(float(v) for v in position),
+                    wxyz=tuple(float(v) for v in quat_wxyz),
+                )
+                handles.append(handle)
 
         if handles:
             self._plane_handles[name] = handles
-            self._plane_geometry_keys[name] = geometry_key
 
     @override
     def log_instances(
@@ -916,6 +2085,7 @@ class ViewerViser(ViewerBase):
         if hidden:
             # Remove existing instances if present
             if name in self._scene_handles:
+                self._detach_picking_callback(self._scene_handles[name])
                 try:
                     self._scene_handles[name].remove()
                 except Exception:
@@ -929,23 +2099,22 @@ class ViewerViser(ViewerBase):
         if xforms is None:
             return
 
+        existing = self._instances.get(name) if name in self._scene_handles else None
+        shape_batch = self._shape_instance_batch(name)
         xforms_np = self._to_numpy(xforms)
-        scales_np = self._to_numpy(scales) if scales is not None else None
-        colors_np = self._to_numpy(colors) if colors is not None else None
-
         num_instances = len(xforms_np)
-
-        # Extract positions from transforms
-        # Warp transform format: [x, y, z, qx, qy, qz, qw]
         positions = xforms_np[:, :3].astype(np.float32)
-
         quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
 
-        # Prepare scales
-        if scales_np is not None:
-            batched_scales = scales_np.astype(np.float32)
+        if existing is not None and shape_batch is not None:
+            batched_scales = existing["scales"]
         else:
-            batched_scales = np.ones((num_instances, 3), dtype=np.float32)
+            scales_np = self._to_numpy(scales) if scales is not None else None
+            if scales_np is not None:
+                batched_scales = scales_np.astype(np.float32)
+            else:
+                batched_scales = np.ones((num_instances, 3), dtype=np.float32)
+        colors_np = self._to_numpy(colors) if colors is not None else None
 
         # Prepare colors (convert from 0-1 float to 0-255 uint8)
         if colors_np is not None:
@@ -963,6 +2132,7 @@ class ViewerViser(ViewerBase):
 
             # If instance count changed, we need to recreate the mesh
             if prev_count != num_instances or prev_use_trimesh != use_trimesh:
+                self._detach_picking_callback(handle)
                 try:
                     handle.remove()
                 except Exception:
@@ -972,18 +2142,25 @@ class ViewerViser(ViewerBase):
             else:
                 # Update transforms in-place
                 try:
-                    handle.batched_positions = positions
-                    handle.batched_wxyzs = quats_wxyz
-                    if hasattr(handle, "batched_scales"):
+                    instance = self._instances[name]
+                    if not np.array_equal(instance["positions"], positions):
+                        handle.batched_positions = positions
+                        instance["positions"] = positions.copy()
+                    if not np.array_equal(instance["wxyzs"], quats_wxyz):
+                        handle.batched_wxyzs = quats_wxyz
+                        instance["wxyzs"] = quats_wxyz.copy()
+                    if hasattr(handle, "batched_scales") and not np.array_equal(instance["scales"], batched_scales):
                         handle.batched_scales = batched_scales
+                        instance["scales"] = batched_scales.copy()
                     # Only update colors if they were explicitly provided
                     if batched_colors is not None and hasattr(handle, "batched_colors"):
-                        handle.batched_colors = batched_colors
-                        # Cache the colors for future reference
-                        self._instances[name]["colors"] = batched_colors
+                        if not np.array_equal(instance["colors"], batched_colors):
+                            handle.batched_colors = batched_colors
+                            instance["colors"] = batched_colors.copy()
                     return
                 except Exception:
                     # If update fails, recreate the mesh
+                    self._detach_picking_callback(handle)
                     try:
                         handle.remove()
                     except Exception:
@@ -1019,15 +2196,154 @@ class ViewerViser(ViewerBase):
                 batched_scales=batched_scales,
                 batched_colors=batched_colors,
                 lod="off",
+                wireframe=self._wireframe,
             )
 
+        pickable = self._is_pickable_instance(name)
         self._scene_handles[name] = handle
         self._instances[name] = {
             "mesh": mesh,
             "count": num_instances,
-            "colors": batched_colors,  # Cache the colors
+            "positions": positions.copy(),
+            "wxyzs": quats_wxyz.copy(),
+            "scales": batched_scales.copy(),
+            "colors": batched_colors.copy(),
             "use_trimesh": use_trimesh,
+            "layer_id": self.layer.layer_id,
+            "pickable": pickable,
         }
+        if pickable:
+            self._attach_picking_callback(handle, self.layer.layer_id)
+
+    @override
+    def log_state(self, state: newton.State) -> None:
+        """Log simulation state with packed model-shape transfers.
+
+        Args:
+            state: Current simulation state.
+        """
+        self._last_state = state
+        if self.model is None:
+            return
+
+        packed = self._packed_shape_world_xforms
+        if packed is None or self._slot_to_shape_wp is None:
+            super().log_state(state)
+            self._render_picking_line()
+            return
+
+        self._sync_shape_colors_from_model()
+
+        from .kernels import update_model_shape_xforms  # noqa: PLC0415
+        from .viewer_viser_kernels import detect_shape_color_changes  # noqa: PLC0415
+
+        wp.launch(
+            kernel=update_model_shape_xforms,
+            dim=len(packed),
+            inputs=[
+                self.model.shape_transform,
+                self.model.shape_body,
+                state.body_q,
+                self.model.shape_world,
+                self.world_offsets,
+                self.layer.xform,
+                self._slot_to_shape_wp,
+            ],
+            outputs=[packed],
+            device=self.device,
+            record_tape=False,
+        )
+
+        packed_xforms = self._to_numpy(packed)
+        packed_colors = None
+        colors_changed = self.model_changed or self._packed_shape_colors_host is None
+        if (
+            self.model_shape_color is not None
+            and not colors_changed
+            and self._packed_shape_colors_device is not None
+            and self._shape_colors_changed_device is not None
+        ):
+            self._shape_colors_changed_device.fill_(0)
+            wp.launch(
+                kernel=detect_shape_color_changes,
+                dim=len(self.model_shape_color),
+                inputs=[
+                    self.model_shape_color,
+                    self._packed_shape_colors_device,
+                ],
+                outputs=[self._shape_colors_changed_device],
+                device=self.device,
+                record_tape=False,
+            )
+            colors_changed = bool(self._shape_colors_changed_device.numpy()[0])
+        if self.model_shape_color is not None and colors_changed:
+            packed_colors = self._to_numpy(self.model_shape_color)
+            self._packed_shape_colors_host = packed_colors.copy()
+            if self._packed_shape_colors_device is None:
+                self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
+            wp.copy(self._packed_shape_colors_device, self.model_shape_color)
+        layer_hidden = self._layer_force_hidden()
+
+        for shapes, offset, count in self._packed_shape_groups:
+            visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+            xforms = packed_xforms[offset : offset + count]
+            colors = packed_colors[offset : offset + count] if packed_colors is not None and colors_changed else None
+            materials = shapes.materials if self.model_changed else None
+
+            if shapes.geo_type == newton.GeoType.CAPSULE:
+                self.log_capsules(
+                    shapes.name,
+                    shapes.mesh,
+                    xforms,
+                    shapes.scales,
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
+            else:
+                self.log_instances(
+                    shapes.name,
+                    shapes.mesh,
+                    xforms,
+                    shapes.scales,
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
+            shapes.colors_changed = False
+
+        self._log_gaussian_shapes(state)
+        self._log_non_shape_state(state)
+        self.model_changed = False
+        self._render_picking_line()
+
+    def _log_particles(self, state: newton.State) -> None:
+        """Skip particle compaction and transfer when particles are hidden."""
+        if self.model.particle_count and (not self.show_particles or self._layer_force_hidden()):
+            self.log_points(name=self._qualify("/model/particles"), points=None, hidden=True)
+            return
+        super()._log_particles(state)
+
+    def _render_picking_line(self) -> None:
+        """Render the cyan line from the body anchor to the picking target."""
+        if not self.picking_enabled or self.picking is None or not self.picking.is_picking():
+            self.log_lines("picking_line", None, None, None)
+            return
+        body_idx = int(self.picking.pick_body.numpy()[0])
+        if body_idx < 0:
+            self.log_lines("picking_line", None, None, None)
+            return
+
+        pick_state = self.picking.pick_state.numpy()
+        anchor = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picked_point_world"])
+        target = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picking_target_world"])
+        self.log_lines(
+            "picking_line",
+            np.asarray([anchor], dtype=np.float32),
+            np.asarray([target], dtype=np.float32),
+            (0.0, 1.0, 1.0),
+            hidden=False,
+        )
 
     @override
     def begin_frame(self, time: float):
@@ -1037,8 +2353,36 @@ class ViewerViser(ViewerBase):
         Args:
             time: The current simulation time.
         """
+        self._process_interaction_events()
+        self._update_example_gui()
+        self._sync_gui_controls()
+        self._gizmo_seen.clear()
         self._frame_dt = time - self.time
         self.time = time
+        self._begin_atomic_frame()
+
+    @override
+    def should_step(self) -> bool:
+        """Apply browser interactions before the simulation advances.
+
+        Returns:
+            bool: Whether the simulation should advance.
+        """
+        self._process_interaction_events()
+        self._update_example_gui()
+        self._sync_gui_controls()
+        if not self._paused:
+            self._step_requested = False
+            return True
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
+    @override
+    def is_paused(self) -> bool:
+        """Return whether simulation stepping is paused."""
+        return self._paused
 
     @override
     def end_frame(self):
@@ -1048,11 +2392,18 @@ class ViewerViser(ViewerBase):
         If recording is active, inserts a sleep command for playback timing.
         Updates scalar plots if any data changed since last frame.
         """
-        self._update_scalar_plots()
+        try:
+            self._update_scalar_plots()
 
-        if self._serializer is not None:
-            # Insert sleep for frame timing during recording
-            self._serializer.insert_sleep(self._frame_dt)
+            for name in set(self._gizmo_handles) - self._gizmo_seen:
+                self._remove_gizmo(name)
+
+            if self._serializer is not None:
+                # Insert sleep for frame timing during recording
+                self._serializer.insert_sleep(self._frame_dt)
+        finally:
+            self._end_atomic_frame()
+            self._server.flush()
 
     def _update_scalar_plots(self):
         """Create or update uPlot chart handles for dirty scalar signals."""
@@ -1066,15 +2417,28 @@ class ViewerViser(ViewerBase):
             if self._plot_folder is None:
                 self._plot_folder = self._server.gui.add_folder("Plots")
 
-            n = self._plot_history_size
-            x = np.arange(n, dtype=np.float64)
-
             for name in self._scalar_dirty:
                 buf = self._scalar_buffers[name]
-                y = np.full(n, np.nan, dtype=np.float64)
-                y[n - len(buf) :] = np.array(buf, dtype=np.float64)
-
                 handle = self._plot_handles.get(name)
+                if not buf:
+                    if handle is not None:
+                        empty = np.empty(0, dtype=np.float64)
+                        handle.data = (empty, empty)
+                    continue
+
+                # uPlot receives Float64Array data, which cannot represent its
+                # nullable gap values. Leading NaNs poison its auto-ranging and
+                # leave a partially filled history visually empty, so transfer
+                # only the finite samples currently in the rolling buffer.
+                samples = np.asarray(buf, dtype=np.float64)
+                finite = np.isfinite(samples)
+                y = samples[finite]
+                x = np.flatnonzero(finite).astype(np.float64)
+                if not len(y):
+                    if handle is not None:
+                        handle.data = (x, y)
+                    continue
+
                 if handle is None:
                     with self._plot_folder:
                         handle = self._server.gui.add_uplot(
@@ -1110,6 +2474,12 @@ class ViewerViser(ViewerBase):
         Close the viewer and clean up resources.
         """
         self._running = False
+        self._end_atomic_frame()
+        self.hide_loading_splash()
+        for name in list(self._gizmo_handles):
+            self._remove_gizmo(name)
+        for layer_id in list(self._picking_controls):
+            self._remove_picking_control(layer_id, release=True)
         try:
             self._server.stop()
             if self._serializer is not None:
@@ -1119,12 +2489,17 @@ class ViewerViser(ViewerBase):
 
     @override
     def apply_forces(self, state: newton.State):
-        """Viser backend does not apply interactive forces.
+        """Apply the force from an active Viser picking handle.
 
         Args:
             state: Current simulation state.
         """
-        pass
+        if not self.picking_enabled or self._active_picking_layer_id is None:
+            return
+        layer = self._layers.get(self._active_picking_layer_id)
+        picking = getattr(layer, "picking", None) if layer is not None else None
+        if picking is not None and picking.is_picking():
+            picking._apply_picking_force(state)
 
     def save_recording(self):
         """
@@ -1291,8 +2666,10 @@ class ViewerViser(ViewerBase):
         name = self._qualify(name)
 
         if geo_type == newton.GeoType.PLANE:
-            # Handle "infinite" planes encoded with non-positive scales
-            if geo_scale[0] == 0.0 or geo_scale[1] == 0.0:
+            width = float(geo_scale[0]) if geo_scale else 0.0
+            length = float(geo_scale[1]) if len(geo_scale) > 1 else 10.0
+            infinite_grid = width <= 0.0 or length <= 0.0
+            if infinite_grid:
                 extents = self._get_world_extents()
                 if extents is None:
                     width, length = 10.0, 10.0
@@ -1300,12 +2677,10 @@ class ViewerViser(ViewerBase):
                     max_extent = max(max(extents) * 1.5, 8.0)
                     width = max_extent
                     length = max_extent
-            else:
-                width = geo_scale[0]
-                length = geo_scale[1] if len(geo_scale) > 1 else 10.0
             self._plane_meshes[name] = {
                 "width": float(width),
                 "length": float(length),
+                "infinite": infinite_grid,
             }
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
@@ -1331,24 +2706,19 @@ class ViewerViser(ViewerBase):
         """
         name = self._qualify(name)
 
-        # Remove existing points if present
-        if name in self._scene_handles:
-            try:
-                self._scene_handles[name].remove()
-            except Exception:
-                pass
-            del self._scene_handles[name]
-
-        if hidden:
-            return
-
-        if points is None:
+        existing_handle = self._scene_handles.get(name) if name in self._point_cloud_colors else None
+        if hidden or points is None:
+            if existing_handle is not None:
+                self._set_handle_property_if_changed(existing_handle, "visible", False)
             return
 
         pts = self._to_numpy(points)
         n_points = pts.shape[0]
+        points_val = np.asarray(pts, dtype=np.float32)
 
         if n_points == 0:
+            if existing_handle is not None:
+                self._set_handle_property_if_changed(existing_handle, "visible", False)
             return
 
         # Handle radii (point size)
@@ -1368,23 +2738,190 @@ class ViewerViser(ViewerBase):
             cols = self._to_numpy(colors)
             if cols.shape == (n_points, 3):
                 # Convert from 0-1 to 0-255
-                colors_val = (cols * 255).astype(np.uint8)
+                colors_val = np.rint(np.clip(cols, 0.0, 1.0) * 255.0).astype(np.uint8)
+                if np.all(colors_val == colors_val[0]):
+                    colors_val = colors_val[0]
             elif cols.shape == (3,):
-                colors_val = np.tile((cols * 255).astype(np.uint8), (n_points, 1))
+                colors_val = np.rint(np.clip(cols, 0.0, 1.0) * 255.0).astype(np.uint8)
             else:
                 colors_val = np.full((n_points, 3), 255, dtype=np.uint8)
         else:
+            colors_val = None
+
+        if existing_handle is not None:
+            cached_colors = self._point_cloud_colors[name]
+            if colors_val is None and cached_colors.ndim == 2 and len(cached_colors) != n_points:
+                # Viser requires per-point colors to match the position count.
+                # Model particles use a uniform color, so preserve that color
+                # when active-particle compaction changes the cloud length.
+                base_color = cached_colors[0] if len(cached_colors) else np.full(3, 255, dtype=np.uint8)
+                colors_val = np.asarray(base_color, dtype=np.uint8)
+            try:
+                existing_handle.points = points_val
+                self._set_handle_property_if_changed(existing_handle, "point_size", point_size)
+                if colors_val is not None and not np.array_equal(cached_colors, colors_val):
+                    existing_handle.colors = colors_val
+                    self._point_cloud_colors[name] = colors_val.copy()
+                self._set_handle_property_if_changed(existing_handle, "visible", True)
+                return
+            except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+                _logger.warning("Failed to update Viser point cloud %r in place; recreating it: %s", name, error)
+                try:
+                    existing_handle.remove()
+                except (AttributeError, RuntimeError, TypeError, ValueError) as cleanup_error:
+                    _logger.warning("Failed to remove stale Viser point cloud %r: %s", name, cleanup_error)
+                self._scene_handles.pop(name, None)
+                self._point_cloud_colors.pop(name, None)
+
+        stale_handle = self._scene_handles.get(name)
+        if stale_handle is not None:
+            try:
+                stale_handle.remove()
+            except (AttributeError, RuntimeError, TypeError, ValueError) as cleanup_error:
+                _logger.warning("Failed to remove stale Viser scene handle %r: %s", name, cleanup_error)
+
+        if colors_val is None:
             colors_val = np.full((n_points, 3), 255, dtype=np.uint8)
 
         # Add point cloud to viser
         handle = self._server.scene.add_point_cloud(
             name=name,
-            points=pts.astype(np.float32),
+            points=points_val,
             colors=colors_val,
             point_size=point_size,
             point_shape="circle",
+            point_shading="gradient",
+            precision="float16",
         )
         self._scene_handles[name] = handle
+        self._point_cloud_colors[name] = colors_val.copy()
+
+    def _sync_image_gui_after_clear(self) -> None:
+        """Synchronize or remove native image controls after names are cleared."""
+        if not self._logged_image_names:
+            if self._image_folder is not None:
+                try:
+                    self._image_folder.remove()
+                except Exception:
+                    pass
+            self._image_folder = None
+            self._image_selector = None
+            self._image_handle = None
+            self._image_transport_format = None
+            self._selected_image_name = None
+            return
+
+        names = tuple(self._logged_image_names)
+        if self._selected_image_name not in self._logged_image_names:
+            self._selected_image_name = names[0]
+            if self._image_handle is not None:
+                try:
+                    self._image_handle.remove()
+                except Exception:
+                    pass
+                self._image_handle = None
+                self._image_transport_format = None
+        if self._image_selector is not None:
+            if tuple(self._image_selector.options) != names:
+                self._image_selector.options = names
+            if self._image_selector.value != self._selected_image_name:
+                self._image_selector.value = self._selected_image_name
+
+    def _register_image_name(self, name: str) -> None:
+        """Register a logged image and lazily create its selector panel."""
+        if name in self._logged_image_names:
+            return
+        self._logged_image_names[name] = None
+        if self._selected_image_name is None:
+            self._selected_image_name = name
+
+        names = tuple(self._logged_image_names)
+        if self._image_folder is None:
+            self._image_folder = self._server.gui.add_folder("Images", order=40.0, expand_by_default=True)
+            with self._image_folder:
+                self._image_selector = self._server.gui.add_dropdown(
+                    "Output",
+                    names,
+                    initial_value=self._selected_image_name,
+                )
+
+            @self._image_selector.on_update
+            def _on_image_selected(event):
+                if event.client_id is not None:
+                    self._interaction_events.put(("image_select", str(event.target.value)))
+        elif tuple(self._image_selector.options) != names:
+            self._image_selector.options = names
+
+    def _pack_logged_image(self, name: str, image: wp.array[Any] | np.ndarray) -> np.ndarray:
+        """Pack one image batch into an RGBA atlas suitable for Viser."""
+        n, h, w, c = _validate(name, image)
+        atlas_cols, atlas_rows = _atlas_layout(n)
+        if isinstance(image, wp.array):
+            signature = (tuple(image.shape), image.dtype, image.device, atlas_cols)
+            cached = self._image_atlas_buffers.get(name)
+            if cached is None or cached[0] != signature:
+                atlas_wp = wp.zeros(
+                    (atlas_rows * h, atlas_cols * w, 4),
+                    dtype=wp.uint8,
+                    device=image.device,
+                )
+                self._image_atlas_buffers[name] = (signature, atlas_wp)
+            else:
+                atlas_wp = cached[1]
+            source = _to_canonical_4d_wp(image, n, h, w, c)
+            _pack_rgba_warp(source, c, atlas_cols, atlas_wp)
+            atlas = atlas_wp.numpy()
+        else:
+            self._image_atlas_buffers.pop(name, None)
+            atlas = _convert_to_packed_rgba_numpy(image, atlas_cols)
+
+        # The shared atlas packer leaves unused slots transparent. Make the
+        # padding opaque white so it does not force otherwise opaque image
+        # batches onto Viser's much slower PNG transport path.
+        final_row_tiles = n % atlas_cols
+        if final_row_tiles:
+            atlas[(atlas_rows - 1) * h :, final_row_tiles * w :] = 255
+        return atlas
+
+    @staticmethod
+    def _prepare_logged_image_transport(atlas: np.ndarray) -> tuple[np.ndarray, Literal["jpeg", "png"]]:
+        """Use fast JPEG transport for opaque images and preserve real alpha with PNG."""
+        if np.all(atlas[..., 3] == 255):
+            return np.ascontiguousarray(atlas[..., :3]), "jpeg"
+        return atlas, "png"
+
+    @override
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray, *, fullscreen: bool = False) -> None:
+        """Display a selected image stream in a persistent native Viser panel.
+
+        Args:
+            name: Image stream name.
+            image: Single image or image batch to display.
+            fullscreen: Accepted for viewer API compatibility and ignored by Viser.
+        """
+        name = self._qualify(name)
+        self._register_image_name(name)
+        if name != self._selected_image_name:
+            return
+
+        atlas = self._pack_logged_image(name, image)
+        transport_image, transport_format = self._prepare_logged_image_transport(atlas)
+        if self._image_handle is not None and self._image_transport_format != transport_format:
+            self._image_handle.remove()
+            self._image_handle = None
+        if self._image_handle is None:
+            with self._image_folder:
+                self._image_handle = self._server.gui.add_image(
+                    transport_image,
+                    label=name,
+                    format=transport_format,
+                    jpeg_quality=self._IMAGE_JPEG_QUALITY,
+                )
+            self._image_transport_format = transport_format
+        else:
+            if self._image_handle.label != name:
+                self._image_handle.label = name
+            self._image_handle.image = transport_image
 
     @override
     def log_gaussian(
@@ -1522,11 +3059,13 @@ class ViewerViser(ViewerBase):
             buf.clear()
             self._scalar_accumulators.pop(name, None)
 
+        plot_changed = clear
         if self._scalar_smoothing.get(name, smoothing) != smoothing:
             self._scalar_accumulators.pop(name, None)
         self._scalar_smoothing[name] = smoothing
         if smoothing <= 1:
             buf.append(val)
+            plot_changed = True
         else:
             acc = self._scalar_accumulators.get(name)
             if acc is None:
@@ -1536,8 +3075,10 @@ class ViewerViser(ViewerBase):
             if len(acc) >= smoothing:
                 buf.append(sum(acc) / len(acc))
                 acc.clear()
+                plot_changed = True
 
-        self._scalar_dirty.add(name)
+        if plot_changed:
+            self._scalar_dirty.add(name)
 
     def show_notebook(self, width: int | str = "100%", height: int | str = 400):
         """

@@ -9,7 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.viewer.camera import Camera
-from newton.viewer import ViewerGL
+from newton.viewer import ViewerGL, ViewerNull
 
 
 def _as_np(value):
@@ -119,6 +119,32 @@ class TestViewerCameraOrbit(unittest.TestCase):
         camera.dolly(-0.5)
 
         self.assertGreater(camera.pivot_distance, distance_after_dolly_in)
+
+
+class TestViewerCameraLookAtValidation(unittest.TestCase):
+    def test_base_rejects_nonfinite_coordinates(self):
+        viewer = ViewerNull(num_frames=1)
+
+        for pos, target in (
+            (wp.vec3(float("nan"), 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)),
+            (wp.vec3(0.0, 0.0, 0.0), wp.vec3(float("inf"), 0.0, 0.0)),
+        ):
+            with self.subTest(pos=pos, target=target), self.assertRaisesRegex(ValueError, "must be finite"):
+                viewer.set_camera_look_at(pos, target)
+
+    def test_viewer_gl_rejects_nonfinite_coordinates_before_mutation(self):
+        viewer = object.__new__(ViewerGL)
+        viewer.camera = Camera(pos=(1.0, 2.0, 3.0), up_axis="Z")
+
+        for pos, target in (
+            (wp.vec3(float("nan"), 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)),
+            (wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, float("inf"), 0.0)),
+        ):
+            with self.subTest(pos=pos, target=target):
+                initial_position = _as_np(viewer.camera.pos)
+                with self.assertRaisesRegex(ValueError, "must be finite"):
+                    viewer.set_camera_look_at(pos, target)
+                np.testing.assert_allclose(_as_np(viewer.camera.pos), initial_position)
 
 
 def _build_viewer_model(z: float, up_axis: newton.Axis = newton.Axis.Z) -> newton.Model:

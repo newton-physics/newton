@@ -26,6 +26,7 @@ from .kernels import (
     repack_shape_colors,
     transform_points,
 )
+from .transform import transform_add_translation, transform_from_array, transform_multiply
 
 #: Sentinel layer id used when no user-defined layer has been activated.
 #: Preserves the legacy behavior of unprefixed object names so that existing
@@ -809,11 +810,46 @@ class ViewerBase(ABC):
         """Set the camera position and orientation.
 
         Args:
-            pos: The position of the camera.
-            pitch: The pitch of the camera.
-            yaw: The yaw of the camera.
+            pos: Camera position [m].
+            pitch: Camera pitch angle [deg].
+            yaw: Camera yaw angle [deg].
         """
         return
+
+    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, fov: float | None = None):
+        """Set the camera position and aim it at a world-space target.
+
+        Backends that do not expose an orbit target fall back to equivalent
+        pitch and yaw angles.
+
+        Args:
+            pos: Camera position [m].
+            target: World-space point at which to aim the camera [m].
+            fov: Optional vertical field of view [deg], when supported by the
+                viewer backend.
+        """
+        position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
+        target_np = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
+        if not np.all(np.isfinite(position)) or not np.all(np.isfinite(target_np)):
+            raise ValueError("Camera position and target must be finite")
+        direction = target_np - position
+        direction_norm = float(np.linalg.norm(direction))
+        if direction_norm <= 1.0e-12:
+            self.set_camera(pos, pitch=0.0, yaw=0.0)
+            return
+
+        direction /= direction_norm
+        up_axis = int(self.model.up_axis) if self.model is not None else 2
+        if up_axis == 0:
+            pitch = math.degrees(math.asin(float(np.clip(direction[0], -1.0, 1.0))))
+            yaw = math.degrees(math.atan2(float(direction[2]), float(direction[1])))
+        elif up_axis == 2:
+            pitch = math.degrees(math.asin(float(np.clip(direction[2], -1.0, 1.0))))
+            yaw = math.degrees(math.atan2(float(direction[1]), float(direction[0])))
+        else:
+            pitch = math.degrees(math.asin(float(np.clip(direction[1], -1.0, 1.0))))
+            yaw = math.degrees(math.atan2(float(direction[2]), float(direction[0])))
+        self.set_camera(pos, pitch=pitch, yaw=yaw)
 
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
         """Set world offsets for visual separation of multiple worlds.
@@ -925,9 +961,13 @@ class ViewerBase(ABC):
         bounds_min_np = world_bounds_min.numpy()
         bounds_max_np = world_bounds_max.numpy()
 
-        # Find maximum extents across all worlds
-        # Mask out invalid bounds (inf values)
-        valid_mask = ~np.isinf(bounds_min_np[:, 0])
+        # Find maximum extents across all worlds. Bounds use finite MAXVAL
+        # sentinels, so an untouched row is detected by its inverted range.
+        valid_mask = (
+            np.all(np.isfinite(bounds_min_np), axis=1)
+            & np.all(np.isfinite(bounds_max_np), axis=1)
+            & np.all(bounds_min_np <= bounds_max_np, axis=1)
+        )
 
         if not valid_mask.any():
             # No valid worlds found
@@ -960,8 +1000,8 @@ class ViewerBase(ABC):
     def _auto_compute_contact_scales(self):
         """Adapt contact-visualization scales to the current model.
 
-        Sets ``contact_viz_scale`` and ``contact_force_scale``, based on
-        aggregate model dimensions.
+        Sets ``contact_viz_scale`` and ``contact_force_scale`` based on a
+        characteristic rigid-shape size and force.
 
         Falls back to the literal defaults if the relevant model data is
         unavailable (e.g. no shapes / no dynamic bodies / zero gravity).
@@ -971,11 +1011,10 @@ class ViewerBase(ABC):
         prev_default_scale = self._contact_viz_scale_default
         prev_default_force_scale = self._contact_force_scale_default
 
-        # Characteristic length L_char: 10% of the maximal extent.
-        L_char = 0.0
-        max_extents = self._get_world_extents()
-        if max_extents is not None:
-            L_char = float(0.1 * np.linalg.norm(max_extents))
+        # Characteristic length L_char: half the median collision radius of
+        # body-attached shapes. Unlike the full world diagonal, this remains
+        # proportional to the rendered rigid shapes in long or sparse scenes.
+        L_char = 0.5 * float(self.scene_scale)
         if not np.isfinite(L_char) or L_char <= 0.0:
             L_char = 1.0
 
@@ -1128,8 +1167,8 @@ class ViewerBase(ABC):
                 if body_q_np is None:
                     body_q_np = state.body_q.numpy()
 
-                body_xform = wp.transform_expand(body_q_np[parent])
-                world_xform = wp.transform_multiply(body_xform, shape_xform)
+                body_xform = transform_from_array(body_q_np[parent])
+                world_xform = transform_multiply(body_xform, shape_xform)
             else:
                 world_xform = shape_xform
 
@@ -1137,11 +1176,8 @@ class ViewerBase(ABC):
                 if offsets_np is None:
                     offsets_np = self.world_offsets.numpy()
                 offset = offsets_np[world_idx]
-                world_xform = wp.transformf(
-                    wp.vec3(world_xform.p[0] + offset[0], world_xform.p[1] + offset[1], world_xform.p[2] + offset[2]),
-                    world_xform.q,
-                )
-            world_xform = wp.transform_multiply(self.layer.xform, world_xform)
+                world_xform = transform_add_translation(world_xform, offset)
+            world_xform = transform_multiply(self.layer.xform, world_xform)
             self.log_gaussian(gname, gaussian, xform=world_xform, hidden=False)
 
     def _log_non_shape_state(self, state: newton.State):
@@ -1713,14 +1749,16 @@ class ViewerBase(ABC):
 
         Args:
             name: The name of the gizmo.
-            transform: The transform of the gizmo.
+            transform: Gizmo transform with translation [m] and a unitless
+                rotation quaternion.
             translate: Axes on which the translation handles are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
-            snap_to: Optional world transform to snap to when this gizmo is
+            snap_to: Optional world transform with translation [m] and a
+                unitless rotation quaternion to apply when this gizmo is
                 released by the user.
         """
         return
@@ -1972,8 +2010,9 @@ class ViewerBase(ABC):
                 as the main viewer surface for the current frame instead of
                 rendering the 3D scene. Other backends ignore this option.
 
-        The base implementation is a no-op. Backends that render images
-        (currently only :class:`~newton.viewer.ViewerGL`) override this method.
+        The base implementation is a no-op. Backends that render images,
+        including :class:`~newton.viewer.ViewerGL` and
+        :class:`~newton.viewer.ViewerViser`, override this method.
         """
         return
 
@@ -2345,7 +2384,7 @@ class ViewerBase(ABC):
             if geo_type == newton.GeoType.GAUSSIAN:
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
-                    xform = wp.transform_expand(shape_transform[s])
+                    xform = transform_from_array(shape_transform[s])
                     gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
                     self._gaussian_instances.append(
                         (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
@@ -2420,7 +2459,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._shape_instances[shape_hash]
 
-            xform = wp.transform_expand(shape_transform[s])
+            xform = transform_from_array(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
 
             if shape_display_color is not None:
@@ -2584,7 +2623,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._sdf_isomesh_instances[geo_hash]
 
-            xform = wp.transform_expand(shape_transform[s])
+            xform = transform_from_array(shape_transform[s])
             # Apply shape scale if not baked into SDF, otherwise use (1,1,1)
             if scale_baked:
                 scale = np.array([1.0, 1.0, 1.0])

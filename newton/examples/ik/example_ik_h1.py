@@ -5,7 +5,7 @@
 # Example IK H1 (positions + rotations)
 #
 # Inverse kinematics on H1 with four interactive end-effector
-# targets (left/right hands + left/right feet) controlled via ViewerGL.log_gizmo().
+# targets (left/right hands + left/right feet) controlled via viewer.log_gizmo().
 #
 # - Uses both IKObjectivePosition and IKObjectiveRotation per end-effector
 # - Re-solves IK every frame from the latest gizmo transforms
@@ -30,6 +30,7 @@ class Example:
         self.sim_time = 0.0
 
         self.viewer = viewer
+        self.viewer.picking_enabled = False
 
         # ------------------------------------------------------------------
         # Build a single H1 (fixed base for stability) + ground

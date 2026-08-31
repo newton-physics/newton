@@ -447,7 +447,7 @@ class Example:
             self.tiled_camera_sensor.default_render_config.gaussians_max_num_hits = value
             show_compile_kernel_info = True
 
-        if show_compile_kernel_info:
+        if show_compile_kernel_info and isinstance(self.viewer, ViewerGL):
             display_width = self.viewer.renderer.window.width
             display_height = self.viewer.renderer.window.height
 
