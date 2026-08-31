@@ -221,24 +221,6 @@ def optimize_face_sdf(
 
 
 @wp.func
-def _shape_frames(
-    shape_body: wp.array[wp.int32],
-    body_q: wp.array[wp.transform],
-    shape_transform: wp.array[wp.transform],
-    shape_index: wp.int32,
-):
-    """Return (X_bs, X_ws, X_sw): shape-local->body, shape-local->world, world->shape-local."""
-    rigid_body = shape_body[shape_index]
-    X_wb = wp.transform_identity()
-    if rigid_body >= 0:
-        X_wb = body_q[rigid_body]
-    X_bs = shape_transform[shape_index]
-    X_ws = wp.transform_multiply(X_wb, X_bs)
-    X_sw = wp.transform_inverse(X_ws)
-    return X_bs, X_ws, X_sw
-
-
-@wp.func
 def _shape_world_frame(
     shape_body: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
@@ -255,34 +237,7 @@ def _shape_world_frame(
 
 @wp.func
 def _soft_feature_aabb_misses_shape(
-    shape_index: wp.int32,
-    shape_type: wp.array[wp.int32],
-    shape_gap: wp.array[float],
-    shape_aabb_lower: wp.array[wp.vec3],
-    shape_aabb_upper: wp.array[wp.vec3],
-    feature_lower: wp.vec3,
-    feature_upper: wp.vec3,
-    margin: float,
-    radius: float,
-) -> bool:
-    """Return whether an expanded soft-feature AABB is disjoint from the rigid-shape AABB."""
-    if shape_aabb_lower.shape[0] == 0 or shape_type[shape_index] == GeoType.PLANE:
-        return False
-
-    return _soft_feature_aabb_misses_analytic_shape(
-        shape_index,
-        shape_gap,
-        shape_aabb_lower,
-        shape_aabb_upper,
-        feature_lower,
-        feature_upper,
-        margin,
-        radius,
-    )
-
-
-@wp.func
-def _soft_feature_aabb_misses_analytic_shape(
+    geo: wp.int32,
     shape_index: wp.int32,
     shape_gap: wp.array[float],
     shape_aabb_lower: wp.array[wp.vec3],
@@ -292,24 +247,28 @@ def _soft_feature_aabb_misses_analytic_shape(
     margin: float,
     radius: float,
 ) -> bool:
-    """Analytic non-plane variant of :func:`_soft_feature_aabb_misses_shape`."""
-    if shape_aabb_lower.shape[0] == 0:
+    """Return whether an expanded soft-feature AABB is disjoint from the rigid-shape AABB.
+
+    Planes bypass the test (their finite stored bounds cannot represent an infinite contact
+    surface); an empty AABB array disables the rejection for isolated/reference callers.
+    """
+    if shape_aabb_lower.shape[0] == 0 or geo == GeoType.PLANE:
         return False
 
     gap = shape_gap[shape_index]
     expansion = margin + radius + wp.max(0.0, -gap)
     expansion_vec = wp.vec3(expansion, expansion, expansion)
-    feature_lower = feature_lower - expansion_vec
-    feature_upper = feature_upper + expansion_vec
+    lower = feature_lower - expansion_vec
+    upper = feature_upper + expansion_vec
     rigid_lower = shape_aabb_lower[shape_index]
     rigid_upper = shape_aabb_upper[shape_index]
     return (
-        feature_upper[0] < rigid_lower[0]
-        or feature_upper[1] < rigid_lower[1]
-        or feature_upper[2] < rigid_lower[2]
-        or feature_lower[0] > rigid_upper[0]
-        or feature_lower[1] > rigid_upper[1]
-        or feature_lower[2] > rigid_upper[2]
+        upper[0] < rigid_lower[0]
+        or upper[1] < rigid_lower[1]
+        or upper[2] < rigid_lower[2]
+        or lower[0] > rigid_upper[0]
+        or lower[1] > rigid_upper[1]
+        or lower[2] > rigid_upper[2]
     )
 
 
@@ -426,8 +385,8 @@ def create_soft_face_contacts(
         wp.max(a_w[2], wp.max(b_w[2], c_w[2])),
     )
     if _soft_feature_aabb_misses_shape(
+        geo,
         shape_index,
-        shape_type,
         shape_gap,
         shape_aabb_lower,
         shape_aabb_upper,
@@ -465,9 +424,6 @@ def create_soft_face_contacts(
         y = x - phi * grad
         X_bs = shape_transform[shape_index]
         X_ws = _shape_world_frame(shape_body, body_q, X_bs, shape_index)
-        out_a_idx = tri_indices[t, 0]
-        out_b_idx = tri_indices[t, 1]
-        out_c_idx = tri_indices[t, 2]
         _emit_soft_ef_contact(
             tid,
             tid_base,
@@ -481,7 +437,7 @@ def create_soft_face_contacts(
             soft_contact_body_pos,
             soft_contact_body_vel,
             soft_contact_normal,
-            wp.vec3i(out_a_idx, out_b_idx, out_c_idx),
+            wp.vec3i(a_idx, b_idx, c_idx),
             bary,
             shape_index,
             wp.transform_point(X_bs, y),
@@ -557,8 +513,8 @@ def create_soft_edge_contacts(
         wp.max(p_w[2], q_w[2]),
     )
     if _soft_feature_aabb_misses_shape(
+        geo,
         shape_index,
-        shape_type,
         shape_gap,
         shape_aabb_lower,
         shape_aabb_upper,
@@ -589,8 +545,6 @@ def create_soft_edge_contacts(
         y = x - phi * grad
         X_bs = shape_transform[shape_index]
         X_ws = _shape_world_frame(shape_body, body_q, X_bs, shape_index)
-        out_v0 = edge_indices[e, 2]
-        out_v1 = edge_indices[e, 3]
         # optimize_edge_sdf parameterizes x = (1 - u) * p_s + u * q_s, so v0 carries weight 1 - u.
         _emit_soft_ef_contact(
             tid,
@@ -605,7 +559,7 @@ def create_soft_edge_contacts(
             soft_contact_body_pos,
             soft_contact_body_vel,
             soft_contact_normal,
-            wp.vec3i(out_v0, out_v1, -1),
+            wp.vec3i(v0, v1, -1),
             wp.vec3(1.0 - u, u, 0.0),
             shape_index,
             wp.transform_point(X_bs, y),
@@ -621,11 +575,11 @@ def launch_soft_ef_contacts(
     contacts,
     margin: float,
     device,
-    edge_pairs,
-    face_pairs,
-    n_particle_pairs,
-    shape_aabb_lower=None,
-    shape_aabb_upper=None,
+    edge_pairs: wp.array[wp.vec2i],
+    face_pairs: wp.array[wp.vec2i],
+    n_particle_pairs: int,
+    shape_aabb_lower: wp.array[wp.vec3] | None = None,
+    shape_aabb_upper: wp.array[wp.vec3] | None = None,
 ):
     """Launch the soft EDGE and FACE passes (the soft-particle pass is the legacy kernel).
 

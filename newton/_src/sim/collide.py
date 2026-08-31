@@ -834,7 +834,7 @@ def _world_compatible_pairs(
     n_features = len(feature_world)
     n_shapes = len(shape_world)
 
-    def _pairs(f_idx: np.ndarray, s_idx: np.ndarray):
+    def _pairs(f_idx: np.ndarray, s_idx: np.ndarray) -> wp.array[wp.vec2i]:
         # ``shape_ok`` (optional, indexed by shape) drops pairs whose shape cannot participate -- e.g.
         # full-surface edge/face excludes shapes without a usable SDF, which fall back to per-particle.
         if shape_ok is not None and len(s_idx):
