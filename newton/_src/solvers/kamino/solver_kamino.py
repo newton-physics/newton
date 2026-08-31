@@ -113,8 +113,8 @@ class SolverKamino(SolverBase, CouplingInterface):
     under-/overactuation, joint-limits, hard frictional contacts and restitutive impacts.
 
     Forward dynamics are formulated as a Nonlinear Complementarity Problem (NCP)
-    over bilateral kinematic joint constraints and unilateral joint-limit and
-    contact constraints. The default PADMM backend solves this problem with
+    over bilateral kinematic joint constraints, bounded-multiplier constraints, and unilateral joint-limit
+    and contact constraints. The default PADMM backend solves this problem with
     Proximal ADMM. An opt-in DVI backend uses projected iterations with a direct
     bilateral block solve.
 
@@ -1014,6 +1014,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                     convert_forces=False,
                     friction_mix_mode=self._config.materials.friction_mix_mode,
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
+                    cull_speculative_contacts=self._config.dynamics.cull_speculative_contacts,
                 )
         else:
             self._detector = None
@@ -1248,7 +1249,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - springs
         - triangles, edges, tetrahedra
         - muscles
-        - distance or cable joints
+        - distance or rod joints
         - bodies with singular inertial properties that are attached to movable bodies
 
         Args:
@@ -1284,8 +1285,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 # Check for explicitly unsupported joint types
                 if joint_type == JointType.DISTANCE:
                     unsupported_joint_types["DISTANCE"] = unsupported_joint_types.get("DISTANCE", 0) + 1
-                elif joint_type == JointType.CABLE:
-                    unsupported_joint_types["CABLE"] = unsupported_joint_types.get("CABLE", 0) + 1
+                elif joint_type == JointType.ROD:
+                    unsupported_joint_types["ROD"] = unsupported_joint_types.get("ROD", 0) + 1
             if len(unsupported_joint_types) > 0:
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
@@ -1413,14 +1414,15 @@ class SolverKamino(SolverBase, CouplingInterface):
         axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
         massless_body = violations[self._kamino.StructuralUpdateViolation.MASSLESS]
+        friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
+        effort_joint = violations[self._kamino.StructuralUpdateViolation.EFFORT_CTS]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
             raise RuntimeError(
-                f"Changing dynamic constraint topology for joint {joint} "
+                f"Changing joint dynamics allocation for joint {joint} "
                 f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
-                "The dynamic constraint topology changes if armature, damping, target stiffness, or target damping are updated to non-zero values, while they were zero when creating the solver. "
-                "The opposite is also true: if the values are updated to zero, while they were non-zero when creating the solver, the dynamic constraint topology also changes."
+                "This occurs when armature, damping, or unbounded implicit-PD gains cross zero on a DoF."
             )
 
         if limit_dof != sentinel:
@@ -1428,6 +1430,22 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise RuntimeError(
                 f"Changing the existence of a joint limit for DoF {dof} "
                 f"is not supported; recreate SolverKamino to apply the change."
+            )
+
+        if friction_joint != sentinel:
+            joint = int(friction_joint)
+            raise RuntimeError(
+                f"Changing joint friction allocation for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "Enabling or disabling friction on a DoF requires recreation."
+            )
+
+        if effort_joint != sentinel:
+            joint = int(effort_joint)
+            raise RuntimeError(
+                f"Changing effort-limit allocation for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "Adding or removing bounded implicit PD on a DoF requires recreation."
             )
 
         if actuation_joint != sentinel:

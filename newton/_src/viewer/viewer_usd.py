@@ -293,6 +293,7 @@ class ViewerUSD(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
         colors: wp.array[wp.vec3] | None = None,
     ):
         """
@@ -313,6 +314,7 @@ class ViewerUSD(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
             colors: Optional per-vertex RGB colors. Takes precedence over
                 ``color``. Valid textures with ``uvs`` take precedence over
                 ``colors``; handling of invalid or unsupported texture inputs
@@ -324,6 +326,7 @@ class ViewerUSD(ViewerBase):
         # Convert warp arrays to numpy
         points_np = points.numpy().astype(np.float32)
         indices_np = indices.numpy().astype(np.uint32)
+        face_vertex_counts = [3] * (len(indices_np) // 3)
         colors_np = colors.numpy().astype(np.float32) if colors is not None else None
         if colors_np is not None and len(colors_np) != len(points_np):
             raise ValueError("Number of colors must match number of points")
@@ -333,15 +336,18 @@ class ViewerUSD(ViewerBase):
 
             mesh_prim = UsdGeom.Mesh.Define(self.stage, self._get_path(name))
 
-            # setup topology once (do not set every frame)
-            face_vertex_counts = [3] * (len(indices_np) // 3)
-            mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts)
-            mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np)
+            if not dynamic:
+                # Static mesh topology is authored once.
+                mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts)
+                mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np)
 
             # Store the prototype path
             self._meshes[name] = mesh_prim
 
         mesh_prim = self._meshes[name]
+        if dynamic:
+            mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts, self._frame_index)
+            mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np, self._frame_index)
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
 
         # Set normals if provided
@@ -349,6 +355,8 @@ class ViewerUSD(ViewerBase):
             normals_np = normals.numpy().astype(np.float32)
             mesh_prim.GetNormalsAttr().Set(normals_np, self._frame_index)
             mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+        elif dynamic:
+            mesh_prim.GetNormalsAttr().Set([], self._frame_index)
 
         # Set UVs if provided
         if uvs is not None:

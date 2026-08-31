@@ -23,9 +23,51 @@ from newton._src.geometry.contact_reduction_global import (
     reduce_buffered_contacts_speculative_kernel,
     reduction_finalize_slot,
 )
-from newton._src.geometry.narrow_phase import ContactWriterData, NarrowPhase, write_contact_simple
+from newton._src.geometry.narrow_phase import (
+    ContactWriterData,
+    NarrowPhase,
+    create_prepare_convex_pair,
+    write_contact_simple,
+)
 from newton._src.geometry.types import GeoType
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+
+_prepare_speculative_convex_pair = create_prepare_convex_pair(
+    external_aabb=True,
+    speculative=True,
+)
+
+
+@wp.kernel
+def _extract_speculative_plane_proxy_scale(
+    shape_types: wp.array[wp.int32],
+    shape_data: wp.array[wp.vec4],
+    shape_transform: wp.array[wp.transform],
+    shape_source: wp.array[wp.uint64],
+    shape_gap: wp.array[wp.float32],
+    shape_collision_radius: wp.array[wp.float32],
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
+    proxy_scale: wp.array[wp.vec3],
+    valid_result: wp.array[wp.int32],
+):
+    valid, query = wp.static(_prepare_speculative_convex_pair)(
+        wp.vec2i(0, 1),
+        shape_types,
+        shape_data,
+        shape_transform,
+        shape_source,
+        shape_gap,
+        shape_collision_radius,
+        shape_aabb_lower,
+        shape_aabb_upper,
+        shape_collision_aabb_lower,
+        shape_collision_aabb_upper,
+    )
+    valid_result[0] = int(valid)
+    proxy_scale[0] = query.geom_a.scale
 
 
 @wp.kernel
@@ -721,6 +763,58 @@ def test_speculative_cone_reaches_infinite_plane(test, device):
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
+def test_speculative_plane_proxy_adds_gap_once(test, device):
+    """Size an infinite-plane proxy from the base radius plus one pair gap."""
+    shape_types = wp.array([int(GeoType.PLANE), int(GeoType.CONE)], dtype=wp.int32, device=device)
+    shape_data = wp.array(
+        [wp.vec4(0.0), wp.vec4(0.1, 0.1, 0.0, 0.0)],
+        dtype=wp.vec4,
+        device=device,
+    )
+    shape_transform = wp.array(
+        [wp.transform_identity(), wp.transform(wp.vec3(0.0, 0.0, 0.5))],
+        dtype=wp.transform,
+        device=device,
+    )
+    shape_aabb_lower = wp.array([wp.vec3(0.0), wp.vec3(-0.1, -0.1, 0.4)], dtype=wp.vec3, device=device)
+    shape_aabb_upper = wp.array([wp.vec3(0.0), wp.vec3(0.1, 0.1, 0.6)], dtype=wp.vec3, device=device)
+    shape_collision_aabb_lower = wp.array(
+        [wp.vec3(0.0), wp.vec3(-0.1)],
+        dtype=wp.vec3,
+        device=device,
+    )
+    shape_collision_aabb_upper = wp.array(
+        [wp.vec3(0.0), wp.vec3(0.1)],
+        dtype=wp.vec3,
+        device=device,
+    )
+    proxy_scale = wp.zeros(1, dtype=wp.vec3, device=device)
+    valid_result = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(
+        _extract_speculative_plane_proxy_scale,
+        dim=1,
+        inputs=[
+            shape_types,
+            shape_data,
+            shape_transform,
+            wp.zeros(2, dtype=wp.uint64, device=device),
+            wp.array([0.2, 0.3], dtype=wp.float32, device=device),
+            wp.zeros(2, dtype=wp.float32, device=device),
+            shape_aabb_lower,
+            shape_aabb_upper,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
+        ],
+        outputs=[proxy_scale, valid_result],
+        device=device,
+    )
+
+    test.assertEqual(int(valid_result.numpy()[0]), 1)
+    base_radius = np.linalg.norm([0.1, 0.1, 0.1])
+    expected_half_extent = 10.0 * (base_radius + 0.2 + 0.3)
+    np.testing.assert_allclose(proxy_scale.numpy()[0], expected_half_extent, rtol=1.0e-6, atol=1.0e-6)
+
+
 def test_stationary_contacts_match_non_speculative_pipeline(test, device):
     """Match contacts for non-moving shapes with speculative generation on and off."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -1334,6 +1428,7 @@ for _name, _test in (
     ("test_speculative_candidates_preserve_physical_geometry", test_speculative_candidates_preserve_physical_geometry),
     ("test_speculative_candidates_include_angular_motion", test_speculative_candidates_include_angular_motion),
     ("test_speculative_cone_reaches_infinite_plane", test_speculative_cone_reaches_infinite_plane),
+    ("test_speculative_plane_proxy_adds_gap_once", test_speculative_plane_proxy_adds_gap_once),
     (
         "test_stationary_contacts_match_non_speculative_pipeline",
         test_stationary_contacts_match_non_speculative_pipeline,

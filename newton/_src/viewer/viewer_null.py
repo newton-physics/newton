@@ -70,6 +70,7 @@ class ViewerNull(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
         colors: wp.array[wp.vec3] | None = None,
     ):
         """
@@ -90,6 +91,7 @@ class ViewerNull(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
             colors: Optional per-vertex RGB colors. Takes precedence over
                 ``color``. Valid textures with ``uvs`` take precedence over
                 ``colors``; handling of invalid or unsupported texture inputs

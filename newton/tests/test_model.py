@@ -216,6 +216,23 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
 
 
 class TestModelMesh(unittest.TestCase):
+    class _FakeDecompositionMesh:
+        """Store mesh data passed to a fake decomposition backend."""
+
+        def __init__(self, vertices, faces):
+            self.vertices = vertices
+            self.faces = faces
+
+    @classmethod
+    def _make_fake_decomposition_backend(cls, method, decompose):
+        """Create a stub module and import name for a decomposition backend."""
+        if method == "coacd":
+            return "coacd", SimpleNamespace(Mesh=cls._FakeDecompositionMesh, run_coacd=decompose)
+        return "trimesh", SimpleNamespace(
+            Trimesh=cls._FakeDecompositionMesh,
+            decomposition=SimpleNamespace(convex_decomposition=decompose),
+        )
+
     def test_mesh_rejects_invalid_triangle_indices(self):
         """Reject malformed and out-of-range mesh triangle indices."""
         vertices = np.array(
@@ -433,6 +450,69 @@ class TestModelMesh(unittest.TestCase):
         finalize_b.assert_not_called()
         shape_source_ptr = model.shape_source_ptr.numpy()
         self.assertEqual(shape_source_ptr[0], shape_source_ptr[1])
+
+    def test_finalize_deduplicates_convex_collision_vertices(self):
+        """Deduplicate exact convex vertices in the finalized collision mesh."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        indices = np.arange(6, dtype=np.int32)
+        mesh = newton.Mesh(vertices, indices, compute_inertia=False)
+        mesh._build_collision_edges(
+            lower_angle_threshold_rad=0.0,
+            upper_angle_threshold_rad=np.pi,
+            enable_box_absorption=False,
+            enable_inward_filter=False,
+            sign_method="normal",
+            half_normal=0.0,
+            half_lateral=0.0,
+        )
+        # Exercise defensive remapping of cached edges from duplicate source vertices.
+        mesh._collision_edges = np.concatenate(
+            (mesh._collision_edges, np.array([[3, 0], [3, 1]], dtype=np.int32)),
+            axis=0,
+        )
+
+        builder = ModelBuilder()
+        builder.add_shape_convex_hull(body=-1, mesh=mesh)
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_array_equal(mesh.vertices, vertices)
+        self.assertIs(model.shape_source[0], mesh)
+        self.assertEqual(len(model._mesh_keep_alive), 1)
+        collision_mesh = model._mesh_keep_alive[0]
+        np.testing.assert_array_equal(
+            collision_mesh.points.numpy(),
+            np.array(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=np.float32,
+            ),
+        )
+        np.testing.assert_array_equal(
+            collision_mesh.indices.numpy(),
+            np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+        )
+        edge_start, edge_count = model.shape_edge_range.numpy()[0]
+        collision_edges = model.mesh_edge_indices.numpy()[edge_start : edge_start + edge_count]
+        np.testing.assert_array_equal(
+            collision_edges,
+            np.array([[0, 1], [1, 2], [0, 2], [2, 3], [0, 3]], dtype=np.int32),
+        )
+        self.assertTrue(np.all(collision_edges[:, 0] != collision_edges[:, 1]))
+        self.assertEqual(len(np.unique(collision_edges, axis=0)), len(collision_edges))
 
     def test_finalize_does_not_deduplicate_different_mesh_layouts(self):
         vertices_a = np.array(
@@ -947,6 +1027,115 @@ class TestModelMesh(unittest.TestCase):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.5)
         # the documented threshold migration must keep working without coacd installed
         self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
+
+    def test_mesh_approximation_empty_convex_decomposition_raises(self):
+        """Raise when a convex decomposition backend returns no parts."""
+
+        mesh = newton.Mesh.create_box(
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        for method in ("coacd", "vhacd"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+                module_name, fake_backend = self._make_fake_decomposition_backend(method, lambda _mesh, **_kwargs: [])
+                with (
+                    patch_sys_module(module_name, fake_backend),
+                    self.assertRaisesRegex(RuntimeError, rf"Remeshing with method '{method}' failed"),
+                ):
+                    builder.approximate_meshes(method=method, shape_indices=[shape], raise_on_failure=True)
+
+                self.assertEqual(builder.shape_type[shape], newton.GeoType.MESH)
+
+    def test_mesh_approximation_empty_convex_decomposition_falls_back_per_shape(self):
+        """Fall back only empty-result shapes while preserving successful decompositions."""
+
+        empty_mesh = newton.Mesh.create_box(
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        successful_mesh = newton.Mesh.create_box(
+            2.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        for method in ("coacd", "vhacd"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                empty_shape = builder.add_shape_mesh(body=-1, mesh=empty_mesh)
+                successful_shape = builder.add_shape_mesh(body=-1, mesh=successful_mesh)
+                fallback_meshes = []
+
+                def fake_decompose(backend_mesh, _method=method, **_kwargs):
+                    vertices = np.asarray(backend_mesh.vertices)
+                    if np.isclose(np.ptp(vertices[:, 0]), 2.0):
+                        return []
+                    faces = np.asarray(backend_mesh.faces)
+                    if _method == "coacd":
+                        return [(vertices.copy(), faces.copy())]
+                    return [{"vertices": vertices.copy(), "faces": faces.copy()}]
+
+                def fake_convex_hull(mesh, _fallback_meshes=fallback_meshes, **_kwargs):
+                    _fallback_meshes.append(mesh)
+                    return mesh.copy()
+
+                module_name, fake_backend = self._make_fake_decomposition_backend(method, fake_decompose)
+                with (
+                    patch_sys_module(module_name, fake_backend),
+                    mock.patch("newton._src.sim.builder.remesh_mesh", side_effect=fake_convex_hull),
+                    self.assertWarnsRegex(
+                        UserWarning,
+                        rf"Remeshing with method '{method}' failed for shape {empty_shape}.*Falling back to convex_hull",
+                    ),
+                ):
+                    remeshed = builder.approximate_meshes(
+                        method=method,
+                        shape_indices=[empty_shape, successful_shape],
+                    )
+
+                self.assertEqual(remeshed, {empty_shape, successful_shape})
+                self.assertEqual(builder.shape_type[empty_shape], newton.GeoType.CONVEX_MESH)
+                self.assertEqual(builder.shape_type[successful_shape], newton.GeoType.CONVEX_MESH)
+                self.assertEqual(fallback_meshes, [empty_mesh])
+
+    def test_mesh_approximation_empty_convex_decomposition_reaches_bounding_box_fallback(self):
+        """Reach the bounding-box fallback when an empty decomposition is followed by a hull failure."""
+
+        mesh = newton.Mesh.create_box(
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        for method in ("coacd", "vhacd"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+                module_name, fake_backend = self._make_fake_decomposition_backend(method, lambda _mesh, **_kwargs: [])
+                with (
+                    patch_sys_module(module_name, fake_backend),
+                    mock.patch("newton._src.sim.builder.remesh_mesh", side_effect=RuntimeError("qhull failed")),
+                    warnings.catch_warnings(record=True) as caught,
+                ):
+                    warnings.simplefilter("always")
+                    remeshed = builder.approximate_meshes(method=method, shape_indices=[shape])
+
+                self.assertEqual(len(caught), 2)
+                self.assertRegex(str(caught[0].message), "the backend returned no convex parts")
+                self.assertRegex(str(caught[1].message), "Falling back to bounding_box")
+                self.assertEqual(remeshed, {shape})
+                self.assertEqual(builder.shape_type[shape], newton.GeoType.BOX)
+                self.assertIsNone(builder.shape_source[shape])
 
     def test_mesh_approximation_ignores_non_mesh_shapes(self):
         builder = ModelBuilder()

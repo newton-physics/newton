@@ -118,6 +118,11 @@ class TestViewerMeshColors(unittest.TestCase):
         mesh = Mock()
         mesh.base_color = (0.7, 0.5, 0.3)
         mesh.material = (0.5, 0.0, 0.0, 0.0)
+        # Match the logged geometry so log_mesh reuses this mesh instead of
+        # replacing it, which would need a live GL device.
+        mesh.dynamic = False
+        mesh.num_points = 1
+        mesh.num_indices = 3
         viewer.objects = {"mesh": mesh}
         viewer._qualify = lambda name: name
 
@@ -140,6 +145,11 @@ class TestViewerMeshColors(unittest.TestCase):
         mesh = Mock()
         mesh.base_color = (0.7, 0.5, 0.3)
         mesh.material = (0.5, 0.0, 0.0, 0.0)
+        # Match the logged geometry so log_mesh reuses this mesh instead of
+        # replacing it, which would need a live GL device.
+        mesh.dynamic = False
+        mesh.num_points = 1
+        mesh.num_indices = 3
         viewer.objects = {"mesh": mesh}
         viewer._qualify = lambda name: name
 

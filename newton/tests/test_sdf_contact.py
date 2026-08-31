@@ -8,7 +8,11 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.geometry.sdf_contact import _sdf_rsqrt_rn, mesh_sdf_contact_search_precision
+from newton._src.geometry.sdf_contact import (
+    _sdf_rsqrt_rn,
+    compute_block_counts_from_weights,
+    mesh_sdf_contact_search_precision,
+)
 from newton.tests.unittest_utils import get_test_devices
 
 
@@ -27,6 +31,36 @@ def _sdf_rsqrt_rn_kernel(values: wp.array[wp.float32], out: wp.array[wp.float32]
 
 
 class TestSDFContact(unittest.TestCase):
+    def test_block_count_scan_ignores_inactive_tail(self) -> None:
+        """Keep active block offsets independent of stale inactive slots."""
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                weights = wp.array([1024, 2048, 1024, 99, 99, 99, 99, 99], dtype=wp.int32, device=device)
+                pair_count = wp.array([3], dtype=wp.int32, device=device)
+                total_weight = wp.array([4096], dtype=wp.int32, device=device)
+                block_counts = wp.full(8, 77, dtype=wp.int32, device=device)
+                offsets = wp.empty_like(block_counts)
+
+                wp.launch(
+                    compute_block_counts_from_weights,
+                    dim=2,
+                    inputs=[total_weight, weights, pair_count, len(weights), 4, block_counts, 2],
+                    device=device,
+                )
+                wp.utils.array_scan(block_counts, offsets, inclusive=False)
+                np.testing.assert_array_equal(offsets.numpy()[:4], [0, 1, 3, 4])
+
+                pair_count.assign([1])
+                total_weight.assign([1024])
+                wp.launch(
+                    compute_block_counts_from_weights,
+                    dim=2,
+                    inputs=[total_weight, weights, pair_count, len(weights), 4, block_counts, 2],
+                    device=device,
+                )
+                wp.utils.array_scan(block_counts, offsets, inclusive=False)
+                np.testing.assert_array_equal(offsets.numpy()[:2], [0, 4])
+
     def test_mesh_sdf_contact_search_precision_uses_inner_envelope(self) -> None:
         device = wp.get_preferred_device()
         values = wp.empty(4, dtype=wp.float32, device=device)

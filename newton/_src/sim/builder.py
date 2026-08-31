@@ -101,6 +101,42 @@ not show up in builder-state comparisons or survive past either builder's lifeti
 """
 
 
+def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
+    """Build a collision-only mesh containing each exact vertex position once."""
+    vertices = source.vertices
+    _, first_indices, inverse = np.unique(vertices, axis=0, return_index=True, return_inverse=True)
+    if len(first_indices) == len(vertices):
+        return source
+
+    # Retain first-occurrence order so support-map tie breaking stays unchanged.
+    first_order = np.argsort(first_indices)
+    unique_remap = np.empty(len(first_indices), dtype=np.int32)
+    unique_remap[first_order] = np.arange(len(first_indices), dtype=np.int32)
+    vertex_remap = unique_remap[inverse]
+    collision_mesh = Mesh(
+        vertices=vertices[first_indices[first_order]],
+        indices=vertex_remap[source.indices],
+        compute_inertia=False,
+        is_solid=source.is_solid,
+        maxhullvert=source.maxhullvert,
+        sdf=source.sdf,
+    )
+    collision_mesh.mass = source.mass
+    collision_mesh.com = source.com
+    collision_mesh.inertia = source.inertia
+    collision_mesh.has_inertia = source.has_inertia
+
+    if source._collision_edges is not None:
+        collision_edges = vertex_remap[source._collision_edges]
+        collision_edges = collision_edges[collision_edges[:, 0] != collision_edges[:, 1]]
+        if len(collision_edges) > 0:
+            _, first_edges = np.unique(collision_edges, axis=0, return_index=True)
+            collision_edges = collision_edges[np.sort(first_edges)]
+        collision_mesh._collision_edges = collision_edges
+
+    return collision_mesh
+
+
 @dataclass(frozen=True)
 class _ShapeCollisionFilterBlock:
     """Compact replicated collision-filter block."""
@@ -291,7 +327,7 @@ class ModelBuilder:
         _SHAPE_COLOR_PALETTE[0][2] / 255.0,
     )
     _ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE = (
-        "Omitting body_frame_origin when creating cable rods is deprecated because the implicit default "
+        "Omitting body_frame_origin when creating rods is deprecated because the implicit default "
         "will change from 'start' to 'com' in a future release. Pass body_frame_origin='start' to "
         "preserve the existing start-node body frame, or body_frame_origin='com' to opt into "
         "COM-centered capsule body frames."
@@ -550,9 +586,9 @@ class ModelBuilder:
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to
-        :attr:`gap` when ``None``. Distinct from :attr:`gap` (broad-phase
-        inflation) and :attr:`margin` (contact-surface inflation). Rejected on
-        ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
+        :attr:`gap`, plus :attr:`margin` for hydroelastic shapes, when
+        ``None``. Hydroelastic padding must cover ``margin + gap``. Rejected
+        on ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
         :meth:`~newton.geometry.Mesh.build_sdf` instead."""
 
         def configure_sdf(
@@ -1090,6 +1126,37 @@ class ModelBuilder:
                         yield {"joint": joint_path, "stiffness": prim.GetCustomDataByKey("stiffness")}
         """
 
+        articulation_owner_attribute: str | None = None
+        """Full key of the attribute that assigns each row to an articulation.
+
+        The key must be named ``<frequency>_articulation``.
+        The attribute must use this custom frequency, be assigned to the model,
+        and declare ``references="articulation"``. When provided,
+        :class:`~newton.selection.ArticulationView` automatically exposes every
+        array that uses this frequency.
+        """
+
+        articulation_owner_resolver: Callable[[ModelBuilder], Sequence[int]] | None = None
+        """Optional callback that computes the articulation owner for every row.
+
+        The callback runs before this builder is merged or finalized and its
+        results populate :attr:`articulation_owner_attribute`. This keeps
+        solver-specific ownership logic local to the custom-frequency
+        registration while preserving ordinary reference remapping. Rows whose
+        ownership was already remapped by a merge are preserved when later rows
+        are appended and resolved.
+        """
+
+        label_attribute: str | None = None
+        """Optional full key of a string attribute containing row labels.
+
+        The key must be named ``<frequency>_label``.
+        The attribute must use this custom frequency and be assigned to the model.
+        :class:`~newton.selection.ArticulationView` uses it to expose labels for
+        the template articulation. Builder merging applies ``label_prefix`` to
+        these values like other entity labels.
+        """
+
         def __post_init__(self):
             """Validate frequency naming and callback relationships."""
             if not self.name or ":" in self.name:
@@ -1098,6 +1165,21 @@ class ModelBuilder:
                 raise ValueError(f"namespace must be non-empty and colon-free, got '{self.namespace}'")
             if self.usd_entry_expander is not None and self.usd_prim_filter is None:
                 raise ValueError("usd_entry_expander requires usd_prim_filter")
+            if self.articulation_owner_resolver is not None and self.articulation_owner_attribute is None:
+                raise ValueError("articulation_owner_resolver requires articulation_owner_attribute")
+            for field_name, attribute_key, expected_key in (
+                (
+                    "articulation_owner_attribute",
+                    self.articulation_owner_attribute,
+                    f"{self.key}_articulation",
+                ),
+                ("label_attribute", self.label_attribute, f"{self.key}_label"),
+            ):
+                if attribute_key is not None and attribute_key != expected_key:
+                    raise ValueError(
+                        f"{field_name} for custom frequency '{self.key}' must be '{expected_key}', "
+                        f"got '{attribute_key}'"
+                    )
 
         @property
         def key(self) -> str:
@@ -1615,6 +1697,8 @@ class ModelBuilder:
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
         """Running counts for custom string frequencies used to size custom attribute arrays."""
+        self._custom_frequency_owner_resolved_counts: dict[str, int] = {}
+        """Row counts covered by the latest custom-frequency owner resolution."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
@@ -1716,6 +1800,9 @@ class ModelBuilder:
         return (
             existing.usd_prim_filter is incoming.usd_prim_filter
             and existing.usd_entry_expander is incoming.usd_entry_expander
+            and existing.articulation_owner_attribute == incoming.articulation_owner_attribute
+            and existing.articulation_owner_resolver is incoming.articulation_owner_resolver
+            and existing.label_attribute == incoming.label_attribute
         )
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
@@ -1832,7 +1919,9 @@ class ModelBuilder:
         if freq_key in self.custom_frequencies:
             existing = self.custom_frequencies[freq_key]
             if not self._custom_frequency_specs_match(existing, freq_obj):
-                raise ValueError(f"Custom frequency '{freq_key}' is already registered with different callbacks.")
+                raise ValueError(
+                    f"Custom frequency '{freq_key}' is already registered with different callbacks or metadata."
+                )
             # Already registered with equivalent callbacks - silently skip
             return
 
@@ -1864,6 +1953,136 @@ class ModelBuilder:
     def get_custom_frequency_keys(self) -> set[str]:
         """Return set of custom frequency keys (string frequencies) defined in this builder."""
         return set(self._custom_frequency_counts.keys())
+
+    @staticmethod
+    def _get_namespaced_attribute(source: Any, key: str) -> Any:
+        """Return an attribute addressed by its colon-delimited key."""
+        value = source
+        for component in key.split(":"):
+            value = getattr(value, component)
+        return value
+
+    def _resolve_custom_frequency_articulation_owners(self) -> None:
+        """Populate declared owner attributes using frequency-local callbacks."""
+        for frequency_key, frequency in self.custom_frequencies.items():
+            resolver = frequency.articulation_owner_resolver
+            if resolver is None:
+                continue
+
+            count = self._custom_frequency_counts.get(frequency_key, 0)
+            resolved_count = self._custom_frequency_owner_resolved_counts.get(frequency_key, 0)
+            if resolved_count == count:
+                continue
+            if resolved_count > count:
+                raise RuntimeError(
+                    f"Custom frequency '{frequency_key}' has {count} rows but tracks "
+                    f"{resolved_count} resolved owner rows"
+                )
+
+            owner_key = frequency.articulation_owner_attribute
+            assert owner_key is not None
+            owner_attribute = self.custom_attributes.get(owner_key)
+            if owner_attribute is None:
+                raise ValueError(
+                    f"Custom frequency '{frequency_key}' declares unknown articulation owner attribute '{owner_key}'"
+                )
+
+            resolved_owners = list(resolver(self))
+            if len(resolved_owners) != count:
+                raise ValueError(
+                    f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                    f"{len(resolved_owners)} values, expected {count}"
+                )
+            if resolved_count > 0:
+                if not isinstance(owner_attribute.values, list) or len(owner_attribute.values) < resolved_count:
+                    value_count = len(owner_attribute.values) if owner_attribute.values is not None else 0
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' has {value_count} values but "
+                        f"{resolved_count} merged rows must be preserved"
+                    )
+                owners = list(owner_attribute.values[:resolved_count])
+            else:
+                owners = []
+            for row in range(resolved_count, count):
+                owner = resolved_owners[row]
+                if not self._is_integer_scalar(owner):
+                    raise ValueError(
+                        f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                        f"non-integer value {owner!r} at row {row}"
+                    )
+                owner_index = int(owner)
+                if owner_index < -1 or owner_index >= self.articulation_count:
+                    raise ValueError(
+                        f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                        f"invalid articulation index {owner_index} at row {row}"
+                    )
+                owners.append(owner_index)
+            owner_attribute.values = owners
+            self._custom_frequency_owner_resolved_counts[frequency_key] = count
+
+    def _finalize_custom_frequency_metadata(self, model: Model, device: Devicelike | None) -> None:
+        """Materialize articulation ownership and label metadata on a model."""
+        for frequency_key, frequency in self.custom_frequencies.items():
+            owner_key = frequency.articulation_owner_attribute
+            if owner_key is not None:
+                owner_attribute = self.custom_attributes.get(owner_key)
+                if owner_attribute is None:
+                    raise ValueError(
+                        f"Custom frequency '{frequency_key}' declares unknown articulation owner attribute "
+                        f"'{owner_key}'"
+                    )
+                if owner_attribute.frequency != frequency_key:
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' uses frequency "
+                        f"'{owner_attribute.frequency}', expected '{frequency_key}'"
+                    )
+                if owner_attribute.assignment != Model.AttributeAssignment.MODEL:
+                    raise ValueError(f"Articulation owner attribute '{owner_key}' must be assigned to Model")
+                if owner_attribute.references != "articulation":
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' must declare references='articulation'"
+                    )
+                if not wp.types.type_is_int(owner_attribute.dtype):
+                    raise ValueError(f"Articulation owner attribute '{owner_key}' must use an integer dtype")
+
+                count = model.custom_frequency_counts.get(frequency_key, 0)
+                if count == 0:
+                    owners = wp.empty(0, dtype=owner_attribute.dtype, device=device)
+                else:
+                    owners = self._get_namespaced_attribute(model, owner_key)
+                    if not isinstance(owners, wp.array) or owners.ndim != 1:
+                        raise ValueError(f"Articulation owner attribute '{owner_key}' must be a 1-D Warp array")
+                    if len(owners) != count:
+                        raise ValueError(
+                            f"Articulation owner attribute '{owner_key}' has {len(owners)} values but "
+                            f"frequency '{frequency_key}' expects {count}"
+                        )
+                    owner_values = owners.numpy()
+                    invalid = np.flatnonzero((owner_values < -1) | (owner_values >= model.articulation_count))
+                    if len(invalid) > 0:
+                        row = int(invalid[0])
+                        raise ValueError(
+                            f"Articulation owner attribute '{owner_key}' contains invalid articulation "
+                            f"index {int(owner_values[row])} at row {row}"
+                        )
+                model.custom_frequency_articulation[frequency_key] = owners
+
+            label_key = frequency.label_attribute
+            if label_key is None:
+                continue
+            label_attribute = self.custom_attributes.get(label_key)
+            if label_attribute is None:
+                raise ValueError(f"Custom frequency '{frequency_key}' declares unknown label attribute '{label_key}'")
+            if label_attribute.frequency != frequency_key:
+                raise ValueError(
+                    f"Label attribute '{label_key}' uses frequency '{label_attribute.frequency}', "
+                    f"expected '{frequency_key}'"
+                )
+            if label_attribute.assignment != Model.AttributeAssignment.MODEL:
+                raise ValueError(f"Label attribute '{label_key}' must be assigned to Model")
+            if label_attribute.dtype is not str:
+                raise ValueError(f"Label attribute '{label_key}' must use dtype=str")
+            model.custom_frequency_label_attributes[frequency_key] = label_key
 
     def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
         """Append values to custom attributes with custom string frequencies.
@@ -2569,6 +2788,7 @@ class ModelBuilder:
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
         *,
         xforms: Sequence[Transform] | None = None,
+        label_prefixes: Sequence[str | None] | None = None,
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
@@ -2603,6 +2823,11 @@ class ModelBuilder:
                 Defaults to (0.0, 0.0, 0.0).
             xforms: Optional sequence of transforms, one per replicated world.
                 When provided, its length must equal ``world_count``.
+            label_prefixes: Optional prefix prepended to all labels from the source builder,
+                one per replicated world, applied as :meth:`add_builder` applies its
+                ``label_prefix``. Labels are joined with ``/``. A ``None`` entry leaves that
+                world's labels as they are in ``builder``; an empty source label remains
+                unlabeled.
         """
         if world_count <= 0:
             return
@@ -2616,10 +2841,14 @@ class ModelBuilder:
             xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
         elif len(xforms) != world_count:
             raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
+        if label_prefixes is None:
+            label_prefixes = [None] * world_count
+        elif len(label_prefixes) != world_count:
+            raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
 
         base_world = self.world_count
         worlds = list(range(base_world, base_world + world_count))
-        self._merge_builder_copies(builder, worlds, xforms, [None] * world_count)
+        self._merge_builder_copies(builder, worlds, xforms, label_prefixes)
 
         self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
         self.world_count += world_count
@@ -2838,7 +3067,8 @@ class ModelBuilder:
             elif attr.endswith("_label"):
                 for label_prefix in label_prefixes:
                     if label_prefix:
-                        destination.extend(f"{label_prefix}/{label}" if label else label for label in source)
+                        rooted = label_prefix + "/"
+                        destination.extend([rooted + label if label else label for label in source])
                     else:
                         destination.extend(source)
             elif spec.references in {Model.AttributeFrequency.WORLD, "world"}:
@@ -2994,7 +3224,9 @@ class ModelBuilder:
         for freq_key, frequency in builder.custom_frequencies.items():
             existing = self.custom_frequencies.get(freq_key)
             if existing is not None and not self._custom_frequency_specs_match(existing, frequency):
-                raise ValueError(f"Custom frequency '{freq_key}' is already registered with different callbacks.")
+                raise ValueError(
+                    f"Custom frequency '{freq_key}' is already registered with different callbacks or metadata."
+                )
 
         for full_key, attr in builder.custom_attributes.items():
             merged = self.custom_attributes.get(full_key)
@@ -3373,7 +3605,7 @@ class ModelBuilder:
         legacy_margin_gap: bool = False,
         return_deformable_results: bool = False,
     ) -> dict[str, Any]:
-        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
+        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -3530,6 +3762,35 @@ class ModelBuilder:
             diagnostic text, not a stable code, and a prim absent from a realized map may still
             appear in the authored metadata.
 
+            ``path_particle_map`` is always returned. It maps each imported
+            ``UsdGeom.Points`` prim carrying ``NewtonPointsDeformableSimAPI`` whose
+            governing ``PhysicsDeformableBodyAPI`` resolves to a
+            ``NewtonMPMSceneAPI`` owner to its half-open ``[start, end)`` builder
+            particle range. These ranges are build-time snapshots and are not
+            updated by later structural builder mutations.
+            Each resolved whole-prim or point-``GeomSubset`` physics material must
+            apply ``NewtonMPMMaterialAPI``, ``PhysicsMaterialAPI``, or
+            ``PhysicsVolumeDeformableMaterialAPI``. MPM elasticity is read from
+            ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. After
+            unit conversion, Young's modulus is in Pa and density is in kg/m^3.
+            Unbound Points use Newton's registered material defaults and
+            ``ModelBuilder.default_shape_cfg`` density. All Points imported by one
+            call must resolve to the same MPM scene; unrelated PhysicsScenes
+            and particle systems are ignored. ``particle_scene_path`` contains the
+            governing ``UsdPhysics.Scene`` prim path, or ``None`` when no particles
+            are imported.
+
+            Particle widths are diameters. Newton converts each radius as
+            ``width / 2`` after applying stage units and the prim's uniform world
+            scale; converted widths and radii are in meters. Authored
+            ``physics:masses`` take precedence over body mass or density, then
+            material density. Density-derived mass uses
+            ``physics:density * width**3``; converted masses are in kilograms.
+            Without widths, it uses ``ModelBuilder.default_particle_radius`` and a
+            support width of twice that radius. Non-uniform scale or shear is
+            rejected because one scalar width cannot preserve a spherical particle
+            under that transform.
+
             The returned mapping has the following entries:
 
             .. list-table::
@@ -3549,6 +3810,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_particle_map"``
+                  - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
                 * - ``"path_cable_map"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_map"``
@@ -3556,7 +3819,7 @@ class ModelBuilder:
                 * - ``"path_soft_map"``
                   - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
                 * - ``"path_cable_attrs"``
-                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the imported rod cannot express (e.g. shear / twist). ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the component identifier. Present only with ``return_deformable_results=True``.
+                  - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_attrs"``
                   - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``). Present only with ``return_deformable_results=True``.
                 * - ``"path_soft_attrs"``
@@ -3581,6 +3844,8 @@ class ModelBuilder:
                   - Dictionary of collected per-prim schema attributes (dict)
                 * - ``"max_solver_iterations"``
                   - The resolved maximum solver iterations (int or None)
+                * - ``"particle_scene_path"``
+                  - Governing ``UsdPhysics.Scene`` prim path for imported particle simulation geometry, or ``None`` when no particles are imported
                 * - ``"path_body_relative_transform"``
                   - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
                 * - ``"path_original_body_map"``
@@ -3973,6 +4238,11 @@ class ModelBuilder:
         world: int,
         label_prefix: str | None,
     ) -> None:
+        # Resolve source rows before ordinary reference remapping copies them.
+        # Resolve existing destination rows too, since its topology may have
+        # changed since the rows were first added.
+        builder._resolve_custom_frequency_articulation_owners()
+        self._resolve_custom_frequency_articulation_owners()
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
         # Builders allocate MJCF mask-domain IDs independently. Remap every
@@ -4142,15 +4412,37 @@ class ModelBuilder:
             else:
                 merged.values.update({index_offset + idx: value for idx, value in attr.values.items()})
 
-        if label_prefix and builder._equality_constraint_count > 0:
-            label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
-            if label_attr is not None and label_attr.values:
-                start = self._equality_constraint_count
-                for i in range(start, start + builder._equality_constraint_count):
-                    if i < len(label_attr.values):
-                        label = label_attr.values[i]
-                        if label:
-                            label_attr.values[i] = f"{label_prefix}/{label}"
+        if label_prefix:
+            for frequency_key, frequency in builder.custom_frequencies.items():
+                label_key = frequency.label_attribute
+                if label_key is None:
+                    continue
+                source_label_attribute = builder.custom_attributes.get(label_key)
+                if source_label_attribute is None or source_label_attribute.frequency != frequency_key:
+                    continue
+                label_attribute = self.custom_attributes.get(label_key)
+                if (
+                    label_attribute is None
+                    or not isinstance(label_attribute.values, list)
+                    or not label_attribute.values
+                ):
+                    continue
+                start = custom_frequency_offsets.get(frequency_key, 0)
+                count = builder._custom_frequency_counts.get(frequency_key, 0)
+                for row in range(start, min(start + count, len(label_attribute.values))):
+                    label = label_attribute.values[row]
+                    if label:
+                        label_attribute.values[row] = f"{label_prefix}/{label}"
+
+            if builder._equality_constraint_count > 0:
+                label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
+                if label_attr is not None and label_attr.values:
+                    start = self._equality_constraint_count
+                    for i in range(start, start + builder._equality_constraint_count):
+                        if i < len(label_attr.values):
+                            label = label_attr.values[i]
+                            if label:
+                                label_attr.values[i] = f"{label_prefix}/{label}"
 
         for freq_key, freq_obj in builder.custom_frequencies.items():
             if freq_key not in self.custom_frequencies:
@@ -4160,6 +4452,11 @@ class ModelBuilder:
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
+            frequency = builder.custom_frequencies.get(freq_key)
+            if frequency is not None and frequency.articulation_owner_resolver is not None:
+                # Source owner values were resolved above and remapped as regular
+                # articulation references, so the merged rows are already current.
+                self._custom_frequency_owner_resolved_counts[freq_key] = offset + builder_count
 
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
             self._add_custom_attribute_model_finalizer(key, finalizer)
@@ -5175,6 +5472,133 @@ class ModelBuilder:
         )
 
     @deprecate_nonkeyword_arguments
+    def add_joint_rod(
+        self,
+        parent: int,
+        child: int,
+        *,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
+        label: str | None = None,
+        collision_filter_parent: bool | None = None,
+        enabled: bool = True,
+        custom_attributes: dict[str, Any] | None = None,
+        **kwargs,
+    ) -> int:
+        """Adds a rod joint to the model.
+
+        Rod joints have split linear stretch/shear material slots plus separate
+        angular bend and twist material slots. When both ``shear_stiffness`` and
+        ``shear_damping`` are omitted, shear uses the stretch stiffness /
+        damping, reproducing the isotropic linear energy while using the
+        split layout. When both ``twist_stiffness`` and ``twist_damping`` are
+        omitted, twist uses the bend stiffness / damping, reproducing the
+        isotropic angular energy while using the split layout.
+
+        .. note::
+
+            Rod joints are supported by :class:`newton.solvers.SolverVBD`, which uses an
+            AVBD backend for rigid bodies. They are represented in the joint data
+            model as VBD stretch, shear, bend, and twist constraint slots rather
+            than ``joint_q`` coordinates. Rod body transforms are
+            integrated directly by :class:`newton.solvers.SolverVBD`; they are
+            not reconstructed by :func:`newton.eval_fk`.
+
+            Rod joints use each anchor frame's local ``+Z`` as the material
+            tangent axis for separating axial stretch from shear and twist from
+            bend. For a body-to-body rod span, the parent anchor ``+Z`` should
+            point from the parent attachment toward the child attachment.
+            :meth:`add_rod` and :meth:`add_rod_graph` satisfy the tangent
+            convention automatically.
+
+        Args:
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform: The transform from the parent body frame to the joint parent anchor frame; its
+                translation is the attachment point and its local ``+Z`` axis is the parent-side material
+                tangent.
+            child_xform: The transform from the child body frame to the joint child anchor frame; its
+                translation is the attachment point and its local ``+Z`` axis is the child-side material
+                tangent.
+            stretch_stiffness: Rod stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
+            stretch_damping: Rod stretch damping [N·s/m] (stored as ``target_kd``). If None,
+                defaults to 0.0.
+            shear_stiffness: Optional transverse shear stiffness [N/m]. If None,
+                defaults to ``stretch_stiffness``.
+            shear_damping: Optional transverse shear damping [N·s/m]. If None, defaults to
+                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise
+                defaults to 0.0.
+            bend_stiffness: Rod bend stiffness (stored as ``target_ke``) [N·m/rad].
+                If None, defaults to 0.0.
+            bend_damping: Rod bend damping [N·m·s/rad] (stored as ``target_kd``). If None, defaults to 0.0.
+            twist_stiffness: Optional twist stiffness [N·m/rad]. If None,
+                defaults to ``bend_stiffness``.
+            twist_damping: Optional twist damping [N·m·s/rad]. If None, defaults to ``bend_damping`` only when
+                both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
+            label: The label of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
+            enabled: Whether the joint is enabled.
+            custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD
+                frequency attributes.
+
+        Returns:
+            The index of the added joint.
+
+        """
+        # Linear material slots (stretch and shear). Default shear to stretch so omitted
+        # shear reproduces the isotropic linear anchor energy in the split layout.
+        stretch_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
+        stretch_kd = 0.0 if stretch_damping is None else stretch_damping
+        stretch_axis = ModelBuilder.JointDofConfig(target_ke=stretch_ke, target_kd=stretch_kd)
+        if shear_stiffness is None and shear_damping is None:
+            shear_ke = stretch_ke
+            shear_kd = stretch_kd
+        else:
+            shear_ke = stretch_ke if shear_stiffness is None else shear_stiffness
+            shear_kd = 0.0 if shear_damping is None else shear_damping
+        shear_axis = ModelBuilder.JointDofConfig(target_ke=shear_ke, target_kd=shear_kd)
+
+        # Angular material slots (bend and twist). Default twist to bend so omitted twist
+        # reproduces the isotropic angular energy in the split layout.
+        bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
+        bend_kd = 0.0 if bend_damping is None else bend_damping
+        bend_axis = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
+        if twist_stiffness is None and twist_damping is None:
+            twist_ke = bend_ke
+            twist_kd = bend_kd
+        else:
+            twist_ke = bend_ke if twist_stiffness is None else twist_stiffness
+            twist_kd = 0.0 if twist_damping is None else twist_damping
+        if stretch_ke < 0.0 or shear_ke < 0.0 or bend_ke < 0.0 or twist_ke < 0.0:
+            raise ValueError(
+                "add_joint_rod: stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness must be >= 0"
+            )
+        twist_axis = ModelBuilder.JointDofConfig(target_ke=twist_ke, target_kd=twist_kd)
+
+        return self.add_joint(
+            JointType.ROD,
+            parent,
+            child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            linear_axes=[stretch_axis, shear_axis],
+            angular_axes=[bend_axis, twist_axis],
+            label=label,
+            collision_filter_parent=collision_filter_parent,
+            enabled=enabled,
+            custom_attributes=custom_attributes,
+            **kwargs,
+        )
+
+    @deprecate_nonkeyword_arguments
     def add_joint_cable(
         self,
         parent: int,
@@ -5196,104 +5620,29 @@ class ModelBuilder:
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
     ) -> int:
-        """Adds a cable joint to the model.
+        """Deprecated alias for :meth:`add_joint_rod`.
 
-        Cable joints have split linear stretch/shear material slots plus separate
-        angular bend and twist material slots. When both ``shear_stiffness`` and
-        ``shear_damping`` are omitted, shear uses the stretch stiffness /
-        damping, reproducing the isotropic linear energy while using the
-        split layout. When both ``twist_stiffness`` and ``twist_damping`` are
-        omitted, twist uses the bend stiffness / damping, reproducing the
-        isotropic angular energy while using the split layout.
-
-        .. note::
-
-            Cable joints are supported by :class:`newton.solvers.SolverVBD`, which uses an
-            AVBD backend for rigid bodies. Split cables are represented in the
-            joint data model as VBD stretch, shear, bend, and twist constraint
-            slots rather than ``joint_q`` coordinates. Cable body transforms are
-            integrated directly by :class:`newton.solvers.SolverVBD`; they are
-            not reconstructed by :func:`newton.eval_fk`.
-
-            Split cables use each anchor frame's local ``+Z`` as the material
-            tangent axis for separating axial stretch from shear and twist from
-            bend. For a body-to-body cable span, the parent anchor ``+Z`` should
-            point from the parent attachment toward the child attachment.
-            :meth:`add_rod` and :meth:`add_rod_graph` satisfy the tangent
-            convention automatically.
-
-        Args:
-            parent: The index of the parent body.
-            child: The index of the child body.
-            parent_xform: The transform from the parent body frame to the joint parent anchor frame; its
-                translation is the attachment point and its local ``+Z`` axis is the parent-side material
-                tangent.
-            child_xform: The transform from the child body frame to the joint child anchor frame; its
-                translation is the attachment point and its local ``+Z`` axis is the child-side material
-                tangent.
-            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
-            stretch_damping: Cable stretch damping [N·s/m] (stored as ``target_kd``). If None,
-                defaults to 0.0.
-            shear_stiffness: Optional transverse shear stiffness [N/m]. If None,
-                defaults to ``stretch_stiffness``.
-            shear_damping: Optional transverse shear damping [N·s/m]. If None, defaults to
-                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise
-                defaults to 0.0.
-            bend_stiffness: Cable bend stiffness (stored as ``target_ke``) [N*m]
-                (torque per radian). If None, defaults to 0.0.
-            bend_damping: Cable bend damping [N·m·s/rad] (stored as ``target_kd``). If None, defaults to 0.0.
-            twist_stiffness: Optional twist stiffness [N*m] (torque per radian). If None,
-                defaults to ``bend_stiffness``.
-            twist_damping: Optional twist damping [N·m·s/rad]. If None, defaults to ``bend_damping`` only when
-                both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
-            enabled: Whether the joint is enabled.
-            custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD
-                frequency attributes.
-
-        Returns:
-            The index of the added joint.
-
+        .. deprecated:: 1.6
+            Use :meth:`add_joint_rod` instead.
         """
-        # Linear DOFs (stretch and shear). Default shear to stretch so omitted
-        # shear reproduces the isotropic linear anchor energy in the split layout.
-        stretch_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
-        stretch_kd = 0.0 if stretch_damping is None else stretch_damping
-        stretch_axis = ModelBuilder.JointDofConfig(target_ke=stretch_ke, target_kd=stretch_kd)
-        if shear_stiffness is None and shear_damping is None:
-            shear_ke = stretch_ke
-            shear_kd = stretch_kd
-        else:
-            shear_ke = stretch_ke if shear_stiffness is None else shear_stiffness
-            shear_kd = 0.0 if shear_damping is None else shear_damping
-        shear_axis = ModelBuilder.JointDofConfig(target_ke=shear_ke, target_kd=shear_kd)
-
-        # Angular DOFs (bend and twist). Default twist to bend so omitted twist
-        # reproduces the isotropic angular energy in the split layout.
-        bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
-        bend_kd = 0.0 if bend_damping is None else bend_damping
-        bend_axis = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
-        if twist_stiffness is None and twist_damping is None:
-            twist_ke = bend_ke
-            twist_kd = bend_kd
-        else:
-            twist_ke = bend_ke if twist_stiffness is None else twist_stiffness
-            twist_kd = 0.0 if twist_damping is None else twist_damping
-        if stretch_ke < 0.0 or shear_ke < 0.0 or bend_ke < 0.0 or twist_ke < 0.0:
-            raise ValueError(
-                "add_joint_cable: stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness must be >= 0"
-            )
-        twist_axis = ModelBuilder.JointDofConfig(target_ke=twist_ke, target_kd=twist_kd)
-
-        return self.add_joint(
-            JointType.CABLE,
-            parent,
-            child,
+        warnings.warn(
+            "ModelBuilder.add_joint_cable() is deprecated in Newton 1.6; use add_joint_rod() instead.",
+            DeprecationWarning,
+            stacklevel=self._external_warning_stacklevel(),
+        )
+        return self.add_joint_rod(
+            parent=parent,
+            child=child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_axes=[stretch_axis, shear_axis],
-            angular_axes=[bend_axis, twist_axis],
+            stretch_stiffness=stretch_stiffness,
+            stretch_damping=stretch_damping,
+            shear_stiffness=shear_stiffness,
+            shear_damping=shear_damping,
+            bend_stiffness=bend_stiffness,
+            bend_damping=bend_damping,
+            twist_stiffness=twist_stiffness,
+            twist_damping=twist_damping,
             label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -5301,32 +5650,58 @@ class ModelBuilder:
             **kwargs,
         )
 
-    def _set_joint_cable_stiffnesses(
+    def _set_joint_rod_material_gains(
         self,
         joint: int,
         *,
-        stretch_stiffness: float | None,
-        shear_stiffness: float | None,
-        bend_stiffness: float | None,
-        twist_stiffness: float | None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
     ) -> None:
-        """Overwrite each non-None stiffness and its inferred target mode, in :meth:`add_joint_cable` axis order."""
+        """Overwrite non-None material gains and target modes in :meth:`add_joint_rod` slot order.
+
+        Args:
+            joint: Rod joint index.
+            stretch_stiffness: Per-joint stretch stiffness [N/m], or ``None`` to preserve it.
+            stretch_damping: Per-joint stretch damping [N·s/m], or ``None`` to preserve it.
+            shear_stiffness: Per-joint shear stiffness [N/m], or ``None`` to preserve it.
+            shear_damping: Per-joint shear damping [N·s/m], or ``None`` to preserve it.
+            bend_stiffness: Per-joint bend stiffness [N·m/rad], or ``None`` to preserve it.
+            bend_damping: Per-joint bend damping [N·m·s/rad], or ``None`` to preserve it.
+            twist_stiffness: Per-joint twist stiffness [N·m/rad], or ``None`` to preserve it.
+            twist_damping: Per-joint twist damping [N·m·s/rad], or ``None`` to preserve it.
+        """
         joint_type = self.joint_type[joint]
         joint_dof_dim = self.joint_dof_dim[joint]
-        if joint_type != JointType.CABLE or joint_dof_dim != (2, 2):
+        if joint_type != JointType.ROD or joint_dof_dim != (2, 2):
             raise ValueError(
-                "_set_joint_cable_stiffnesses() expected the four-DOF CABLE layout "
+                "_set_joint_rod_material_gains() expected the four-slot ROD layout "
                 f"(2 linear, 2 angular); got joint type {JointType(joint_type).name} with dimensions "
-                f"{joint_dof_dim}. Update the CABLE material-slot mapping when changing its DOF layout."
+                f"{joint_dof_dim}. Update the ROD material-slot mapping when changing its slot layout."
             )
         dof_start = self.joint_qd_start[joint]
-        for offset, stiffness in enumerate((stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)):
-            if stiffness is not None:
+        stiffnesses = (stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)
+        dampings = (stretch_damping, shear_damping, bend_damping, twist_damping)
+        for offset, (stiffness, damping) in enumerate(zip(stiffnesses, dampings, strict=True)):
+            if stiffness is not None or damping is not None:
                 dof = dof_start + offset
-                damping = self.joint_target_kd[dof]
-                self.joint_target_ke[dof] = stiffness
+                if stiffness is not None:
+                    self.joint_target_ke[dof] = stiffness
+                if damping is not None:
+                    self.joint_target_kd[dof] = damping
+                resolved_stiffness = self.joint_target_ke[dof]
+                resolved_damping = self.joint_target_kd[dof]
                 self.joint_target_mode[dof] = int(
-                    JointTargetMode.from_gains(stiffness, damping, has_drive=stiffness != 0.0 or damping != 0.0)
+                    JointTargetMode.from_gains(
+                        resolved_stiffness,
+                        resolved_damping,
+                        has_drive=resolved_stiffness != 0.0 or resolved_damping != 0.0,
+                    )
                 )
 
     def add_constraint_mimic(
@@ -5434,8 +5809,8 @@ class ModelBuilder:
                 return "fixed"
             elif type == JointType.DISTANCE:
                 return "distance"
-            elif type == JointType.CABLE:
-                return "cable"
+            elif type == JointType.ROD:
+                return "rod"
             return "unknown"
 
         def shape_type_str(type):
@@ -5979,12 +6354,12 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by cable
+        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by rod
         # joints (never fixed), so they are not collapsed and their ranges stay contiguous; only their
         # indices shift as other bodies/joints are dropped. Cloth/volume ranges address particles and
         # triangles/tets/edges, which fixed-joint collapse never touches, so they are left untouched.
         def _remap_body_id(body_id: int) -> int:
-            # Cable bodies are linked only by non-fixed cable joints, so collapse must never
+            # Cable bodies are linked only by non-fixed rod joints, so collapse must never
             # merge or drop them; a violation would silently corrupt every recorded range.
             assert body_id in body_remap, f"cable body {body_id} was collapsed; cable ranges would be corrupt"
             return body_remap[body_id]
@@ -5997,7 +6372,7 @@ class ModelBuilder:
             if self._cable_joint_end[i] > self._cable_joint_start[i]:
                 first, last = self._cable_joint_start[i], self._cable_joint_end[i] - 1
                 assert first in joint_remap and last in joint_remap, (
-                    f"cable joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
+                    f"rod joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
                 )
                 self._cable_joint_start[i] = joint_remap[first]
                 self._cable_joint_end[i] = joint_remap[last] + 1
@@ -7470,6 +7845,8 @@ class ModelBuilder:
         remeshed_shapes = set()
 
         if method == "coacd" or method == "vhacd":
+            empty_decomposition_shape = None
+            decomposition_failed = False
             try:
                 if method == "coacd":
                     # convex decomposition using CoACD
@@ -7523,6 +7900,15 @@ class ModelBuilder:
                                 decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
                         decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
+                        if raise_on_failure:
+                            empty_decomposition_shape = shape
+                            break
+                        warnings.warn(
+                            f"Remeshing with method '{method}' failed for shape {shape}: the backend returned no "
+                            "convex parts. Falling back to convex_hull.",
+                            stacklevel=2,
+                        )
+                        decomposition_failed = True
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
                     replacement_mesh = self.shape_source[shape].copy(
@@ -7591,6 +7977,15 @@ class ModelBuilder:
                     method = "convex_hull"
                     # kwargs were addressed to the failed decomposition method
                     remeshing_kwargs = {}
+            if empty_decomposition_shape is not None:
+                raise RuntimeError(
+                    f"Remeshing with method '{method}' failed for shape {empty_decomposition_shape}: "
+                    "the backend returned no convex parts."
+                )
+            if decomposition_failed:
+                method = "convex_hull"
+                # kwargs were addressed to the failed decomposition method
+                remeshing_kwargs = {}
 
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
@@ -7699,12 +8094,12 @@ class ModelBuilder:
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
-        """Adds a rod composed of capsule bodies connected by cable joints.
+        """Adds a rod composed of capsule bodies connected by rod joints.
 
         Constructs a chain of capsule bodies from the given centerline points and orientations.
         Each segment is a capsule aligned by the corresponding quaternion, and adjacent capsules
-        are connected by cable joints providing split linear stretch/shear and split angular
-        bend/twist degrees of freedom.
+        are connected by rod joints providing separate slots for linear stretch/shear and angular
+        bend/twist.
 
         Args:
             positions: Centerline node positions (segment endpoints) in world space. These are the
@@ -7716,25 +8111,26 @@ class ModelBuilder:
                 orientations are computed automatically to align +Z with each segment direction.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
+            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, defaults to 1.0e5.
-            stretch_damping: Stretch damping [N·s/m] for the cable joints (applied per-joint; not length-normalized). If None,
+            stretch_damping: Stretch damping [N·s/m] for the rod joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
                 ``stretch_stiffness``.
             shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m]
-                (torque per radian). If None, defaults to 0.0.
-            bend_damping: Bend damping [N·m·s/rad] for the cable joints (applied per-joint; not length-normalized). If None,
+            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
+                If None, defaults to 0.0.
+            bend_damping: Bend damping [N·m·s/rad] for the rod joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
-            twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
+            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
                 ``bend_stiffness``.
-            twist_damping: Optional per-joint cable twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
+            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
-            label: Optional label prefix for bodies, shapes, and joints.
+            label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
+                retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
@@ -7811,7 +8207,7 @@ class ModelBuilder:
             )
 
         if num_segments < 2:
-            # A "rod" in this API is defined as multiple capsules coupled by cable joints.
+            # A "rod" in this API is defined as multiple capsules coupled by rod joints.
             # If you want a single capsule, create a body + capsule shape directly.
             raise ValueError(
                 f"add_rod: requires at least 2 segments (got {num_segments}); "
@@ -7851,7 +8247,7 @@ class ModelBuilder:
             rod_art_label = f"{label}_articulation" if label else None
             self.add_articulation(link_joints, label=rod_art_label)
 
-        # For closed loops, add one extra loop-closing cable joint that is intentionally
+        # For closed loops, add one extra loop-closing rod joint that is intentionally
         # *not* part of an articulation (articulations must be trees/forests).
         if closed:
             if not wrap_in_articulation:
@@ -7885,7 +8281,7 @@ class ModelBuilder:
                     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
                 loop_joint_label = f"{label}_cable_{len(link_joints) + 1}" if label else None
-                j_loop = self.add_joint_cable(
+                j_loop = self.add_joint_rod(
                     parent=last_body,
                     child=first_body,
                     parent_xform=parent_xform,
@@ -7929,7 +8325,7 @@ class ModelBuilder:
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
-        """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
+        """Adds a rod *graph* (supports junctions) from nodes + edges.
 
         This is a generalization of :meth:`add_rod` to support branching/junction topologies.
 
@@ -7937,7 +8333,7 @@ class ModelBuilder:
 
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
           ``node_positions[v]`` (local +Z points toward ``v``).
-        - Cable joints are created between edge-bodies that share a node, using a spanning-tree
+        - Rod joints are created between edge-bodies that share a node, using a spanning-tree
           traversal so that each body has a single parent when wrapped into an articulation.
 
         Notes:
@@ -7958,21 +8354,22 @@ class ModelBuilder:
                 capsule body oriented so its local +Z points from node ``u`` to node ``v``.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
+            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
             stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
             shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
                 ``stretch_stiffness``.
             shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m].
+            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
                 Defaults to 0.0.
             bend_damping: Bend damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
+            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
                 ``bend_stiffness``.
-            twist_damping: Optional per-joint cable twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
+            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations.
+            label: Optional label prefix for bodies, shapes, joints, and articulations. Generated
+                joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
             quaternions: Optional per-edge orientations in world space. If provided, must have
@@ -8171,7 +8568,7 @@ class ModelBuilder:
                     joint_counter += 1
                     joint_label = f"{label}_cable_{joint_counter}" if label else None
 
-                    j = self.add_joint_cable(
+                    j = self.add_joint_rod(
                         parent=parent_body,
                         child=child_body,
                         parent_xform=parent_xform,
@@ -8230,7 +8627,7 @@ class ModelBuilder:
                             joint_counter += 1
                             joint_label = f"{label}_cable_{joint_counter}" if label else None
 
-                            j = self.add_joint_cable(
+                            j = self.add_joint_rod(
                                 parent=parent_body,
                                 child=child_body,
                                 parent_xform=parent_xform,
@@ -8298,7 +8695,7 @@ class ModelBuilder:
         if junction_collision_filter:
             # Filter collisions among *non-jointed* sibling bodies incident to each junction node
             # (degree >= 3). Jointed parent/child pairs are already filtered by
-            # add_joint_cable(collision_filter_parent=True).
+            # add_joint_rod(collision_filter_parent=True).
             for inc in node_incidence:
                 if len(inc) < 3:
                     continue
@@ -8312,7 +8709,7 @@ class ModelBuilder:
                         bi = bodies[i]
                         bj = bodies[j]
                         if (bi, bj) in jointed_body_pairs:
-                            # Already filtered by add_joint_cable(collision_filter_parent=True).
+                            # Already filtered by add_joint_rod(collision_filter_parent=True).
                             continue
                         for si in self.body_shapes.get(bi, []):
                             if not self.shape_flags[si] & ShapeFlags.COLLIDE_SHAPES:
@@ -10487,6 +10884,51 @@ class ModelBuilder:
                 continue
             margin = self.shape_margin[i]
             gap = self.shape_gap[i]
+            sdf_padding = self.shape_sdf_padding[i]
+            if (
+                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                and sdf_padding is not None
+                and sdf_padding < margin + gap
+                and not math.isclose(sdf_padding, margin + gap, rel_tol=1.0e-9, abs_tol=1.0e-12)
+            ):
+                raise ValueError(
+                    f"Hydroelastic shape {i} requires sdf_padding >= margin + gap "
+                    f"({margin + gap:.6g}), got {sdf_padding:.6g}."
+                )
+            if (
+                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                and self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH)
+            ):
+                shape_src = self.shape_source[i]
+                mesh_sdf = getattr(shape_src, "sdf", None) if shape_src is not None else None
+                if mesh_sdf is not None:
+                    required_sdf_padding = margin + gap
+                    construction_padding = getattr(mesh_sdf, "_construction_padding", None)
+                    if mesh_sdf.texture_data is not None and construction_padding is None:
+                        raise ValueError(
+                            f"Hydroelastic shape {i} has precomputed SDF data with unknown construction padding. "
+                            "Declare the original padding with "
+                            "SDF.create_from_data(construction_padding=...), or rebuild it with "
+                            "Mesh.build_sdf(margin=margin + gap)."
+                        )
+                    if (
+                        construction_padding is not None
+                        and construction_padding < required_sdf_padding
+                        and not math.isclose(
+                            construction_padding,
+                            required_sdf_padding,
+                            rel_tol=1.0e-9,
+                            abs_tol=1.0e-12,
+                        )
+                    ):
+                        raise ValueError(
+                            f"Hydroelastic shape {i} requires SDF construction padding >= margin + gap "
+                            f"({required_sdf_padding:.6g}), but the attached SDF uses "
+                            f"{construction_padding:.6g}. Rebuild it with "
+                            f"Mesh.build_sdf(margin={required_sdf_padding:.6g})."
+                        )
             if gap < 0.0:
                 shapes_with_bad_gap.append(
                     f"{self.shape_label[i] or f'shape_{i}'} (margin={margin:.6g}, gap={gap:.6g})"
@@ -11240,6 +11682,18 @@ class ModelBuilder:
                 )
 
             generated_shape_sources = list(self.shape_source)
+            deduplicated_convex_sources = {}
+            for shape_idx, shape_type in enumerate(self.shape_type):
+                source = generated_shape_sources[shape_idx]
+                if shape_type != GeoType.CONVEX_MESH or not isinstance(source, Mesh):
+                    continue
+                source_identity = id(source)
+                if source_identity in deduplicated_convex_sources:
+                    generated_shape_sources[shape_idx] = deduplicated_convex_sources[source_identity]
+                    continue
+                deduplicated_source = _deduplicate_convex_collision_mesh(source)
+                deduplicated_convex_sources[source_identity] = deduplicated_source
+                generated_shape_sources[shape_idx] = deduplicated_source
             generated_sdf_edge_meshes = []
             unit_box_edge_mesh = None
             for shape_idx, shape_type in enumerate(self.shape_type):
@@ -11621,9 +12075,11 @@ class ModelBuilder:
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
                 sdf_padding = self.shape_sdf_padding[i]
-                # Fall back to shape_gap when sdf_padding is unset (see ShapeConfig.sdf_padding).
-                sdf_gen_margin = sdf_padding if sdf_padding is not None else shape_gap
-                is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
+                is_hydroelastic = bool(
+                    shape_flags & ShapeFlags.HYDROELASTIC and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                )
+                required_sdf_padding = shape_gap + self.shape_margin[i] if is_hydroelastic else shape_gap
+                sdf_gen_margin = sdf_padding if sdf_padding is not None else required_sdf_padding
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
                 cache_key = None
@@ -11643,8 +12099,11 @@ class ModelBuilder:
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
                         sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
+                        # Convex collision geometry is deduplicated before finalization,
+                        # so build and cache its deferred SDF against that same topology.
+                        sdf_source = generated_shape_sources[i] if shape_type == GeoType.CONVEX_MESH else shape_src
                         deferred_key = (
-                            id(shape_src),
+                            id(sdf_source),
                             tuple(shape_scale),
                             tuple(sdf_narrow_band_range),
                             sdf_target_voxel_size,
@@ -11654,7 +12113,7 @@ class ModelBuilder:
                         )
                         mesh_sdf = deferred_mesh_sdf_cache.get(deferred_key)
                         if mesh_sdf is None:
-                            mesh_copy = shape_src.copy()
+                            mesh_copy = sdf_source.copy()
                             mesh_copy.build_sdf(**sdf_kwargs)
                             mesh_sdf = mesh_copy.sdf
                             deferred_mesh_sdf_cache[deferred_key] = mesh_sdf
@@ -12175,7 +12634,7 @@ class ModelBuilder:
                 m.body_color_groups = [wp.array(group, dtype=int) for group in self.body_color_groups]
 
             # joints
-            m._has_cable_joints = JointType.CABLE in self.joint_type  # pyright: ignore[reportPrivateUsage]
+            m._has_rod_joints = JointType.ROD in self.joint_type  # pyright: ignore[reportPrivateUsage]
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
@@ -12385,8 +12844,12 @@ class ModelBuilder:
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)
+            self._resolve_custom_frequency_articulation_owners()
+
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
+                m.custom_frequency_counts = dict(self._custom_frequency_counts)
+                self._finalize_custom_frequency_metadata(m, device)
                 m.bvh_build_shapes(
                     m,
                     bvh_constructor=self.default_bvh_cfg.shape_constructor,
@@ -12397,7 +12860,7 @@ class ModelBuilder:
 
             # Resolve authoritative counts for custom frequencies
             # Use incremental _custom_frequency_counts as primary source, with safety fallback
-            custom_frequency_counts: dict[str, int] = {}
+            custom_frequency_counts: dict[str, int] = dict(self._custom_frequency_counts)
             frequency_max_lens: dict[str, int] = {}  # Track max len(values) per frequency as fallback
 
             # First pass: collect max len(values) per frequency as fallback
@@ -12409,10 +12872,7 @@ class ModelBuilder:
 
             # Determine authoritative counts: prefer _custom_frequency_counts, fallback to max lens
             for freq_key, max_len in frequency_max_lens.items():
-                if freq_key in self._custom_frequency_counts:
-                    # Use authoritative incremental counter
-                    custom_frequency_counts[freq_key] = self._custom_frequency_counts[freq_key]
-                else:
+                if freq_key not in custom_frequency_counts:
                     # Safety fallback: use max observed length
                     custom_frequency_counts[freq_key] = max_len
 
@@ -12497,6 +12957,8 @@ class ModelBuilder:
                     custom_attr.namespace,
                     custom_attr.references,
                 )
+
+            self._finalize_custom_frequency_metadata(m, device)
 
             m.bvh_build_shapes(
                 m,

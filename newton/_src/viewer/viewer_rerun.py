@@ -258,6 +258,7 @@ class ViewerRerun(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
         colors: wp.array[wp.vec3] | None = None,
     ):
         """
@@ -278,12 +279,15 @@ class ViewerRerun(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
             colors: Optional per-vertex RGB colors. Takes precedence over
                 ``color``. Valid textures with ``uvs`` take precedence over
                 ``colors``; handling of invalid or unsupported texture inputs
                 is backend-specific.
         """
         name = self._qualify(name)
+        previous_mesh = self._meshes.get(name)
+        was_visible = isinstance(previous_mesh, dict) and previous_mesh.get("visible", False)
 
         if not hidden:
             assert isinstance(points, wp.array)
@@ -351,10 +355,13 @@ class ViewerRerun(ViewerBase):
             "texture_image": texture_image,
             "texture_buffer": texture_buffer,
             "texture_format": texture_format,
+            "visible": not hidden,
             "vertex_colors": vertex_colors,
         }
 
         if hidden:
+            if was_visible:
+                rr.log(name, rr.Clear(recursive=False))
             return
 
         mesh_kwargs = {

@@ -1132,7 +1132,7 @@ class Model:
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
         self.joint_type: wp.array[wp.int32] | None = None
         """Joint type, shape [joint_count], int."""
-        self._has_cable_joints: bool = False
+        self._has_rod_joints: bool = False
         self.joint_articulation: wp.array[wp.int32] | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
         self.joint_parent: wp.array[wp.int32] | None = None
@@ -1384,6 +1384,12 @@ class Model:
         self.custom_frequency_counts: dict[str, int] = {}
         """Counts for custom frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
 
+        self.custom_frequency_articulation: dict[str, wp.array[Any]] = {}
+        """Per-row articulation owners for articulation-scoped custom frequencies."""
+
+        self.custom_frequency_label_attributes: dict[str, str] = {}
+        """Attribute keys containing labels for custom-frequency rows."""
+
         self._requested_state_attributes: set[str] = set()
         self._collision_pipeline: CollisionPipeline | None = None
         # cached collision pipeline
@@ -1625,6 +1631,7 @@ class Model:
                 included in the BVH if any of its flags are set in the mask.
         """
         from ..geometry.bvh import (  # noqa: PLC0415
+            SHAPE_BOUNDS_BLOCK_DIM,
             compute_bvh_group_roots,
             compute_enabled_shapes,
             compute_shape_bvh_bounds_launch,
@@ -1640,9 +1647,10 @@ class Model:
         world_count_total = self.world_count + 1
 
         self.bvh_shape_bounds = wp.empty((shape_count, 2), dtype=wp.vec3f, ndim=2, device=device)
-        wp.launch(
+        wp.launch_tiled(
             kernel=compute_shape_local_bounds,
             dim=shape_count,
+            block_dim=SHAPE_BOUNDS_BLOCK_DIM,
             inputs=[
                 self.shape_type,
                 self.shape_source_ptr,

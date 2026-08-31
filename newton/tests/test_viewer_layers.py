@@ -45,6 +45,7 @@ class _RecordingViewer(ViewerNull):
         color=None,
         roughness=None,
         metallic=None,
+        dynamic=False,
         colors=None,
     ):
         self.mesh_calls.append((name, hidden))

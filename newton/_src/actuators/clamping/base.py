@@ -47,6 +47,33 @@ class Clamping:
             num_actuators: Number of actuators (DOFs) this clamping manages.
         """
 
+    evaluate_clamp: ClassVar[wp.Function | None] = None
+    """``@wp.func`` bounding effort inside the implicit solve, at the predicted
+    end-of-step state. ``None`` means the clamp has no implicit form::
+
+        evaluate_clamp(value, q, qd, params: wp.array2d[float], i: int, base: int) -> wp.float64
+
+    ``params[i, base:]`` holds this clamp's parameters; see :meth:`bind_params`.
+
+    Clamps apply in list order, innermost first. Order matters only when a
+    clamp's feasible interval excludes zero, which :class:`ClampingDCMotor` can
+    do above its velocity limit.
+    """
+
+    def param_width(self) -> int:
+        """Columns this clamp occupies in the packed parameter array."""
+        return 0
+
+    def bind_params(self, block: wp.array2d[float]) -> None:
+        """Fill *block* with this clamp's parameters and wire attributes to it.
+
+        ``block`` is this clamp's ``(N, param_width())`` slice of the effort
+        mode's packed array. Re-pointing the user-facing arrays (e.g.
+        ``clamp.max_effort``) at its columns keeps later writes visible to the
+        solve kernel.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support implicit actuation")
+
     def modify_forces(
         self,
         src_forces: wp.array[float],
