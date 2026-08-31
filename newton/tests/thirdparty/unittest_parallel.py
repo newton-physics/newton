@@ -43,15 +43,21 @@ except ImportError:
 # The following variables are NVIDIA Modifications
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
+# Add warning-clean test modules incrementally. Eventually this should cover
+# the entire test_* surface and be replaced by a single test_.* filter.
+_STRICT_WARNING_TEST_MODULES = ("test_actuators",)
+
 
 def _enable_strict_warnings():
-    """Escalate DeprecationWarnings and any newton.* warning to errors.
+    """Escalate actionable and caller-attributed cleaned-test warnings to errors.
 
     Installed before discovery and in each worker initializer so import-time
     warnings from test modules are escalated too, not just runtime ones.
     """
     warnings.filterwarnings("error", category=DeprecationWarning)
     warnings.filterwarnings("error", module=r"newton(\.|$)")
+    for module in _STRICT_WARNING_TEST_MODULES:
+        warnings.filterwarnings("error", module=rf"{module}$")
 
 
 def _use_coord_layout_targets():

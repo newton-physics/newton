@@ -36,6 +36,16 @@ _DEFAULT_LAYER_ID = "__default__"
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
 
 
+def _mesh_texture_uvs(mesh: newton.Mesh) -> np.ndarray | None:
+    """Return authored UVs with the mesh's affine texture transform applied."""
+    uvs = mesh._uvs
+    texture_transform = mesh.texture_transform
+    if uvs is None or mesh.texture is None or texture_transform == ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+        return uvs
+    transform = np.asarray(texture_transform, dtype=uvs.dtype)
+    return uvs @ transform[:, :2].T + transform[:, 2]
+
+
 class Layer:
     """Container holding per-model viewer state for one layer.
 
@@ -1618,8 +1628,9 @@ class ViewerBase(ABC):
             if geo_src._normals is not None:
                 normals = wp.array(geo_src._normals, dtype=wp.vec3, device=self.device)
 
-            if geo_src._uvs is not None:
-                uvs = wp.array(geo_src._uvs, dtype=wp.vec2, device=self.device)
+            transformed_uvs = _mesh_texture_uvs(geo_src)
+            if transformed_uvs is not None:
+                uvs = wp.array(transformed_uvs, dtype=wp.vec2, device=self.device)
 
             if hasattr(geo_src, "texture"):
                 texture = geo_src.texture
@@ -2139,7 +2150,10 @@ class ViewerBase(ABC):
     def _hash_geometry(
         self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
     ) -> int:
-        return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
+        geometry_hash = hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
+        if isinstance(geo_src, newton.Mesh) and geo_src.texture is not None:
+            geometry_hash = hash((geometry_hash, geo_src.texture_transform))
+        return geometry_hash
 
     def _hash_shape(self, geo_hash, shape_static, shape_flags) -> int:
         return hash((geo_hash, shape_static, shape_flags))
@@ -2268,8 +2282,9 @@ class ViewerBase(ABC):
             normals_wp = wp.array(-np.asarray(src._normals, dtype=np.float32), dtype=wp.vec3, device=self.device)
 
         uvs_wp = None
-        if src._uvs is not None:
-            uvs_wp = wp.array(src._uvs, dtype=wp.vec2, device=self.device)
+        transformed_uvs = _mesh_texture_uvs(src)
+        if transformed_uvs is not None:
+            uvs_wp = wp.array(transformed_uvs, dtype=wp.vec2, device=self.device)
 
         self.log_mesh(
             name,

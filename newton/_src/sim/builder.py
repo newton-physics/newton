@@ -7843,6 +7843,8 @@ class ModelBuilder:
         remeshed_shapes = set()
 
         if method == "coacd" or method == "vhacd":
+            empty_decomposition_shape = None
+            decomposition_failed = False
             try:
                 if method == "coacd":
                     # convex decomposition using CoACD
@@ -7896,6 +7898,15 @@ class ModelBuilder:
                                 decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
                         decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
+                        if raise_on_failure:
+                            empty_decomposition_shape = shape
+                            break
+                        warnings.warn(
+                            f"Remeshing with method '{method}' failed for shape {shape}: the backend returned no "
+                            "convex parts. Falling back to convex_hull.",
+                            stacklevel=2,
+                        )
+                        decomposition_failed = True
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
                     replacement_mesh = self.shape_source[shape].copy(
@@ -7964,6 +7975,15 @@ class ModelBuilder:
                     method = "convex_hull"
                     # kwargs were addressed to the failed decomposition method
                     remeshing_kwargs = {}
+            if empty_decomposition_shape is not None:
+                raise RuntimeError(
+                    f"Remeshing with method '{method}' failed for shape {empty_decomposition_shape}: "
+                    "the backend returned no convex parts."
+                )
+            if decomposition_failed:
+                method = "convex_hull"
+                # kwargs were addressed to the failed decomposition method
+                remeshing_kwargs = {}
 
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes

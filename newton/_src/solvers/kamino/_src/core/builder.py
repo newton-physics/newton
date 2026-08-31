@@ -1272,7 +1272,13 @@ class ModelBuilderKamino:
                 geoms_params.append(shape.paramsvec)
                 geoms_offset.append(geom.offset)
                 geoms_material.append(geom.mid)
-                geoms_group.append(geom.group)
+                # `GeometriesModel.group` feeds Newton's broad-phase group test, which uses a
+                # single integer per shape (positive groups mutually collide, zero never
+                # collides). Kamino's own group/collides bitmask is strictly more expressive and
+                # is already fully resolved into `collidable_pairs`/`excluded_pairs` above, so
+                # here we only need to preserve collidability, collapsing every collidable group
+                # onto the same value.
+                geoms_group.append(1 if geom.group > 0 else 0)
                 geoms_collides.append(geom.collides)
                 geoms_gap.append(geom.gap)
                 geoms_margin.append(geom.margin)
