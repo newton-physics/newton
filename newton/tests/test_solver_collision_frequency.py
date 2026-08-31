@@ -469,6 +469,24 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
         )
     test.assertEqual(legacy_margin.particle_self_contact_margin, 0.2)
     test.assertEqual(legacy_margin.particle_self_contact_gap, 0.2)
+    # Invalid ignored legacy geometry still warns but is not rejected.
+    with test.assertWarns(DeprecationWarning):
+        SolverVBD(_build_model(device), iterations=1, particle_self_contact_margin=0.1)
+    with test.assertWarns(DeprecationWarning):
+        SolverVBD(
+            _build_cloth_model(device),
+            iterations=1,
+            particle_enable_self_contact=False,
+            particle_self_contact_margin=0.1,
+        )
+    # The same geometry remains invalid when self-contact is active.
+    with test.assertRaises(ValueError):
+        SolverVBD(
+            _build_cloth_model(device),
+            iterations=1,
+            particle_enable_self_contact=True,
+            particle_self_contact_margin=0.1,
+        )
     # Deprecated interval warns; combining it with an explicit slot raises.
     with test.assertWarns(DeprecationWarning):
         SolverVBD(_build_cloth_model(device), iterations=1, particle_collision_detection_interval=2)

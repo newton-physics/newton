@@ -619,11 +619,13 @@ class SolverVBD(SolverBase, CouplingInterface):
             if particle_self_contact_margin is not None and particle_self_contact_gap is None:
                 _sc_gap = particle_self_contact_margin - 0.2
                 if _sc_gap < 0.0:
-                    raise ValueError(
-                        "particle_self_contact_margin is smaller than the legacy interaction radius 0.2; "
-                        "this would miss contacts. Pass particle_self_contact_gap explicitly to use the "
-                        "new margin + gap convention."
-                    )
+                    if particle_enable_self_contact and model.particle_count > 0:
+                        raise ValueError(
+                            "particle_self_contact_margin is smaller than the legacy interaction radius 0.2; "
+                            "this would miss contacts. Pass particle_self_contact_gap explicitly to use the "
+                            "new margin + gap convention."
+                        )
+                    _sc_gap = 0.0
                 warnings.warn(
                     "particle_self_contact_margin without particle_self_contact_gap retains its deprecated "
                     "meaning as the detection query radius; pass particle_self_contact_gap explicitly "
