@@ -281,6 +281,7 @@ class TestCartpoleSimulator(unittest.TestCase):
         num_kinematic_joint_cts = single_sim.model.size.sum_of_num_kinematic_joint_cts
         num_dynamic_joint_cts = single_sim.model.size.sum_of_num_dynamic_joint_cts
         num_friction_joint_cts = single_sim.model.size.sum_of_num_friction_joint_cts
+        num_effort_joint_cts = single_sim.model.size.sum_of_num_effort_joint_cts
         sample_init_q_i = np.zeros((num_sample_steps, num_bodies, 7), dtype=np.float32)
         sample_init_u_i = np.zeros((num_sample_steps, num_bodies, 6), dtype=np.float32)
         sample_next_q_i = np.zeros((num_sample_steps, num_bodies, 7), dtype=np.float32)
@@ -290,6 +291,7 @@ class TestCartpoleSimulator(unittest.TestCase):
         sample_init_lambda_kin_j = np.zeros((num_sample_steps, num_kinematic_joint_cts), dtype=np.float32)
         sample_init_lambda_dyn_j = np.zeros((num_sample_steps, num_dynamic_joint_cts), dtype=np.float32)
         sample_init_lambda_f_j = np.zeros((num_sample_steps, num_friction_joint_cts), dtype=np.float32)
+        sample_init_lambda_tau_j = np.zeros((num_sample_steps, num_effort_joint_cts), dtype=np.float32)
         sample_next_q_j = np.zeros((num_sample_steps, num_joint_dofs), dtype=np.float32)
         sample_next_dq_j = np.zeros((num_sample_steps, num_joint_dofs), dtype=np.float32)
         sample_ctrl_tau_j = np.zeros((num_sample_steps, num_joint_dofs), dtype=np.float32)
@@ -319,6 +321,8 @@ class TestCartpoleSimulator(unittest.TestCase):
                     sample_init_lambda_dyn_j[sample, :] = single_sim.state_previous.lambda_dyn_j.numpy().copy()
                 if num_friction_joint_cts > 0:
                     sample_init_lambda_f_j[sample, :] = single_sim.state_previous.lambda_f_j.numpy().copy()
+                if num_effort_joint_cts > 0:
+                    sample_init_lambda_tau_j[sample, :] = single_sim.state_previous.lambda_tau_j.numpy().copy()
                 sample_next_q_j[sample, :] = single_sim.state.q_j.numpy().copy()
                 sample_next_dq_j[sample, :] = single_sim.state.dq_j.numpy().copy()
                 sample_ctrl_tau_j[sample, :] = single_sim.control.tau_j.numpy().copy()
@@ -334,6 +338,7 @@ class TestCartpoleSimulator(unittest.TestCase):
         sample_init_lambda_kin_j = sample_init_lambda_kin_j.reshape(-1)
         sample_init_lambda_dyn_j = sample_init_lambda_dyn_j.reshape(-1)
         sample_init_lambda_f_j = sample_init_lambda_f_j.reshape(-1)
+        sample_init_lambda_tau_j = sample_init_lambda_tau_j.reshape(-1)
         sample_next_q_j = sample_next_q_j.reshape(-1)
         sample_next_dq_j = sample_next_dq_j.reshape(-1)
         sample_ctrl_tau_j = sample_ctrl_tau_j.reshape(-1)
@@ -350,6 +355,9 @@ class TestCartpoleSimulator(unittest.TestCase):
             f"[samples]: init lambda_dyn_j (shape={sample_init_lambda_dyn_j.shape}):\n{sample_init_lambda_dyn_j}\n"
         )
         msg.info(f"[samples]: init lambda_f_j (shape={sample_init_lambda_f_j.shape}):\n{sample_init_lambda_f_j}\n")
+        msg.info(
+            f"[samples]: init lambda_tau_j (shape={sample_init_lambda_tau_j.shape}):\n{sample_init_lambda_tau_j}\n"
+        )
         msg.info(f"[samples]: next q_i (shape={sample_next_q_i.shape}):\n{sample_next_q_i}\n")
         msg.info(f"[samples]: next u_i (shape={sample_next_u_i.shape}):\n{sample_next_u_i}\n")
         msg.info(f"[samples]: next q_j (shape={sample_next_q_j.shape}):\n{sample_next_q_j}\n")
@@ -391,6 +399,8 @@ class TestCartpoleSimulator(unittest.TestCase):
             state_0.lambda_dyn_j.assign(sample_init_lambda_dyn_j)
         if num_friction_joint_cts > 0:
             state_0.lambda_f_j.assign(sample_init_lambda_f_j)
+        if num_effort_joint_cts > 0:
+            state_0.lambda_tau_j.assign(sample_init_lambda_tau_j)
         control_0 = multi_sim.model.control()
         control_0.tau_j.assign(sample_ctrl_tau_j)
 

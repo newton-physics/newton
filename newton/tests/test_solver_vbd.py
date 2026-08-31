@@ -4104,11 +4104,17 @@ def _build_edge_over_post(device):
 
 
 def test_edge_face_pushes_vertices_out(test, device):
-    """A soft edge/face penetrating a rigid box pushes its triangle's vertices out (+y).
+    """A soft edge/face penetrating a rigid box pushes its triangle's vertices out.
 
     With section 2 absent the particle force stays zero (legacy count is 0, gravity off),
     so the vertices never move. With section 2 present the barycentric distribution drives
-    v0 and v1 (the spanning edge) up out of the box.
+    v0 and v1 (the spanning edge) out of the box along the contact normal.
+
+    The +y penetration depth is constant along the part of the edge inside the post, so the
+    contact point is degenerate there and lands where the +y and +x exits are nearly
+    equidistant (they differ by ~4e-5). Which face the contact resolves to is therefore
+    decided by rounding and varies across devices, so assert the push along the emitted
+    contact normal rather than along +y.
     """
     model, (v0, v1, _v2) = _build_edge_over_post(device)
 
@@ -4128,15 +4134,24 @@ def test_edge_face_pushes_vertices_out(test, device):
     test.assertEqual(int(np.sum(idx[:, 1] < 0)), 0, "vertices should be outside the legacy particle margin")
     test.assertGreater(total, 0, "edge/face contacts must be detected")
 
+    # Every record lies on one flat face of the post, so they share a normal. Assert that
+    # rather than letting the push check below depend silently on record 0.
+    normals = contacts.soft_contact_normal.numpy()[:total]
+    test.assertTrue(
+        bool(np.allclose(normals, normals[0], atol=1.0e-6)), "edge/face records should share one face normal"
+    )
+    normal = normals[0]
+
     solver = newton.solvers.SolverVBD(model)
 
-    y0_before = state_in.particle_q.numpy()[:, 1].copy()
+    q_before = state_in.particle_q.numpy().copy()
     solver.step(state_in, state_out, None, contacts, dt=1.0 / 60.0)
-    y0_after = state_out.particle_q.numpy()[:, 1]
+    q_after = state_out.particle_q.numpy()
 
-    # The two vertices of the spanning edge are pushed up out of the +y face.
-    test.assertGreater(y0_after[v0] - y0_before[v0], 1.0e-3, "v0 should be pushed +y")
-    test.assertGreater(y0_after[v1] - y0_before[v1], 1.0e-3, "v1 should be pushed +y")
+    # The two vertices of the spanning edge are pushed out along the contact normal.
+    for name, v in (("v0", v0), ("v1", v1)):
+        push = float(np.dot(q_after[v] - q_before[v], normal))
+        test.assertGreater(push, 1.0e-3, f"{name} should be pushed along the contact normal")
 
 
 def _build_sphere_on_fixed_soft_triangle(device):
