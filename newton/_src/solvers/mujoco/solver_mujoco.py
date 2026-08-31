@@ -3664,6 +3664,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if disable_sensors:
             disableflags |= mujoco.mjtDisableBit.mjDSBL_SENSOR
         self.use_mujoco_cpu = use_mujoco_cpu
+        # Compiled midphase boxes and the inertial frame they are expressed in, captured
+        # before the first inertial sync so every refit starts from the same bounds.
+        self._canonical_bvh_aabb: np.ndarray | None = None
+        self._canonical_body_ipos: np.ndarray | None = None
+        self._canonical_body_iquat: np.ndarray | None = None
         if use_mujoco_contacts or use_mujoco_cpu:
             mujoco_attrs_for_warn = getattr(model, "mujoco", None)
             solref_mode_attr = (
@@ -4361,6 +4366,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Synchronize the complete MJWarp inertial representation to MuJoCo CPU."""
         mjw_body_inertia = self.mjw_model.body_inertia.numpy()[0]
         mjw_body_iquat = self.mjw_model.body_iquat.numpy()[0]
+        mjw_body_ipos = self.mjw_model.body_ipos.numpy()[0]
 
         inertia_changed = ~np.isclose(
             self.mj_model.body_inertia,
@@ -4374,15 +4380,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             rtol=1.0e-6,
             atol=1.0e-8,
         ).all(axis=1)
-        changed_bodies = inertia_changed | iquat_changed
+        ipos_changed = ~np.isclose(
+            self.mj_model.body_ipos,
+            mjw_body_ipos,
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        ).all(axis=1)
+        # The inertial frame is the pair (ipos, iquat); either one moving invalidates the
+        # compiled metadata and the midphase boxes expressed in that frame.
+        frame_changed = iquat_changed | ipos_changed
+        changed_bodies = inertia_changed | frame_changed
 
         if not np.any(changed_bodies):
             return
 
-        old_body_iquat = self.mj_model.body_iquat.copy()
+        self._cache_canonical_body_bvh()
 
         self.mj_model.body_inertia[:] = mjw_body_inertia
         self.mj_model.body_iquat[:] = mjw_body_iquat
+        self.mj_model.body_ipos[:] = mjw_body_ipos
 
         # ``body_inertia`` and ``body_iquat`` are coupled. Once the inertial
         # frame changes, MuJoCo CPU's compiled simple-path metadata may still
@@ -4391,39 +4407,55 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.mj_model.body_simple[changed_bodies] = 0
         self.mj_model.dof_simplenum[:] = 0
 
-        self._refit_body_bvh_to_inertial_frame(old_body_iquat, mjw_body_iquat, iquat_changed)
+        self._refit_body_bvh_to_inertial_frame(frame_changed)
 
-    def _refit_body_bvh_to_inertial_frame(
-        self, old_body_iquat: np.ndarray, new_body_iquat: np.ndarray, iquat_changed: np.ndarray
-    ) -> None:
-        """Re-express each rotated body's midphase BVH boxes in its new inertial frame.
+    def _cache_canonical_body_bvh(self) -> None:
+        """Snapshot the compiled midphase boxes and the frame they are expressed in.
+
+        Every refit is computed from this snapshot rather than from the previous result. The
+        enclosing-box growth applied when a box is rotated is not reversible, so transforming
+        an already-expanded box on each update would let the bounds grow without limit.
+        """
+        if self._canonical_bvh_aabb is not None:
+            return
+        self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
+        self._canonical_body_ipos = self.mj_model.body_ipos.copy()
+        self._canonical_body_iquat = self.mj_model.body_iquat.copy()
+
+    def _refit_body_bvh_to_inertial_frame(self, frame_changed: np.ndarray) -> None:
+        """Re-express each moved body's midphase BVH boxes in its new inertial frame.
 
         MuJoCo stores the body midphase BVH in the compile-time inertial frame and
         ``mj_collideTree`` transforms it by ``ximat = xmat @ iquat`` at runtime. Overwriting
-        ``body_iquat`` after ``spec.compile()`` therefore leaves those boxes expressed in a frame
-        that no longer exists, and the midphase culls geom pairs that genuinely overlap.
+        ``body_ipos`` or ``body_iquat`` after ``spec.compile()`` therefore leaves those boxes
+        expressed in a frame that no longer exists, and the midphase culls geom pairs that
+        genuinely overlap.
 
         Args:
-            old_body_iquat: Inertial frame orientations before the sync, shape ``(nbody, 4)``.
-            new_body_iquat: Inertial frame orientations after the sync, shape ``(nbody, 4)``.
-            iquat_changed: Boolean mask selecting the bodies whose orientation changed.
+            frame_changed: Boolean mask selecting the bodies whose inertial frame moved.
         """
-        rot_old = np.empty(9)
+        rot_canonical = np.empty(9)
         rot_new = np.empty(9)
-        for body in np.flatnonzero(iquat_changed):
+        for body in np.flatnonzero(frame_changed):
             bvh_num = int(self.mj_model.body_bvhnum[body])
             if bvh_num == 0:
                 continue
-            self._mujoco.mju_quat2Mat(rot_old, old_body_iquat[body])
-            self._mujoco.mju_quat2Mat(rot_new, new_body_iquat[body])
-            # Maps a point from the old inertial frame to the new one.
-            rot = rot_new.reshape(3, 3).T @ rot_old.reshape(3, 3)
+            self._mujoco.mju_quat2Mat(rot_canonical, self._canonical_body_iquat[body])
+            self._mujoco.mju_quat2Mat(rot_new, self.mj_model.body_iquat[body])
+            rot_canonical = rot_canonical.reshape(3, 3)
+            rot_new = rot_new.reshape(3, 3)
+            # A point p in the canonical frame sits at ipos_c + R_c @ p in body coordinates, so
+            # in the new frame it is R_n.T @ (R_c @ p + ipos_c - ipos_n).
+            rot = rot_new.T @ rot_canonical
+            offset = rot_new.T @ (self._canonical_body_ipos[body] - self.mj_model.body_ipos[body])
             bvh_adr = int(self.mj_model.body_bvhadr[body])
-            aabb = self.mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num]
+            aabb = self._canonical_bvh_aabb[bvh_adr : bvh_adr + bvh_num]
             # A rotated box is not axis-aligned, so its half-extents grow into the enclosing box.
             self.mj_model.bvh_aabb[bvh_adr : bvh_adr + bvh_num] = np.hstack(
-                (aabb[:, :3] @ rot.T, aabb[:, 3:] @ np.abs(rot).T)
+                (aabb[:, :3] @ rot.T + offset, aabb[:, 3:] @ np.abs(rot).T)
             )
+            rot_canonical = rot_canonical.reshape(9)
+            rot_new = rot_new.reshape(9)
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -4497,7 +4529,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         if self.use_mujoco_cpu:
             if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
-                self.mj_model.body_ipos[:] = self.mjw_model.body_ipos.numpy()[0]
                 self.mj_model.body_mass[:] = self.mjw_model.body_mass.numpy()[0]
                 self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
                 self._sync_mjw_inertias_to_mjc_cpu()
