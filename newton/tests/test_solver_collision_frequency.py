@@ -283,6 +283,35 @@ def test_vbd_rigid_iterations_preserves_contact_duals(test, device):
         test.assertGreater(after, 0.0)
 
 
+def test_vbd_rigid_iterations_refreshes_contact_frame(test, device):
+    """Recompute rigid contact-frame state after each mid-solve detection pass."""
+
+    class _TrackingSolver(SolverVBD):
+        def __init__(self, *args, **kwargs):
+            self.contact_frame_steps = []
+            super().__init__(*args, **kwargs)
+
+        def _step_body_body_contact_frame(self, contacts, body_q, dt, lambda_retention, penalty_decay):
+            self.contact_frame_steps.append((lambda_retention, penalty_decay))
+            super()._step_body_body_contact_frame(contacts, body_q, dt, lambda_retention, penalty_decay)
+
+    model = _build_model(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+    solver = _TrackingSolver(
+        model,
+        iterations=3,
+        collision_pipeline=pipeline,
+        rigid_compliant_alm=True,
+        collision_frequency={Slot.RIGID: 1},
+        collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS},
+    )
+
+    solver.step(model.state(), model.state(), None, None, 1e-3)
+
+    test.assertEqual(len(solver.contact_frame_steps), 3)
+    test.assertEqual(solver.contact_frame_steps[1:], [(1.0, 1.0), (1.0, 1.0)])
+
+
 def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
     """Refresh body-particle contact state after each mid-solve collision pass."""
 
@@ -514,6 +543,12 @@ add_function_test(
     TestSolverCollisionFrequency,
     "test_vbd_rigid_iterations_preserves_contact_duals",
     test_vbd_rigid_iterations_preserves_contact_duals,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_rigid_iterations_refreshes_contact_frame",
+    test_vbd_rigid_iterations_refreshes_contact_frame,
     devices=devices,
 )
 add_function_test(

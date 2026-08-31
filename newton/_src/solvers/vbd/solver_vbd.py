@@ -2302,8 +2302,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 # lambdas are snapshotted first so matching can carry them onto
                 # the refreshed contact set.
                 self._snapshot_rigid_contact_history(contacts, force=True)
-                self._run_rigid_collision(self._rigid_iterate_view(state_in, state_out), dt)
+                iterate = self._rigid_iterate_view(state_in, state_out)
+                self._run_rigid_collision(iterate, dt)
                 self._refresh_rigid_contact_state(contacts, refresh=True, restore_history=True)
+                self._step_body_body_contact_frame(contacts, iterate.body_q, dt, 1.0, 1.0)
                 self._refresh_body_particle_contact_state(contacts, refresh=True)
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
@@ -2858,6 +2860,58 @@ class SolverVBD(SolverBase, CouplingInterface):
             device=self.device,
         )
 
+    def _step_body_body_contact_frame(
+        self,
+        contacts: Contacts,
+        body_q: wp.array[wp.transform],
+        dt: float,
+        lambda_retention: float,
+        penalty_decay: float,
+    ) -> None:
+        """Update rigid-contact C0, conditioning, penalty, and lambda state."""
+        if not self._integrates_rigid_bodies or contacts.rigid_contact_max == 0:
+            return
+        model = self.model
+        wp.launch(
+            kernel=step_body_body_contact_C0_lambda,
+            dim=contacts.rigid_contact_max,
+            inputs=[
+                contacts.rigid_contact_count,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                contacts.rigid_contact_point0,
+                contacts.rigid_contact_point1,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
+                contacts.rigid_contact_normal,
+                contacts.rigid_contact_margin0,
+                contacts.rigid_contact_margin1,
+                model.shape_body,
+                model.body_flags,
+                self.body_inv_mass_effective,
+                self.body_inv_inertia_effective,
+                model.body_com,
+                self.body_structural_k,
+                int(BodyFlags.PROXY),
+                body_q,
+                self.rigid_contact_hard,
+                self.rigid_compliant_alm,
+                lambda_retention,
+                1.0 / (dt * dt),
+                penalty_decay,
+                self.body_body_contact_material_ke,
+                self.rigid_contact_k_start_value,
+            ],
+            outputs=[
+                self.body_body_contact_normal_rho,
+                self.body_body_contact_penalty_k,
+                self.body_body_contact_C0,
+                self.body_body_contact_lambda,
+                self.body_body_contact_tangent_rho,
+            ],
+            device=self.device,
+        )
+
     def _initialize_rigid_bodies(
         self,
         state_in: State,
@@ -2913,48 +2967,15 @@ class SolverVBD(SolverBase, CouplingInterface):
             # Per-step penalty decay, lambda retention, C0, and ALM auto-rho
             # (body_q is still collide frame here).
             if contacts is not None and contacts.rigid_contact_max > 0:
-                contact_launch_dim = contacts.rigid_contact_max
                 contact_lambda_retention = _rigid_lambda_retention(
                     self.rigid_contact_alpha, self.rigid_avbd_gamma, self.rigid_compliant_alm
                 )
-                wp.launch(
-                    kernel=step_body_body_contact_C0_lambda,
-                    dim=contact_launch_dim,
-                    inputs=[
-                        contacts.rigid_contact_count,
-                        contacts.rigid_contact_shape0,
-                        contacts.rigid_contact_shape1,
-                        contacts.rigid_contact_point0,
-                        contacts.rigid_contact_point1,
-                        contacts.rigid_contact_offset0,
-                        contacts.rigid_contact_offset1,
-                        contacts.rigid_contact_normal,
-                        contacts.rigid_contact_margin0,
-                        contacts.rigid_contact_margin1,
-                        model.shape_body,
-                        model.body_flags,
-                        self.body_inv_mass_effective,
-                        self.body_inv_inertia_effective,
-                        model.body_com,
-                        self.body_structural_k,
-                        int(BodyFlags.PROXY),
-                        state_in.body_q,
-                        self.rigid_contact_hard,
-                        self.rigid_compliant_alm,
-                        contact_lambda_retention,
-                        1.0 / (dt * dt),
-                        self.rigid_avbd_gamma,
-                        self.body_body_contact_material_ke,
-                        self.rigid_contact_k_start_value,
-                    ],
-                    outputs=[
-                        self.body_body_contact_normal_rho,
-                        self.body_body_contact_penalty_k,
-                        self.body_body_contact_C0,
-                        self.body_body_contact_lambda,
-                        self.body_body_contact_tangent_rho,
-                    ],
-                    device=self.device,
+                self._step_body_body_contact_frame(
+                    contacts,
+                    state_in.body_q,
+                    dt,
+                    contact_lambda_retention,
+                    self.rigid_avbd_gamma,
                 )
 
             # Accumulate joint_f into body wrenches (scratch buffer avoids mutating user state).
