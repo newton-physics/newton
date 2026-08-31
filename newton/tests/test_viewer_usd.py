@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import io
 import os
 import shutil
@@ -13,7 +14,7 @@ import warp as wp
 
 import newton
 from newton.tests.unittest_utils import USD_AVAILABLE
-from newton.viewer import ViewerUSD
+from newton.viewer import ViewerRTX, ViewerUSD
 
 if USD_AVAILABLE:
     from pxr import UsdGeom, UsdShade
@@ -54,10 +55,18 @@ class TestViewerUSD(unittest.TestCase):
         return viewer
 
     def _logged_texture_path(self, viewer, mesh_name: str) -> str:
-        safe = mesh_name.replace("/", "_").lstrip("_")
-        shader = UsdShade.Shader.Get(viewer.stage, f"/root/Materials/mat_{safe}/DiffuseTexture")
+        prim = viewer.stage.GetPrimAtPath(viewer._get_path(mesh_name))
+        material, _binding = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+        shader = UsdShade.Shader(material.GetPrim().GetChild("DiffuseTexture"))
         asset_path = shader.GetInput("file").Get()
         return asset_path.path if hasattr(asset_path, "path") else str(asset_path)
+
+    def _get_bound_preview_surface(self, prim):
+        material, _binding = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+        self.assertTrue(material)
+        shader = UsdShade.Shader(material.GetPrim().GetChild("PreviewSurface"))
+        self.assertTrue(shader)
+        return shader
 
     def test_log_points_keeps_per_point_wp_vec3_colors_for_three_points(self):
         viewer = self._make_viewer()
@@ -266,6 +275,184 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(hidden_path, path)
         self.assertEqual(instancer.GetVisibilityAttr().Get(viewer._frame_index), UsdGeom.Tokens.invisible)
 
+    def test_log_instances_authors_display_opacity(self):
+        """Author displayOpacity on individually referenced instances."""
+        viewer = self._make_viewer()
+
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        xforms = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], dtype=wp.vec3)
+        opacities = wp.array([0.25, 0.75], dtype=wp.float32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/opacity_mesh", points, indices)
+        viewer.log_instances("/opacity_instances", "/opacity_mesh", xforms, scales, None, None, opacities=opacities)
+
+        for i, expected in enumerate((0.25, 0.75)):
+            prim = viewer.stage.GetPrimAtPath(f"/root/opacity_instances/instance_{i}")
+            display_opacity = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayOpacity")
+
+            self.assertTrue(display_opacity)
+            np.testing.assert_allclose(
+                np.asarray(display_opacity.Get(viewer._frame_index), dtype=np.float32),
+                np.array([expected], dtype=np.float32),
+                atol=1e-6,
+            )
+
+    def test_log_instances_authors_preview_surface_opacity(self):
+        """Author per-instance PreviewSurface appearance."""
+        viewer = self._make_viewer()
+
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        xforms = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], dtype=wp.vec3)
+        colors = wp.array([[0.2, 0.4, 0.6], [0.8, 0.3, 0.1]], dtype=wp.vec3)
+        materials = wp.array([[0.25, 0.1, 0.0, 0.0], [0.75, 0.4, 0.0, 0.0]], dtype=wp.vec4)
+        opacities = wp.array([0.25, 0.75], dtype=wp.float32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/opacity_mesh", points, indices)
+        viewer.log_instances(
+            "/opacity_instances",
+            "/opacity_mesh",
+            xforms,
+            scales,
+            colors,
+            materials,
+            opacities=opacities,
+        )
+
+        for i, expected in enumerate((0.25, 0.75)):
+            prim = viewer.stage.GetPrimAtPath(f"/root/opacity_instances/instance_{i}")
+            shader = self._get_bound_preview_surface(prim)
+            self.assertAlmostEqual(shader.GetInput("opacity").Get(), expected, places=6)
+
+        shader0 = self._get_bound_preview_surface(viewer.stage.GetPrimAtPath("/root/opacity_instances/instance_0"))
+        np.testing.assert_allclose(np.asarray(shader0.GetInput("diffuseColor").Get()), [0.2, 0.4, 0.6], atol=1e-6)
+        self.assertAlmostEqual(shader0.GetInput("roughness").Get(), 0.25, places=6)
+        self.assertAlmostEqual(shader0.GetInput("metallic").Get(), 0.1, places=6)
+
+    def test_log_instances_rejects_mismatched_opacity_count(self):
+        """Reject opacity arrays that do not match instance count."""
+        viewer = self._make_viewer()
+
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        xforms = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], dtype=wp.vec3)
+        opacities = wp.array([0.25, 0.5, 0.75], dtype=wp.float32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/opacity_mesh", points, indices)
+        with self.assertRaisesRegex(ValueError, "Opacity arrays"):
+            viewer.log_instances("/opacity_instances", "/opacity_mesh", xforms, scales, None, None, opacities=opacities)
+
+    def test_log_mesh_authors_display_opacity(self):
+        """Author displayOpacity on standalone meshes."""
+        viewer = self._make_viewer()
+
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/opacity_mesh_standalone", points, indices, opacity=0.35)
+
+        prim = viewer.stage.GetPrimAtPath("/root/opacity_mesh_standalone")
+        display_opacity = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayOpacity")
+
+        self.assertTrue(display_opacity)
+        np.testing.assert_allclose(
+            np.asarray(display_opacity.Get(viewer._frame_index), dtype=np.float32),
+            np.array([0.35], dtype=np.float32),
+            atol=1e-6,
+        )
+
+    def test_log_mesh_authors_double_sided_from_backface_culling(self):
+        """Map disabled backface culling to double-sided USD meshes."""
+        viewer = self._make_viewer()
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/two_sided", points, indices, backface_culling=False)
+        viewer.log_mesh("/single_sided", points, indices, backface_culling=True)
+
+        two_sided = UsdGeom.Mesh.Get(viewer.stage, "/root/two_sided")
+        single_sided = UsdGeom.Mesh.Get(viewer.stage, "/root/single_sided")
+        self.assertTrue(two_sided.GetDoubleSidedAttr().Get())
+        self.assertFalse(single_sided.GetDoubleSidedAttr().Get())
+
+    def test_log_mesh_authors_preview_surface_opacity(self):
+        """Author standalone PreviewSurface appearance."""
+        viewer = self._make_viewer()
+
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh(
+            "/opacity_mesh_standalone",
+            points,
+            indices,
+            opacity=0.35,
+            color=(0.1, 0.2, 0.3),
+            roughness=0.2,
+            metallic=0.4,
+        )
+
+        prim = viewer.stage.GetPrimAtPath("/root/opacity_mesh_standalone")
+        shader = self._get_bound_preview_surface(prim)
+
+        self.assertAlmostEqual(shader.GetInput("opacity").Get(), 0.35, places=6)
+        self.assertEqual(shader.GetInput("opacityMode").Get(), "transparent")
+        self.assertAlmostEqual(shader.GetInput("opacityThreshold").Get(), 0.0, places=6)
+        np.testing.assert_allclose(np.asarray(shader.GetInput("diffuseColor").Get()), [0.1, 0.2, 0.3], atol=1e-6)
+        self.assertAlmostEqual(shader.GetInput("roughness").Get(), 0.2, places=6)
+        self.assertAlmostEqual(shader.GetInput("metallic").Get(), 0.4, places=6)
+
+    def test_viewer_rtx_accepts_opacity_arguments(self):
+        """Keep ViewerRTX opacity parameters aligned with the common API."""
+        log_mesh_params = inspect.signature(ViewerRTX.log_mesh).parameters
+        log_instances_params = inspect.signature(ViewerRTX.log_instances).parameters
+
+        self.assertIn("opacity", log_mesh_params)
+        self.assertIn("opacities", log_instances_params)
+
+    def test_viewer_rtx_compensates_preview_surface_opacity(self):
+        """Compensate PreviewSurface opacity for RTX rendering layers."""
+        viewer = ViewerRTX.__new__(ViewerRTX)
+        viewer._uses_fractional_opacity = False
+
+        self.assertAlmostEqual(viewer._preview_surface_opacity_value(1.0), 1.0, places=6)
+        self.assertFalse(viewer._uses_fractional_opacity)
+
+        opacity = viewer._preview_surface_opacity_value(0.35)
+
+        self.assertLess(opacity, 0.35)
+        self.assertAlmostEqual(1.0 - (1.0 - opacity) ** viewer._PREVIEW_SURFACE_OPACITY_LAYERS, 0.35, places=6)
+        self.assertEqual(viewer._preview_surface_ior_value(0.35), 1.0)
+        self.assertTrue(viewer._uses_fractional_opacity)
+
     def test_named_layers_write_distinct_prim_namespaces(self):
         viewer = self._make_viewer()
 
@@ -288,6 +475,7 @@ class TestViewerUSD(unittest.TestCase):
         self.assertTrue(prim_b.IsValid())
 
     def test_remove_layer_preserves_sibling_usd_prims(self):
+        """Remove one layer's geometry and materials without touching its sibling."""
         viewer = self._make_viewer()
 
         viewer.activate("solverA")
@@ -302,6 +490,13 @@ class TestViewerUSD(unittest.TestCase):
         viewer.log_state(viewer.model.state())
         viewer.end_frame()
 
+        prim_a = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes/shape_0/instance_0")
+        prim_b = viewer.stage.GetPrimAtPath("/root/layers/solverB/model/shapes/shape_0/instance_0")
+        material_a, _ = UsdShade.MaterialBindingAPI(prim_a).ComputeBoundMaterial()
+        material_b, _ = UsdShade.MaterialBindingAPI(prim_b).ComputeBoundMaterial()
+        material_a_path = material_a.GetPath()
+        material_b_path = material_b.GetPath()
+
         viewer.remove_layer("solverA")
 
         prim_a = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes/shape_0/instance_0")
@@ -309,6 +504,8 @@ class TestViewerUSD(unittest.TestCase):
 
         self.assertFalse(prim_a.IsValid())
         self.assertTrue(prim_b.IsValid())
+        self.assertFalse(viewer.stage.GetPrimAtPath(material_a_path).IsValid())
+        self.assertTrue(viewer.stage.GetPrimAtPath(material_b_path).IsValid())
 
     def test_layer_visibility_hides_usd_instances(self):
         viewer = self._make_viewer()
