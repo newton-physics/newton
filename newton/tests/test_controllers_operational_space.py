@@ -818,8 +818,9 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
     A joint torque entirely in the null space, tau_null = N @ M @ a for any
     joint acceleration a, must produce zero task-space acceleration when N is
     built from the dynamically-consistent pseudo-inverse transpose. Algebraically
-    this reduces to one identity: J @ M^-1 @ N @ M == 0 (a 6 x n zero matrix,
-    true for every a simultaneously, not just one example).
+    this reduces to one identity: J @ M^-1 @ N == 0 (a 6 x n zero matrix) --
+    M is always invertible, so this is equivalent to (and tighter than)
+    checking J @ M^-1 @ N @ M == 0 for every a simultaneously.
 
     This does *not* hold for the Moore-Penrose variant (which ignores the
     robot's inertia) unless M happens to be proportional to identity, so it's
@@ -948,7 +949,6 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
 
     jacobian_np = jacobian_tool_world.numpy()[0][:, :7]
     mass_matrix_inv_np = mass_matrix_inv.numpy()[0][:7, :7]
-    mass_matrix_np = mass_matrix.numpy()[0][:7, :7]
 
     # Both are valid projectors (idempotent), regardless of which pseudo-inverse built them.
     np.testing.assert_allclose(
@@ -958,11 +958,13 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
     )
     np.testing.assert_allclose(moore_penrose_projector @ moore_penrose_projector, moore_penrose_projector, atol=1e-3)
 
-    # Only the dynamically-consistent projector zeroes the task-space response to a null-space torque.
-    dynamically_consistent_response = (
-        jacobian_np @ mass_matrix_inv_np @ dynamically_consistent_projector @ mass_matrix_np
-    )
-    moore_penrose_response = jacobian_np @ mass_matrix_inv_np @ moore_penrose_projector @ mass_matrix_np
+    # Only the dynamically-consistent projector zeroes J @ M^-1 @ N -- the
+    # identity that guarantees tau_null = N @ M @ a never disturbs the task,
+    # for every a simultaneously (M is invertible, so multiplying through by
+    # it, as tau_null literally does, changes nothing about which projector
+    # zeroes this out).
+    dynamically_consistent_response = jacobian_np @ mass_matrix_inv_np @ dynamically_consistent_projector
+    moore_penrose_response = jacobian_np @ mass_matrix_inv_np @ moore_penrose_projector
 
     np.testing.assert_allclose(dynamically_consistent_response, np.zeros((6, 7)), atol=1e-3)
     test.assertGreater(np.abs(moore_penrose_response).max(), 0.1)

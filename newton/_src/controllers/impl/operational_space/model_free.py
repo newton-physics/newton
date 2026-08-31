@@ -56,10 +56,10 @@ DOFs) is added directly to the summed joint torque.
 When ``use_null_space_control=True``, a secondary joint-space posture task
 is pursued only in directions that leave the task-space motion undisturbed:
 
-    tau_null = N^T · [M(q)·a_posture if use_inertia_decoupling else a_posture]
+    tau_null = N · [M(q)·a_posture if use_inertia_decoupling else a_posture]
     a_posture = Kp_null·(q_des_null - q) + Kd_null·(qd_des_null - qd)
 
-``N^T`` is the null-space projector: dynamically consistent (accounting for
+``N`` is the null-space projector: dynamically consistent (accounting for
 the robot's own inertia) when ``use_inertia_decoupling=True`` and
 ``use_partial_inertia_decoupling=False``, otherwise a kinematics-only
 (Moore-Penrose) projector. Only a robot with more controlled DOFs than task

@@ -486,9 +486,9 @@ def _jacobian_transpose_force_kernel(
 #   - dynamically consistent: Lambda @ J @ M^-1 (needs the mass matrix)
 #   - Moore-Penrose: (J @ J^T)^-1 @ J (kinematic only, ignores inertia)
 # Only the dynamically-consistent variant guarantees that a joint torque
-# entirely in the null space, tau_null = N^T @ M @ a for any joint
+# entirely in the null space, tau_null = N @ M @ a for any joint
 # acceleration a, produces zero task-space acceleration. That guarantee is
-# the identity J @ M^-1 @ N^T == 0, which the module tests check directly
+# the identity J @ M^-1 @ N == 0, which the module tests check directly
 # (and check does *not* hold for the Moore-Penrose variant, in general).
 # ---------------------------------------------------------------------------
 
@@ -587,9 +587,9 @@ def _null_space_projector_kernel(
     A joint torque built as ``N @ M @ a``, for any joint acceleration ``a``
     and the joint-space mass matrix ``M``, produces zero task-space
     acceleration — but only when ``jacobian_pinv_transpose`` is the
-    dynamically-consistent variant: ``J @ M^-1 @ N @ M`` is the zero matrix
-    in that case, and generally nonzero for the Moore-Penrose variant, since
-    that one ignores the robot's inertia.
+    dynamically-consistent variant: ``J @ M^-1 @ N == 0`` in that case, and
+    generally nonzero for the Moore-Penrose variant, since that one ignores
+    the robot's inertia.
     """
     robot_idx, row, col = wp.tid()
     robot_dof_count = dof_count[robot_idx]
