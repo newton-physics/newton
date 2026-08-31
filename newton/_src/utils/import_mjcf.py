@@ -354,6 +354,7 @@ def parse_mjcf(
 
     root, base_dir = _load_and_expand_mjcf(source, path_resolver)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
+    start_body_count = len(builder.body_mass)
 
     contact_sections = root.findall("contact")
 
@@ -441,6 +442,12 @@ def parse_mjcf(
     inertia_group_range = tuple(int(value) for value in compiler_attribs.get("inertiagrouprange", "0 5").split())
     if len(inertia_group_range) != 2:
         raise ValueError("MJCF compiler inertiagrouprange must contain exactly 2 integers.")
+    bound_mass = float(compiler_attribs.get("boundmass", 0.0))
+    bound_inertia = float(compiler_attribs.get("boundinertia", 0.0)) * scale**2
+    balance_inertia_value = compiler_attribs.get("balanceinertia", "false").lower()
+    if balance_inertia_value not in {"false", "true"}:
+        raise ValueError(f"MJCF compiler balanceinertia must be 'false' or 'true'; got {balance_inertia_value!r}.")
+    balance_inertia = balance_inertia_value == "true"
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -3439,6 +3446,37 @@ def parse_mjcf(
     if not visual_shapes:
         for shape_idx in collider_shapes:
             builder.shape_flags[shape_idx] |= ShapeFlags.VISIBLE
+
+    # MuJoCo applies compiler inertia guards after all body mass properties have
+    # been accumulated. Restrict them to this import so an existing builder is
+    # not affected.
+    for body_idx in range(start_body_count, len(builder.body_mass)):
+        mass = builder.body_mass[body_idx]
+        inertia = np.array(builder.body_inertia[body_idx], dtype=np.float64).reshape(3, 3)
+        inertia = 0.5 * (inertia + inertia.T)
+        principal_inertia, principal_axes = np.linalg.eigh(inertia)
+
+        if mass < 0.0 or np.any(principal_inertia < 0.0):
+            raise ValueError("MJCF body mass and inertia must be nonnegative.")
+
+        mass = max(mass, bound_mass)
+        principal_inertia = np.maximum(principal_inertia, bound_inertia)
+
+        if (
+            principal_inertia[0] + principal_inertia[1] < principal_inertia[2]
+            or principal_inertia[0] + principal_inertia[2] < principal_inertia[1]
+            or principal_inertia[1] + principal_inertia[2] < principal_inertia[0]
+        ):
+            if not balance_inertia:
+                raise ValueError("MJCF body inertia must satisfy A + B >= C; use 'balanceinertia' to fix.")
+            principal_inertia[:] = np.mean(principal_inertia)
+
+        inertia = principal_axes @ np.diag(principal_inertia) @ principal_axes.T
+        inertia = wp.mat33(inertia.astype(np.float32))
+        builder.body_mass[body_idx] = mass
+        builder.body_inv_mass[body_idx] = 1.0 / mass if mass > 0.0 else 0.0
+        builder.body_inertia[body_idx] = inertia
+        builder.body_inv_inertia[body_idx] = wp.inverse(inertia) if any(inertia) else inertia
 
     end_shape_count = len(builder.shape_type)
 
