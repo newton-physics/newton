@@ -71,6 +71,9 @@ def apply_picking_force_kernel(
     body_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
     pick_effective_mass: wp.array[float],
+    pick_os_inertia: wp.array[wp.mat33],
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[int],
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
@@ -92,18 +95,27 @@ def apply_picking_force_kernel(
     offset = pick_pos_world - com_world
     pick_vel = velocity_at_point(body_qd[pick_body], offset)
 
-    # Adjust force to mass for more adaptive manipulation of picked bodies.
-    force_multiplier = 10.0 + body_mass[pick_body]
-
-    pick_force = force_multiplier * (
-        pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (pick_state[0].pick_damping * pick_vel)
+    # Command an acceleration of the pick point so gains are mass-independent,
+    # then map it to a force through the operational-space inertia at that point.
+    pick_accel = pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (
+        pick_state[0].pick_damping * pick_vel
     )
 
-    # Clamp force magnitude to prevent runaway divergence on light objects (#2361).
-    # Uses the effective mass (total articulation mass for linked bodies,
-    # own mass for free bodies) so picking a light robot link still allows
-    # enough force to move the whole chain.
     max_acceleration = pick_state[0].pick_max_acceleration * 9.81
+
+    # Operational-space mass resolved along the pull direction, so the force stays
+    # parallel to the commanded acceleration.
+    accel_mag = wp.length(pick_accel)
+    pick_mass = body_mass[pick_body]
+    if accel_mag > 1.0e-9:
+        accel_dir = pick_accel / accel_mag
+        pick_mass = wp.dot(accel_dir, pick_os_inertia[0] * accel_dir)
+
+    pick_force = pick_accel * pick_mass
+
+    # Clamp force magnitude to prevent runaway divergence on light objects.
+    # The articulation total bounds the force so picking a light link can still
+    # move the whole chain.
     max_force = max_acceleration * pick_effective_mass[pick_body]
     force_mag = wp.length(pick_force)
     if force_mag > max_force:
@@ -123,6 +135,15 @@ def apply_picking_force_kernel(
             pick_torque = wp.vec3(0.0)
         elif rotational_acceleration_sq > max_acceleration * max_acceleration:
             pick_torque = pick_torque * (max_acceleration / wp.sqrt(rotational_acceleration_sq))
+
+    # Cancel the picked body's own weight so the commanded acceleration is delivered
+    # instead of being offset by gravity.
+    if gravity:
+        world = int(0)
+        if body_world:
+            # Bodies outside any world are tagged -1; they take the first world's gravity.
+            world = wp.max(body_world[pick_body], 0)
+        pick_force -= gravity[world] * body_mass[pick_body]
 
     wp.atomic_add(body_f, pick_body, wp.spatial_vector(pick_force, pick_torque))
 
