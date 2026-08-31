@@ -1561,7 +1561,8 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
     with wp.ScopedDevice(device):
         # Two contacts, cold-start lambda=0, K=rho_n=rho_t=10, mu=0.5, C_n=0.1
         # from coincident points + 0.05 margins. Contact 0 has unit tangential
-        # slip (saturates the cone); contact 1 has none.
+        # slip and one radian of twist; both channels saturate at mu*lambda_n.
+        # Contact 1 has neither.
         contact_count = wp.array([2], dtype=int, device=device)
         shape0 = wp.array([0, 0], dtype=int, device=device)
         shape1 = wp.array([1, 2], dtype=int, device=device)
@@ -1571,10 +1572,11 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
         shape_body = wp.array([0, 1, 2], dtype=int, device=device)
 
         q = wp.quat_identity()
+        q_twist = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 1.0)
         body_q = wp.array(
             [
                 wp.transform(wp.vec3(0.0, 0.0, 0.0), q),
-                wp.transform(wp.vec3(1.0, 0.0, 0.0), q),
+                wp.transform(wp.vec3(1.0, 0.0, 0.0), q_twist),
                 wp.transform(wp.vec3(0.0, 0.0, 0.0), q),
             ],
             dtype=wp.transform,
@@ -1586,6 +1588,7 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
         contact_rho = wp.array([10.0, 10.0], dtype=float, device=device)
         penalty_k = wp.array([10.0, 10.0], dtype=float, device=device)
         contact_lambda = wp.zeros(2, dtype=wp.vec3, device=device)
+        contact_lambda_angular = wp.zeros(2, dtype=wp.vec3, device=device)
 
         wp.launch(
             update_duals_body_body_contacts,
@@ -1605,7 +1608,7 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 body_q,
                 body_q_prev,
                 contact_mu,
-                wp.zeros(2, dtype=float, device=device),
+                wp.array([0.5, 0.0], dtype=float, device=device),
                 wp.zeros(2, dtype=float, device=device),
                 zeros3,
                 0.0,
@@ -1614,12 +1617,12 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 contact_ke,
                 contact_rho,
                 contact_rho,
-                wp.zeros(2, dtype=float, device=device),
+                contact_rho,
                 wp.zeros(2, dtype=float, device=device),
                 0.0,
                 penalty_k,
                 contact_lambda,
-                wp.zeros(2, dtype=wp.vec3, device=device),
+                contact_lambda_angular,
             ],
             device=device,
         )
@@ -1632,6 +1635,12 @@ def _rigid_contact_dual_update_computes_lambda(test, device):
                 [-0.25, 0.0, 0.5],
                 [0.0, 0.0, 0.5],
             ],
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            contact_lambda_angular.numpy(),
+            [[0.0, 0.0, -0.25], [0.0, 0.0, 0.0]],
             rtol=1.0e-6,
             atol=1.0e-6,
         )

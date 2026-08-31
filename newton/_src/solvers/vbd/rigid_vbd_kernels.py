@@ -6994,16 +6994,7 @@ def update_duals_body_body_contacts(
 
         has_angular_friction = contact_material_mu_torsional[idx] > 0.0 or contact_material_mu_rolling[idx] > 0.0
         if has_angular_friction:
-            updated_lam_n = wp.dot(contact_lambda[idx], n)
-            if contact_compliant_alm == 1:
-                normal_primal_k, lambda_n_eff = _material_force_terms(
-                    rho_n, material_k, updated_lam_n, contact_compliant_alm
-                )
-                normal_force = wp.max(normal_primal_k * C_stab_n + lambda_n_eff, 0.0)
-            else:
-                # Legacy lambda_n_new already equals the undamped primal normal
-                # force used for this dual projection.
-                normal_force = wp.max(updated_lam_n, 0.0)
+            normal_load = wp.max(wp.dot(contact_lambda[idx], n), 0.0)
 
             theta_rel = _relative_angular_displacement(body_id_0, body_id_1, body_q, body_q_prev)
             n_outer = wp.outer(n, n)
@@ -7014,8 +7005,8 @@ def update_duals_body_body_contacts(
             lam_angular_new = _project_angular_friction(
                 lam_angular_trial,
                 n,
-                contact_material_mu_torsional[idx] * normal_force,
-                contact_material_mu_rolling[idx] * normal_force,
+                contact_material_mu_torsional[idx] * normal_load,
+                contact_material_mu_rolling[idx] * normal_load,
             )
             contact_lambda_angular[idx] = lam_angular_new
         else:
