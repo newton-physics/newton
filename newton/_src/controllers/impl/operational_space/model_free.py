@@ -20,13 +20,14 @@ Motion law (terms enabled at construction):
 
 ``Kp``/``Kd`` are specified per-axis in the tool-local frame (so "stiff along
 the insertion axis" stays true as the tool reorients, instead of silently
-meaning whatever world axis the insertion axis started aligned with), so —
-like ``motion_selection_axes_tool``/``wrench_selection_axes_tool`` below —
-they are rotated into world-frame 6x6 matrices every step before being
-applied to ``pose_error``/``twist_error``, which are themselves expressed in
-world coordinates. A rotated tool-local diagonal is generally no longer
-diagonal in world frame (only block-diagonal), which is why this is a matrix
-product rather than a per-axis multiply.
+meaning whatever world axis the insertion axis started aligned with), while
+``pose_error``/``twist_error`` are computed in world coordinates. Rather than
+rotating ``Kp``/``Kd`` themselves into a world-frame 6x6 matrix (``R @
+diag(Kp) @ R^T``), :func:`_task_space_pd_kernel` rotates the errors into the
+tool frame instead, applies the diagonal gain there with a plain per-axis
+multiply, and rotates only the combined result back to world — algebraically
+identical, but without ever forming a 6x6 matrix, and with one shared
+rotate-back for both the ``Kp`` and ``Kd`` terms instead of one each.
 
 When ``use_partial_inertia_decoupling=True`` (only meaningful alongside
 ``use_inertia_decoupling=True``), Lambda is computed as two independent 3x3
@@ -48,8 +49,8 @@ term is a feedback correction toward that same setpoint from a measured
 wrench, e.g. a 6-axis force/torque sensor reading. Either may be used alone —
 ``use_wrench_feedback`` with ``use_wrench_feedforward=False`` regulates the
 measured wrench toward the setpoint with no separate feedforward term. The
-feedback ``Kp`` here is tool-local and rotated the same way the motion gains
-are.
+feedback ``Kp`` here is tool-local and applied the same
+rotate-error/apply-diagonal/rotate-result-back way the motion gains are.
 
 When wrench control is enabled, ``F_motion`` and ``F_wrench`` are each
 masked by a world-frame 6x6 selection matrix, itself rotated every step from
@@ -266,10 +267,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             operational-space mass matrix is only invertible for a robot
             whose Jacobian can span all 6 task dimensions.
         motion_stiffness: Task-space position/orientation-error gain Kp,
-            per-axis in the tool-local frame — rotated into world every step
-            before being applied, the same way ``motion_selection_axes_tool``
-            below is, so e.g. "stiff along the insertion axis" stays true as
-            the tool reorients. Units depend on ``use_inertia_decoupling``:
+            per-axis in the tool-local frame, applied as the tool reorients
+            so e.g. "stiff along the insertion axis" stays true rather than
+            meaning whatever world axis the insertion axis started aligned
+            with. Units depend on ``use_inertia_decoupling``:
             [1/s²] when enabled, since the spring-damper term is then a
             task-space acceleration premultiplied by Lambda; otherwise [N/m]
             on the position axes and [N·m/rad] on the orientation axes. Pass
@@ -323,10 +324,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             Usually the complement of ``motion_selection_axes_tool``, but
             that is not enforced — see its docstring above.
         wrench_stiffness: Contact-wrench proportional feedback gain Kp,
-            tool-local like ``motion_stiffness`` (rotated into world every
-            step before being applied), [N/m] on the force axes and [N·m/rad]
-            on the moment axes. Same format as ``motion_stiffness``. Only
-            meaningful when ``use_wrench_feedback=True``.
+            tool-local like ``motion_stiffness``, [N/m] on the force axes
+            and [N·m/rad] on the moment axes. Same format as
+            ``motion_stiffness``. Only meaningful when
+            ``use_wrench_feedback=True``.
         use_null_space_control: Pursue a secondary joint-space posture task
             in the null space of the primary task, so it does not disturb
             task-space motion. Requires every robot to have more than 6
@@ -376,15 +377,15 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         desired_twist_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
         """Desired tool twist (linear, angular) in world coordinates [m/s, rad/s], shape [controlled_robot_count]."""
         motion_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Task-space position/orientation-error gain Kp, tool-local (rotated into world every step), shape [controlled_robot_count]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m] / [N·m/rad]. ``None`` when gains are baked at construction."""
+        """Task-space position/orientation-error gain Kp, tool-local (applied in the tool's current orientation each step), shape [controlled_robot_count]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m] / [N·m/rad]. ``None`` when gains are baked at construction."""
         motion_damping: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Task-space velocity-error gain Kd, tool-local (rotated into world every step), shape [controlled_robot_count]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] / [N·m·s/rad]. ``None`` when gains are baked at construction."""
+        """Task-space velocity-error gain Kd, tool-local (applied in the tool's current orientation each step), shape [controlled_robot_count]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] / [N·m·s/rad]. ``None`` when gains are baked at construction."""
         desired_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Desired contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count] — the feedforward term, and/or the feedback setpoint. ``None`` unless wrench control is enabled."""
         measured_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count], e.g. from a 6-axis force/torque sensor. ``None`` unless ``use_wrench_feedback=True``."""
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Contact-wrench proportional feedback gain Kp, tool-local (rotated into world every step), shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
+        """Contact-wrench proportional feedback gain Kp, tool-local (applied in the tool's current orientation each step), shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
         joint_q: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Current joint positions [m or rad], compact, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_control=True``."""
         joint_qd: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
@@ -601,22 +602,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         )
         self._damping_buf: wp.array[wp.spatial_vector] | None = _twist_buf() if self._damping_baked is None else None
 
-        # Kp/Kd are specified per-axis in the tool-local frame (so e.g. "stiff
-        # along the insertion axis" stays true as the tool reorients), so
-        # they're rotated into these world-frame matrices every step, via
-        # the same _rotate_selection_matrix_kernel used for
-        # motion_selection_axes_tool/wrench_selection_axes_tool below --
-        # needed unconditionally, not just when wrench control is enabled,
-        # since the tool's orientation (and hence the rotation) changes
-        # every step regardless.
-        def _gain_matrix_buf():
-            return wp.zeros(
-                (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
-            )
-
-        self._motion_stiffness_matrix_world = _gain_matrix_buf()
-        self._motion_damping_matrix_world = _gain_matrix_buf()
-
         self._motion_selection_axes_tool: wp.array[wp.spatial_vector] | None = None
         self._wrench_selection_axes_tool: wp.array[wp.spatial_vector] | None = None
         self._motion_selection_matrix_world: wp.array3d[wp.float32] | None = None
@@ -629,7 +614,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         self._wrench_tau_buf: wp.array[wp.float32] | None = None
         self._wrench_stiffness_baked: wp.array[wp.spatial_vector] | None = None
         self._wrench_stiffness_buf: wp.array[wp.spatial_vector] | None = None
-        self._wrench_stiffness_matrix_world: wp.array3d[wp.float32] | None = None
         if self._use_wrench:
             self._motion_selection_axes_tool = self._bake_axes(motion_selection_axes_tool_resolved)
             self._wrench_selection_axes_tool = self._bake_axes(wrench_selection_axes_tool)
@@ -650,7 +634,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 self._wrench_command_buf = _twist_buf()
                 self._wrench_stiffness_baked = self._bake_gain(wrench_stiffness)
                 self._wrench_stiffness_buf = _twist_buf() if self._wrench_stiffness_baked is None else None
-                self._wrench_stiffness_matrix_world = _gain_matrix_buf()
 
         self._pose_error_buf = _twist_buf()
         self._desired_task_acceleration_buf = _twist_buf()
@@ -1218,31 +1201,16 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             outputs=[self._pose_error_buf],
             device=self._device,
         )
-        # Kp/Kd are tool-local; rotate into world every step, since the
-        # tool's orientation (and hence the rotation) changes every step.
-        wp.launch(
-            _rotate_selection_matrix_kernel,
-            dim=robot_count,
-            inputs=[self._pose_buf, stiffness],
-            outputs=[self._motion_stiffness_matrix_world],
-            device=self._device,
-        )
-        wp.launch(
-            _rotate_selection_matrix_kernel,
-            dim=robot_count,
-            inputs=[self._pose_buf, damping],
-            outputs=[self._motion_damping_matrix_world],
-            device=self._device,
-        )
         wp.launch(
             _task_space_pd_kernel,
             dim=robot_count,
             inputs=[
+                self._pose_buf,
                 self._pose_error_buf,
                 self._twist_buf,
                 self._desired_twist_buf,
-                self._motion_stiffness_matrix_world,
-                self._motion_damping_matrix_world,
+                stiffness,
+                damping,
             ],
             outputs=[self._desired_task_acceleration_buf],
             device=self._device,
@@ -1346,15 +1314,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                     if self._wrench_stiffness_baked is not None
                     else self._wrench_stiffness_buf
                 )
-                # wrench_stiffness is tool-local too; rotate into world every
-                # step, the same reason motion Kp/Kd are rotated above.
-                wp.launch(
-                    _rotate_selection_matrix_kernel,
-                    dim=robot_count,
-                    inputs=[self._pose_buf, wrench_stiffness],
-                    outputs=[self._wrench_stiffness_matrix_world],
-                    device=self._device,
-                )
                 wrench_command_kernel = (
                     _wrench_feedforward_and_feedback_kernel
                     if self._use_wrench_feedforward
@@ -1363,7 +1322,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 wp.launch(
                     wrench_command_kernel,
                     dim=robot_count,
-                    inputs=[self._desired_wrench_buf, self._measured_wrench_buf, self._wrench_stiffness_matrix_world],
+                    inputs=[self._pose_buf, self._desired_wrench_buf, self._measured_wrench_buf, wrench_stiffness],
                     outputs=[self._wrench_command_buf],
                     device=self._device,
                 )

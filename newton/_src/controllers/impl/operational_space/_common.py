@@ -331,23 +331,24 @@ def _pose_error_kernel(
 
 @wp.kernel
 def _task_space_pd_kernel(
+    tool_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the tool frame
     pose_error_world: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) (position error, orientation error) from _pose_error_kernel
     tool_twist_world: wp.array[wp.spatial_vector],  # (robot_count,) current tool twist, world coords
     desired_twist_world: wp.array[wp.spatial_vector],  # (robot_count,) desired tool twist, world coords
-    stiffness_matrix_world: wp.array3d[
-        float
-    ],  # (robot_count, 6, 6) proportional gain Kp, rotated tool-local -> world by _rotate_selection_matrix_kernel; [1/s^2] if inertial decoupling follows, else [N/m or N*m/rad]
-    damping_matrix_world: wp.array3d[
-        float
-    ],  # (robot_count, 6, 6) derivative gain Kd, rotated tool-local -> world the same way; [1/s] if inertial decoupling follows, else [N*s/m or N*m*s/rad]
+    stiffness: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) per-axis proportional gain Kp, tool-local; [1/s^2] if inertial decoupling follows, else [N/m or N*m/rad]
+    damping: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) per-axis derivative gain Kd, tool-local; [1/s] if inertial decoupling follows, else [N*s/m or N*m*s/rad]
     # outputs
     desired_task_acceleration_world: wp.array[
         wp.spatial_vector
-    ],  # (robot_count,) stiffness_matrix_world @ pose_error + damping_matrix_world @ twist_error
+    ],  # (robot_count,) Kp .* pose_error + Kd .* twist_error, tool-local diagonal applied in the tool frame, result rotated back to world
 ):
-    """Task-space spring-damper term, ``Kp @ pose_error + Kd @ (desired_twist - current_twist)``.
+    """Task-space spring-damper term, ``Kp .* pose_error + Kd .* (desired_twist - current_twist)``.
 
     The same law as :func:`_pd_term_kernel` in the joint-impedance controller
     family, just operating on a 6D task-space error instead of a per-DOF one:
@@ -357,25 +358,50 @@ def _task_space_pd_kernel(
     Kp/Kd are specified per-axis in the tool-local frame -- e.g. "stiff along
     the insertion axis" should stay true as the tool reorients, not silently
     become "stiff along whatever world axis the insertion axis started
-    aligned with" -- so :func:`_rotate_selection_matrix_kernel` rotates them
-    into these world-frame matrices every step, the same way it rotates
-    ``motion_selection_axes_tool``/``wrench_selection_axes_tool``. A rotated
-    diagonal is generally no longer diagonal (only block-diagonal), which is
-    why a full 6x6 matrix-vector product is used here instead of a per-axis
-    multiply.
+    aligned with". Rather than rotating Kp/Kd themselves into a world-frame
+    6x6 matrix (``R @ diag(Kp) @ R^T``, needing a matrix-matrix product to
+    build and a matrix-vector product to apply), the errors are rotated into
+    the tool frame instead (``R^T @ error``), the diagonal gain is applied
+    there with a plain per-axis multiply, and only the combined result is
+    rotated back to world (``R @ ...``) -- algebraically identical
+    (``R @ (Kp .* (R^T @ error)) == (R @ diag(Kp) @ R^T) @ error``) but
+    without ever forming the 6x6 matrix, and with one shared rotate-back for
+    both the Kp and Kd terms instead of one each.
     """
     robot_idx = wp.tid()
+    quat_world_from_tool = wp.transform_get_rotation(tool_pose_world[robot_idx])
     pose_error = pose_error_world[robot_idx]
     twist_error = desired_twist_world[robot_idx] - tool_twist_world[robot_idx]
+    kp = stiffness[robot_idx]
+    kd = damping[robot_idx]
 
-    local_stiffness = wp.spatial_matrix()
-    local_damping = wp.spatial_matrix()
-    for row in range(6):
-        for col in range(6):
-            local_stiffness[row, col] = stiffness_matrix_world[robot_idx, row, col]
-            local_damping[row, col] = damping_matrix_world[robot_idx, row, col]
+    pose_error_linear_tool = wp.quat_rotate_inv(
+        quat_world_from_tool, wp.vec3(pose_error[0], pose_error[1], pose_error[2])
+    )
+    pose_error_angular_tool = wp.quat_rotate_inv(
+        quat_world_from_tool, wp.vec3(pose_error[3], pose_error[4], pose_error[5])
+    )
+    twist_error_linear_tool = wp.quat_rotate_inv(
+        quat_world_from_tool, wp.vec3(twist_error[0], twist_error[1], twist_error[2])
+    )
+    twist_error_angular_tool = wp.quat_rotate_inv(
+        quat_world_from_tool, wp.vec3(twist_error[3], twist_error[4], twist_error[5])
+    )
 
-    desired_task_acceleration_world[robot_idx] = local_stiffness * pose_error + local_damping * twist_error
+    accel_linear_tool = wp.vec3(
+        kp[0] * pose_error_linear_tool[0] + kd[0] * twist_error_linear_tool[0],
+        kp[1] * pose_error_linear_tool[1] + kd[1] * twist_error_linear_tool[1],
+        kp[2] * pose_error_linear_tool[2] + kd[2] * twist_error_linear_tool[2],
+    )
+    accel_angular_tool = wp.vec3(
+        kp[3] * pose_error_angular_tool[0] + kd[3] * twist_error_angular_tool[0],
+        kp[4] * pose_error_angular_tool[1] + kd[4] * twist_error_angular_tool[1],
+        kp[5] * pose_error_angular_tool[2] + kd[5] * twist_error_angular_tool[2],
+    )
+
+    accel_linear_world = wp.quat_rotate(quat_world_from_tool, accel_linear_tool)
+    accel_angular_world = wp.quat_rotate(quat_world_from_tool, accel_angular_tool)
+    desired_task_acceleration_world[robot_idx] = wp.spatial_vector(accel_linear_world, accel_angular_world)
 
 
 @wp.kernel
@@ -642,75 +668,97 @@ def _rotate_selection_matrix_kernel(
             selection_matrix_world[robot_idx, row + 3, col] = 0.0
 
 
+@wp.func
+def _apply_tool_local_gain(
+    quat_world_from_tool: wp.quat,
+    gain_tool: wp.spatial_vector,  # per-axis, tool-local
+    error_world: wp.spatial_vector,
+) -> wp.spatial_vector:
+    """Rotate a world-frame error into the tool frame, apply a diagonal tool-local gain, rotate the result back.
+
+    Algebraically identical to ``(R @ diag(gain_tool) @ R^T) @ error_world``
+    (the world-frame rotated-gain-matrix form) but never forms that 6x6
+    matrix: ``R @ (gain_tool .* (R^T @ error_world))``, all vec3 rotations
+    and a per-axis multiply.
+    """
+    error_linear_tool = wp.quat_rotate_inv(
+        quat_world_from_tool, wp.vec3(error_world[0], error_world[1], error_world[2])
+    )
+    error_angular_tool = wp.quat_rotate_inv(
+        quat_world_from_tool, wp.vec3(error_world[3], error_world[4], error_world[5])
+    )
+    result_linear_tool = wp.vec3(
+        gain_tool[0] * error_linear_tool[0], gain_tool[1] * error_linear_tool[1], gain_tool[2] * error_linear_tool[2]
+    )
+    result_angular_tool = wp.vec3(
+        gain_tool[3] * error_angular_tool[0],
+        gain_tool[4] * error_angular_tool[1],
+        gain_tool[5] * error_angular_tool[2],
+    )
+    return wp.spatial_vector(
+        wp.quat_rotate(quat_world_from_tool, result_linear_tool),
+        wp.quat_rotate(quat_world_from_tool, result_angular_tool),
+    )
+
+
 @wp.kernel
 def _wrench_feedforward_and_feedback_kernel(
+    tool_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the tool frame
     desired_wrench_world: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) desired contact wrench (force, moment), world coords
     measured_wrench_world: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) measured contact wrench (force, moment), world coords, e.g. from a 6-axis force/torque sensor
-    stiffness_matrix_world: wp.array3d[
-        float
-    ],  # (robot_count, 6, 6) proportional feedback gain Kp, rotated tool-local -> world by _rotate_selection_matrix_kernel
+    stiffness: wp.array[wp.spatial_vector],  # (robot_count,) per-axis proportional feedback gain Kp, tool-local
     # outputs
     wrench_command_world: wp.array[
         wp.spatial_vector
-    ],  # (robot_count,) desired (feedforward) + stiffness_matrix_world @ (desired - measured) (feedback)
+    ],  # (robot_count,) desired (feedforward) + Kp .* (desired - measured) (feedback)
 ):
-    """Wrench command combining a feedforward and a feedback term, ``desired + Kp @ (desired - measured)``.
+    """Wrench command combining a feedforward and a feedback term, ``desired + Kp .* (desired - measured)``.
 
     The feedforward term is the desired wrench, commanded directly. The
     feedback term is the same law as :func:`_task_space_pd_kernel`'s
-    proportional term (see its docstring for why Kp is rotated tool-local ->
-    world here too) — this assumes the full wrench (force and moment) is
-    measurable, e.g. from a 6-axis force/torque sensor. See
-    :func:`_wrench_feedback_only_kernel` for the feedback term alone,
-    without the feedforward term.
+    proportional term (see its docstring, and :func:`_apply_tool_local_gain`,
+    for why/how Kp is applied tool-local here too) — this assumes the full
+    wrench (force and moment) is measurable, e.g. from a 6-axis
+    force/torque sensor. See :func:`_wrench_feedback_only_kernel` for the
+    feedback term alone, without the feedforward term.
     """
     robot_idx = wp.tid()
+    quat_world_from_tool = wp.transform_get_rotation(tool_pose_world[robot_idx])
     desired = desired_wrench_world[robot_idx]
     measured = measured_wrench_world[robot_idx]
     wrench_error = desired - measured
 
-    local_stiffness = wp.spatial_matrix()
-    for row in range(6):
-        for col in range(6):
-            local_stiffness[row, col] = stiffness_matrix_world[robot_idx, row, col]
-
-    wrench_command_world[robot_idx] = desired + local_stiffness * wrench_error
+    feedback = _apply_tool_local_gain(quat_world_from_tool, stiffness[robot_idx], wrench_error)
+    wrench_command_world[robot_idx] = desired + feedback
 
 
 @wp.kernel
 def _wrench_feedback_only_kernel(
+    tool_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the tool frame
     desired_wrench_world: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) desired contact wrench (force, moment), world coords, used as the feedback setpoint only
     measured_wrench_world: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) measured contact wrench (force, moment), world coords, e.g. from a 6-axis force/torque sensor
-    stiffness_matrix_world: wp.array3d[
-        float
-    ],  # (robot_count, 6, 6) proportional feedback gain Kp, rotated tool-local -> world by _rotate_selection_matrix_kernel
+    stiffness: wp.array[wp.spatial_vector],  # (robot_count,) per-axis proportional feedback gain Kp, tool-local
     # outputs
-    wrench_command_world: wp.array[
-        wp.spatial_vector
-    ],  # (robot_count,) stiffness_matrix_world @ (desired - measured), no feedforward term
+    wrench_command_world: wp.array[wp.spatial_vector],  # (robot_count,) Kp .* (desired - measured), no feedforward term
 ):
-    """Wrench feedback correction alone, ``Kp @ (desired - measured)``, with no feedforward term.
+    """Wrench feedback correction alone, ``Kp .* (desired - measured)``, with no feedforward term.
 
     For a controller that wants to regulate a measured wrench toward a
     setpoint without also commanding that setpoint directly — see
     :func:`_wrench_feedforward_and_feedback_kernel` for the combined law.
     """
     robot_idx = wp.tid()
+    quat_world_from_tool = wp.transform_get_rotation(tool_pose_world[robot_idx])
     desired = desired_wrench_world[robot_idx]
     measured = measured_wrench_world[robot_idx]
     wrench_error = desired - measured
 
-    local_stiffness = wp.spatial_matrix()
-    for row in range(6):
-        for col in range(6):
-            local_stiffness[row, col] = stiffness_matrix_world[robot_idx, row, col]
-
-    wrench_command_world[robot_idx] = local_stiffness * wrench_error
+    wrench_command_world[robot_idx] = _apply_tool_local_gain(quat_world_from_tool, stiffness[robot_idx], wrench_error)

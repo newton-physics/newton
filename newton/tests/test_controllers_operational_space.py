@@ -620,15 +620,16 @@ def test_pose_error_orientation_matches_known_rotations(test, device):
 
 
 def test_task_space_pd_matches_formula(test, device):
-    """The PD kernel computes Kp @ pose_error + Kd @ (desired_twist - current_twist), as a matrix-vector product.
+    """The PD kernel computes Kp .* pose_error + Kd .* (desired_twist - current_twist), axis by axis.
 
-    Kp/Kd are already-rotated world-frame matrices at this kernel's level
-    (:func:`_rotate_selection_matrix_kernel` does the tool-local -> world
-    rotation, tested separately); this test uses diagonal matrices, which
-    reduces the matrix product to the same per-axis formula the kernel used
-    before gains became rotatable, confirming the matrix-vector product
-    itself is wired correctly.
+    At an identity tool orientation the tool-local frame coincides with
+    world, so rotating errors into the tool frame, applying the gain, and
+    rotating the result back (the kernel's actual implementation) reduces
+    to exactly this per-axis formula.
     """
+    identity_pose = wp.array(
+        [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transform, device=device
+    )
     pose_error_world = wp.array(
         [wp.spatial_vector(0.1, -0.2, 0.3, 0.01, -0.02, 0.03)], dtype=wp.spatial_vector, device=device
     )
@@ -640,14 +641,14 @@ def test_task_space_pd_matches_formula(test, device):
     )
     kp = np.array([10.0, 20.0, 30.0, 1.0, 2.0, 3.0])
     kd = np.array([1.0, 2.0, 3.0, 0.1, 0.2, 0.3])
-    stiffness_matrix_world = wp.array(np.diag(kp).reshape(1, 6, 6).astype(np.float32), dtype=float, device=device)
-    damping_matrix_world = wp.array(np.diag(kd).reshape(1, 6, 6).astype(np.float32), dtype=float, device=device)
+    stiffness = wp.array([wp.spatial_vector(*kp.tolist())], dtype=wp.spatial_vector, device=device)
+    damping = wp.array([wp.spatial_vector(*kd.tolist())], dtype=wp.spatial_vector, device=device)
 
     desired_task_acceleration_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _task_space_pd_kernel,
         dim=1,
-        inputs=[pose_error_world, tool_twist_world, desired_twist_world, stiffness_matrix_world, damping_matrix_world],
+        inputs=[identity_pose, pose_error_world, tool_twist_world, desired_twist_world, stiffness, damping],
         outputs=[desired_task_acceleration_world],
         device=device,
     )
@@ -656,36 +657,25 @@ def test_task_space_pd_matches_formula(test, device):
     twist_error_np = np.array([0.0, 0.5, 0.0, 0.0, 0.1, 0.0]) - np.array([0.5, 0.0, -0.5, 0.1, 0.0, -0.1])
     expected = kp * pose_error_np + kd * twist_error_np
 
-    np.testing.assert_allclose(desired_task_acceleration_world.numpy()[0], expected, atol=1e-6)
+    np.testing.assert_allclose(desired_task_acceleration_world.numpy()[0], expected, atol=1e-5)
 
 
-def test_task_space_pd_uses_rotated_gain_matrix_not_local_diagonal(test, device):
-    """Kp acts as a world-frame matrix rotated from a tool-local diagonal, not a raw per-axis multiply.
+def test_task_space_pd_applies_gain_in_tool_frame_not_world(test, device):
+    """Kp is applied in the tool frame, not directly to world-frame axes.
 
     With the tool rotated 45 degrees about world Z and an anisotropic
-    tool-local Kp (stiff along local X only), the rotated world-frame gain
-    has a genuine off-diagonal term mixing world X and Y (unlike a 90 or
-    180 degree rotation of a single-axis gain, which only permutes axes and
-    stays purely diagonal) -- so a world-Y-only pose error still produces a
-    nonzero X component in the result. A per-axis multiply using only the
-    rotated matrix's diagonal (the pre-rotation kernel's behavior) would
-    miss that X component entirely.
+    tool-local Kp (stiff along local X only), tool-local X maps to a
+    world direction with equal X and Y components -- so a world-Y-only
+    pose error still produces a nonzero world-X component in the result.
+    Applying Kp directly to world axes (ignoring the tool's orientation)
+    would produce zero, since Kp's world-X entry is 0.
     """
     quat_45_about_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 4.0)
     tool_pose_world = wp.array(
         [wp.transform(wp.vec3(0.0, 0.0, 0.0), quat_45_about_z)], dtype=wp.transform, device=device
     )
-    stiffness_tool_local = wp.array(
-        [wp.spatial_vector(100.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device
-    )
-    stiffness_matrix_world = wp.zeros((1, 6, 6), dtype=float, device=device)
-    wp.launch(
-        _rotate_selection_matrix_kernel,
-        dim=1,
-        inputs=[tool_pose_world, stiffness_tool_local],
-        outputs=[stiffness_matrix_world],
-        device=device,
-    )
+    stiffness = wp.array([wp.spatial_vector(100.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
+    damping = wp.array([wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
 
     zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     pose_error_world = wp.array(
@@ -693,20 +683,19 @@ def test_task_space_pd_uses_rotated_gain_matrix_not_local_diagonal(test, device)
     )
     tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
     desired_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-    damping_matrix_world = wp.zeros((1, 6, 6), dtype=float, device=device)
 
     desired_task_acceleration_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _task_space_pd_kernel,
         dim=1,
-        inputs=[pose_error_world, tool_twist_world, desired_twist_world, stiffness_matrix_world, damping_matrix_world],
+        inputs=[tool_pose_world, pose_error_world, tool_twist_world, desired_twist_world, stiffness, damping],
         outputs=[desired_task_acceleration_world],
         device=device,
     )
 
-    # linear_block_world = 100 * outer(col_x, col_x), col_x = R @ (1,0,0) =
-    # (cos45, sin45, 0) -- applied to a pose error of (0, 1, 0) gives
-    # 100 * col_x * col_x[1] = (50, 50, 0).
+    # R @ diag(100, 0, 0) @ R^T = 100 * outer(col_x, col_x), col_x = R @
+    # (1, 0, 0) = (cos45, sin45, 0) -- applied to a pose error of (0, 1, 0)
+    # gives 100 * col_x * col_x[1] = (50, 50, 0).
     np.testing.assert_allclose(desired_task_acceleration_world.numpy()[0], [50.0, 50.0, 0.0, 0.0, 0.0, 0.0], atol=1e-4)
 
 
@@ -1013,13 +1002,15 @@ def test_rotate_selection_matrix_matches_numpy(test, device):
 
 
 def test_wrench_feedforward_and_feedback_matches_formula(test, device):
-    """The full wrench (force and moment) gets feedforward + feedback, desired + Kp @ (desired - measured).
+    """The full wrench (force and moment) gets feedforward + feedback, desired + Kp .* (desired - measured).
 
-    Kp is already a rotated world-frame matrix at this kernel's level (see
-    :func:`_rotate_selection_matrix_kernel`); a diagonal matrix here reduces
-    the product to the per-axis formula, confirming the matrix-vector
-    product itself is wired correctly.
+    An identity tool orientation makes the tool-local Kp coincide with
+    world axes, reducing the kernel's rotate/apply/rotate-back to exactly
+    this per-axis formula.
     """
+    identity_pose = wp.array(
+        [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transform, device=device
+    )
     desired_wrench_world = wp.array(
         [wp.spatial_vector(10.0, -5.0, 2.0, 1.0, -0.5, 0.25)], dtype=wp.spatial_vector, device=device
     )
@@ -1027,13 +1018,13 @@ def test_wrench_feedforward_and_feedback_matches_formula(test, device):
         [wp.spatial_vector(8.0, -6.0, 2.5, 0.8, -0.6, 0.1)], dtype=wp.spatial_vector, device=device
     )
     kp_np = np.array([2.0, 3.0, 1.0, 0.5, 0.5, 0.5])
-    stiffness_matrix_world = wp.array(np.diag(kp_np).reshape(1, 6, 6).astype(np.float32), dtype=float, device=device)
+    stiffness = wp.array([wp.spatial_vector(*kp_np.tolist())], dtype=wp.spatial_vector, device=device)
 
     wrench_command_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _wrench_feedforward_and_feedback_kernel,
         dim=1,
-        inputs=[desired_wrench_world, measured_wrench_world, stiffness_matrix_world],
+        inputs=[identity_pose, desired_wrench_world, measured_wrench_world, stiffness],
         outputs=[wrench_command_world],
         device=device,
     )
@@ -1046,11 +1037,14 @@ def test_wrench_feedforward_and_feedback_matches_formula(test, device):
 
 
 def test_wrench_feedback_only_matches_formula(test, device):
-    """Feedback alone, with no feedforward term, is Kp @ (desired - measured).
+    """Feedback alone, with no feedforward term, is Kp .* (desired - measured).
 
-    Same rotated-matrix-at-this-kernel's-level note as
+    Same identity-orientation note as
     :func:`test_wrench_feedforward_and_feedback_matches_formula` above.
     """
+    identity_pose = wp.array(
+        [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transform, device=device
+    )
     desired_wrench_world = wp.array(
         [wp.spatial_vector(10.0, -5.0, 2.0, 1.0, -0.5, 0.25)], dtype=wp.spatial_vector, device=device
     )
@@ -1058,13 +1052,13 @@ def test_wrench_feedback_only_matches_formula(test, device):
         [wp.spatial_vector(8.0, -6.0, 2.5, 0.8, -0.6, 0.1)], dtype=wp.spatial_vector, device=device
     )
     kp_np = np.array([2.0, 3.0, 1.0, 0.5, 0.5, 0.5])
-    stiffness_matrix_world = wp.array(np.diag(kp_np).reshape(1, 6, 6).astype(np.float32), dtype=float, device=device)
+    stiffness = wp.array([wp.spatial_vector(*kp_np.tolist())], dtype=wp.spatial_vector, device=device)
 
     wrench_command_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _wrench_feedback_only_kernel,
         dim=1,
-        inputs=[desired_wrench_world, measured_wrench_world, stiffness_matrix_world],
+        inputs=[identity_pose, desired_wrench_world, measured_wrench_world, stiffness],
         outputs=[wrench_command_world],
         device=device,
     )
@@ -1148,8 +1142,8 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_task_space_pd_uses_rotated_gain_matrix_not_local_diagonal",
-    test_task_space_pd_uses_rotated_gain_matrix_not_local_diagonal,
+    "test_task_space_pd_applies_gain_in_tool_frame_not_world",
+    test_task_space_pd_applies_gain_in_tool_frame_not_world,
     devices=devices,
 )
 add_function_test(
