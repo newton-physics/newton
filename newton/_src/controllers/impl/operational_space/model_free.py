@@ -358,8 +358,6 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] on the
             position axes and [N·m·s/rad] on the orientation axes. Same
             format as ``motion_stiffness``.
-        use_inertia_decoupling: Premultiply the task-space spring-damper term
-            by Lambda, the operational-space mass matrix.
         operational_frame_pose_world: World pose of the operational frame —
             the frame ``inputs.desired_tool_pose_operational``/
             ``inputs.desired_twist_operational`` are expressed relative to,
@@ -373,6 +371,8 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             ``None`` to read ``inputs.operational_frame_pose_world`` each
             step for a time-varying frame. Defaults to identity (coincides
             with world frame).
+        use_inertia_decoupling: Premultiply the task-space spring-damper term
+            by Lambda, the operational-space mass matrix.
         use_partial_inertia_decoupling: Compute Lambda ignoring the coupling
             between translational and rotational inertia. Only meaningful
             when ``use_inertia_decoupling=True``.
