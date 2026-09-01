@@ -4,19 +4,23 @@
 ###########################################################################
 # Example Controllers — Operational Space Hybrid Force/Motion
 #
-# Demonstrates ControllerOperationalSpace on one real 7-DOF Franka Panda
-# arm (redundant against the 6D task), pressing its gripper down into a
-# collision plane (a tabletop) while its horizontal position is
-# interactively steered. A static, uncontrolled box sits on the table too,
-# to show the model can hold bodies the controller never touches.
+# Demonstrates ControllerOperationalSpace on one real 7-DOF Franka Panda arm
+# (redundant against the 6D task), pressing its gripper into a table
+# tilted 45 degrees toward it, with its position along the table steered
+# interactively. The operational frame is placed on the table's top
+# surface, oriented so its Z axis is normal to the (tilted) table -- so the
+# same operational-frame-relative command works regardless of the tilt, and
+# the axis triad drawn each frame at that frame lets you see exactly where
+# the controller thinks "the table" and "into the table" are.
 #
-# World Z (straight down onto the table) is wrench-controlled with a
-# feedforward press force; the other five task axes (the two in-plane
-# linear directions and full orientation) are motion-controlled, tracking a
-# desired (x, y) on the table while holding the tool's orientation fixed.
-# The operational frame and the S_f/S_tau selection frames are all left at
-# world here, so "world Z" is literally the selection axis passed in -- no
-# need to track the tool's own orientation to find it. This is a true
+# The operational frame's local Z (into the table) is wrench-controlled
+# with a feedforward press force; the other five task axes (the two
+# in-plane directions along the table, and full orientation) are
+# motion-controlled, tracking a desired (x, y) on the table's surface. The
+# desired orientation is held fixed at whatever the gripper's own starting
+# orientation is (zero initial error, in both position and orientation, so
+# the arm starts at rest instead of snapping toward a new target) -- the
+# gripper does not itself tilt to match the table. This is a true
 # zero-stiffness hybrid split: the press axis carries no position spring
 # at all, only the feedforward force -- the same design Isaac Lab's own
 # test_franka_hybrid_decoupled_motion (isaaclab/test/controllers/
@@ -66,14 +70,28 @@ from newton.sensors import SensorContact
 READY_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
 ARM_DOFS = len(READY_POSE)  # 7; the two finger joints are left uncontrolled
 
-# Slider ranges, centered on the ready pose's tool position.
-XY_SLIDER_RANGE = 0.15  # [m], +/- around the ready-pose x/y
+# Slider ranges, centered on the gripper's actual starting (x, y) in the
+# operational frame -- so the initial commanded position matches where the
+# gripper already is, along the table's tilted surface.
+XY_SLIDER_RANGE = 0.15  # [m]
 FORCE_SLIDER_MAX = 80.0  # [N]
 
-# Height of the table's top surface above the ground plane [m]. Chosen so
-# the full +/-XY_SLIDER_RANGE stays within the table's footprint (0.5 +/-
-# 0.35 in x, 0 +/- 0.35 in y) around the ready-pose tool position.
+# The table: a box of half-height TABLE_HEIGHT/2 and half-footprint
+# TABLE_HALF_EXTENT, centered 0.5m in front of the robot, tilted
+# TABLE_TILT_ANGLE about world Y so its top surface faces up and toward the
+# robot. TABLE_POSITION/TABLE_ROTATION are the box's own (center) pose; the
+# operational frame is built from these but offset onto the top surface --
+# see __init__.
+TABLE_HALF_EXTENT = 0.35
 TABLE_HEIGHT = 0.15
+TABLE_TILT_ANGLE = np.pi / 4.0
+TABLE_ROTATION = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -TABLE_TILT_ANGLE)
+# Center height chosen so every corner of the tilted table clears the
+# ground plane: tilting a TABLE_HALF_EXTENT x TABLE_HEIGHT/2 box 45 degrees
+# drops its lowest corner ~sqrt(TABLE_HALF_EXTENT**2 + (TABLE_HEIGHT/2)**2)
+# below the table's own center, so the center needs to sit at least that
+# far above z=0, plus a margin.
+TABLE_POSITION = wp.vec3(0.5, 0.0, np.sqrt(TABLE_HALF_EXTENT**2 + (TABLE_HEIGHT / 2.0) ** 2) + 0.05)
 
 # Gains -- use_inertia_decoupling=True, so these are in the mass-normalized
 # (acceleration) domain: [1/s^2] for stiffness, [1/s] for damping. Same
@@ -111,32 +129,47 @@ class Example:
 
         builder.add_ground_plane()
 
-        # A physical table in front of the robot -- this, not the ground
-        # plane, is what the gripper presses into. Its top sits at
-        # TABLE_HEIGHT; the slider range in __init__ keeps the commanded
-        # (x, y) within its footprint.
+        # A physical table in front of the robot, tilted 45 degrees toward
+        # it -- this, not the ground plane, is what the gripper presses
+        # into. The table body's own transform is its geometric center (the
+        # natural pose for a box shape); the operational frame (below) sits
+        # on its TOP surface instead -- where the tool actually presses --
+        # offset from the center along the table's own normal by half its
+        # thickness, same orientation (Z normal to the tilted surface).
+        table_transform = wp.transform(TABLE_POSITION, TABLE_ROTATION)
         table_body = builder.add_link()
-        builder.add_shape_box(table_body, hx=0.35, hy=0.35, hz=TABLE_HEIGHT / 2.0)
-        table_joint = builder.add_joint_fixed(
-            parent=-1,
-            child=table_body,
-            parent_xform=wp.transform(wp.vec3(0.5, 0.0, TABLE_HEIGHT / 2.0), wp.quat_identity()),
-        )
+        builder.add_shape_box(table_body, hx=TABLE_HALF_EXTENT, hy=TABLE_HALF_EXTENT, hz=TABLE_HEIGHT / 2.0)
+        table_joint = builder.add_joint_fixed(parent=-1, child=table_body, parent_xform=table_transform)
         builder.add_articulation([table_joint], label="table")
 
-        # A static box on the table that is part of the model but never
-        # selected by the controller (no joints of its own to control) --
-        # just to show the model can hold uncontrolled content alongside a
-        # controlled robot. Placed off to the side, clear of the slider
-        # range, so it never sits under the gripper.
-        obstacle_body = builder.add_link()
-        builder.add_shape_box(obstacle_body, hx=0.05, hy=0.05, hz=0.05)
-        obstacle_joint = builder.add_joint_fixed(
-            parent=-1,
-            child=obstacle_body,
-            parent_xform=wp.transform(wp.vec3(0.65, 0.28, TABLE_HEIGHT + 0.05), wp.quat_identity()),
+        # Cached for step()/gui()/render(): the operational frame's
+        # numpy-side rotation/position/normal, so the world-frame
+        # wrench/position math below doesn't need to redo transform algebra
+        # in Warp every frame.
+        table_rotation_np = np.array(wp.quat_to_matrix(TABLE_ROTATION), dtype=np.float32).reshape(3, 3)
+        table_normal_world = table_rotation_np @ np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        self._table_rotation_np = table_rotation_np
+        self._table_normal_world = table_normal_world
+        self._table_position_np = np.array(TABLE_POSITION, dtype=np.float32) + table_normal_world * (TABLE_HEIGHT / 2.0)
+        operational_frame_transform = wp.transform(wp.vec3(*self._table_position_np.tolist()), TABLE_ROTATION)
+
+        # A static RGB axis triad (X red, Y green, Z blue) at the
+        # operational frame, drawn every frame in render() -- log_gizmo's
+        # "gizmo" is its interactive drag handles, so an empty
+        # translate/rotate list draws nothing at all; log_lines is the
+        # primitive for a plain, non-interactive marker. Longer than the
+        # table's half-extent so X/Y visibly poke out past its edge, rather
+        # than being lost against the table surface they lie flat against.
+        axis_length = TABLE_HALF_EXTENT + 0.1
+        origin = self._table_position_np
+        axis_tips = origin + axis_length * self._table_rotation_np.T
+        self._operational_frame_gizmo_starts = wp.array([origin] * 3, dtype=wp.vec3, device=self.device)
+        self._operational_frame_gizmo_ends = wp.array(axis_tips, dtype=wp.vec3, device=self.device)
+        self._operational_frame_gizmo_colors = wp.array(
+            [wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)],
+            dtype=wp.vec3,
+            device=self.device,
         )
-        builder.add_articulation([obstacle_joint], label="obstacle")
 
         for i in range(builder.joint_dof_count):
             builder.joint_target_ke[i] = 0.0
@@ -166,22 +199,37 @@ class Example:
             requested_attributes=self.model.get_requested_contact_attributes(),
         )
 
-        # Home tool pose (position + orientation), read off directly from FK
-        # at the ready configuration -- the tool site's transform is
-        # identity, so it equals fr3_hand_tcp's own world pose. The x/y
-        # sliders offset from this position; the orientation and (masked)
-        # z target hold it fixed throughout, and the wrench selection axis
-        # below is measured from it.
+        # Home tool pose, read off directly from FK at the ready
+        # configuration -- the tool site's transform is identity, so it
+        # equals fr3_hand_tcp's own world pose there. The desired
+        # orientation, relative to the (tilted) operational frame, is
+        # computed so it composes back to exactly this same world
+        # orientation -- zero initial orientation error, matching the zero
+        # initial position error below, rather than commanding a sudden
+        # 45-degree reorientation snap at startup.
         home_pose = self.state_0.body_q.numpy()[tool_body].astype(np.float32)
         self._home_pose = home_pose
-        self.desired_x = float(home_pose[0])
-        self.desired_y = float(home_pose[1])
+        home_orientation_world = wp.quat(*home_pose[3:7].tolist())
+        desired_orientation_operational = wp.quat_inverse(TABLE_ROTATION) * home_orientation_world
+        self._home_pose[3:7] = np.array(desired_orientation_operational, dtype=np.float32)
+        # x/y sliders offset the target along the table's tangent plane,
+        # relative to the operational frame's own origin (the table's top
+        # surface). Initialized to the gripper's actual starting (x, y) in
+        # that same frame -- zero initial error, like the flat-table
+        # version -- rather than to the origin, which would otherwise be a
+        # sudden, large initial position command. z is left at 0 since that
+        # axis is wrench-, not motion-, controlled.
+        home_pos_operational = self._table_rotation_np.T @ (home_pose[:3] - self._table_position_np)
+        self._home_pos_operational = home_pos_operational
+        self.desired_x = float(home_pos_operational[0])
+        self.desired_y = float(home_pos_operational[1])
         self.desired_force = 0.0
 
-        # World Z is the press axis (index 2); the other five task axes are
-        # motion-controlled. Selection is relative to S_f (linear)/S_tau
-        # (angular), both left at identity below, so "axis 2" here is
-        # literally world Z -- independent of the tool's own orientation.
+        # The operational frame's local Z (below) is the press axis (index
+        # 2); the other five task axes are motion-controlled. Selection is
+        # relative to S_f (linear)/S_tau (angular), both left at identity
+        # relative to the operational frame, so "axis 2" here is literally
+        # the table's normal -- independent of the tool's own orientation.
         motion_selection = wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0)
         wrench_selection = wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
 
@@ -197,8 +245,9 @@ class Example:
             motion_stiffness=MOTION_KP,
             motion_damping=MOTION_KD,
             # Commands/gains, and the S_f/S_tau selection frames below, are
-            # all interpreted directly in world coordinates.
-            operational_frame_pose_world=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            # all interpreted relative to this frame -- the table's top
+            # surface, oriented with Z normal to the (tilted) table.
+            operational_frame_pose_world=operational_frame_transform,
             use_inertia_decoupling=True,
             use_gravity_compensation=True,
             use_wrench_feedforward=True,
@@ -235,6 +284,14 @@ class Example:
             with wp.ScopedCapture() as capture:
                 self._gpu_step()
             self._graph = capture.graph
+
+        # Side view: robot at the origin, table centered at x=0.5 -- looking
+        # along -Y at their midpoint shows the robot and the tilted table's
+        # profile together, instead of the default view from behind the table.
+        if hasattr(self.viewer, "set_camera"):
+            self.viewer.set_camera(pos=wp.vec3(0.25, -1.8, 0.7), pitch=0.0, yaw=90.0)
+            if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
+                self.viewer.camera.look_at(wp.vec3(0.25, 0.0, 0.3))
 
         self.viewer.set_model(self.model)
 
@@ -283,13 +340,21 @@ class Example:
         # Sliders drive the target directly -- read in gui(), applied here.
         # Cannot be graph-captured (assign() is, but the desired values
         # themselves come from Python-side UI state read after capture).
+        # Position: (x, y) along the table's tangent plane, relative to the
+        # operational frame; z left at 0 (wrench-, not motion-, controlled).
+        # Orientation: home_pose's, unchanged -- composed with the tilted
+        # operational frame, this keeps the gripper perpendicular to the table.
         desired_pose = self._home_pose.copy()[None, :]
         desired_pose[0, 0] = self.desired_x
         desired_pose[0, 1] = self.desired_y
+        desired_pose[0, 2] = 0.0
         self._input.desired_tool_pose_operational.assign(desired_pose)
-        self._input.desired_wrench_world.assign(
-            np.array([[0.0, 0.0, -self.desired_force, 0.0, 0.0, 0.0]], dtype=np.float32)
-        )
+        # desired_wrench_world is genuinely world-frame, so "press into the
+        # table" means force along the negative table normal in world, not
+        # negative world Z (only the same thing before the table was tilted).
+        press_force_world = -self.desired_force * self._table_normal_world
+        desired_wrench_world = np.concatenate([press_force_world, np.zeros(3, dtype=np.float32)])
+        self._input.desired_wrench_world.assign(desired_wrench_world[None, :].astype(np.float32))
 
         if self._graph:
             wp.capture_launch(self._graph)
@@ -304,25 +369,45 @@ class Example:
 
     def gui(self, ui):
         _, self.desired_x = ui.slider_float(
-            "Desired x [m]", self.desired_x, self._home_pose[0] - XY_SLIDER_RANGE, self._home_pose[0] + XY_SLIDER_RANGE
+            "Desired x [m]",
+            self.desired_x,
+            self._home_pos_operational[0] - XY_SLIDER_RANGE,
+            self._home_pos_operational[0] + XY_SLIDER_RANGE,
         )
         _, self.desired_y = ui.slider_float(
-            "Desired y [m]", self.desired_y, self._home_pose[1] - XY_SLIDER_RANGE, self._home_pose[1] + XY_SLIDER_RANGE
+            "Desired y [m]",
+            self.desired_y,
+            self._home_pos_operational[1] - XY_SLIDER_RANGE,
+            self._home_pos_operational[1] + XY_SLIDER_RANGE,
         )
         _, self.desired_force = ui.slider_float("Desired press force [N]", self.desired_force, 0.0, FORCE_SLIDER_MAX)
 
-        actual_pose = self.controller._tool_pose_world.numpy()[0]
-        # Force the table exerts on the fingers, summed; positive z means
-        # the table is pushing back up against the commanded downward press.
-        measured_force_z = float(self.force_sensor.total_force.numpy()[:, 2].sum())
+        # Actual tool position, relative to the operational frame -- same
+        # frame the x/y sliders above are expressed in.
+        actual_pose_world = self.controller._tool_pose_world.numpy()[0]
+        actual_pos_operational = self._table_rotation_np.T @ (actual_pose_world[:3] - self._table_position_np)
+        # Force the table exerts on the fingers, summed and projected onto
+        # the table normal; positive means the table is pushing back against
+        # the commanded press.
+        total_force_world = self.force_sensor.total_force.numpy().sum(axis=0)
+        measured_force_normal = float(self._table_normal_world @ total_force_world)
 
-        ui.text(f"actual x:   {actual_pose[0]:.3f}   (desired {self.desired_x:.3f})")
-        ui.text(f"actual y:   {actual_pose[1]:.3f}   (desired {self.desired_y:.3f})")
-        ui.text(f"measured press force: {measured_force_z:.1f} N   (desired {self.desired_force:.1f} N)")
+        ui.text(f"actual x:   {actual_pos_operational[0]:.3f}   (desired {self.desired_x:.3f})")
+        ui.text(f"actual y:   {actual_pos_operational[1]:.3f}   (desired {self.desired_y:.3f})")
+        ui.text(f"measured press force: {measured_force_normal:.1f} N   (desired {self.desired_force:.1f} N)")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        # The operational frame itself -- a fixed RGB axis triad, not tied
+        # to any body, so you can see where the controller's (x, y) target
+        # and press axis actually point on the tilted table.
+        self.viewer.log_lines(
+            "/operational_frame",
+            self._operational_frame_gizmo_starts,
+            self._operational_frame_gizmo_ends,
+            self._operational_frame_gizmo_colors,
+        )
         self.viewer.end_frame()
 
     def test_final(self):
