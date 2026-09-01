@@ -113,9 +113,9 @@ UR10_TABLE_OFFSET = TABLE_OFFSET + wp.vec3(0.3, 0.0, 0.0)
 # (a wrong cylinder axis and insufficient table clearance, both now fixed),
 # so this configuration is being re-tested to see if it's actually stable
 # without needing use_partial_inertia_decoupling or softer UR10 gains.
-FRANKA_MOTION_KP = 300.0
+FRANKA_MOTION_KP = 600.0
 FRANKA_MOTION_KD = 2.0 * FRANKA_MOTION_KP**0.5  # critically damped
-UR10_MOTION_KP = 300.0
+UR10_MOTION_KP = 600.0
 UR10_MOTION_KD = 2.0 * UR10_MOTION_KP**0.5  # critically damped
 # Dimensionless: multiplies a wrench error (already in N/N*m) directly, not a pose error.
 WRENCH_KP = 0.5
