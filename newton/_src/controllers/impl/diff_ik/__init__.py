@@ -4,3 +4,9 @@
 """Differential-kinematics controllers."""
 
 from __future__ import annotations
+
+from .model_free import ControllerDiffIKModelFree
+
+__all__ = [
+    "ControllerDiffIKModelFree",
+]

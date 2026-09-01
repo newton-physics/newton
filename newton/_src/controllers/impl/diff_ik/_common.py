@@ -37,8 +37,12 @@ check when that solver is added.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import warp as wp
+
+from ....core.types import Devicelike
 
 # Cholesky pivots are clamped above this, scaled by the pivot's own
 # magnitude, so float32 cancellation noise on a near-singular matrix can't
@@ -246,3 +250,92 @@ def _integrate_position_kernel(
     """Explicit-Euler joint position target, ``q_target = q + q̇_target·dt``."""
     dof = wp.tid()
     joint_q_target[dof] = joint_q[dof] + joint_qd_target[dof] * dt[0]
+
+
+# ---------------------------------------------------------------------------
+# Port plumbing: wp.copy is not recordable under APIC graph capture when
+# either side is non-contiguous, which every indexed-view port is. These
+# kernels do the same work in a form that captures and serialises. A
+# controller launches them at its own port length: one entry per controlled
+# DOF for a compact port, one per robot for a per-robot port.
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _gather_rank1_port_kernel(
+    port: wp.indexedarray(dtype=Any),  # view of a simulation-sized array
+    # outputs
+    out: wp.array[Any],  # one entry per element the view addresses
+):
+    dof = wp.tid()
+    out[dof] = port[dof]
+
+
+@wp.kernel
+def _gather_rank3_port_kernel(
+    port: wp.indexedarray(dtype=wp.float32, ndim=3),  # view of a simulation-sized 3-D array
+    # outputs
+    out: wp.array3d[wp.float32],  # one entry per element the view addresses
+):
+    i, j, k = wp.tid()
+    out[i, j, k] = port[i, j, k]
+
+
+@wp.kernel
+def _scatter_port_kernel(
+    values: wp.array[wp.float32],  # one entry per element the view addresses
+    # outputs
+    port: wp.indexedarray[wp.float32],  # view of a simulation-sized array
+):
+    dof = wp.tid()
+    port[dof] = values[dof]
+
+
+# dtype -> (rank -> gather kernel), the set of dtype/rank combinations this
+# controller family's ports use. Extend this table, not _read_port itself,
+# to support a new port dtype or rank. Every rank-1 dtype shares
+# _gather_rank1_port_kernel: it's generic over dtype (Any), so Warp compiles
+# one concrete kernel per dtype the table actually uses, from a single body.
+_GATHER_KERNELS_BY_DTYPE_AND_RANK = {
+    wp.float32: {1: _gather_rank1_port_kernel, 3: _gather_rank3_port_kernel},
+    wp.transform: {1: _gather_rank1_port_kernel},
+}
+
+
+def _read_port(
+    port: wp.array | wp.indexedarray,
+    buffer: wp.array,
+    shape: int | tuple[int, ...],
+    device: Devicelike,
+) -> None:
+    """Copy a bound port into an internal buffer, whatever it is bound to.
+
+    A view has to go through a kernel: :func:`warp.copy` is not recordable
+    under APIC graph capture when either side is non-contiguous, so using it
+    here would make a controller that reports ``is_graphable()`` fail to
+    export.
+
+    Args:
+        port: The caller-bound port, a :class:`warp.array` or a view of one.
+            Any dtype/rank combination in :data:`_GATHER_KERNELS_BY_DTYPE_AND_RANK`
+            is supported when ``port`` is a view; a plain array supports any
+            dtype/rank, since :func:`warp.copy` doesn't care.
+        buffer: Destination, matching ``port`` in shape and dtype.
+        shape: Launch shape — the length for a 1-D port, ``(robots, rows, cols)``
+            for the Jacobian.
+        device: Device to launch on.
+    """
+    if not isinstance(port, wp.indexedarray):
+        wp.copy(buffer, port)
+        return
+
+    # A kernel parameter's dtype and dimensionality are part of its type, so
+    # a view needs the kernel that matches both.
+    kernels_by_rank = _GATHER_KERNELS_BY_DTYPE_AND_RANK.get(port.dtype)
+    kernel = kernels_by_rank.get(port.ndim) if kernels_by_rank is not None else None
+    if kernel is None:
+        raise TypeError(
+            f"_read_port has no gather kernel for a {port.ndim}-D indexed array of dtype {port.dtype}; "
+            f"add one to _GATHER_KERNELS_BY_DTYPE_AND_RANK in controllers/impl/diff_ik/_common.py."
+        )
+    wp.launch(kernel, dim=shape, inputs=[port], outputs=[buffer], device=device)

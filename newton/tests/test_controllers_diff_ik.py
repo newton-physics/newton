@@ -6,8 +6,10 @@
 Kernel-level tests (:class:`TestDiffIkKernels`) exercise each Warp kernel in
 ``newton._src.controllers.impl.diff_ik._common`` directly against a
 hand-derived numpy reference, with no :class:`Controller` involved.
-Controller-class-level tests are added alongside ``model_free.py``/
-``model_based.py`` in later chunks.
+Controller-class-level tests (:class:`TestControllerDiffIKModelFree`)
+exercise :class:`~newton.controllers.ControllerDiffIKModelFree` — the
+construction/validation/port-plumbing layer built on top of those kernels.
+``model_based.py`` tests are added alongside it in a later chunk.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from newton._src.controllers.impl.diff_ik._common import (
     _pose_error_kernel,
     _qd_from_y_kernel,
 )
+from newton._src.controllers.impl.diff_ik.model_free import ControllerDiffIKModelFree
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
@@ -602,6 +605,476 @@ add_function_test(
 add_function_test(
     TestDiffIkKernels, "test_integrate_position_euler_step", test_integrate_position_euler_step, devices=devices
 )
+
+
+# ---------------------------------------------------------------------------
+# ControllerDiffIKModelFree
+# ---------------------------------------------------------------------------
+
+
+def _dofs_arr(dofs_list, device):
+    """Return a wp.array[int32] from a list of per-robot DOF counts."""
+    return wp.array(np.array(dofs_list, dtype=np.int32), device=device)
+
+
+def _identity_jacobian(robot_count, max_dofs, device, num_rows=6):
+    """Return a (robot_count, num_rows, max_dofs) identity-like Jacobian."""
+    jacobian_np = np.zeros((robot_count, num_rows, max_dofs), dtype=np.float32)
+    for i in range(min(num_rows, max_dofs)):
+        jacobian_np[:, i, i] = 1.0
+    return wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+
+
+def _identity_transform(robot_count, device):
+    """Return a (robot_count,) array of identity transforms at the origin."""
+    return wp.array(
+        [wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity())] * robot_count,
+        dtype=wp.transform,
+        device=device,
+    )
+
+
+class TestControllerDiffIKModelFree(unittest.TestCase):
+    def test_zero_error_gives_zero_velocity(self):
+        """When current tool pose equals the target pose exactly, qd_target must be zero."""
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        pose = _identity_transform(1, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(6), atol=1e-6)
+        np.testing.assert_allclose(outputs.joint_q_target.numpy(), np.zeros(6), atol=1e-6)
+
+    def test_output_q_target_equals_joint_q_plus_qd_target_times_dt(self):
+        device = wp.get_device()
+        joint_q = [0.2, -0.3, 0.1, 0.0, 0.4, -0.1]
+        dt = 0.02
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.5, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.array(joint_q, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(0.1, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=dt)
+        expected_q_target = np.array(joint_q, dtype=np.float32) + outputs.joint_qd_target.numpy() * dt
+        np.testing.assert_allclose(outputs.joint_q_target.numpy(), expected_q_target, atol=1e-6)
+
+    def test_pinv_identity_jacobian_matches_error_exactly(self):
+        """J = I_6x6, λ=0: qd_target equals the raw pose error exactly."""
+        device = wp.get_device()
+        pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*pos_err.tolist()), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        np.testing.assert_allclose(
+            outputs.joint_qd_target.numpy(), np.concatenate([pos_err, np.zeros(3, dtype=np.float32)]), atol=1e-5
+        )
+
+    def test_rotation_error_axis_angle_magnitude(self):
+        """30 deg rotation about x with J=I_6x6, λ=0: qd_target[3] equals the rotation angle exactly."""
+        device = wp.get_device()
+        angle = math.pi / 6
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        target_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), angle)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=target_quat)], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+        np.testing.assert_allclose(qd[:3], [0.0, 0.0, 0.0], atol=1e-5)
+        self.assertAlmostEqual(float(qd[3]), angle, places=5)
+        np.testing.assert_allclose(qd[4:], [0.0, 0.0], atol=1e-5)
+
+    def test_one_dof_revolute_arm_matches_analytical_solution(self):
+        """A single revolute joint with a unit-length tool offset matches the hand-derived closed form.
+
+        Same setup and formula as the kernel-level golden test, run through
+        the full controller (construction, port validation, buffer wiring)
+        instead of the raw kernels directly.
+        """
+        device = wp.get_device()
+        err_y = 0.1
+        lam = 0.5
+        bandwidth_val = 2.0
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([1], device), bandwidth=bandwidth_val, damping=lam, device=device
+        )
+        jacobian_np = np.zeros((1, 6, 1), dtype=np.float32)
+        jacobian_np[0, 1, 0] = 1.0
+        jacobian_np[0, 5, 0] = 1.0
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(1, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(0.0, err_y, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        expected = bandwidth_val * err_y / (2.0 + lam**2)
+        self.assertAlmostEqual(float(outputs.joint_qd_target.numpy()[0]), expected, places=5)
+
+    def test_multiple_robots_independent(self):
+        """Each robot's qd_target depends only on its own Jacobian and pose error."""
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6, 6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(12, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(2, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [
+                wp.transform(p=wp.vec3(0.1, 0.0, 0.0), q=wp.quat_identity()),
+                wp.transform(p=wp.vec3(0.0, -0.2, 0.0), q=wp.quat_identity()),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(2, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+        np.testing.assert_allclose(qd[:6], [0.1, 0.0, 0.0, 0.0, 0.0, 0.0], atol=1e-5)
+        np.testing.assert_allclose(qd[6:], [0.0, -0.2, 0.0, 0.0, 0.0, 0.0], atol=1e-5)
+
+    def test_heterogeneous_dof_counts(self):
+        """A 3-DOF robot and a 7-DOF robot in the same batch each match their own ridge-regression solution."""
+        device = wp.get_device()
+        rng = np.random.default_rng(7)
+        dof_counts = [3, 7]
+        max_dofs = 7
+        lam = 0.2
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr(dof_counts, device), bandwidth=1.0, damping=lam, device=device
+        )
+
+        jacobian_np = np.zeros((2, 6, max_dofs), dtype=np.float32)
+        for robot_idx, n in enumerate(dof_counts):
+            jacobian_np[robot_idx, :, :n] = rng.normal(size=(6, n))
+        error_np = rng.normal(size=(2, 6)).astype(np.float32)
+        # Orientation error can't be set directly through a transform for an
+        # arbitrary small-angle vector, so only the position rows are
+        # exercised here; test_dls_heterogeneous_dof_counts_independent
+        # (kernel-level) already covers the full 6D error.
+        error_np[:, 3:] = 0.0
+
+        total_dofs = sum(dof_counts)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(total_dofs, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(2, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*error_np[i, :3].tolist()), q=wp.quat_identity()) for i in range(2)],
+            dtype=wp.transform,
+            device=device,
+        )
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+
+        offset = 0
+        for robot_idx, n in enumerate(dof_counts):
+            j64 = jacobian_np[robot_idx, :, :n].astype(np.float64)
+            e64 = error_np[robot_idx].astype(np.float64)
+            expected = np.linalg.solve(j64.T @ j64 + lam**2 * np.eye(n), j64.T @ e64)
+            np.testing.assert_allclose(qd[offset : offset + n], expected, atol=1e-3)
+            offset += n
+
+    def test_live_bandwidth_port(self):
+        device = wp.get_device()
+        pos_err = np.array([0.1, 0.0, 0.0], dtype=np.float32)
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=None, damping=0.0, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*pos_err.tolist()), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        inputs.bandwidth = wp.full(6, 3.0, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy()[:3], pos_err * 3.0, atol=1e-5)
+
+    def test_live_damping_port(self):
+        device = wp.get_device()
+        err_y = 0.1
+        lam = 0.5
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([1], device), bandwidth=1.0, damping=None, device=device
+        )
+        jacobian_np = np.zeros((1, 6, 1), dtype=np.float32)
+        jacobian_np[0, 1, 0] = 1.0
+        jacobian_np[0, 5, 0] = 1.0
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(1, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(0.0, err_y, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        inputs.damping = wp.array([lam], dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        expected = err_y / (2.0 + lam**2)
+        self.assertAlmostEqual(float(outputs.joint_qd_target.numpy()[0]), expected, places=5)
+
+    def test_dt_as_wp_array(self):
+        device = wp.get_device()
+        dt_scalar = 0.02
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.5, device=device
+        )
+        pose = _identity_transform(1, device)
+        desired = wp.array(
+            [wp.transform(p=wp.vec3(0.1, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        jacobian = _identity_jacobian(1, 6, device)
+
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = desired
+        inputs.jacobian_tool_world = jacobian
+        ctrl.step(inputs=inputs, outputs=outputs, dt=dt_scalar)
+        qd_scalar = outputs.joint_qd_target.numpy().copy()
+        q_target_scalar = outputs.joint_q_target.numpy().copy()
+
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = desired
+        inputs.jacobian_tool_world = jacobian
+        ctrl.step(inputs=inputs, outputs=outputs, dt=wp.array([dt_scalar], dtype=wp.float32, device=device))
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), qd_scalar, atol=1e-6)
+        np.testing.assert_allclose(outputs.joint_q_target.numpy(), q_target_scalar, atol=1e-6)
+
+    def test_is_graphable(self):
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.5, device=device
+        )
+        self.assertTrue(ctrl.is_graphable())
+
+    def test_inputs_bandwidth_and_damping_none_when_baked(self):
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.5, device=device
+        )
+        inputs = ctrl.input()
+        self.assertIsNone(inputs.bandwidth)
+        self.assertIsNone(inputs.damping)
+
+    def test_inputs_bandwidth_and_damping_allocated_when_live(self):
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=None, damping=None, device=device
+        )
+        inputs = ctrl.input()
+        self.assertIsNotNone(inputs.bandwidth)
+        self.assertIsNotNone(inputs.damping)
+        self.assertEqual(inputs.bandwidth.shape, (6,))
+        self.assertEqual(inputs.damping.shape, (1,))
+
+    def test_indexed_view_input_gathers(self):
+        """A tool-pose input bound to an indexed view is read correctly."""
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        sim_poses = wp.array(
+            [
+                wp.transform(p=wp.vec3(9.0, 9.0, 9.0), q=wp.quat_identity()),
+                wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+        view_idx = wp.array([1], dtype=wp.int32, device=device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = sim_poses[view_idx]
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(0.2, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy()[:3], [0.2, 0.0, 0.0], atol=1e-5)
+
+    def test_indexed_view_float32_rank1_input_gathers(self):
+        """A joint_q input bound to a float32 indexed view is read correctly.
+
+        Distinct from test_indexed_view_input_gathers: that one exercises
+        _gather_rank1_port_kernel's wp.transform instantiation, this one its
+        wp.float32 instantiation — Warp compiles a separate concrete kernel
+        per dtype from the same generic body, so neither test covers both.
+        """
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([1], device), bandwidth=1.0, damping=0.5, device=device
+        )
+        sim_q = wp.array([9.0, 0.3], dtype=wp.float32, device=device)
+        view_idx = wp.array([1], dtype=wp.int32, device=device)
+        pose = _identity_transform(1, device)
+        desired = wp.array(
+            [wp.transform(p=wp.vec3(0.3, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = sim_q[view_idx]
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = desired
+        inputs.jacobian_tool_world = _identity_jacobian(1, 1, device, num_rows=6)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.1)
+        # joint_q only feeds the integration step, so its gathered value
+        # (0.3, not the un-viewed 9.0) shows up in q_target, not qd_target.
+        np.testing.assert_allclose(
+            outputs.joint_q_target.numpy()[0], 0.3 + outputs.joint_qd_target.numpy()[0] * 0.1, atol=1e-5
+        )
+
+    def test_indexed_view_jacobian_input_gathers(self):
+        """A jacobian_tool_world input bound to a rank-3 indexed view is read correctly.
+
+        Exercises _gather_rank3_port_kernel, which only runs when the
+        Jacobian port is bound to a view — otherwise silently uncovered.
+        """
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([1], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        sim_jacobian = wp.array3d(
+            np.stack([np.zeros((6, 1), dtype=np.float32), _identity_jacobian(1, 1, device).numpy()[0]]),
+            dtype=wp.float32,
+            device=device,
+        )
+        view_idx = wp.array([1], dtype=wp.int32, device=device)
+        pose = _identity_transform(1, device)
+        desired = wp.array(
+            [wp.transform(p=wp.vec3(0.4, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(1, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = desired
+        inputs.jacobian_tool_world = sim_jacobian[view_idx]
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        # With the viewed (identity) Jacobian, qd = pose error exactly; the
+        # un-viewed (all-zero) block at index 0 would instead give qd = 0.
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy()[0], 0.4, atol=1e-5)
+
+    def test_indexed_view_output_scatters(self):
+        """An output bound to an indexed view is written correctly."""
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        inputs = ctrl.input()
+        sim_qd = wp.zeros(12, dtype=wp.float32, device=device)
+        view_idx = wp.array(np.arange(6, 12, dtype=np.int32), dtype=wp.int32, device=device)
+        outputs = ctrl.output()
+        outputs.joint_qd_target = sim_qd[view_idx]
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(0.1, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        np.testing.assert_allclose(sim_qd.numpy()[:6], np.zeros(6), atol=1e-8)
+        np.testing.assert_allclose(sim_qd.numpy()[6:9], [0.1, 0.0, 0.0], atol=1e-5)
+
+    def test_disabled_bandwidth_port_written_raises(self):
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = _identity_transform(1, device)
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        inputs.bandwidth = wp.full(6, 1.0, dtype=wp.float32, device=device)
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+    def test_wrong_shape_jacobian_raises(self):
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = _identity_transform(1, device)
+        inputs.jacobian_tool_world = wp.zeros((1, 6, 3), dtype=wp.float32, device=device)
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+    def test_zero_dof_robot_raises(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6, 0], device), bandwidth=1.0, damping=0.0, device=device
+            )
+
+    def test_controlled_dofs_per_robot_is_copied(self):
+        """A later mutation of the caller's own array must not affect the controller."""
+        device = wp.get_device()
+        dofs = _dofs_arr([6], device)
+        ctrl = ControllerDiffIKModelFree(controlled_dofs_per_robot=dofs, bandwidth=1.0, damping=0.0, device=device)
+        dofs.assign(np.array([1], dtype=np.int32))
+
+        pose = _identity_transform(1, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        # If the mutation had propagated, total_controlled_dofs would now be
+        # 1, and running a length-6 port through the controller would raise
+        # a shape mismatch instead of succeeding.
+        self.assertEqual(ctrl.total_controlled_dofs, 6)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(6), atol=1e-6)
 
 
 if __name__ == "__main__":
