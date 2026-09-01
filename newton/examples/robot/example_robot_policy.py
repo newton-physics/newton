@@ -293,6 +293,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=self.contacts)
 
         self.viewer.set_model(self.model)
         self.viewer.vsync = True
@@ -342,14 +343,14 @@ class Example:
 
             self.viewer.apply_forces(self.state_0)
 
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(
+                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt, outputs=self.solver_outputs
+            )
 
             if need_state_copy and i == self.sim_substeps - 1:
                 self.state_0.assign(self.state_1)
             else:
                 self.state_0, self.state_1 = self.state_1, self.state_0
-
-        self.solver.update_contacts(self.contacts, self.state_0)
 
     def reset(self):
         print("[INFO] Resetting example")
@@ -419,7 +420,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, outputs=self.solver_outputs)
         self.viewer.end_frame()
 
     def test_final(self):

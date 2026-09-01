@@ -1,13 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelFlags, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, SolverOutputFlags, SolverOutputs
 from . import kernels
 from .kernels import (
     accumulate_weighted_contact_impulse,
@@ -47,13 +49,14 @@ class SolverXPBD(SolverBase, CouplingInterface):
         enabled (the default), each body's positional correction is divided by
         its number of active contacts.  This improves convergence for stacking
         scenarios but means the solver does not conserve momentum at contacts.
-        Reported per-contact forces (see :meth:`update_contacts`) are
+        Reported per-contact forces (request
+        :attr:`~newton.solvers.SolverOutputFlags.CONTACT_F`) are
         approximate: for contacts between two dynamic bodies the force is
         computed using the harmonic mean of the two bodies' contact counts,
         which is symmetric but not exact.
 
-        **Reported parent-joint forces** (see :attr:`~newton.State.body_parent_f`,
-        populated when the extended state attribute is requested) are
+        **Reported parent-joint forces** (request
+        :attr:`~newton.solvers.SolverOutputFlags.BODY_PARENT_F`) are
         approximate.  XPBD applies relaxation factors
         (``joint_linear_relaxation``, ``joint_angular_relaxation``) to each
         joint constraint correction, and with a finite ``iterations`` count
@@ -95,6 +98,13 @@ class SolverXPBD(SolverBase, CouplingInterface):
             state_in, state_out = state_out, state_in
 
     """
+
+    SUPPORTED_OUTPUT_FLAGS = frozenset(
+        {
+            SolverOutputFlags.BODY_PARENT_F,
+            SolverOutputFlags.CONTACT_F,
+        }
+    )
 
     @deprecate_nonkeyword_arguments
     def __init__(
@@ -334,6 +344,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
+        *,
+        outputs: SolverOutputs | None = None,
     ) -> None:
         """Advance the simulation state by one time step using XPBD.
 
@@ -345,13 +357,19 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 :meth:`~newton.CollisionPipeline.contacts`. If ``None``, rigid and particle-shape contact handling
                 is skipped; particle-particle contacts and model constraints are still solved.
             dt: Time step size [s].
+            outputs: Optional solver output arrays allocated by :meth:`outputs`.
         """
         self._apply_module_options()
+        self._validate_outputs(outputs, contacts)
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
 
         model = self.model
+        body_parent_f = outputs.body_parent_f if outputs is not None and outputs.body_parent_f is not None else None
+        if body_parent_f is None:
+            body_parent_f = state_out.body_parent_f
+        contact_f = outputs.contact_f if outputs is not None else None
 
         particle_q = None
         particle_qd = None
@@ -373,16 +391,16 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 rigid_contact_inv_weight = wp.zeros(model.body_count, dtype=float, device=model.device)
             rigid_contact_inv_weight_init = None
 
-            if contacts.force is not None:
+            if contacts.force is not None or contact_f is not None:
                 contact_impulse = wp.zeros(contacts.rigid_contact_max, dtype=wp.spatial_vector, device=model.device)
                 contact_impulse_iter = wp.zeros(
                     contacts.rigid_contact_max, dtype=wp.spatial_vector, device=model.device
                 )
 
         # Optional per-joint accumulated child-side spatial impulse, used to
-        # populate ``state_out.body_parent_f`` after the iteration loop.
+        # populate ``body_parent_f`` after the iteration loop.
         joint_impulse = None
-        if state_out.body_parent_f is not None and model.joint_count > 0:
+        if body_parent_f is not None and model.joint_count > 0:
             joint_impulse = wp.zeros(model.joint_count, dtype=wp.spatial_vector, device=model.device)
 
         if control is None:
@@ -733,12 +751,29 @@ class SolverXPBD(SolverBase, CouplingInterface):
             self._contact_impulse_capacity = contacts.rigid_contact_max if contacts is not None else 0
             self._last_dt = dt
 
-            # Populate optional ``state_out.body_parent_f`` (incoming joint
+            if contact_f is not None:
+                contact_f.zero_()
+                if contact_impulse is not None and contacts is not None:
+                    wp.launch(
+                        kernel=convert_contact_impulse_to_force,
+                        dim=contacts.rigid_contact_max,
+                        inputs=[
+                            contacts.rigid_contact_count,
+                            contact_impulse,
+                            dt,
+                        ],
+                        outputs=[contact_f],
+                        device=model.device,
+                    )
+                if contacts is not None and contacts.force is not None and contacts.force.ptr != contact_f.ptr:
+                    contacts.force.assign(contact_f)
+
+            # Populate optional ``body_parent_f`` (incoming joint
             # wrench per body) from the per-joint accumulated child-side
             # impulse.  Bodies without an inbound joint (roots / free bodies)
             # remain zero-initialized, matching MuJoCo's behavior.
-            if state_out.body_parent_f is not None:
-                state_out.body_parent_f.zero_()
+            if body_parent_f is not None:
+                body_parent_f.zero_()
                 if joint_impulse is not None:
                     wp.launch(
                         kernel=convert_joint_impulse_to_parent_f,
@@ -750,9 +785,11 @@ class SolverXPBD(SolverBase, CouplingInterface):
                             model.joint_child,
                             dt,
                         ],
-                        outputs=[state_out.body_parent_f],
+                        outputs=[body_parent_f],
                         device=model.device,
                     )
+                if state_out.body_parent_f is not None and state_out.body_parent_f.ptr != body_parent_f.ptr:
+                    state_out.body_parent_f.assign(body_parent_f)
 
             if model.particle_count:
                 if particle_q.ptr != state_out.particle_q.ptr:
@@ -865,6 +902,10 @@ class SolverXPBD(SolverBase, CouplingInterface):
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """Populate ``contacts.force`` from XPBD contact impulses accumulated during the last :meth:`step`.
 
+        .. deprecated:: 1.6
+            Request :attr:`~newton.solvers.SolverOutputFlags.CONTACT_F` and
+            pass the resulting outputs to :meth:`step` instead.
+
         Both force [N] and torque [N·m] components are written.  The torque
         includes torsional and rolling friction contributions that cannot be
         reconstructed from the linear force alone.
@@ -890,11 +931,17 @@ class SolverXPBD(SolverBase, CouplingInterface):
             ValueError: If ``contacts.force`` is ``None`` (not requested), if no step has been run yet,
                 or if the contacts capacity does not match the one used in the last :meth:`step`.
         """
+        warnings.warn(
+            "SolverXPBD.update_contacts() is deprecated; request SolverOutputFlags.CONTACT_F and pass "
+            "SolverOutputs to step().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._apply_module_options()
         if contacts.force is None:
             raise ValueError(
-                "contacts.force is not allocated. Call model.request_contact_attributes('force') "
-                "before creating the Contacts object."
+                "The deprecated contacts.force compatibility buffer is not allocated. "
+                "Prefer SolverOutputFlags.CONTACT_F; legacy callers must request 'force' before creating Contacts."
             )
         if not hasattr(self, "_contact_impulse") or self._contact_impulse is None:
             raise ValueError("No contact impulse data available. Call step() before update_contacts().")

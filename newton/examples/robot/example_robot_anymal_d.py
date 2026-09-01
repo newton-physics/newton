@@ -95,6 +95,7 @@ class Example:
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
+        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=self.contacts)
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
@@ -118,12 +119,11 @@ class Example:
 
             # apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(
+                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt, outputs=self.solver_outputs
+            )
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
-
-        if self.use_mujoco_contacts:
-            self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:
@@ -136,7 +136,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, outputs=self.solver_outputs)
         self.viewer.end_frame()
 
     def test_final(self):

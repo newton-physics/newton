@@ -1418,8 +1418,8 @@ class Model:
 
         self.attribute_specs["joint_target_q"] = Model.AttributeSpec(target_q_freq)
 
-        # Extended state attributes live on State and are allocated only when
-        # explicitly requested via request_state_attributes().
+        # Deprecated solver-produced State attributes remain registered for
+        # compatibility with request_state_attributes().
         for full_name, template in State.EXTENDED_ATTRIBUTE_TEMPLATES.items():
             self.attribute_specs[full_name] = Model.AttributeSpec(getattr(Model.AttributeFrequency, template.frequency))
 
@@ -2091,24 +2091,42 @@ class Model:
         return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:
-        """
-        Request that specific state attributes be allocated when creating a State object.
+        """Request optional solver-produced state attributes.
 
-        See :ref:`extended_state_attributes` for details and usage.
+        .. deprecated:: 1.6
+
+            Request :class:`newton.solvers.SolverOutputs` from the solver
+            instead.
+
+        See :doc:`Solver Outputs </concepts/solver_outputs>` for migration details.
 
         Args:
             *attributes: Variable number of attribute names (strings).
         """
+        warnings.warn(
+            "Model.request_state_attributes() is deprecated; request SolverOutputs from the solver instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
 
     def request_contact_attributes(self, *attributes: str) -> None:
-        """
-        Request that specific contact attributes be allocated when creating a Contacts object.
+        """Request optional solver-produced contact attributes.
+
+        .. deprecated:: 1.6
+
+            Request :attr:`newton.solvers.SolverOutputFlags.CONTACT_F` from
+            the solver instead.
 
         Args:
             *attributes: Variable number of attribute names (strings).
         """
+        warnings.warn(
+            "Model.request_contact_attributes() is deprecated; request SolverOutputs from the solver instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         Contacts.validate_extended_attributes(attributes)
         self._requested_contact_attributes.update(attributes)
 
@@ -2286,7 +2304,7 @@ class Model:
         """
         Get the list of requested state attribute names that have been requested on the model.
 
-        See :ref:`extended_state_attributes` for details.
+        See :doc:`Solver Outputs </concepts/solver_outputs>` for details.
 
         Returns:
             The list of requested state attributes.

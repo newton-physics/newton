@@ -292,7 +292,6 @@ def test_free_plus_revolute_position_target(
         actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
     )
     builder.add_articulation([j_free, j_rev])
-    builder.request_state_attributes("mujoco:qfrc_actuator")
 
     model = builder.finalize(device=device)
     model.ground = False
@@ -305,12 +304,13 @@ def test_free_plus_revolute_position_target(
         test.skipTest("qfrc_actuator-based check is MuJoCo-specific")
 
     state_0, state_1 = model.state(), model.state()
+    outputs = solver.outputs({solver.OutputFlags.QFRC_ACTUATOR})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     control = model.control()
 
-    solver.step(state_0, state_1, control, None, dt=0.01)
+    solver.step(state_0, state_1, control, None, dt=0.01, outputs=outputs)
 
-    qfrc = state_1.mujoco.qfrc_actuator.numpy()
+    qfrc = outputs.qfrc_actuator.numpy()
     applied = float(qfrc[6])
     expected = target_ke * target_pos
     test.assertAlmostEqual(
@@ -413,7 +413,7 @@ def test_qfrc_actuator(
     device,
     solver_fn,
 ):
-    """Test that mujoco.qfrc_actuator extended state attribute is populated correctly by MuJoCo solver."""
+    """Test that the MuJoCo-specific qfrc_actuator solver output is populated correctly."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
 
     box_mass = 1.0
@@ -444,19 +444,16 @@ def test_qfrc_actuator(
     )
     builder.add_articulation([j])
 
-    builder.request_state_attributes("mujoco:qfrc_actuator")
-
     model = builder.finalize(device=device)
     model.ground = False
     solver = solver_fn(model)
 
     state_0 = model.state()
     state_1 = model.state()
+    outputs = solver.outputs({solver.OutputFlags.QFRC_ACTUATOR})
 
-    # Verify that qfrc_actuator is allocated under the mujoco namespace
-    test.assertTrue(hasattr(state_1, "mujoco"), "state should have mujoco namespace")
-    test.assertIsNotNone(state_1.mujoco.qfrc_actuator, "mujoco.qfrc_actuator should be allocated")
-    test.assertEqual(len(state_1.mujoco.qfrc_actuator), model.joint_dof_count)
+    test.assertIsNotNone(outputs.qfrc_actuator)
+    test.assertEqual(len(outputs.qfrc_actuator), model.joint_dof_count)
 
     initial_q = 1.0
     initial_qd = 0.0
@@ -473,9 +470,9 @@ def test_qfrc_actuator(
     F_unclamped = -kp * initial_q - kd * initial_qd
     F_expected = np.clip(F_unclamped, -effort_limit, effort_limit)
 
-    solver.step(state_0, state_1, control, None, dt=dt)
+    solver.step(state_0, state_1, control, None, dt=dt, outputs=outputs)
 
-    qfrc = state_1.mujoco.qfrc_actuator.numpy()
+    qfrc = outputs.qfrc_actuator.numpy()
     test.assertEqual(len(qfrc), 1, "Should have one DOF")
     test.assertAlmostEqual(
         float(qfrc[0]),
@@ -541,8 +538,6 @@ def test_free_joint_qfrc_actuator_frame(
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
     parse_mjcf(builder, mjcf, ctrl_direct=True, ignore_inertial_definitions=False)
-    builder.request_state_attributes("mujoco:qfrc_actuator")
-
     model = builder.finalize(device=device)
     model.ground = False
 
@@ -550,6 +545,7 @@ def test_free_joint_qfrc_actuator_frame(
 
     state_0 = model.state()
     state_1 = model.state()
+    outputs = solver.outputs({solver.OutputFlags.QFRC_ACTUATOR})
 
     control = model.control()
     # Set ctrl: [thrust=10, yaw=10]
@@ -559,9 +555,9 @@ def test_free_joint_qfrc_actuator_frame(
     control.mujoco.ctrl = wp.array(ctrl_vals, dtype=wp.float32, device=device)
 
     dt = 0.01
-    solver.step(state_0, state_1, control, None, dt=dt)
+    solver.step(state_0, state_1, control, None, dt=dt, outputs=outputs)
 
-    qfrc = state_1.mujoco.qfrc_actuator.numpy()
+    qfrc = outputs.qfrc_actuator.numpy()
 
     # --- Thrust check: linear force along world-z ---
     # Linear DOFs (0,1,2) = (fx, fy, fz) in world frame

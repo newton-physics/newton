@@ -8,7 +8,7 @@ import warp as wp
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelBuilder, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
-from ..solver import SolverBase
+from ..solver import SolverBase, SolverOutputs
 from .builder import PDMatrixBuilder
 from .collision import Collision
 from .kernels import (
@@ -166,7 +166,16 @@ class SolverStyle3D(SolverBase):
         self.drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
     @override
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
+    def step(
+        self,
+        state_in: State,
+        state_out: State,
+        control: Control,
+        contacts: Contacts,
+        dt: float,
+        *,
+        outputs: SolverOutputs | None = None,
+    ) -> None:
         """Advance the Style3D solver by one time step.
 
         The solver performs non-linear projective dynamics iterations with
@@ -181,6 +190,7 @@ class SolverStyle3D(SolverBase):
             contacts: :class:`newton.Contacts` used for collision response.
             dt: Time step in seconds.
         """
+        self._validate_outputs(outputs, contacts)
         # Model masses and flags may change between solver steps.
         wp.copy(self._particle_flags, self.model.particle_flags)
         if self.model.particle_count > 0:

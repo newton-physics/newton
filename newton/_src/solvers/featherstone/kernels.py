@@ -2378,7 +2378,7 @@ def compute_body_parent_f(
     # output
     body_parent_f: wp.array[wp.spatial_vector],
 ):
-    """Populate ``State.body_parent_f`` from Featherstone's RNEA backward pass.
+    """Populate a body-parent-wrench output from Featherstone's RNEA backward pass.
 
     The Featherstone backward pass leaves the per-body spatial wrench
     decomposed across three buffers:
@@ -2392,7 +2392,7 @@ def compute_body_parent_f(
     inbound joint, expressed in Featherstone's internal solve frame. For
     floating-root articulations this frame is translated to the root COM; for
     other roots it remains at the world origin. We translate it to the body's
-    COM (matching :class:`SolverMuJoCo` and the :attr:`State.body_parent_f`
+    COM (matching :class:`SolverMuJoCo` and the ``SolverOutputs.body_parent_f``
     convention -- linear ``[N]`` first, torque ``[N·m]`` referenced to the COM,
     both in world frame).
 

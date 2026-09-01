@@ -3,13 +3,82 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Iterable
+from enum import Enum
+from typing import Any, ClassVar
 
 import warp as wp
 
 from ..core.reset import normalize_reset_world_mask
 from ..geometry import ParticleFlags
 from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
+
+
+class SolverOutputFlags(Enum):
+    """Standard output quantities that may be requested from a solver.
+
+    Requests are composed as a :class:`set` rather than a bit mask so that
+    solver-specific enums can add entries without coordinating integer bits
+    with Newton or other solver implementations.
+
+    .. experimental::
+
+        The solver output API may change while additional solvers and output
+        categories are migrated to it.
+    """
+
+    BODY_QDD = "body_qdd"
+    """Rigid-body spatial accelerations."""
+
+    BODY_PARENT_F = "body_parent_f"
+    """Incoming parent-joint wrenches on rigid bodies."""
+
+    CONTACT_F = "contact_f"
+    """Spatial contact forces aligned with a :class:`~newton.Contacts` container."""
+
+
+class SolverOutputs:
+    """Arrays populated by a solver in addition to the simulation state.
+
+    Instances are allocated by :meth:`SolverBase.outputs` and may be reused
+    across steps. Solver implementations can derive from this class to add
+    solver-specific arrays while retaining the standard Newton outputs.
+
+    .. experimental::
+
+        The solver output API may change while additional solvers and output
+        categories are migrated to it.
+    """
+
+    def __init__(self, flags: Iterable[Enum] = ()) -> None:
+        """Initialize an unallocated output container.
+
+        Args:
+            flags: Output flags represented by this container.
+        """
+        self.flags: frozenset[Enum] = frozenset(flags)
+        """Output flags allocated in this container."""
+
+        self.body_qdd: wp.array[wp.spatial_vector] | None = None
+        """Rigid-body accelerations [m/s², rad/s²], shape ``(body_count,)``."""
+
+        self.body_parent_f: wp.array[wp.spatial_vector] | None = None
+        """Incoming parent-joint wrenches [N, N·m], shape ``(body_count,)``."""
+
+        self.contact_f: wp.array[wp.spatial_vector] | None = None
+        """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)``."""
+
+        self._solver: SolverBase | None = None
+        self._contacts: Contacts | None = None
+
+    def __contains__(self, flag: Enum) -> bool:
+        """Return whether an output flag was allocated."""
+        return flag in self.flags
+
+    @property
+    def contacts(self) -> Contacts | None:
+        """Contact storage associated with contact-indexed outputs, if any."""
+        return self._contacts
 
 
 def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
@@ -197,11 +266,132 @@ class SolverBase:
     """
 
     _module_options_revision = 0
+    OUTPUTS_TYPE: ClassVar[type[SolverOutputs]] = SolverOutputs
+    """Container type returned by :meth:`outputs`."""
+
+    SUPPORTED_OUTPUT_FLAGS: ClassVar[frozenset[Enum]] = frozenset()
+    """Output flags accepted by :meth:`outputs`."""
 
     def __init__(self, model: Model):
         self.model = model
         self._module_options: dict[Any, dict[str, Any]] = {}
         self._applied_module_options_revision = -1
+
+    @property
+    def supported_output_flags(self) -> frozenset[Enum]:
+        """Output flags supported by this solver instance."""
+        return self.SUPPORTED_OUTPUT_FLAGS
+
+    def outputs(
+        self,
+        flags: Iterable[Enum],
+        *,
+        contacts: Contacts | None = None,
+        requires_grad: bool | None = None,
+    ) -> SolverOutputs:
+        """Allocate reusable arrays for requested solver outputs.
+
+        A container is owned by the solver that allocates it and can be passed
+        to that solver's :meth:`step` method on every time step. Derived
+        solvers add custom flags to :attr:`SUPPORTED_OUTPUT_FLAGS`, derive a
+        container from :class:`SolverOutputs`, and override
+        :meth:`_allocate_outputs` for their custom arrays.
+
+        Args:
+            flags: Set or other iterable of standard and solver-specific output
+                enum members.
+            contacts: Contact storage whose capacities determine the shape of
+                contact-indexed outputs. Required when requesting
+                :attr:`SolverOutputFlags.CONTACT_F`.
+            requires_grad: Whether allocated arrays require gradients. If
+                ``None``, use the model's setting.
+
+        Returns:
+            A solver-owned output container with requested arrays allocated.
+
+        Raises:
+            TypeError: If a request is not a plain enum member or the
+                configured output type does not derive from
+                :class:`SolverOutputs`.
+            ValueError: If this solver does not support a requested output.
+
+        .. experimental::
+
+            The solver output API may change while additional solvers and
+            output categories are migrated to it.
+        """
+        requested = frozenset(flags)
+        invalid = [flag for flag in requested if not isinstance(flag, Enum) or isinstance(flag, (int, str))]
+        if invalid:
+            values = ", ".join(repr(flag) for flag in invalid)
+            raise TypeError(
+                "Solver output flags must be plain enum.Enum members, not strings, integers, IntEnum members, "
+                f"or string-mixin enum members; got: {values}."
+            )
+
+        unsupported = requested.difference(self.supported_output_flags)
+        if unsupported:
+            names = ", ".join(self._format_output_flag(flag) for flag in unsupported)
+            raise ValueError(f"{type(self).__name__} does not support solver output(s): {names}.")
+
+        if not issubclass(self.OUTPUTS_TYPE, SolverOutputs):
+            raise TypeError("OUTPUTS_TYPE must derive from SolverOutputs.")
+        result = self.OUTPUTS_TYPE(requested)
+        result._solver = self
+        result._contacts = contacts
+        if requires_grad is None:
+            requires_grad = self.model.requires_grad
+        if SolverOutputFlags.CONTACT_F in requested:
+            if contacts is None:
+                raise ValueError("'contacts' is required when requesting SolverOutputFlags.CONTACT_F.")
+            if contacts.device != self.model.device:
+                raise ValueError("Solver outputs and contacts must be allocated on the solver device.")
+        self._allocate_outputs(result, requires_grad=requires_grad)
+        return result
+
+    @staticmethod
+    def _format_output_flag(flag: Enum) -> str:
+        """Format an output flag for diagnostics."""
+        return f"{type(flag).__name__}.{flag.name}"
+
+    def _allocate_outputs(self, outputs: SolverOutputs, *, requires_grad: bool) -> None:
+        """Allocate standard arrays requested in an output container."""
+        if SolverOutputFlags.BODY_QDD in outputs:
+            outputs.body_qdd = wp.zeros(
+                self.model.body_count,
+                dtype=wp.spatial_vector,
+                device=self.model.device,
+                requires_grad=requires_grad,
+            )
+        if SolverOutputFlags.BODY_PARENT_F in outputs:
+            outputs.body_parent_f = wp.zeros(
+                self.model.body_count,
+                dtype=wp.spatial_vector,
+                device=self.model.device,
+                requires_grad=requires_grad,
+            )
+
+        if SolverOutputFlags.CONTACT_F in outputs:
+            contacts = outputs._contacts
+            if contacts is None:
+                raise ValueError("Contact storage is missing for SolverOutputFlags.CONTACT_F.")
+            outputs.contact_f = wp.zeros(
+                contacts.rigid_contact_max + contacts.soft_contact_max,
+                dtype=wp.spatial_vector,
+                device=self.model.device,
+                requires_grad=requires_grad,
+            )
+
+    def _validate_outputs(self, outputs: SolverOutputs | None, contacts: Contacts | None = None) -> None:
+        """Validate that an output container belongs to this solver."""
+        if outputs is None:
+            return
+        if not isinstance(outputs, self.OUTPUTS_TYPE):
+            raise TypeError(f"'outputs' must be an instance of {self.OUTPUTS_TYPE.__name__}.")
+        if outputs._solver is not self:
+            raise ValueError("Solver outputs must be passed to the solver instance that allocated them.")
+        if outputs.contact_f is not None and contacts is not None and outputs._contacts is not contacts:
+            raise ValueError("Contact solver outputs must be used with the Contacts instance that sized them.")
 
     def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
         self._module_options[module] = dict(options)
@@ -375,7 +565,14 @@ class SolverBase:
         self._normalize_reset_world_mask(world_mask)
 
     def step(
-        self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
+        self,
+        state_in: State,
+        state_out: State,
+        control: Control | None,
+        contacts: Contacts | None,
+        dt: float,
+        *,
+        outputs: SolverOutputs | None = None,
     ) -> None:
         """
         Simulate the model for a given time step using the given control input.
@@ -388,6 +585,7 @@ class SolverBase:
                 :class:`Model` are used.
             contacts: The contact information.
             dt: The time step (typically in seconds).
+            outputs: Optional solver output arrays allocated by :meth:`outputs`.
         """
         raise NotImplementedError()
 
@@ -429,9 +627,12 @@ class SolverBase:
         pass
 
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """
-        Update a Contacts object with forces from the solver state. Where the solver state contains
-        other contact data, convert that data to the Contacts format.
+        """Update a legacy Contacts object with forces from the solver state.
+
+        .. deprecated:: 1.6
+
+            Request :attr:`SolverOutputFlags.CONTACT_F` using :meth:`outputs`
+            and pass the resulting container to :meth:`step` instead.
 
         Args:
             contacts: The object to update from the solver state.

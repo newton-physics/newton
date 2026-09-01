@@ -10,6 +10,7 @@ import warp as wp
 from ..geometry.flags import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
+from ..solvers.solver import SolverOutputFlags, SolverOutputs
 from ..utils.selection import match_labels
 
 
@@ -76,11 +77,15 @@ class SensorIMU:
     given sites. Each site defines an IMU frame; outputs are expressed in that
     frame.
 
-    This sensor requires the extended state attribute ``body_qdd``. By default,
-    constructing the sensor requests ``body_qdd`` from the model so that
-    subsequent ``model.state()`` calls allocate it automatically. The solver
-    must also support computing ``body_qdd``
-    (e.g. :class:`~newton.solvers.SolverMuJoCo`).
+    This sensor requires the :attr:`~newton.solvers.SolverOutputFlags.BODY_QDD`
+    solver output. The solver must support computing ``body_qdd``
+    (e.g. :class:`~newton.solvers.SolverMuJoCo`). The extended
+    :attr:`newton.State.body_qdd` attribute remains supported during migration.
+
+    .. experimental::
+
+        The :attr:`solver_output_flags` attribute and the ``outputs`` argument
+        to :meth:`update` may change with the solver output API.
 
     The ``sites`` parameter accepts label patterns -- see :ref:`label-matching`.
 
@@ -99,13 +104,14 @@ class SensorIMU:
             builder.add_site(body, label="imu_0")
             model = builder.finalize()
 
-            imu = SensorIMU(model, sites="imu_*")
+            imu = SensorIMU(model, sites="imu_*", request_state_attributes=False)
             solver = newton.solvers.SolverMuJoCo(model)
+            outputs = solver.outputs(imu.solver_output_flags)
             state = model.state()
 
             # after solver step
-            solver.step(state, state, None, None, dt=1.0 / 60.0)
-            imu.update(state)
+            solver.step(state, state, None, None, dt=1.0 / 60.0, outputs=outputs)
+            imu.update(state, outputs=outputs)
             acc = imu.accelerometer.numpy()
             gyro = imu.gyroscope.numpy()
     """
@@ -116,18 +122,22 @@ class SensorIMU:
     gyroscope: wp.array[wp.vec3]
     """Angular velocity readings [rad/s] in sensor frame, shape ``(n_sensors,)``."""
 
+    solver_output_flags = frozenset({SolverOutputFlags.BODY_QDD})
+    """Solver outputs required to update this sensor."""
+
     def __init__(
         self,
         model: Model,
         sites: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
-        request_state_attributes: bool = True,
+        request_state_attributes: bool = False,
     ):
         """Initialize SensorIMU.
 
-        Transparently requests the extended state attribute ``body_qdd`` from the model, which is required for acceleration
-        data.
+        Set ``request_state_attributes=True`` to retain the deprecated
+        ``State.body_qdd`` allocation path. By default, allocate
+        :attr:`solver_output_flags` through the solver.
 
         Args:
             model: The model to use.
@@ -136,8 +146,9 @@ class SensorIMU:
                 expressions use full matching.
             verbose: If True, print details. If False, suppress details. If None, print details when
                 ``wp.config.log_level`` is configured for debug logging.
-            request_state_attributes: If True (default), transparently request the extended state attribute ``body_qdd`` from the model.
-                If False, ``model`` is not modified and the attribute must be requested elsewhere before calling ``model.state()``.
+            request_state_attributes: If True, request the deprecated extended
+                state attribute ``body_qdd`` from the model. Defaults to False;
+                :meth:`update` must receive solver outputs containing ``body_qdd``.
         Raises:
             ValueError: If no labels match or invalid sites are passed.
         """
@@ -152,7 +163,7 @@ class SensorIMU:
                 raise ValueError("'sites' must not be empty")
             raise ValueError(f"No sites matched the given pattern {original_sites!r}")
 
-        # request acceleration state attribute
+        # Retain an explicit compatibility path during the deprecation period.
         if request_state_attributes:
             self.model.request_state_attributes("body_qdd")
 
@@ -177,14 +188,20 @@ class SensorIMU:
             if not (shape_flags[site_idx] & ShapeFlags.SITE):
                 raise ValueError(f"sensor site index {site_idx} is not a site")
 
-    def update(self, state: State):
+    def update(self, state: State, *, outputs: SolverOutputs | None = None):
         """Update the IMU sensor.
 
         Args:
             state: The state to update the sensor from.
+            outputs: Solver outputs containing rigid-body accelerations. If
+                ``None``, use the legacy ``state.body_qdd`` attribute.
         """
-        if state.body_qdd is None:
-            raise ValueError("SensorIMU requires a State with body_qdd allocated. Create SensorIMU before State.")
+        body_qdd = outputs.body_qdd if outputs is not None else state.body_qdd
+        if body_qdd is None:
+            raise ValueError(
+                "SensorIMU requires SolverOutputs with BODY_QDD allocated. "
+                "Call solver.outputs(sensor.solver_output_flags) and pass the result to solver.step() and sensor.update()."
+            )
 
         wp.launch(
             compute_sensor_imu_kernel,
@@ -199,7 +216,7 @@ class SensorIMU:
                 self.sensor_sites_arr,
                 state.body_q,
                 state.body_qd,
-                state.body_qdd,
+                body_qdd,
             ],
             outputs=[self.accelerometer, self.gyroscope],
             device=self.model.device,

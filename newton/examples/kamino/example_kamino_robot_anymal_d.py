@@ -34,8 +34,6 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
-        robot_builder.request_contact_attributes("force")  # For contact visualization
-
         # Load the Anymal D USD and add it to the builder
         asset_path = newton.utils.download_asset("anybotics_anymal_d")
         asset_file = str(asset_path / "usd" / "anymal_d.usda")
@@ -78,6 +76,7 @@ class Example:
         else:
             self.collision_pipeline = None
             self.contacts = newton.CollisionPipeline(self.model).contacts()
+        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=self.contacts)
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -118,10 +117,18 @@ class Example:
             self.viewer.apply_forces(self.state_0)
             if not self.use_kamino_contacts:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
-                self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+                self.solver.step(
+                    self.state_0,
+                    self.state_1,
+                    self.control,
+                    self.contacts,
+                    self.sim_dt,
+                    outputs=self.solver_outputs,
+                )
             else:
-                self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-            self.solver.update_contacts(self.contacts, self.state_0)
+                self.solver.step(
+                    self.state_0, self.state_1, self.control, None, self.sim_dt, outputs=self.solver_outputs
+                )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -135,7 +142,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, outputs=self.solver_outputs)
         self.viewer.end_frame()
 
     def test_final(self):
