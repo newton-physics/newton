@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import warp as wp
 
 from ...core.types import override
@@ -27,6 +29,7 @@ from .kernels import (
     # solve_simple_body_joints,
     solve_springs,
     solve_tetrahedra,
+    update_body_velocities,
 )
 from .restitution_kernels import (
     RESTITUTION_MANIFOLD_MAX_CONTACTS,
@@ -35,6 +38,12 @@ from .restitution_kernels import (
     mark_restitution_contacts,
     select_manifold_contacts,
     solve_manifold_restitution,
+)
+
+_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG = (
+    "SolverXPBD.compute_body_velocity_from_position_delta is deprecated in Newton 1.6 and will be removed in 1.7 "
+    "or later. Leave it at False because XPBD now updates rigid-body velocities incrementally after every position "
+    "correction."
 )
 
 
@@ -190,6 +199,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
         self.enable_restitution = enable_restitution
         self._rigid_restitution_enabled = False
         self._refresh_rigid_restitution_enabled()
+        self._compute_body_velocity_from_position_delta = False
 
         self._init_kinematic_state()
 
@@ -201,6 +211,23 @@ class SolverXPBD(SolverBase, CouplingInterface):
             # reserve space for the particle hash grid
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
+
+    @property
+    def compute_body_velocity_from_position_delta(self) -> bool:
+        """Whether to reconstruct rigid-body velocities after position projection.
+
+        .. deprecated:: 1.6
+            Leave this setting at ``False`` because XPBD now maintains rigid-body
+            velocities incrementally. ``True`` temporarily retains the legacy
+            full-step velocity reconstruction for compatibility.
+        """
+        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self._compute_body_velocity_from_position_delta
+
+    @compute_body_velocity_from_position_delta.setter
+    def compute_body_velocity_from_position_delta(self, value: bool) -> None:
+        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self._compute_body_velocity_from_position_delta = value
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -394,6 +421,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
         body_q = None
         body_qd = None
+        body_q_step_start = None
         body_q_pre_solve = None
         body_qd_pre_solve = None
         body_deltas = None
@@ -482,6 +510,9 @@ class SolverXPBD(SolverBase, CouplingInterface):
             if model.body_count:
                 body_q = state_out.body_q
                 body_qd = state_out.body_qd
+
+                if self._compute_body_velocity_from_position_delta and not requires_grad:
+                    body_q_step_start = wp.clone(state_in.body_q)
 
                 body_deltas = wp.empty_like(state_out.body_qd)
 
@@ -848,6 +879,16 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 if body_q.ptr != state_out.body_q.ptr:
                     state_out.body_q.assign(body_q)
                     state_out.body_qd.assign(body_qd)
+
+            if self._compute_body_velocity_from_position_delta and model.body_count and not requires_grad:
+                assert body_q_step_start is not None
+                wp.launch(
+                    kernel=update_body_velocities,
+                    dim=model.body_count,
+                    inputs=[state_out.body_q, body_q_step_start, model.body_com, dt],
+                    outputs=[state_out.body_qd],
+                    device=model.device,
+                )
 
             # Rigid integration and every positional correction update all
             # bodies' public COM-referenced velocities incrementally. Velocity

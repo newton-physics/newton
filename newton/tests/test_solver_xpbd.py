@@ -715,6 +715,40 @@ def test_particle_shape_restitution_does_not_launch_resting_particle(test, devic
     test.assertAlmostEqual(vy, 0.0, delta=1.0e-6)
 
 
+def test_compute_body_velocity_from_position_delta_legacy_path(test, device):
+    """Retain the deprecated full-step angular-velocity reconstruction."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body()
+    builder.add_shape_sphere(body, radius=0.1)
+    model = builder.finalize(device=device)
+
+    solver_incremental = newton.solvers.SolverXPBD(model)
+    solver_legacy = newton.solvers.SolverXPBD(model)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        solver_legacy.compute_body_velocity_from_position_delta = True
+
+    state_incremental_in = model.state()
+    state_incremental_out = model.state()
+    state_legacy_in = model.state()
+    state_legacy_out = model.state()
+    qd = np.zeros((model.body_count, 6), dtype=np.float32)
+    qd[body, 5] = 10.0
+    state_incremental_in.body_qd.assign(qd)
+    state_legacy_in.body_qd.assign(qd)
+
+    dt = 0.1
+    state_incremental_in.clear_forces()
+    state_legacy_in.clear_forces()
+    solver_incremental.step(state_incremental_in, state_incremental_out, None, None, dt)
+    solver_legacy.step(state_legacy_in, state_legacy_out, None, None, dt)
+
+    wz_incremental = float(state_incremental_out.body_qd.numpy()[body, 5])
+    wz_legacy = float(state_legacy_out.body_qd.numpy()[body, 5])
+    test.assertAlmostEqual(wz_incremental, 10.0, delta=1.0e-4)
+    test.assertAlmostEqual(wz_legacy, 8.944272, delta=1.0e-4)
+
+
 def test_restitution_flag_does_not_change_body_integration(test, device):
     """Keep rigid-body integration independent of the restitution flag."""
     builder = newton.ModelBuilder(gravity=(0.0, -10.0, 0.0), up_axis=newton.Axis.Y)
@@ -2434,6 +2468,19 @@ class TestSolverXPBD(unittest.TestCase):
 
         self.assertFalse(solver.enable_restitution)
 
+    def test_compute_body_velocity_from_position_delta_is_deprecated(self):
+        model = newton.ModelBuilder().finalize()
+        solver = newton.solvers.SolverXPBD(model)
+
+        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
+            self.assertFalse(solver.compute_body_velocity_from_position_delta)
+
+        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
+            solver.compute_body_velocity_from_position_delta = True
+
+        with self.assertWarnsRegex(DeprecationWarning, "deprecated in Newton 1.6"):
+            self.assertTrue(solver.compute_body_velocity_from_position_delta)
+
 
 add_function_test(
     TestSolverXPBD,
@@ -2528,6 +2575,14 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_shape_restitution_accounts_for_body_velocity",
     test_particle_shape_restitution_accounts_for_body_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_compute_body_velocity_from_position_delta_legacy_path",
+    test_compute_body_velocity_from_position_delta_legacy_path,
     devices=devices,
     check_output=False,
 )

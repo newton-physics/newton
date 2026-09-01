@@ -938,6 +938,39 @@ def apply_body_deltas(
 
 
 @wp.kernel
+def update_body_velocities(
+    poses: wp.array[wp.transform],
+    poses_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    dt: float,
+    qd_out: wp.array[wp.spatial_vector],
+):
+    """Reconstruct body velocities from a full-step pose change for legacy compatibility."""
+    tid = wp.tid()
+
+    pose = poses[tid]
+    pose_prev = poses_prev[tid]
+
+    x = wp.transform_get_translation(pose)
+    x_prev = wp.transform_get_translation(pose_prev)
+
+    q = wp.transform_get_rotation(pose)
+    q_prev = wp.transform_get_rotation(pose_prev)
+
+    x_com = x + wp.quat_rotate(q, body_com[tid])
+    x_com_prev = x_prev + wp.quat_rotate(q_prev, body_com[tid])
+
+    v = (x_com - x_com_prev) / dt
+    dq = q * wp.quat_inverse(q_prev)
+
+    omega = 2.0 / dt * wp.vec3(dq[0], dq[1], dq[2])
+    if dq[3] < 0.0:
+        omega = -omega
+
+    qd_out[tid] = wp.spatial_vector(v, omega)
+
+
+@wp.kernel
 def apply_body_delta_velocities(
     deltas: wp.array[wp.spatial_vector],
     constraint_inv_weights: wp.array[float],
