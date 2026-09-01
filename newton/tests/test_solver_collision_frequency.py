@@ -133,6 +133,7 @@ def test_frequency_validation_and_ownership(test, device):
         iterations=1,
         collision_pipeline=pipeline,
         rigid_contact_history=False,
+        rigid_compliant_alm=False,
         collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
     )
     with test.assertRaisesRegex(ValueError, "requires contact matching"):
