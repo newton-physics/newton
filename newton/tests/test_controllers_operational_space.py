@@ -1031,6 +1031,76 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         expected = jacobian[0].T @ (kp * pose_error)
         np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
 
+    def test_quat_inputs_accept_indexed_views(self):
+        """linear/angular_selection_frame_operational, wp.quat ports, may be bound to indexed views too.
+
+        Runs a hybrid force/motion controller twice with identical values --
+        once with the two selection-frame ports (and tool_pose_world) bound to
+        views selecting robot 1 out of a larger 3-robot simulation-sized
+        array, once with plain per-robot arrays -- and checks the two runs
+        produce identical output.
+        """
+        device = wp.get_device()
+        current_pose = wp.transform_identity()
+        linear_frame = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.3)
+        angular_frame = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.5)
+        rng = np.random.default_rng(7)
+        jacobian = rng.standard_normal((1, 6, 6)).astype(np.float32)
+
+        def run(*, tool_pose_world, linear_selection_frame_operational, angular_selection_frame_operational):
+            ctrl = ControllerOperationalSpaceModelFree(
+                controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
+                motion_stiffness=30.0,
+                motion_damping=5.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
+                use_inertia_decoupling=False,
+                use_wrench_feedforward=True,
+                motion_selection_axes=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
+                wrench_selection_axes=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+                linear_selection_frame_operational=None,
+                angular_selection_frame_operational=None,
+                device=device,
+            )
+            ins = ctrl.input()
+            ins.tool_pose_world = tool_pose_world
+            ins.tool_twist_world = wp.array(
+                [wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device
+            )
+            ins.desired_tool_pose_operational = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+            ins.desired_twist_operational = wp.array(
+                [wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device
+            )
+            ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+            ins.desired_wrench_world = wp.array(
+                [wp.spatial_vector(0.0, 0.0, 10.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device
+            )
+            ins.linear_selection_frame_operational = linear_selection_frame_operational
+            ins.angular_selection_frame_operational = angular_selection_frame_operational
+            outs = ctrl.output()
+            ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+            return outs.joint_f.numpy()
+
+        # A larger, 3-robot simulation-sized set of per-robot arrays; only
+        # index 1 belongs to this run's one robot.
+        selection = wp.array(np.array([1], dtype=np.int32), device=device)
+        sim_pose = wp.array(
+            [wp.transform_identity(), current_pose, wp.transform_identity()], dtype=wp.transform, device=device
+        )
+        sim_linear_frame = wp.array([_IDENTITY_QUAT, linear_frame, _IDENTITY_QUAT], dtype=wp.quat, device=device)
+        sim_angular_frame = wp.array([_IDENTITY_QUAT, angular_frame, _IDENTITY_QUAT], dtype=wp.quat, device=device)
+
+        indexed_result = run(
+            tool_pose_world=sim_pose[selection],
+            linear_selection_frame_operational=sim_linear_frame[selection],
+            angular_selection_frame_operational=sim_angular_frame[selection],
+        )
+        plain_result = run(
+            tool_pose_world=wp.array([current_pose], dtype=wp.transform, device=device),
+            linear_selection_frame_operational=wp.array([linear_frame], dtype=wp.quat, device=device),
+            angular_selection_frame_operational=wp.array([angular_frame], dtype=wp.quat, device=device),
+        )
+        np.testing.assert_allclose(indexed_result, plain_result, atol=1e-6)
+
     def test_use_wrench_feedforward_requires_selection_axes(self):
         """use_wrench_feedforward=True without wrench_selection_axes raises at construction."""
         device = wp.get_device()

@@ -141,6 +141,7 @@ _GATHER_KERNELS_BY_DTYPE_AND_RANK = {
     wp.float32: {1: _gather_rank1_port_kernel, 3: _gather_mass_matrix_port_kernel},
     wp.transform: {1: _gather_rank1_port_kernel},
     wp.spatial_vector: {1: _gather_rank1_port_kernel},
+    wp.quat: {1: _gather_rank1_port_kernel},
 }
 
 
