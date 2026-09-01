@@ -619,13 +619,15 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
 
 
 def test_generalized_task_specification_matrix_matches_numpy(test, device):
-    """Dual-frame masking matches Khatib's Omega = diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau).
+    """Dual-frame masking matches Omega = diag(S_f . Sigma_f . S_f^T, S_tau . Sigma_tau . S_tau^T).
 
-    Khatib, O. (1987), "A unified approach for motion and force control of
-    robot manipulators: The operational space formulation," IEEE Journal of
-    Robotics and Automation, 3(1), 43-53, eq. 3-4. S_f and S_tau are two
-    genuinely different rotations, so this also
-    checks the linear/angular halves are independently rotated.
+    From Khatib, O. (1987), "A unified approach for motion and force control
+    of robot manipulators: The operational space formulation," IEEE Journal
+    of Robotics and Automation, 3(1), 43-53, eq. 3-4 -- with S_f/S_tau
+    meaning quat_operational_from_sf/quat_operational_from_stau (rotating
+    INTO the operational frame), the transpose of the paper's own S_f/S_tau
+    convention. S_f and S_tau are two genuinely different rotations, so this
+    also checks the linear/angular halves are independently rotated.
     """
     quat_sf = wp.quat_from_axis_angle(wp.vec3(0.3, -0.6, 0.2), 1.1)
     quat_stau = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4)

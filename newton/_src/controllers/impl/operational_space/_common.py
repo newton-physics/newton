@@ -667,8 +667,14 @@ def _null_space_projector_kernel(
 # generalized task specification matrix from Khatib, O. (1987), "A unified
 # approach for motion and force control of robot manipulators: The
 # operational space formulation," IEEE Journal of Robotics and Automation,
-# 3(1), 43-53: Omega = diag(S_f^T . Sigma_f . S_f,
-# S_tau^T . Sigma_tau . S_tau). Both S_f and S_tau are themselves specified
+# 3(1), 43-53: Omega = diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau)
+# in the paper's own convention, where S_f/S_tau rotate FROM the operational
+# frame INTO the selection frame. This file names transforms the opposite
+# way (``coordinate_change_TARGET_from_SOURCE``, i.e. quat_operational_from_sf
+# rotates INTO the operational frame), so with S_f/S_tau meaning this file's
+# own quat_operational_from_sf/quat_operational_from_stau (the paper's S_f/S_tau
+# transposed), the same matrix is Omega = diag(S_f . Sigma_f . S_f^T,
+# S_tau . Sigma_tau . S_tau^T). Both S_f and S_tau are themselves specified
 # relative to the operational frame, and applied to task-space vectors that
 # are already expressed there (:func:`_apply_generalized_task_specification_matrix_kernel`),
 # so selection never touches world frame at all.
@@ -708,10 +714,14 @@ def _apply_generalized_task_specification_matrix_kernel(
 ):
     """Apply the generalized task specification matrix, zeroing excluded task axes.
 
-    ``Omega = diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau)``, from
-    Khatib, O. (1987), "A unified approach for motion and force control of
-    robot manipulators: The operational space formulation," IEEE Journal of
-    Robotics and Automation, 3(1), 43-53. The linear half is rotated into
+    ``Omega = diag(S_f . Sigma_f . S_f^T, S_tau . Sigma_tau . S_tau^T)``, with
+    ``S_f``/``S_tau`` meaning this kernel's own ``quat_operational_from_sf``/
+    ``quat_operational_from_stau`` (rotating INTO the operational frame) --
+    the transpose of Khatib, O. (1987)'s own S_f/S_tau convention (which
+    rotate the opposite way, operational frame into the selection frame),
+    "A unified approach for motion and force control of robot manipulators:
+    The operational space formulation," IEEE Journal of Robotics and
+    Automation, 3(1), 43-53. The linear half is rotated into
     ``S_f``, masked by ``Sigma_f``, and rotated back; the angular half does
     the same independently through ``S_tau``. ``S_f`` and ``S_tau`` need not
     agree -- e.g. the force-control direction (surface normal) and the
