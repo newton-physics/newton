@@ -62,12 +62,8 @@ def _rotate_spatial_vector(quat_target_from_source: wp.quat, vector_source: wp.s
     Jacobian column), and the wrench command kernels below (the desired/
     measured wrench).
     """
-    linear_target = wp.quat_rotate(
-        quat_target_from_source, wp.vec3(vector_source[0], vector_source[1], vector_source[2])
-    )
-    angular_target = wp.quat_rotate(
-        quat_target_from_source, wp.vec3(vector_source[3], vector_source[4], vector_source[5])
-    )
+    linear_target = wp.quat_rotate(quat_target_from_source, wp.spatial_top(vector_source))
+    angular_target = wp.quat_rotate(quat_target_from_source, wp.spatial_bottom(vector_source))
     return wp.spatial_vector(linear_target, angular_target)
 
 
@@ -674,8 +670,8 @@ def _null_space_projector_kernel(
 # 3(1), 43-53: Omega = diag(S_f^T . Sigma_f . S_f,
 # S_tau^T . Sigma_tau . S_tau). Both S_f and S_tau are themselves specified
 # relative to the operational frame, and applied to task-space vectors that
-# are already expressed there (:func:`_apply_dual_frame_selection`), so
-# selection never touches world frame at all.
+# are already expressed there (:func:`_apply_generalized_task_specification_matrix_kernel`),
+# so selection never touches world frame at all.
 #
 # Applied once, before Lambda for the motion branch (masking the desired
 # acceleration, matching Khatib's ``F_m = Lambda . Omega . F*_m``) and once
@@ -696,7 +692,7 @@ def _null_space_projector_kernel(
 
 
 @wp.kernel
-def _mask_dual_frame_kernel(
+def _apply_generalized_task_specification_matrix_kernel(
     quat_operational_from_sf: wp.array[wp.quat],  # (robot_count,) S_f, relative to the operational frame
     quat_operational_from_stau: wp.array[wp.quat],  # (robot_count,) S_tau, relative to the operational frame
     selection_axes: wp.array[
@@ -710,17 +706,18 @@ def _mask_dual_frame_kernel(
         wp.spatial_vector
     ],  # (robot_count,) vector_operational's component along selected axes, still in the operational frame
 ):
-    """Zero an operational-frame task-space vector along the axes ``selection_axes`` excludes.
+    """Apply the generalized task specification matrix, zeroing excluded task axes.
 
-    Implements Khatib's generalized task specification matrix, ``Omega =
-    diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau)``: the linear
-    half is rotated into ``S_f``, masked by ``Sigma_f``, and rotated back;
-    the angular half does the same independently through ``S_tau``. ``S_f``
-    and ``S_tau`` need not agree -- e.g. the force-control direction
-    (surface normal) and the compliant-rotation axis of a task generally
-    differ. No world pose is needed here -- S_f/S_tau are defined relative
-    to the operational frame directly, so this never touches world frame
-    at all.
+    ``Omega = diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau)``, from
+    Khatib, O. (1987), "A unified approach for motion and force control of
+    robot manipulators: The operational space formulation," IEEE Journal of
+    Robotics and Automation, 3(1), 43-53. The linear half is rotated into
+    ``S_f``, masked by ``Sigma_f``, and rotated back; the angular half does
+    the same independently through ``S_tau``. ``S_f`` and ``S_tau`` need not
+    agree -- e.g. the force-control direction (surface normal) and the
+    compliant-rotation axis of a task generally differ. No world pose is
+    needed here -- S_f/S_tau are defined relative to the operational frame
+    directly, so this never touches world frame at all.
     """
     robot_idx = wp.tid()
     axes = selection_axes[robot_idx]

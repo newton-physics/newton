@@ -121,12 +121,12 @@ from .._common import (
     _scatter_port_kernel,
 )
 from ._common import (
+    _apply_generalized_task_specification_matrix_kernel,
     _apply_mass_matrix_inv_on_right_kernel,
     _apply_spatial_matrix_kernel,
     _invert_spd_block_kernel,
     _jacobian_times_jacobian_transpose_kernel,
     _jacobian_transpose_force_kernel,
-    _mask_dual_frame_kernel,
     _null_space_projector_kernel,
     _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
@@ -1510,7 +1510,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 else self._angular_selection_frame_buf
             )
             wp.launch(
-                _mask_dual_frame_kernel,
+                _apply_generalized_task_specification_matrix_kernel,
                 dim=robot_count,
                 inputs=[
                     linear_selection_frame,
@@ -1632,7 +1632,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 else self._angular_selection_frame_buf
             )
             wp.launch(
-                _mask_dual_frame_kernel,
+                _apply_generalized_task_specification_matrix_kernel,
                 dim=robot_count,
                 inputs=[
                     linear_selection_frame,

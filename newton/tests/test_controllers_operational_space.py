@@ -23,12 +23,12 @@ import warp as wp
 
 import newton
 from newton._src.controllers.impl.operational_space._common import (
+    _apply_generalized_task_specification_matrix_kernel,
     _apply_mass_matrix_inv_on_right_kernel,
     _apply_spatial_matrix_kernel,
     _invert_spd_block_kernel,
     _jacobian_times_jacobian_transpose_kernel,
     _jacobian_transpose_force_kernel,
-    _mask_dual_frame_kernel,
     _null_space_projector_kernel,
     _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
@@ -942,7 +942,7 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
     test.assertGreater(np.abs(moore_penrose_response).max(), 0.1)
 
 
-def test_mask_dual_frame_matches_numpy(test, device):
+def test_generalized_task_specification_matrix_matches_numpy(test, device):
     """Dual-frame masking matches Khatib's Omega = diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau).
 
     Khatib, O. (1987), "A unified approach for motion and force control of
@@ -969,7 +969,7 @@ def test_mask_dual_frame_matches_numpy(test, device):
 
     masked_vector_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
-        _mask_dual_frame_kernel,
+        _apply_generalized_task_specification_matrix_kernel,
         dim=1,
         inputs=[quat_operational_from_sf, quat_operational_from_stau, selection_axes, vector_operational],
         outputs=[masked_vector_operational],
@@ -1233,8 +1233,8 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_mask_dual_frame_matches_numpy",
-    test_mask_dual_frame_matches_numpy,
+    "test_generalized_task_specification_matrix_matches_numpy",
+    test_generalized_task_specification_matrix_matches_numpy,
     devices=devices,
 )
 add_function_test(
@@ -1678,7 +1678,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         device = wp.get_device()
         kp = 60.0
         # quat_from_axis_angle does not normalize its axis; an un-normalized
-        # one (unlike test_mask_dual_frame_matches_numpy's use of the
+        # one (unlike test_generalized_task_specification_matrix_matches_numpy's use of the
         # same values, which is self-consistently checked against
         # wp.quat_to_matrix either way) would make "rotating" an isotropic
         # gain fail to be a true rotation, so isotropic Kp would no longer
