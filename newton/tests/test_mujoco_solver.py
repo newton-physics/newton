@@ -7449,6 +7449,33 @@ class TestMuJoCoOptions(unittest.TestCase):
         builder.replicate(template_builder, world_count)
         return builder.finalize()
 
+    def test_njmax_nnz_constructor_override(self):
+        """Forward an explicit sparse Jacobian capacity to MuJoCo Warp."""
+        model = self._create_multiworld_model(world_count=2)
+
+        solver = SolverMuJoCo(
+            model,
+            iterations=1,
+            disable_contacts=True,
+            jacobian="sparse",
+            njmax_nnz=123,
+        )
+
+        self.assertEqual(solver.mjw_data.njmax_nnz, 123)
+        self.assertEqual(solver.mjw_data.efc.J.shape, (2, 1, 123))
+
+    def test_njmax_nnz_rejects_invalid_values(self):
+        """Reject invalid sparse Jacobian capacities."""
+        model = self._create_multiworld_model(world_count=1)
+
+        for value in (True, 1.5, "123"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(TypeError, "njmax_nnz must be an integer or None"):
+                    SolverMuJoCo(model, njmax_nnz=value)
+
+        with self.assertRaisesRegex(ValueError, "njmax_nnz must be non-negative"):
+            SolverMuJoCo(model, njmax_nnz=-1)
+
     def test_impratio_multiworld_conversion(self):
         """
         Verify that impratio custom attribute with WORLD frequency:

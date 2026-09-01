@@ -1513,6 +1513,7 @@ class TestMenagerieBase(unittest.TestCase):
     backfill_fields: list[str] | None = None  # None = use MODEL_BACKFILL_FIELDS
 
     njmax: int | None = None  # Max constraint rows per world (None = auto from MuJoCo)
+    njmax_nnz: int | None = None  # Max sparse Jacobian nonzeros per world (None = auto from MuJoCo Warp)
     nconmax: int | None = None  # Max contacts per world (None = auto from MuJoCo)
     # Override integrator for SolverMuJoCo
     solver_integrator: str | int | None = None
@@ -1731,6 +1732,7 @@ class TestMenagerieBase(unittest.TestCase):
         solver_kwargs = {
             "skip_visual_only_geoms": not self.parse_visuals,
             "njmax": self.njmax,
+            "njmax_nnz": self.njmax_nnz,
             "nconmax": self.nconmax,
         }
         if self.solver_integrator is not None:
