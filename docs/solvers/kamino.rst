@@ -71,3 +71,21 @@ For large bilateral systems, opt into RCM-reordered factorization explicitly:
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
 changes. Keep the default ``"LLTB"`` solver for small systems.
+
+Actuation and forward kinematics
+--------------------------------
+
+Kamino dynamics routes actuation independently for each joint DoF. A DoF can
+use explicit effort, unbounded implicit PD, or effort-limited implicit PD;
+passive armature, damping, and Coulomb friction are likewise configured per
+DoF. Implicit-PD target modes require a non-zero applicable gain: velocity
+mode requires derivative gain, while position-based modes require proportional
+or derivative gain. Coulomb friction supports all non-free joint types, while
+joint dynamics and implicit PD currently support revolute, prismatic, and
+gimbal joint types only.
+
+The forward-kinematics solver still partitions each joint as entirely passive
+or entirely actuated. Different non-passive target modes are allowed within a
+joint, but mixing passive and actuated DoFs within one joint is not yet
+supported. The ``fk_actuation_flag`` model attribute provides an explicit
+joint-level override for this FK partition.

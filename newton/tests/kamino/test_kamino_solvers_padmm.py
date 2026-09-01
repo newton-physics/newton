@@ -154,11 +154,11 @@ def check_padmm_solution(
         error_dual_abs_inf = np.linalg.norm(v_plus_true - v_plus_wp_np[w], ord=np.inf)
 
         # Extract solver status
-        converged = True if status[w][0] == 1 else False
-        iterations = status[w][1]
-        r_p = status[w][2]
-        r_d = status[w][3]
-        r_c = status[w][4]
+        converged = bool(status[w]["converged"])
+        iterations = status[w]["iterations"]
+        r_p = status[w]["r_p"]
+        r_d = status[w]["r_d"]
+        r_c = status[w]["r_c"]
 
         # Optionally print relevant solver data
         if verbose:
@@ -324,7 +324,7 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool
 
     nw = solver.size.num_worlds
     status = solver.data.status.numpy()
-    iterations = [status[w][1] for w in range(nw)]
+    iterations = [status[w]["iterations"] for w in range(nw)]
     offsets_np = solver.data.info.offsets.numpy()
     num_rho_updates_np = extract_info_vectors(offsets_np, solver.data.info.num_rho_updates.numpy(), iterations)
     norm_s_np = extract_info_vectors(offsets_np, solver.data.info.norm_s.numpy(), iterations)
@@ -813,6 +813,55 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Check solution
         check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+
+    def test_08a_padmm_collect_info_matches_solution(self):
+        """Record consistent diagnostics for dense and sparse PADMM problems."""
+        info_vectors = {}
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                test = TestSetup(
+                    builder_fn=basics.build_box_on_plane,
+                    device=self.default_device,
+                    sparse=sparse,
+                )
+                solver = PADMMSolver(
+                    model=test.model,
+                    config=PADMMSolver.Config(
+                        primal_tolerance=1.0e3,
+                        dual_tolerance=1.0e3,
+                        compl_tolerance=1.0e3,
+                        max_iterations=8,
+                    ),
+                    warmstart=PADMMWarmStartMode.NONE,
+                    use_acceleration=False,
+                    use_graph_conditionals=False,
+                    collect_info=True,
+                )
+
+                test.build()
+                solver.reset()
+                solver.coldstart()
+                solver.solve(problem=test.problem)
+
+                info = solver.data.info
+                status = solver.data.status
+                solution = solver.data.solution
+                iterations = int(status.numpy()[0]["iterations"])
+
+                # History was written
+                self.assertTrue((info.norm_x.numpy()[:iterations] != 0.0).all())
+                np.testing.assert_array_equal(info.norm_x.numpy()[iterations:], 0.0)
+
+                # Solution is consistent with info
+                np.testing.assert_allclose(info.lambdas.numpy(), solution.lambdas.numpy())
+                np.testing.assert_allclose(info.v_aug.numpy(), info.v_plus.numpy() + info.s.numpy())
+
+                # Store info for dense-sparse comparison
+                info_vectors[sparse] = (info.v_plus.numpy(), info.v_aug.numpy(), info.s.numpy())
+
+        # Compare dense-sparse info
+        for dense_values, sparse_values in zip(info_vectors[False], info_vectors[True], strict=True):
+            np.testing.assert_allclose(dense_values, sparse_values, rtol=1e-5, atol=1e-6)
 
     def test_09_apadmm_restart_matches_bilateral_reference(self):
         """Match a NumPy reference across an APADMM solve whose final iteration restarts.

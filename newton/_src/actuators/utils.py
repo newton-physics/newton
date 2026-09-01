@@ -80,6 +80,7 @@ def load_checkpoint(
     device: str | wp.Device | None = None,
     batch_size: int = 1,
     input_batch_axes: int | dict[str, int] | None = None,
+    requires_grad: bool = False,
 ):
     """Load a neural-network checkpoint as ``(model, metadata)``.
 
@@ -95,6 +96,10 @@ def load_checkpoint(
             buffers.
         input_batch_axes: Optional ONNX graph-input batch-axis override passed
             to :class:`warp_nn.runtime.OnnxRuntime`.
+        requires_grad: Whether the runtime allocates gradient storage for its
+            own tensors. Required to differentiate the network, since the
+            runtime owns intermediate buffers that cannot be given gradients
+            after construction. Ignored for Torch checkpoints.
 
     Returns:
         ``(model, metadata)`` where *model* is a Warp-NN runtime for ONNX
@@ -105,7 +110,13 @@ def load_checkpoint(
 
     metadata = load_metadata(path)
     OnnxRuntime = _require_warp_nn_runtime()
-    runtime = OnnxRuntime(path, device=device, batch_size=batch_size, input_batch_axes=input_batch_axes)
+    runtime = OnnxRuntime(
+        path,
+        device=device,
+        batch_size=batch_size,
+        input_batch_axes=input_batch_axes,
+        requires_grad=requires_grad,
+    )
     return runtime, metadata
 
 

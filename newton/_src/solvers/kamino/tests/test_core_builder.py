@@ -53,7 +53,7 @@ def assert_model_matches_builder(test: unittest.TestCase, builder: ModelBuilderK
         test.assertEqual(model.info.num_passive_joint_dofs.numpy()[w], world.num_passive_joint_dofs)
         test.assertEqual(model.info.num_actuated_joint_coords.numpy()[w], world.num_actuated_joint_coords)
         test.assertEqual(model.info.num_actuated_joint_dofs.numpy()[w], world.num_actuated_joint_dofs)
-        test.assertEqual(model.info.num_joint_cts.numpy()[w], world.num_joint_cts)
+        test.assertEqual(model.info.num_joint_bilateral_cts.numpy()[w], world.num_bilateral_joint_cts)
         test.assertEqual(model.info.num_joint_dynamic_cts.numpy()[w], world.num_dynamic_joint_cts)
         test.assertEqual(model.info.num_joint_kinematic_cts.numpy()[w], world.num_kinematic_joint_cts)
         test.assertEqual(model.info.bodies_offset.numpy()[w], world.bodies_idx_offset)
@@ -66,9 +66,11 @@ def assert_model_matches_builder(test: unittest.TestCase, builder: ModelBuilderK
         test.assertEqual(model.info.joint_passive_dofs_offset.numpy()[w], world.joint_passive_dofs_idx_offset)
         test.assertEqual(model.info.joint_actuated_coords_offset.numpy()[w], world.joint_actuated_coords_idx_offset)
         test.assertEqual(model.info.joint_actuated_dofs_offset.numpy()[w], world.joint_actuated_dofs_idx_offset)
-        # TODO: test.assertEqual(model.info.joint_cts_offset.numpy()[w], world.joint_cts_idx_offset)
+        test.assertEqual(model.info.joint_bilateral_cts_offset.numpy()[w], world.joint_bilateral_cts_idx_offset)
         test.assertEqual(model.info.joint_dynamic_cts_offset.numpy()[w], world.joint_dynamic_cts_idx_offset)
         test.assertEqual(model.info.joint_kinematic_cts_offset.numpy()[w], world.joint_kinematic_cts_idx_offset)
+        test.assertEqual(model.info.joint_bounded_cts_offset.numpy()[w], world.joint_bounded_cts_idx_offset)
+        test.assertEqual(model.info.joint_friction_cts_offset.numpy()[w], world.joint_friction_cts_idx_offset)
 
     test.assertEqual(builder.num_bodies, model.size.sum_of_num_bodies)
     for i, body in enumerate(builder.all_bodies):
@@ -110,7 +112,7 @@ def assert_model_matches_builder(test: unittest.TestCase, builder: ModelBuilderK
     msg.info("model.info.body_dofs_offset: %s", model.info.body_dofs_offset)
     msg.info("model.info.joint_coords_offset: %s", model.info.joint_coords_offset)
     msg.info("model.info.joint_dofs_offset: %s", model.info.joint_dofs_offset)
-    msg.info("model.info.joint_cts_offset: %s\n", model.info.joint_cts_offset)
+    msg.info("model.info.joint_bilateral_cts_offset: %s\n", model.info.joint_bilateral_cts_offset)
     msg.info("model.info.joint_dynamic_cts_offset: %s\n", model.info.joint_dynamic_cts_offset)
     msg.info("model.info.joint_kinematic_cts_offset: %s\n", model.info.joint_kinematic_cts_offset)
     msg.info("model.info.joint_passive_coords_offset: %s", model.info.joint_passive_coords_offset)
@@ -156,7 +158,7 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(builder.num_joint_dofs, 0)
         self.assertEqual(builder.num_passive_joint_dofs, 0)
         self.assertEqual(builder.num_actuated_joint_dofs, 0)
-        self.assertEqual(builder.num_joint_cts, 0)
+        self.assertEqual(builder.num_bilateral_joint_cts, 0)
         self.assertEqual(builder.num_dynamic_joint_cts, 0)
         self.assertEqual(builder.num_kinematic_joint_cts, 0)
         self.assertEqual(len(builder.bodies), 0)
@@ -175,7 +177,7 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(builder.num_joint_dofs, 0)
         self.assertEqual(builder.num_passive_joint_dofs, 0)
         self.assertEqual(builder.num_actuated_joint_dofs, 0)
-        self.assertEqual(builder.num_joint_cts, 0)
+        self.assertEqual(builder.num_bilateral_joint_cts, 0)
         self.assertEqual(len(builder.bodies), 1)
         self.assertEqual(len(builder.bodies[0]), 0)
         self.assertEqual(len(builder.joints), 1)
@@ -310,7 +312,7 @@ class TestModelBuilder(unittest.TestCase):
             bid_B=bid_0,
             bid_F=bid_1,
             dof_type=JointDoFType.PRISMATIC,
-            act_type=JointActuationType.FORCE,
+            dof_act_types=[JointActuationType.FORCE],
             a_j=1.0,
             b_j=1.0,
         )
@@ -328,7 +330,7 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(builder.joints[wid][jid].act_type, JointActuationType.FORCE)
         self.assertEqual(builder.joints[wid][jid].a_j, [1.0])
         self.assertEqual(builder.joints[wid][jid].b_j, [1.0])
-        self.assertTrue(builder.joints[wid][jid].is_dynamic)
+        self.assertEqual(builder.joints[wid][jid].dynamic_cts_axes(), [0])
         self.assertTrue(builder.joints[wid][jid].num_kinematic_cts, 5)
         self.assertTrue(builder.joints[wid][jid].num_dynamic_cts, 1)
 
@@ -360,12 +362,85 @@ class TestModelBuilder(unittest.TestCase):
             bid_B=bid_0,
             bid_F=bid_1,
             dof_type=JointDoFType.PRISMATIC,
-            act_type=JointActuationType.FORCE,
+            dof_act_types=[JointActuationType.FORCE],
         )
         builder.add_joint_descriptor(joint, world_index=wid)
 
         # Attempt to add the same joint again and expect an error
         self.assertRaises(ValueError, builder.add_joint_descriptor, joint, world_index=wid)
+
+    def test_add_joint_per_dof_actuation(self):
+        """Propagate per-DoF actuation into selective constraint rows and the model."""
+        builder = ModelBuilderKamino()
+        wid = builder.add_world(name="test_world", up_axis=Axis.Z)
+        body = RigidBodyDescriptor(
+            name="test_rigid_body",
+            m_i=1.0,
+            i_I_i=wp.mat33f(np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
+        )
+        bid = builder.add_rigid_body_descriptor(body, world_index=wid)
+        joint = JointDescriptor(
+            name="test_gimbal",
+            bid_B=-1,
+            bid_F=bid,
+            dof_type=JointDoFType.GIMBAL,
+            dof_act_types=[
+                JointActuationType.POSITION,
+                JointActuationType.FORCE,
+                JointActuationType.FORCE,
+            ],
+            k_p_j=[100.0, 100.0, 100.0],
+            tau_j_max=[1.0, 1.0, 1.0],
+        )
+        builder.add_joint_descriptor(joint, world_index=wid)
+
+        self.assertEqual(joint.dynamic_cts_axes(), [])
+        self.assertEqual(joint.effort_cts_axes(), [0])
+
+        model = builder.finalize(self.default_device)
+
+        np.testing.assert_array_equal(
+            model.joints.dof_act_types.numpy(),
+            [
+                JointActuationType.POSITION,
+                JointActuationType.FORCE,
+                JointActuationType.FORCE,
+            ],
+        )
+        self.assertEqual(joint.act_type, JointActuationType.POSITION)
+
+    def test_reject_implicit_pd_actuation_without_gains(self):
+        """Reject implicit-PD modes whose required gains are all zero."""
+        for act_type, k_p_j, k_d_j in (
+            (JointActuationType.VELOCITY, 1.0, 0.0),
+            (JointActuationType.POSITION, 0.0, 0.0),
+            (JointActuationType.POSITION_VELOCITY, 0.0, 0.0),
+            (JointActuationType.POSITION_VELOCITY_FORCE, 0.0, 0.0),
+        ):
+            with self.subTest(act_type=act_type):
+                with self.assertRaisesRegex(ValueError, "requires a non-zero gain"):
+                    JointDescriptor(
+                        name="test_joint",
+                        dof_type=JointDoFType.PRISMATIC,
+                        dof_act_types=[act_type],
+                        k_p_j=k_p_j,
+                        k_d_j=k_d_j,
+                    )
+
+    def test_allow_unused_implicit_pd_gains(self):
+        """Allow gains that are unused by passive or force-actuated DoFs."""
+        for act_type in (JointActuationType.PASSIVE, JointActuationType.FORCE):
+            with self.subTest(act_type=act_type):
+                joint = JointDescriptor(
+                    name="test_joint",
+                    dof_type=JointDoFType.PRISMATIC,
+                    dof_act_types=[act_type],
+                    k_p_j=1.0,
+                    k_d_j=1.0,
+                )
+                self.assertEqual(joint.dof_act_types, [act_type])
 
     def test_08_add_invalid_joint(self):
         builder = ModelBuilderKamino()
@@ -375,7 +450,7 @@ class TestModelBuilder(unittest.TestCase):
         joint = JointDescriptor(
             name="test_joint",
             dof_type=JointDoFType.PRISMATIC,
-            act_type=JointActuationType.FORCE,
+            dof_act_types=[JointActuationType.FORCE],
         )
         # Attempt to add a joint without specifying bodies and expect an error
         self.assertRaises(ValueError, builder.add_joint_descriptor, joint, world_index=wid)

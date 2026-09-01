@@ -1941,8 +1941,8 @@ Contact reduction options for hydroelastic contacts are configured via :class:`~
 
 Hydroelastic memory can be tuned with ``buffer_fraction`` on
 :class:`~geometry.HydroelasticSDF.Config`. This scales broadphase, iso-refinement,
-and hydroelastic face-contact buffer allocations as a fraction of the worst-case
-size. Lower values reduce memory usage but also reduce overflow headroom.
+and hydroelastic face-contact buffer allocations from their default estimated
+capacities. Lower values reduce memory usage but also reduce overflow headroom.
 
 .. testcode:: hydro-buffer
 
@@ -1950,13 +1950,16 @@ size. Lower values reduce memory usage but also reduce overflow headroom.
 
     config = HydroelasticSDF.Config(
         reduce_contacts=True,
-        buffer_fraction=0.2,  # 20% of worst-case (default: 1.0)
+        buffer_fraction=0.2,  # 20% of default estimates (default: 1.0)
     )
 
-The default ``buffer_fraction`` is ``1.0`` (full worst-case allocation). Lowering it
-reduces GPU memory usage but may cause overflow in dense contact scenes.
+The default ``buffer_fraction`` is ``1.0``, which uses the default capacity
+estimates. Lowering it reduces GPU memory usage but may cause overflow in dense contact scenes.
 If runtime overflow warnings appear, increase ``buffer_fraction`` (or stage-specific
 ``buffer_mult_*`` values) until warnings disappear in your target scenes.
+In deterministic mode, the final iso-voxel buffer has a hard fingerprint-safe
+capacity limit that these settings cannot raise. If that limit overflows, reduce
+the SDF resolution or disable deterministic mode.
 
 .. _Contact Material Properties:
 

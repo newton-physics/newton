@@ -44,6 +44,7 @@ JOINT_LIMIT_TOLERANCE = 0.003
 START_RAMP_DURATION = 1.2
 MOUSE_PICK_STIFFNESS = 0.01
 MOUSE_PICK_DAMPING = 0.001
+PULLEY_OPACITY = 0.55
 CONTACT_KE = 1.0e6
 
 
@@ -236,6 +237,7 @@ def add_pulley(
             half_height=half_height,
             cfg=cfg,
             color=shape_color,
+            opacity=PULLEY_OPACITY,
             label=f"{label}_{suffix}" if label else None,
         )
 
@@ -495,6 +497,7 @@ class Example:
         self.table_tracking_max_error = 0.0
         self.table_tracking_error_sq_sum = 0.0
         self.table_tracking_sample_count = 0
+        self._last_body_q: np.ndarray | None = None
         self.slide_x_bounds = _symmetric_bounds(TABLE_RECT_HALF_X)
         self.table_y_bounds = _symmetric_bounds(TABLE_RECT_HALF_Y)
 
@@ -886,6 +889,7 @@ class Example:
         q_left = float(input_pulley_angles[0])
         q_right = float(input_pulley_angles[1])
         body_q = self.state_0.body_q.numpy()
+        self._last_body_q = body_q
         target_table_xy = self.target_table_xy.numpy()
         table_pos = body_q[self.table_body, 0:3]
         table_x = float(table_pos[0]) - self.table_origin_xy[0]
@@ -941,7 +945,9 @@ class Example:
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
 
-        body_q = self.state_0.body_q.numpy()
+        body_q = self._last_body_q
+        if body_q is None:
+            body_q = self.state_0.body_q.numpy()
         self._check_state_bounds(body_q)
 
     def test_final(self):
@@ -949,7 +955,9 @@ class Example:
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
 
-        body_q = self.state_0.body_q.numpy()
+        body_q = self._last_body_q
+        if body_q is None:
+            body_q = self.state_0.body_q.numpy()
         self._check_state_bounds(body_q)
 
         if self.table_tracking_sample_count == 0:
