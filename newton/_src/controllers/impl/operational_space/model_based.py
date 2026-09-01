@@ -97,9 +97,11 @@ class ControllerOperationalSpace(ControllerBase):
         use_gravity_compensation: Forwarded unchanged.
         use_wrench_feedforward: Forwarded unchanged.
         use_wrench_feedback: Forwarded unchanged.
-        motion_selection_axes_tool: Forwarded unchanged.
-        wrench_selection_axes_tool: Forwarded unchanged.
+        motion_selection_axes: Forwarded unchanged.
+        wrench_selection_axes: Forwarded unchanged.
         wrench_stiffness: Forwarded unchanged.
+        linear_selection_frame_operational: Forwarded unchanged.
+        angular_selection_frame_operational: Forwarded unchanged.
         use_null_space_control: Forwarded unchanged.
         null_space_stiffness: Forwarded unchanged.
         null_space_damping: Forwarded unchanged.
@@ -136,6 +138,10 @@ class ControllerOperationalSpace(ControllerBase):
         """Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count]. ``None`` unless ``use_wrench_feedback=True``."""
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Contact-wrench proportional feedback gain Kp, shape [controlled_robot_count]. ``None`` when baked at construction, or when ``use_wrench_feedback=False``."""
+        linear_selection_frame_operational: wp.array[wp.quat] | wp.indexedarray[wp.quat] | None
+        """Orientation of S_f, relative to the operational frame, shape [controlled_robot_count]. ``None`` when fixed at construction, or when wrench control is disabled."""
+        angular_selection_frame_operational: wp.array[wp.quat] | wp.indexedarray[wp.quat] | None
+        """Orientation of S_tau, relative to the operational frame, shape [controlled_robot_count]. ``None`` when fixed at construction, or when wrench control is disabled."""
         joint_q_des_null: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Desired joint positions for the null-space posture task [m or rad], compact, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_control=True``."""
         joint_qd_des_null: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
@@ -166,9 +172,11 @@ class ControllerOperationalSpace(ControllerBase):
         use_gravity_compensation: bool = True,
         use_wrench_feedforward: bool = False,
         use_wrench_feedback: bool = False,
-        motion_selection_axes_tool: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
-        wrench_selection_axes_tool: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
+        motion_selection_axes: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
+        wrench_selection_axes: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None = None,
+        linear_selection_frame_operational: wp.array[wp.quat] | wp.quat | None = None,
+        angular_selection_frame_operational: wp.array[wp.quat] | wp.quat | None = None,
         use_null_space_control: bool = False,
         null_space_stiffness: wp.array[wp.float32] | float | None = None,
         null_space_damping: wp.array[wp.float32] | float | None = None,
@@ -196,6 +204,8 @@ class ControllerOperationalSpace(ControllerBase):
         self._motion_stiffness_is_live = motion_stiffness is None
         self._motion_damping_is_live = motion_damping is None
         self._wrench_stiffness_is_live = self._use_wrench_feedback and wrench_stiffness is None
+        self._linear_selection_frame_is_live = self._use_wrench and linear_selection_frame_operational is None
+        self._angular_selection_frame_is_live = self._use_wrench and angular_selection_frame_operational is None
         self._null_stiffness_is_live = self._use_null_space and null_space_stiffness is None
         self._null_damping_is_live = self._use_null_space and null_space_damping is None
 
@@ -455,9 +465,11 @@ class ControllerOperationalSpace(ControllerBase):
             use_gravity_compensation=use_gravity_compensation,
             use_wrench_feedforward=use_wrench_feedforward,
             use_wrench_feedback=use_wrench_feedback,
-            motion_selection_axes_tool=motion_selection_axes_tool,
-            wrench_selection_axes_tool=wrench_selection_axes_tool,
+            motion_selection_axes=motion_selection_axes,
+            wrench_selection_axes=wrench_selection_axes,
             wrench_stiffness=wrench_stiffness,
+            linear_selection_frame_operational=linear_selection_frame_operational,
+            angular_selection_frame_operational=angular_selection_frame_operational,
             use_null_space_control=use_null_space_control,
             null_space_stiffness=null_space_stiffness,
             null_space_damping=null_space_damping,
@@ -595,6 +607,16 @@ class ControllerOperationalSpace(ControllerBase):
         inputs.wrench_stiffness = (
             wp.zeros(robot_count, dtype=wp.spatial_vector, device=device, requires_grad=requires_grad)
             if self._wrench_stiffness_is_live
+            else None
+        )
+        inputs.linear_selection_frame_operational = (
+            wp.zeros(robot_count, dtype=wp.quat, device=device, requires_grad=requires_grad)
+            if self._linear_selection_frame_is_live
+            else None
+        )
+        inputs.angular_selection_frame_operational = (
+            wp.zeros(robot_count, dtype=wp.quat, device=device, requires_grad=requires_grad)
+            if self._angular_selection_frame_is_live
             else None
         )
         inputs.joint_q_des_null = (
@@ -756,6 +778,10 @@ class ControllerOperationalSpace(ControllerBase):
             self._mf_input.measured_wrench_world = inputs.measured_wrench_world
         if self._wrench_stiffness_is_live:
             self._mf_input.wrench_stiffness = inputs.wrench_stiffness
+        if self._linear_selection_frame_is_live:
+            self._mf_input.linear_selection_frame_operational = inputs.linear_selection_frame_operational
+        if self._angular_selection_frame_is_live:
+            self._mf_input.angular_selection_frame_operational = inputs.angular_selection_frame_operational
         if self._use_null_space:
             self._mf_input.joint_q_des_null = inputs.joint_q_des_null
             self._mf_input.joint_qd_des_null = inputs.joint_qd_des_null

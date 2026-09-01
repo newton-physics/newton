@@ -48,6 +48,29 @@ from ....math import velocity_at_point
 _FLOAT32_EPS = wp.constant(wp.float32(np.finfo(np.float32).eps))
 
 
+@wp.func
+def _rotate_spatial_vector(quat_target_from_source: wp.quat, vector_source: wp.spatial_vector) -> wp.spatial_vector:
+    """Rotate a spatial vector's linear/angular halves independently by the same rotation.
+
+    A twist, force, or wrench's components change under a change of basis
+    the same way any other vector's do -- a pure rotation, no translation
+    and no dependence on the target/source frames' relative motion (this is
+    a coordinate re-expression of the same physical quantity, not a moving-
+    reference-frame velocity correction). Shared by every kernel that needs
+    to re-express one of these in a different frame: :func:`_pose_twist_to_frame_kernel`
+    (the tool's twist), :func:`_rotate_jacobian_to_frame_kernel` (each
+    Jacobian column), and the wrench command kernels below (the desired/
+    measured wrench).
+    """
+    linear_target = wp.quat_rotate(
+        quat_target_from_source, wp.vec3(vector_source[0], vector_source[1], vector_source[2])
+    )
+    angular_target = wp.quat_rotate(
+        quat_target_from_source, wp.vec3(vector_source[3], vector_source[4], vector_source[5])
+    )
+    return wp.spatial_vector(linear_target, angular_target)
+
+
 @wp.kernel
 def _tool_pose_and_twist_kernel(
     body_q: wp.array[wp.transform],  # (body_count,) coordinate_change_world_from_body per body
@@ -134,6 +157,42 @@ def _shift_jacobian_to_tool_kernel(
     )
     for row in range(6):
         jacobian_tool_world[robot_idx, row, padded_dof_idx] = jacobian_column_tool_world[row]
+
+
+@wp.kernel
+def _rotate_jacobian_to_frame_kernel(
+    frame_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the target frame
+    jacobian_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, in world coords
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    jacobian_in_frame: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns rotated into the target frame; zero beyond dof_count
+):
+    """Rotate every column of a tool-point Jacobian from world into an arbitrary frame.
+
+    Each column is itself a spatial vector (a per-DOF unit twist), so this
+    is :func:`_rotate_spatial_vector` applied column by column. Downstream,
+    Lambda, the null-space projector, and both J^T force mappings are
+    computed entirely from the result -- the world-frame Jacobian is never
+    read again after this, since ``J_frame^T @ (...)`` sandwiches built
+    consistently from the same rotation always equal their world-frame
+    counterparts exactly (the rotation cancels: ``(R @ J)^T @ (R @ ...) ==
+    J^T @ (...)`` for any orthogonal ``R``).
+    """
+    robot_idx, padded_dof_idx = wp.tid()
+    if padded_dof_idx >= dof_count[robot_idx]:
+        return
+    quat_frame_from_world = wp.quat_inverse(wp.transform_get_rotation(frame_pose_world[robot_idx]))
+
+    column_world = wp.spatial_vector()
+    for row in range(6):
+        column_world[row] = jacobian_world[robot_idx, row, padded_dof_idx]
+    column_in_frame = _rotate_spatial_vector(quat_frame_from_world, column_world)
+    for row in range(6):
+        jacobian_in_frame[robot_idx, row, padded_dof_idx] = column_in_frame[row]
 
 
 # ---------------------------------------------------------------------------
@@ -265,36 +324,28 @@ def _operational_space_mass_matrix_inverse_kernel(
 
 
 @wp.kernel
-def _tool_state_to_operational_kernel(
-    operational_frame_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the operational frame
-    tool_pose_world: wp.array[wp.transform],  # (robot_count,) current world pose of the tool frame
-    tool_twist_world: wp.array[wp.spatial_vector],  # (robot_count,) current tool twist, world coords
+def _pose_twist_to_frame_kernel(
+    frame_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the target frame
+    pose_world: wp.array[wp.transform],  # (robot_count,) a world pose, e.g. the tool's current pose
+    twist_world: wp.array[wp.spatial_vector],  # (robot_count,) the same body's twist, world coords
     # outputs
-    tool_pose_operational: wp.array[
-        wp.transform
-    ],  # (robot_count,) current tool pose, relative to the operational frame
-    tool_twist_operational: wp.array[
-        wp.spatial_vector
-    ],  # (robot_count,) current tool twist, components expressed in the operational frame
+    pose_in_frame: wp.array[wp.transform],  # (robot_count,) pose_world, relative to the target frame
+    twist_in_frame: wp.array[wp.spatial_vector],  # (robot_count,) twist_world, components expressed in the target frame
 ):
-    """Express the tool's current pose/twist relative to the operational frame instead of world.
+    """Express a world pose/twist relative to an arbitrary frame instead of world.
 
     Bringing the tool's own state into the operational frame here -- rather
     than composing the desired command out into world frame and rotating
     the resulting error back for every downstream term that needs it -- means
     the error and PD law run entirely in the operational frame with no
-    rotation of their own: one rotation in (here), one rotation out (in
-    :func:`_task_space_pd_kernel`, for the result only).
+    rotation of their own.
     """
     robot_idx = wp.tid()
-    operational_frame_pose = operational_frame_pose_world[robot_idx]
-    tool_pose_operational[robot_idx] = wp.transform_inverse(operational_frame_pose) * tool_pose_world[robot_idx]
+    frame_pose = frame_pose_world[robot_idx]
+    pose_in_frame[robot_idx] = wp.transform_inverse(frame_pose) * pose_world[robot_idx]
 
-    quat_operational_from_world = wp.quat_inverse(wp.transform_get_rotation(operational_frame_pose))
-    twist = tool_twist_world[robot_idx]
-    linear_operational = wp.quat_rotate(quat_operational_from_world, wp.vec3(twist[0], twist[1], twist[2]))
-    angular_operational = wp.quat_rotate(quat_operational_from_world, wp.vec3(twist[3], twist[4], twist[5]))
-    tool_twist_operational[robot_idx] = wp.spatial_vector(linear_operational, angular_operational)
+    quat_frame_from_world = wp.quat_inverse(wp.transform_get_rotation(frame_pose))
+    twist_in_frame[robot_idx] = _rotate_spatial_vector(quat_frame_from_world, twist_world[robot_idx])
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +423,6 @@ def _pose_error_kernel(
 
 @wp.kernel
 def _task_space_pd_kernel(
-    operational_frame_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the operational frame
     pose_error_operational: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) (position error, orientation error) from _pose_error_kernel, operational frame
@@ -389,9 +439,9 @@ def _task_space_pd_kernel(
         wp.spatial_vector
     ],  # (robot_count,) per-axis derivative gain Kd, operational-frame-local; [1/s] if inertial decoupling follows, else [N*s/m or N*m*s/rad]
     # outputs
-    desired_task_acceleration_world: wp.array[
+    desired_task_acceleration_operational: wp.array[
         wp.spatial_vector
-    ],  # (robot_count,) Kp .* pose_error + Kd .* twist_error, computed in the operational frame, result rotated to world
+    ],  # (robot_count,) Kp .* pose_error + Kd .* twist_error, in the operational frame
 ):
     """Task-space spring-damper term, ``Kp .* pose_error + Kd .* (desired_twist - current_twist)``.
 
@@ -403,14 +453,12 @@ def _task_space_pd_kernel(
     Kp/Kd are specified per-axis in the operational frame -- e.g. "stiff
     along the insertion axis" should stay true as that frame reorients, not
     silently become "stiff along whatever world axis the insertion axis
-    started aligned with". The error/twist inputs are already expressed in
-    the operational frame (:func:`_tool_state_to_operational_kernel` puts
-    the tool's own state there, and callers pass the desired twist/pose
-    error the same way), so the gain applies as a plain per-axis multiply
-    with no rotation at all -- only the combined result needs rotating, once,
-    back out to world (``R @ (Kp .* error)``, the same result
-    ``(R @ diag(Kp) @ R^T) @ error_world`` would give, without ever forming
-    the 6x6 matrix or rotating the error in the first place).
+    started aligned with". Every input and the output are already expressed
+    in the operational frame (:func:`_pose_twist_to_frame_kernel` puts the
+    tool's own state there, callers pass the desired twist/pose error the
+    same way, and Lambda -- the next consumer of this output -- is itself
+    computed from a Jacobian rotated into the operational frame), so this
+    reduces to a plain per-axis multiply with no rotation anywhere at all.
     """
     robot_idx = wp.tid()
     pose_error = pose_error_operational[robot_idx]
@@ -418,44 +466,33 @@ def _task_space_pd_kernel(
     kp = stiffness[robot_idx]
     kd = damping[robot_idx]
 
-    accel_linear_operational = wp.vec3(
+    desired_task_acceleration_operational[robot_idx] = wp.spatial_vector(
         kp[0] * pose_error[0] + kd[0] * twist_error[0],
         kp[1] * pose_error[1] + kd[1] * twist_error[1],
         kp[2] * pose_error[2] + kd[2] * twist_error[2],
-    )
-    accel_angular_operational = wp.vec3(
         kp[3] * pose_error[3] + kd[3] * twist_error[3],
         kp[4] * pose_error[4] + kd[4] * twist_error[4],
         kp[5] * pose_error[5] + kd[5] * twist_error[5],
     )
 
-    quat_world_from_operational = wp.transform_get_rotation(operational_frame_pose_world[robot_idx])
-    accel_linear_world = wp.quat_rotate(quat_world_from_operational, accel_linear_operational)
-    accel_angular_world = wp.quat_rotate(quat_world_from_operational, accel_angular_operational)
-    desired_task_acceleration_world[robot_idx] = wp.spatial_vector(accel_linear_world, accel_angular_world)
-
 
 @wp.kernel
 def _apply_spatial_matrix_kernel(
-    matrix: wp.array3d[float],  # (robot_count, 6, 6) e.g. Lambda (from _invert_spd_block_kernel) or a selection matrix
-    vector: wp.array[wp.spatial_vector],  # (robot_count,) e.g. a desired task-space acceleration, or a wrench
+    matrix: wp.array3d[float],  # (robot_count, 6, 6) Lambda, from _invert_spd_block_kernel
+    vector: wp.array[wp.spatial_vector],  # (robot_count,) a desired task-space acceleration
     # outputs
     result: wp.array[wp.spatial_vector],  # (robot_count,) = matrix @ vector
 ):
     """Multiply a 6x6 task-space matrix by a task-space vector, ``result = matrix @ vector``.
 
-    Two unrelated uses share this kernel because the operation is identical:
-
-    - **Inertial decoupling**: ``matrix = Lambda`` (the operational-space mass
-      matrix), ``vector`` a desired task-space acceleration, ``result`` the
-      task-space force that produces it — the operational-space analogue of
-      ``F = m*a``. Skipping this step entirely (using the acceleration
-      directly as the force) is the task-space-impedance alternative, which
-      ignores the tool's effective inertia.
-    - **Selection masking**: ``matrix`` a world-frame selection matrix (from
-      :func:`_rotate_selection_matrix_kernel`), ``vector`` a candidate
-      task-space force or wrench, ``result`` its component along the
-      selected axes only.
+    Used for inertial decoupling: ``matrix = Lambda`` (the operational-space
+    mass matrix), ``vector`` a desired task-space acceleration, ``result``
+    the task-space force that produces it — the operational-space analogue
+    of ``F = m*a``. Skipping this step entirely (using the acceleration
+    directly as the force) is the task-space-impedance alternative, which
+    ignores the tool's effective inertia. (Frame-local axis selection uses
+    :func:`_mask_frame_local_kernel` instead, which never builds a 6x6
+    matrix at all.)
 
     ``matrix`` is stored as a plain ``(robot_count, 6, 6)`` float array — not
     a ``wp.spatial_matrix`` array — because Lambda comes from
@@ -641,10 +678,22 @@ def _null_space_projector_kernel(
 # Motion/force selection and contact-wrench control.
 #
 # Which of the 6 task axes are motion-controlled vs. force-controlled is
-# naturally a tool-local choice (e.g. "force-control along the insertion
-# axis" for a peg-in-hole task should track the tool's current orientation,
-# not stay fixed in world), so the selection weights are rotated into world
-# coordinates every step from a fixed tool-local specification.
+# naturally not a single-frame choice: the linear/force selection is most
+# naturally expressed relative to a frame S_f (e.g. aligned to a contact
+# surface's normal) and the angular/moment selection relative to a possibly
+# *different* frame S_tau (e.g. the compliant-rotation axis) -- Khatib's
+# generalized task specification matrix, Omega = diag(S_f^T . Sigma_f . S_f,
+# S_tau^T . Sigma_tau . S_tau). Both S_f and S_tau are themselves specified
+# relative to the operational frame, and applied to task-space vectors that
+# are already expressed there (:func:`_apply_dual_frame_selection`), so
+# selection never touches world frame at all.
+#
+# Applied once, before Lambda for the motion branch (masking the desired
+# acceleration, matching Khatib's ``F_m = Lambda . Omega . F*_m``) and once
+# on the combined wrench command for the force branch -- not a second time
+# afterward, since Lambda's own coupling is exactly what should propagate
+# through a selected acceleration; see the module-level docstring in
+# ``model_free.py`` for the full derivation.
 #
 # The motion, force, and (if used) null-space joint torques are each mapped
 # to joint space by their own :func:`_jacobian_transpose_force_kernel` call
@@ -657,80 +706,110 @@ def _null_space_projector_kernel(
 # ---------------------------------------------------------------------------
 
 
-@wp.kernel
-def _rotate_selection_matrix_kernel(
-    tool_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the tool frame
-    selection_axes_tool: wp.array[
-        wp.spatial_vector
-    ],  # (robot_count,) diagonal selection weight per axis (0/1, or any scalar weight), tool-local: (linear x,y,z, angular x,y,z)
-    # outputs
-    selection_matrix_world: wp.array3d[
-        float
-    ],  # (robot_count, 6, 6) block-diagonal; the linear-angular cross blocks are always zero
-):
-    """Rotate a tool-local diagonal selection into a world-frame selection matrix.
+@wp.func
+def _rotate_apply_diagonal_rotate_back(
+    quat_outer_from_inner: wp.quat,
+    diagonal_inner: wp.vec3,  # per-axis gain or 0/1 selection, expressed in the "inner" frame
+    value_outer: wp.vec3,
+) -> wp.vec3:
+    """Rotate a 3-vector into the "inner" frame, apply a diagonal there, rotate the result back to "outer".
 
-    A rotation only mixes the 3 linear axes among themselves, and separately
-    the 3 angular axes among themselves, so the world-frame result stays
-    block-diagonal — it is generally no longer itself diagonal (unless the
-    tool-local weights within a block are all equal), which is why it has to
-    be represented as a full 6x6 matrix rather than another diagonal/vector.
+    The single vec3 building block behind :func:`_apply_dual_frame_selection`
+    (linear/angular halves use two *different* inner frames, "outer" = the
+    operational frame).
     """
-    robot_idx = wp.tid()
-    axes = selection_axes_tool[robot_idx]
-    quat_world_from_tool = wp.transform_get_rotation(tool_pose_world[robot_idx])
-
-    rotation_col_x = wp.quat_rotate(quat_world_from_tool, wp.vec3(1.0, 0.0, 0.0))
-    rotation_col_y = wp.quat_rotate(quat_world_from_tool, wp.vec3(0.0, 1.0, 0.0))
-    rotation_col_z = wp.quat_rotate(quat_world_from_tool, wp.vec3(0.0, 0.0, 1.0))
-    rotation = wp.matrix_from_cols(rotation_col_x, rotation_col_y, rotation_col_z)
-    rotation_transpose = wp.transpose(rotation)
-
-    linear_diag = wp.mat33(axes[0], 0.0, 0.0, 0.0, axes[1], 0.0, 0.0, 0.0, axes[2])
-    angular_diag = wp.mat33(axes[3], 0.0, 0.0, 0.0, axes[4], 0.0, 0.0, 0.0, axes[5])
-    linear_block_world = rotation * linear_diag * rotation_transpose
-    angular_block_world = rotation * angular_diag * rotation_transpose
-
-    for row in range(3):
-        for col in range(3):
-            selection_matrix_world[robot_idx, row, col] = linear_block_world[row, col]
-            selection_matrix_world[robot_idx, row + 3, col + 3] = angular_block_world[row, col]
-            selection_matrix_world[robot_idx, row, col + 3] = 0.0
-            selection_matrix_world[robot_idx, row + 3, col] = 0.0
+    value_inner = wp.quat_rotate_inv(quat_outer_from_inner, value_outer)
+    masked_inner = wp.vec3(
+        diagonal_inner[0] * value_inner[0], diagonal_inner[1] * value_inner[1], diagonal_inner[2] * value_inner[2]
+    )
+    return wp.quat_rotate(quat_outer_from_inner, masked_inner)
 
 
 @wp.func
-def _apply_operational_frame_gain(
-    quat_world_from_operational: wp.quat,
-    gain_operational: wp.spatial_vector,  # per-axis, expressed in the operational frame
-    error_world: wp.spatial_vector,
+def _apply_dual_frame_selection(
+    quat_operational_from_sf: wp.quat,  # (robot,) orientation of the linear/force selection frame S_f, relative to the operational frame
+    quat_operational_from_stau: wp.quat,  # (robot,) orientation of the angular/moment selection frame S_tau, relative to the operational frame
+    selection_linear_sf: wp.vec3,  # diagonal selection weight per linear axis, expressed in S_f
+    selection_angular_stau: wp.vec3,  # diagonal selection weight per angular axis, expressed in S_tau
+    vector_operational: wp.spatial_vector,
 ) -> wp.spatial_vector:
-    """Rotate a world-frame error into the operational frame, apply a diagonal gain there, rotate the result back.
+    """Mask a task-space vector already expressed in the operational frame, using two independent selection frames.
 
-    Algebraically identical to ``(R @ diag(gain_operational) @ R^T) @
-    error_world`` (the world-frame rotated-gain-matrix form) but never forms
-    that 6x6 matrix: ``R @ (gain_operational .* (R^T @ error_world))``, all
-    vec3 rotations and a per-axis multiply.
+    Implements Khatib's generalized task specification matrix, ``Omega =
+    diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau)``: the linear
+    half is rotated into ``S_f``, masked by ``Sigma_f`` (``selection_linear_sf``),
+    and rotated back; the angular half does the same independently through
+    ``S_tau``. ``S_f`` and ``S_tau`` need not agree -- e.g. the force-control
+    direction (surface normal) and the compliant-rotation axis of a task
+    generally differ.
     """
-    error_linear_operational = wp.quat_rotate_inv(
-        quat_world_from_operational, wp.vec3(error_world[0], error_world[1], error_world[2])
+    linear_operational = wp.vec3(vector_operational[0], vector_operational[1], vector_operational[2])
+    angular_operational = wp.vec3(vector_operational[3], vector_operational[4], vector_operational[5])
+    masked_linear = _rotate_apply_diagonal_rotate_back(
+        quat_operational_from_sf, selection_linear_sf, linear_operational
     )
-    error_angular_operational = wp.quat_rotate_inv(
-        quat_world_from_operational, wp.vec3(error_world[3], error_world[4], error_world[5])
+    masked_angular = _rotate_apply_diagonal_rotate_back(
+        quat_operational_from_stau, selection_angular_stau, angular_operational
     )
-    result_linear_operational = wp.vec3(
-        gain_operational[0] * error_linear_operational[0],
-        gain_operational[1] * error_linear_operational[1],
-        gain_operational[2] * error_linear_operational[2],
+    return wp.spatial_vector(masked_linear, masked_angular)
+
+
+@wp.kernel
+def _mask_dual_frame_kernel(
+    quat_operational_from_sf: wp.array[wp.quat],  # (robot_count,) S_f, relative to the operational frame
+    quat_operational_from_stau: wp.array[wp.quat],  # (robot_count,) S_tau, relative to the operational frame
+    selection_axes: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) diagonal selection weight per axis: linear half in S_f, angular half in S_tau
+    vector_operational: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) a task-space acceleration/force/wrench, already in the operational frame
+    # outputs
+    masked_vector_operational: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) vector_operational's component along selected axes, still in the operational frame
+):
+    """Zero an operational-frame task-space vector along the axes ``selection_axes`` excludes.
+
+    See :func:`_apply_dual_frame_selection`. No world pose is needed here --
+    S_f/S_tau are defined relative to the operational frame directly, so
+    this never touches world frame at all.
+    """
+    robot_idx = wp.tid()
+    axes = selection_axes[robot_idx]
+    masked_vector_operational[robot_idx] = _apply_dual_frame_selection(
+        quat_operational_from_sf[robot_idx],
+        quat_operational_from_stau[robot_idx],
+        wp.vec3(axes[0], axes[1], axes[2]),
+        wp.vec3(axes[3], axes[4], axes[5]),
+        vector_operational[robot_idx],
     )
-    result_angular_operational = wp.vec3(
-        gain_operational[3] * error_angular_operational[0],
-        gain_operational[4] * error_angular_operational[1],
-        gain_operational[5] * error_angular_operational[2],
-    )
-    return wp.spatial_vector(
-        wp.quat_rotate(quat_world_from_operational, result_linear_operational),
-        wp.quat_rotate(quat_world_from_operational, result_angular_operational),
+
+
+@wp.kernel
+def _wrench_feedforward_only_kernel(
+    operational_frame_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the operational frame
+    desired_wrench_world: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) desired contact wrench (force, moment), world coords
+    # outputs
+    wrench_command_operational: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) desired_wrench_world, rotated into the operational frame
+):
+    """The feedforward-only wrench command: just the desired wrench, rotated into the operational frame.
+
+    No gain, no feedback -- used when ``use_wrench_feedback=False``, so
+    there is nothing to combine with :func:`_wrench_feedforward_and_feedback_kernel`
+    or :func:`_wrench_feedback_only_kernel`. Still needs a rotation, since
+    the desired wrench is given in world coordinates but everything
+    downstream (selection masking, the J^T force mapping) runs in the
+    operational frame.
+    """
+    robot_idx = wp.tid()
+    quat_operational_from_world = wp.quat_inverse(wp.transform_get_rotation(operational_frame_pose_world[robot_idx]))
+    wrench_command_operational[robot_idx] = _rotate_spatial_vector(
+        quat_operational_from_world, desired_wrench_world[robot_idx]
     )
 
 
@@ -747,29 +826,38 @@ def _wrench_feedforward_and_feedback_kernel(
         wp.spatial_vector
     ],  # (robot_count,) per-axis proportional feedback gain Kp, operational-frame-local
     # outputs
-    wrench_command_world: wp.array[
+    wrench_command_operational: wp.array[
         wp.spatial_vector
-    ],  # (robot_count,) desired (feedforward) + Kp .* (desired - measured) (feedback)
+    ],  # (robot_count,) desired (feedforward) + Kp .* (desired - measured) (feedback), in the operational frame
 ):
     """Wrench command combining a feedforward and a feedback term, ``desired + Kp .* (desired - measured)``.
 
     The feedforward term is the desired wrench, commanded directly. The
     feedback term is the same law as :func:`_task_space_pd_kernel`'s
-    proportional term (see its docstring, and
-    :func:`_apply_operational_frame_gain`, for why/how Kp is applied
-    operational-frame-local here too) — this assumes the full wrench (force
-    and moment) is measurable, e.g. from a 6-axis force/torque sensor. See
-    :func:`_wrench_feedback_only_kernel` for the feedback term alone,
-    without the feedforward term.
+    proportional term. Both ``desired``/``measured`` are rotated into the
+    operational frame first (:func:`_rotate_spatial_vector`), so Kp applies
+    as a plain per-axis multiply and the whole result stays in the
+    operational frame with no further rotation -- this assumes the full
+    wrench (force and moment) is measurable, e.g. from a 6-axis
+    force/torque sensor. See :func:`_wrench_feedback_only_kernel` for the
+    feedback term alone, without the feedforward term.
     """
     robot_idx = wp.tid()
-    quat_world_from_operational = wp.transform_get_rotation(operational_frame_pose_world[robot_idx])
-    desired = desired_wrench_world[robot_idx]
-    measured = measured_wrench_world[robot_idx]
-    wrench_error = desired - measured
+    quat_operational_from_world = wp.quat_inverse(wp.transform_get_rotation(operational_frame_pose_world[robot_idx]))
+    desired_operational = _rotate_spatial_vector(quat_operational_from_world, desired_wrench_world[robot_idx])
+    measured_operational = _rotate_spatial_vector(quat_operational_from_world, measured_wrench_world[robot_idx])
+    wrench_error_operational = desired_operational - measured_operational
+    kp = stiffness[robot_idx]
 
-    feedback = _apply_operational_frame_gain(quat_world_from_operational, stiffness[robot_idx], wrench_error)
-    wrench_command_world[robot_idx] = desired + feedback
+    feedback_operational = wp.spatial_vector(
+        kp[0] * wrench_error_operational[0],
+        kp[1] * wrench_error_operational[1],
+        kp[2] * wrench_error_operational[2],
+        kp[3] * wrench_error_operational[3],
+        kp[4] * wrench_error_operational[4],
+        kp[5] * wrench_error_operational[5],
+    )
+    wrench_command_operational[robot_idx] = desired_operational + feedback_operational
 
 
 @wp.kernel
@@ -785,7 +873,9 @@ def _wrench_feedback_only_kernel(
         wp.spatial_vector
     ],  # (robot_count,) per-axis proportional feedback gain Kp, operational-frame-local
     # outputs
-    wrench_command_world: wp.array[wp.spatial_vector],  # (robot_count,) Kp .* (desired - measured), no feedforward term
+    wrench_command_operational: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) Kp .* (desired - measured), no feedforward term, in the operational frame
 ):
     """Wrench feedback correction alone, ``Kp .* (desired - measured)``, with no feedforward term.
 
@@ -794,11 +884,17 @@ def _wrench_feedback_only_kernel(
     :func:`_wrench_feedforward_and_feedback_kernel` for the combined law.
     """
     robot_idx = wp.tid()
-    quat_world_from_operational = wp.transform_get_rotation(operational_frame_pose_world[robot_idx])
-    desired = desired_wrench_world[robot_idx]
-    measured = measured_wrench_world[robot_idx]
-    wrench_error = desired - measured
+    quat_operational_from_world = wp.quat_inverse(wp.transform_get_rotation(operational_frame_pose_world[robot_idx]))
+    desired_operational = _rotate_spatial_vector(quat_operational_from_world, desired_wrench_world[robot_idx])
+    measured_operational = _rotate_spatial_vector(quat_operational_from_world, measured_wrench_world[robot_idx])
+    wrench_error_operational = desired_operational - measured_operational
+    kp = stiffness[robot_idx]
 
-    wrench_command_world[robot_idx] = _apply_operational_frame_gain(
-        quat_world_from_operational, stiffness[robot_idx], wrench_error
+    wrench_command_operational[robot_idx] = wp.spatial_vector(
+        kp[0] * wrench_error_operational[0],
+        kp[1] * wrench_error_operational[1],
+        kp[2] * wrench_error_operational[2],
+        kp[3] * wrench_error_operational[3],
+        kp[4] * wrench_error_operational[4],
+        kp[5] * wrench_error_operational[5],
     )

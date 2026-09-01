@@ -10,12 +10,13 @@
 # interactively steered. A static, uncontrolled box sits on the table too,
 # to show the model can hold bodies the controller never touches.
 #
-# Whichever tool-local axis is closest to vertical at the home ("ready")
-# pose -- the gripper's own Z axis, which points straight down there by
-# construction -- is wrench-controlled with a feedforward press force; the
-# other five task axes (the two in-plane linear directions and full
-# orientation) are motion-controlled, tracking a desired (x, y) on the
-# table while holding the tool's orientation fixed. This is a true
+# World Z (straight down onto the table) is wrench-controlled with a
+# feedforward press force; the other five task axes (the two in-plane
+# linear directions and full orientation) are motion-controlled, tracking a
+# desired (x, y) on the table while holding the tool's orientation fixed.
+# The operational frame and the S_f/S_tau selection frames are all left at
+# world here, so "world Z" is literally the selection axis passed in -- no
+# need to track the tool's own orientation to find it. This is a true
 # zero-stiffness hybrid split: the press axis carries no position spring
 # at all, only the feedforward force -- the same design Isaac Lab's own
 # test_franka_hybrid_decoupled_motion (isaaclab/test/controllers/
@@ -81,24 +82,6 @@ MOTION_KP = 300.0
 MOTION_KD = 2.0 * MOTION_KP**0.5  # critically damped
 NULL_KP = 50.0
 NULL_KD = 2.0 * NULL_KP**0.5
-
-
-def _closest_to_vertical_local_axis(tool_pose_world) -> int:
-    """Return which tool-local linear axis (0=X, 1=Y, 2=Z) is closest to world Z.
-
-    ``wrench_selection_axes_tool`` is tool-local, so pressing "down" means
-    selecting whichever local axis the home orientation happens to align
-    with world Z. For Franka's gripper at the ready pose this is local Z
-    (by URDF convention the gripper points straight down there), but this
-    measures it directly from the FK'd home quaternion rather than assuming
-    it, so the same logic works unchanged if READY_POSE is ever changed.
-    Reads the world-Z row of the rotation matrix built from the quaternion
-    (the standard quaternion-to-matrix formula) and picks its
-    largest-magnitude column.
-    """
-    qx, qy, qz, qw = tool_pose_world[3:]
-    world_z_row = np.array([2.0 * (qx * qz - qy * qw), 2.0 * (qy * qz + qx * qw), 1.0 - 2.0 * (qx * qx + qy * qy)])
-    return int(np.argmax(np.abs(world_z_row)))
 
 
 # ---------------------------------------------------------------------------
@@ -195,30 +178,12 @@ class Example:
         self.desired_y = float(home_pose[1])
         self.desired_force = 0.0
 
-        press_axis = _closest_to_vertical_local_axis(home_pose)
-        motion_selection = wp.spatial_vector(*(0.0 if axis == press_axis else 1.0 for axis in range(6)))
-        wrench_selection = wp.spatial_vector(*(1.0 if axis == press_axis else 0.0 for axis in range(6)))
-
-        # motion_stiffness/motion_damping are tool-local, like
-        # motion_selection_axes_tool above (both rotated into world every
-        # step from the tool's current orientation), so press_axis is the
-        # right index to zero for both.
-        #
-        # Zeroing it is required, not just a tidy-up: with a uniform nonzero
-        # gain on every axis, the dense position/velocity error term still
-        # computes a large "virtual acceleration" along the press axis even
-        # though it's excluded from motion_selection_axes_tool -- masking
-        # only happens to the *output* of Lambda @ acceleration, and
-        # Lambda's off-diagonal coupling terms leak that spurious
-        # acceleration into the other axes' *inputs* before the mask is
-        # ever applied. Zeroing the gain removes the spurious acceleration
-        # at the source, instead of trying to mask its downstream effects.
-        # Confirmed by direct comparison: with a uniform scalar gain, x
-        # drifted to a wrong steady state under the press force despite x
-        # being fully motion-selected; with the press axis's gain zeroed,
-        # x converges correctly.
-        motion_stiffness = wp.spatial_vector(*(0.0 if axis == press_axis else MOTION_KP for axis in range(6)))
-        motion_damping = wp.spatial_vector(*(0.0 if axis == press_axis else MOTION_KD for axis in range(6)))
+        # World Z is the press axis (index 2); the other five task axes are
+        # motion-controlled. Selection is relative to S_f (linear)/S_tau
+        # (angular), both left at identity below, so "axis 2" here is
+        # literally world Z -- independent of the tool's own orientation.
+        motion_selection = wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0)
+        wrench_selection = wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
 
         # ---- Operational-space controller -------------------------------------
         # "tool_site" matches the one site on this robot. joints restricts
@@ -229,15 +194,18 @@ class Example:
             self.model,
             joints=arm_joints,
             tool="tool_site",
-            motion_stiffness=motion_stiffness,
-            motion_damping=motion_damping,
-            # Commands/gains are interpreted directly in world coordinates.
+            motion_stiffness=MOTION_KP,
+            motion_damping=MOTION_KD,
+            # Commands/gains, and the S_f/S_tau selection frames below, are
+            # all interpreted directly in world coordinates.
             operational_frame_pose_world=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             use_inertia_decoupling=True,
             use_gravity_compensation=True,
             use_wrench_feedforward=True,
-            motion_selection_axes_tool=motion_selection,
-            wrench_selection_axes_tool=wrench_selection,
+            motion_selection_axes=motion_selection,
+            wrench_selection_axes=wrench_selection,
+            linear_selection_frame_operational=wp.quat(0.0, 0.0, 0.0, 1.0),
+            angular_selection_frame_operational=wp.quat(0.0, 0.0, 0.0, 1.0),
             use_null_space_control=True,
             null_space_stiffness=NULL_KP,
             null_space_damping=NULL_KD,

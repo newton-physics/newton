@@ -28,16 +28,19 @@ from newton._src.controllers.impl.operational_space._common import (
     _invert_spd_block_kernel,
     _jacobian_times_jacobian_transpose_kernel,
     _jacobian_transpose_force_kernel,
+    _mask_dual_frame_kernel,
     _null_space_projector_kernel,
     _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
-    _rotate_selection_matrix_kernel,
+    _pose_twist_to_frame_kernel,
+    _rotate_jacobian_to_frame_kernel,
     _shift_jacobian_to_tool_kernel,
     _task_matrix_times_jacobian_kernel,
     _task_space_pd_kernel,
     _tool_pose_and_twist_kernel,
     _wrench_feedback_only_kernel,
     _wrench_feedforward_and_feedback_kernel,
+    _wrench_feedforward_only_kernel,
 )
 from newton._src.controllers.impl.operational_space.model_based import ControllerOperationalSpace
 from newton._src.controllers.impl.operational_space.model_free import ControllerOperationalSpaceModelFree
@@ -48,6 +51,9 @@ devices = get_test_devices()
 # Operational frame coincides with world frame, for every test not
 # specifically exercising operational_frame_pose_world itself.
 _IDENTITY_TRANSFORM = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+# S_f/S_tau coincide with the operational frame, for every test not
+# specifically exercising the selection frames themselves.
+_IDENTITY_QUAT = wp.quat(0.0, 0.0, 0.0, 1.0)
 
 
 def _build_two_link_arm_with_tool_site(device):
@@ -626,21 +632,17 @@ def test_pose_error_orientation_matches_known_rotations(test, device):
 def test_task_space_pd_matches_formula(test, device):
     """The PD kernel computes Kp .* pose_error + Kd .* (desired_twist - current_twist), axis by axis.
 
-    At an identity tool orientation the tool-local frame coincides with
-    world, so rotating errors into the tool frame, applying the gain, and
-    rotating the result back (the kernel's actual implementation) reduces
-    to exactly this per-axis formula.
+    The kernel itself has no frame concept at all -- it's a plain per-axis
+    multiply on whatever frame its inputs already share (the operational
+    frame, in the real pipeline; upstream kernels handle every rotation).
     """
-    identity_pose = wp.array(
-        [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transform, device=device
-    )
-    pose_error_world = wp.array(
+    pose_error_operational = wp.array(
         [wp.spatial_vector(0.1, -0.2, 0.3, 0.01, -0.02, 0.03)], dtype=wp.spatial_vector, device=device
     )
-    tool_twist_world = wp.array(
+    tool_twist_operational = wp.array(
         [wp.spatial_vector(0.5, 0.0, -0.5, 0.1, 0.0, -0.1)], dtype=wp.spatial_vector, device=device
     )
-    desired_twist_world = wp.array(
+    desired_twist_operational = wp.array(
         [wp.spatial_vector(0.0, 0.5, 0.0, 0.0, 0.1, 0.0)], dtype=wp.spatial_vector, device=device
     )
     kp = np.array([10.0, 20.0, 30.0, 1.0, 2.0, 3.0])
@@ -648,12 +650,18 @@ def test_task_space_pd_matches_formula(test, device):
     stiffness = wp.array([wp.spatial_vector(*kp.tolist())], dtype=wp.spatial_vector, device=device)
     damping = wp.array([wp.spatial_vector(*kd.tolist())], dtype=wp.spatial_vector, device=device)
 
-    desired_task_acceleration_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    desired_task_acceleration_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _task_space_pd_kernel,
         dim=1,
-        inputs=[identity_pose, pose_error_world, tool_twist_world, desired_twist_world, stiffness, damping],
-        outputs=[desired_task_acceleration_world],
+        inputs=[
+            pose_error_operational,
+            tool_twist_operational,
+            desired_twist_operational,
+            stiffness,
+            damping,
+        ],
+        outputs=[desired_task_acceleration_operational],
         device=device,
     )
 
@@ -661,57 +669,7 @@ def test_task_space_pd_matches_formula(test, device):
     twist_error_np = np.array([0.0, 0.5, 0.0, 0.0, 0.1, 0.0]) - np.array([0.5, 0.0, -0.5, 0.1, 0.0, -0.1])
     expected = kp * pose_error_np + kd * twist_error_np
 
-    np.testing.assert_allclose(desired_task_acceleration_world.numpy()[0], expected, atol=1e-5)
-
-
-def test_task_space_pd_applies_gain_in_operational_frame_not_world(test, device):
-    """The kernel's own responsibility is rotating its result from the operational frame back to world.
-
-    Upstream (_tool_state_to_operational_kernel, _pose_error_kernel) already
-    puts the pose/twist error in the operational frame before this kernel
-    runs, so this test feeds a pose error already expressed there and checks
-    only the remaining rotate-out: with the operational frame rotated 45
-    degrees about world Z and an anisotropic operational-frame-local Kp
-    (stiff along local X only), a purely-local-X error produces a world
-    result with equal X and Y components -- not purely along world X.
-    """
-    quat_45_about_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 4.0)
-    operational_frame_pose_world = wp.array(
-        [wp.transform(wp.vec3(0.0, 0.0, 0.0), quat_45_about_z)], dtype=wp.transform, device=device
-    )
-    stiffness = wp.array([wp.spatial_vector(100.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
-    damping = wp.array([wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
-
-    zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    # A pose error purely along operational-frame-local X.
-    pose_error_operational = wp.array(
-        [wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device
-    )
-    tool_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-    desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
-
-    desired_task_acceleration_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _task_space_pd_kernel,
-        dim=1,
-        inputs=[
-            operational_frame_pose_world,
-            pose_error_operational,
-            tool_twist_operational,
-            desired_twist_operational,
-            stiffness,
-            damping,
-        ],
-        outputs=[desired_task_acceleration_world],
-        device=device,
-    )
-
-    # accel_operational = kp .* pose_error_operational = (100, 0, 0). Rotated
-    # to world by 45 degrees about Z: 100 * (cos45, sin45, 0) = (70.7, 70.7, 0).
-    expected_world = 100.0 * np.array([np.cos(np.pi / 4.0), np.sin(np.pi / 4.0), 0.0])
-    np.testing.assert_allclose(
-        desired_task_acceleration_world.numpy()[0], [*expected_world, 0.0, 0.0, 0.0], atol=1e-4
-    )
+    np.testing.assert_allclose(desired_task_acceleration_operational.numpy()[0], expected, atol=1e-5)
 
 
 def test_apply_spatial_matrix_matches_matvec(test, device):
@@ -985,45 +943,51 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
     test.assertGreater(np.abs(moore_penrose_response).max(), 0.1)
 
 
-def test_rotate_selection_matrix_matches_numpy(test, device):
-    """The rotated selection matrix is block-diagonal, each block R @ diag(axes) @ R^T, cross-blocks zero."""
-    quat = wp.quat_from_axis_angle(wp.vec3(0.3, -0.6, 0.2), 1.1)
-    tool_pose_world = wp.array([wp.transform(wp.vec3(0.0, 0.0, 0.0), quat)], dtype=wp.transform, device=device)
-    # Select only the local x linear axis and the local y,z angular axes.
+def test_mask_dual_frame_matches_numpy(test, device):
+    """Dual-frame masking matches Omega = diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau).
+
+    S_f and S_tau are two genuinely different rotations, so this also
+    checks the linear/angular halves are independently rotated -- not
+    accidentally sharing one frame the way a single-frame mask would.
+    """
+    quat_sf = wp.quat_from_axis_angle(wp.vec3(0.3, -0.6, 0.2), 1.1)
+    quat_stau = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4)
+    quat_operational_from_sf = wp.array([quat_sf], dtype=wp.quat, device=device)
+    quat_operational_from_stau = wp.array([quat_stau], dtype=wp.quat, device=device)
+    # Select only the S_f-local x linear axis and the S_tau-local y,z angular axes.
     linear_axes_np = np.array([1.0, 0.0, 0.0])
     angular_axes_np = np.array([0.0, 1.0, 1.0])
-    selection_axes_tool = wp.array(
+    selection_axes = wp.array(
         [wp.spatial_vector(*linear_axes_np.tolist(), *angular_axes_np.tolist())],
         dtype=wp.spatial_vector,
         device=device,
     )
+    vector_np = np.array([0.4, -0.7, 0.2, 0.1, -0.3, 0.5])
+    vector_operational = wp.array([wp.spatial_vector(*vector_np.tolist())], dtype=wp.spatial_vector, device=device)
 
-    selection_matrix_world = wp.zeros((1, 6, 6), dtype=float, device=device)
+    masked_vector_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
-        _rotate_selection_matrix_kernel,
+        _mask_dual_frame_kernel,
         dim=1,
-        inputs=[tool_pose_world, selection_axes_tool],
-        outputs=[selection_matrix_world],
+        inputs=[quat_operational_from_sf, quat_operational_from_stau, selection_axes, vector_operational],
+        outputs=[masked_vector_operational],
         device=device,
     )
 
-    rotation_np = np.array(wp.quat_to_matrix(quat)).reshape(3, 3)
-    expected_linear_block = rotation_np @ np.diag(linear_axes_np) @ rotation_np.T
-    expected_angular_block = rotation_np @ np.diag(angular_axes_np) @ rotation_np.T
+    rotation_sf_np = np.array(wp.quat_to_matrix(quat_sf)).reshape(3, 3)
+    rotation_stau_np = np.array(wp.quat_to_matrix(quat_stau)).reshape(3, 3)
+    linear_block = rotation_sf_np @ np.diag(linear_axes_np) @ rotation_sf_np.T
+    angular_block = rotation_stau_np @ np.diag(angular_axes_np) @ rotation_stau_np.T
+    expected = np.concatenate([linear_block @ vector_np[:3], angular_block @ vector_np[3:]])
 
-    result = selection_matrix_world.numpy()[0]
-    np.testing.assert_allclose(result[0:3, 0:3], expected_linear_block, atol=1e-5)
-    np.testing.assert_allclose(result[3:6, 3:6], expected_angular_block, atol=1e-5)
-    np.testing.assert_allclose(result[0:3, 3:6], np.zeros((3, 3)))
-    np.testing.assert_allclose(result[3:6, 0:3], np.zeros((3, 3)))
+    np.testing.assert_allclose(masked_vector_operational.numpy()[0], expected, atol=1e-5)
 
 
 def test_wrench_feedforward_and_feedback_matches_formula(test, device):
     """The full wrench (force and moment) gets feedforward + feedback, desired + Kp .* (desired - measured).
 
-    An identity tool orientation makes the tool-local Kp coincide with
-    world axes, reducing the kernel's rotate/apply/rotate-back to exactly
-    this per-axis formula.
+    An identity operational frame makes the rotate-in-then-elementwise
+    implementation reduce to exactly this per-axis formula.
     """
     identity_pose = wp.array(
         [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transform, device=device
@@ -1037,12 +1001,12 @@ def test_wrench_feedforward_and_feedback_matches_formula(test, device):
     kp_np = np.array([2.0, 3.0, 1.0, 0.5, 0.5, 0.5])
     stiffness = wp.array([wp.spatial_vector(*kp_np.tolist())], dtype=wp.spatial_vector, device=device)
 
-    wrench_command_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wrench_command_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _wrench_feedforward_and_feedback_kernel,
         dim=1,
         inputs=[identity_pose, desired_wrench_world, measured_wrench_world, stiffness],
-        outputs=[wrench_command_world],
+        outputs=[wrench_command_operational],
         device=device,
     )
 
@@ -1050,13 +1014,13 @@ def test_wrench_feedforward_and_feedback_matches_formula(test, device):
     measured_np = np.array([8.0, -6.0, 2.5, 0.8, -0.6, 0.1])
     expected = desired_np + kp_np * (desired_np - measured_np)
 
-    np.testing.assert_allclose(wrench_command_world.numpy()[0], expected, atol=1e-5)
+    np.testing.assert_allclose(wrench_command_operational.numpy()[0], expected, atol=1e-5)
 
 
 def test_wrench_feedback_only_matches_formula(test, device):
     """Feedback alone, with no feedforward term, is Kp .* (desired - measured).
 
-    Same identity-orientation note as
+    Same identity-operational-frame note as
     :func:`test_wrench_feedforward_and_feedback_matches_formula` above.
     """
     identity_pose = wp.array(
@@ -1071,12 +1035,12 @@ def test_wrench_feedback_only_matches_formula(test, device):
     kp_np = np.array([2.0, 3.0, 1.0, 0.5, 0.5, 0.5])
     stiffness = wp.array([wp.spatial_vector(*kp_np.tolist())], dtype=wp.spatial_vector, device=device)
 
-    wrench_command_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wrench_command_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
         _wrench_feedback_only_kernel,
         dim=1,
         inputs=[identity_pose, desired_wrench_world, measured_wrench_world, stiffness],
-        outputs=[wrench_command_world],
+        outputs=[wrench_command_operational],
         device=device,
     )
 
@@ -1084,7 +1048,82 @@ def test_wrench_feedback_only_matches_formula(test, device):
     measured_np = np.array([8.0, -6.0, 2.5, 0.8, -0.6, 0.1])
     expected = kp_np * (desired_np - measured_np)
 
-    np.testing.assert_allclose(wrench_command_world.numpy()[0], expected, atol=1e-5)
+    np.testing.assert_allclose(wrench_command_operational.numpy()[0], expected, atol=1e-5)
+
+
+def test_wrench_feedforward_only_matches_formula(test, device):
+    """The feedforward-only wrench command is just the desired wrench, rotated into the operational frame."""
+    quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 4.0)
+    operational_frame_pose_world = wp.array(
+        [wp.transform(wp.vec3(0.0, 0.0, 0.0), quat)], dtype=wp.transform, device=device
+    )
+    desired_np = np.array([10.0, -5.0, 2.0, 1.0, -0.5, 0.25])
+    desired_wrench_world = wp.array([wp.spatial_vector(*desired_np.tolist())], dtype=wp.spatial_vector, device=device)
+
+    wrench_command_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(
+        _wrench_feedforward_only_kernel,
+        dim=1,
+        inputs=[operational_frame_pose_world, desired_wrench_world],
+        outputs=[wrench_command_operational],
+        device=device,
+    )
+
+    rotation_np = np.array(wp.quat_to_matrix(quat)).reshape(3, 3)
+    expected = np.concatenate([rotation_np.T @ desired_np[:3], rotation_np.T @ desired_np[3:]])
+    np.testing.assert_allclose(wrench_command_operational.numpy()[0], expected, atol=1e-5)
+
+
+def test_pose_twist_to_frame_matches_manual_rotation(test, device):
+    """Expressing a world pose/twist relative to a frame matches inverse-transform/rotate by hand."""
+    quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 3.0)
+    frame_pose_world = wp.array([wp.transform(wp.vec3(1.0, 2.0, 0.0), quat)], dtype=wp.transform, device=device)
+    pose_world = wp.array([wp.transform(wp.vec3(1.5, 2.2, 0.3), wp.quat_identity())], dtype=wp.transform, device=device)
+    twist_np = np.array([0.5, -0.2, 0.1, 0.0, 0.0, 0.3])
+    twist_world = wp.array([wp.spatial_vector(*twist_np.tolist())], dtype=wp.spatial_vector, device=device)
+
+    pose_in_frame = wp.zeros(1, dtype=wp.transform, device=device)
+    twist_in_frame = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    wp.launch(
+        _pose_twist_to_frame_kernel,
+        dim=1,
+        inputs=[frame_pose_world, pose_world, twist_world],
+        outputs=[pose_in_frame, twist_in_frame],
+        device=device,
+    )
+
+    frame_transform_inv = wp.transform_inverse(wp.transform(wp.vec3(1.0, 2.0, 0.0), quat))
+    expected_pose = frame_transform_inv * wp.transform(wp.vec3(1.5, 2.2, 0.3), wp.quat_identity())
+    np.testing.assert_allclose(np.array(pose_in_frame.numpy()[0]), np.array(expected_pose), atol=1e-5)
+
+    rotation_np = np.array(wp.quat_to_matrix(quat)).reshape(3, 3)
+    expected_twist = np.concatenate([rotation_np.T @ twist_np[:3], rotation_np.T @ twist_np[3:]])
+    np.testing.assert_allclose(twist_in_frame.numpy()[0], expected_twist, atol=1e-5)
+
+
+def test_rotate_jacobian_to_frame_matches_column_rotation(test, device):
+    """Rotating a Jacobian into a frame matches rotating each column as a spatial vector by hand."""
+    quat = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.6)
+    frame_pose_world = wp.array([wp.transform(wp.vec3(0.0, 0.0, 0.0), quat)], dtype=wp.transform, device=device)
+    rng = np.random.default_rng(11)
+    jacobian_np = rng.standard_normal((1, 6, 3)).astype(np.float32)
+    jacobian_world = wp.array(jacobian_np, dtype=wp.float32, device=device)
+    dof_count = wp.array(np.array([3], dtype=np.int32), device=device)
+
+    jacobian_in_frame = wp.zeros((1, 6, 3), dtype=wp.float32, device=device)
+    wp.launch(
+        _rotate_jacobian_to_frame_kernel,
+        dim=(1, 3),
+        inputs=[frame_pose_world, jacobian_world, dof_count],
+        outputs=[jacobian_in_frame],
+        device=device,
+    )
+
+    rotation_np = np.array(wp.quat_to_matrix(quat)).reshape(3, 3)
+    expected = np.zeros_like(jacobian_np[0])
+    expected[:3, :] = rotation_np.T @ jacobian_np[0, :3, :]
+    expected[3:, :] = rotation_np.T @ jacobian_np[0, 3:, :]
+    np.testing.assert_allclose(jacobian_in_frame.numpy()[0], expected, atol=1e-5)
 
 
 class TestOperationalSpaceKernels(unittest.TestCase):
@@ -1159,12 +1198,6 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_task_space_pd_applies_gain_in_operational_frame_not_world",
-    test_task_space_pd_applies_gain_in_operational_frame_not_world,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
     "test_apply_spatial_matrix_matches_matvec",
     test_apply_spatial_matrix_matches_matvec,
     devices=devices,
@@ -1189,8 +1222,8 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_rotate_selection_matrix_matches_numpy",
-    test_rotate_selection_matrix_matches_numpy,
+    "test_mask_dual_frame_matches_numpy",
+    test_mask_dual_frame_matches_numpy,
     devices=devices,
 )
 add_function_test(
@@ -1203,6 +1236,24 @@ add_function_test(
     TestOperationalSpaceKernels,
     "test_wrench_feedback_only_matches_formula",
     test_wrench_feedback_only_matches_formula,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_wrench_feedforward_only_matches_formula",
+    test_wrench_feedforward_only_matches_formula,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_pose_twist_to_frame_matches_manual_rotation",
+    test_pose_twist_to_frame_matches_manual_rotation,
+    devices=devices,
+)
+add_function_test(
+    TestOperationalSpaceKernels,
+    "test_rotate_jacobian_to_frame_matches_column_rotation",
+    test_rotate_jacobian_to_frame_matches_column_rotation,
     devices=devices,
 )
 
@@ -1517,7 +1568,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-2)
 
     def test_use_wrench_feedforward_requires_selection_axes(self):
-        """use_wrench_feedforward=True without wrench_selection_axes_tool raises at construction."""
+        """use_wrench_feedforward=True without wrench_selection_axes raises at construction."""
         device = wp.get_device()
         with self.assertRaises(ValueError):
             ControllerOperationalSpaceModelFree(
@@ -1531,7 +1582,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             )
 
     def test_wrench_params_rejected_without_wrench_enabled(self):
-        """wrench_selection_axes_tool set without use_wrench_feedforward/use_wrench_feedback raises at construction."""
+        """wrench_selection_axes set without use_wrench_feedforward/use_wrench_feedback raises at construction."""
         device = wp.get_device()
         with self.assertRaises(ValueError):
             ControllerOperationalSpaceModelFree(
@@ -1540,7 +1591,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
                 motion_damping=1.0,
                 operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_inertia_decoupling=False,
-                wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+                wrench_selection_axes=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
                 device=device,
             )
 
@@ -1555,7 +1606,7 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
                 operational_frame_pose_world=_IDENTITY_TRANSFORM,
                 use_inertia_decoupling=False,
                 use_wrench_feedback=True,
-                wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+                wrench_selection_axes=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
                 wrench_stiffness=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
                 device=device,
             )
@@ -1572,9 +1623,11 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_wrench_feedback=True,
-            motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
-            wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+            motion_selection_axes=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
+            wrench_selection_axes=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
             wrench_stiffness=wp.spatial_vector(*wrench_kp_vec),
+            linear_selection_frame_operational=_IDENTITY_QUAT,
+            angular_selection_frame_operational=_IDENTITY_QUAT,
             device=device,
         )
         current_pose = wp.transform_identity()
@@ -1607,25 +1660,14 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         """Hybrid motion/wrench control: tau = J^T @ (S_motion @ F_motion) + J^T @ (S_wrench @ desired_wrench).
 
         Uses a peg-in-hole-style split (translation z and rotation open to
-        force control, everything else motion-controlled) at a non-identity
-        tool orientation, so the world-frame selection matrices actually mix
-        axes rather than reducing to a fixed 0/1 mask.
+        force control) with S_f/S_tau (both) set to a non-identity rotation,
+        so the selection matrices actually mix axes rather than reducing to
+        a fixed 0/1 mask.
         """
         device = wp.get_device()
         kp = 60.0
-        ctrl = ControllerOperationalSpaceModelFree(
-            controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
-            motion_stiffness=kp,
-            motion_damping=10.0,
-            operational_frame_pose_world=_IDENTITY_TRANSFORM,
-            use_inertia_decoupling=False,
-            use_wrench_feedforward=True,
-            motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
-            wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
-            device=device,
-        )
         # quat_from_axis_angle does not normalize its axis; an un-normalized
-        # one (unlike test_rotate_selection_matrix_matches_numpy's use of the
+        # one (unlike test_mask_dual_frame_matches_numpy's use of the
         # same values, which is self-consistently checked against
         # wp.quat_to_matrix either way) would make "rotating" an isotropic
         # gain fail to be a true rotation, so isotropic Kp would no longer
@@ -1634,6 +1676,19 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         axis = np.array([0.3, -0.6, 0.2])
         axis = axis / np.linalg.norm(axis)
         quat = wp.quat_from_axis_angle(wp.vec3(*axis.tolist()), 1.1)
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([6], dtype=np.int32), device=device),
+            motion_stiffness=kp,
+            motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
+            use_inertia_decoupling=False,
+            use_wrench_feedforward=True,
+            motion_selection_axes=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
+            wrench_selection_axes=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+            linear_selection_frame_operational=quat,
+            angular_selection_frame_operational=quat,
+            device=device,
+        )
         current_pose = wp.transform(wp.vec3(0.2, 0.1, -0.1), quat)
         desired_pose = wp.transform(wp.vec3(0.25, 0.05, -0.08), quat)
         zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -1683,9 +1738,11 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             use_inertia_decoupling=False,
             use_wrench_feedforward=True,
             use_wrench_feedback=True,
-            motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
-            wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+            motion_selection_axes=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
+            wrench_selection_axes=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
             wrench_stiffness=wrench_kp,
+            linear_selection_frame_operational=_IDENTITY_QUAT,
+            angular_selection_frame_operational=_IDENTITY_QUAT,
             device=device,
         )
         current_pose = wp.transform_identity()
@@ -1725,9 +1782,11 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             use_wrench_feedback=True,
-            motion_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
-            wrench_selection_axes_tool=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+            motion_selection_axes=wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0),
+            wrench_selection_axes=wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
             wrench_stiffness=wrench_kp,
+            linear_selection_frame_operational=_IDENTITY_QUAT,
+            angular_selection_frame_operational=_IDENTITY_QUAT,
             device=device,
         )
         current_pose = wp.transform_identity()
@@ -2570,7 +2629,9 @@ class TestControllerOperationalSpace(unittest.TestCase):
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
             use_wrench_feedforward=True,
-            wrench_selection_axes_tool=wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            wrench_selection_axes=wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            linear_selection_frame_operational=_IDENTITY_QUAT,
+            angular_selection_frame_operational=_IDENTITY_QUAT,
         )
         inputs = ctrl.input()
         outputs = ctrl.output()
@@ -2688,7 +2749,9 @@ class TestControllerOperationalSpace(unittest.TestCase):
                 use_inertia_decoupling=False,
                 use_gravity_compensation=False,
                 use_wrench_feedforward=use_wrench,
-                wrench_selection_axes_tool=full_selection if use_wrench else None,
+                wrench_selection_axes=full_selection if use_wrench else None,
+                linear_selection_frame_operational=_IDENTITY_QUAT if use_wrench else None,
+                angular_selection_frame_operational=_IDENTITY_QUAT if use_wrench else None,
                 use_null_space_control=use_null_space,
                 null_space_stiffness=100.0 if use_null_space else None,
                 null_space_damping=10.0 if use_null_space else None,
@@ -2714,22 +2777,23 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         np.testing.assert_allclose(tau_all, tau_motion + tau_wrench + tau_null, rtol=1e-4, atol=1e-4)
 
-    def test_step_partial_wrench_selection_is_rotated_by_the_resolved_tool_orientation(self):
-        """A partial (non-full) wrench selection is rotated using step()'s own FK-resolved tool orientation.
+    def test_step_partial_wrench_selection_is_rotated_by_s_f_not_the_resolved_tool_orientation(self):
+        """A partial (non-full) wrench selection is rotated by S_f, independent of the tool's own FK-resolved orientation.
 
-        Only the tool-local X axis is force-controlled here; every other
-        axis defaults to motion-controlled. With zero pose and twist error,
-        the motion term is exactly zero everywhere regardless of selection,
-        isolating the wrench term as the only contributor. Since the arm's
-        joints all rotate about world Z, the tool's world orientation is a
-        pure Z rotation by ``theta1 + theta2`` -- already verified correct by
-        ``test_step_resolves_tool_pose_matching_forward_kinematics`` -- which
-        this test reuses directly to build the expected rotated selection
-        matrix, independent of :func:`_rotate_selection_matrix_kernel`.
+        Only the S_f-local X axis is force-controlled here; every other axis
+        defaults to motion-controlled. With zero pose and twist error, the
+        motion term is exactly zero everywhere regardless of selection,
+        isolating the wrench term as the only contributor. S_f is set to an
+        arbitrary fixed rotation about world Z, unrelated to the arm's
+        joint angles (unlike the old tool-local design, S_f does not track
+        the tool's own orientation at all), so the expected selection is
+        built from S_f alone.
         """
         device = wp.get_device()
         model, _state, _tool_body, _transform = _build_two_link_arm_with_tool_site(device)
 
+        s_f_angle = 0.75
+        s_f = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), s_f_angle)
         ctrl = ControllerOperationalSpace(
             model,
             tool="tool_site",
@@ -2739,7 +2803,9 @@ class TestControllerOperationalSpace(unittest.TestCase):
             use_inertia_decoupling=False,
             use_gravity_compensation=False,
             use_wrench_feedforward=True,
-            wrench_selection_axes_tool=wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            wrench_selection_axes=wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            linear_selection_frame_operational=s_f,
+            angular_selection_frame_operational=_IDENTITY_QUAT,
         )
         inputs = ctrl.input()
         outputs = ctrl.output()
@@ -2759,13 +2825,13 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
 
-        combined_angle = theta1 + theta2
-        cos_c, sin_c = np.cos(combined_angle), np.sin(combined_angle)
-        world_from_tool_rotation = np.array([[cos_c, -sin_c, 0.0], [sin_c, cos_c, 0.0], [0.0, 0.0, 1.0]])
-        # Local weight is 1 on linear X only, 0 everywhere else, so the
-        # angular block of the rotated selection matrix is exactly zero.
+        cos_c, sin_c = np.cos(s_f_angle), np.sin(s_f_angle)
+        world_from_sf_rotation = np.array([[cos_c, -sin_c, 0.0], [sin_c, cos_c, 0.0], [0.0, 0.0, 1.0]])
+        # S_f-local weight is 1 on linear X only, 0 everywhere else, so the
+        # angular block of the rotated selection matrix is exactly zero
+        # regardless of S_tau.
         local_linear_selection = np.diag([1.0, 0.0, 0.0])
-        world_linear_selection = world_from_tool_rotation @ local_linear_selection @ world_from_tool_rotation.T
+        world_linear_selection = world_from_sf_rotation @ local_linear_selection @ world_from_sf_rotation.T
 
         selected_wrench_world = np.zeros(6, dtype=np.float32)
         selected_wrench_world[:3] = world_linear_selection @ desired_wrench_world[:3]
