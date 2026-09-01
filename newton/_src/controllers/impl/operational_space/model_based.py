@@ -847,7 +847,11 @@ class ControllerOperationalSpace(ControllerBase):
 
         if self._use_inertia:
             eval_mass_matrix(
-                self._model, self._model_state, H=self._model_mass_matrix, mask=self._controlled_robot_mask
+                self._model,
+                self._model_state,
+                H=self._model_mass_matrix,
+                J=self._jacobian_com_world,
+                mask=self._controlled_robot_mask,
             )
             wp.launch(
                 _gather_mass_matrix_blocks_kernel,
