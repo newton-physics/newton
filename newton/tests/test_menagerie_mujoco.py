@@ -370,6 +370,10 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "mocap_",
     "nmocap",
     "body_mocapid",
+    "body_weldid",
+    # Keyframes: Newton does not import keyframes
+    "nkey",
+    "key_",
     # Inertia representation: Newton re-diagonalizes, giving same physics but different
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
@@ -454,8 +458,8 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "nmeshnormal",
     "nmeshpoly",
     "nmeshface",
-    "nmaxmeshdeg",
-    "nmaxpolygon",
+    "nmeshdegmax",
+    "npolygonmax",
     "mesh_",
 }
 

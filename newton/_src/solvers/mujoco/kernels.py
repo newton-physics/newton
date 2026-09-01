@@ -388,6 +388,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     # Model:
     geom_bodyid: wp.array[int],
     body_weldid: wp.array[int],
+    body_dofnum: wp.array[int],
     body_invweight0: wp.array2d[wp.vec2],
     geom_condim: wp.array[int],
     geom_priority: wp.array[int],
@@ -500,14 +501,13 @@ def convert_newton_contacts_to_mjwarp_kernel(
         mj_body_a = geom_bodyid[geom_a]
         mj_body_b = geom_bodyid[geom_b]
 
-        # A body is "immovable" in three cases:
-        #  1. body < 0 → static shape (no body)
-        #  2. BodyFlags.KINEMATIC → kinematic body (e.g. armature=1e10)
-        #  3. body_weldid == 0 → fixed root body (worldbody)
-        # Pairs where both sides are immovable produce degenerate efc_D values
-        # in MuJoCo's solver, so we skip them.
-        a_immovable = body_a < 0 or (body_flags[body_a] & BodyFlags.KINEMATIC) != 0 or body_weldid[mj_body_a] == 0
-        b_immovable = body_b < 0 or (body_flags[body_b] & BodyFlags.KINEMATIC) != 0 or body_weldid[mj_body_b] == 0
+        # Skip pairs where both sides are immovable; MuJoCo produces degenerate efc_D for them.
+        # Immovable means the weld group has no dofs (welded to the worldbody, or mocap, which is
+        # how Newton represents fixed roots) or BodyFlags.KINEMATIC. `body < 0` guards body_flags.
+        a_dofless = body_dofnum[body_weldid[mj_body_a]] == 0
+        b_dofless = body_dofnum[body_weldid[mj_body_b]] == 0
+        a_immovable = body_a < 0 or (body_flags[body_a] & BodyFlags.KINEMATIC) != 0 or a_dofless
+        b_immovable = body_b < 0 or (body_flags[body_b] & BodyFlags.KINEMATIC) != 0 or b_dofless
 
         if a_immovable and b_immovable:
             tid_to_cid[tid] = -1
