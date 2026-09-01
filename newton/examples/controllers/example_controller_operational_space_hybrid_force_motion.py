@@ -51,9 +51,8 @@ from newton.sensors import SensorContact
 
 # Franka's standard "ready" pose.
 FRANKA_READY_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
-FRANKA_ARM_DOFS = len(FRANKA_READY_POSE)  # 7; the OSC controller's controlled DOFs
+FRANKA_ARM_DOFS = len(FRANKA_READY_POSE)  # 7; all controlled by the OSC controller
 FRANKA_BASE_POSITION = wp.vec3(0.0, 0.0, 0.0)
-
 
 # A UR10 configuration reaching forward and down, chosen (via forward
 # kinematics) to put its tool roughly chest-height in front of the base,
@@ -75,7 +74,7 @@ FRANKA_BALL_OFFSET = 0.04
 
 # Slider ranges, centered on each tool's actual starting (x, y) in its own
 # operational frame -- so the initial commanded position matches where the
-# tool already is, along its table's tilted surface.
+# tool already is, on its table's surface.
 XY_SLIDER_RANGE = 0.15  # [m]
 FORCE_SLIDER_MAX = 80.0  # [N]
 
@@ -90,16 +89,17 @@ TABLE_HEIGHT = 0.15
 TABLE_TILT_ANGLE = np.pi / 4.0
 TABLE_ROTATION = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -TABLE_TILT_ANGLE)
 TABLE_OFFSET = wp.vec3(0.5, 0.0, np.sqrt(TABLE_HALF_EXTENT**2 + (TABLE_HEIGHT / 2.0) ** 2) + 0.05)
-# Low friction between each tool and its table -- the wrench controller
-# handles pressing into the surface; sliding shouldn't cost extra drag force
-# on top of that.
-TOOL_TABLE_FRICTION_CFG = newton.ModelBuilder.ShapeConfig(mu=0.05)
 # The UR10's table is flat (0 degrees), unlike the Franka's tilted one.
 UR10_TABLE_ROTATION = wp.quat_identity()
 # UR10_READY_POSE's tool tip reaches further forward than the Franka's does
 # at TABLE_OFFSET's 0.5m -- push the UR10's table further out along its own
 # reach direction so it still clears the table box with margin.
 UR10_TABLE_OFFSET = TABLE_OFFSET + wp.vec3(0.3, 0.0, 0.0)
+
+# Low friction between each tool and its table -- the wrench controller
+# handles pressing into the surface; sliding shouldn't cost extra drag force
+# on top of that.
+TOOL_TABLE_FRICTION_CFG = newton.ModelBuilder.ShapeConfig(mu=0.05)
 
 # Gains -- use_inertia_decoupling=True (the default), so these are in the
 # mass-normalized (acceleration) domain: [1/s^2] for stiffness, [1/s] for
@@ -207,12 +207,12 @@ class Example:
         )
         builder.add_articulation([ur10_table_joint], label="ur10_table")
 
-        # Every controlled-arm and table DOF is driven by joint_f (through
-        # the OSC controller, or not at all for the tables), so it's put
-        # into EFFORT mode with zero gains here. The Franka's finger DOFs
-        # are skipped -- left at the URDF's own POSITION-mode target and
-        # gains, closed and held there by the solver's own implicit PD
-        # instead of drifting open under blanket EFFORT/zero gains.
+        # Every arm DOF is put into EFFORT mode with zero implicit-PD gains,
+        # so joint_f -- the OSC controller's torque output -- is its sole
+        # driver. The Franka's finger DOFs are skipped, left at the URDF's
+        # own POSITION-mode target and gains, so the solver's implicit PD
+        # holds them closed instead of drifting open under a zeroed torque.
+        # The tables (fixed-jointed, no DOFs) are unaffected either way.
         for i in range(builder.joint_dof_count):
             if i in franka_finger_dofs:
                 continue
@@ -649,7 +649,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         # Each operational frame itself -- a fixed RGB axis triad, not tied
         # to any body, so you can see where each controller's (x, y) target
-        # and press axis actually point on its tilted table.
+        # and press axis actually point on its table.
         for i, rig in enumerate(self.rigs):
             self.viewer.log_lines(f"/operational_frame_{i}", rig.gizmo_starts, rig.gizmo_ends, rig.gizmo_colors)
         self.viewer.end_frame()
