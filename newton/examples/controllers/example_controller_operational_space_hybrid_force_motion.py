@@ -14,9 +14,10 @@
 # the controller thinks "the table" and "into the table" are.
 #
 # The operational frame's local Z (into the table) is wrench-controlled
-# with a feedforward press force; the other five task axes (the two
-# in-plane directions along the table, and full orientation) are
-# motion-controlled, tracking a desired (x, y) on the table's surface.
+# with a feedforward press force plus feedback from the measured contact
+# force; the other five task axes (the two in-plane directions along the
+# table, and full orientation) are motion-controlled, tracking a desired
+# (x, y) on the table's surface.
 # A secondary null-space posture task pulls the redundant DOF back toward the ready
 # pose without disturbing either the force or the motion task
 #
@@ -71,6 +72,8 @@ MOTION_KP = 300.0
 MOTION_KD = 2.0 * MOTION_KP**0.5  # critically damped
 NULL_KP = 50.0
 NULL_KD = 2.0 * NULL_KP**0.5
+# Dimensionless: multiplies a wrench error (already in N/N*m) directly, not a pose error.
+WRENCH_KP = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +152,8 @@ class Example:
 
         # SensorContact + Contacts is Newton's contact-force readback API (see
         # example_sensor_contact.py) -- reads back the actual contact force the
-        # table exerts on the gripper fingers, so the commanded press force can
-        # be checked against what's really happening, not just assumed.
+        # table exerts on the gripper fingers, fed into the controller as
+        # wrench feedback and shown in the GUI alongside the commanded force.
         self.force_sensor = SensorContact(self.model, sensing_bodies=finger_bodies)
         self.contacts = Contacts(
             self.solver.get_max_contact_count(),
@@ -183,6 +186,7 @@ class Example:
         self.desired_x = float(home_pos_operational[0])
         self.desired_y = float(home_pos_operational[1])
         self.desired_force = 0.0
+        self._measured_force_normal = 0.0
 
         # The operational frame's local Z (below) is the press axis (index
         # 2); the other five task axes are motion-controlled. The linear and
@@ -205,9 +209,9 @@ class Example:
             # are all interpreted relative to this frame -- the table's top
             # surface, oriented with Z normal to the (tilted) table.
             operational_frame_pose_world=operational_frame_transform,
-            use_inertia_decoupling=True,
-            use_gravity_compensation=True,
             use_wrench_feedforward=True,
+            use_wrench_feedback=True,
+            wrench_stiffness=WRENCH_KP,
             motion_selection_axes=motion_selection,
             wrench_selection_axes=wrench_selection,
             use_null_space_control=True,
@@ -292,6 +296,18 @@ class Example:
         self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
+        # Force feedback needs last frame's measured contact force before
+        # this frame's controller.step() runs; SensorContact.update() isn't
+        # graph-capturable, so it has to happen here in Python, first.
+        self.force_sensor.update(self.state_0, self.contacts)
+        total_force_world = self.force_sensor.total_force.numpy().sum(axis=0)
+        self._measured_force_normal = float(self._table_normal_world @ total_force_world)
+        # SensorContact reports the reaction force the table exerts on the
+        # gripper (Newton's third law), the opposite sign of desired_wrench_world
+        # (force the gripper exerts on the table) -- negate to match.
+        measured_wrench_world = np.concatenate([-total_force_world, np.zeros(3, dtype=np.float32)])
+        self._input.measured_wrench_world.assign(measured_wrench_world[None, :].astype(np.float32))
+
         # Sliders drive the target directly -- read in gui(), applied here.
         # Cannot be graph-captured (assign() is, but the desired values
         # themselves come from Python-side UI state read after capture).
@@ -316,10 +332,6 @@ class Example:
         else:
             self._gpu_step()
 
-        # Not graph-capturable: reads self.contacts back to Python (.numpy()
-        # below) to display in the GUI.
-        self.force_sensor.update(self.state_0, self.contacts)
-
         self.sim_time += self.frame_dt
 
     def gui(self, ui):
@@ -341,15 +353,10 @@ class Example:
         # frame the x/y sliders above are expressed in.
         actual_pose_world = self.controller._tool_pose_world.numpy()[0]
         actual_pos_operational = self._table_rotation_np.T @ (actual_pose_world[:3] - self._table_position_np)
-        # Force the table exerts on the fingers, summed and projected onto
-        # the table normal; positive means the table is pushing back against
-        # the commanded press.
-        total_force_world = self.force_sensor.total_force.numpy().sum(axis=0)
-        measured_force_normal = float(self._table_normal_world @ total_force_world)
 
         ui.text(f"actual x:   {actual_pos_operational[0]:.3f}   (desired {self.desired_x:.3f})")
         ui.text(f"actual y:   {actual_pos_operational[1]:.3f}   (desired {self.desired_y:.3f})")
-        ui.text(f"measured press force: {measured_force_normal:.1f} N   (desired {self.desired_force:.1f} N)")
+        ui.text(f"measured press force: {self._measured_force_normal:.1f} N   (desired {self.desired_force:.1f} N)")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

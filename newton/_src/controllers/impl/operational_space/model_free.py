@@ -405,10 +405,10 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             Usually the complement of ``motion_selection_axes``, but that is
             not enforced — see its docstring above.
         wrench_stiffness: Contact-wrench proportional feedback gain Kp,
-            operational-frame-local like ``motion_stiffness``, [N/m] on the
-            force axes and [N·m/rad] on the moment axes. Same format as
-            ``motion_stiffness``. Only meaningful when
-            ``use_wrench_feedback=True``.
+            operational-frame-local like ``motion_stiffness``, dimensionless
+            (multiplies a wrench error directly, not a pose error) on both
+            the force and moment axes. Same format as ``motion_stiffness``.
+            Only meaningful when ``use_wrench_feedback=True``.
         linear_selection_frame_operational: Orientation of S_f, the frame
             ``motion_selection_axes``/``wrench_selection_axes``'s linear
             (force) half is interpreted in, relative to the operational
