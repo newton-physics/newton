@@ -31,9 +31,16 @@ public contract.
 Review feedback
 ---------------
 
-Raise project-Fit and architectural concerns before detailed implementation
-findings. When the overall direction is in question, avoid obscuring that
-discussion with minor observations.
+Separate discovery order from reporting order. When practical, first inspect
+the exact change and perform a correctness-first Requirements pass before
+evaluating Fit or reading existing review comments. Then use the existing
+discussion to refine or deduplicate the independently discovered concerns.
+
+In the final review, raise project-Fit and architectural concerns before
+detailed implementation findings. When the overall direction is in question,
+avoid obscuring that discussion with minor observations. Still report every
+supported material behavioral, correctness, compatibility, and performance
+finding even when the change does not Fit.
 
 For each concern, state the problem, its impact, and the supporting evidence.
 Distinguish a documented requirement from a judgment call or open question.
@@ -139,6 +146,10 @@ accuracy, and compatibility claims need representative measurements or
 primary-source evidence with enough context to interpret them. Missing
 evidence should prompt a question. Treat its absence as a finding when the
 change cannot be reviewed safely without it.
+
+Missing tests, documentation, or measurements do not substitute for identifying
+an underlying behavioral defect. Distinguish demonstrated defects from
+questions and requests for evidence.
 
 Do not silently reinterpret the intended behavior to match the implementation.
 A better but different design can pass Fit while still requiring agreement to
