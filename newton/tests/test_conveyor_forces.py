@@ -95,13 +95,15 @@ def run_conveyor(
     builder.color()
 
     model = builder.finalize(device=device)
-    model.request_contact_attributes("force")
 
     solver = _make_solver(solver_name, model)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
+    solver_outputs = None
+    if solver_name != "vbd":
+        solver_outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=contacts)
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
@@ -118,7 +120,7 @@ def run_conveyor(
             velocity=velocity if velocity is not None else wp.vec3(0.0, 0.0, 0.0),
             friction=BELT_FRICTION,
         )
-    conveyor.finalize(contacts)
+    conveyor.finalize(contacts, solver_outputs)
 
     sim_dt = 1.0 / fps / substeps
     positions = np.zeros((frames + 1, 3), dtype=np.float32)
@@ -135,8 +137,8 @@ def run_conveyor(
             conveyor.apply(state_0)
             conveyor.snapshot_prev(solver)
             collision_pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, sim_dt)
-            conveyor.update(solver, contacts, state_1, sim_dt)
+            solver.step(state_0, state_1, control, contacts, sim_dt, outputs=solver_outputs)
+            conveyor.update(solver, contacts, solver_outputs, state_1, sim_dt)
             if collect_diagnostics:
                 belt_contact_counts[sample] = conveyor.body_contact_count.numpy()[box_body]
                 conveyor_force_norms[sample] = np.linalg.norm(conveyor.conveyor_body_f.numpy()[box_body][:3])
@@ -214,19 +216,21 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
     builder.color()
 
     model = builder.finalize(device=device)
-    model.request_contact_attributes("force")
 
     solver = _make_solver(solver_name, model)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
+    solver_outputs = None
+    if solver_name != "vbd":
+        solver_outputs = solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=contacts)
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
     for shape, (_center, _half, vel) in zip(belt_shapes, belts, strict=True):
         conveyor.add_constant_belt(shape, velocity=wp.vec3(*vel))
-    conveyor.finalize(contacts)
+    conveyor.finalize(contacts, solver_outputs)
 
     sim_dt = 1.0 / fps / substeps
     positions = np.zeros((frames + 1, 3), dtype=np.float32)
@@ -240,8 +244,8 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
             conveyor.apply(state_0)
             conveyor.snapshot_prev(solver)
             collision_pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, sim_dt)
-            conveyor.update(solver, contacts, state_1, sim_dt)
+            solver.step(state_0, state_1, control, contacts, sim_dt, outputs=solver_outputs)
+            conveyor.update(solver, contacts, solver_outputs, state_1, sim_dt)
             state_0, state_1 = state_1, state_0
         q = state_0.body_q.numpy()[box_body]
         positions[f + 1], quats[f + 1] = q[:3], q[3:7]

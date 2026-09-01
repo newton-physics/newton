@@ -1,0 +1,1191 @@
+<!DOCTYPE html>
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+SPDX-License-Identifier: CC-BY-4.0
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:,">
+  <title>Solver Outputs Architecture — Newton</title>
+  <style>
+    :root {
+      --page: #f5f7f9;
+      --surface: #ffffff;
+      --surface-soft: #eef3f6;
+      --surface-code: #111820;
+      --ink: #16202a;
+      --muted: #536170;
+      --line: #ced7df;
+      --line-strong: #93a2af;
+      --accent: #4f7f18;
+      --accent-soft: #e9f4dc;
+      --blue: #216c8c;
+      --blue-soft: #e4f2f7;
+      --purple: #7053a3;
+      --purple-soft: #eee8f7;
+      --orange: #9a5a0a;
+      --orange-soft: #fff0d6;
+      --danger: #9c3e3e;
+      --danger-soft: #fbe8e7;
+      --shadow: 0 12px 34px rgb(17 29 41 / 9%);
+      --radius: 14px;
+      --content: 1120px;
+      --sidebar: 238px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #0f151b;
+        --surface: #171f27;
+        --surface-soft: #1e2933;
+        --surface-code: #090d12;
+        --ink: #edf3f7;
+        --muted: #acbac5;
+        --line: #34424e;
+        --line-strong: #617382;
+        --accent: #9acb61;
+        --accent-soft: #273a22;
+        --blue: #79bdd9;
+        --blue-soft: #1c3540;
+        --purple: #c0a6ed;
+        --purple-soft: #322a43;
+        --orange: #e1aa5f;
+        --orange-soft: #3e3020;
+        --danger: #ef9292;
+        --danger-soft: #422829;
+        --shadow: 0 14px 38px rgb(0 0 0 / 25%);
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 24px;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--page);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.62;
+    }
+
+    a { color: var(--blue); }
+    a:hover { text-decoration-thickness: 2px; }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    code {
+      padding: 0.08em 0.32em;
+      border-radius: 5px;
+      background: var(--surface-soft);
+      font-size: 0.91em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 0;
+      padding: 20px 22px;
+      border: 1px solid #273544;
+      border-radius: 11px;
+      color: #e7eef4;
+      background: var(--surface-code);
+      font-size: 13px;
+      line-height: 1.56;
+      tab-size: 4;
+    }
+
+    pre code {
+      padding: 0;
+      color: inherit;
+      background: transparent;
+      font-size: inherit;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: var(--sidebar) minmax(0, 1fr);
+      gap: 42px;
+      width: min(calc(100% - 40px), var(--content));
+      margin: 0 auto;
+      padding: 26px 0 72px;
+    }
+
+    .toc {
+      position: sticky;
+      top: 22px;
+      align-self: start;
+      max-height: calc(100vh - 44px);
+      overflow-y: auto;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: color-mix(in srgb, var(--surface) 94%, transparent);
+      box-shadow: var(--shadow);
+    }
+
+    .toc-brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 14px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-mark {
+      display: grid;
+      width: 28px;
+      height: 28px;
+      place-items: center;
+      border-radius: 7px;
+      color: #fff;
+      background: var(--accent);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .toc ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .toc a {
+      display: block;
+      padding: 6px 8px;
+      border-radius: 7px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .toc a:hover {
+      color: var(--ink);
+      background: var(--surface-soft);
+    }
+
+    .toc .toc-back {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      color: var(--blue);
+    }
+
+    main { min-width: 0; }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 46px 48px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background:
+        radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 36%),
+        linear-gradient(145deg, var(--surface), color-mix(in srgb, var(--blue-soft) 52%, var(--surface)));
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 9px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.16;
+      letter-spacing: -0.035em;
+    }
+
+    h1 {
+      max-width: 740px;
+      margin: 0;
+      font-size: clamp(38px, 6vw, 64px);
+    }
+
+    .hero .lede {
+      max-width: 760px;
+      margin: 20px 0 0;
+      color: var(--muted);
+      font-size: 19px;
+      line-height: 1.55;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 24px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .badge {
+      padding: 5px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: color-mix(in srgb, var(--surface) 78%, transparent);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    section {
+      padding-top: 64px;
+    }
+
+    section > h2 {
+      margin: 0 0 12px;
+      font-size: clamp(28px, 4vw, 39px);
+    }
+
+    section > .section-lede {
+      max-width: 800px;
+      margin: 0 0 28px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 20px;
+    }
+
+    p { margin: 0 0 16px; }
+
+    .callout {
+      margin-top: 28px;
+      padding: 18px 20px;
+      border-left: 4px solid var(--accent);
+      border-radius: 0 10px 10px 0;
+      background: var(--accent-soft);
+    }
+
+    .callout strong { color: var(--accent); }
+
+    .comparison {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .panel,
+    .benefit,
+    .decision {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: 0 8px 22px rgb(17 29 41 / 5%);
+    }
+
+    .panel { padding: 24px; }
+
+    .panel.before { border-top: 4px solid var(--danger); }
+    .panel.after { border-top: 4px solid var(--accent); }
+
+    .panel-label {
+      display: inline-block;
+      margin-bottom: 13px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    .mini-flow {
+      display: grid;
+      gap: 9px;
+      margin: 18px 0;
+    }
+
+    .mini-node {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-soft);
+      font-size: 13px;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    .mini-arrow {
+      height: 18px;
+      color: var(--line-strong);
+      text-align: center;
+      line-height: 18px;
+    }
+
+    .panel ul,
+    .benefit ul {
+      margin: 12px 0 0;
+      padding-left: 20px;
+      color: var(--muted);
+    }
+
+    .diagram {
+      margin: 28px 0 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .diagram-scroll {
+      overflow-x: auto;
+    }
+
+    .diagram svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .diagram figcaption {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .narrow-hint { display: none; }
+
+    .extension-heading { margin-top: 34px; }
+
+    .svg-node { fill: var(--surface-soft); stroke: var(--line-strong); stroke-width: 1.5; }
+    .svg-node-accent { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .svg-node-blue { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 1.7; }
+    .svg-node-purple { fill: var(--purple-soft); stroke: var(--purple); stroke-width: 1.7; }
+    .svg-node-orange { fill: var(--orange-soft); stroke: var(--orange); stroke-width: 1.7; }
+    .svg-edge { fill: none; stroke: var(--line-strong); stroke-width: 2; }
+    .svg-edge-accent { fill: none; stroke: var(--accent); stroke-width: 2.4; }
+    .svg-edge-dashed { fill: none; stroke: var(--line-strong); stroke-width: 1.7; stroke-dasharray: 7 6; }
+    .svg-label { fill: var(--ink); font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 14px; font-weight: 700; }
+    .svg-sub { fill: var(--muted); font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 11.5px; }
+    .svg-small { fill: var(--muted); font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 10.5px; font-weight: 700; }
+
+    .benefits {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 28px;
+    }
+
+    .benefit { padding: 20px; }
+
+    .benefit-index {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      margin-bottom: 13px;
+      place-items: center;
+      border-radius: 8px;
+      color: var(--accent);
+      background: var(--accent-soft);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .benefit p,
+    .decision p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .contract-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 24px;
+    }
+
+    .decision { padding: 19px; }
+
+    .decision h3 {
+      display: flex;
+      gap: 9px;
+      align-items: center;
+      font-size: 17px;
+    }
+
+    .decision-dot {
+      width: 10px;
+      height: 10px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .workflow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin: 26px 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: flow;
+    }
+
+    .workflow li {
+      position: relative;
+      padding: 20px 17px 17px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+      counter-increment: flow;
+    }
+
+    .workflow li::before {
+      content: counter(flow);
+      display: grid;
+      width: 28px;
+      height: 28px;
+      margin-bottom: 12px;
+      place-items: center;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .workflow strong { display: block; margin-bottom: 5px; }
+    .workflow span { color: var(--muted); font-size: 13px; }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin-top: 24px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      background: var(--surface-soft);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .code-heading {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      margin: 26px 0 10px;
+    }
+
+    .code-heading h3 { margin: 0; }
+    .code-heading span { color: var(--muted); font-size: 12px; }
+
+    .migration td:first-child { color: var(--danger); }
+    .migration td:nth-child(2) { color: var(--accent); }
+
+    .footer {
+      margin-top: 68px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .footer p { margin: 0; }
+
+    @media (max-width: 920px) {
+      .shell {
+        grid-template-columns: 1fr;
+        gap: 20px;
+        width: min(calc(100% - 28px), 820px);
+      }
+
+      .toc {
+        position: static;
+        max-height: none;
+      }
+
+      .toc ul {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 3px 8px;
+      }
+
+      .toc .toc-back {
+        margin-top: 8px;
+      }
+
+      .benefits { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .workflow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 650px) {
+      body { font-size: 15px; }
+      .shell { width: min(calc(100% - 20px), 620px); padding-top: 10px; }
+      .hero { padding: 30px 22px; border-radius: 16px; }
+      .hero .lede { font-size: 17px; }
+      section { padding-top: 48px; }
+      .comparison,
+      .benefits,
+      .contract-grid,
+      .workflow { grid-template-columns: 1fr; }
+      .panel { padding: 20px; }
+      .diagram { margin-inline: -2px; padding: 8px; }
+      .diagram-scroll svg { min-width: 720px; }
+      .diagram figcaption { padding-inline: 8px; }
+      .narrow-hint { display: block; }
+      th,
+      td { padding: 11px 12px; }
+      pre { padding: 16px; font-size: 12px; }
+    }
+
+    @media print {
+      :root {
+        --page: #fff;
+        --surface: #fff;
+        --surface-soft: #f1f3f5;
+        --ink: #111;
+        --muted: #444;
+        --line: #bbb;
+        --line-strong: #777;
+      }
+
+      body { background: #fff; }
+      .shell { display: block; width: 100%; padding: 0; }
+      .toc { display: none; }
+      .hero,
+      .panel,
+      .benefit,
+      .decision,
+      .diagram { box-shadow: none; break-inside: avoid; }
+      section { break-before: auto; }
+      pre { white-space: pre-wrap; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <nav class="toc" aria-label="Document sections">
+      <div class="toc-brand"><span class="brand-mark">N</span> Newton design</div>
+      <ul>
+        <li><a href="#summary">Summary</a></li>
+        <li><a href="#motivation">Why change</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#contracts">Design contracts</a></li>
+        <li><a href="#usage">How to use it</a></li>
+        <li><a href="#extension">Custom solver extension</a></li>
+        <li><a href="#sensors">Sensor consumption</a></li>
+        <li><a href="#migration">Migration map</a></li>
+        <li><a href="#benefits">Benefits</a></li>
+      </ul>
+      <a class="toc-back" href="../concepts/solver_outputs.html">← Solver Outputs reference</a>
+    </nav>
+
+    <main>
+      <header class="hero" id="summary">
+        <p class="eyebrow">Architecture proposal</p>
+        <h1>Solver Outputs</h1>
+        <p class="lede">
+          A separate, extensible data plane for optional diagnostics produced by a solver—requested by consumers,
+          allocated by the solver, populated during <code>step()</code>, and consumed by sensors, viewers, and applications.
+        </p>
+        <ul class="badges">
+          <li class="badge">solver-owned</li>
+          <li class="badge">set-composable flags</li>
+          <li class="badge">allocate once, reuse</li>
+          <li class="badge">custom-solver extensible</li>
+          <li class="badge">fail-fast validation</li>
+        </ul>
+      </header>
+
+      <div class="callout">
+        <strong>Core rule:</strong> simulation state stores the data needed to advance the simulation. Optional data that a
+        solver can report—but the simulation does not need to continue—belongs in <code>SolverOutputs</code>.
+      </div>
+
+      <section id="motivation">
+        <h2>Why change the ownership model?</h2>
+        <p class="section-lede">
+          Extended attributes made the model responsible for requesting data that only a solver can produce. This inverted
+          ownership, expanded every state/contact allocation, and made it hard for a custom solver to expose new diagnostics.
+        </p>
+
+        <div class="comparison">
+          <article class="panel before">
+            <span class="panel-label">Before — extended attributes</span>
+            <h3>Consumer mutates model allocation policy</h3>
+            <div class="mini-flow" role="group" aria-label="Old request flow">
+              <div class="mini-node">Sensor or application</div>
+              <div class="mini-arrow">↓ request_state_attribute(...)</div>
+              <div class="mini-node">Model / ModelBuilder</div>
+              <div class="mini-arrow">↓ allocates every State or Contacts</div>
+              <div class="mini-node">State.body_parent_f / Contacts.force</div>
+            </div>
+            <ul>
+              <li>The model appears to own solver capabilities.</li>
+              <li>Optional diagnostics are mixed into persistent simulation data.</li>
+              <li>Custom solver outputs need global model/state plumbing.</li>
+              <li>Allocation intent is implicit and can happen far from the solver.</li>
+            </ul>
+          </article>
+
+          <article class="panel after">
+            <span class="panel-label">After — solver outputs</span>
+            <h3>Consumers declare needs; solver owns allocation</h3>
+            <div class="mini-flow" role="group" aria-label="New request flow">
+              <div class="mini-node">Sensors / viewer / application</div>
+              <div class="mini-arrow">↓ union solver_output_flags</div>
+              <div class="mini-node">solver.outputs(flags)</div>
+              <div class="mini-arrow">↓ validates + allocates concrete type</div>
+              <div class="mini-node">SolverOutputs</div>
+            </div>
+            <ul>
+              <li>The request is made against the component that produces the data.</li>
+              <li>Only requested arrays are allocated.</li>
+              <li>Standard and solver-specific flags compose in one set.</li>
+              <li>The same container flows explicitly to every consumer.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="architecture">
+        <h2>Proposed architecture</h2>
+        <p class="section-lede">
+          The design separates the persistent simulation data plane from an optional diagnostic data plane. Allocation occurs
+          once during setup; production and consumption occur every step without changing the model.
+        </p>
+
+        <figure class="diagram">
+          <div class="diagram-scroll">
+          <svg viewBox="0 0 920 560" role="img" aria-labelledby="runtime-title runtime-desc">
+            <title id="runtime-title">Solver Outputs allocation and runtime data flow</title>
+            <desc id="runtime-desc">Consumers union output flags, the solver validates and allocates a concrete output container, then solver step fills it for sensors and viewers.</desc>
+            <defs>
+              <marker id="runtime-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path>
+              </marker>
+              <marker id="runtime-arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"></path>
+              </marker>
+            </defs>
+
+            <text x="28" y="35" class="svg-small">SETUP — DECLARE AND ALLOCATE ONCE</text>
+            <rect x="28" y="58" width="190" height="82" rx="12" class="svg-node-blue"></rect>
+            <text x="123" y="88" text-anchor="middle" class="svg-label">Consumers</text>
+            <text x="123" y="110" text-anchor="middle" class="svg-sub">IMU · contact sensor · viewer</text>
+            <text x="123" y="127" text-anchor="middle" class="svg-sub">each exposes required flags</text>
+
+            <rect x="298" y="58" width="198" height="82" rx="12" class="svg-node"></rect>
+            <text x="397" y="88" text-anchor="middle" class="svg-label">Composable set</text>
+            <text x="397" y="110" text-anchor="middle" class="svg-sub">standard Enum + custom Enum</text>
+            <text x="397" y="127" text-anchor="middle" class="svg-sub">union removes duplicates</text>
+
+            <rect x="576" y="50" width="302" height="98" rx="12" class="svg-node-accent"></rect>
+            <text x="727" y="82" text-anchor="middle" class="svg-label">solver.outputs(flags)</text>
+            <text x="727" y="105" text-anchor="middle" class="svg-sub">validate support and ownership</text>
+            <text x="727" y="123" text-anchor="middle" class="svg-sub">instantiate OUTPUTS_TYPE · allocate arrays</text>
+
+            <path d="M 218 99 H 287" class="svg-edge" marker-end="url(#runtime-arrow)"></path>
+            <text x="252" y="88" text-anchor="middle" class="svg-small">UNION</text>
+            <path d="M 496 99 H 565" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
+            <text x="530" y="88" text-anchor="middle" class="svg-small">REQUEST</text>
+
+            <line x1="28" y1="188" x2="878" y2="188" class="svg-edge-dashed"></line>
+            <text x="28" y="222" class="svg-small">RUNTIME — PRODUCE AND CONSUME EVERY STEP</text>
+
+            <rect x="28" y="253" width="185" height="88" rx="12" class="svg-node"></rect>
+            <text x="120" y="283" text-anchor="middle" class="svg-label">State</text>
+            <text x="120" y="305" text-anchor="middle" class="svg-sub">q · qd · forces</text>
+            <text x="120" y="323" text-anchor="middle" class="svg-sub">simulation data</text>
+
+            <rect x="28" y="382" width="185" height="88" rx="12" class="svg-node-orange"></rect>
+            <text x="120" y="412" text-anchor="middle" class="svg-label">Contacts</text>
+            <text x="120" y="434" text-anchor="middle" class="svg-sub">geometry · ordering</text>
+            <text x="120" y="452" text-anchor="middle" class="svg-sub">capacity binding</text>
+
+            <rect x="309" y="296" width="250" height="126" rx="14" class="svg-node-accent"></rect>
+            <text x="434" y="332" text-anchor="middle" class="svg-label">solver.step(..., outputs=)</text>
+            <text x="434" y="357" text-anchor="middle" class="svg-sub">advance State</text>
+            <text x="434" y="378" text-anchor="middle" class="svg-sub">populate only allocated output arrays</text>
+            <text x="434" y="399" text-anchor="middle" class="svg-sub">preserve contact index alignment</text>
+
+            <rect x="655" y="253" width="223" height="88" rx="12" class="svg-node-purple"></rect>
+            <text x="766" y="283" text-anchor="middle" class="svg-label">SolverOutputs</text>
+            <text x="766" y="305" text-anchor="middle" class="svg-sub">body_qdd · body_parent_f</text>
+            <text x="766" y="323" text-anchor="middle" class="svg-sub">contact_f · custom fields</text>
+
+            <rect x="655" y="382" width="223" height="88" rx="12" class="svg-node-blue"></rect>
+            <text x="766" y="412" text-anchor="middle" class="svg-label">Consumers</text>
+            <text x="766" y="434" text-anchor="middle" class="svg-sub">sensor.update(..., outputs=)</text>
+            <text x="766" y="452" text-anchor="middle" class="svg-sub">viewer · logging · application</text>
+
+            <path d="M 213 297 H 298" class="svg-edge" marker-end="url(#runtime-arrow)"></path>
+            <path d="M 213 426 H 269 Q 287 426 296 411 L 315 390" class="svg-edge" marker-end="url(#runtime-arrow)"></path>
+            <path d="M 559 338 H 644" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
+            <path d="M 766 341 V 371" class="svg-edge-accent" marker-end="url(#runtime-arrow-accent)"></path>
+            <path d="M 559 390 H 615 Q 633 390 646 405" class="svg-edge-dashed" marker-end="url(#runtime-arrow)"></path>
+            <text x="603" y="378" text-anchor="middle" class="svg-small">STATE + OUTPUTS</text>
+
+            <text x="28" y="526" class="svg-sub">Solid green: optional diagnostic data plane</text>
+            <text x="298" y="526" class="svg-sub">Gray: persistent simulation inputs/outputs</text>
+            <text x="605" y="526" class="svg-sub">Dashed: additional consumer context</text>
+          </svg>
+          </div>
+          <figcaption>
+            Allocation is explicit and front-loaded; the runtime loop only fills and reads reusable buffers.
+            <span class="narrow-hint">Scroll the diagram horizontally for full-size labels.</span>
+          </figcaption>
+        </figure>
+
+        <h3 class="extension-heading">Class and extension model</h3>
+        <figure class="diagram">
+          <div class="diagram-scroll">
+          <svg viewBox="0 0 920 430" role="img" aria-labelledby="inherit-title inherit-desc">
+            <title id="inherit-title">Inheritance and extension model for solver outputs</title>
+            <desc id="inherit-desc">A standard flag enum and base output class are extended by custom flag enums and custom output containers, selected by each solver.</desc>
+            <defs>
+              <marker id="inherit-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path>
+              </marker>
+              <marker id="inherit-triangle" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="8" markerHeight="8" orient="auto">
+                <path d="M 1 1 L 11 6 L 1 11 z" fill="var(--surface)" stroke="var(--line-strong)" stroke-width="1.4"></path>
+              </marker>
+            </defs>
+
+            <rect x="34" y="42" width="230" height="130" rx="12" class="svg-node"></rect>
+            <text x="149" y="73" text-anchor="middle" class="svg-label">SolverOutputFlags</text>
+            <text x="149" y="98" text-anchor="middle" class="svg-sub">plain enum.Enum</text>
+            <text x="149" y="121" text-anchor="middle" class="svg-sub">BODY_QDD</text>
+            <text x="149" y="139" text-anchor="middle" class="svg-sub">BODY_PARENT_F</text>
+            <text x="149" y="157" text-anchor="middle" class="svg-sub">CONTACT_F</text>
+
+            <rect x="347" y="42" width="230" height="130" rx="12" class="svg-node-accent"></rect>
+            <text x="462" y="73" text-anchor="middle" class="svg-label">SolverOutputs</text>
+            <text x="462" y="98" text-anchor="middle" class="svg-sub">flags: frozenset[Enum]</text>
+            <text x="462" y="121" text-anchor="middle" class="svg-sub">body_qdd: array | None</text>
+            <text x="462" y="139" text-anchor="middle" class="svg-sub">body_parent_f: array | None</text>
+            <text x="462" y="157" text-anchor="middle" class="svg-sub">contact_f: array | None</text>
+
+            <rect x="660" y="42" width="226" height="130" rx="12" class="svg-node-blue"></rect>
+            <text x="773" y="73" text-anchor="middle" class="svg-label">SolverBase</text>
+            <text x="773" y="98" text-anchor="middle" class="svg-sub">SUPPORTED_OUTPUT_FLAGS</text>
+            <text x="773" y="121" text-anchor="middle" class="svg-sub">OUTPUTS_TYPE</text>
+            <text x="773" y="139" text-anchor="middle" class="svg-sub">outputs(...)</text>
+            <text x="773" y="157" text-anchor="middle" class="svg-sub">_allocate/_validate_outputs(...)</text>
+
+            <rect x="34" y="282" width="230" height="104" rx="12" class="svg-node-orange"></rect>
+            <text x="149" y="315" text-anchor="middle" class="svg-label">ThermalOutputFlags</text>
+            <text x="149" y="340" text-anchor="middle" class="svg-sub">BODY_TEMPERATURE</text>
+            <text x="149" y="360" text-anchor="middle" class="svg-sub">separate plain Enum</text>
+
+            <rect x="347" y="270" width="230" height="128" rx="12" class="svg-node-purple"></rect>
+            <text x="462" y="304" text-anchor="middle" class="svg-label">ThermalSolverOutputs</text>
+            <text x="462" y="329" text-anchor="middle" class="svg-sub">extends SolverOutputs</text>
+            <text x="462" y="352" text-anchor="middle" class="svg-sub">body_temperature: array | None</text>
+            <text x="462" y="375" text-anchor="middle" class="svg-sub">inherits all standard fields</text>
+
+            <rect x="660" y="270" width="226" height="128" rx="12" class="svg-node-blue"></rect>
+            <text x="773" y="304" text-anchor="middle" class="svg-label">ThermalSolver</text>
+            <text x="773" y="329" text-anchor="middle" class="svg-sub">OUTPUTS_TYPE = ThermalSolverOutputs</text>
+            <text x="773" y="352" text-anchor="middle" class="svg-sub">supports standard + custom flags</text>
+            <text x="773" y="375" text-anchor="middle" class="svg-sub">allocates and fills custom arrays</text>
+
+            <path d="M 462 270 V 184" class="svg-edge" marker-end="url(#inherit-triangle)"></path>
+            <text x="475" y="225" class="svg-small">INHERITS</text>
+            <path d="M 773 270 V 184" class="svg-edge" marker-end="url(#inherit-triangle)"></path>
+            <text x="786" y="225" class="svg-small">INHERITS</text>
+            <path d="M 264 334 H 336" class="svg-edge-dashed" marker-end="url(#inherit-arrow)"></path>
+            <text x="300" y="323" text-anchor="middle" class="svg-small">SELECTS FIELD</text>
+            <path d="M 577 334 H 649" class="svg-edge-accent" marker-end="url(#inherit-arrow)"></path>
+            <text x="613" y="323" text-anchor="middle" class="svg-small">OUTPUTS_TYPE</text>
+            <path d="M 264 108 H 336" class="svg-edge-dashed" marker-end="url(#inherit-arrow)"></path>
+            <text x="300" y="96" text-anchor="middle" class="svg-small">SELECTS FIELD</text>
+            <path d="M 577 108 H 649" class="svg-edge-accent" marker-end="url(#inherit-arrow)"></path>
+            <text x="613" y="96" text-anchor="middle" class="svg-small">DEFAULT TYPE</text>
+          </svg>
+          </div>
+          <figcaption>
+            Custom solvers inherit the common container, add a separate flag enum, and select a derived concrete output type.
+            <span class="narrow-hint">Scroll the diagram horizontally for full-size labels.</span>
+          </figcaption>
+        </figure>
+      </section>
+
+      <section id="contracts">
+        <h2>Design contracts</h2>
+        <p class="section-lede">
+          A small number of strict contracts keep extension safe and make configuration errors fail during setup instead of
+          silently corrupting data at runtime.
+        </p>
+
+        <div class="contract-grid">
+          <article class="decision">
+            <h3><span class="decision-dot"></span>Flags are plain <code>Enum</code> members</h3>
+            <p>Standard and custom enum members coexist in a set without coordinating bit ranges. <code>IntEnum</code>, raw strings, and string-mixin enums are rejected because value equality can collide across independent extensions.</p>
+          </article>
+          <article class="decision">
+            <h3><span class="decision-dot"></span>Unsupported requests fail at allocation</h3>
+            <p>Every solver advertises <code>supported_output_flags</code>. A request outside that set raises immediately, before a simulation loop or graph capture begins.</p>
+          </article>
+          <article class="decision">
+            <h3><span class="decision-dot"></span>Containers belong to one solver instance</h3>
+            <p>The allocator records solver ownership. Passing the container to another solver is rejected, preventing compatible-looking arrays from being filled with the wrong semantics.</p>
+          </article>
+          <article class="decision">
+            <h3><span class="decision-dot"></span>Contact outputs bind to contact storage</h3>
+            <p><code>CONTACT_F</code> requires the exact <code>Contacts</code> instance used for sizing and stepping, preserving capacity and index alignment for sensors and viewers.</p>
+          </article>
+          <article class="decision">
+            <h3><span class="decision-dot"></span>Unrequested fields stay <code>None</code></h3>
+            <p>The concrete type is stable, but buffers are opt-in. Consumers can inspect flags or fields without allocating every diagnostic supported by the solver.</p>
+          </article>
+          <article class="decision">
+            <h3><span class="decision-dot"></span>Allocation is reusable and graph-friendly</h3>
+            <p>Allocate before stepping and reuse the same arrays. There is no per-step Python allocation, which keeps the design compatible with CUDA graph capture.</p>
+          </article>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Standard flag</th><th>Output field</th><th>Meaning</th><th>Shape / binding</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>BODY_QDD</code></td><td><code>body_qdd</code></td><td>Rigid-body spatial acceleration</td><td><code>(body_count,)</code></td></tr>
+              <tr><td><code>BODY_PARENT_F</code></td><td><code>body_parent_f</code></td><td>Incoming parent-joint wrench at child COM</td><td><code>(body_count,)</code></td></tr>
+              <tr><td><code>CONTACT_F</code></td><td><code>contact_f</code></td><td>Spatial contact force aligned with contact indices</td><td><code>rigid_contact_max + soft_contact_max</code>; bound to <code>Contacts</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="usage">
+        <h2>How applications use it</h2>
+        <p class="section-lede">
+          The application gathers requirements from all consumers, allocates one container, and threads it explicitly through
+          the solver step and downstream processing.
+        </p>
+
+        <ol class="workflow">
+          <li><strong>Collect flags</strong><span>Union application needs with every sensor's <code>solver_output_flags</code>.</span></li>
+          <li><strong>Allocate once</strong><span>Call <code>solver.outputs(flags)</code>; pass <code>contacts=</code> when needed.</span></li>
+          <li><strong>Populate on step</strong><span>Pass the same container to <code>solver.step(..., outputs=outputs)</code>.</span></li>
+          <li><strong>Consume results</strong><span>Read arrays directly or pass the container to sensors and viewers.</span></li>
+        </ol>
+
+        <div class="code-heading"><h3>Body-level outputs</h3><span>Allocate once during setup</span></div>
+        <pre><code>from newton.solvers import SolverMuJoCo, SolverOutputFlags
+
+solver = SolverMuJoCo(model)
+outputs = solver.outputs(
+    {
+        SolverOutputFlags.BODY_QDD,
+        SolverOutputFlags.BODY_PARENT_F,
+    }
+)
+
+for _ in range(num_steps):
+    solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+
+    acceleration = outputs.body_qdd
+    parent_wrench = outputs.body_parent_f
+    state_in, state_out = state_out, state_in</code></pre>
+
+        <div class="code-heading"><h3>Contact-indexed outputs</h3><span>Bind allocation to the contact container</span></div>
+        <pre><code>pipeline = newton.CollisionPipeline(model)
+contacts = pipeline.contacts()
+
+outputs = solver.outputs(
+    {SolverOutputFlags.CONTACT_F},
+    contacts=contacts,
+)
+
+pipeline.collide(state_in, contacts)
+solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+
+# Same ordering and capacity as `contacts`.
+contact_force = outputs.contact_f</code></pre>
+      </section>
+
+      <section id="extension">
+        <h2>Extend it for a custom solver</h2>
+        <p class="section-lede">
+          A custom solver defines its own plain enum, derives a container that retains every standard field, advertises the
+          combined supported set, and extends allocation and population for custom fields.
+        </p>
+
+        <div class="code-heading"><h3>1. Define the custom flag and container</h3><span>No global registry or bit allocation</span></div>
+        <pre><code>from enum import Enum
+import warp as wp
+
+from newton.solvers import SolverOutputs
+
+
+class ThermalOutputFlags(Enum):
+    BODY_TEMPERATURE = "body_temperature"
+
+
+class ThermalSolverOutputs(SolverOutputs):
+    def __init__(self, flags=()):
+        super().__init__(flags)
+        self.body_temperature: wp.array[wp.float32] | None = None</code></pre>
+
+        <div class="code-heading"><h3>2. Select the type and allocate custom fields</h3><span>Call <code>super()</code> for standard arrays</span></div>
+        <pre><code>from newton.solvers import SolverBase, SolverOutputFlags
+
+
+class ThermalSolver(SolverBase):
+    OUTPUTS_TYPE = ThermalSolverOutputs
+    SUPPORTED_OUTPUT_FLAGS = frozenset(
+        {
+            SolverOutputFlags.BODY_QDD,
+            ThermalOutputFlags.BODY_TEMPERATURE,
+        }
+    )
+
+    def _allocate_outputs(self, outputs, *, requires_grad):
+        super()._allocate_outputs(outputs, requires_grad=requires_grad)
+
+        if ThermalOutputFlags.BODY_TEMPERATURE in outputs:
+            outputs.body_temperature = wp.zeros(
+                self.model.body_count,
+                dtype=wp.float32,
+                device=self.model.device,
+                requires_grad=requires_grad,
+            )</code></pre>
+
+        <div class="code-heading"><h3>3. Validate and populate during the step</h3><span>Only fill arrays that were requested</span></div>
+        <pre><code>    def step(
+        self,
+        state_in,
+        state_out,
+        control,
+        contacts,
+        dt,
+        *,
+        outputs=None,
+    ):
+        self._validate_outputs(outputs, contacts)
+
+        # ...advance simulation and populate standard outputs...
+
+        if outputs is not None and outputs.body_temperature is not None:
+            wp.launch(
+                compute_body_temperature,
+                dim=self.model.body_count,
+                inputs=[state_out.body_qd],
+                outputs=[outputs.body_temperature],
+                device=self.model.device,
+            )</code></pre>
+
+        <div class="code-heading"><h3>4. Compose standard and custom requests</h3><span>The caller treats both enums uniformly</span></div>
+        <pre><code>requested = {
+    SolverOutputFlags.BODY_QDD,
+    ThermalOutputFlags.BODY_TEMPERATURE,
+}
+
+outputs = solver.outputs(requested)
+solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+
+temperature = outputs.body_temperature</code></pre>
+      </section>
+
+      <section id="sensors">
+        <h2>How sensors consume outputs</h2>
+        <p class="section-lede">
+          Sensors declare requirements without mutating the model. The application remains the orchestrator: it unions all
+          consumer requirements, verifies that the selected solver supports them, and shares one populated container.
+        </p>
+
+        <figure class="diagram">
+          <div class="diagram-scroll">
+          <svg viewBox="0 0 920 410" role="img" aria-labelledby="sensor-title sensor-desc">
+            <title id="sensor-title">Sensor requirements and consumption flow</title>
+            <desc id="sensor-desc">IMU and contact sensor output flag sets are combined, allocated by the solver, populated during step, and routed back to each sensor.</desc>
+            <defs>
+              <marker id="sensor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--line-strong)"></path>
+              </marker>
+              <marker id="sensor-arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"></path>
+              </marker>
+            </defs>
+
+            <rect x="30" y="42" width="205" height="92" rx="12" class="svg-node-blue"></rect>
+            <text x="132" y="74" text-anchor="middle" class="svg-label">SensorIMU</text>
+            <text x="132" y="99" text-anchor="middle" class="svg-sub">solver_output_flags</text>
+            <text x="132" y="118" text-anchor="middle" class="svg-sub">{ BODY_QDD }</text>
+
+            <rect x="30" y="274" width="205" height="92" rx="12" class="svg-node-orange"></rect>
+            <text x="132" y="306" text-anchor="middle" class="svg-label">SensorContact</text>
+            <text x="132" y="331" text-anchor="middle" class="svg-sub">solver_output_flags</text>
+            <text x="132" y="350" text-anchor="middle" class="svg-sub">{ CONTACT_F }</text>
+
+            <rect x="340" y="151" width="240" height="108" rx="13" class="svg-node-accent"></rect>
+            <text x="460" y="184" text-anchor="middle" class="svg-label">Union + allocation</text>
+            <text x="460" y="208" text-anchor="middle" class="svg-sub">flags = imu.flags | contact.flags</text>
+            <text x="460" y="229" text-anchor="middle" class="svg-sub">solver.outputs(flags, contacts=...)</text>
+            <text x="460" y="248" text-anchor="middle" class="svg-sub">allocate one reusable container</text>
+
+            <rect x="685" y="151" width="205" height="108" rx="13" class="svg-node-purple"></rect>
+            <text x="787" y="184" text-anchor="middle" class="svg-label">solver.step()</text>
+            <text x="787" y="208" text-anchor="middle" class="svg-sub">fills body_qdd</text>
+            <text x="787" y="229" text-anchor="middle" class="svg-sub">fills contact_f</text>
+            <text x="787" y="248" text-anchor="middle" class="svg-sub">same output identity</text>
+
+            <path d="M 235 88 H 280 Q 300 88 312 105 L 365 161" class="svg-edge" marker-end="url(#sensor-arrow)"></path>
+            <path d="M 235 320 H 280 Q 300 320 312 303 L 365 249" class="svg-edge" marker-end="url(#sensor-arrow)"></path>
+            <path d="M 580 205 H 674" class="svg-edge-accent" marker-end="url(#sensor-arrow-accent)"></path>
+
+            <path d="M 787 151 V 107 Q 787 88 768 88 H 246" class="svg-edge-accent" marker-end="url(#sensor-arrow-accent)"></path>
+            <text x="560" y="77" text-anchor="middle" class="svg-small">imu.update(state, outputs=outputs)</text>
+            <path d="M 787 259 V 303 Q 787 320 768 320 H 246" class="svg-edge-accent" marker-end="url(#sensor-arrow-accent)"></path>
+            <text x="560" y="349" text-anchor="middle" class="svg-small">contact_sensor.update(state, contacts, outputs=outputs)</text>
+
+            <text x="30" y="399" class="svg-sub">A sensor declares what it needs; it does not decide how the solver computes it.</text>
+          </svg>
+          </div>
+          <figcaption>
+            Multiple consumers share one output allocation, with each sensor reading only the fields it declared.
+            <span class="narrow-hint">Scroll the diagram horizontally for full-size labels.</span>
+          </figcaption>
+        </figure>
+
+        <div class="code-heading"><h3>Combined IMU and contact sensor loop</h3><span>Requirements remain composable</span></div>
+        <pre><code>imu = newton.sensors.SensorIMU(model, sites="imu_*")
+contact_sensor = newton.sensors.SensorContact(
+    model,
+    sensing_shapes="foot_*",
+)
+
+pipeline = newton.CollisionPipeline(model)
+contacts = pipeline.contacts()
+
+flags = imu.solver_output_flags | contact_sensor.solver_output_flags
+outputs = solver.outputs(flags, contacts=contacts)
+
+for _ in range(num_steps):
+    pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+
+    imu.update(state_out, outputs=outputs)
+    contact_sensor.update(state_out, contacts, outputs=outputs)
+    viewer.log_contacts(contacts, state_out, outputs=outputs)
+
+    state_in, state_out = state_out, state_in</code></pre>
+      </section>
+
+      <section id="migration">
+        <h2>What changes for existing code?</h2>
+        <p class="section-lede">
+          Legacy extended-attribute paths remain available for a deprecation window, but new code requests the equivalent
+          output from the solver and passes the container explicitly.
+        </p>
+
+        <div class="table-wrap">
+          <table class="migration">
+            <thead>
+              <tr><th>Deprecated path</th><th>Replacement</th><th>Reason</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>State.body_qdd</code></td><td><code>outputs.body_qdd</code></td><td>Acceleration is solver-produced diagnostic data.</td></tr>
+              <tr><td><code>State.body_parent_f</code></td><td><code>outputs.body_parent_f</code></td><td>Joint reaction reporting varies by solver capability.</td></tr>
+              <tr><td><code>State.mujoco.qfrc_actuator</code></td><td><code>SolverMuJoCo.Outputs.qfrc_actuator</code></td><td>Solver-specific diagnostics stay on the solver-specific container.</td></tr>
+              <tr><td><code>Contacts.force</code></td><td><code>outputs.contact_f</code></td><td>Contact geometry and computed force have separate ownership.</td></tr>
+              <tr><td><code>model.request_state_attributes(...)</code></td><td><code>solver.outputs({...})</code></td><td>Requests target the producer rather than the model.</td></tr>
+              <tr><td><code>model.request_contact_attributes(...)</code></td><td><code>solver.outputs({...}, contacts=contacts)</code></td><td>Contact-indexed outputs are bound explicitly to their storage.</td></tr>
+              <tr><td><code>solver.update_contacts(...)</code></td><td><code>solver.step(..., outputs=outputs)</code></td><td>Outputs are produced with the step, avoiding a separate update protocol.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="code-heading"><h3>Before</h3><span>Model-driven allocation</span></div>
+        <pre><code>model.request_state_attributes("body_parent_f")
+model.request_contact_attributes("force")
+
+state = model.state()
+contacts = model.contacts()
+
+solver.step(state_in, state_out, control, contacts, dt)
+solver.update_contacts(contacts, state_out)
+
+parent_wrench = state_out.body_parent_f
+contact_force = contacts.force</code></pre>
+
+        <div class="code-heading"><h3>After</h3><span>Solver-driven allocation</span></div>
+        <pre><code>outputs = solver.outputs(
+    {
+        SolverOutputFlags.BODY_PARENT_F,
+        SolverOutputFlags.CONTACT_F,
+    },
+    contacts=contacts,
+)
+
+solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+
+parent_wrench = outputs.body_parent_f
+contact_force = outputs.contact_f</code></pre>
+      </section>
+
+      <section id="benefits">
+        <h2>Benefits and future-proofing</h2>
+        <p class="section-lede">
+          This is more than moving arrays. It establishes a stable extension point between solvers and optional consumers while
+          keeping model and state APIs focused on simulation data.
+        </p>
+
+        <div class="benefits">
+          <article class="benefit"><div class="benefit-index">01</div><h3>Clear ownership</h3><p>Users ask the solver for solver outputs. The API location matches the component with the capability and implementation.</p></article>
+          <article class="benefit"><div class="benefit-index">02</div><h3>Pay only for what is used</h3><p>Optional arrays are absent until requested, reducing memory and avoiding unnecessary diagnostic computation.</p></article>
+          <article class="benefit"><div class="benefit-index">03</div><h3>Independent extension</h3><p>Custom solvers add flags and fields without editing Newton's global state schema or coordinating enum bit assignments.</p></article>
+          <article class="benefit"><div class="benefit-index">04</div><h3>Composable consumers</h3><p>Sensors, viewers, loggers, and applications publish requirements as sets that can be unioned into one allocation.</p></article>
+          <article class="benefit"><div class="benefit-index">05</div><h3>Stronger validation</h3><p>Unsupported flags, wrong concrete types, solver mismatches, and contact-buffer mismatches fail close to allocation or step.</p></article>
+          <article class="benefit"><div class="benefit-index">06</div><h3>Room to evolve</h3><p>Future output families—iterations, residuals, thermal fields, stresses, actuator diagnostics—can follow the same contract.</p></article>
+        </div>
+
+        <div class="callout">
+          <strong>Scope boundary:</strong> this migration covers built-in solver-produced diagnostics. Custom model, state,
+          control, and contact attributes remain valid for authored or persistent simulation data.
+        </div>
+      </section>
+
+      <footer class="footer">
+        <p>Newton architecture note · Solver Outputs proposal · Experimental API subject to refinement as more solvers and consumers migrate.</p>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

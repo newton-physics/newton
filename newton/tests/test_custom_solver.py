@@ -3,12 +3,36 @@
 
 """Tests for extending solver change/reset flags with custom integer bits."""
 
+from __future__ import annotations
+
 import unittest
+from enum import Enum, IntEnum
 
 import numpy as np
 import warp as wp
 
 import newton
+
+
+class DummyOutputFlags(Enum):
+    """Solver-specific outputs used to exercise extension behavior."""
+
+    BODY_TEMPERATURE = "body_temperature"
+
+
+class IntegerOutputFlags(IntEnum):
+    """Invalid value-like enum used to verify collision prevention."""
+
+    BODY_TEMPERATURE = 0
+
+
+class DummySolverOutputs(newton.solvers.SolverOutputs):
+    """Extend the standard output container with a custom body array."""
+
+    def __init__(self, flags=()):
+        """Initialize the inherited and custom output fields."""
+        super().__init__(flags)
+        self.body_temperature: wp.array[wp.float32] | None = None
 
 
 class DummySolver(newton.solvers.SolverBase):
@@ -17,6 +41,13 @@ class DummySolver(newton.solvers.SolverBase):
     # These bits intentionally live outside Newton's built-in flag range.
     MODEL_ATTRIBUTE_CHANGED = 1 << 20
     STATE_ATTRIBUTE_RESET = 1 << 21
+    OUTPUTS_TYPE = DummySolverOutputs
+    SUPPORTED_OUTPUT_FLAGS = frozenset(
+        {
+            newton.solvers.SolverOutputFlags.BODY_QDD,
+            DummyOutputFlags.BODY_TEMPERATURE,
+        }
+    )
 
     def __init__(self, model: newton.Model):
         """Initialize bookkeeping used by the tests."""
@@ -34,6 +65,17 @@ class DummySolver(newton.solvers.SolverBase):
         self.saw_body_properties = bool(flags & newton.ModelFlags.BODY_PROPERTIES)
         if flags & self.MODEL_ATTRIBUTE_CHANGED:
             self.model_epoch = int(self.model.custom_solver.model_epoch.numpy()[0])
+
+    def _allocate_outputs(self, outputs: DummySolverOutputs, *, requires_grad: bool) -> None:
+        """Allocate inherited outputs before solver-specific arrays."""
+        super()._allocate_outputs(outputs, requires_grad=requires_grad)
+        if DummyOutputFlags.BODY_TEMPERATURE in outputs:
+            outputs.body_temperature = wp.zeros(
+                self.model.body_count,
+                dtype=wp.float32,
+                device=self.model.device,
+                requires_grad=requires_grad,
+            )
 
     def reset(
         self,
@@ -143,6 +185,55 @@ class TestCustomSolver(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "expected 2 or 3"):
             solver.reset(state, world_mask=wp.array((True,), dtype=wp.bool, device=model.device))
+
+    def test_outputs_compose_standard_and_custom_flags(self):
+        """Allocate inherited and solver-specific outputs from one set."""
+        model = self._build_model()
+        solver = DummySolver(model)
+        requested = {
+            newton.solvers.SolverOutputFlags.BODY_QDD,
+            DummyOutputFlags.BODY_TEMPERATURE,
+        }
+
+        outputs = solver.outputs(requested)
+
+        self.assertIsInstance(outputs, DummySolverOutputs)
+        self.assertEqual(outputs.flags, frozenset(requested))
+        self.assertEqual(outputs.body_qdd.shape, (model.body_count,))
+        self.assertEqual(outputs.body_temperature.shape, (model.body_count,))
+        self.assertIsNone(outputs.body_parent_f)
+
+    def test_outputs_reject_unsupported_flags(self):
+        """Reject standard outputs not implemented by a solver."""
+        model = self._build_model()
+        solver = DummySolver(model)
+
+        with self.assertRaisesRegex(ValueError, "BODY_PARENT_F"):
+            solver.outputs({newton.solvers.SolverOutputFlags.BODY_PARENT_F})
+
+    def test_outputs_reject_value_like_flags(self):
+        """Reject string and integer enum keys that can collide across extensions."""
+        model = self._build_model()
+        solver = DummySolver(model)
+
+        with self.assertRaisesRegex(TypeError, "plain enum"):
+            solver.outputs({"body_qdd"})
+        with self.assertRaisesRegex(TypeError, "IntEnum"):
+            solver.outputs({IntegerOutputFlags.BODY_TEMPERATURE})
+
+    def test_extended_attribute_requests_are_deprecated(self):
+        """Keep legacy allocation requests while directing callers to solver outputs."""
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(DeprecationWarning, "SolverOutputs"):
+            builder.request_state_attributes("body_qdd")
+        with self.assertWarnsRegex(DeprecationWarning, "SolverOutputs"):
+            builder.request_contact_attributes("force")
+
+        model = builder.finalize()
+        with self.assertWarnsRegex(DeprecationWarning, "SolverOutputs"):
+            model.request_state_attributes("body_parent_f")
+        with self.assertWarnsRegex(DeprecationWarning, "SolverOutputs"):
+            model.request_contact_attributes("force")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from ...core.types import override
 from ...sim import Contacts, Control, Model, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, SolverOutputs
 from . import kernels_body, kernels_contact, kernels_muscle, kernels_particle
 from .kernels_body import (
     eval_body_joint_forces,
@@ -128,6 +128,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
+        *,
+        outputs: SolverOutputs | None = None,
     ) -> None:
         """
         Simulate the model for a given time step using the given control input.
@@ -147,6 +149,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             for simulations involving particle collisions.
             To disable it, set :attr:`newton.Model.particle_grid` to `None` prior to calling :meth:`step`.
         """
+        self._validate_outputs(outputs, contacts)
         self._apply_module_options()
         with wp.ScopedTimer("simulate", False):
             particle_f = None

@@ -26,7 +26,7 @@ from ...sim.collide import _count_soft_particle_rigid_contact_pairs
 from ...utils import is_graph_capture_allocation_enabled
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, SolverOutputs
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
@@ -2083,6 +2083,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         control: Control,
         contacts: Contacts | None,
         dt: float,
+        *,
+        outputs: SolverOutputs | None = None,
     ) -> None:
         """Execute one simulation timestep using VBD (particles) and AVBD (rigid bodies).
 
@@ -2110,6 +2112,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             RuntimeError: If required rigid contact-matching data is unavailable, or contact-history storage would
                 need to be allocated or grown during graph capture.
         """
+        self._validate_outputs(outputs, contacts)
         self._apply_module_options()
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True

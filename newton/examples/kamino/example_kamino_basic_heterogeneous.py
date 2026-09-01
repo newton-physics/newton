@@ -67,7 +67,6 @@ class Example:
             basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
 
         # Create the model from the builder
-        builder.request_contact_attributes("force")  # For contact visualization
         self.model = builder.finalize(skip_validation_joints=True)
 
         # Create and configure settings for SolverKamino and the collision detector
@@ -95,6 +94,7 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
+        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=self.contacts)
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -124,8 +124,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-            self.solver.update_contacts(self.contacts, self.state_0)
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt, outputs=self.solver_outputs)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -142,7 +141,7 @@ class Example:
         # so contacts are rendered with self.state_1 to match the body positions at the
         # time of contact generation.
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_1)
+        self.viewer.log_contacts(self.contacts, self.state_1, outputs=self.solver_outputs)
         self.viewer.end_frame()
 
     def test_final(self):

@@ -35,7 +35,7 @@ from ...sim.collide import (
     _estimate_rigid_contact_max,
 )
 from ..coupled.interface import CouplingInterface
-from ..solver import SolverBase
+from ..solver import SolverBase, SolverOutputFlags, SolverOutputs
 
 if TYPE_CHECKING:
     from .config import (
@@ -171,6 +171,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 solver.step(state_in, state_out, control, contacts, dt)
                 state_in, state_out = state_out, state_in
     """
+
+    SUPPORTED_OUTPUT_FLAGS = frozenset({SolverOutputFlags.CONTACT_F})
 
     @dataclass
     class Config:
@@ -974,7 +976,16 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.base_pose = config_cache
 
     @override
-    def step(self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float):
+    def step(
+        self,
+        state_in: State,
+        state_out: State,
+        control: Control | None,
+        contacts: Contacts | None,
+        dt: float,
+        *,
+        outputs: SolverOutputs | None = None,
+    ):
         """
         Simulate the model for a given time step using the given control input.
 
@@ -993,7 +1004,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             contacts: The contact information from Newton's collision pipeline. Ignored when
                 :attr:`Config.use_collision_detector` is enabled.
             dt: The time step (typically in seconds).
+            outputs: Optional solver output arrays allocated by :meth:`outputs`.
         """
+        self._validate_outputs(outputs, contacts)
         # Interface the input state containers to Kamino's equivalents
         # NOTE: These should produce zero-copy views/references
         # to the arrays of the source Newton containers.
@@ -1056,6 +1069,14 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_q_com=state_out_kamino.q_i,
             body_q=state_out_kamino.q_i,
         )
+
+        if outputs is not None and outputs.contact_f is not None:
+            output_contacts = outputs._contacts
+            if output_contacts is None:
+                raise ValueError("Contact storage is missing from solver outputs.")
+            self._populate_contact_outputs(output_contacts, state_out, outputs.contact_f)
+            if output_contacts.force is not None and output_contacts.force.ptr != outputs.contact_f.ptr:
+                output_contacts.force.assign(outputs.contact_f)
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -1128,24 +1149,41 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """
-        Converts Kamino contacts to Newton's Contacts format.
+        """Convert Kamino contacts to legacy Newton contact-force storage.
 
-        Note: produces undefined behavior if a different Newton Contacts object was
-        passed to step().
+        .. deprecated:: 1.6
+            Request :attr:`~newton.solvers.SolverOutputFlags.CONTACT_F` and
+            pass the resulting outputs to :meth:`step` instead.
+        """
+        warnings.warn(
+            "SolverKamino.update_contacts() is deprecated; request SolverOutputFlags.CONTACT_F and pass "
+            "SolverOutputs to step().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._populate_contact_outputs(contacts, state, contacts.force)
+
+    def _populate_contact_outputs(
+        self,
+        contacts: Contacts,
+        state: State | None,
+        contact_f: wp.array[wp.spatial_vector] | None,
+    ) -> None:
+        """Convert Kamino contact metadata and forces to Newton outputs.
 
         Args:
             contacts: The Newton Contacts object to populate.
             state: Simulation state providing ``body_q`` for converting
                 world-space contact positions to body-local frame.
+            contact_f: Optional contact-force output array to populate.
         """
         # Ensure the containers are not None and of the correct shape
         if contacts is None:
-            raise ValueError("contacts cannot be None when calling SolverKamino.update_contacts")
+            raise ValueError("contacts cannot be None when populating Kamino contact outputs")
         elif not isinstance(contacts, Contacts):
             raise TypeError(f"contacts must be of type Contacts, got {type(contacts)}")
         if state is None:
-            raise ValueError("state cannot be None when calling SolverKamino.update_contacts")
+            raise ValueError("state cannot be None when populating Kamino contact outputs")
         elif not isinstance(state, State):
             raise TypeError(f"state must be of type State, got {type(state)}")
 
@@ -1169,6 +1207,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             contacts_out=contacts,
             clear_output=self._detector is not None,
             convert_forces=True,
+            contact_f=contact_f,
         )
 
     @override

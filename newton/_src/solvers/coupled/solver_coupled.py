@@ -16,7 +16,7 @@ import warp as wp
 from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
 from ...sim import JointType, Model, ModelFlags, StateFlags
-from ..solver import SolverBase
+from ..solver import SolverBase, SolverOutputFlags, SolverOutputs
 from .interface import (
     CouplingEndpointKind,
     CouplingInterface,
@@ -360,6 +360,33 @@ class SolverCoupled(SolverBase, CouplingInterface):
         substeps: int = 1
         in_place: bool = False
 
+    class Outputs(SolverOutputs):
+        """Global outputs and the entry-local containers that populate them."""
+
+        def __init__(self, flags=()):
+            super().__init__(flags)
+            self.entry_outputs: dict[str, SolverOutputs] = {}
+            """Output containers allocated by each owning sub-solver."""
+
+    OUTPUTS_TYPE = Outputs
+
+    @property
+    def supported_output_flags(self):
+        """Return body outputs supported by every entry that owns bodies."""
+        flags = set()
+        body_entries = [entry for entry in self._entries.values() if entry.body_indices.shape[0] > 0]
+        for flag in (SolverOutputFlags.BODY_QDD, SolverOutputFlags.BODY_PARENT_F):
+            if body_entries and all(flag in entry.solver.supported_output_flags for entry in body_entries):
+                flags.add(flag)
+        return frozenset(flags)
+
+    def _allocate_outputs(self, outputs: Outputs, *, requires_grad: bool) -> None:
+        """Allocate global outputs and matching entry-local containers."""
+        super()._allocate_outputs(outputs, requires_grad=requires_grad)
+        for entry in self._entries.values():
+            entry_flags = outputs.flags if entry.body_indices.shape[0] > 0 else ()
+            outputs.entry_outputs[entry.name] = entry.solver.outputs(entry_flags, requires_grad=requires_grad)
+
     @staticmethod
     def _positive_integer(value: int, label: str) -> int:
         """Validate and return an integer greater than zero."""
@@ -398,6 +425,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._entry_soft_contact_update: dict[str, wp.array] = {}
         self._entry_rigid_contact_src_to_dst: dict[str, wp.array] = {}
         self._entry_soft_contact_src_to_dst: dict[str, wp.array] = {}
+        self._active_outputs: SolverCoupled.Outputs | None = None
         self._entry_output_state_valid = False
 
         self._validate_entry_names()
@@ -2199,6 +2227,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
+        *,
+        outputs: SolverOutputs | None = None,
     ) -> None:
         """Step all coupled sub-solvers for one time step.
 
@@ -2207,11 +2237,39 @@ class SolverCoupled(SolverBase, CouplingInterface):
         need a private contact pipeline (e.g. proxy collisions, ADMM internal
         contacts) own their own buffers internally.
         """
+        self._validate_outputs(outputs, contacts)
         self._distribute_state(state_in, dt=dt)
-        self._step_coupled(state_in, state_out, control, contacts, dt)
+        self._active_outputs = outputs
+        try:
+            self._step_coupled(state_in, state_out, control, contacts, dt)
+        finally:
+            self._active_outputs = None
         _copy_state(state_in, state_out)
         self._reconcile_state(state_out)
+        if outputs is not None:
+            self._reconcile_outputs(outputs)
         self._entry_output_state_valid = True
+
+    def _reconcile_outputs(self, outputs: Outputs) -> None:
+        """Merge body-indexed entry outputs into global output arrays."""
+        for dst in (outputs.body_qdd, outputs.body_parent_f):
+            if dst is not None:
+                dst.zero_()
+
+        for entry in self._entries.values():
+            entry_outputs = outputs.entry_outputs[entry.name]
+            for src, dst in (
+                (entry_outputs.body_qdd, outputs.body_qdd),
+                (entry_outputs.body_parent_f, outputs.body_parent_f),
+            ):
+                if src is None or dst is None or entry.body_indices.shape[0] == 0:
+                    continue
+                wp.launch(
+                    _scatter_spatial_state_mapped,
+                    dim=entry.body_indices.shape[0],
+                    inputs=[entry.body_indices, entry.body_global_to_local, src, dst],
+                    device=self.model.device,
+                )
 
     def prepare_contacts(self, contacts: Contacts | None) -> None:
         """Preallocate entry-local filtered contact buffers for graph capture."""
@@ -2667,14 +2725,24 @@ class SolverCoupled(SolverBase, CouplingInterface):
         control = _copy_control_to_entry(control, entry)
         if control_callback is not None:
             control_callback(control)
+        entry_outputs = None
+        if self._active_outputs is not None:
+            entry_outputs = self._active_outputs.entry_outputs[entry.name]
+
+        def step_solver(state_in: State, state_out: State, step_dt: float) -> None:
+            if entry_outputs is None:
+                entry.solver.step(state_in, state_out, control, contacts, step_dt)
+            else:
+                entry.solver.step(state_in, state_out, control, contacts, step_dt, outputs=entry_outputs)
+
         if entry.in_place:
             substep_dt = dt / float(entry.substeps)
             for _ in range(entry.substeps):
-                entry.solver.step(entry.state_0, entry.state_0, control, contacts, substep_dt)
+                step_solver(entry.state_0, entry.state_0, substep_dt)
             return contacts
 
         if entry.substeps == 1:
-            entry.solver.step(entry.state_0, entry.state_1, control, contacts, dt)
+            step_solver(entry.state_0, entry.state_1, dt)
             return contacts
 
         substep_dt = dt / float(entry.substeps)
@@ -2686,7 +2754,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         for substep in range(entry.substeps):
             if substep > 0:
                 _copy_forces(entry.state_0, state_in)
-            entry.solver.step(state_in, state_out, control, contacts, substep_dt)
+            step_solver(state_in, state_out, substep_dt)
             state_in, state_out = state_out, state_in
         if state_in is entry.state_tmp:
             _copy_same_view_state(entry.state_tmp, entry.state_1)
@@ -3430,6 +3498,21 @@ def _scatter_scalar_state_mapped(
     global_to_local: wp.array[int],
     src: wp.array[float],
     dst: wp.array[float],
+):
+    i = wp.tid()
+    global_id = indices[i]
+    local_id = global_to_local[global_id]
+    if local_id < 0:
+        return
+    dst[global_id] = src[local_id]
+
+
+@wp.kernel(enable_backward=False)
+def _scatter_spatial_state_mapped(
+    indices: wp.array[int],
+    global_to_local: wp.array[int],
+    src: wp.array[wp.spatial_vector],
+    dst: wp.array[wp.spatial_vector],
 ):
     i = wp.tid()
     global_id = indices[i]

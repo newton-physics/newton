@@ -18,11 +18,9 @@ Most Newton sensors follow a common pattern:
 
 .. note::
 
-   Sensors automatically request any :doc:`extended attributes <extended_attributes>` they need
-   (e.g. ``body_qdd``, ``Contacts.force``) at init, so ``State`` and ``Contacts`` objects created afterwards will
-   include them.
-
-   ``SensorContact`` additionally requires a call to ``solver.update_contacts()`` before ``sensor.update()``.
+   Solver-dependent sensors expose ``solver_output_flags``. Combine these sets,
+   allocate :doc:`solver outputs <solver_outputs>` once, and pass the
+   container to the solver and sensor updates.
 
    ``SensorTiledCamera`` writes results to output arrays passed into ``update()`` rather than storing them as sensor
    attributes.
@@ -46,15 +44,16 @@ Most Newton sensors follow a common pattern:
 
    # Create solver and state
    solver = newton.solvers.SolverMuJoCo(model)
+   outputs = solver.outputs(imu.solver_output_flags)
    state = model.state()
 
    # Simulation loop
    for _ in range(100):
        state.clear_forces()
-       solver.step(state, state, None, None, dt=1.0 / 60.0)
+       solver.step(state, state, None, None, dt=1.0 / 60.0, outputs=outputs)
 
        # 2. Compute measurements from the current state
-       imu.update(state)
+       imu.update(state, outputs=outputs)
 
        # 3. Results stored on sensor attributes
        acc = imu.accelerometer.numpy()   # (n_sensors, 3) linear acceleration
@@ -154,18 +153,23 @@ For fisheye cameras, extract the calibration values from your chosen USD attribu
 :meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_kannala_brandt`. Each fisheye helper builds
 rays for one camera; pass ``out_rays`` and ``camera_index`` to fill a shared ray buffer.
 
-Extended Attributes
--------------------
+Solver Outputs
+--------------
 
-Some sensors depend on extended attributes that are not allocated by default:
+``SensorIMU`` requires ``SolverOutputFlags.BODY_QDD`` and ``SensorContact``
+requires ``SolverOutputFlags.CONTACT_F``. Their ``solver_output_flags``
+properties provide these requirements without mutating the model. Union the
+sets when both sensors are present and bind contact-indexed output to the
+contacts buffer:
 
-- ``SensorIMU`` requires ``State.body_qdd`` (rigid-body accelerations). By
-  default it requests this from the model at construction, so subsequent
-  ``model.state()`` calls allocate it automatically.
-- ``SensorContact`` requires ``Contacts.force`` (per-contact spatial force
-  wrenches). By default it requests this from the model at construction, so
-  subsequent :meth:`CollisionPipeline.contacts <newton.CollisionPipeline.contacts>` calls allocate it automatically. The solver
-  must also support populating contact forces.
+.. code-block:: python
+
+   flags = imu.solver_output_flags | contact_sensor.solver_output_flags
+   outputs = solver.outputs(flags, contacts=contacts)
+
+   solver.step(state_in, state_out, control, contacts, dt, outputs=outputs)
+   imu.update(state_out, outputs=outputs)
+   contact_sensor.update(state_out, contacts, outputs=outputs)
 
 Performance Considerations
 --------------------------
@@ -175,17 +179,15 @@ parallel where possible. Create each sensor once during setup and reuse it
 every step -- this lets Newton pre-allocate output arrays and avoid per-frame
 overhead.
 
-Sensors that depend on extended attributes (e.g. ``body_qdd``,
-``Contacts.force``) may add nontrivial cost to the solver step itself, since
-the solver must compute and store these additional quantities regardless of
-whether the sensor is evaluated after each step.
+Requested solver outputs may add nontrivial cost to the solver step itself.
+Request only the flags consumed by the application and reuse the allocation.
 
 See Also
 --------
 
 * :doc:`sites` -- using sites as sensor attachment points and reference frames
 * :doc:`../api/newton_sensors` -- full sensor API reference
-* :doc:`extended_attributes` -- optional ``State``/``Contacts`` arrays required by some sensors
+* :doc:`solver_outputs` -- optional arrays produced by solvers
 * ``newton.examples.sensors.example_sensor_contact`` -- SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` -- SensorIMU example
 * ``newton.examples.sensors.example_sensor_tiled_camera`` -- SensorTiledCamera example

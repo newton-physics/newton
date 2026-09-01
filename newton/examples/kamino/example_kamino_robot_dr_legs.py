@@ -46,8 +46,6 @@ class Example:
         robot_builder.default_shape_cfg.gap = 1e-2
         if self.animated:
             robot_builder.default_shape_cfg.mu = 0.1
-        robot_builder.request_contact_attributes("force")  # For contact visualization
-
         # Load the DR Legs USD and add it to the builder.
         # Pinned to an older revision: the current one is better for RL but tips over
         # differently in simulation, which the DVI contact regressions detect. Drop the
@@ -86,7 +84,6 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.request_contact_attributes("force")
         builder.default_shape_cfg.margin = dvi_contact_margin
         builder.default_shape_cfg.gap = 1e-2
         for _ in range(self.world_count):
@@ -149,6 +146,7 @@ class Example:
         else:
             self.collision_pipeline = None
             self.contacts = newton.CollisionPipeline(self.model).contacts()
+        self.solver_outputs = self.solver.outputs({newton.solvers.SolverOutputFlags.CONTACT_F}, contacts=self.contacts)
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -198,10 +196,18 @@ class Example:
             self.viewer.apply_forces(self.state_0)
             if not self.use_kamino_contacts:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
-                self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+                self.solver.step(
+                    self.state_0,
+                    self.state_1,
+                    self.control,
+                    self.contacts,
+                    self.sim_dt,
+                    outputs=self.solver_outputs,
+                )
             else:
-                self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-            self.solver.update_contacts(self.contacts, self.state_0)
+                self.solver.step(
+                    self.state_0, self.state_1, self.control, None, self.sim_dt, outputs=self.solver_outputs
+                )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -215,7 +221,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_1)
+        self.viewer.log_contacts(self.contacts, self.state_1, outputs=self.solver_outputs)
         self.viewer.end_frame()
 
     def test_final(self):

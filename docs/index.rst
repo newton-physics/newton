@@ -35,7 +35,7 @@ Newton Physics
    Conventions <concepts/conventions>
    USD Parsing <concepts/usd_parsing>
    Custom Attributes <concepts/custom_attributes>
-   Extended Attributes <concepts/extended_attributes>
+   Solver Outputs <concepts/solver_outputs>
    Collisions and Contacts <concepts/collisions>
    Simulation Tuning <concepts/simulation_tuning>
    Coupled Solvers <concepts/coupling>

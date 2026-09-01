@@ -100,7 +100,7 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.imu = newton.sensors.SensorIMU(self.model, self.imu_sites)
+        self.imu = newton.sensors.SensorIMU(self.model, self.imu_sites, request_state_attributes=False)
 
         self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
 
@@ -108,6 +108,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+        output_flags = self.imu.solver_output_flags | {newton.solvers.SolverOutputFlags.CONTACT_F}
+        self.solver_outputs = self.solver.outputs(output_flags, contacts=self.contacts)
 
         self.buffer = wp.zeros(self.n_cubes, dtype=wp.vec3)
         self.colors = wp.zeros(self.n_cubes, dtype=wp.vec3)
@@ -134,17 +136,17 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(
+                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt, outputs=self.solver_outputs
+            )
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
             # read IMU acceleration
-            self.imu.update(self.state_0)
+            self.imu.update(self.state_0, outputs=self.solver_outputs)
             # average and compute color
             wp.launch(acc_to_color, dim=self.n_cubes, inputs=[0.025, self.imu.accelerometer, self.buffer, self.colors])
-
-        self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:
@@ -174,7 +176,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, outputs=self.solver_outputs)
         self.viewer.end_frame()
 
 

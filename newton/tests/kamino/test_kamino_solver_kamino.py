@@ -536,7 +536,7 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         self.assertEqual(solver._contacts_kamino.model_max_contacts_host, 1002)
 
         contacts = newton.CollisionPipeline(model).contacts()
-        with self.assertNoLogs(level="WARNING"):
+        with self.assertWarns(DeprecationWarning), self.assertNoLogs(level="WARNING"):
             solver.update_contacts(contacts, model.state())
 
     def test_step_with_zero_max_contacts(self):

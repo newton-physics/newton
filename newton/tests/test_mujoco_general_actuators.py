@@ -1323,7 +1323,6 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         """Stepping with a site actuator produces qfrc_actuator matching native MuJoCo."""
         builder = ModelBuilder()
         builder.add_mjcf(MJCF_SITE_ACTUATOR, ctrl_direct=True)
-        builder.request_state_attributes("mujoco:qfrc_actuator")
         model = builder.finalize()
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -1332,6 +1331,7 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
 
         state_0 = model.state()
         state_1 = model.state()
+        outputs = solver.outputs({solver.OutputFlags.QFRC_ACTUATOR})
         control = model.control()
 
         # Identify the Newton-side actuator ordering so we can set matching ctrl
@@ -1346,8 +1346,8 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         ctrl[newton_joint_idx] = 0.7  # joint-motor input
         control.mujoco.ctrl = wp.array(ctrl, dtype=wp.float32, device=model.device)
 
-        solver.step(state_0, state_1, control, None, dt=0.001)
-        qfrc_newton = state_1.mujoco.qfrc_actuator.numpy()
+        solver.step(state_0, state_1, control, None, dt=0.001, outputs=outputs)
+        qfrc_newton = outputs.qfrc_actuator.numpy()
 
         # Native MuJoCo reference: mj_forward with the same ctrl mapped through
         # the MuJoCo-side actuator ordering (which may permute Newton's).

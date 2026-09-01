@@ -351,6 +351,26 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
             wp.copy(state_out.particle_qd, state_in.particle_qd)
 
 
+class _BodyOutputCopySolver(_StepCountingCopySolver):
+    """Copy solver that fills body-indexed solver outputs."""
+
+    SUPPORTED_OUTPUT_FLAGS = frozenset(
+        {
+            newton.solvers.SolverOutputFlags.BODY_QDD,
+            newton.solvers.SolverOutputFlags.BODY_PARENT_F,
+        }
+    )
+
+    def step(self, state_in, state_out, control, contacts, dt, *, outputs=None):
+        self._validate_outputs(outputs, contacts)
+        super().step(state_in, state_out, control, contacts, dt)
+        if outputs is None:
+            return
+        value = 1.0 if self.model.name == "left" else 2.0
+        outputs.body_qdd.fill_(value)
+        outputs.body_parent_f.fill_(value + 10.0)
+
+
 class _ResetRecordingCopySolver(_StepCountingCopySolver):
     """Copy solver that records validated reset calls."""
 
@@ -621,7 +641,8 @@ class TestModelView(unittest.TestCase):
 
     def test_state_creation_respects_view_count_overrides(self):
         """view.state() should size state arrays from view-local counts."""
-        self.model.request_state_attributes("body_qdd", "body_parent_f")
+        with self.assertWarns(DeprecationWarning):
+            self.model.request_state_attributes("body_qdd", "body_parent_f")
         view = ModelView(self.model, "test")
         view.body_count = 1
 
@@ -881,7 +902,8 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 builder.add_world(world)
                 builder.add_world(world)
                 model = builder.finalize(device="cpu")
-                model.request_state_attributes("body_qdd", "body_parent_f")
+                with self.assertWarns(DeprecationWarning):
+                    model.request_state_attributes("body_qdd", "body_parent_f")
                 coupled = SolverCoupled(
                     model,
                     [SolverCoupled.Entry("recording", _ResetRecordingCopySolver, bodies=range(3), substeps=2)],
@@ -1114,6 +1136,28 @@ class TestSolverCoupledBasic(unittest.TestCase):
         builder.add_shape_sphere(body=1, radius=0.2)
 
         self.model = builder.finalize(device="cpu")
+
+    def test_routes_body_solver_outputs(self):
+        """Gather entry-local body outputs into parent-model order."""
+        coupled = SolverCoupled(
+            self.model,
+            [
+                SolverCoupled.Entry("left", _BodyOutputCopySolver, bodies=[0]),
+                SolverCoupled.Entry("right", _BodyOutputCopySolver, bodies=[1]),
+            ],
+        )
+        flags = {
+            newton.solvers.SolverOutputFlags.BODY_QDD,
+            newton.solvers.SolverOutputFlags.BODY_PARENT_F,
+        }
+        outputs = coupled.outputs(flags)
+        state_in, state_out = self.model.state(), self.model.state()
+
+        coupled.step(state_in, state_out, None, None, 0.01, outputs=outputs)
+
+        np.testing.assert_array_equal(outputs.body_qdd.numpy()[:, 0], (1.0, 2.0))
+        np.testing.assert_array_equal(outputs.body_parent_f.numpy()[:, 0], (11.0, 12.0))
+        self.assertEqual(set(outputs.entry_outputs), {"left", "right"})
 
     def test_rejects_solver_without_coupling_interface_during_construction(self):
         with self.assertRaisesRegex(TypeError, "cannot participate in a coupled simulation"):
