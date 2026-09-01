@@ -85,7 +85,7 @@ residual definitions are backend-specific:
   [N·s or N·m·s].
   ``r_d = ||P^-1 (eta (x - x_prev) + rho (y - y_prev))||_inf`` is the ADMM dual
   residual [m/s or rad/s]. ``r_c`` is the maximum absolute impulse-velocity
-  inner product over unilateral limit and contact blocks [J]. The ``P`` factors
+  inner product over inequality blocks [J]. The ``P`` factors
   convert the first two residuals from solver scaling to physical constraint
   units.
 * **DVI:** With physical impulse ``lambda`` and augmented constraint velocity
@@ -93,7 +93,7 @@ residual definitions are backend-specific:
   impulses from the nonnegative limit cone or Coulomb contact cone
   [N·s or N·m·s]. ``r_d`` is the maximum of the corresponding velocity distance
   from the dual cone and the bilateral velocity violation [m/s or rad/s].
-  ``r_c = max |lambda_k dot v_k|`` is the maximum unilateral complementarity
+  ``r_c = max |lambda_k dot v_k|`` is the maximum inequality complementarity
   violation [J].
 
 These are absolute maxima: neither backend divides them by a reference norm,
@@ -113,3 +113,21 @@ backends.
 Terminal status is always maintained. ``collect_solver_info=True`` enables
 additional solver diagnostics and adds runtime and memory overhead; it is not
 required to access ``status``.
+
+Actuation and forward kinematics
+--------------------------------
+
+Kamino dynamics routes actuation independently for each joint DoF. A DoF can
+use explicit effort, unbounded implicit PD, or effort-limited implicit PD;
+passive armature, damping, and Coulomb friction are likewise configured per
+DoF. Implicit-PD target modes require a non-zero applicable gain: velocity
+mode requires derivative gain, while position-based modes require proportional
+or derivative gain. Coulomb friction supports all non-free joint types, while
+joint dynamics and implicit PD currently support revolute, prismatic, and
+gimbal joint types only.
+
+The forward-kinematics solver still partitions each joint as entirely passive
+or entirely actuated. Different non-passive target modes are allowed within a
+joint, but mixing passive and actuated DoFs within one joint is not yet
+supported. The ``fk_actuation_flag`` model attribute provides an explicit
+joint-level override for this FK partition.

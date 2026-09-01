@@ -58,7 +58,7 @@ class Example:
         builder.add_ground_plane()
 
         # Create the model from the builder
-        self.model = builder.finalize(skip_validation_joints=True)
+        self.model = builder.finalize()
 
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
@@ -82,14 +82,6 @@ class Example:
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
-
-        # Warm-start the simulation
-        if not self.use_kamino_contacts:
-            self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-        else:
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        self.solver.reset(self.state_0)
 
         # Reset the simulation state to a valid initial configuration above the ground
         self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)

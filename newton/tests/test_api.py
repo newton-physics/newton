@@ -141,18 +141,24 @@ class TestApi(unittest.TestCase):
         doc_method = "\n".join(line.strip() for line in (TetMesh.create_from_usd.__doc__ or "").splitlines()).strip()
         assert doc_func == doc_method, "Docstring mismatch between get_tetmesh and TetMesh.create_from_usd"
 
-    def test_keyword_only_deprecation_shim_rebinds_builder_args(self):
+    def test_shape_helpers_reject_keyword_only_args_positionally(self):
+        """Reject optional shape-helper arguments passed positionally."""
         import warp as wp  # noqa: PLC0415
 
         from newton import ModelBuilder  # noqa: PLC0415
 
         builder = ModelBuilder()
 
-        with self.assertWarnsRegex(DeprecationWarning, "Passing 'xform', 'hx', 'hy', 'hz' positionally"):
-            shape = builder.add_shape_box(-1, wp.transform(), 0.1, 0.2, 0.3)
+        with self.assertRaisesRegex(TypeError, "positional"):
+            builder.add_shape_box(-1, wp.transform(), 0.1, 0.2, 0.3)
 
-        self.assertEqual(shape, 0)
-        self.assertEqual(builder.shape_count, 1)
+    def test_keyword_only_deprecation_shim_rebinds_builder_args(self):
+        """Keep legacy builder arguments working during deprecation."""
+        import warp as wp  # noqa: PLC0415
+
+        from newton import ModelBuilder  # noqa: PLC0415
+
+        builder = ModelBuilder()
 
         with self.assertWarnsRegex(DeprecationWarning, "Passing 'xform' positionally"):
             body = builder.add_body(wp.transform())
@@ -160,14 +166,13 @@ class TestApi(unittest.TestCase):
         self.assertEqual(body, 0)
 
     def test_keyword_only_deprecation_shim_rejects_duplicate_keyword(self):
+        """Reject duplicate values passed through the deprecation shim."""
         import warp as wp  # noqa: PLC0415
 
         from newton import ModelBuilder  # noqa: PLC0415
 
-        builder = ModelBuilder()
-
         with self.assertRaisesRegex(TypeError, "multiple values for argument 'xform'"):
-            builder.add_shape_box(-1, wp.transform(), xform=wp.transform())
+            ModelBuilder().add_body(wp.transform(), xform=wp.transform())
 
     def test_keyword_only_deprecation_shim_rebinds_config_constructors(self):
         import newton  # noqa: PLC0415
@@ -193,17 +198,44 @@ class TestApi(unittest.TestCase):
         self.assertEqual(solver.angular_damping, 0.123)
 
     def test_keyword_only_deprecation_shim_preserves_signature(self):
+        """Preserve keyword-only kinds in decorated signatures."""
         import newton  # noqa: PLC0415
 
         body_sig = inspect.signature(newton.ModelBuilder.add_body)
         link_sig = inspect.signature(newton.ModelBuilder.add_link)
-        shape_sig = inspect.signature(newton.ModelBuilder.add_shape_box)
         solver_sig = inspect.signature(newton.solvers.SolverSemiImplicit.__init__)
 
         self.assertEqual(body_sig.parameters["xform"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertEqual(link_sig.parameters["xform"].kind, inspect.Parameter.KEYWORD_ONLY)
-        self.assertEqual(shape_sig.parameters["xform"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertEqual(solver_sig.parameters["angular_damping"].kind, inspect.Parameter.KEYWORD_ONLY)
+
+    def test_shape_opacity_follows_color(self):
+        """Keep shape display arguments adjacent and keyword-only."""
+        import newton  # noqa: PLC0415
+
+        method_names = (
+            "add_shape",
+            "add_shape_plane",
+            "add_ground_plane",
+            "add_shape_sphere",
+            "add_shape_ellipsoid",
+            "add_shape_box",
+            "add_shape_capsule",
+            "add_shape_cylinder",
+            "add_shape_cone",
+            "add_shape_mesh",
+            "add_shape_convex_hull",
+            "add_shape_heightfield",
+            "add_shape_gaussian",
+        )
+
+        for method_name in method_names:
+            with self.subTest(method=method_name):
+                parameters = list(inspect.signature(getattr(newton.ModelBuilder, method_name)).parameters.values())
+                color_index = next(i for i, parameter in enumerate(parameters) if parameter.name == "color")
+                opacity = parameters[color_index + 1]
+                self.assertEqual(opacity.name, "opacity")
+                self.assertEqual(opacity.kind, inspect.Parameter.KEYWORD_ONLY)
 
 
 if __name__ == "__main__":

@@ -5659,6 +5659,391 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25])
 
 
+def _assert_rod_dof_property_refresh(
+    test,
+    device,
+    *,
+    build_param,
+    target_array,
+    before,
+    after,
+    pointer_stable_arrays=(),
+):
+    """Assert a live ROD ``joint_target_*`` edit reaches the solve, matching a from-scratch build.
+
+    Builds a cable chain with ``build_param`` set to ``before``, captures its step graph where
+    the device allows it, then rewrites ``target_array``'s bend and twist DOFs to ``after`` and
+    notifies with ``JOINT_DOF_PROPERTIES`` -- all before any replay, so the refresh has to reach
+    the already-captured graph. Compares that trajectory against from-scratch builds at both
+    ``after`` (must match bit-for-bit) and ``before`` (must differ, or the comparison is vacuous).
+
+    Args:
+        build_param: :func:`_build_cable_chain` keyword to vary (e.g. ``"bend_stiffness"``).
+        target_array: ``Model`` array to edit live (e.g. ``"joint_target_ke"``).
+        before: Value built with, and reinit'd away from.
+        after: Value reinit'd to.
+        pointer_stable_arrays: Solver array names required to keep their address across the
+            refresh -- a captured graph holds pointers, so reallocation would leave it reading
+            stale memory.
+    """
+    fixed = {"bend_stiffness": 5.0e1, "bend_damping": 1.0}
+    sim_substeps = 10
+    sim_dt = (1.0 / 60.0) / sim_substeps
+    num_steps = 20
+
+    def build_and_run(value, retarget_to=None):
+        model, state0, state1, control, _rod_bodies = _build_cable_chain(
+            device,
+            num_links=6,
+            segment_length=0.2,
+            **{**fixed, build_param: value},
+        )
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+
+        state = {"s0": state0, "s1": state1}
+
+        def simulate():
+            for _substep in range(sim_substeps):
+                state["s0"].clear_forces()
+                collision_pipeline.collide(state["s0"], contacts)
+                solver.step(state["s0"], state["s1"], control, contacts, sim_dt)
+                state["s0"], state["s1"] = state["s1"], state["s0"]
+
+        graph = None
+        if is_graph_capture_allocation_enabled(device):
+            with wp.ScopedCapture(device) as capture:
+                simulate()
+            graph = capture.graph
+
+        if retarget_to is not None:
+            ptrs_before = {name: getattr(solver, name).ptr for name in pointer_stable_arrays}
+
+            values = getattr(model, target_array).numpy()
+            joint_qd_start = model.joint_qd_start.numpy()
+            joint_type = model.joint_type.numpy()
+            for j in range(model.joint_count):
+                if joint_type[j] == int(newton.JointType.ROD):
+                    d0 = joint_qd_start[j]
+                    values[d0 + 2] = retarget_to  # bend slot
+                    values[d0 + 3] = retarget_to  # twist slot
+            getattr(model, target_array).assign(values)
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+            for name, ptr in ptrs_before.items():
+                test.assertEqual(
+                    getattr(solver, name).ptr,
+                    ptr,
+                    msg=f"{name} was reallocated by notify_model_changed -- "
+                    "a captured graph would now read stale memory",
+                )
+
+        for _ in range(num_steps):
+            if graph is not None:
+                wp.capture_launch(graph)
+            else:
+                simulate()
+
+        return state["s0"].body_q.numpy().copy()
+
+    reinit_q = build_and_run(before, retarget_to=after)
+    reference_q = build_and_run(after)
+    unrefreshed_q = build_and_run(before)
+
+    test.assertFalse(
+        np.array_equal(unrefreshed_q, reference_q),
+        msg=f"test is vacuous: {build_param}={before} and {build_param}={after} yield identical "
+        "trajectories, so matching the latter proves nothing about the refresh",
+    )
+
+    np.testing.assert_array_equal(
+        reinit_q,
+        reference_q,
+        err_msg=f"a rod chain reinit'd via {target_array} + "
+        "notify_model_changed(JOINT_DOF_PROPERTIES) should reproduce a from-scratch build "
+        "bit-for-bit",
+    )
+
+
+def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
+    """Verify a live rod stiffness edit applied after graph capture matches a from-scratch build."""
+    _assert_rod_dof_property_refresh(
+        test,
+        device,
+        build_param="bend_stiffness",
+        target_array="joint_target_ke",
+        before=5.0e1,
+        after=5.0e2,
+        pointer_stable_arrays=("joint_material_k", "joint_penalty_k", "joint_penalty_k_min"),
+    )
+
+
+def _notify_without_joint_dof_properties_leaves_rod_material_k_stale(test, device):
+    """Verify the rod material-k refresh is gated on ``JOINT_DOF_PROPERTIES``.
+
+    An unrelated flag (``BODY_PROPERTIES``) must not trigger it.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link()
+    joint = builder.add_joint_rod(-1, body, bend_stiffness=10.0, twist_stiffness=3.0)
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+
+    start = int(solver.joint_constraint_start.numpy()[joint])
+    before = solver.joint_material_k.numpy()[start : start + 4].copy()
+
+    dof0 = int(model.joint_qd_start.numpy()[joint])
+    joint_target_ke = model.joint_target_ke.numpy()
+    joint_target_ke[dof0 + 2] = 999.0
+    joint_target_ke[dof0 + 3] = 999.0
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+    after = solver.joint_material_k.numpy()[start : start + 4]
+    np.testing.assert_array_equal(
+        before,
+        after,
+        err_msg="joint_material_k changed without JOINT_DOF_PROPERTIES in the flags",
+    )
+
+    # Sanity: JOINT_DOF_PROPERTIES does refresh it, so the guard above is meaningful.
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+    after_refresh = solver.joint_material_k.numpy()[start : start + 4]
+    np.testing.assert_allclose(after_refresh[2:], [999.0, 999.0])
+
+
+def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
+    """Verify REVOLUTE/PRISMATIC/D6 drive/limit slots refresh to ``max(target_ke, limit_ke)``.
+
+    Both inputs to that maximum are covered by ``JOINT_DOF_PROPERTIES``, so editing either
+    ``joint_target_ke`` or ``joint_limit_ke`` alone must propagate. Built on the legacy AVBD
+    path because it is the only formulation that reads these cached slots -- compliant ALM
+    gathers the same coefficients live from the model each solve (see
+    ``_load_joint_axis_drive_limit``) and needs no notification.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    JointDofConfig = newton.ModelBuilder.JointDofConfig
+
+    body_revolute = builder.add_link()
+    j_revolute = builder.add_joint_revolute(-1, body_revolute, target_ke=50.0, limit_ke=10.0)
+
+    body_prismatic = builder.add_link()
+    j_prismatic = builder.add_joint_prismatic(-1, body_prismatic, target_ke=60.0, limit_ke=20.0)
+
+    body_d6 = builder.add_link()
+    j_d6 = builder.add_joint_d6(
+        -1,
+        body_d6,
+        linear_axes=[JointDofConfig(axis=(1, 0, 0), target_ke=70.0, limit_ke=30.0)],
+        angular_axes=[JointDofConfig(axis=(0, 1, 0), target_ke=80.0, limit_ke=40.0)],
+    )
+    builder.add_articulation([j_revolute, j_prismatic, j_d6])
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+
+    def material_k_at(joint, slot_offset):
+        start = int(solver.joint_constraint_start.numpy()[joint])
+        return float(solver.joint_material_k.numpy()[start + slot_offset])
+
+    # Construction-time value: slot 2 is the (only) drive/limit slot for REVOLUTE/PRISMATIC;
+    # D6 here has one linear axis (slot 2) and one angular axis (slot 3).
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(50.0, 10.0))
+    test.assertAlmostEqual(material_k_at(j_prismatic, 2), max(60.0, 20.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 2), max(70.0, 30.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 3), max(80.0, 40.0))
+
+    joint_target_ke = model.joint_target_ke.numpy()
+    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_ke[joint_qd_start[j_revolute]] = 500.0
+    joint_target_ke[joint_qd_start[j_prismatic]] = 600.0
+    joint_target_ke[joint_qd_start[j_d6] + 0] = 700.0  # linear axis
+    joint_target_ke[joint_qd_start[j_d6] + 1] = 800.0  # angular axis
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(500.0, 10.0))
+    test.assertAlmostEqual(material_k_at(j_prismatic, 2), max(600.0, 20.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 2), max(700.0, 30.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 40.0))
+
+    # joint_limit_ke is the other half of the slot's max() and is likewise covered by
+    # JOINT_DOF_PROPERTIES, so editing it alone must propagate too. Raise each above the
+    # target_ke set above so the maximum switches over to the limit side.
+    joint_limit_ke = model.joint_limit_ke.numpy()
+    joint_limit_ke[joint_qd_start[j_revolute]] = 5000.0
+    joint_limit_ke[joint_qd_start[j_prismatic]] = 6000.0
+    joint_limit_ke[joint_qd_start[j_d6] + 0] = 7000.0  # linear axis
+    joint_limit_ke[joint_qd_start[j_d6] + 1] = 8000.0  # angular axis
+    model.joint_limit_ke.assign(joint_limit_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(500.0, 5000.0))
+    test.assertAlmostEqual(material_k_at(j_prismatic, 2), max(600.0, 6000.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 2), max(700.0, 7000.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 8000.0))
+
+    joint_target_ke[joint_qd_start[j_revolute]] = 100.0  # below limit_ke of 5000
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(100.0, 5000.0))
+
+
+def _notify_joint_dof_properties_preserves_unchanged_penalty_ramp(test, device):
+    """Verify only slots whose effective stiffness changed are reseeded.
+
+    ``ModelFlags`` documents the notification as updating only the necessary components, so a
+    slot the caller did not touch must keep whatever legacy AVBD ramping has accumulated in
+    ``joint_penalty_k`` -- including slots on other joints.
+    """
+    model, state0, state1, control, _rod_bodies = _build_cable_chain(
+        device,
+        num_links=6,
+        bend_stiffness=5.0e1,
+        bend_damping=1.0,
+        segment_length=0.2,
+    )
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    # beta > 0 enables the legacy AVBD ramp; it is the state this selective reseed protects.
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False, rigid_avbd_beta=5.0)
+
+    sim_substeps = 10
+    sim_dt = (1.0 / 60.0) / sim_substeps
+    for _ in range(10):
+        for _substep in range(sim_substeps):
+            state0.clear_forces()
+            collision_pipeline.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, sim_dt)
+            state0, state1 = state1, state0
+
+    ramped = solver.joint_penalty_k.numpy().copy()
+    ramped_min = solver.joint_penalty_k_min.numpy().copy()
+    test.assertTrue(
+        np.any(ramped > ramped_min + 1.0e-6),
+        msg="precondition: stepping should have ramped joint_penalty_k above its floor",
+    )
+
+    joint_type = model.joint_type.numpy()
+    rod_joints = [j for j in range(model.joint_count) if joint_type[j] == int(newton.JointType.ROD)]
+    test.assertGreater(len(rod_joints), 1, msg="need several joints to check cross-joint preservation")
+
+    edited = rod_joints[0]
+    bend_slot = int(solver.joint_constraint_start.numpy()[edited]) + 2
+    ang_seed = solver.rigid_joint_angular_k_start
+    new_ke = 5.0e2
+    expected = min(ang_seed, new_ke)
+    test.assertGreater(
+        float(ramped[bend_slot]),
+        expected + 1.0e-6,
+        msg="precondition: the edited slot must have ramped, so reseeding it is observable",
+    )
+
+    dof0 = int(model.joint_qd_start.numpy()[edited])
+    joint_target_ke = model.joint_target_ke.numpy()
+    joint_target_ke[dof0 + 2] = new_ke  # bend on the first rod joint only
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    refreshed = solver.joint_penalty_k.numpy()
+    refreshed_min = solver.joint_penalty_k_min.numpy()
+    test.assertAlmostEqual(float(refreshed[bend_slot]), expected)
+
+    others = [i for i in range(len(refreshed)) if i != bend_slot]
+    np.testing.assert_array_equal(
+        refreshed[others],
+        ramped[others],
+        err_msg="slots whose stiffness did not change must keep their ramped joint_penalty_k",
+    )
+    np.testing.assert_array_equal(
+        refreshed_min[others],
+        ramped_min[others],
+        err_msg="slots whose stiffness did not change must keep their joint_penalty_k_min",
+    )
+
+
+def _notify_joint_dof_properties_validates_compliant_materials(test, device):
+    """Verify a live edit to invalid coefficients is rejected under compliant ALM.
+
+    The constructor validates these arrays, so the refresh path must too -- otherwise a live
+    edit would slip non-finite or negative values straight into ``joint_material_k``.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link()
+    joint = builder.add_joint_rod(-1, body, bend_stiffness=10.0)
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+
+    dof0 = int(model.joint_qd_start.numpy()[joint])
+    start = int(solver.joint_constraint_start.numpy()[joint])
+
+    valid_target_ke = model.joint_target_ke.numpy().copy()
+
+    for bad_value in (float("inf"), float("nan"), -1.0):
+        joint_target_ke = valid_target_ke.copy()
+        joint_target_ke[dof0 + 2] = bad_value
+        model.joint_target_ke.assign(joint_target_ke)
+        with test.assertRaises(ValueError):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        test.assertAlmostEqual(float(solver.joint_material_k.numpy()[start + 2]), 10.0)
+
+
+def _notify_joint_dof_properties_refreshes_rod_penalty_kd(test, device):
+    """Verify a live rod damping edit reaches the solve and matches a from-scratch build.
+
+    ROD damping is cached in ``joint_penalty_kd`` at construction (unlike other joint types,
+    whose drive damping is read live), so it needs the same refresh as stiffness.
+    """
+    _assert_rod_dof_property_refresh(
+        test,
+        device,
+        build_param="bend_damping",
+        target_array="joint_target_kd",
+        before=1.0e-1,
+        after=5.0e1,
+        pointer_stable_arrays=("joint_penalty_kd",),
+    )
+
+
+def _notify_joint_dof_properties_refreshes_rod_structural_k(test, device):
+    """Verify a ROD stretch/shear edit also refreshes ``body_structural_k``.
+
+    That summary is derived from ``joint_material_k``'s stretch/shear slots, so it would
+    otherwise go stale behind a ``JOINT_DOF_PROPERTIES`` refresh.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link()
+    joint = builder.add_joint_rod(-1, body, stretch_stiffness=100.0, bend_stiffness=10.0)
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+
+    test.assertAlmostEqual(float(solver.body_structural_k.numpy()[body]), 100.0)
+
+    dof0 = int(model.joint_qd_start.numpy()[joint])
+    joint_target_ke = model.joint_target_ke.numpy()
+    joint_target_ke[dof0 + 0] = 999.0  # stretch, now the larger of the two
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(float(solver.body_structural_k.numpy()[body]), 999.0)
+
+    # The summary is max(stretch, shear), so raise shear above stretch to confirm the shear
+    # slot feeds it too -- an edit that left shear stale would be masked while stretch leads.
+    joint_target_ke[dof0 + 1] = 2500.0  # shear
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(float(solver.body_structural_k.numpy()[body]), 2500.0)
+
+
 def _split_cable_parent_hessian_separates_elastic_and_damping_arms(test, device):
     """Verify isotropic elasticity and damping use their intended parent lever arms."""
     errors = wp.zeros(1, dtype=wp.vec2, device=device)
@@ -6368,6 +6753,48 @@ add_function_test(
     TestCable,
     "test_split_cable_routes_explicit_shear_to_second_slot",
     _split_cable_routes_explicit_shear_to_second_slot,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_refreshes_rod_material_k",
+    _notify_joint_dof_properties_refreshes_rod_material_k,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_without_joint_dof_properties_leaves_rod_material_k_stale",
+    _notify_without_joint_dof_properties_leaves_rod_material_k_stale,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_refreshes_drive_limit_material_k",
+    _notify_joint_dof_properties_refreshes_drive_limit_material_k,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_preserves_unchanged_penalty_ramp",
+    _notify_joint_dof_properties_preserves_unchanged_penalty_ramp,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_validates_compliant_materials",
+    _notify_joint_dof_properties_validates_compliant_materials,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_refreshes_rod_penalty_kd",
+    _notify_joint_dof_properties_refreshes_rod_penalty_kd,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_refreshes_rod_structural_k",
+    _notify_joint_dof_properties_refreshes_rod_structural_k,
     devices=devices,
 )
 add_function_test(
