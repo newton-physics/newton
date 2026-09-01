@@ -226,8 +226,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
                 changed.
         """
-        if self.enable_restitution and restitution_kernels not in self._module_options:
-            self._set_module_options(self._restitution_module_options, module=restitution_kernels)
+        self._ensure_restitution_module_options()
         self._apply_module_options()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
@@ -237,6 +236,13 @@ class SolverXPBD(SolverBase, CouplingInterface):
     def _refresh_rigid_restitution_enabled(self) -> None:
         restitution = self.model.shape_material_restitution
         self._rigid_restitution_enabled = restitution is not None and restitution.size > 0
+
+    def _ensure_restitution_module_options(self) -> None:
+        if self.enable_restitution and restitution_kernels not in self._module_options:
+            self._set_module_options(self._restitution_module_options, module=restitution_kernels)
+            # Registration may advance the shared revision while this solver's
+            # core module options are stale, so force a complete reapplication.
+            self._applied_module_options_revision = -1
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
@@ -387,8 +393,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 is skipped; particle-particle contacts and model constraints are still solved.
             dt: Time step size [s].
         """
-        if self.enable_restitution and restitution_kernels not in self._module_options:
-            self._set_module_options(self._restitution_module_options, module=restitution_kernels)
+        self._ensure_restitution_module_options()
         self._apply_module_options()
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
