@@ -1283,7 +1283,15 @@ add_example_test(
 
 
 class TestKaminoExamples(unittest.TestCase):
-    pass
+    def test_asoverdog_render_fps_default(self):
+        if not _HAS_ONNX_RUNTIME:
+            self.skipTest("onnx or warp-nn not installed")
+
+        from newton.examples.kamino.example_kamino_robot_asoverdog import Example  # noqa: PLC0415
+
+        parser = Example.create_parser()
+        self.assertEqual(parser.parse_args([]).render_fps, 50.0)
+        self.assertEqual(parser.parse_args(["--render-fps", "30"]).render_fps, 30.0)
 
 
 add_example_test(
@@ -1321,6 +1329,15 @@ add_example_test(
     test_options={"num-frames": 500},
     use_viewer=True,
 )
+for robot in ("bennett", "planar", "spherical"):
+    add_example_test(
+        TestKaminoExamples,
+        name="kamino.example_kamino_robot_asoverdog",
+        devices=cuda_test_devices,
+        test_options={"num-frames": 120, "onnx_required": True, "robot": robot},
+        use_viewer=True,
+        test_suffix=robot.title(),
+    )
 
 
 class TestControllersExamples(unittest.TestCase):
