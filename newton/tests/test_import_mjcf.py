@@ -61,6 +61,42 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_geom_rgba_preserves_opacity(self):
+        """Preserve authored MJCF geometry opacity."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="body">
+                    <geom type="sphere" size="0.1" rgba="0.2 0.3 0.4 0.25"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        self.assertEqual(builder.shape_count, 1)
+        np.testing.assert_allclose(builder.shape_color[0], [0.2, 0.3, 0.4], atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(builder.shape_opacity[0], 0.25, places=6)
+
+    def test_geom_rgba_clamps_authored_opacity(self):
+        """Clamp out-of-range MJCF geometry opacity."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="body">
+                    <geom type="sphere" size="0.1" rgba="0.2 0.3 0.4 11.0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "Clamping opacity"):
+            builder.add_mjcf(mjcf)
+
+        self.assertEqual(builder.shape_count, 1)
+        self.assertAlmostEqual(builder.shape_opacity[0], 1.0, places=6)
+
     def test_collision_shapes_hidden_by_default_even_without_same_body_visuals(self):
         mjcf = """
 <mujoco model="collision_visibility">

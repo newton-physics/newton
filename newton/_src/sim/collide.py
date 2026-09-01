@@ -15,9 +15,11 @@ from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
 from ..geometry.contact_data import (
+    CONTACT_SORT_SUB_KEY_BITS,
     ContactData,
     contact_passes_speculative_gap_check,
-    make_contact_sort_key,
+    contact_sort_shape_index_bits,
+    make_contact_sort_key_with_bits,
     prepare_speculative_contact,
 )
 from ..geometry.contact_match import ContactMatcher
@@ -133,6 +135,8 @@ class ContactWriterData:
     """Contact writer data for collide write_contact function."""
 
     contact_max: int
+    shape_index_bits: int
+    sub_key_bits: int
     # Body information arrays (for transforming to body-local coordinates)
     body_q: wp.array[wp.transform]
     shape_body: wp.array[int]
@@ -202,8 +206,12 @@ def _write_contact_at_index(
         writer_data.out_friction[index] = contact_data.contact_friction_scale
 
     if writer_data.out_sort_key.shape[0] > 0:
-        writer_data.out_sort_key[index] = make_contact_sort_key(
-            contact_data.shape_a, contact_data.shape_b, contact_data.sort_sub_key
+        writer_data.out_sort_key[index] = make_contact_sort_key_with_bits(
+            contact_data.shape_a,
+            contact_data.shape_b,
+            contact_data.sort_sub_key,
+            writer_data.shape_index_bits,
+            writer_data.sub_key_bits,
         )
 
 
@@ -1280,6 +1288,7 @@ class CollisionPipeline:
                 broad_phase_instance = broad_phase
 
         shape_count = model.shape_count
+        self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(shape_count)
         device = model.device
         using_expert_components = broad_phase_instance is not None or narrow_phase is not None
 
@@ -1396,7 +1405,7 @@ class CollisionPipeline:
             elif self.broad_phase_mode == "sap":
                 if shape_world is None:
                     raise ValueError("model.shape_world is required for broad_phase=SAP")
-                self.broad_phase = BroadPhaseSAP(shape_world, shape_flags=shape_flags, device=device)
+                self.broad_phase = BroadPhaseSAP(shape_world, shape_flags=shape_flags, sort_type="auto", device=device)
                 self.shape_pairs_filtered = None
                 self.shape_pairs_max = _resolve_shape_pairs_max(model, shape_pairs_max)
                 self.shape_pairs_excluded = self._build_excluded_pairs(model)
@@ -1441,6 +1450,7 @@ class CollisionPipeline:
                 heightfield_mask = colliding_mask & (shape_types == int(GeoType.HFIELD))
                 plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
                 mesh_sdf_pair_mask = mesh_mask | heightfield_mask
+                planar_sdf_mask = np.zeros(len(shape_types), dtype=bool)
                 has_meshes = bool(np.any(mesh_mask))
                 if (
                     hasattr(model, "_shape_sdf_index")
@@ -1479,11 +1489,34 @@ class CollisionPipeline:
                             bool(scale_baked[shape_sdf_index[shape_idx]]) or identity_shape_scale[shape_idx]
                             for shape_idx in np.flatnonzero(mesh_sdf_shapes)
                         )
-                if self.broad_phase_mode == "explicit":
-                    # Explicit pairs are not constrained by shape_world and may
-                    # intentionally connect shapes from different worlds.
-                    max_mesh_mesh_pairs = self.shape_pairs_max
-                    max_mesh_plane_pairs = self.shape_pairs_max
+                if self.broad_phase_mode == "explicit" and self.shape_pairs_filtered is not None:
+                    # Explicit pair types are fixed at pipeline construction, including
+                    # intentional cross-world pairs, so size only the stages they can reach.
+                    explicit_pairs = self.shape_pairs_filtered.numpy().reshape(-1, 2)
+                    if len(explicit_pairs) == 0:
+                        max_mesh_mesh_pairs = 0
+                        max_mesh_plane_pairs = 0
+                    else:
+                        shape_a = explicit_pairs[:, 0]
+                        shape_b = explicit_pairs[:, 1]
+                        box_mask = colliding_mask & (shape_types == int(GeoType.BOX))
+                        mesh_mesh_routes = (
+                            (mesh_mask[shape_a] & mesh_mask[shape_b])
+                            | (heightfield_mask[shape_a] & mesh_mask[shape_b])
+                            | (mesh_mask[shape_a] & heightfield_mask[shape_b])
+                            | (
+                                planar_sdf_mask[shape_a]
+                                & planar_sdf_mask[shape_b]
+                                & ~(box_mask[shape_a] & box_mask[shape_b])
+                            )
+                        )
+                        shape_scale = model.shape_scale.numpy()
+                        infinite_plane_mask = plane_mask & (shape_scale[:, 0] == 0.0) & (shape_scale[:, 1] == 0.0)
+                        mesh_plane_routes = (mesh_mask[shape_a] & infinite_plane_mask[shape_b]) | (
+                            infinite_plane_mask[shape_a] & mesh_mask[shape_b]
+                        )
+                        max_mesh_mesh_pairs = int(np.count_nonzero(mesh_mesh_routes))
+                        max_mesh_plane_pairs = int(np.count_nonzero(mesh_plane_routes))
                 else:
                     max_mesh_mesh_pairs = min(
                         self.shape_pairs_max,
@@ -1554,6 +1587,7 @@ class CollisionPipeline:
                 has_meshes=has_meshes,
                 has_heightfields=model.heightfield_count > 0,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
+                convex_support_acceleration=model._convex_support_lut.shape[0] > 1,
                 has_generic_convex_pairs=has_generic_convex_pairs,
                 split_gjk_mpr=split_gjk_mpr,
                 candidate_pair_work_estimate=candidate_pair_work_estimate,
@@ -1568,6 +1602,12 @@ class CollisionPipeline:
                 contact_writer_supports_speculative=self._speculative_enabled,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
+
+        # Analytic and convex manifolds use compact unique sub-keys even when
+        # matching; complex contact families retain the full fingerprint width.
+        self._contact_sort_sub_key_bits = getattr(
+            self.narrow_phase, "_contact_sort_sub_key_bits", CONTACT_SORT_SUB_KEY_BITS
+        )
 
         self._hydro_shape_sdf_data_prepared = self.hydroelastic_sdf is not None
         if self.hydroelastic_sdf is not None:
@@ -1644,7 +1684,10 @@ class CollisionPipeline:
             with wp.ScopedDevice(device):
                 self._sort_key_array = wp.zeros(rigid_contact_max, dtype=wp.int64, device=device)
             self._contact_sorter = ContactSorter(
-                rigid_contact_max, per_contact_shape_properties=per_contact_props, device=device
+                rigid_contact_max,
+                key_bit_count=self._contact_sort_sub_key_bits + 2 * self._contact_sort_shape_index_bits,
+                per_contact_shape_properties=per_contact_props,
+                device=device,
             )
         else:
             self._sort_key_array = wp.zeros(0, dtype=wp.int64, device=device)
@@ -1660,6 +1703,8 @@ class CollisionPipeline:
                 sorter=self._contact_sorter,
                 shape_world=model.shape_world,
                 world_count=model.world_count,
+                shape_index_bits=self._contact_sort_shape_index_bits,
+                sub_key_bits=self._contact_sort_sub_key_bits,
                 pos_threshold=contact_matching_pos_threshold,
                 normal_dot_threshold=contact_matching_normal_dot_threshold,
                 contact_report=contact_report,
@@ -1965,6 +2010,8 @@ class CollisionPipeline:
         # Create ContactWriterData struct for custom contact writing
         writer_data = ContactWriterData()
         writer_data.contact_max = contacts.rigid_contact_max
+        writer_data.shape_index_bits = self._contact_sort_shape_index_bits
+        writer_data.sub_key_bits = self._contact_sort_sub_key_bits
         writer_data.body_q = state.body_q
         writer_data.shape_body = model.shape_body
         writer_data.shape_gap = model.shape_gap
@@ -2003,6 +2050,10 @@ class CollisionPipeline:
             narrow_phase_extension_kwargs.update(
                 mesh_edge_centers=model.mesh_edge_centers,
                 mesh_edge_halves=model.mesh_edge_halves,
+                shape_support_data=model._shape_support_data,
+                support_lut=model._convex_support_lut,
+                support_vertex_offsets=model._convex_support_vertex_offsets,
+                support_neighbors=model._convex_support_neighbors,
                 hydroelastic_shape_sdf_data_prepared=self._hydro_shape_sdf_data_prepared,
             )
         if self._speculative_enabled:

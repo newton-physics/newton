@@ -202,11 +202,24 @@ class ContactSorter:
     the active ``contact_count`` are filled with a sentinel key
     (``0x7FFFFFFFFFFFFFFF``) so they sort to the end and the gather kernels
     skip them via the ``contact_count`` guard.
+
+    ``key_bit_count`` limits sorting to the populated low key bits, reducing
+    radix passes without changing the full-capacity graph-capture behavior.
     """
 
-    def __init__(self, capacity: int, *, per_contact_shape_properties: bool = False, device: Devicelike = None):
+    def __init__(
+        self,
+        capacity: int,
+        *,
+        key_bit_count: int = 64,
+        per_contact_shape_properties: bool = False,
+        device: Devicelike = None,
+    ):
+        if not 1 <= key_bit_count <= 64:
+            raise ValueError(f"key_bit_count must be in [1, 64], got {key_bit_count}")
         with wp.ScopedDevice(device):
             self._capacity = capacity
+            self._key_bit_count = key_bit_count
             # radix_sort_pairs uses the second half as scratch, so allocate 2x.
             self._sort_indices = wp.zeros(2 * capacity, dtype=wp.int32)
             self._sort_keys_copy = wp.zeros(2 * capacity, dtype=wp.int64)
@@ -303,7 +316,7 @@ class ContactSorter:
             inputs=[data, contact_count, sort_keys, self._sort_keys_copy, self._sort_indices],
             device=device,
         )
-        wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n)
+        wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n, end_bit=self._key_bit_count)
         wp.launch(_gather_simple_kernel, dim=n, inputs=[data, self._sort_indices, contact_count], device=device)
 
     def sort_full(
@@ -399,7 +412,7 @@ class ContactSorter:
             inputs=[data, contact_count, sort_keys, self._sort_keys_copy, self._sort_indices],
             device=device,
         )
-        wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n)
+        wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n, end_bit=self._key_bit_count)
         wp.launch(_gather_full_kernel, dim=n, inputs=[data, self._sort_indices, contact_count], device=device)
 
     @property

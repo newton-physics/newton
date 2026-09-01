@@ -51,6 +51,10 @@ layout (location = 7) in vec3 aObjectColor;
 // material properties
 layout (location = 8) in vec4 aMaterial;
 
+#ifdef ENABLE_TRANSPARENCY
+layout (location = 9) in float aOpacity;
+#endif
+
 uniform mat4 view;
 uniform mat4 projection;
 uniform vec3 view_pos;
@@ -60,6 +64,10 @@ out vec3 LocalPos;
 out vec2 TexCoord;
 out vec3 ObjectColor;
 out vec4 Material;
+#ifdef ENABLE_TRANSPARENCY
+out float Opacity;
+out float ViewDepth;
+#endif
 
 void main()
 {
@@ -83,18 +91,38 @@ void main()
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
     Material = aMaterial;
+#ifdef ENABLE_TRANSPARENCY
+    Opacity = clamp(aOpacity, 0.0, 1.0);
+    ViewDepth = max(-view_position.z, 0.0);
+#endif
 }
 """
 
 shape_fragment_shader = """
 #version 330 core
+#ifdef ENABLE_TRANSPARENCY
+layout (location = 0) out vec4 FragColor;
+layout (location = 1) out vec4 Revealage;
+#else
 out vec4 FragColor;
+#endif
 
 in vec3 Normal;
 in vec3 LocalPos;
 in vec2 TexCoord;
 in vec3 ObjectColor;
 in vec4 Material;
+#ifdef ENABLE_TRANSPARENCY
+in float Opacity;
+in float ViewDepth;
+
+// Reciprocal of the reference distance to the transparent content. Normalizing
+// view depth by it keeps the OIT weight curve below independent of scene scale.
+uniform float oit_inv_depth_reference;
+// False when the GL context cannot drive the weighted-OIT accumulation buffers
+// and transparency falls back to single-pass alpha blending.
+uniform bool oit_enabled;
+#endif
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -116,6 +144,7 @@ uniform int up_axis;
 uniform mat4 light_space_matrix;
 
 uniform float shadow_radius;
+uniform bool enable_shadows;
 uniform float diffuse_scale;
 uniform float specular_scale;
 uniform bool spotlight_enabled;
@@ -381,7 +410,7 @@ void main()
     ambient = kD_ambient * ambient + ambient_spec * metallic;
 
     // shadows
-    float shadow = ShadowCalculation(camera_to_fragment);
+    float shadow = enable_shadows ? ShadowCalculation(camera_to_fragment) : 0.0;
 
     float spotAttenuation = SpotlightAttenuation(camera_to_fragment);
     vec3 color = ambient + (1.0 - shadow) * spotAttenuation * Lo;
@@ -410,7 +439,32 @@ void main()
     // gamma correction (sRGB)
     color = pow(color, vec3(1.0 / 2.2));
 
+#ifdef ENABLE_TRANSPARENCY
+    float alpha = clamp(Opacity, 0.0, 1.0);
+    if (oit_enabled)
+    {
+        // Weighted-blended OIT (McGuire & Bavoil 2013, eq. 9). The published
+        // curve is tuned for meter-scale view depth; evaluating it on depth
+        // normalized by the transparent content's reference distance keeps the
+        // weight spread across its clamp range for any scene scale. Feeding it
+        // the raw window-space depth instead pins every fragment to the clamp
+        // ceiling, collapsing the resolve to a plain alpha-weighted average.
+        float d = ViewDepth * oit_inv_depth_reference;
+        float depth_weight = clamp(10.0 / (1e-5 + pow(2.0 * d, 2.0) + pow(0.6 * d, 6.0)), 1e-2, 3e3);
+        float weight = alpha * depth_weight;
+        FragColor = vec4(color * alpha, alpha) * weight;
+        Revealage = vec4(alpha);
+    }
+    else
+    {
+        // Fallback: straight source-alpha blending into the shared color
+        // target. Revealage has no bound draw buffer in this pass.
+        FragColor = vec4(color, alpha);
+        Revealage = vec4(alpha);
+    }
+#else
     FragColor = vec4(color, 1.0);
+#endif
 }
 """
 
@@ -497,6 +551,28 @@ void main() {
 }
 """
 
+oit_resolve_fragment_shader = """
+#version 330 core
+in vec2 TexCoord;
+
+out vec4 FragColor;
+
+uniform sampler2D accum_texture;
+uniform sampler2D reveal_texture;
+
+void main() {
+    float revealage = clamp(texture(reveal_texture, TexCoord).r, 0.0, 1.0);
+    if (revealage >= 1.0)
+        discard;
+
+    vec4 accum = texture(accum_texture, TexCoord);
+    float alpha = 1.0 - revealage;
+    vec3 transparent_color = accum.a > 1e-5 ? accum.rgb / accum.a : vec3(0.0);
+
+    FragColor = vec4(transparent_color * alpha, alpha);
+}
+"""
+
 
 def str_buffer(string: str):
     """Convert string to C-style char pointer for OpenGL."""
@@ -506,6 +582,10 @@ def str_buffer(string: str):
 def arr_pointer(arr: np.ndarray):
     """Convert numpy array to C-style float pointer for OpenGL."""
     return arr.astype(np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+
+
+def _with_shader_define(source: str, define: str) -> str:
+    return source.replace("#version 330 core\n", f"#version 330 core\n#define {define}\n", 1)
 
 
 class ShaderGL:
@@ -540,14 +620,17 @@ class ShaderGL:
 class ShaderShape(ShaderGL):
     """Shader for rendering 3D shapes with lighting and shadows."""
 
-    def __init__(self, gl):
+    def __init__(self, gl, enable_transparency: bool = False):
         super().__init__()
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
-        self.shader_program = ShaderProgram(
-            Shader(shape_vertex_shader, "vertex"), Shader(shape_fragment_shader, "fragment")
-        )
+        vertex_shader = shape_vertex_shader
+        fragment_shader = shape_fragment_shader
+        if enable_transparency:
+            vertex_shader = _with_shader_define(vertex_shader, "ENABLE_TRANSPARENCY")
+            fragment_shader = _with_shader_define(fragment_shader, "ENABLE_TRANSPARENCY")
+        self.shader_program = ShaderProgram(Shader(vertex_shader, "vertex"), Shader(fragment_shader, "fragment"))
         self._cached_projection = None
         self._cached_inverse_projection = None
 
@@ -570,11 +653,29 @@ class ShaderShape(ShaderGL):
             self.loc_ground_color = self._get_uniform_location("ground_color")
             self.loc_sky_color = self._get_uniform_location("sky_color")
             self.loc_shadow_radius = self._get_uniform_location("shadow_radius")
+            self.loc_enable_shadows = self._get_uniform_location("enable_shadows")
             self.loc_diffuse_scale = self._get_uniform_location("diffuse_scale")
             self.loc_specular_scale = self._get_uniform_location("specular_scale")
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
+            self.loc_oit_inv_depth_reference = None
+            self.loc_oit_enabled = None
+            if enable_transparency:
+                self.loc_oit_inv_depth_reference = self._get_uniform_location("oit_inv_depth_reference")
+                self.loc_oit_enabled = self._get_uniform_location("oit_enabled")
+                self._gl.glUniform1i(self.loc_oit_enabled, 1)
+
+    def set_oit_enabled(self, enabled: bool):
+        """Select weighted-OIT accumulation or the alpha-blended fallback.
+
+        Args:
+            enabled: Whether the weighted-OIT accumulation buffers are bound.
+        """
+        if self.loc_oit_enabled is None:
+            return
+        with self:
+            self._gl.glUniform1i(self.loc_oit_enabled, int(enabled))
 
     def update(
         self,
@@ -599,8 +700,15 @@ class ShaderShape(ShaderGL):
         spotlight_enabled: bool = True,
         shadow_extents: float = 10.0,
         exposure: float = 1.6,
+        oit_depth_reference: float = 1.0,
     ):
-        """Update all shader uniforms."""
+        """Update all shader uniforms.
+
+        Args:
+            oit_depth_reference: Reference distance [m] to the transparent
+                content, used to normalize the weighted-OIT depth weight.
+                Ignored unless this shader was built with transparency enabled.
+        """
         with self:
             # Basic matrices
             self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
@@ -621,11 +729,14 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform3f(self.loc_ground_color, *ground_color)
             self._gl.glUniform3f(self.loc_sky_color, *sky_color)
             self._gl.glUniform1f(self.loc_shadow_radius, shadow_radius)
+            self._gl.glUniform1i(self.loc_enable_shadows, int(enable_shadows))
             self._gl.glUniform1f(self.loc_diffuse_scale, diffuse_scale)
             self._gl.glUniform1f(self.loc_specular_scale, specular_scale)
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
             self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
             self._gl.glUniform1f(self.loc_exposure, exposure)
+            if self.loc_oit_inv_depth_reference is not None:
+                self._gl.glUniform1f(self.loc_oit_inv_depth_reference, 1.0 / max(float(oit_depth_reference), 1e-6))
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)
@@ -748,6 +859,25 @@ class FrameShader(ShaderGL):
         with self:
             self._gl.glUniform1i(self.loc_texture, texture_unit)
             self._gl.glUniform1i(self.loc_flip_y, int(flip_y))
+
+
+class OITResolveShader(ShaderGL):
+    """Shader for compositing weighted blended transparent accumulators."""
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(frame_vertex_shader, "vertex"), Shader(oit_resolve_fragment_shader, "fragment")
+        )
+
+        with self:
+            self.loc_accum_texture = self._get_uniform_location("accum_texture")
+            self.loc_reveal_texture = self._get_uniform_location("reveal_texture")
+            self._gl.glUniform1i(self.loc_accum_texture, 0)
+            self._gl.glUniform1i(self.loc_reveal_texture, 1)
 
 
 wireframe_vertex_shader = """
