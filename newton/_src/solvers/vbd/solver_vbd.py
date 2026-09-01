@@ -527,7 +527,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 schedule below; ``step()`` must then receive ``contacts=None``.
             collision_frequency: Iteration frequencies keyed by
                 :class:`SolverBase.CollisionSlot`; only used by ``ITERATIONS``
-                slots ("every k-th iteration").
+                slots (before iterations k, 2k, and so on).
             collision_frequency_type: In-step detection points keyed by
                 :class:`SolverBase.CollisionSlot`; runtime-changeable via
                 :meth:`SolverBase.set_collision_frequency`.
@@ -858,13 +858,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         if particle_enable_self_contact:
             self.particle_conservative_bound_relaxation = particle_conservative_bound_relaxation
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
+            self._self_contact_edge_edge_parallel_epsilon = particle_edge_parallel_epsilon
 
             if self.collision_pipeline is not None:
-                # Solver-owned pipeline: use its shared detector bound to the owned
-                # Contacts buffer so self-contact results land in solver.contacts.
-                self.trimesh_collision_detector = self.collision_pipeline._get_soft_self_contact_detector(
-                    self._pipeline_contacts
-                )
+                collision_info = self._pipeline_contacts.soft_self_contact_data
             else:
                 self.trimesh_collision_detector = TriMeshCollisionDetector(
                     self.model,
@@ -876,10 +873,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                     external_vertex_triangle_filtering_map=particle_external_vertex_contact_filtering_map,
                     external_edge_edge_filtering_map=particle_external_edge_contact_filtering_map,
                 )
+                collision_info = self.trimesh_collision_detector.collision_info
 
-            self.trimesh_collision_info = wp.array(
-                [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
-            )
+            self.trimesh_collision_info = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=self.device)
 
             self.particle_self_contact_evaluation_kernel_launch_size = max(
                 self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -1485,7 +1481,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.model.soft_contact_kd,
                     self.model.soft_contact_mu,
                     self.friction_epsilon,
-                    self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                    self._self_contact_edge_edge_parallel_epsilon,
                     out_particle_f,
                 ],
                 device=self.device,
@@ -2280,9 +2276,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             rigid_mode = self._resolved_collision_frequency_type(rigid_slot)
             self._rigid_mode_this_step = rigid_mode
             self._rigid_freq_this_step = self._collision_frequency[rigid_slot]
-            if rigid_mode in (_Frequency.PRE_INIT, _Frequency.ITERATIONS):
+            if rigid_mode in (_Frequency.PRE_INIT, _Frequency.PRE_POST_INIT, _Frequency.ITERATIONS):
                 # ITERATIONS' baseline includes the pre-init pass; in-loop
-                # re-detections start at the first k-th iteration.
+                # re-detections run before iterations k, 2k, and so on.
                 self._run_rigid_collision(state_in, dt)
                 update_rigid = True
 
@@ -2292,12 +2288,15 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid)
         self._initialize_particles(state_in, state_out, dt)
 
+        if self._rigid_mode_this_step == _Frequency.PRE_POST_INIT:
+            iterate = self._rigid_iterate_view(state_in, state_out)
+            self._run_rigid_collision(iterate, dt)
+            self._refresh_rigid_contact_state(contacts, refresh=True)
+            self._step_body_body_contact_frame(contacts, iterate.body_q, dt, 1.0, 1.0)
+            self._refresh_body_particle_contact_state(contacts, refresh=True)
+
         for iter_num in range(self.iterations):
-            if (
-                self._rigid_mode_this_step == _Frequency.ITERATIONS
-                and iter_num > 0
-                and iter_num % self._rigid_freq_this_step == 0
-            ):
+            if self._rigid_mode_this_step == _Frequency.ITERATIONS and (iter_num + 1) % self._rigid_freq_this_step == 0:
                 # Re-detect all pipeline contacts at the current iterate. This
                 # must also run without internally integrated bodies because
                 # the pipeline owns particle-shape contacts. In-flight rigid
@@ -2576,7 +2575,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.model.tri_indices,
                     self.model.edge_indices,
                     self.trimesh_collision_info,
-                    self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                    self._self_contact_edge_edge_parallel_epsilon,
                     self.particle_conservative_bound_relaxation,
                 ],
                 outputs=[
@@ -3156,7 +3155,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if self.particle_enable_self_contact:
             _Frequency = SolverBase.CollisionFrequencyType
             if (self._sc_mode_this_step == _Frequency.PRE_POST_INIT and iter_num == 0) or (
-                self._sc_mode_this_step == _Frequency.ITERATIONS and iter_num % self._sc_freq_this_step == 0
+                self._sc_mode_this_step == _Frequency.ITERATIONS and (iter_num + 1) % self._sc_freq_this_step == 0
             ):
                 self._collision_detection_penetration_free(state_in)
 
@@ -3244,7 +3243,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.model.soft_contact_kd,
                         self.model.soft_contact_mu,
                         self.friction_epsilon,
-                        self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                        self._self_contact_edge_edge_parallel_epsilon,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
@@ -3917,17 +3916,20 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.pos_prev_collision_detection.assign(current_state.particle_q)
         self.particle_displacements.zero_()
 
-        self.trimesh_collision_detector.refit(current_state.particle_q)
-        self.trimesh_collision_detector.vertex_triangle_collision_detection(
-            self._self_contact_query_radius,
-            min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
-            min_distance_filtering_ref_pos=self.particle_q_rest,
-        )
-        self.trimesh_collision_detector.edge_edge_collision_detection(
-            self._self_contact_query_radius,
-            min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
-            min_distance_filtering_ref_pos=self.particle_q_rest,
-        )
+        if self.collision_pipeline is not None:
+            self.collision_pipeline._detect_soft_self_contact(current_state.particle_q, self._pipeline_contacts)
+        else:
+            self.trimesh_collision_detector.refit(current_state.particle_q)
+            self.trimesh_collision_detector.vertex_triangle_collision_detection(
+                self._self_contact_query_radius,
+                min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
+                min_distance_filtering_ref_pos=self.particle_q_rest,
+            )
+            self.trimesh_collision_detector.edge_edge_collision_detection(
+                self._self_contact_query_radius,
+                min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
+                min_distance_filtering_ref_pos=self.particle_q_rest,
+            )
 
     def rebuild_bvh(self, state: State):
         """This function will rebuild the BVHs used for detecting self-contacts using the input `state`.
@@ -3939,4 +3941,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             state:  The state whose particle positions (:attr:`~newton.State.particle_q`) will be used for rebuilding the BVHs.
         """
         if self.particle_enable_self_contact:
-            self.trimesh_collision_detector.rebuild(state.particle_q)
+            if self.collision_pipeline is not None:
+                self.collision_pipeline.refit_soft_self_contact_bvh(state.particle_q, rebuild=True)
+            else:
+                self.trimesh_collision_detector.rebuild(state.particle_q)

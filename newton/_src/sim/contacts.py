@@ -436,7 +436,13 @@ class Contacts:
         self.soft_self_contact_data: TriMeshCollisionInfo | None = None
         """Tri-mesh self-contact results owned by this container, written by the
         collision pipeline's tri-mesh collision detector; ``None`` unless
-        constructed with ``soft_self_contact=True``."""
+        constructed with ``soft_self_contact=True``.
+
+        .. experimental::
+
+            This storage-level result attribute may change without the normal
+            deprecation period while the public self-contact API matures.
+        """
         if soft_self_contact:
             mesh_counts = {
                 "particle_count": particle_count,

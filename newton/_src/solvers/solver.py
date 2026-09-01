@@ -222,7 +222,7 @@ class SolverBase:
         PRE_POST_INIT = 2
         """Before and after solver initialization (one detection each)."""
         ITERATIONS = 3
-        """Before initialization, then every k-th solver iteration."""
+        """Before initialization, then immediately before iterations k, 2k, and so on."""
         AUTO = 4
         """Solver-specific default."""
 
@@ -313,6 +313,7 @@ class SolverBase:
 
     def set_collision_frequency(
         self,
+        *,
         collision_frequency: Mapping[CollisionSlot, int] | None = None,
         collision_frequency_type: Mapping[CollisionSlot, CollisionFrequencyType] | None = None,
     ) -> None:
@@ -327,7 +328,7 @@ class SolverBase:
         Args:
             collision_frequency: Frequency numbers keyed by
                 :class:`CollisionSlot`; used only by ``ITERATIONS`` slots
-                ("every k-th iteration") and must be at least one.
+                (before iterations k, 2k, and so on) and must be at least one.
             collision_frequency_type: Detection points keyed by
                 :class:`CollisionSlot`.
         """
@@ -346,11 +347,6 @@ class SolverBase:
         if collision_frequency_type is not None:
             for slot, value in collision_frequency_type.items():
                 ftype[Slot(slot)] = Frequency(value)
-            if ftype[Slot.RIGID] == Frequency.PRE_POST_INIT:
-                raise ValueError(
-                    "collision_frequency_type: PRE_POST_INIT is invalid for the rigid slot; "
-                    "the rigid pass has no post-initialization detection point."
-                )
             if self.collision_pipeline is None and ftype[Slot.RIGID] not in (
                 Frequency.NONE,
                 Frequency.AUTO,

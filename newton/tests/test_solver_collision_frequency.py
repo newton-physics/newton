@@ -127,13 +127,14 @@ def test_frequency_validation_and_ownership(test, device):
     with test.assertRaises(ValueError):
         _NonOwning(model, collision_frequency_type={Slot.RIGID: Frequency.PRE_INIT})
 
-    # PRE_POST_INIT is meaningless for the rigid slot.
-    with test.assertRaises(ValueError):
-        _StubSolver(
-            model,
-            collision_pipeline=pipeline,
-            collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
-        )
+    # VBD supports rigid detection on both sides of solver initialization.
+    SolverVBD(
+        model,
+        iterations=1,
+        collision_pipeline=pipeline,
+        rigid_contact_history=False,
+        collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
+    )
     with test.assertRaisesRegex(ValueError, "requires contact matching"):
         _StubSolver(
             model,
@@ -248,6 +249,69 @@ def test_vbd_rigid_iterations_mode(test, device):
     test.assertTrue(np.isfinite(q_k1).all())
 
 
+def test_vbd_rigid_pre_post_init_mode(test, device):
+    """Run rigid detection before and after solver initialization."""
+
+    class _TrackingSolver(SolverVBD):
+        def __init__(self, *args, **kwargs):
+            self.collision_passes = 0
+            super().__init__(*args, **kwargs)
+
+        def _run_rigid_collision(self, state, dt=None):
+            self.collision_passes += 1
+            super()._run_rigid_collision(state, dt)
+
+    model = _build_model(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    solver = _TrackingSolver(
+        model,
+        iterations=1,
+        collision_pipeline=pipeline,
+        rigid_contact_history=False,
+        rigid_compliant_alm=False,
+        collision_frequency_type={Slot.RIGID: Frequency.PRE_POST_INIT},
+    )
+
+    solver.step(model.state(), model.state(), None, None, 1e-3)
+
+    test.assertEqual(solver.collision_passes, 2)
+
+
+def test_vbd_iteration_schedules_align(test, device):
+    """Run rigid and self-contact passes before the same k-th iterations."""
+
+    class _TrackingSolver(SolverVBD):
+        def __init__(self, *args, **kwargs):
+            self.rigid_collision_passes = 0
+            self.self_collision_passes = 0
+            super().__init__(*args, **kwargs)
+
+        def _run_rigid_collision(self, state, dt=None):
+            self.rigid_collision_passes += 1
+            super()._run_rigid_collision(state, dt)
+
+        def _collision_detection_penetration_free(self, current_state):
+            self.self_collision_passes += 1
+            super()._collision_detection_penetration_free(current_state)
+
+    model = _build_cloth_model(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+    solver = _TrackingSolver(
+        model,
+        iterations=4,
+        collision_pipeline=pipeline,
+        particle_enable_self_contact=True,
+        collision_frequency={Slot.RIGID: 2, Slot.SOFT_SELF_CONTACT: 2},
+        collision_frequency_type={Slot.RIGID: Frequency.ITERATIONS, Slot.SOFT_SELF_CONTACT: Frequency.ITERATIONS},
+    )
+
+    solver.step(model.state(), model.state(), None, None, 1e-3)
+
+    # One pre-initialization baseline plus passes before iterations 2 and 4.
+    test.assertEqual(solver.rigid_collision_passes, 3)
+    test.assertEqual(solver.self_collision_passes, 3)
+
+
 def test_vbd_rigid_iterations_preserves_contact_duals(test, device):
     """Carry in-flight rigid contact duals across scheduled re-detection."""
 
@@ -277,8 +341,10 @@ def test_vbd_rigid_iterations_preserves_contact_duals(test, device):
 
     solver.step(model.state(), model.state(), None, None, 1e-3)
 
-    test.assertGreater(len(solver.dual_norms), 0)
-    for before, after in solver.dual_norms:
+    test.assertEqual(len(solver.dual_norms), 3)
+    # The first k=1 refresh precedes the first solve, so no dual exists yet.
+    test.assertEqual(solver.dual_norms[0], (0.0, 0.0))
+    for before, after in solver.dual_norms[1:]:
         test.assertGreater(before, 0.0)
         test.assertGreater(after, 0.0)
 
@@ -308,8 +374,8 @@ def test_vbd_rigid_iterations_refreshes_contact_frame(test, device):
 
     solver.step(model.state(), model.state(), None, None, 1e-3)
 
-    test.assertEqual(len(solver.contact_frame_steps), 3)
-    test.assertEqual(solver.contact_frame_steps[1:], [(1.0, 1.0), (1.0, 1.0)])
+    test.assertEqual(len(solver.contact_frame_steps), 4)
+    test.assertEqual(solver.contact_frame_steps[1:], [(1.0, 1.0), (1.0, 1.0), (1.0, 1.0)])
 
 
 def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
@@ -344,7 +410,7 @@ def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
     state_a, state_b = model.state(), model.state()
     solver.step(state_a, state_b, None, None, 1e-3)
 
-    test.assertEqual(solver.body_particle_refreshes, 3)
+    test.assertEqual(solver.body_particle_refreshes, 4)
     test.assertGreater(int(solver.contacts.soft_contact_count.numpy()[0]), 0)
     test.assertGreater(int(solver.body_particle_contact_counts.numpy().sum()), 0)
     test.assertTrue(np.isfinite(state_b.particle_q.numpy()).all())
@@ -380,8 +446,8 @@ def test_vbd_pipeline_iterations_without_internal_bodies(test, device):
     state_a, state_b = model.state(), model.state()
     solver.step(state_a, state_b, None, None, 1e-3)
 
-    # One pre-initialization pass plus passes before iterations 1 and 2.
-    test.assertEqual(solver.collision_passes, 3)
+    # One pre-initialization pass plus one pass before each iteration.
+    test.assertEqual(solver.collision_passes, 4)
     test.assertGreater(int(solver.contacts.soft_contact_count.numpy()[0]), 0)
 
 
@@ -395,6 +461,28 @@ def test_vbd_external_rigid_iterate_view(test, device):
 
     test.assertIs(view.body_q, state_out.body_q)
     test.assertIs(view.body_qd, state_out.body_qd)
+
+
+def test_vbd_self_contact_rebinds_owned_buffer(test, device):
+    """Rebind pipeline self-contact detection to the solver-owned buffer."""
+    model = _build_cloth_model(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    solver = SolverVBD(
+        model,
+        iterations=1,
+        collision_pipeline=pipeline,
+        particle_enable_self_contact=True,
+        collision_frequency_type={Slot.RIGID: Frequency.NONE},
+    )
+    state = model.state()
+    other_contacts = pipeline.contacts()
+
+    pipeline.collide(state, other_contacts, soft_self_contact=True)
+    test.assertIs(pipeline._soft_self_contact_detector.collision_info, other_contacts.soft_self_contact_data)
+
+    solver._collision_detection_penetration_free(state)
+
+    test.assertIs(pipeline._soft_self_contact_detector.collision_info, solver.contacts.soft_self_contact_data)
 
 
 def _build_cloth_model(device):
@@ -553,6 +641,18 @@ add_function_test(
 )
 add_function_test(
     TestSolverCollisionFrequency,
+    "test_vbd_rigid_pre_post_init_mode",
+    test_vbd_rigid_pre_post_init_mode,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_iteration_schedules_align",
+    test_vbd_iteration_schedules_align,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
     "test_vbd_rigid_iterations_refreshes_body_particle_contacts",
     test_vbd_rigid_iterations_refreshes_body_particle_contacts,
     devices=devices,
@@ -579,6 +679,12 @@ add_function_test(
     TestSolverCollisionFrequency,
     "test_vbd_external_rigid_iterate_view",
     test_vbd_external_rigid_iterate_view,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_self_contact_rebinds_owned_buffer",
+    test_vbd_self_contact_rebinds_owned_buffer,
     devices=devices,
 )
 add_function_test(

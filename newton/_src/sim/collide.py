@@ -1986,7 +1986,7 @@ class CollisionPipeline:
             detector._bind_external_buffers(data)
         return detector
 
-    def refit_soft_self_contact_bvh(self, new_pos: wp.array[wp.vec3], rebuild: bool = False) -> None:
+    def refit_soft_self_contact_bvh(self, new_pos: wp.array[wp.vec3], *, rebuild: bool = False) -> None:
         """Refit (or fully rebuild) the soft self-contact BVHs to ``new_pos``.
 
         :meth:`collide` automatically refits before self-contact detection.
@@ -2004,6 +2004,22 @@ class CollisionPipeline:
             detector.rebuild(new_pos)
         else:
             detector.refit(new_pos)
+
+    def _detect_soft_self_contact(self, particle_q: wp.array[wp.vec3], contacts: Contacts) -> None:
+        """Detect tri-mesh self-contact into ``contacts`` at ``particle_q``."""
+        detector = self._get_soft_self_contact_detector(contacts)
+        detector.refit(particle_q)
+        query_radius = self.soft_self_contact_margin + self.soft_self_contact_gap
+        detector.vertex_triangle_collision_detection(
+            query_radius,
+            min_query_radius=self.soft_self_contact_rest_shape_exclusion_radius,
+            min_distance_filtering_ref_pos=self.model.particle_q,
+        )
+        detector.edge_edge_collision_detection(
+            query_radius,
+            min_query_radius=self.soft_self_contact_rest_shape_exclusion_radius,
+            min_distance_filtering_ref_pos=self.model.particle_q,
+        )
 
     def reset_contact_matching(self, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Clear all or reset-selected previous-frame contact history.
@@ -2517,18 +2533,4 @@ class CollisionPipeline:
         # Soft (cloth) self-contact detection (opt-in per call; results land in
         # contacts.soft_self_contact_data).
         if soft_self_contact:
-            detector = self._get_soft_self_contact_detector(contacts)
-            detector.refit(state.particle_q)
-            query_radius = self.soft_self_contact_margin + self.soft_self_contact_gap
-            # Rest-shape exclusion measures pair distances in the model's
-            # initial positions rather than the current state.
-            detector.vertex_triangle_collision_detection(
-                query_radius,
-                min_query_radius=self.soft_self_contact_rest_shape_exclusion_radius,
-                min_distance_filtering_ref_pos=self.model.particle_q,
-            )
-            detector.edge_edge_collision_detection(
-                query_radius,
-                min_query_radius=self.soft_self_contact_rest_shape_exclusion_radius,
-                min_distance_filtering_ref_pos=self.model.particle_q,
-            )
+            self._detect_soft_self_contact(state.particle_q, contacts)

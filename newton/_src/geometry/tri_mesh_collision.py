@@ -29,10 +29,15 @@ if TYPE_CHECKING:
 class TriMeshCollisionInfo:
     """Bounded buffers produced by triangle-mesh self-collision queries.
 
+    .. experimental::
+
+        This storage-level result type may change without the normal
+        deprecation period while the public self-contact API matures.
+
     Vertex-triangle and edge-edge results use interleaved source/target pairs;
     triangle-vertex results use plain target indices. Counts record all pairs
     found and may exceed a row's capacity when a buffer overflows. Kernel code
-    should therefore read results through the public ``get_*`` accessors,
+    should therefore read results through the internal ``get_*`` accessors,
     which clamp counts and apply the correct packed indexing.
     """
 
@@ -71,58 +76,64 @@ class TriMeshCollisionInfo:
 
 
 @wp.func
-def get_vertex_colliding_triangles_count(col_info: TriMeshCollisionInfo, v: int):
-    """Return the stored collision count for vertex ``v``, clamped to capacity."""
-    return wp.min(col_info.vertex_colliding_triangles_count[v], col_info.vertex_colliding_triangles_buffer_sizes[v])
-
-
-@wp.func
-def get_vertex_colliding_triangles(col_info: TriMeshCollisionInfo, v: int, i_collision: int):
-    """Return the triangle index for collision ``i_collision`` of vertex ``v``."""
-    offset = col_info.vertex_colliding_triangles_offsets[v]
-    return col_info.vertex_colliding_triangles[2 * (offset + i_collision) + 1]
-
-
-@wp.func
-def get_vertex_collision_buffer_vertex_index(col_info: TriMeshCollisionInfo, v: int, i_collision: int):
-    """Return the stored source vertex for collision ``i_collision`` of vertex ``v``."""
-    offset = col_info.vertex_colliding_triangles_offsets[v]
-    return col_info.vertex_colliding_triangles[2 * (offset + i_collision)]
-
-
-@wp.func
-def get_triangle_colliding_vertices_count(col_info: TriMeshCollisionInfo, tri: int):
-    """Return the stored collision count for triangle ``tri``, clamped to capacity."""
+def get_vertex_colliding_triangles_count(collision_info: TriMeshCollisionInfo, vertex: int):
+    """Return the stored collision count for ``vertex``, clamped to capacity."""
     return wp.min(
-        col_info.triangle_colliding_vertices_count[tri], col_info.triangle_colliding_vertices_buffer_sizes[tri]
+        collision_info.vertex_colliding_triangles_count[vertex],
+        collision_info.vertex_colliding_triangles_buffer_sizes[vertex],
     )
 
 
 @wp.func
-def get_triangle_colliding_vertices(col_info: TriMeshCollisionInfo, tri: int, i_collision: int):
-    """Return the vertex index for collision ``i_collision`` of triangle ``tri``."""
-    offset = col_info.triangle_colliding_vertices_offsets[tri]
-    return col_info.triangle_colliding_vertices[offset + i_collision]
+def get_vertex_colliding_triangles(collision_info: TriMeshCollisionInfo, vertex: int, collision_index: int):
+    """Return the triangle index for ``collision_index`` of ``vertex``."""
+    offset = collision_info.vertex_colliding_triangles_offsets[vertex]
+    return collision_info.vertex_colliding_triangles[2 * (offset + collision_index) + 1]
 
 
 @wp.func
-def get_edge_colliding_edges_count(col_info: TriMeshCollisionInfo, e: int):
-    """Return the stored collision count for edge ``e``, clamped to capacity."""
-    return wp.min(col_info.edge_colliding_edges_count[e], col_info.edge_colliding_edges_buffer_sizes[e])
+def get_vertex_collision_buffer_vertex_index(collision_info: TriMeshCollisionInfo, vertex: int, collision_index: int):
+    """Return the stored source vertex for ``collision_index`` of ``vertex``."""
+    offset = collision_info.vertex_colliding_triangles_offsets[vertex]
+    return collision_info.vertex_colliding_triangles[2 * (offset + collision_index)]
 
 
 @wp.func
-def get_edge_colliding_edges(col_info: TriMeshCollisionInfo, e: int, i_collision: int):
-    """Return the target edge for collision ``i_collision`` of edge ``e``."""
-    offset = col_info.edge_colliding_edges_offsets[e]
-    return col_info.edge_colliding_edges[2 * (offset + i_collision) + 1]
+def get_triangle_colliding_vertices_count(collision_info: TriMeshCollisionInfo, triangle: int):
+    """Return the stored collision count for ``triangle``, clamped to capacity."""
+    return wp.min(
+        collision_info.triangle_colliding_vertices_count[triangle],
+        collision_info.triangle_colliding_vertices_buffer_sizes[triangle],
+    )
 
 
 @wp.func
-def get_edge_collision_buffer_edge_index(col_info: TriMeshCollisionInfo, e: int, i_collision: int):
-    """Return the stored source edge for collision ``i_collision`` of edge ``e``."""
-    offset = col_info.edge_colliding_edges_offsets[e]
-    return col_info.edge_colliding_edges[2 * (offset + i_collision)]
+def get_triangle_colliding_vertices(collision_info: TriMeshCollisionInfo, triangle: int, collision_index: int):
+    """Return the vertex index for ``collision_index`` of ``triangle``."""
+    offset = collision_info.triangle_colliding_vertices_offsets[triangle]
+    return collision_info.triangle_colliding_vertices[offset + collision_index]
+
+
+@wp.func
+def get_edge_colliding_edges_count(collision_info: TriMeshCollisionInfo, edge: int):
+    """Return the stored collision count for ``edge``, clamped to capacity."""
+    return wp.min(
+        collision_info.edge_colliding_edges_count[edge], collision_info.edge_colliding_edges_buffer_sizes[edge]
+    )
+
+
+@wp.func
+def get_edge_colliding_edges(collision_info: TriMeshCollisionInfo, edge: int, collision_index: int):
+    """Return the target edge for ``collision_index`` of ``edge``."""
+    offset = collision_info.edge_colliding_edges_offsets[edge]
+    return collision_info.edge_colliding_edges[2 * (offset + collision_index) + 1]
+
+
+@wp.func
+def get_edge_collision_buffer_edge_index(collision_info: TriMeshCollisionInfo, edge: int, collision_index: int):
+    """Return the stored source edge for ``collision_index`` of ``edge``."""
+    offset = collision_info.edge_colliding_edges_offsets[edge]
+    return collision_info.edge_colliding_edges[2 * (offset + collision_index)]
 
 
 def _as_numpy(arr) -> np.ndarray:
