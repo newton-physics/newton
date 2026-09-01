@@ -13,6 +13,10 @@ Solver Outputs
    The solver output API may change while additional solvers and output
    categories are migrated to it.
 
+See the standalone `Solver Outputs architecture guide
+<../_static/solver_outputs_architecture.html>`_ for diagrams of the ownership,
+allocation, extension, and sensor-consumption flows.
+
 Quantities produced by a solver but not required to advance simulation belong
 in :class:`newton.solvers.SolverOutputs`, separately from
 :class:`~newton.State` and :class:`~newton.Contacts`. Request only the arrays
