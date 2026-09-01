@@ -1891,7 +1891,7 @@ class ArticulationView:
         return mapping.reshape((self.world_count, dofs_per_world))
 
     def get_actuator_view(self, actuators: list[Actuator]) -> ActuatorView:
-        """Get a cached actuator view in this articulation view's DOF layout.
+        """Get a cached actuator view over the selected velocity-DOF columns.
 
         Args:
             actuators: Actuators to expose through the returned view.
@@ -1903,9 +1903,11 @@ class ArticulationView:
 
     @functools.cache  # noqa: B019 - cache is tied to view lifetime
     def _get_actuator_view(self, actuators: tuple[Actuator, ...]) -> ActuatorView:
-        return ActuatorView({actuator: self._get_actuator_dof_mapping(actuator) for actuator in actuators})
+        return ActuatorView._from_mappings(
+            {actuator: self._get_actuator_dof_mapping(actuator) for actuator in actuators}
+        )
 
-    def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
+    def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str) -> wp.array2d[Any]:
         """Read an actuator-component parameter for every DOF in this view.
 
         The returned array covers all DOFs selected by the view (one column
@@ -1916,7 +1918,8 @@ class ArticulationView:
         Args:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
-            component: The component that owns the parameter — a
+            component: The component that owns the parameter, or its
+                actuator-relative string path — a
                 :class:`~newton.actuators.Controller`,
                 :class:`~newton.actuators.Clamping`, or
                 :class:`~newton.actuators.Delay` instance.
@@ -1928,9 +1931,7 @@ class ArticulationView:
             ``dofs_per_world`` is the total number of DOFs in the view (not
             just the actuated subset).
         """
-        if self._get_actuator_dof_mapping(actuator).shape[1] == 0:
-            return wp.empty((self.world_count, 0), dtype=float, device=self.device)
-        return self.get_actuator_view([actuator])._get_parameter_array(actuator, getattr(component, name))
+        return self.get_actuator_view([actuator]).get_actuator_parameter(actuator, component, name)
 
     def set_actuator_parameter(
         self,
@@ -1949,7 +1950,8 @@ class ArticulationView:
         Args:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
-            component: The component that owns the parameter — a
+            component: The component that owns the parameter, or its
+                actuator-relative string path — a
                 :class:`~newton.actuators.Controller`,
                 :class:`~newton.actuators.Clamping`, or
                 :class:`~newton.actuators.Delay` instance.
@@ -1960,6 +1962,4 @@ class ArticulationView:
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
         mask = self._resolve_world_mask(mask)
-        if self._get_actuator_dof_mapping(actuator).shape[1] == 0:
-            return
-        self.get_actuator_view([actuator])._set_parameter_array(actuator, getattr(component, name), values, mask)
+        self.get_actuator_view([actuator]).set_actuator_parameter(actuator, component, name, values, mask)
