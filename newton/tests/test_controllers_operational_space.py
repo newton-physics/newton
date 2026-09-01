@@ -30,13 +30,9 @@ from newton._src.controllers.impl.operational_space._common import (
     _null_space_projector_kernel,
     _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
-    _pose_twist_to_frame_kernel,
-    _rotate_jacobian_to_frame_kernel,
     _shift_jacobian_to_tool_kernel,
     _task_matrix_times_jacobian_kernel,
-    _task_space_pd_kernel,
     _tool_pose_and_twist_kernel,
-    _wrench_feedforward_kernel,
 )
 from newton._src.controllers.impl.operational_space.model_based import ControllerOperationalSpace
 from newton._src.controllers.impl.operational_space.model_free import ControllerOperationalSpaceModelFree
@@ -419,39 +415,6 @@ def test_jacobian_tool_shift_matches_finite_difference(test, device):
     np.testing.assert_allclose(predicted_velocity, finite_diff_velocity, atol=1e-3)
 
 
-def test_tool_twist_angular_part_matches_body(test, device):
-    """The tool frame's angular velocity is the body's angular velocity, unshifted."""
-    model, state, tool_body, coordinate_change_body_from_tool = _build_two_link_arm_with_tool_site(device)
-    device = model.device
-
-    # Move the arm to a non-identity configuration with nonzero joint velocity
-    # and run ground-truth FK, keeping the body's own twist for comparison.
-    state.joint_q.assign([0.2, 0.7])
-    state.joint_qd.assign([0.4, -0.3])
-    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-    body_twist_com_world = state.body_qd.numpy()[tool_body]
-
-    # Preallocate outputs and launch the kernel under test.
-    tool_pose_world = wp.zeros(1, dtype=wp.transform, device=device)
-    tool_twist_world = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _tool_pose_and_twist_kernel,
-        dim=1,
-        inputs=[
-            state.body_q,
-            state.body_qd,
-            model.body_com,
-            wp.array([tool_body], dtype=wp.int32, device=device),
-            wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
-        ],
-        outputs=[tool_pose_world, tool_twist_world],
-        device=device,
-    )
-
-    # Compare: the tool twist's angular part (last 3 components) should be unchanged.
-    np.testing.assert_allclose(tool_twist_world.numpy()[0][3:], body_twist_com_world[3:], atol=1e-6)
-
-
 def _pose_error(current_pos, current_quat, desired_pos, desired_quat, device):
     """Launch _pose_error_kernel for a single robot and return the 6D error as numpy."""
     current = wp.array([wp.transform(wp.vec3(*current_pos), current_quat)], dtype=wp.transform, device=device)
@@ -500,95 +463,6 @@ def test_pose_error_orientation_matches_known_rotations(test, device):
         np.testing.assert_allclose(error[3:], expected_orientation_error, atol=1e-5)
 
 
-def test_task_space_pd_matches_formula(test, device):
-    """The PD kernel computes Kp .* pose_error + Kd .* (desired_twist - current_twist), axis by axis.
-
-    The kernel itself has no frame concept at all -- it's a plain per-axis
-    multiply on whatever frame its inputs already share (the operational
-    frame, in the real pipeline; upstream kernels handle every rotation).
-    """
-    pose_error_operational = wp.array(
-        [wp.spatial_vector(0.1, -0.2, 0.3, 0.01, -0.02, 0.03)], dtype=wp.spatial_vector, device=device
-    )
-    tool_twist_operational = wp.array(
-        [wp.spatial_vector(0.5, 0.0, -0.5, 0.1, 0.0, -0.1)], dtype=wp.spatial_vector, device=device
-    )
-    desired_twist_operational = wp.array(
-        [wp.spatial_vector(0.0, 0.5, 0.0, 0.0, 0.1, 0.0)], dtype=wp.spatial_vector, device=device
-    )
-    kp = np.array([10.0, 20.0, 30.0, 1.0, 2.0, 3.0])
-    kd = np.array([1.0, 2.0, 3.0, 0.1, 0.2, 0.3])
-    stiffness = wp.array([wp.spatial_vector(*kp.tolist())], dtype=wp.spatial_vector, device=device)
-    damping = wp.array([wp.spatial_vector(*kd.tolist())], dtype=wp.spatial_vector, device=device)
-
-    desired_task_acceleration_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _task_space_pd_kernel,
-        dim=1,
-        inputs=[
-            pose_error_operational,
-            tool_twist_operational,
-            desired_twist_operational,
-            stiffness,
-            damping,
-        ],
-        outputs=[desired_task_acceleration_operational],
-        device=device,
-    )
-
-    pose_error_np = np.array([0.1, -0.2, 0.3, 0.01, -0.02, 0.03])
-    twist_error_np = np.array([0.0, 0.5, 0.0, 0.0, 0.1, 0.0]) - np.array([0.5, 0.0, -0.5, 0.1, 0.0, -0.1])
-    expected = kp * pose_error_np + kd * twist_error_np
-
-    np.testing.assert_allclose(desired_task_acceleration_operational.numpy()[0], expected, atol=1e-5)
-
-
-def test_jacobian_times_jacobian_transpose_matches_numpy(test, device):
-    """J @ J^T, the purely kinematic factor the Moore-Penrose pseudo-inverse transpose needs, matches numpy."""
-    model, state, tool_body, coordinate_change_body_from_tool = _build_seven_dof_arm_with_tool_site(device)
-    device = model.device
-
-    state.joint_q.assign([0.3, -0.4, 0.6, 0.2, -0.5, 0.35, 0.15])
-    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-    jacobian_com_world = newton.eval_jacobian(model, state)
-
-    max_dofs = model.max_dofs_per_articulation
-    jacobian_tool_world = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
-    wp.launch(
-        _shift_jacobian_to_tool_kernel,
-        dim=(1, max_dofs),
-        inputs=[
-            jacobian_com_world,
-            state.body_q,
-            model.body_com,
-            wp.array([tool_body], dtype=wp.int32, device=device),
-            wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
-            wp.array([0], dtype=wp.int32, device=device),
-            wp.array([6], dtype=wp.int32, device=device),  # tool_body is link 6 (the 7th joint's child)
-            wp.array(
-                [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
-            ),  # articulation_dof_idx_of_padded_dof_idx: every DOF controlled, in order
-            wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
-        ],
-        outputs=[jacobian_tool_world],
-        device=device,
-    )
-
-    dof_count = wp.array([max_dofs], dtype=wp.int32, device=device)
-    jacobian_times_jacobian_transpose = wp.zeros((1, 6, 6), dtype=float, device=device)
-    wp.launch(
-        _jacobian_times_jacobian_transpose_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian_tool_world, dof_count],
-        outputs=[jacobian_times_jacobian_transpose],
-        device=device,
-    )
-
-    jacobian_np = jacobian_tool_world.numpy()[0]
-    expected = jacobian_np @ jacobian_np.T
-    np.testing.assert_allclose(jacobian_times_jacobian_transpose.numpy()[0], expected, atol=1e-5)
-
-
 def test_null_space_projector_zeroes_task_response_only_when_dynamically_consistent(test, device):
     """The null-space projector's defining property: null-space torques must not move the tool.
 
@@ -596,13 +470,10 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
     joint acceleration a, must produce zero task-space acceleration when N is
     built from the dynamically-consistent pseudo-inverse transpose. Algebraically
     this reduces to one identity: J @ M^-1 @ N == 0 (a 6 x n zero matrix) --
-    M is always invertible, so this is equivalent to (and tighter than)
-    checking J @ M^-1 @ N @ M == 0 for every a simultaneously.
 
     This does *not* hold for the Moore-Penrose variant (which ignores the
     robot's inertia) unless M happens to be proportional to identity, so it's
-    checked here too as a contrast — confirming this test would actually
-    catch the two variants being mixed up, not just that the formulas run.
+    checked here too as a contrast
     """
     model, state, tool_body, coordinate_change_body_from_tool = _build_seven_dof_arm_with_tool_site(device)
     device = model.device
@@ -754,8 +625,7 @@ def test_generalized_task_specification_matrix_matches_numpy(test, device):
     robot manipulators: The operational space formulation," IEEE Journal of
     Robotics and Automation, 3(1), 43-53, eq. 3-4. S_f and S_tau are two
     genuinely different rotations, so this also
-    checks the linear/angular halves are independently rotated -- not
-    accidentally sharing one frame the way a single-frame mask would.
+    checks the linear/angular halves are independently rotated.
     """
     quat_sf = wp.quat_from_axis_angle(wp.vec3(0.3, -0.6, 0.2), 1.1)
     quat_stau = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4)
@@ -790,81 +660,6 @@ def test_generalized_task_specification_matrix_matches_numpy(test, device):
     np.testing.assert_allclose(masked_vector_operational.numpy()[0], expected, atol=1e-5)
 
 
-def test_wrench_feedforward_matches_formula(test, device):
-    """Feedforward alone, on a zeroed buffer, is the desired wrench rotated into the operational frame."""
-    quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 4.0)
-    operational_frame_pose_world = wp.array(
-        [wp.transform(wp.vec3(0.0, 0.0, 0.0), quat)], dtype=wp.transform, device=device
-    )
-    desired_np = np.array([10.0, -5.0, 2.0, 1.0, -0.5, 0.25])
-    desired_wrench_world = wp.array([wp.spatial_vector(*desired_np.tolist())], dtype=wp.spatial_vector, device=device)
-
-    wrench_command_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _wrench_feedforward_kernel,
-        dim=1,
-        inputs=[operational_frame_pose_world, desired_wrench_world],
-        outputs=[wrench_command_operational],
-        device=device,
-    )
-
-    rotation_np = np.array(wp.quat_to_matrix(quat)).reshape(3, 3)
-    expected = np.concatenate([rotation_np.T @ desired_np[:3], rotation_np.T @ desired_np[3:]])
-    np.testing.assert_allclose(wrench_command_operational.numpy()[0], expected, atol=1e-5)
-
-
-def test_pose_twist_to_frame_matches_manual_rotation(test, device):
-    """Expressing a world pose/twist relative to a frame matches inverse-transform/rotate by hand."""
-    quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 3.0)
-    frame_pose_world = wp.array([wp.transform(wp.vec3(1.0, 2.0, 0.0), quat)], dtype=wp.transform, device=device)
-    pose_world = wp.array([wp.transform(wp.vec3(1.5, 2.2, 0.3), wp.quat_identity())], dtype=wp.transform, device=device)
-    twist_np = np.array([0.5, -0.2, 0.1, 0.0, 0.0, 0.3])
-    twist_world = wp.array([wp.spatial_vector(*twist_np.tolist())], dtype=wp.spatial_vector, device=device)
-
-    pose_in_frame = wp.zeros(1, dtype=wp.transform, device=device)
-    twist_in_frame = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _pose_twist_to_frame_kernel,
-        dim=1,
-        inputs=[frame_pose_world, pose_world, twist_world],
-        outputs=[pose_in_frame, twist_in_frame],
-        device=device,
-    )
-
-    frame_transform_inv = wp.transform_inverse(wp.transform(wp.vec3(1.0, 2.0, 0.0), quat))
-    expected_pose = frame_transform_inv * wp.transform(wp.vec3(1.5, 2.2, 0.3), wp.quat_identity())
-    np.testing.assert_allclose(np.array(pose_in_frame.numpy()[0]), np.array(expected_pose), atol=1e-5)
-
-    rotation_np = np.array(wp.quat_to_matrix(quat)).reshape(3, 3)
-    expected_twist = np.concatenate([rotation_np.T @ twist_np[:3], rotation_np.T @ twist_np[3:]])
-    np.testing.assert_allclose(twist_in_frame.numpy()[0], expected_twist, atol=1e-5)
-
-
-def test_rotate_jacobian_to_frame_matches_column_rotation(test, device):
-    """Rotating a Jacobian into a frame matches rotating each column as a spatial vector by hand."""
-    quat = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.6)
-    frame_pose_world = wp.array([wp.transform(wp.vec3(0.0, 0.0, 0.0), quat)], dtype=wp.transform, device=device)
-    rng = np.random.default_rng(11)
-    jacobian_np = rng.standard_normal((1, 6, 3)).astype(np.float32)
-    jacobian_world = wp.array(jacobian_np, dtype=wp.float32, device=device)
-    dof_count = wp.array(np.array([3], dtype=np.int32), device=device)
-
-    jacobian_in_frame = wp.zeros((1, 6, 3), dtype=wp.float32, device=device)
-    wp.launch(
-        _rotate_jacobian_to_frame_kernel,
-        dim=(1, 3),
-        inputs=[frame_pose_world, jacobian_world, dof_count],
-        outputs=[jacobian_in_frame],
-        device=device,
-    )
-
-    rotation_np = np.array(wp.quat_to_matrix(quat)).reshape(3, 3)
-    expected = np.zeros_like(jacobian_np[0])
-    expected[:3, :] = rotation_np.T @ jacobian_np[0, :3, :]
-    expected[3:, :] = rotation_np.T @ jacobian_np[0, 3:, :]
-    np.testing.assert_allclose(jacobian_in_frame.numpy()[0], expected, atol=1e-5)
-
-
 class TestOperationalSpaceKernels(unittest.TestCase):
     pass
 
@@ -895,12 +690,6 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_tool_twist_angular_part_matches_body",
-    test_tool_twist_angular_part_matches_body,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
     "test_pose_error_position_is_desired_minus_current",
     test_pose_error_position_is_desired_minus_current,
     devices=devices,
@@ -909,18 +698,6 @@ add_function_test(
     TestOperationalSpaceKernels,
     "test_pose_error_orientation_matches_known_rotations",
     test_pose_error_orientation_matches_known_rotations,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
-    "test_task_space_pd_matches_formula",
-    test_task_space_pd_matches_formula,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
-    "test_jacobian_times_jacobian_transpose_matches_numpy",
-    test_jacobian_times_jacobian_transpose_matches_numpy,
     devices=devices,
 )
 add_function_test(
@@ -935,25 +712,6 @@ add_function_test(
     test_generalized_task_specification_matrix_matches_numpy,
     devices=devices,
 )
-add_function_test(
-    TestOperationalSpaceKernels,
-    "test_wrench_feedforward_matches_formula",
-    test_wrench_feedforward_matches_formula,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
-    "test_pose_twist_to_frame_matches_manual_rotation",
-    test_pose_twist_to_frame_matches_manual_rotation,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
-    "test_rotate_jacobian_to_frame_matches_column_rotation",
-    test_rotate_jacobian_to_frame_matches_column_rotation,
-    devices=devices,
-)
-
 
 # ---------------------------------------------------------------------------
 # ControllerOperationalSpaceModelFree
@@ -989,34 +747,41 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         np.testing.assert_allclose(outs.joint_f.numpy(), np.zeros(7), atol=1e-5)
 
     def test_position_error_matches_formula_without_inertia_decoupling(self):
-        """tau = J^T @ (Kp * pose_error), when inertial decoupling is off."""
+        """tau = J^T @ (Kp .* pose_error + Kd .* twist_error), when inertial decoupling is off.
+
+        Kp/Kd vary per axis (not a shared scalar), so an axis-permutation bug
+        -- e.g. axis 0's gain accidentally applied to axis 1 -- would be caught.
+        """
         device = wp.get_device()
-        kp = 100.0
+        kp_np = np.array([10.0, 20.0, 30.0, 1.0, 2.0, 3.0])
+        kd_np = np.array([1.0, 2.0, 3.0, 0.1, 0.2, 0.3])
         ctrl = ControllerOperationalSpaceModelFree(
             controlled_dofs_per_robot=wp.array(np.array([7], dtype=np.int32), device=device),
-            motion_stiffness=kp,
-            motion_damping=10.0,
+            motion_stiffness=wp.spatial_vector(*kp_np.tolist()),
+            motion_damping=wp.spatial_vector(*kd_np.tolist()),
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
             use_inertia_decoupling=False,
             device=device,
         )
         current_pose = wp.transform_identity()
         desired_pose = wp.transform(wp.vec3(0.1, -0.05, 0.02), wp.quat_identity())
-        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        tool_twist = wp.spatial_vector(0.5, 0.0, -0.5, 0.1, 0.0, -0.1)
+        desired_twist = wp.spatial_vector(0.0, 0.5, 0.0, 0.0, 0.1, 0.0)
         rng = np.random.default_rng(1)
         jacobian = rng.standard_normal((1, 6, 7)).astype(np.float32)
 
         ins = ctrl.input()
         ins.tool_pose_world = wp.array([current_pose], dtype=wp.transform, device=device)
-        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.tool_twist_world = wp.array([tool_twist], dtype=wp.spatial_vector, device=device)
         ins.desired_tool_pose_operational = wp.array([desired_pose], dtype=wp.transform, device=device)
-        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_twist_operational = wp.array([desired_twist], dtype=wp.spatial_vector, device=device)
         ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
         outs = ctrl.output()
         ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
         pose_error = np.array([0.1, -0.05, 0.02, 0.0, 0.0, 0.0])
-        expected = jacobian[0].T @ (kp * pose_error)
+        twist_error = np.array([0.0, 0.5, 0.0, 0.0, 0.1, 0.0]) - np.array([0.5, 0.0, -0.5, 0.1, 0.0, -0.1])
+        expected = jacobian[0].T @ (kp_np * pose_error + kd_np * twist_error)
         np.testing.assert_allclose(outs.joint_f.numpy(), expected, atol=1e-3)
 
     def test_inertia_decoupling_matches_formula(self):
@@ -2135,7 +1900,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
             )
 
     def test_step_resolves_tool_pose_matching_forward_kinematics(self):
-        """step() resolves the tool pose from joint_q, matching a hand-derived planar forward-kinematics formula.
+        """step() resolves the tool pose/twist from joint_q/joint_qd, matching hand-derived planar formulas.
 
         For the two-link planar arm, joint 1 rotates body 1 (and everything
         downstream of it) about Z by theta1; joint 2 further rotates body 2
@@ -2144,6 +1909,11 @@ class TestControllerOperationalSpace(unittest.TestCase):
         ``(cos(theta1), sin(theta1), 0)`` and its orientation is
         ``Rot_z(theta1 + theta2)``; the tool site is a further fixed offset
         from body 2's origin, rotated by that same combined angle.
+
+        Both joints rotate about the same (Z) axis, so the tool's angular
+        velocity is simply ``theta1_dot + theta2_dot`` about Z, independent
+        of position -- this also checks the twist the tool-pose/twist kernel
+        resolves, not just the pose.
         """
         device = wp.get_device()
         model, _state, _tool_body, coordinate_change_body_from_tool = _build_two_link_arm_with_tool_site(device)
@@ -2161,8 +1931,9 @@ class TestControllerOperationalSpace(unittest.TestCase):
         outputs = ctrl.output()
 
         theta1, theta2 = 0.3, -0.2
+        theta1_dot, theta2_dot = 0.4, -0.3
         inputs.joint_q.assign(np.array([theta1, theta2], dtype=np.float32))
-        inputs.joint_qd.assign(np.zeros(2, dtype=np.float32))
+        inputs.joint_qd.assign(np.array([theta1_dot, theta2_dot], dtype=np.float32))
         inputs.desired_tool_pose_operational.assign(np.zeros((1, 7), dtype=np.float32))
         inputs.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
 
@@ -2181,12 +1952,122 @@ class TestControllerOperationalSpace(unittest.TestCase):
         expected_tool_orientation_world = np.array(
             [0.0, 0.0, np.sin(combined_angle / 2.0), np.cos(combined_angle / 2.0)]
         )
+        expected_tool_angular_velocity_world = np.array([0.0, 0.0, theta1_dot + theta2_dot])
 
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
 
         computed_tool_pose_world = ctrl._tool_pose_world.numpy()[0]
         np.testing.assert_allclose(computed_tool_pose_world[:3], expected_tool_position_world, rtol=1e-4, atol=1e-4)
         np.testing.assert_allclose(computed_tool_pose_world[3:], expected_tool_orientation_world, rtol=1e-4, atol=1e-4)
+
+        computed_tool_twist_world = ctrl._tool_twist_world.numpy()[0]
+        np.testing.assert_allclose(
+            computed_tool_twist_world[3:], expected_tool_angular_velocity_world, rtol=1e-4, atol=1e-4
+        )
+
+    def test_step_rotates_pose_twist_jacobian_and_wrench_into_operational_frame(self):
+        """step() correctly rotates the tool pose, twist, Jacobian, and a feedforward wrench into a real frame.
+
+        Every other public test in this file uses an identity
+        ``operational_frame_pose_world``, so none of them exercise this
+        rotation at all. Uses the simplest fixture (the two-link planar
+        arm) at its home configuration (theta1=theta2=0) with a small
+        joint velocity, and an operational frame that's a 90-degree
+        rotation about Z plus a small translation -- simple enough that
+        every expected value below can be checked by hand.
+        """
+        device = wp.get_device()
+        model, state, tool_body, coordinate_change_body_from_tool = _build_two_link_arm_with_tool_site(device)
+
+        frame_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0)
+        operational_frame_pose_world = wp.transform(wp.vec3(1.0, 0.5, 0.0), frame_quat)
+
+        ctrl = ControllerOperationalSpace(
+            model,
+            tool="tool_site",
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            operational_frame_pose_world=operational_frame_pose_world,
+            use_inertia_decoupling=False,
+            use_gravity_compensation=False,
+            use_wrench_feedforward=True,
+            motion_selection_axes=wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            wrench_selection_axes=wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            linear_selection_frame_operational=_IDENTITY_QUAT,
+            angular_selection_frame_operational=_IDENTITY_QUAT,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+
+        theta1_dot, theta2_dot = 0.4, -0.3
+        desired_wrench_world_np = np.array([10.0, -5.0, 2.0, 1.0, -0.5, 0.25])
+        inputs.joint_q.assign(np.zeros(2, dtype=np.float32))
+        inputs.joint_qd.assign(np.array([theta1_dot, theta2_dot], dtype=np.float32))
+        inputs.desired_tool_pose_operational.assign(np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+        inputs.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
+        inputs.desired_wrench_world.assign(np.array([desired_wrench_world_np], dtype=np.float32))
+
+        # Ground truth: tool pose/orientation at the home configuration
+        # (same composition as test_step_resolves_tool_pose_matching_forward_kinematics,
+        # trivial here since theta1=theta2=0), rotated into the operational
+        # frame by hand via the same wp.transform_inverse/quat_to_matrix
+        # building blocks _pose_twist_to_frame_kernel/_rotate_jacobian_to_frame_kernel use internally.
+        site_local = np.array(coordinate_change_body_from_tool)[:3]
+        tool_position_world = np.array([1.0, 0.0, 0.0]) + site_local
+        tool_pose_world = wp.transform(wp.vec3(*tool_position_world.tolist()), wp.quat_identity())
+        expected_pose_operational = wp.transform_inverse(operational_frame_pose_world) * tool_pose_world
+
+        rotation_np = np.array(wp.quat_to_matrix(frame_quat)).reshape(3, 3)
+        expected_angular_velocity_operational = rotation_np.T @ np.array([0.0, 0.0, theta1_dot + theta2_dot])
+        expected_wrench_operational = np.concatenate(
+            [rotation_np.T @ desired_wrench_world_np[:3], rotation_np.T @ desired_wrench_world_np[3:]]
+        )
+
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        computed_pose_operational = ctrl._model_free._tool_pose_operational_buf.numpy()[0]
+        np.testing.assert_allclose(computed_pose_operational, np.array(expected_pose_operational), atol=1e-5)
+
+        computed_twist_operational = ctrl._model_free._tool_twist_operational_buf.numpy()[0]
+        np.testing.assert_allclose(computed_twist_operational[3:], expected_angular_velocity_operational, atol=1e-5)
+
+        computed_wrench_operational = ctrl._model_free._wrench_command_buf.numpy()[0]
+        np.testing.assert_allclose(computed_wrench_operational, expected_wrench_operational, atol=1e-4)
+
+        # Jacobian ground truth: the same eval_jacobian + shift-to-tool
+        # machinery the dedicated Jacobian-shift tests independently
+        # verify, rotated into the operational frame by hand.
+        state.joint_q.assign(np.zeros(2, dtype=np.float32))
+        state.joint_qd.assign(np.array([theta1_dot, theta2_dot], dtype=np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        jacobian_com_world = newton.eval_jacobian(model, state)
+        max_dofs = model.max_dofs_per_articulation
+        jacobian_tool_world = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
+        wp.launch(
+            _shift_jacobian_to_tool_kernel,
+            dim=(1, max_dofs),
+            inputs=[
+                jacobian_com_world,
+                state.body_q,
+                model.body_com,
+                wp.array([tool_body], dtype=wp.int32, device=device),
+                wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
+                wp.array([0], dtype=wp.int32, device=device),  # robot_articulation: one robot, articulation 0
+                wp.array([1], dtype=wp.int32, device=device),  # robot_link_idx: tool_body is link 1
+                wp.array(
+                    [np.arange(max_dofs, dtype=np.int32)], dtype=wp.int32, device=device
+                ),  # articulation_dof_idx_of_padded_dof_idx: every DOF controlled, in order
+                wp.array([max_dofs], dtype=wp.int32, device=device),  # controlled_dofs_per_robot
+            ],
+            outputs=[jacobian_tool_world],
+            device=device,
+        )
+        jacobian_np = jacobian_tool_world.numpy()[0]
+        expected_jacobian_operational = np.zeros_like(jacobian_np)
+        expected_jacobian_operational[:3, :] = rotation_np.T @ jacobian_np[:3, :]
+        expected_jacobian_operational[3:, :] = rotation_np.T @ jacobian_np[3:, :]
+        computed_jacobian_operational = ctrl._model_free._jacobian_operational_buf.numpy()[0]
+        np.testing.assert_allclose(computed_jacobian_operational, expected_jacobian_operational, atol=1e-4)
 
     def test_step_output_is_zero_when_tool_is_already_at_the_desired_pose_and_still(self):
         """With zero pose error and zero twist error, step() commands zero joint torque.
