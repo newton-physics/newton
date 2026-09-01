@@ -29,7 +29,7 @@ from ...joint_selection import select_joints
 from ...utils import _validate_array
 from .._common import _gather_mass_matrix_blocks_kernel, _read_port
 from ._common import _shift_jacobian_to_tool_kernel, _tool_pose_and_twist_kernel
-from .model_free import ControllerOperationalSpaceModelFree
+from .model_free import _IDENTITY_QUAT, _IDENTITY_TRANSFORM, ControllerOperationalSpaceModelFree
 
 
 class ControllerOperationalSpace(ControllerBase):
@@ -110,8 +110,8 @@ class ControllerOperationalSpace(ControllerBase):
             to every robot, an array of shape [controlled_robot_count] to
             set them individually (fixed for the controller's lifetime), or
             ``None`` to read ``inputs.operational_frame_pose_world`` each
-            step for a time-varying frame. No default — pass ``wp.transform()``
-            explicitly for the operational frame to coincide with world frame.
+            step for a time-varying frame. Defaults to identity (coincides
+            with world frame).
         use_inertia_decoupling: Premultiply the task-space spring-damper
             term by Lambda, the operational-space mass matrix, computed
             each step from ``model``'s own mass matrix (via
@@ -133,9 +133,10 @@ class ControllerOperationalSpace(ControllerBase):
             ``angular_selection_frame_operational`` below). When both this
             and ``use_wrench_feedback`` are ``False``, every axis is
             motion-controlled and ``motion_selection_axes``/
-            ``wrench_selection_axes``/``wrench_stiffness``/
-            ``linear_selection_frame_operational``/
-            ``angular_selection_frame_operational`` must all be left unset.
+            ``wrench_selection_axes``/``wrench_stiffness`` must be left
+            unset, and ``linear_selection_frame_operational``/
+            ``angular_selection_frame_operational`` must be left at their
+            identity default.
         use_wrench_feedback: Correct the wrench command by
             ``Kp · (desired - measured)`` using
             ``inputs.measured_wrench_world`` each step, as a feedback term
@@ -175,9 +176,7 @@ class ControllerOperationalSpace(ControllerBase):
             orientation to every robot, an array of shape
             [controlled_robot_count] to set them individually, or ``None``
             to read ``inputs.linear_selection_frame_operational`` each step
-            for a time-varying frame. Required (may be ``None`` for a live
-            value) when wrench control is enabled; must be left unset
-            otherwise.
+            for a time-varying frame. Defaults to identity.
         angular_selection_frame_operational: Orientation of S_tau, the
             frame ``motion_selection_axes``/``wrench_selection_axes``'s
             angular (moment) half is interpreted in, relative to the
@@ -260,7 +259,7 @@ class ControllerOperationalSpace(ControllerBase):
         tool: list[int | str | re.Pattern[str]] | str | re.Pattern[str],
         motion_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
         motion_damping: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
-        operational_frame_pose_world: wp.array[wp.transform] | wp.transform | None,
+        operational_frame_pose_world: wp.array[wp.transform] | wp.transform | None = _IDENTITY_TRANSFORM,
         use_inertia_decoupling: bool = True,
         use_partial_inertia_decoupling: bool = False,
         use_gravity_compensation: bool = True,
@@ -269,8 +268,8 @@ class ControllerOperationalSpace(ControllerBase):
         motion_selection_axes: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         wrench_selection_axes: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None = None,
-        linear_selection_frame_operational: wp.array[wp.quat] | wp.quat | None = None,
-        angular_selection_frame_operational: wp.array[wp.quat] | wp.quat | None = None,
+        linear_selection_frame_operational: wp.array[wp.quat] | wp.quat | None = _IDENTITY_QUAT,
+        angular_selection_frame_operational: wp.array[wp.quat] | wp.quat | None = _IDENTITY_QUAT,
         use_null_space_control: bool = False,
         null_space_stiffness: wp.array[wp.float32] | float | None = None,
         null_space_damping: wp.array[wp.float32] | float | None = None,
