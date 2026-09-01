@@ -5306,7 +5306,8 @@ class TestImmovableContactFiltering(unittest.TestCase):
     The MuJoCo solver produces degenerate efc_D values when both sides of a
     contact have zero/near-zero invweight (both bodies are immovable).  The
     contact conversion kernel must skip such pairs.  Immovable bodies include
-    static shapes (body < 0) and kinematic bodies (BodyFlags.KINEMATIC).
+    static shapes (body < 0), kinematic bodies (BodyFlags.KINEMATIC), and
+    bodies whose weld group has no degrees of freedom.
     """
 
     @staticmethod
@@ -5437,7 +5438,7 @@ class TestImmovableContactFiltering(unittest.TestCase):
         """Contacts between a kinematic body and a fixed-root body must be filtered.
 
         Both sides are immovable: the kinematic body via BodyFlags.KINEMATIC,
-        the fixed-root body via body_weldid == 0 (welded to world).
+        the fixed-root body via its weld group having no degrees of freedom.
         """
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
@@ -5515,7 +5516,7 @@ class TestImmovableContactFiltering(unittest.TestCase):
     def test_two_fixed_root_bodies_contacts_filtered(self):
         """Contacts between two fixed-root bodies must be filtered.
 
-        Both bodies are welded to the world (body_weldid == 0), so both are
+        Neither body's weld group has any degrees of freedom, so both are
         immovable and the contact should be skipped.
         """
         builder = newton.ModelBuilder()
@@ -11000,6 +11001,19 @@ class TestUsdActuatorTypeAttributes(unittest.TestCase):
         self.assertEqual(self.solver.mj_model.actuator_gaintype[0], 0)
         self.assertEqual(self.solver.mj_model.actuator_biastype[0], 1)
 
+    def test_unsupported_type_warns_naming_the_prim(self):
+        """Warn on an unsupported USD gainType, naming the offending actuator prim."""
+        from pxr import Sdf
+
+        def set_actuator_attrs(act):
+            act.CreateAttribute("mjc:gainType", Sdf.ValueTypeNames.Token, True).Set("pid")
+
+        stage = _create_actuator_test_stage(extra_actuator_attrs=set_actuator_attrs)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        with self.assertWarnsRegex(RuntimeWarning, r"gaintype 'pid' on prim '/World/actuator'"):
+            builder.add_usd(stage)
+
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUsdActuatorInheritrange(unittest.TestCase):
@@ -12873,6 +12887,7 @@ class TestActuatorTypes(unittest.TestCase):
         return self.MJCF.format(dyntype=dyntype, gaintype=gaintype, biastype=biastype, extra=extra)
 
     def test_enums_match_mujoco(self):
+        """Pin every actuator enum ordinal against the matching mujoco.mjt* member."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
         for enum, mj_enum, prefix in (
             (_ActuatorBiasType, mujoco.mjtBias, "mjBIAS_"),
@@ -12884,6 +12899,7 @@ class TestActuatorTypes(unittest.TestCase):
                     self.assertEqual(int(member), int(mj_enum.__members__[prefix + member.name.replace("_", "")]))
 
     def test_types_match_native(self):
+        """Compile actuator types through Newton and check they match native MuJoCo on the same MJCF."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
         for dyntype, gaintype, biastype, extra in (
             ("none", "fixed", "none", ""),
@@ -12905,10 +12921,11 @@ class TestActuatorTypes(unittest.TestCase):
                 assert_np_equal(mj_model.actuator_biastype, native.actuator_biastype)
 
     def test_unsupported_type_warns(self):
+        """Warn on an unsupported gaintype, naming the attribute, the value and the MJCF actuator."""
         for gaintype in ("dcmotor", "so3", "pid", "bogus"):
             with self.subTest(gaintype=gaintype):
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(RuntimeWarning, gaintype):
+                with self.assertWarnsRegex(RuntimeWarning, rf"gaintype '{gaintype}' on actuator 'a'"):
                     builder.add_mjcf(self._mjcf(gaintype=gaintype))
 
 
