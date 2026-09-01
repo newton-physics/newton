@@ -66,6 +66,8 @@ class ActuatorView:
             raise ValueError("Expected a two-dimensional integer dof_indices array")
         if dof_indices.shape[0] == 0:
             raise ValueError("Expected dof_indices for at least one world")
+        if dof_indices.shape[1] > 1 and any(len(set(indices)) != len(indices) for indices in dof_indices.numpy()):
+            raise ValueError("Expected dof_indices to be unique within each world")
 
         mappings = {}
         for actuator in actuators:
@@ -101,14 +103,22 @@ class ActuatorView:
         self._full_mask = wp.full(mapping.shape[0], True, dtype=bool, device=mapping.device)
 
     def get_actuator_dof_mapping(self, actuator: Actuator) -> wp.array2d[int]:
-        """Get the view-local DOF mapping for an actuator.
+        """Return the actuator parameter index for each selected velocity DOF.
+
+        The returned array has the same ``(world, DOF)`` layout as parameter
+        arrays read or written through this view. Each non-negative entry is
+        the index along the leading axis of the actuator's parameter arrays.
+        An entry of ``-1`` means that the actuator does not drive that DOF.
+
+        The mapping can therefore be used for actuator-ownership queries:
+        non-negative entries identify the view columns driven by *actuator*.
+        It is cached view metadata and must not be modified.
 
         Args:
             actuator: Actuator whose mapping to return.
 
         Returns:
-            Mapping from selected velocity-DOF columns to actuator parameter
-            indices. Unmapped columns contain ``-1``.
+            View-owned mapping shaped ``(world_count, dofs_per_world)``.
         """
         return self._mappings[actuator]
 

@@ -151,6 +151,14 @@ class TestActuatorView(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least one actuator"):
             ActuatorView([], dof_indices)
 
+    def test_constructor_rejects_duplicate_dofs_per_world(self):
+        """Reject duplicate columns that would race when scattering parameters."""
+        actuator = self.make_actuator([10.0, 20.0, 30.0, 40.0], indices=[0, 2, 3, 5])
+        dof_indices = wp.array([[0, 0, 2], [3, 4, 5]], dtype=int, device=wp.get_device())
+
+        with self.assertRaisesRegex(ValueError, "unique within each world"):
+            ActuatorView([actuator], dof_indices)
+
     def test_set_rejects_invalid_warp_inputs_before_launch(self):
         """Reject incompatible values and masks before launching a kernel."""
         actuator = self.make_actuator([10.0, 20.0, 30.0, 40.0], indices=[0, 2, 3, 5])
