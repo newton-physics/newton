@@ -37,10 +37,6 @@ velocity impulse divided by ``dt`` rather than a continuous midpoint
 acceleration. Resetting a state clears the requested acceleration in each reset
 world.
 
-:class:`~newton.sensors.SensorIMU` requests ``body_qdd`` automatically and uses
-it to compute specific force. Construct the sensor before creating simulation
-states so the optional array is allocated.
-
 Choosing a dynamics solver
 --------------------------
 

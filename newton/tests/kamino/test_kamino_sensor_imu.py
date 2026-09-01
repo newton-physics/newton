@@ -31,21 +31,23 @@ def _make_free_body_scene(
     device,
     *,
     gravity=(0.0, 0.0, -9.81),
-    site_xform=None,
     enable_contacts=False,
+    with_imu=False,
 ):
-    """Build one free body with an IMU site."""
+    """Build one free body with requested acceleration or an IMU."""
     builder = newton.ModelBuilder()
     builder.begin_world(gravity=gravity)
     body_xform = wp.transform(wp.vec3(0.0, 0.0, 10.0), wp.quat_identity()) if enable_contacts else None
     body = _add_free_body(builder, label="body", xform=body_xform)
-    site = builder.add_site(body, label="imu", xform=site_xform)
+    site = builder.add_site(body, label="imu") if with_imu else None
     if enable_contacts:
         builder.add_shape_sphere(body, radius=0.1)
         builder.add_ground_plane()
     builder.end_world()
+    if not with_imu:
+        builder.request_state_attributes("body_qdd")
     model = builder.finalize(device=device)
-    sensor = SensorIMU(model, sites=[site])
+    sensor = SensorIMU(model, sites=[site]) if site is not None else None
     return model, body, sensor
 
 
@@ -60,7 +62,11 @@ def _make_solver(model, integrator="euler"):
 
 def test_free_fall_body_acceleration_and_imu(test, device, integrator):
     """Report gravity as body acceleration and zero free-fall specific force."""
-    model, _, sensor = _make_free_body_scene(device, enable_contacts=integrator == "moreau")
+    model, _, sensor = _make_free_body_scene(
+        device,
+        enable_contacts=integrator == "moreau",
+        with_imu=True,
+    )
     solver = _make_solver(model, integrator)
     state_in = model.state()
     state_out = model.state()
@@ -115,22 +121,20 @@ def test_body_acceleration_state_ownership(test, device):
 
 
 def test_heterogeneous_world_step_isolation(test, device):
-    """Keep body acceleration and IMU readings isolated across heterogeneous worlds."""
+    """Keep body acceleration isolated across heterogeneous worlds."""
     builder = newton.ModelBuilder()
 
     builder.begin_world(label="two_bodies", gravity=(0.0, 0.0, -2.0))
     leading_body = _add_free_body(builder, label="leading_body")
-    sensor_body_0 = _add_free_body(builder, label="sensor_body_0")
-    site_0 = builder.add_site(sensor_body_0, label="imu_0")
+    body_0 = _add_free_body(builder, label="body_0")
     builder.end_world()
 
     builder.begin_world(label="one_body", gravity=(0.0, 0.0, -7.0))
-    sensor_body_1 = _add_free_body(builder, label="sensor_body_1")
-    site_1 = builder.add_site(sensor_body_1, label="imu_1")
+    body_1 = _add_free_body(builder, label="body_1")
     builder.end_world()
 
+    builder.request_state_attributes("body_qdd")
     model = builder.finalize(device=device)
-    sensor = SensorIMU(model, sites=[site_0, site_1])
     solver = _make_solver(model)
     state_in = model.state()
     state_out = model.state()
@@ -152,7 +156,6 @@ def test_heterogeneous_world_step_isolation(test, device):
     )
 
     solver.step(state_in, state_out, model.control(), None, DT)
-    sensor.update(state_out)
 
     expected_acceleration = np.array(
         [
@@ -163,7 +166,7 @@ def test_heterogeneous_world_step_isolation(test, device):
         dtype=np.float32,
     )
     np.testing.assert_array_equal(model.body_world.numpy(), [0, 0, 1])
-    test.assertEqual((leading_body, sensor_body_0, sensor_body_1), (0, 1, 2))
+    test.assertEqual((leading_body, body_0, body_1), (0, 1, 2))
     np.testing.assert_allclose(state_out.body_qdd.numpy(), expected_acceleration, rtol=0.0, atol=3.0e-4)
     np.testing.assert_allclose(
         state_out.body_qd.numpy(),
@@ -171,20 +174,11 @@ def test_heterogeneous_world_step_isolation(test, device):
         rtol=0.0,
         atol=3.0e-5,
     )
-    np.testing.assert_allclose(
-        sensor.accelerometer.numpy(),
-        [[3.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
-        rtol=0.0,
-        atol=3.0e-4,
-    )
-    np.testing.assert_allclose(sensor.gyroscope.numpy(), 0.0, rtol=0.0, atol=3.0e-4)
 
 
-def test_rotating_offset_imu(test, device):
-    """Include angular acceleration and centripetal acceleration at an offset site."""
-    radius = 0.5
-    site_xform = wp.transform(wp.vec3(radius, 0.0, 0.0), wp.quat_identity())
-    model, _, sensor = _make_free_body_scene(device, gravity=(0.0, 0.0, 0.0), site_xform=site_xform)
+def test_rotating_body_acceleration(test, device):
+    """Report angular acceleration for a rotating body."""
+    model, _, _ = _make_free_body_scene(device, gravity=(0.0, 0.0, 0.0))
     solver = _make_solver(model)
     state_in = model.state()
     state_out = model.state()
@@ -192,21 +186,13 @@ def test_rotating_offset_imu(test, device):
     state_in.body_f.assign([[0.0, 0.0, 0.0, 0.0, 0.0, 1.0]])
 
     solver.step(state_in, state_out, model.control(), None, DT)
-    sensor.update(state_out)
 
-    angular_velocity = 2.0 + DT
+    np.testing.assert_allclose(state_out.body_qdd.numpy()[0, :3], 0.0, rtol=0.0, atol=3.0e-4)
     np.testing.assert_allclose(state_out.body_qdd.numpy()[0, 3:], [0.0, 0.0, 1.0], rtol=0.0, atol=3.0e-4)
-    np.testing.assert_allclose(
-        sensor.accelerometer.numpy()[0],
-        [-angular_velocity * angular_velocity * radius, radius, 0.0],
-        rtol=0.0,
-        atol=5.0e-4,
-    )
-    np.testing.assert_allclose(sensor.gyroscope.numpy()[0], [0.0, 0.0, angular_velocity], rtol=0.0, atol=3.0e-4)
 
 
-def test_supported_body_imu(test, device):
-    """Report an upward specific force after a body settles on a plane."""
+def test_contact_body_acceleration(test, device):
+    """Capture impact acceleration and settle a body on a plane."""
     builder = newton.ModelBuilder()
     builder.begin_world()
     body = _add_free_body(
@@ -216,11 +202,10 @@ def test_supported_body_imu(test, device):
     )
     cfg = newton.ModelBuilder.ShapeConfig(margin=0.0, gap=0.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
-    site = builder.add_site(body, label="imu")
     builder.add_ground_plane(cfg=cfg)
     builder.end_world()
+    builder.request_state_attributes("body_qdd")
     model = builder.finalize(device=device)
-    sensor = SensorIMU(model, sites=[site])
     solver = newton.solvers.SolverKamino(
         model,
         config=newton.solvers.SolverKamino.Config(use_collision_detector=True),
@@ -236,11 +221,9 @@ def test_supported_body_imu(test, device):
         saw_impact_acceleration |= np.linalg.norm(state_out.body_qdd.numpy()[body, :3]) > 20.0
         state_in, state_out = state_out, state_in
 
-    sensor.update(state_in)
-
     test.assertTrue(saw_impact_acceleration)
     np.testing.assert_allclose(state_in.body_qd.numpy()[body], 0.0, rtol=0.0, atol=2.0e-2)
-    np.testing.assert_allclose(sensor.accelerometer.numpy()[0], [0.0, 0.0, 9.81], rtol=0.0, atol=3.0e-1)
+    np.testing.assert_allclose(state_in.body_qdd.numpy()[body], 0.0, rtol=0.0, atol=3.0e-1)
 
 
 def test_body_acceleration_partial_reset(test, device):
@@ -306,7 +289,7 @@ def test_body_acceleration_cuda_graph(test, device):
     np.testing.assert_allclose(state.body_qdd.numpy()[0, :3], [0.0, 0.0, -9.81], rtol=0.0, atol=2.0e-4)
 
 
-class TestKaminoSensorIMU(unittest.TestCase):
+class TestKaminoBodyAcceleration(unittest.TestCase):
     """Test Kamino body acceleration support."""
 
 
@@ -314,7 +297,7 @@ devices = get_test_devices(mode="basic")
 
 for _integrator in ("euler", "moreau"):
     add_function_test(
-        TestKaminoSensorIMU,
+        TestKaminoBodyAcceleration,
         f"test_free_fall_body_acceleration_and_imu_{_integrator}",
         test_free_fall_body_acceleration_and_imu,
         devices=devices,
@@ -323,49 +306,49 @@ for _integrator in ("euler", "moreau"):
     )
 
 add_function_test(
-    TestKaminoSensorIMU,
+    TestKaminoBodyAcceleration,
     "test_body_acceleration_state_ownership",
     test_body_acceleration_state_ownership,
     devices=devices,
     check_output=False,
 )
 add_function_test(
-    TestKaminoSensorIMU,
+    TestKaminoBodyAcceleration,
     "test_heterogeneous_world_step_isolation",
     test_heterogeneous_world_step_isolation,
     devices=devices,
     check_output=False,
 )
 add_function_test(
-    TestKaminoSensorIMU,
-    "test_rotating_offset_imu",
-    test_rotating_offset_imu,
+    TestKaminoBodyAcceleration,
+    "test_rotating_body_acceleration",
+    test_rotating_body_acceleration,
     devices=devices,
     check_output=False,
 )
 add_function_test(
-    TestKaminoSensorIMU,
-    "test_supported_body_imu",
-    test_supported_body_imu,
+    TestKaminoBodyAcceleration,
+    "test_contact_body_acceleration",
+    test_contact_body_acceleration,
     devices=devices,
     check_output=False,
 )
 add_function_test(
-    TestKaminoSensorIMU,
+    TestKaminoBodyAcceleration,
     "test_body_acceleration_partial_reset",
     test_body_acceleration_partial_reset,
     devices=devices,
     check_output=False,
 )
 add_function_test(
-    TestKaminoSensorIMU,
+    TestKaminoBodyAcceleration,
     "test_body_acceleration_remains_unrequested",
     test_body_acceleration_remains_unrequested,
     devices=devices,
     check_output=False,
 )
 add_function_test(
-    TestKaminoSensorIMU,
+    TestKaminoBodyAcceleration,
     "test_body_acceleration_cuda_graph",
     test_body_acceleration_cuda_graph,
     devices=devices,
