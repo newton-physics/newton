@@ -80,7 +80,7 @@ Rationale: `CODING_GUIDELINES.rst` forbids examples and docs from importing `new
 
 `changelog/README.md`: for `Deprecated`, `Changed`, and `Removed` entries, include migration guidance such as "Deprecate `Model.geo_meshes` in favor of `Model.shapes`."
 
-Flag `### Deprecated`, `### Removed`, and `### Changed` entries that name a rename / removal / reorder but do NOT express migration direction. Direction can be expressed with one of these phrases (case-insensitive): `use`, `in favor of`, `renamed to`, `replaced by`, `switch to`, `migrate to`, `prefer`. Direction can also be expressed structurally — an imperative `Rename X to Y`, an arrow `X → Y`, or a parameter-rename table — which counts as migration guidance even when none of the listed phrases appear verbatim (see the `ModelBuilder.add_shape_ellipsoid` example below).
+Flag `### Deprecated`, `### Removed`, and `### Changed` entries that name a rename / removal / reorder but do NOT express migration direction. Direction can be expressed with one of these phrases (case-insensitive): `use`, `in favor of`, `renamed to`, `replaced by`, `switch to`, `migrate to`, `prefer`. The phrase must identify a non-empty replacement target, normally as a backtick-delimited symbol. Direction can also be expressed structurally — an imperative `Rename X to Y`, an arrow `X → Y`, or a parameter-rename table — which counts as migration guidance even when none of the listed phrases appear verbatim (see the `ModelBuilder.add_shape_ellipsoid` example below).
 
 Flag:
 
@@ -89,6 +89,9 @@ Flag:
 >
 > Deprecate `Model.geo_meshes`.
 > *Reason:* no replacement named. Should read "Deprecate `Model.geo_meshes` in favor of `Model.shapes`."
+>
+> Remove `Model.foo`; switch to improve performance.
+> *Reason:* "switch to" does not name a replacement target.
 
 Don't flag:
 

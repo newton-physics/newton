@@ -137,7 +137,8 @@ observable behavior and meaningful regression boundaries rather than merely
 repeat the implementation. Performance, scalability, determinism, numerical
 accuracy, and compatibility claims need representative measurements or
 primary-source evidence with enough context to interpret them. Missing
-evidence is a question unless its absence is itself the risk.
+evidence should prompt a question. Treat its absence as a finding when the
+change cannot be reviewed safely without it.
 
 Do not silently reinterpret the intended behavior to match the implementation.
 A better but different design can pass Fit while still requiring agreement to
