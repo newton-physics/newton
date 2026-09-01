@@ -3549,7 +3549,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self._rigid_contact_body1.fill_(-1)
                 self._rigid_contact_point0_world.zero_()
                 self._rigid_contact_point1_world.zero_()
-                self._rigid_contact_pure_torque_on_body1.zero_()
             return (
                 self._rigid_contact_body0,
                 self._rigid_contact_body1,
