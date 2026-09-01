@@ -389,6 +389,7 @@ def _eval_angular_contact_friction_kernel(
     normal: wp.array[wp.vec3],
     mu_torsional: wp.array[float],
     mu_rolling: wp.array[float],
+    contact_lambda_angular: wp.array[wp.vec3],
     use_angular_friction_multiplier: int,
     torque_out: wp.array[wp.vec3],
     hessian_out: wp.array[wp.mat33],
@@ -405,7 +406,7 @@ def _eval_angular_contact_friction_kernel(
         mu_rolling[0],
         100.0,
         100.0,
-        wp.vec3(0.0),
+        contact_lambda_angular[0],
         use_angular_friction_multiplier,
         1.0e-2,
         0.01,
@@ -1153,27 +1154,64 @@ def _assert_rigid_compliant_alm_coefficients(device):
 
 
 def _angular_contact_friction_isolates_channels(test, device):
-    """Verify each angular channel's bound and saturated stateful solve metric."""
+    """Verify angular-channel isolation, bounds, and stateful solve metrics."""
     cases = (
         (
             wp.vec3(0.0, 0.0, 1.0),
+            0.1,
             0.02,
             0.0,
+            wp.vec3(0.0),
             np.array([0.0, 0.0, -2.0]),
             np.diag([0.0, 0.0, 20.0]),
+            False,
         ),
         (
             wp.vec3(1.0, 0.0, 0.0),
+            0.1,
             0.0,
             0.03,
+            wp.vec3(0.0),
             np.array([-3.0, 0.0, 0.0]),
             np.diag([30.0, 30.0, 0.0]),
+            False,
+        ),
+        (
+            wp.vec3(0.0, 0.0, 1.0),
+            0.001,
+            0.02,
+            0.0,
+            wp.vec3(0.0, 0.0, -0.5),
+            np.array([0.0, 0.0, -0.6]),
+            np.diag([0.0, 0.0, 100.0]),
+            True,
+        ),
+        (
+            wp.vec3(1.0, 0.0, 0.0),
+            0.001,
+            0.0,
+            0.03,
+            wp.vec3(-0.5, 0.0, 0.0),
+            np.array([-0.6, 0.0, 0.0]),
+            np.diag([100.0, 100.0, 0.0]),
+            True,
         ),
     )
     with wp.ScopedDevice(device):
         for use_angular_friction_multiplier in (0, 1):
-            for axis, mu_torsional, mu_rolling, expected_torque, expected_stateful_hessian in cases:
-                q_now = wp.quat_from_axis_angle(axis, 0.1)
+            for (
+                axis,
+                angle,
+                mu_torsional,
+                mu_rolling,
+                contact_lambda_angular,
+                expected_torque,
+                expected_stateful_hessian,
+                stateful_only,
+            ) in cases:
+                if stateful_only and use_angular_friction_multiplier == 0:
+                    continue
+                q_now = wp.quat_from_axis_angle(axis, angle)
                 body_q = wp.array([wp.transform(wp.vec3(0.0), q_now)], dtype=wp.transform, device=device)
                 body_q_prev = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
                 normal = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=device)
@@ -1189,6 +1227,7 @@ def _angular_contact_friction_isolates_channels(test, device):
                         normal,
                         wp.array([mu_torsional], dtype=float, device=device),
                         wp.array([mu_rolling], dtype=float, device=device),
+                        wp.array([contact_lambda_angular], dtype=wp.vec3, device=device),
                         use_angular_friction_multiplier,
                     ],
                     outputs=[torque, hessian],
@@ -2564,11 +2603,6 @@ def _rigid_compliant_alm_validates_contact_materials(test, device):
                 newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
         array.assign(original)
 
-    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
-    solver.set_rigid_history_update(False)
-    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-    test.assertTrue(solver._update_rigid_history)
-
 
 def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):
     """Verify the warning distinguishes compliant behavior from the legacy path."""
@@ -3836,6 +3870,8 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True, rigid_c
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 100.0
     cfg.mu = 0.0
+    cfg.mu_torsional = 0.0
+    cfg.mu_rolling = 0.0
     cfg.ke = 1.0e3
     cfg.kd = 1.0
     cfg.kf = 0.0

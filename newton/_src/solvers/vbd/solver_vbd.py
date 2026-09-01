@@ -151,8 +151,9 @@ class SolverVBD(SolverBase, CouplingInterface):
       ``rigid_compliant_alm`` is deprecated because the default will change to
       ``True``.
 
-    Rigid-rigid torsional and rolling friction consume shape ``mu_torsional``
-    and ``mu_rolling``; zero disables the corresponding channel.
+    Rigid-rigid contacts consume shape ``mu_torsional`` and ``mu_rolling``.
+    Their nonzero defaults enable both channels; setting either coefficient to
+    zero on either shape disables that channel for the contact pair.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, ROD.
@@ -1042,11 +1043,6 @@ class SolverVBD(SolverBase, CouplingInterface):
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         self._apply_module_options()
-        if flags & ModelFlags.SHAPE_PROPERTIES:
-            if self._integrates_rigid_bodies:
-                self._validate_angular_contact_materials()
-            # Force the next contact refresh to update its material caches.
-            self._update_rigid_history = True
         refresh_structural_k = (
             bool(flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES))
             and self._integrates_rigid_bodies
