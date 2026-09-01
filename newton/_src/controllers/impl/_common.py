@@ -21,6 +21,8 @@ its ``N @ (M @ a)`` combine step) for the two current users.
 
 from __future__ import annotations
 
+from typing import Any
+
 import warp as wp
 
 from ...core.types import Devicelike
@@ -104,9 +106,9 @@ def _gather_mass_matrix_blocks_kernel(
 
 
 @wp.kernel
-def _gather_port_kernel(
-    port: wp.indexedarray[wp.float32],  # view of a simulation-sized array
-    out: wp.array[wp.float32],  # one entry per element the view addresses
+def _gather_rank1_port_kernel(
+    port: wp.indexedarray(dtype=Any),  # view of a simulation-sized array
+    out: wp.array[Any],  # one entry per element the view addresses
 ):
     dof = wp.tid()
     out[dof] = port[dof]
@@ -122,24 +124,6 @@ def _gather_mass_matrix_port_kernel(
 
 
 @wp.kernel
-def _gather_transform_port_kernel(
-    port: wp.indexedarray[wp.transform],  # view of a simulation-sized array
-    out: wp.array[wp.transform],  # one entry per element the view addresses
-):
-    dof = wp.tid()
-    out[dof] = port[dof]
-
-
-@wp.kernel
-def _gather_spatial_vector_port_kernel(
-    port: wp.indexedarray[wp.spatial_vector],  # view of a simulation-sized array
-    out: wp.array[wp.spatial_vector],  # one entry per element the view addresses
-):
-    dof = wp.tid()
-    out[dof] = port[dof]
-
-
-@wp.kernel
 def _scatter_port_kernel(
     values: wp.array[wp.float32],  # one entry per element the view addresses
     port: wp.indexedarray[wp.float32],  # view of a simulation-sized array
@@ -150,11 +134,13 @@ def _scatter_port_kernel(
 
 # dtype -> (rank -> gather kernel), the set of dtype/rank combinations any
 # controller's ports currently use. Extend this table, not _read_port itself,
-# when a controller needs a new port dtype or rank.
+# when a controller needs a new port dtype or rank. Every rank-1 dtype shares
+# _gather_rank1_port_kernel: it's generic over dtype (Any), so Warp compiles
+# one concrete kernel per dtype the table actually uses, from a single body.
 _GATHER_KERNELS_BY_DTYPE_AND_RANK = {
-    wp.float32: {1: _gather_port_kernel, 3: _gather_mass_matrix_port_kernel},
-    wp.transform: {1: _gather_transform_port_kernel},
-    wp.spatial_vector: {1: _gather_spatial_vector_port_kernel},
+    wp.float32: {1: _gather_rank1_port_kernel, 3: _gather_mass_matrix_port_kernel},
+    wp.transform: {1: _gather_rank1_port_kernel},
+    wp.spatial_vector: {1: _gather_rank1_port_kernel},
 }
 
 
