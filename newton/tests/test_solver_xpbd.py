@@ -8,6 +8,7 @@ Includes tests for particle-particle friction using relative velocity correctly.
 """
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -171,7 +172,7 @@ def test_distance_joint_limits(test, device):
         model = builder.finalize(device=device)
         state_in = model.state()
         state_out = model.state()
-        solver = newton.solvers.SolverXPBD(model, iterations=10, enable_restitution=True)
+        solver = newton.solvers.SolverXPBD(model, iterations=10)
         solver.step(state_in, state_out, None, None, 1.0 / 60.0)
         return state_out.body_q.numpy()[body, :3]
 
@@ -225,7 +226,7 @@ def test_ball_joint_recovers_from_large_anchor_separation(test, device):
     body_q[child, :3] += np.array((1.0, 1.0, 0.0), dtype=np.float32)
     state0.body_q.assign(body_q)
 
-    solver = newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True)
+    solver = newton.solvers.SolverXPBD(model, iterations=2)
     solver.step(state0, state1, None, None, 1.0 / 240.0)
 
     body_q = state1.body_q.numpy()
@@ -292,7 +293,7 @@ def test_prismatic_joint_recovers_from_large_transverse_separation(test, device)
     body_q[child, :3] += np.array((0.5, 1.0, 1.0), dtype=np.float32)
     state0.body_q.assign(body_q)
 
-    solver = newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True)
+    solver = newton.solvers.SolverXPBD(model, iterations=2)
     solver.step(state0, state1, None, None, 1.0 / 240.0)
 
     body_q = state1.body_q.numpy()
@@ -351,7 +352,7 @@ def test_prismatic_joint_retains_extension_in_parent_moment_arm(test, device):
     body_q[child, :2] += np.array((extension, transverse_error), dtype=np.float32)
     state0.body_q.assign(body_q)
 
-    solver = newton.solvers.SolverXPBD(model, iterations=2, angular_damping=0.0, enable_restitution=True)
+    solver = newton.solvers.SolverXPBD(model, iterations=2, angular_damping=0.0)
     solver.step(state0, state1, None, None, 1.0 / 240.0)
 
     parent_rotation_z = abs(float(state1.body_q.numpy()[parent, 5]))
@@ -710,8 +711,7 @@ def test_restitution_flag_does_not_change_body_integration(test, device):
     for state in (states_disabled[0], states_enabled[0]):
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-    with test.assertWarnsRegex(DeprecationWarning, r"enable_restitution=False.*deprecated"):
-        solver_disabled = newton.solvers.SolverXPBD(model, enable_restitution=False)
+    solver_disabled = newton.solvers.SolverXPBD(model, enable_restitution=False)
     solver_enabled = newton.solvers.SolverXPBD(model, enable_restitution=True)
 
     for _ in range(200):
@@ -2249,8 +2249,7 @@ def test_xpbd_aligned_box_stack_remains_stable(test, device):
     model = builder.finalize(device=device)
     # This regression isolates positional manifold stability from the
     # separately tested restitution velocity pass.
-    with test.assertWarnsRegex(DeprecationWarning, r"enable_restitution=False.*deprecated"):
-        solver = newton.solvers.SolverXPBD(model, iterations=4, enable_restitution=False)
+    solver = newton.solvers.SolverXPBD(model, iterations=4)
     state_in = model.state()
     state_out = model.state()
     control = model.control()
@@ -2290,7 +2289,15 @@ devices = get_test_devices()
 
 
 class TestSolverXPBD(unittest.TestCase):
-    pass
+    def test_restitution_is_disabled_by_default(self):
+        """Keep restitution disabled by default without a deprecation warning."""
+        model = newton.ModelBuilder().finalize()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            solver = newton.solvers.SolverXPBD(model)
+
+        self.assertFalse(solver.enable_restitution)
 
 
 add_function_test(

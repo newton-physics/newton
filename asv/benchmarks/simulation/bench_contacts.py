@@ -261,10 +261,6 @@ class FastExampleContactPyramidDefaults:
                 solver="xpbd",
                 test_mode=False,
             )
-        # The example captures its graph during construction, so recapture
-        # after restoring the historical no-restitution workload.
-        self.example.solver.enable_restitution = False
-        self.example.capture()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):

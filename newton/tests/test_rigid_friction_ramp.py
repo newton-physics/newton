@@ -376,9 +376,8 @@ cuda_devices = get_selected_cuda_test_devices()
 # Featherstone and SemiImplicit use viscous (kf) friction rather than Coulomb,
 # so the critical-angle criterion does not apply; excluded here.
 # stopping_distance_rel_tol: per-solver tolerance on d_measured/d_expected. Coulomb-cone
-# MuJoCo hits ~0.05-0.2% in practice. XPBD's velocity-level inelastic
-# correction reaches about 2.2%, while VBD also has finite-step and
-# finite-iteration error, so keep small empirical margins above the precise
+# solvers (XPBD, MuJoCo) hit ~0.05-0.2% in practice. VBD still has finite-step and
+# finite-iteration error, so keep a small empirical margin above the precise
 # Coulomb stopping-distance oracle.
 _SOLVERS = {
     "xpbd": {
@@ -386,7 +385,7 @@ _SOLVERS = {
         "mus": _DEFAULT_MUS,
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,
-        "stopping_distance_rel_tol": 0.025,
+        "stopping_distance_rel_tol": 0.01,
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
     "mujoco_warp": {

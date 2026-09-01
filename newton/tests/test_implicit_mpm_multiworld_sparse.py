@@ -173,9 +173,7 @@ def test_coupled_multiworld_isolation(test, device):
     coupled = SolverCoupledProxy(
         model=model,
         entries=(
-            SolverCoupled.Entry(
-                name="xpbd", solver=lambda view: SolverXPBD(view, enable_restitution=True), particles=proxy_particle_ids
-            ),
+            SolverCoupled.Entry(name="xpbd", solver=SolverXPBD, particles=proxy_particle_ids),
             SolverCoupled.Entry(
                 name="mpm",
                 solver=lambda view: SolverImplicitMPM(view, config=config),

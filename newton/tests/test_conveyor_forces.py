@@ -36,7 +36,7 @@ def _make_solver(solver_name, model):
     if solver_name == "mujoco":
         # MuJoCo configuration for Newton-generated contacts.
         return newton.solvers.SolverMuJoCo(model, cone="elliptic", use_mujoco_contacts=False, njmax=200, nconmax=100)
-    return newton.solvers.SolverXPBD(model, enable_restitution=True)
+    return newton.solvers.SolverXPBD(model)
 
 
 def run_conveyor(
