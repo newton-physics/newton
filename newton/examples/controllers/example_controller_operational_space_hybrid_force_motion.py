@@ -64,10 +64,17 @@ UR10_READY_POSE = [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
 UR10_ARM_DOFS = len(UR10_READY_POSE)  # 6; no redundant DOF, unlike the Franka
 UR10_BASE_POSITION = wp.vec3(0.0, 1.8, 0.0)  # separated from the Franka along Y
 
-# The UR10 asset is a bare arm with no gripper; a small cylinder fixed to
+# The UR10 asset is a bare arm with no gripper; a small capsule fixed to
 # its wrist flange (ee_link) stands in as its pressing tool.
 TOOL_CYLINDER_RADIUS = 0.02
 TOOL_CYLINDER_HALF_HEIGHT = 0.05
+
+# A small ball fixed to the Franka's fr3_hand_tcp, offset out past the
+# fingertip pads (verified: the frontmost pad's far edge sits at ~0.0095m
+# along fr3_hand_tcp's own local +Z, so 0.04m clears it with margin) --
+# rounds off what would otherwise be a flat-fingered contact.
+FRANKA_BALL_RADIUS = 0.02
+FRANKA_BALL_OFFSET = 0.04
 
 # Slider ranges, centered on each tool's actual starting (x, y) in its own
 # operational frame -- so the initial commanded position matches where the
@@ -158,7 +165,7 @@ class Example:
         ur10_asset_file = str(newton.utils.download_asset("universal_robots_ur10") / "usd/ur10_instanceable.usda")
         builder = newton.ModelBuilder()
 
-        franka_joints, franka_coords, franka_tool_body, franka_tool_site_transform, finger_bodies = self._add_franka(
+        franka_joints, franka_coords, franka_tool_body, franka_tool_site_transform = self._add_franka(
             builder, franka_urdf_path, FRANKA_BASE_POSITION
         )
         ur10_joints, ur10_coords, ur10_tool_body, ur10_tool_site_transform = self._add_ur10(
@@ -208,11 +215,11 @@ class Example:
 
         # SensorContact + Contacts is Newton's contact-force readback API (see
         # example_sensor_contact.py) -- reads back the actual contact force
-        # each tool exerts on its table, fed into the controller as wrench
-        # feedback and shown in the GUI alongside the commanded force. One
-        # sensor covers both robots; total_force's rows are ordered to match
-        # sensing_bodies below (the two Franka fingers, then the UR10 tool).
-        self.force_sensor = SensorContact(self.model, sensing_bodies=[*finger_bodies, ur10_tool_body])
+        # each tool's ball exerts on its table, fed into the controller as
+        # wrench feedback and shown in the GUI alongside the commanded
+        # force. One sensor covers both robots; total_force's rows are
+        # ordered to match sensing_bodies below (Franka's ball, then UR10's).
+        self.force_sensor = SensorContact(self.model, sensing_bodies=[franka_tool_body, ur10_tool_body])
         self.contacts = Contacts(
             self.solver.get_max_contact_count(),
             0,
@@ -374,12 +381,11 @@ class Example:
 
     @staticmethod
     def _add_franka(builder, urdf_path, base_position):
-        """Load one Franka at base_position, set its ready pose, and add its tool site.
+        """Load one Franka at base_position, set its ready pose, and add its pressing-tool ball and site.
 
         Returns:
             Tuple of (arm joint indices, arm coordinate indices, fr3_hand_tcp
-            body index, tool site's body-local transform,
-            [leftfinger, rightfinger] body indices).
+            body index, tool site's body-local transform).
         """
         joint_count_before = builder.joint_count
         coord_count_before = builder.joint_coord_count
@@ -397,14 +403,23 @@ class Example:
         for coord, angle in zip(arm_coords, FRANKA_READY_POSE, strict=True):
             builder.joint_q[coord] = angle
 
-        # Bodies 11, 12, 13 (0-based) this URDF adds are fr3_hand_tcp (the
-        # fixed frame between the fingers), fr3_leftfinger, fr3_rightfinger.
+        # Body 11 (0-based) this URDF adds is fr3_hand_tcp, the fixed frame
+        # between the fingers -- give it a small ball as the pressing tool
+        # (rounds off what would otherwise be a flat-fingered contact), and
+        # put the tool site at the ball's center. fr3_hand_tcp's own local
+        # +Z already points away from the fingers (verified from the URDF's
+        # own geometry), so unlike the UR10 no axis correction is needed,
+        # just an offset out past the fingertip pads.
         tool_body = body_count_before + 11
-        finger_bodies = [body_count_before + 12, body_count_before + 13]
-        tool_site_transform = wp.transform_identity()
+        builder.add_shape_sphere(
+            tool_body,
+            xform=wp.transform(wp.vec3(0.0, 0.0, FRANKA_BALL_OFFSET), wp.quat_identity()),
+            radius=FRANKA_BALL_RADIUS,
+        )
+        tool_site_transform = wp.transform(wp.vec3(0.0, 0.0, FRANKA_BALL_OFFSET), wp.quat_identity())
         builder.add_site(tool_body, xform=tool_site_transform, label="tool_site")
 
-        return arm_joints, arm_coords, tool_body, tool_site_transform, finger_bodies
+        return arm_joints, arm_coords, tool_body, tool_site_transform
 
     @staticmethod
     def _add_ur10(builder, asset_file, base_position):
@@ -436,27 +451,32 @@ class Example:
             builder.joint_q[coord] = angle
 
         # Body 7 (0-based) this asset adds is ee_link, the fixed wrist-flange
-        # frame -- give it a small cylinder as the pressing tool, and put the
-        # tool site at the cylinder's tip (the point that actually presses).
-        # ee_link's own local axes aren't necessarily aligned with the
-        # cylinder's press direction, so the site's transform (unlike
+        # frame -- give it a small capsule (rounded ends slide across a
+        # surface more easily than a flat-ended cylinder) as the pressing
+        # tool, and put the tool site at its tip (the point that actually
+        # presses). ee_link's own local axes aren't necessarily aligned with
+        # the capsule's press direction, so the site's transform (unlike
         # Franka's identity one) is a real, non-identity offset -- callers
         # need it to resolve the site's actual world pose, not ee_link's own.
         # The wrist's actual outward direction (away from wrist_3_link, where
         # ee_link's own fixed joint offset points) is ee_link's local +X, not
-        # +Z -- verified from the asset's own ee_joint transform. A cylinder
+        # +Z -- verified from the asset's own ee_joint transform. A capsule
         # shape extends along its own local Z by default, so its xform below
         # both rotates that Z onto ee_link's local +X (a +90 degree turn
         # about Y) and offsets it out along that same +X.
         tool_body = body_count_before + 7
         tool_direction_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)
-        builder.add_shape_cylinder(
+        builder.add_shape_capsule(
             tool_body,
             xform=wp.transform(wp.vec3(TOOL_CYLINDER_HALF_HEIGHT, 0.0, 0.0), tool_direction_rotation),
             radius=TOOL_CYLINDER_RADIUS,
             half_height=TOOL_CYLINDER_HALF_HEIGHT,
         )
-        tool_site_transform = wp.transform(wp.vec3(2.0 * TOOL_CYLINDER_HALF_HEIGHT, 0.0, 0.0), wp.quat_identity())
+        # The site sits at the capsule's rounded tip: half_height along its
+        # axis, plus the radius of the rounded cap itself.
+        tool_site_transform = wp.transform(
+            wp.vec3(2.0 * TOOL_CYLINDER_HALF_HEIGHT + TOOL_CYLINDER_RADIUS, 0.0, 0.0), wp.quat_identity()
+        )
         builder.add_site(tool_body, xform=tool_site_transform, label="tool_site")
 
         return arm_joints, arm_coords, tool_body, tool_site_transform
@@ -476,8 +496,9 @@ class Example:
         # this frame's controller.step() runs; SensorContact.update() isn't
         # graph-capturable, so it has to happen here in Python, first.
         self.force_sensor.update(self.state_0, self.contacts)
-        total_force_world = self.force_sensor.total_force.numpy()
-        per_robot_force_world = np.stack([total_force_world[:2].sum(axis=0), total_force_world[2]])
+        # One sensing body per robot (Franka's ball, then UR10's), matching
+        # sensing_bodies' order above.
+        per_robot_force_world = self.force_sensor.total_force.numpy()
 
         measured_wrench_world = np.zeros((2, 6), dtype=np.float32)
         desired_pose = np.zeros((2, 7), dtype=np.float32)
