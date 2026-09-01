@@ -660,6 +660,48 @@ def _estimate_rigid_contact_max(model: Model) -> int:
     return max(_RIGID_CONTACT_MIN_CAPACITY, total_contacts)
 
 
+def _estimate_rigid_contact_max_per_world(model: Model, rigid_contact_max: int) -> int:
+    """Estimate the busiest world's share of a global rigid-contact capacity.
+
+    The collision pipeline stores contacts in one heterogeneous global buffer,
+    while downstream solvers may allocate constraint rows per world. Bound that
+    per-world allocation from the model's world-compatible shape pairs instead
+    of duplicating the entire global contact capacity into every world.
+
+    Args:
+        model: The simulation model.
+        rigid_contact_max: Global rigid-contact capacity.
+
+    Returns:
+        Maximum estimated contacts that one world can contribute, capped by the
+        global rigid-contact capacity.
+    """
+    if rigid_contact_max <= 0 or model.shape_contact_pair_count == 0:
+        return 0
+
+    pairs = model.shape_contact_pairs.numpy().reshape((-1, 2))
+    types = model.shape_type.numpy()
+    mesh_types = (int(GeoType.MESH), int(GeoType.HFIELD))
+    mesh_pairs = np.isin(types[pairs], mesh_types).any(axis=1)
+    contacts_per_pair = np.where(
+        mesh_pairs,
+        _RIGID_CONTACTS_PER_MESH_PAIR,
+        _RIGID_CONTACTS_PER_PRIMITIVE_PAIR,
+    )
+
+    worlds = model.shape_world.numpy()
+    pair_worlds = np.maximum(worlds[pairs[:, 0]], worlds[pairs[:, 1]])
+    local_pairs = pair_worlds >= 0
+    contacts_by_world = np.bincount(
+        pair_worlds[local_pairs],
+        weights=contacts_per_pair[local_pairs],
+        minlength=model.world_count,
+    )
+    busiest_world_contacts = int(np.max(contacts_by_world, initial=0))
+    global_contacts = int(np.sum(contacts_per_pair[~local_pairs]))
+    return min(rigid_contact_max, busiest_world_contacts + global_contacts)
+
+
 def _compute_per_world_shape_pairs_max(model: Model) -> int:
     """Compute the maximum number of candidate shape pairs using per-world counts.
 

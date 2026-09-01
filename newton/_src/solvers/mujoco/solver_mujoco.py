@@ -32,6 +32,7 @@ from ...sim import (
     StateFlags,
 )
 from ...sim.articulation import eval_articulation_fk, eval_fk
+from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
@@ -7394,7 +7395,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # just setting qpos0 to d.qpos leads to weird behavior here, needs
         # to be investigated.
 
-        mujoco.mj_forward(self.mj_model, self.mj_data)
+        # ``use_mujoco_contacts=False`` switches MJWarp collision detection off
+        # after conversion, but this CPU forward runs before that option exists.
+        # Temporarily suppress MuJoCo contacts so large Newton-contact scenes do
+        # not build an unused contact set (and potentially overflow mjData's
+        # stack) during solver construction. Restore the authored option before
+        # the model is handed to MJWarp; injected Newton contacts remain enabled.
+        restore_contact_disable = not disable_contacts and not self._use_mujoco_contacts
+        if restore_contact_disable:
+            self.mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
+        try:
+            mujoco.mj_forward(self.mj_model, self.mj_data)
+        finally:
+            if restore_contact_disable:
+                self.mj_model.opt.disableflags &= ~int(mujoco.mjtDisableBit.mjDSBL_CONTACT)
 
         # now that the model is compiled, get the actual geom indices and compute
         # shape transform corrections
@@ -7678,6 +7692,42 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
                 nconmax = 0
+            elif not self._use_mujoco_contacts:
+                # The initialization forward intentionally produces no contacts
+                # in this mode, so size MJWarp from Newton's collision budget.
+                from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
+
+                newton_contact_max = model.rigid_contact_max or _estimate_rigid_contact_max(model)
+                default_nconmax = (newton_contact_max + nworld - 1) // nworld
+                if nconmax is None:
+                    nconmax = default_nconmax
+                elif nconmax >= 0:
+                    nconmax = max(nconmax, default_nconmax)
+
+                max_contact_dim = max(
+                    1,
+                    int(np.max(self.mj_model.geom_condim, initial=1)),
+                    int(np.max(self.mj_model.pair_dim, initial=1)),
+                )
+                if self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
+                    constraint_rows_per_contact = max_contact_dim
+                else:
+                    constraint_rows_per_contact = max(1, 2 * (max_contact_dim - 1))
+
+                # MJWarp stores contacts in one heterogeneous buffer, so every
+                # contact can belong to any compatible world even though
+                # nconmax is passed as a per-world allocation. Constraint rows
+                # are strictly per-world, so size them from the busiest-world
+                # topology rather than duplicating the global capacity.
+                per_world_contact_max = _estimate_rigid_contact_max_per_world(model, nconmax * nworld)
+                default_njmax = max(
+                    estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
+                    self.mj_data.nefc + per_world_contact_max * constraint_rows_per_contact,
+                )
+                if njmax is None:
+                    njmax = default_njmax
+                elif njmax >= 0:
+                    njmax = max(njmax, default_njmax)
             elif nconmax is not None and nconmax < self.mj_data.ncon:
                 warnings.warn(
                     f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",

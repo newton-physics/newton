@@ -142,6 +142,22 @@ class SolverKamino(SolverBase, CouplingInterface):
     After constructing :class:`ModelKamino`, :class:`StateKamino`, :class:`ControlKamino` and :class:`ContactsKamino`
     objects, this physics solver may be used to advance the simulation state forward in time.
 
+    Body flags
+    ----------
+    Kamino treats a rigid body as *immovable* when either its Newton inertia is
+    zero (``body_inv_mass == 0`` and ``body_inv_inertia == 0``) or its
+    ``body_flags`` include :attr:`~newton.BodyFlags.KINEMATIC` or
+    :attr:`~newton.BodyFlags.PROXY`. This decision is baked once at construction,
+    and flipping a body's immovability at runtime (whether by toggling its
+    KINEMATIC/PROXY flag, by making a massive body massless, or by giving a
+    massless body finite inertia) will raise a :class:`RuntimeError` from
+    :meth:`notify_model_changed`.
+
+    Kamino's integrator does not advance a kinematic/proxy body's pose from its
+    velocity. To animate such a body along a trajectory, write the target
+    pose into ``state_in.body_q`` (and optionally ``state_in.body_qd``)
+    externally between steps.
+
     Example
     -------
 
@@ -754,15 +770,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             device=model.device,
         )
 
-        built_massless_np = (model.body_inv_mass.numpy() == 0.0) | np.all(
-            model.body_inv_inertia.numpy() == 0.0, axis=(1, 2)
-        )
-        self._built_massless = wp.array(
-            built_massless_np.astype(np.int32),
-            dtype=wp.int32,
-            device=model.device,
-        )
-
         # Scratch array for notify validation
         self._notify_violations = wp.empty(
             len(self._kamino.StructuralUpdateViolation),
@@ -1071,6 +1078,12 @@ class SolverKamino(SolverBase, CouplingInterface):
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             # q_i_0 is derived from both model.body_q and model.body_com.
             self._update_body_initial_pose()
+            # Kamino-owned masked inv-mass/inertia must track Newton's values.
+            # BODY_PROPERTIES is included because Newton's body_flags aren't
+            # allowed to flip KINEMATIC/PROXY (rejected in the structural check
+            # above), but other body properties may change alongside inertia
+            # and callers commonly bundle these flags together.
+            self._refresh_masked_inertia()
 
         if flags & (
             ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES
@@ -1391,20 +1404,20 @@ class SolverKamino(SolverBase, CouplingInterface):
         check_dof = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
         check_actuation = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES))
         check_axes = check_dof
-        check_inertial = bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
-        if not check_dof and not check_actuation and not check_axes and not check_inertial:
+        check_body_immovability = bool(flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES))
+        if not (check_dof or check_actuation or check_axes or check_body_immovability):
             return
 
         sentinel = self._kamino.validate_model_structural_updates(
             self.model,
             self._model_kamino.joints,
             self._built_limit_finite,
-            self._built_massless,
+            self._model_kamino.bodies.is_immovable,
             self._notify_violations,
             check_dof=check_dof,
             check_actuation=check_actuation,
             check_axes=check_axes,
-            check_inertial=check_inertial,
+            check_body_immovability=check_body_immovability,
         )
         violations = self._notify_violations.numpy()
         dynamic_joint = violations[self._kamino.StructuralUpdateViolation.DYNAMIC_CTS]
@@ -1413,7 +1426,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         invalid_joint = violations[self._kamino.StructuralUpdateViolation.INVALID_TARGET_MODE]
         axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
         gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
-        massless_body = violations[self._kamino.StructuralUpdateViolation.MASSLESS]
+        immovability_flip_body = violations[self._kamino.StructuralUpdateViolation.IMMOVABILITY_FLIP]
         friction_joint = violations[self._kamino.StructuralUpdateViolation.FRICTION_CTS]
         effort_joint = violations[self._kamino.StructuralUpdateViolation.EFFORT_CTS]
 
@@ -1475,11 +1488,14 @@ class SolverKamino(SolverBase, CouplingInterface):
                 "gimbal axes must preserve the solver's original handedness"
             )
 
-        if massless_body != sentinel:
-            body = int(massless_body)
+        if immovability_flip_body != sentinel:
+            body = int(immovability_flip_body)
             label = self.model.body_label[body] if self.model.body_label else f"body {body}"
             raise RuntimeError(
-                f"Making body {body} ({label!r}) massless is not supported; recreate SolverKamino to apply the change."
+                f"Changing the immovability status of body {body} ({label!r}) is not supported; "
+                "recreate SolverKamino to apply the change. More specifically, toggling the "
+                "KINEMATIC/PROXY flag of a body, making a massive body massless or giving a "
+                "massless body finite inertia are not supported."
             )
 
     def _update_actuation_types(self) -> None:
@@ -1492,6 +1508,17 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q=self.model.body_q,
             body_q_com=self._model_kamino.bodies.q_i_0,
+        )
+
+    def _refresh_masked_inertia(self):
+        """Refresh Kamino's inverse mass/inertia from Newton's arrays."""
+        self._kamino.refresh_masked_body_inertia(
+            newton_body_inv_mass=self.model.body_inv_mass,
+            newton_body_inv_inertia=self.model.body_inv_inertia,
+            kamino_body_is_immovable=self._model_kamino.bodies.is_immovable,
+            kamino_body_inv_mass=self._model_kamino.bodies.inv_m_i,
+            kamino_body_inv_inertia=self._model_kamino.bodies.inv_i_I_i,
+            device=self.model.device,
         )
 
     def _update_geom_offsets(self):

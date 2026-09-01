@@ -686,8 +686,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
-    # Deterministic contacts keep the pick-and-place check from flaking.
-    test_options={"usd_required": True, "num-frames": 720, "deterministic": True},
+    test_options={"usd_required": True, "num-frames": 720},
     use_viewer=True,
 )
 
@@ -822,6 +821,14 @@ add_example_test(
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+)
+add_example_test(
+    TestSelectionAPIExamples,
+    name="selection.example_selection_cartpole",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 100, "world-count": 2, "solver": "kamino"},
+    use_viewer=True,
+    test_suffix="kamino",
 )
 add_example_test(
     TestSelectionAPIExamples,
