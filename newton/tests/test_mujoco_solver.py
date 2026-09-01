@@ -7469,6 +7469,23 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mjw_data.njmax_nnz, 123)
         self.assertEqual(solver.mjw_data.efc.J.shape, (2, 1, 123))
 
+    def test_njmax_nnz_includes_joint_limits(self):
+        """Include joint limits in automatic sparse capacity."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(parent=-1, child=body, limit_lower=-1.0, limit_upper=1.0)
+        builder.add_articulation([joint])
+
+        solver = SolverMuJoCo(builder.finalize(), disable_contacts=True, jacobian="sparse")
+
+        from mujoco_warp._src.io import _default_njmax_nnz
+
+        expected = min(
+            _default_njmax_nnz(solver.mj_model, 0, solver.mjw_data.njmax) + 1,
+            solver.mjw_data.njmax * solver.mj_model.nv,
+        )
+        self.assertEqual(solver.mjw_data.njmax_nnz, expected)
+
     def test_njmax_nnz_rejects_invalid_values(self):
         """Reject invalid sparse Jacobian capacities."""
         model = self._create_multiworld_model(world_count=1)

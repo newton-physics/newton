@@ -3737,7 +3737,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             model: The model to be simulated.
             separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax: Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
-            njmax_nnz: Sparse Jacobian nonzero capacity per world. If None, MuJoCo Warp estimates it.
+            njmax_nnz: Sparse Jacobian nonzero capacity per world. If None, estimates it from the model.
             nconmax: Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
@@ -7818,6 +7818,36 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     stacklevel=2,
                 )
                 njmax = self.mj_data.nefc
+
+            if njmax_nnz is None:
+                from mujoco_warp._src.io import _default_nconmax as estimate_mujoco_warp_nconmax
+                from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
+                from mujoco_warp._src.io import _default_njmax_nnz as estimate_mujoco_warp_njmax_nnz
+                from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
+
+                if is_mujoco_warp_sparse(self.mj_model):
+                    resolved_nconmax = (
+                        nconmax if nconmax is not None else estimate_mujoco_warp_nconmax(self.mj_model, self.mj_data)
+                    )
+                    resolved_njmax = (
+                        njmax if njmax is not None else estimate_mujoco_warp_njmax(self.mj_model, self.mj_data)
+                    )
+                    joint_limit_nnz = 0
+                    for limited, joint_type in zip(self.mj_model.jnt_limited, self.mj_model.jnt_type, strict=True):
+                        if not limited:
+                            continue
+                        joint_type_value = int(joint_type)
+                        if joint_type_value == mujoco.mjtJoint.mjJNT_BALL:
+                            joint_limit_nnz += 3
+                        elif joint_type_value in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
+                            joint_limit_nnz += 1
+
+                    # work around buffer under-sizing until the fix is released (mjwarp #1630)
+                    njmax_nnz = min(
+                        estimate_mujoco_warp_njmax_nnz(self.mj_model, resolved_nconmax, resolved_njmax)
+                        + joint_limit_nnz,
+                        resolved_njmax * self.mj_model.nv,
+                    )
 
             if nvmax is not None:
                 if nvmax > self.mj_model.nv:

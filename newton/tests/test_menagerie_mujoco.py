@@ -1517,7 +1517,6 @@ class TestMenagerieBase(unittest.TestCase):
     backfill_fields: list[str] | None = None  # None = use MODEL_BACKFILL_FIELDS
 
     njmax: int | None = None  # Max constraint rows per world (None = auto from MuJoCo)
-    njmax_nnz: int | None = None  # Max sparse Jacobian nonzeros per world (None = auto from MuJoCo Warp)
     nconmax: int | None = None  # Max contacts per world (None = auto from MuJoCo)
     # Override integrator for SolverMuJoCo
     solver_integrator: str | int | None = None
@@ -1710,8 +1709,23 @@ class TestMenagerieBase(unittest.TestCase):
         # Create mujoco_warp model/data with multiple worlds
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)
+
+        # work around buffer under-sizing until the fix is released (mjwarp #1630)
+        from mujoco_warp._src.io import _default_nconmax, _default_njmax, _default_njmax_nnz
+
+        resolved_nconmax = self.nconmax if self.nconmax is not None else _default_nconmax(mj_model, mj_data)
+        resolved_njmax = self.njmax if self.njmax is not None else _default_njmax(mj_model, mj_data)
+        njmax_nnz = max(
+            int(self._newton_solver.mjw_data.njmax_nnz),
+            _default_njmax_nnz(mj_model, resolved_nconmax, resolved_njmax),
+        )
         mjw_data = _mujoco_warp.put_data(
-            mj_model, mj_data, nworld=self.num_worlds, njmax=self.njmax, nconmax=self.nconmax
+            mj_model,
+            mj_data,
+            nworld=self.num_worlds,
+            njmax=self.njmax,
+            nconmax=self.nconmax,
+            njmax_nnz=njmax_nnz,
         )
 
         return mj_model, mj_data, mjw_model, mjw_data
@@ -1736,7 +1750,6 @@ class TestMenagerieBase(unittest.TestCase):
         solver_kwargs = {
             "skip_visual_only_geoms": not self.parse_visuals,
             "njmax": self.njmax,
-            "njmax_nnz": self.njmax_nnz,
             "nconmax": self.nconmax,
         }
         if self.solver_integrator is not None:
