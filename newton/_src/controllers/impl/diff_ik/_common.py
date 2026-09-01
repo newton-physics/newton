@@ -210,9 +210,9 @@ def _qd_from_y_kernel(
     robot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> owning robot
     slot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> column within that robot's Jacobian
     # outputs
-    joint_qd: wp.array[wp.float32],  # (total_controlled_dofs,) compact = bandwidth * Jᵀ @ y
+    joint_qd_target: wp.array[wp.float32],  # (total_controlled_dofs,) compact = bandwidth * Jᵀ @ y
 ):
-    """Finish the damped-least-squares solve, ``q̇ = bandwidth · Jᵀy``, straight into the compact per-DOF layout.
+    """Finish the damped-least-squares solve, ``q̇_target = bandwidth · Jᵀy``, straight into the compact per-DOF layout.
 
     Row ``dof`` of ``Jᵀ`` is column ``slot_of_dof[dof]`` of robot
     ``robot_of_dof[dof]``'s Jacobian — loading it back into a
@@ -227,7 +227,7 @@ def _qd_from_y_kernel(
     for row in range(6):
         jacobian_column[row] = jacobian_tool_world[robot, row, slot]
 
-    joint_qd[dof] = bandwidth[dof] * wp.dot(jacobian_column, y[robot])
+    joint_qd_target[dof] = bandwidth[dof] * wp.dot(jacobian_column, y[robot])
 
 
 # ---------------------------------------------------------------------------
@@ -238,11 +238,11 @@ def _qd_from_y_kernel(
 @wp.kernel
 def _integrate_position_kernel(
     joint_q: wp.array[wp.float32],  # (total_controlled_dofs,)
-    joint_qd: wp.array[wp.float32],  # (total_controlled_dofs,)
+    joint_qd_target: wp.array[wp.float32],  # (total_controlled_dofs,)
     dt: wp.array[wp.float32],  # (1,) step duration [s]
     # outputs
-    joint_q_target: wp.array[wp.float32],  # (total_controlled_dofs,) = joint_q + joint_qd * dt
+    joint_q_target: wp.array[wp.float32],  # (total_controlled_dofs,) = joint_q + joint_qd_target * dt
 ):
-    """Explicit-Euler joint position target, ``q_target = q + q̇·dt``."""
+    """Explicit-Euler joint position target, ``q_target = q + q̇_target·dt``."""
     dof = wp.tid()
-    joint_q_target[dof] = joint_q[dof] + joint_qd[dof] * dt[0]
+    joint_q_target[dof] = joint_q[dof] + joint_qd_target[dof] * dt[0]
