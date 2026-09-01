@@ -231,7 +231,7 @@ class ControllerOperationalSpace(ControllerBase):
         measured_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count]. ``None`` unless ``use_wrench_feedback=True``."""
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Contact-wrench proportional feedback gain Kp, operational-frame-local, shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
+        """Contact-wrench proportional feedback gain Kp, operational-frame-local, shape [controlled_robot_count]. Dimensionless -- multiplies a wrench error directly, not a pose error. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
         linear_selection_frame_operational: wp.array[wp.quat] | wp.indexedarray[wp.quat] | None
         """Orientation of S_f, relative to the operational frame, shape [controlled_robot_count]. ``None`` when fixed at construction, or when wrench control is disabled."""
         angular_selection_frame_operational: wp.array[wp.quat] | wp.indexedarray[wp.quat] | None

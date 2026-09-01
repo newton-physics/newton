@@ -253,10 +253,21 @@ def _validate_wrench_construction_arguments(
             ("motion_selection_axes", motion_selection_axes),
             ("wrench_selection_axes", wrench_selection_axes),
             ("wrench_stiffness", wrench_stiffness),
+        ):
+            if value is not None:
+                raise ValueError(
+                    f"{name} is set, but use_wrench_feedforward and use_wrench_feedback are both False, "
+                    f"so it would be ignored."
+                )
+        # linear_selection_frame_operational/angular_selection_frame_operational
+        # default to _IDENTITY_QUAT, not None -- exempt that default value (by
+        # value, not identity, so a freshly constructed identity quaternion is
+        # accepted too), rather than requiring the exact default object.
+        for name, value in (
             ("linear_selection_frame_operational", linear_selection_frame_operational),
             ("angular_selection_frame_operational", angular_selection_frame_operational),
         ):
-            if value is not None and value is not _IDENTITY_QUAT:
+            if value is not None and not (isinstance(value, wp.quat) and value == _IDENTITY_QUAT):
                 raise ValueError(
                     f"{name} is set, but use_wrench_feedforward and use_wrench_feedback are both False, "
                     f"so it would be ignored."
@@ -482,7 +493,7 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         measured_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count], e.g. from a 6-axis force/torque sensor. ``None`` unless ``use_wrench_feedback=True``."""
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Contact-wrench proportional feedback gain Kp, operational-frame-local, shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
+        """Contact-wrench proportional feedback gain Kp, operational-frame-local, shape [controlled_robot_count]. Dimensionless -- multiplies a wrench error directly, not a pose error. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
         linear_selection_frame_operational: wp.array[wp.quat] | wp.indexedarray[wp.quat] | None
         """Orientation of S_f, relative to the operational frame, shape [controlled_robot_count]. ``None`` when fixed at construction, or when wrench control is disabled."""
         angular_selection_frame_operational: wp.array[wp.quat] | wp.indexedarray[wp.quat] | None
