@@ -188,6 +188,141 @@ def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
     return collision_mesh
 
 
+_CONVEX_SUPPORT_MIN_VERTICES = 256
+_CONVEX_SUPPORT_LUT_RESOLUTION = 32
+
+
+def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Build a directional seed table and welded vertex adjacency for a convex collision mesh."""
+    vertices = np.asarray(source.vertices, dtype=np.float32).reshape(-1, 3)
+    vertex_count = len(vertices)
+    if vertex_count < _CONVEX_SUPPORT_MIN_VERTICES:
+        return None
+
+    triangles = np.asarray(source.indices, dtype=np.int32).reshape(-1, 3)
+    geometry_scale = max(float(np.max(np.ptp(vertices, axis=0))), 1.0e-6)
+    vertices64 = vertices.astype(np.float64)
+    triangle_points = vertices64[triangles]
+    face_normals = np.cross(
+        triangle_points[:, 1] - triangle_points[:, 0], triangle_points[:, 2] - triangle_points[:, 0]
+    )
+    normal_lengths = np.linalg.norm(face_normals, axis=1)
+    nondegenerate = normal_lengths > geometry_scale * geometry_scale * 1.0e-12
+    face_normals = face_normals[nondegenerate]
+    if len(face_normals) == 0:
+        return None
+    face_normals /= normal_lengths[nondegenerate, None]
+    face_offsets = np.einsum("ij,ij->i", face_normals, triangle_points[nondegenerate, 0])
+
+    # The input indices are not automatically rebuilt as a convex hull. Only
+    # use their edges when every non-degenerate triangle lies on a supporting
+    # plane of the point set; otherwise a local edge maximum need not be the
+    # global support point and the exhaustive path must remain active.
+    plane_tolerance = geometry_scale * 2.0e-6
+    for start in range(0, len(face_normals), 64):
+        stop = min(start + 64, len(face_normals))
+        projections = face_normals[start:stop] @ vertices64.T
+        offsets = face_offsets[start:stop]
+        supported_positive = np.max(projections, axis=1) <= offsets + plane_tolerance
+        supported_negative = np.min(projections, axis=1) >= offsets - plane_tolerance
+        if not np.all(supported_positive | supported_negative):
+            return None
+
+    # A connected subset of supporting faces is not necessarily a complete
+    # hull. Walking its edges can stop at a local maximum because an omitted
+    # face also omits the edge needed to reach the global support vertex.
+    # Validate a closed two-manifold after welding numerically split seams.
+    coordinate_scale = max(float(np.max(np.abs(vertices))), 1.0)
+    weld_groups: dict[tuple[float, float, float], list[int]] = {}
+    welded_vertex = np.empty(vertex_count, dtype=np.int32)
+    for vertex, position in enumerate(vertices):
+        key = tuple(np.round(position / coordinate_scale, decimals=6))
+        group = weld_groups.setdefault(key, [])
+        if group:
+            welded_vertex[vertex] = group[0]
+        else:
+            welded_vertex[vertex] = vertex
+        group.append(vertex)
+
+    edge_incidence: Counter[tuple[int, int]] = Counter()
+    for triangle in triangles[nondegenerate]:
+        welded = tuple(int(welded_vertex[int(vertex)]) for vertex in triangle)
+        if len(set(welded)) < 3:
+            continue
+        for first, second in ((welded[0], welded[1]), (welded[1], welded[2]), (welded[2], welded[0])):
+            edge_incidence[min(first, second), max(first, second)] += 1
+    if not edge_incidence or any(count != 2 for count in edge_incidence.values()):
+        warnings.warn(
+            "Convex support acceleration requires complete closed hull topology; "
+            "falling back to exhaustive support mapping.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+
+    adjacent = [set() for _ in range(vertex_count)]
+    for triangle in triangles:
+        a, b, c = (int(value) for value in triangle)
+        if a != b:
+            adjacent[a].add(b)
+            adjacent[b].add(a)
+        if a != c:
+            adjacent[a].add(c)
+            adjacent[c].add(a)
+        if b != c:
+            adjacent[b].add(c)
+            adjacent[c].add(b)
+
+    # Procedural and imported meshes can have numerically split seam vertices.
+    # Share their neighborhoods without changing the mesh points or support values.
+    for group in weld_groups.values():
+        if len(group) <= 1:
+            continue
+        merged = set(group)
+        for vertex in group:
+            merged.update(adjacent[vertex])
+        for vertex in group:
+            adjacent[vertex].update(merged)
+            adjacent[vertex].discard(vertex)
+
+    if any(not neighbors for neighbors in adjacent):
+        return None
+    visited = {0}
+    stack = [0]
+    while stack:
+        vertex = stack.pop()
+        for neighbor in adjacent[vertex]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                stack.append(neighbor)
+    if len(visited) != vertex_count:
+        return None
+
+    resolution = _CONVEX_SUPPORT_LUT_RESOLUTION
+    coordinates = np.linspace(-1.0, 1.0, resolution, dtype=np.float32)
+    xx, yy = np.meshgrid(coordinates, coordinates, indexing="xy")
+    zz = 1.0 - np.abs(xx) - np.abs(yy)
+    folded = zz < 0.0
+    old_x = xx.copy()
+    old_y = yy.copy()
+    xx[folded] = (1.0 - np.abs(old_y[folded])) * np.where(old_x[folded] >= 0.0, 1.0, -1.0)
+    yy[folded] = (1.0 - np.abs(old_x[folded])) * np.where(old_y[folded] >= 0.0, 1.0, -1.0)
+    directions = np.column_stack((xx.ravel(), yy.ravel(), zz.ravel()))
+    directions /= np.linalg.norm(directions, axis=1)[:, None]
+
+    lut = np.empty(resolution * resolution, dtype=np.int32)
+    for start in range(0, len(directions), 64):
+        stop = min(start + 64, len(directions))
+        lut[start:stop] = np.argmax(directions[start:stop] @ vertices.T, axis=1)
+
+    offsets = np.zeros(vertex_count + 1, dtype=np.int32)
+    neighbors = []
+    for vertex, values in enumerate(adjacent):
+        neighbors.extend(sorted(values))
+        offsets[vertex + 1] = len(neighbors)
+    return lut, offsets, np.asarray(neighbors, dtype=np.int32)
+
+
 @dataclass(frozen=True)
 class _ShapeCollisionFilterBlock:
     """Compact replicated collision-filter block."""
@@ -11931,6 +12066,65 @@ class ModelBuilder:
             m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
+
+            # Compact convex support data (one copy per shared geometry).
+            shape_support_data = []
+            support_lut_chunks = []
+            support_offset_chunks = []
+            support_neighbor_chunks = []
+            support_cache = {}
+            lut_offset = 0
+            vertex_offset = 0
+            neighbor_offset = 0
+            for shape_type, source, shape_flags in zip(
+                self.shape_type, generated_shape_sources, self.shape_flags, strict=True
+            ):
+                metadata = (-1, -1, -1, 0)
+                if (
+                    shape_type == GeoType.CONVEX_MESH
+                    and isinstance(source, Mesh)
+                    and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                ):
+                    source_key = hash(source)
+                    if source_key not in support_cache:
+                        acceleration = _build_convex_support_acceleration(source)
+                        cached = None
+                        if acceleration is not None:
+                            lut, offsets, neighbors = acceleration
+                            cached = (
+                                (lut_offset, vertex_offset, neighbor_offset, _CONVEX_SUPPORT_LUT_RESOLUTION),
+                                lut,
+                                offsets,
+                                neighbors,
+                            )
+                            support_lut_chunks.append(lut)
+                            support_offset_chunks.append(offsets)
+                            support_neighbor_chunks.append(neighbors)
+                            lut_offset += len(lut)
+                            vertex_offset += len(offsets)
+                            neighbor_offset += len(neighbors)
+                        support_cache[source_key] = cached
+                    cached = support_cache[source_key]
+                    if cached is not None:
+                        metadata = cached[0]
+                shape_support_data.append(metadata)
+
+            m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)
+            m._convex_support_lut = wp.array(
+                np.concatenate(support_lut_chunks) if support_lut_chunks else np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=device,
+            )
+            m._convex_support_vertex_offsets = wp.array(
+                np.concatenate(support_offset_chunks) if support_offset_chunks else np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=device,
+            )
+            m._convex_support_neighbors = wp.array(
+                np.concatenate(support_neighbor_chunks) if support_neighbor_chunks else np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=device,
+            )
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)

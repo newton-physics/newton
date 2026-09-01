@@ -2158,6 +2158,49 @@ class TestShapePairsMaxScaling(unittest.TestCase):
         self.assertEqual(narrow_phase.shape_pairs_mesh_plane.shape[0], 2)
         self.assertEqual(narrow_phase.mesh_plane_block_offsets.shape[0], 3)
 
+    def test_explicit_mesh_convex_omits_unrelated_mesh_stages(self):
+        """Omit mesh-mesh and mesh-plane stages for explicit mesh-convex pairs."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        mesh_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
+        builder.add_shape_mesh(mesh_body, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+        box_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9)))
+        builder.add_shape_box(box_body, hx=0.5, hy=0.5, hz=0.5)
+        model = builder.finalize(device="cpu")
+        shape_pairs = wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.vec2i, device="cpu")
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            shape_pairs_filtered=shape_pairs,
+            reduce_contacts=True,
+        )
+        contacts = pipeline.contacts()
+
+        self.assertEqual(pipeline.narrow_phase.max_mesh_mesh_pairs, 0)
+        self.assertEqual(pipeline.narrow_phase.max_mesh_plane_pairs, 0)
+        pipeline.collide(model.state(), contacts)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+    def test_explicit_mesh_plane_keeps_required_stage(self):
+        """Keep the mesh-plane stage for explicit mesh-infinite-plane pairs."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        mesh_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.25)))
+        builder.add_shape_mesh(mesh_body, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        shape_pairs = wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.vec2i, device="cpu")
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            shape_pairs_filtered=shape_pairs,
+            reduce_contacts=True,
+        )
+        contacts = pipeline.contacts()
+
+        self.assertEqual(pipeline.narrow_phase.max_mesh_mesh_pairs, 0)
+        self.assertEqual(pipeline.narrow_phase.max_mesh_plane_pairs, 1)
+        pipeline.collide(model.state(), contacts)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
     def test_explicit_cross_world_mesh_pair_uses_explicit_bound(self):
         """Keep explicit cross-world mesh pairs in mesh work buffers."""
         world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -2605,6 +2648,20 @@ def test_mesh_convex_with_sdf_routes_to_sdf_contact(test, device):
     test.assertGreater(sdf_pair_count, 0)
     test.assertEqual(mesh_convex_pair_count, 0)
     test.assertGreater(contact_count, 0)
+
+    shape_pairs = wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.vec2i, device=device)
+    explicit_pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        shape_pairs_filtered=shape_pairs,
+        rigid_contact_max=256,
+    )
+    explicit_contacts = explicit_pipeline.contacts()
+
+    test.assertEqual(explicit_pipeline.narrow_phase.max_mesh_mesh_pairs, 1)
+    test.assertEqual(explicit_pipeline.narrow_phase.max_mesh_plane_pairs, 0)
+    explicit_pipeline.collide(model.state(), explicit_contacts)
+    test.assertGreater(int(explicit_contacts.rigid_contact_count.numpy()[0]), 0)
 
 
 def test_deferred_convex_sdf_edges_use_deduplicated_topology(test, device):
@@ -3525,6 +3582,45 @@ add_function_test(
     "test_deterministic_pipeline_sticky_500_steps",
     test_deterministic_pipeline_sticky_500_steps,
     devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+
+def test_mesh_query_tile_width_follows_geometry(test, device):
+    """Use wider CUDA query tiles only when heightfields are absent."""
+    mesh_builder = newton.ModelBuilder()
+    mesh_builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, compute_inertia=False))
+    mesh_model = mesh_builder.finalize(device=device)
+    mesh_pipeline = newton.CollisionPipeline(mesh_model, broad_phase="nxn")
+
+    heightfield_builder = newton.ModelBuilder()
+    heightfield_builder.add_shape_heightfield(
+        heightfield=newton.Heightfield(
+            data=np.zeros((3, 3), dtype=np.float32),
+            nrow=3,
+            ncol=3,
+            hx=1.0,
+            hy=1.0,
+            min_z=0.0,
+            max_z=0.0,
+        )
+    )
+    heightfield_model = heightfield_builder.finalize(device=device)
+    heightfield_pipeline = newton.CollisionPipeline(heightfield_model, broad_phase="nxn")
+
+    if wp.get_device(device).is_cpu:
+        test.assertEqual(mesh_pipeline.narrow_phase.tile_size_mesh_convex, 1)
+        test.assertEqual(heightfield_pipeline.narrow_phase.tile_size_mesh_convex, 1)
+    else:
+        test.assertEqual(mesh_pipeline.narrow_phase.tile_size_mesh_convex, 256)
+        test.assertEqual(heightfield_pipeline.narrow_phase.tile_size_mesh_convex, 128)
+
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_mesh_query_tile_width_follows_geometry",
+    test_mesh_query_tile_width_follows_geometry,
+    devices=get_test_devices(),
     check_output=False,
 )
 
