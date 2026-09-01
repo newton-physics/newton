@@ -831,8 +831,11 @@ class TestModelMesh(unittest.TestCase):
 
     def test_mesh_adjacency_public(self):
         tris = [[0, 1, 2], [0, 2, 3]]
-        # Construction from triangle indices is supported (no warning) and eager.
-        adj = newton.utils.MeshAdjacency(tris)
+        # The supported ctor path must not warn (the deprecated aliases that warned here are gone).
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            adj = newton.utils.MeshAdjacency(tris)
+        # Edge tables are populated eagerly by the constructor.
         self.assertEqual(adj.edge_indices.shape, (5, 4))
         self.assertEqual(adj.edge_tri_indices.shape, (5, 2))
         self.assertEqual(adj.tri_edge_indices.shape, (2, 3))
