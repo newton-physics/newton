@@ -681,8 +681,11 @@ def _null_space_projector_kernel(
 # naturally not a single-frame choice: the linear/force selection is most
 # naturally expressed relative to a frame S_f (e.g. aligned to a contact
 # surface's normal) and the angular/moment selection relative to a possibly
-# *different* frame S_tau (e.g. the compliant-rotation axis) -- Khatib's
-# generalized task specification matrix, Omega = diag(S_f^T . Sigma_f . S_f,
+# *different* frame S_tau (e.g. the compliant-rotation axis) -- the
+# generalized task specification matrix from Khatib, O. (1987), "A unified
+# approach for motion and force control of robot manipulators: The
+# operational space formulation," IEEE Journal of Robotics and Automation,
+# 3(1), 43-53: Omega = diag(S_f^T . Sigma_f . S_f,
 # S_tau^T . Sigma_tau . S_tau). Both S_f and S_tau are themselves specified
 # relative to the operational frame, and applied to task-space vectors that
 # are already expressed there (:func:`_apply_dual_frame_selection`), so
@@ -706,54 +709,6 @@ def _null_space_projector_kernel(
 # ---------------------------------------------------------------------------
 
 
-@wp.func
-def _rotate_apply_diagonal_rotate_back(
-    quat_outer_from_inner: wp.quat,
-    diagonal_inner: wp.vec3,  # per-axis gain or 0/1 selection, expressed in the "inner" frame
-    value_outer: wp.vec3,
-) -> wp.vec3:
-    """Rotate a 3-vector into the "inner" frame, apply a diagonal there, rotate the result back to "outer".
-
-    The single vec3 building block behind :func:`_apply_dual_frame_selection`
-    (linear/angular halves use two *different* inner frames, "outer" = the
-    operational frame).
-    """
-    value_inner = wp.quat_rotate_inv(quat_outer_from_inner, value_outer)
-    masked_inner = wp.vec3(
-        diagonal_inner[0] * value_inner[0], diagonal_inner[1] * value_inner[1], diagonal_inner[2] * value_inner[2]
-    )
-    return wp.quat_rotate(quat_outer_from_inner, masked_inner)
-
-
-@wp.func
-def _apply_dual_frame_selection(
-    quat_operational_from_sf: wp.quat,  # (robot,) orientation of the linear/force selection frame S_f, relative to the operational frame
-    quat_operational_from_stau: wp.quat,  # (robot,) orientation of the angular/moment selection frame S_tau, relative to the operational frame
-    selection_linear_sf: wp.vec3,  # diagonal selection weight per linear axis, expressed in S_f
-    selection_angular_stau: wp.vec3,  # diagonal selection weight per angular axis, expressed in S_tau
-    vector_operational: wp.spatial_vector,
-) -> wp.spatial_vector:
-    """Mask a task-space vector already expressed in the operational frame, using two independent selection frames.
-
-    Implements Khatib's generalized task specification matrix, ``Omega =
-    diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau)``: the linear
-    half is rotated into ``S_f``, masked by ``Sigma_f`` (``selection_linear_sf``),
-    and rotated back; the angular half does the same independently through
-    ``S_tau``. ``S_f`` and ``S_tau`` need not agree -- e.g. the force-control
-    direction (surface normal) and the compliant-rotation axis of a task
-    generally differ.
-    """
-    linear_operational = wp.vec3(vector_operational[0], vector_operational[1], vector_operational[2])
-    angular_operational = wp.vec3(vector_operational[3], vector_operational[4], vector_operational[5])
-    masked_linear = _rotate_apply_diagonal_rotate_back(
-        quat_operational_from_sf, selection_linear_sf, linear_operational
-    )
-    masked_angular = _rotate_apply_diagonal_rotate_back(
-        quat_operational_from_stau, selection_angular_stau, angular_operational
-    )
-    return wp.spatial_vector(masked_linear, masked_angular)
-
-
 @wp.kernel
 def _mask_dual_frame_kernel(
     quat_operational_from_sf: wp.array[wp.quat],  # (robot_count,) S_f, relative to the operational frame
@@ -771,23 +726,35 @@ def _mask_dual_frame_kernel(
 ):
     """Zero an operational-frame task-space vector along the axes ``selection_axes`` excludes.
 
-    See :func:`_apply_dual_frame_selection`. No world pose is needed here --
-    S_f/S_tau are defined relative to the operational frame directly, so
-    this never touches world frame at all.
+    Implements Khatib's generalized task specification matrix, ``Omega =
+    diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau)``: the linear
+    half is rotated into ``S_f``, masked by ``Sigma_f``, and rotated back;
+    the angular half does the same independently through ``S_tau``. ``S_f``
+    and ``S_tau`` need not agree -- e.g. the force-control direction
+    (surface normal) and the compliant-rotation axis of a task generally
+    differ. No world pose is needed here -- S_f/S_tau are defined relative
+    to the operational frame directly, so this never touches world frame
+    at all.
     """
     robot_idx = wp.tid()
     axes = selection_axes[robot_idx]
-    masked_vector_operational[robot_idx] = _apply_dual_frame_selection(
-        quat_operational_from_sf[robot_idx],
-        quat_operational_from_stau[robot_idx],
-        wp.vec3(axes[0], axes[1], axes[2]),
-        wp.vec3(axes[3], axes[4], axes[5]),
-        vector_operational[robot_idx],
-    )
+    vector = vector_operational[robot_idx]
+    quat_sf = quat_operational_from_sf[robot_idx]
+    quat_stau = quat_operational_from_stau[robot_idx]
+
+    linear_sf = wp.quat_rotate_inv(quat_sf, wp.vec3(vector[0], vector[1], vector[2]))
+    masked_linear_sf = wp.vec3(axes[0] * linear_sf[0], axes[1] * linear_sf[1], axes[2] * linear_sf[2])
+    masked_linear = wp.quat_rotate(quat_sf, masked_linear_sf)
+
+    angular_stau = wp.quat_rotate_inv(quat_stau, wp.vec3(vector[3], vector[4], vector[5]))
+    masked_angular_stau = wp.vec3(axes[3] * angular_stau[0], axes[4] * angular_stau[1], axes[5] * angular_stau[2])
+    masked_angular = wp.quat_rotate(quat_stau, masked_angular_stau)
+
+    masked_vector_operational[robot_idx] = wp.spatial_vector(masked_linear, masked_angular)
 
 
 @wp.kernel
-def _wrench_feedforward_only_kernel(
+def _wrench_feedforward_kernel(
     operational_frame_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the operational frame
     desired_wrench_world: wp.array[
         wp.spatial_vector
@@ -795,30 +762,30 @@ def _wrench_feedforward_only_kernel(
     # outputs
     wrench_command_operational: wp.array[
         wp.spatial_vector
-    ],  # (robot_count,) desired_wrench_world, rotated into the operational frame
+    ],  # (robot_count,) accumulator; desired_wrench_world, rotated into the operational frame, is added to it
 ):
-    """The feedforward-only wrench command: just the desired wrench, rotated into the operational frame.
+    """Add the feedforward wrench term, ``desired_wrench_world`` rotated into the operational frame.
 
-    No gain, no feedback -- used when ``use_wrench_feedback=False``, so
-    there is nothing to combine with :func:`_wrench_feedforward_and_feedback_kernel`
-    or :func:`_wrench_feedback_only_kernel`. Still needs a rotation, since
-    the desired wrench is given in world coordinates but everything
-    downstream (selection masking, the J^T force mapping) runs in the
-    operational frame.
+    ``wrench_command_operational`` is a running accumulator: the caller
+    zeros it once per step, then launches this kernel and/or
+    :func:`_wrench_feedback_kernel`, whichever are enabled, each adding
+    its own term. The rotation is needed because the desired wrench is
+    given in world coordinates but everything downstream (selection
+    masking, the J^T force mapping) runs in the operational frame.
     """
     robot_idx = wp.tid()
     quat_operational_from_world = wp.quat_inverse(wp.transform_get_rotation(operational_frame_pose_world[robot_idx]))
-    wrench_command_operational[robot_idx] = _rotate_spatial_vector(
+    wrench_command_operational[robot_idx] = wrench_command_operational[robot_idx] + _rotate_spatial_vector(
         quat_operational_from_world, desired_wrench_world[robot_idx]
     )
 
 
 @wp.kernel
-def _wrench_feedforward_and_feedback_kernel(
+def _wrench_feedback_kernel(
     operational_frame_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the operational frame
     desired_wrench_world: wp.array[
         wp.spatial_vector
-    ],  # (robot_count,) desired contact wrench (force, moment), world coords
+    ],  # (robot_count,) desired contact wrench (force, moment), world coords, used as the feedback setpoint
     measured_wrench_world: wp.array[
         wp.spatial_vector
     ],  # (robot_count,) measured contact wrench (force, moment), world coords, e.g. from a 6-axis force/torque sensor
@@ -828,19 +795,15 @@ def _wrench_feedforward_and_feedback_kernel(
     # outputs
     wrench_command_operational: wp.array[
         wp.spatial_vector
-    ],  # (robot_count,) desired (feedforward) + Kp .* (desired - measured) (feedback), in the operational frame
+    ],  # (robot_count,) accumulator; Kp .* (desired - measured) is added to it
 ):
-    """Wrench command combining a feedforward and a feedback term, ``desired + Kp .* (desired - measured)``.
+    """Add the feedback wrench term, ``Kp .* (desired - measured)``, both rotated into the operational frame.
 
-    The feedforward term is the desired wrench, commanded directly. The
-    feedback term is the same law as :func:`_task_space_pd_kernel`'s
-    proportional term. Both ``desired``/``measured`` are rotated into the
-    operational frame first (:func:`_rotate_spatial_vector`), so Kp applies
-    as a plain per-axis multiply and the whole result stays in the
-    operational frame with no further rotation -- this assumes the full
-    wrench (force and moment) is measurable, e.g. from a 6-axis
-    force/torque sensor. See :func:`_wrench_feedback_only_kernel` for the
-    feedback term alone, without the feedforward term.
+    ``wrench_command_operational`` is a running accumulator: the caller
+    zeros it once per step, then launches this kernel and/or
+    :func:`_wrench_feedforward_kernel`, whichever are enabled, each adding
+    its own term. This assumes the full wrench (force and moment) is
+    measurable, e.g. from a 6-axis force/torque sensor.
     """
     robot_idx = wp.tid()
     quat_operational_from_world = wp.quat_inverse(wp.transform_get_rotation(operational_frame_pose_world[robot_idx]))
@@ -857,44 +820,4 @@ def _wrench_feedforward_and_feedback_kernel(
         kp[4] * wrench_error_operational[4],
         kp[5] * wrench_error_operational[5],
     )
-    wrench_command_operational[robot_idx] = desired_operational + feedback_operational
-
-
-@wp.kernel
-def _wrench_feedback_only_kernel(
-    operational_frame_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the operational frame
-    desired_wrench_world: wp.array[
-        wp.spatial_vector
-    ],  # (robot_count,) desired contact wrench (force, moment), world coords, used as the feedback setpoint only
-    measured_wrench_world: wp.array[
-        wp.spatial_vector
-    ],  # (robot_count,) measured contact wrench (force, moment), world coords, e.g. from a 6-axis force/torque sensor
-    stiffness: wp.array[
-        wp.spatial_vector
-    ],  # (robot_count,) per-axis proportional feedback gain Kp, operational-frame-local
-    # outputs
-    wrench_command_operational: wp.array[
-        wp.spatial_vector
-    ],  # (robot_count,) Kp .* (desired - measured), no feedforward term, in the operational frame
-):
-    """Wrench feedback correction alone, ``Kp .* (desired - measured)``, with no feedforward term.
-
-    For a controller that wants to regulate a measured wrench toward a
-    setpoint without also commanding that setpoint directly — see
-    :func:`_wrench_feedforward_and_feedback_kernel` for the combined law.
-    """
-    robot_idx = wp.tid()
-    quat_operational_from_world = wp.quat_inverse(wp.transform_get_rotation(operational_frame_pose_world[robot_idx]))
-    desired_operational = _rotate_spatial_vector(quat_operational_from_world, desired_wrench_world[robot_idx])
-    measured_operational = _rotate_spatial_vector(quat_operational_from_world, measured_wrench_world[robot_idx])
-    wrench_error_operational = desired_operational - measured_operational
-    kp = stiffness[robot_idx]
-
-    wrench_command_operational[robot_idx] = wp.spatial_vector(
-        kp[0] * wrench_error_operational[0],
-        kp[1] * wrench_error_operational[1],
-        kp[2] * wrench_error_operational[2],
-        kp[3] * wrench_error_operational[3],
-        kp[4] * wrench_error_operational[4],
-        kp[5] * wrench_error_operational[5],
-    )
+    wrench_command_operational[robot_idx] = wrench_command_operational[robot_idx] + feedback_operational

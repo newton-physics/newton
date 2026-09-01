@@ -84,38 +84,132 @@ class ControllerOperationalSpace(ControllerBase):
             robot's controlled point, as a list or as a single pattern.
             Required — there is no default tool site. Raises if a
             controlled robot matches zero or more than one site.
-        operational_frame_pose_world: Forwarded unchanged; see
-            :class:`ControllerOperationalSpaceModelFree`.
-        motion_stiffness: Forwarded to
-            :class:`ControllerOperationalSpaceModelFree` unchanged; see its
-            docstring for units, format, and the live-gain (``None``)
-            convention.
-        motion_damping: Forwarded unchanged; see
-            :class:`ControllerOperationalSpaceModelFree`.
-        use_inertia_decoupling: Forwarded unchanged.
-        use_partial_inertia_decoupling: Forwarded unchanged.
-        use_gravity_compensation: Forwarded unchanged.
-        use_wrench_feedforward: Forwarded unchanged.
-        use_wrench_feedback: Forwarded unchanged.
-        motion_selection_axes: Forwarded unchanged.
-        wrench_selection_axes: Forwarded unchanged.
-        wrench_stiffness: Forwarded unchanged.
-        linear_selection_frame_operational: Forwarded unchanged.
-        angular_selection_frame_operational: Forwarded unchanged.
-        use_null_space_control: Forwarded unchanged.
-        null_space_stiffness: Forwarded unchanged.
-        null_space_damping: Forwarded unchanged.
+        motion_stiffness: Task-space position/orientation-error gain Kp,
+            per-axis in the operational frame (e.g. "stiff along the
+            insertion axis" stays meaningful as that frame reorients). Units
+            depend on ``use_inertia_decoupling``: [1/s²] when enabled, since
+            the spring-damper term is then a task-space acceleration
+            premultiplied by Lambda; otherwise [N/m] on the position axes
+            and [N·m/rad] on the orientation axes. Pass a scalar to apply
+            the same gain to every axis of every robot, a
+            ``wp.spatial_vector`` to apply the same 6 per-axis gains to
+            every robot, an array of shape [controlled_robot_count] to set
+            them individually (one ``wp.spatial_vector`` of 6 gains per
+            robot), or ``None`` to read ``inputs.motion_stiffness`` each
+            step.
+        motion_damping: Task-space velocity-error gain Kd,
+            operational-frame-local like ``motion_stiffness``, [1/s] when
+            ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] on the
+            position axes and [N·m·s/rad] on the orientation axes. Same
+            format as ``motion_stiffness``.
+        operational_frame_pose_world: World pose of the operational frame —
+            the frame ``inputs.desired_tool_pose_operational``/
+            ``inputs.desired_twist_operational`` are expressed relative to,
+            and that ``motion_stiffness``/``motion_damping``/
+            ``wrench_stiffness`` are interpreted in. Pass a ``wp.transform`` to apply the same fixed pose
+            to every robot, an array of shape [controlled_robot_count] to
+            set them individually (fixed for the controller's lifetime), or
+            ``None`` to read ``inputs.operational_frame_pose_world`` each
+            step for a time-varying frame. No default — pass ``wp.transform()``
+            explicitly for the operational frame to coincide with world frame.
+        use_inertia_decoupling: Premultiply the task-space spring-damper
+            term by Lambda, the operational-space mass matrix, computed
+            each step from ``model``'s own mass matrix (via
+            :func:`newton.eval_mass_matrix`) and the resolved tool Jacobian.
+        use_partial_inertia_decoupling: Compute Lambda ignoring the coupling
+            between translational and rotational inertia. Only meaningful
+            when ``use_inertia_decoupling=True``.
+        use_gravity_compensation: Add the model's own gravity generalized
+            forces — computed each step via
+            :func:`~newton.sim.inverse_dynamics.eval_inverse_dynamics_passive`
+            on ``model`` — directly to the summed joint torque.
+        use_wrench_feedforward: Command the desired wrench directly, as a
+            feedforward term in the wrench law, combined with motion
+            control through the generalized selection matrix Omega from
+            Khatib, O. (1987), "A unified approach for motion and force
+            control of robot manipulators: The operational space
+            formulation," IEEE Journal of Robotics and Automation, 3(1),
+            43-53 (see ``linear_selection_frame_operational``/
+            ``angular_selection_frame_operational`` below). When both this
+            and ``use_wrench_feedback`` are ``False``, every axis is
+            motion-controlled and ``motion_selection_axes``/
+            ``wrench_selection_axes``/``wrench_stiffness``/
+            ``linear_selection_frame_operational``/
+            ``angular_selection_frame_operational`` must all be left unset.
+        use_wrench_feedback: Correct the wrench command by
+            ``Kp · (desired - measured)`` using
+            ``inputs.measured_wrench_world`` each step, as a feedback term
+            in the wrench law. May be enabled with or without
+            ``use_wrench_feedforward``: without it, the command is the
+            feedback correction alone, regulating the measured wrench
+            toward the desired setpoint with no separate feedforward term.
+        motion_selection_axes: Diagonal selection weight per task axis
+            (0/1, or any scalar weight): (linear x, y, z, angular x, y, z),
+            the linear half interpreted in
+            ``linear_selection_frame_operational`` (S_f) and the angular
+            half in ``angular_selection_frame_operational`` (S_tau). Pass a
+            ``wp.spatial_vector`` to apply the same weights to every robot,
+            or an array of shape [controlled_robot_count] to set them
+            individually. Only meaningful when wrench control is enabled;
+            defaults to every axis motion-controlled,
+            ``wp.spatial_vector(1, 1, 1, 1, 1, 1)``. Usually the complement
+            of ``wrench_selection_axes`` — each axis under motion control,
+            not force control, and vice versa — but that is not enforced:
+            nothing here requires the two to partition the 6 axes.
+        wrench_selection_axes: Diagonal selection weight per task axis, same
+            format and selection frames as ``motion_selection_axes``,
+            applied to the wrench term. Required when wrench control is
+            enabled. Usually the complement of ``motion_selection_axes``,
+            but that is not enforced — see its docstring above.
+        wrench_stiffness: Contact-wrench proportional feedback gain Kp,
+            operational-frame-local like ``motion_stiffness``, [N/m] on the
+            force axes and [N·m/rad] on the moment axes. Same format as
+            ``motion_stiffness``. Only meaningful when
+            ``use_wrench_feedback=True``.
+        linear_selection_frame_operational: Orientation of S_f, the frame
+            ``motion_selection_axes``/``wrench_selection_axes``'s linear
+            (force) half is interpreted in, relative to the operational
+            frame — e.g. aligned to a contact surface's normal. Independent
+            of ``angular_selection_frame_operational`` (S_tau); the two
+            need not agree. Pass a ``wp.quat`` to apply the same fixed
+            orientation to every robot, an array of shape
+            [controlled_robot_count] to set them individually, or ``None``
+            to read ``inputs.linear_selection_frame_operational`` each step
+            for a time-varying frame. Required (may be ``None`` for a live
+            value) when wrench control is enabled; must be left unset
+            otherwise.
+        angular_selection_frame_operational: Orientation of S_tau, the
+            frame ``motion_selection_axes``/``wrench_selection_axes``'s
+            angular (moment) half is interpreted in, relative to the
+            operational frame — e.g. a compliant rotation axis. Same format
+            as ``linear_selection_frame_operational``.
+        use_null_space_control: Pursue a secondary joint-space posture task
+            in the null space of the primary task, so it does not disturb
+            task-space motion. Requires every robot to have more than 6
+            controlled DOFs (redundant relative to the 6D task). The
+            null-space projector is dynamically consistent (accounts for
+            the robot's own inertia) when ``use_inertia_decoupling=True``,
+            or a kinematics-only (Moore-Penrose) projector otherwise.
+        null_space_stiffness: Joint-space posture position-error gain Kp.
+            Units depend on ``use_inertia_decoupling``: [1/s²] when enabled,
+            since the posture PD term is then premultiplied by the mass
+            matrix; otherwise [N/m or N·m/rad]. Pass a scalar to apply the
+            same gain to every controlled DOF, an array of shape
+            [total_controlled_dofs] to set them individually, or ``None``
+            to read ``inputs.null_space_stiffness`` each step. Only
+            meaningful when ``use_null_space_control=True``.
+        null_space_damping: Joint-space posture velocity-error gain Kd,
+            [1/s] when ``use_inertia_decoupling`` is enabled, otherwise
+            [N·s/m or N·m·s/rad]. Same format as ``null_space_stiffness``.
     """
 
     class Inputs:
         """Input struct returned by :meth:`~ControllerOperationalSpace.input`.
 
         ``joint_q``/``joint_qd`` cover the whole model, since forward
-        kinematics depends on uncontrolled joints too. Every other field is
-        forwarded to the inner :class:`ControllerOperationalSpaceModelFree`
-        unchanged -- see its docstring for shapes and units. Optional fields
-        are ``None`` when the corresponding feature is disabled at
-        construction.
+        kinematics depends on uncontrolled joints too; every other field is
+        per-robot, shape [controlled_robot_count]. Optional fields are
+        ``None`` when the corresponding feature is disabled at construction.
         """
 
         joint_q: wp.array[wp.float32] | wp.indexedarray[wp.float32]
@@ -129,15 +223,15 @@ class ControllerOperationalSpace(ControllerBase):
         desired_twist_operational: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
         """Desired tool twist (linear, angular), components expressed in the operational frame [m/s, rad/s], shape [controlled_robot_count]."""
         motion_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Task-space position/orientation-error gain Kp, shape [controlled_robot_count]. ``None`` when baked at construction."""
+        """Task-space position/orientation-error gain Kp, operational-frame-local, shape [controlled_robot_count]. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m] / [N·m/rad]. ``None`` when gains are baked at construction."""
         motion_damping: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Task-space velocity-error gain Kd, shape [controlled_robot_count]. ``None`` when baked at construction."""
+        """Task-space velocity-error gain Kd, operational-frame-local, shape [controlled_robot_count]. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m] / [N·m·s/rad]. ``None`` when gains are baked at construction."""
         desired_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Desired contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count]. ``None`` unless wrench control is enabled."""
         measured_wrench_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
         """Measured contact wrench (force, moment) in world coordinates [N, N·m], shape [controlled_robot_count]. ``None`` unless ``use_wrench_feedback=True``."""
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector] | None
-        """Contact-wrench proportional feedback gain Kp, shape [controlled_robot_count]. ``None`` when baked at construction, or when ``use_wrench_feedback=False``."""
+        """Contact-wrench proportional feedback gain Kp, operational-frame-local, shape [controlled_robot_count]. [N/m] on the force axes, [N·m/rad] on the moment axes. ``None`` when gains are baked at construction, or when ``use_wrench_feedback=False``."""
         linear_selection_frame_operational: wp.array[wp.quat] | wp.indexedarray[wp.quat] | None
         """Orientation of S_f, relative to the operational frame, shape [controlled_robot_count]. ``None`` when fixed at construction, or when wrench control is disabled."""
         angular_selection_frame_operational: wp.array[wp.quat] | wp.indexedarray[wp.quat] | None

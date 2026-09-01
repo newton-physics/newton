@@ -43,9 +43,12 @@ specified per-axis in that same operational frame, so e.g. "stiff along the
 insertion axis" stays true as the frame reorients — the operational frame
 need not coincide with the tool's own current orientation.
 
-``Omega`` is Khatib's generalized task specification matrix — applied once,
-*before* Lambda, matching ``F_m = Lambda · Omega · F*_m`` in the reference
-(Khatib 1987, eq. 46) — not a second time afterward: Lambda's own coupling
+``Omega`` is the generalized task specification matrix from Khatib, O.
+(1987), "A unified approach for motion and force control of robot
+manipulators: The operational space formulation," IEEE Journal of
+Robotics and Automation, 3(1), 43-53 — applied once, *before* Lambda,
+matching that paper's ``F_m = Lambda · Omega · F*_m`` (eq. 46) — not a
+second time afterward: Lambda's own coupling
 between axes is exactly what should propagate through an already-selected
 acceleration, so masking again after Lambda would remove information Lambda
 is supposed to provide. ``Omega`` masks the linear half through ``S_f``
@@ -131,9 +134,8 @@ from ._common import (
     _rotate_jacobian_to_frame_kernel,
     _task_matrix_times_jacobian_kernel,
     _task_space_pd_kernel,
-    _wrench_feedback_only_kernel,
-    _wrench_feedforward_and_feedback_kernel,
-    _wrench_feedforward_only_kernel,
+    _wrench_feedback_kernel,
+    _wrench_feedforward_kernel,
 )
 
 
@@ -355,12 +357,8 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             to every robot, an array of shape [controlled_robot_count] to
             set them individually (fixed for the controller's lifetime), or
             ``None`` to read ``inputs.operational_frame_pose_world`` each
-            step for a time-varying frame. No default — pass
-            ``wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())``
-            explicitly for the operational frame to coincide with world
-            frame (``wp.transform_identity()`` does not type-check here —
-            it returns a dtype-generic transform, not the ``wp.float32``
-            one this controller's buffers use).
+            step for a time-varying frame. No default — pass ``wp.transform()``
+            explicitly for the operational frame to coincide with world frame.
         use_partial_inertia_decoupling: Compute Lambda ignoring the coupling
             between translational and rotational inertia. Only meaningful
             when ``use_inertia_decoupling=True``.
@@ -1597,32 +1595,28 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         )
 
         if self._use_wrench:
-            # Build the wrench command: feedforward + feedback, feedback only, or feedforward only --
-            # every variant rotates the world-frame desired/measured wrench into the operational frame,
+            # Build the wrench command by accumulating whichever terms are enabled --
+            # both rotate the world-frame desired/measured wrench into the operational frame,
             # since selection masking and the J^T force mapping below both run there.
+            self._wrench_command_buf.zero_()
+            if self._use_wrench_feedforward:
+                wp.launch(
+                    _wrench_feedforward_kernel,
+                    dim=robot_count,
+                    inputs=[operational_frame, self._desired_wrench_buf],
+                    outputs=[self._wrench_command_buf],
+                    device=self._device,
+                )
             if self._use_wrench_feedback:
                 wrench_stiffness = (
                     self._wrench_stiffness_baked
                     if self._wrench_stiffness_baked is not None
                     else self._wrench_stiffness_buf
                 )
-                wrench_command_kernel = (
-                    _wrench_feedforward_and_feedback_kernel
-                    if self._use_wrench_feedforward
-                    else _wrench_feedback_only_kernel
-                )
                 wp.launch(
-                    wrench_command_kernel,
+                    _wrench_feedback_kernel,
                     dim=robot_count,
                     inputs=[operational_frame, self._desired_wrench_buf, self._measured_wrench_buf, wrench_stiffness],
-                    outputs=[self._wrench_command_buf],
-                    device=self._device,
-                )
-            else:
-                wp.launch(
-                    _wrench_feedforward_only_kernel,
-                    dim=robot_count,
-                    inputs=[operational_frame, self._desired_wrench_buf],
                     outputs=[self._wrench_command_buf],
                     device=self._device,
                 )

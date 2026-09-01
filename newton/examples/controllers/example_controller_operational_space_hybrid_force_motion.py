@@ -226,8 +226,8 @@ class Example:
         self.desired_force = 0.0
 
         # The operational frame's local Z (below) is the press axis (index
-        # 2); the other five task axes are motion-controlled. Selection is
-        # relative to S_f (linear)/S_tau (angular), both left at identity
+        # 2); the other five task axes are motion-controlled. The linear and
+        # angular selection frames (below) are both left at identity
         # relative to the operational frame, so "axis 2" here is literally
         # the table's normal -- independent of the tool's own orientation.
         motion_selection = wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0)
@@ -244,8 +244,8 @@ class Example:
             tool="tool_site",
             motion_stiffness=MOTION_KP,
             motion_damping=MOTION_KD,
-            # Commands/gains, and the S_f/S_tau selection frames below, are
-            # all interpreted relative to this frame -- the table's top
+            # Commands/gains, and the linear/angular selection frames below,
+            # are all interpreted relative to this frame -- the table's top
             # surface, oriented with Z normal to the (tilted) table.
             operational_frame_pose_world=operational_frame_transform,
             use_inertia_decoupling=True,

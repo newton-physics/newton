@@ -38,9 +38,8 @@ from newton._src.controllers.impl.operational_space._common import (
     _task_matrix_times_jacobian_kernel,
     _task_space_pd_kernel,
     _tool_pose_and_twist_kernel,
-    _wrench_feedback_only_kernel,
-    _wrench_feedforward_and_feedback_kernel,
-    _wrench_feedforward_only_kernel,
+    _wrench_feedback_kernel,
+    _wrench_feedforward_kernel,
 )
 from newton._src.controllers.impl.operational_space.model_based import ControllerOperationalSpace
 from newton._src.controllers.impl.operational_space.model_free import ControllerOperationalSpaceModelFree
@@ -50,7 +49,7 @@ devices = get_test_devices()
 
 # Operational frame coincides with world frame, for every test not
 # specifically exercising operational_frame_pose_world itself.
-_IDENTITY_TRANSFORM = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+_IDENTITY_TRANSFORM = wp.transform()
 # S_f/S_tau coincide with the operational frame, for every test not
 # specifically exercising the selection frames themselves.
 _IDENTITY_QUAT = wp.quat(0.0, 0.0, 0.0, 1.0)
@@ -944,9 +943,12 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
 
 
 def test_mask_dual_frame_matches_numpy(test, device):
-    """Dual-frame masking matches Omega = diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau).
+    """Dual-frame masking matches Khatib's Omega = diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau).
 
-    S_f and S_tau are two genuinely different rotations, so this also
+    Khatib, O. (1987), "A unified approach for motion and force control of
+    robot manipulators: The operational space formulation," IEEE Journal of
+    Robotics and Automation, 3(1), 43-53, eq. 3-4. S_f and S_tau are two
+    genuinely different rotations, so this also
     checks the linear/angular halves are independently rotated -- not
     accidentally sharing one frame the way a single-frame mask would.
     """
@@ -983,11 +985,13 @@ def test_mask_dual_frame_matches_numpy(test, device):
     np.testing.assert_allclose(masked_vector_operational.numpy()[0], expected, atol=1e-5)
 
 
-def test_wrench_feedforward_and_feedback_matches_formula(test, device):
-    """The full wrench (force and moment) gets feedforward + feedback, desired + Kp .* (desired - measured).
+def test_wrench_feedforward_and_feedback_accumulate(test, device):
+    """Launching both wrench kernels on a zeroed buffer accumulates desired + Kp .* (desired - measured).
 
     An identity operational frame makes the rotate-in-then-elementwise
-    implementation reduce to exactly this per-axis formula.
+    implementation reduce to exactly this per-axis formula. Each kernel adds
+    its own term, mirroring how the controller composes them at runtime by
+    zeroing the command buffer once and launching whichever terms are enabled.
     """
     identity_pose = wp.array(
         [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transform, device=device
@@ -1003,7 +1007,14 @@ def test_wrench_feedforward_and_feedback_matches_formula(test, device):
 
     wrench_command_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
-        _wrench_feedforward_and_feedback_kernel,
+        _wrench_feedforward_kernel,
+        dim=1,
+        inputs=[identity_pose, desired_wrench_world],
+        outputs=[wrench_command_operational],
+        device=device,
+    )
+    wp.launch(
+        _wrench_feedback_kernel,
         dim=1,
         inputs=[identity_pose, desired_wrench_world, measured_wrench_world, stiffness],
         outputs=[wrench_command_operational],
@@ -1017,11 +1028,11 @@ def test_wrench_feedforward_and_feedback_matches_formula(test, device):
     np.testing.assert_allclose(wrench_command_operational.numpy()[0], expected, atol=1e-5)
 
 
-def test_wrench_feedback_only_matches_formula(test, device):
-    """Feedback alone, with no feedforward term, is Kp .* (desired - measured).
+def test_wrench_feedback_matches_formula(test, device):
+    """Feedback alone, on a zeroed buffer with no feedforward term, is Kp .* (desired - measured).
 
     Same identity-operational-frame note as
-    :func:`test_wrench_feedforward_and_feedback_matches_formula` above.
+    :func:`test_wrench_feedforward_and_feedback_accumulate` above.
     """
     identity_pose = wp.array(
         [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transform, device=device
@@ -1037,7 +1048,7 @@ def test_wrench_feedback_only_matches_formula(test, device):
 
     wrench_command_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
-        _wrench_feedback_only_kernel,
+        _wrench_feedback_kernel,
         dim=1,
         inputs=[identity_pose, desired_wrench_world, measured_wrench_world, stiffness],
         outputs=[wrench_command_operational],
@@ -1051,8 +1062,8 @@ def test_wrench_feedback_only_matches_formula(test, device):
     np.testing.assert_allclose(wrench_command_operational.numpy()[0], expected, atol=1e-5)
 
 
-def test_wrench_feedforward_only_matches_formula(test, device):
-    """The feedforward-only wrench command is just the desired wrench, rotated into the operational frame."""
+def test_wrench_feedforward_matches_formula(test, device):
+    """Feedforward alone, on a zeroed buffer, is the desired wrench rotated into the operational frame."""
     quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 4.0)
     operational_frame_pose_world = wp.array(
         [wp.transform(wp.vec3(0.0, 0.0, 0.0), quat)], dtype=wp.transform, device=device
@@ -1062,7 +1073,7 @@ def test_wrench_feedforward_only_matches_formula(test, device):
 
     wrench_command_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(
-        _wrench_feedforward_only_kernel,
+        _wrench_feedforward_kernel,
         dim=1,
         inputs=[operational_frame_pose_world, desired_wrench_world],
         outputs=[wrench_command_operational],
@@ -1228,20 +1239,20 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_wrench_feedforward_and_feedback_matches_formula",
-    test_wrench_feedforward_and_feedback_matches_formula,
+    "test_wrench_feedforward_and_feedback_accumulate",
+    test_wrench_feedforward_and_feedback_accumulate,
     devices=devices,
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_wrench_feedback_only_matches_formula",
-    test_wrench_feedback_only_matches_formula,
+    "test_wrench_feedback_matches_formula",
+    test_wrench_feedback_matches_formula,
     devices=devices,
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_wrench_feedforward_only_matches_formula",
-    test_wrench_feedforward_only_matches_formula,
+    "test_wrench_feedforward_matches_formula",
+    test_wrench_feedforward_matches_formula,
     devices=devices,
 )
 add_function_test(
