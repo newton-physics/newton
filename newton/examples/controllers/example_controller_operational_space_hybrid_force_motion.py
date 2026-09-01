@@ -129,8 +129,6 @@ class _RobotRig:
     operational_frame_transform: wp.transform
     table_rotation_np: np.ndarray
     table_normal_world: np.ndarray
-    tool_body: int
-    tool_site_transform: wp.transform
     home_pose: np.ndarray
     home_pos_operational: np.ndarray
     desired_x: float
@@ -256,19 +254,11 @@ class Example:
         ur10_body_pose_world = wp.transform(*self.state_0.body_q.numpy()[ur10_tool_body].tolist())
         ur10_home_pose_world = np.array(ur10_body_pose_world * ur10_tool_site_transform, dtype=np.float32)
         self.rigs = [
-            self._build_rig(
-                "Franka",
-                np.array(FRANKA_BASE_POSITION, dtype=np.float32),
-                franka_home_pose_world,
-                franka_tool_body,
-                franka_tool_site_transform,
-            ),
+            self._build_rig("Franka", np.array(FRANKA_BASE_POSITION, dtype=np.float32), franka_home_pose_world),
             self._build_rig(
                 "UR10",
                 np.array(UR10_BASE_POSITION, dtype=np.float32),
                 ur10_home_pose_world,
-                ur10_tool_body,
-                ur10_tool_site_transform,
                 UR10_TABLE_OFFSET,
                 UR10_TABLE_ROTATION,
             ),
@@ -380,8 +370,6 @@ class Example:
         label,
         base_position_np,
         home_pose_world,
-        tool_body,
-        tool_site_transform,
         table_offset=TABLE_OFFSET,
         table_rotation=TABLE_ROTATION,
     ):
@@ -424,8 +412,6 @@ class Example:
             operational_frame_transform=wp.transform(wp.vec3(*operational_position_np.tolist()), table_rotation),
             table_rotation_np=table_rotation_np,
             table_normal_world=table_normal_world,
-            tool_body=tool_body,
-            tool_site_transform=tool_site_transform,
             home_pose=home_pose,
             home_pos_operational=home_pos_operational,
             desired_x=float(home_pos_operational[0]),
@@ -610,8 +596,10 @@ class Example:
         self.sim_time += self.frame_dt
 
     def gui(self, ui):
-        body_q = self.state_0.body_q.numpy()
-        for rig in self.rigs:
+        # The controller's own resolved tool pose, as of last step()'s FK --
+        # the same site pose used to compute the task-space error it acted on.
+        tool_pose_world = self.controller.tool_pose_world.numpy()
+        for i, rig in enumerate(self.rigs):
             _, rig.desired_x = ui.slider_float(
                 f"{rig.label} desired x [m]",
                 rig.desired_x,
@@ -628,14 +616,9 @@ class Example:
                 f"{rig.label} desired press force [N]", rig.desired_force, 0.0, FORCE_SLIDER_MAX
             )
 
-            # Actual tool site's world position -- the body's own pose
-            # composed with the site's body-local offset, the same
-            # computation used for home_pose_world at startup -- relative to
-            # the operational frame, the same frame the x/y sliders above are
-            # expressed in.
-            body_pose_world = wp.transform(*body_q[rig.tool_body].tolist())
-            tool_pos_world = np.array((body_pose_world * rig.tool_site_transform).p, dtype=np.float32)
-            actual_pos_operational = rig.table_rotation_np.T @ (tool_pos_world - rig.operational_position_np)
+            # Actual tool site's world position, relative to the operational
+            # frame -- the same frame the x/y sliders above are expressed in.
+            actual_pos_operational = rig.table_rotation_np.T @ (tool_pose_world[i, :3] - rig.operational_position_np)
 
             ui.text(f"{rig.label} actual x:   {actual_pos_operational[0]:.3f}   (desired {rig.desired_x:.3f})")
             ui.text(f"{rig.label} actual y:   {actual_pos_operational[1]:.3f}   (desired {rig.desired_y:.3f})")

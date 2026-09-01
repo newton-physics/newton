@@ -121,7 +121,7 @@ class ControllerOperationalSpace(ControllerBase):
             when ``use_inertia_decoupling=True``.
         use_gravity_compensation: Add the model's own gravity generalized
             forces — computed each step via
-            :func:`~newton.sim.inverse_dynamics.eval_inverse_dynamics_passive`
+            :func:`~newton.eval_inverse_dynamics_passive`
             on ``model`` — directly to the summed joint torque.
         use_wrench_feedforward: Command the desired wrench directly, as a
             feedforward term in the wrench law, combined with motion
