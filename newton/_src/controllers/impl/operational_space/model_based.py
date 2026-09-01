@@ -648,6 +648,21 @@ class ControllerOperationalSpace(ControllerBase):
         return self._tool_body
 
     @property
+    def tool_transform_body(self) -> wp.array[wp.transform]:
+        """Tool site's transform relative to its body, shape [controlled_robot_count]."""
+        return self._tool_transform_body
+
+    @property
+    def tool_pose_world(self) -> wp.array[wp.transform]:
+        """World pose of each controlled robot's tool site as of the latest ``step()``, shape [controlled_robot_count]."""
+        return self._tool_pose_world
+
+    @property
+    def tool_twist_world(self) -> wp.array[wp.spatial_vector]:
+        """World twist of each controlled robot's tool site as of the latest ``step()``, shape [controlled_robot_count]."""
+        return self._tool_twist_world
+
+    @property
     def device(self):
         return self._device
 
