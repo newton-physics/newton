@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,7 +43,7 @@ test_context = TestContext()
 ###
 
 
-def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None, clear_cache: bool = True):
+def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None, clear_cache: bool = False):
     # Numpy configuration
     np.set_printoptions(
         linewidth=999999, edgeitems=999999, threshold=999999, precision=10, suppress=True
@@ -65,7 +53,6 @@ def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None
     wp.init()
     wp.config.mode = "release"
     wp.config.enable_backward = False
-    wp.config.verbose = False
     wp.config.verify_fp = False
     wp.config.verify_cuda = False
 

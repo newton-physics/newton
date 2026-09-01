@@ -87,6 +87,17 @@ class Example:
 
         sample_mass = np.full(clamp_points.shape[0], self.beam_mass / clamp_points.shape[0], dtype=np.float32)
         modal_mass = np.einsum("s,smc,smc->m", sample_mass.astype(np.float64), phi, phi)
+        frame_mass = float(np.sum(sample_mass))
+        frame_com = np.sum(sample_mass[:, None] * clamp_points, axis=0) / frame_mass
+        frame_offset = clamp_points - frame_com
+        frame_inertia = np.sum(
+            sample_mass[:, None, None]
+            * (
+                np.sum(frame_offset * frame_offset, axis=1)[:, None, None] * np.eye(3)
+                - frame_offset[:, :, None] * frame_offset[:, None, :]
+            ),
+            axis=0,
+        ).astype(np.float32)
         mode_stiffness = [35.0, 35.0]
         mode_damping = [0.0, 0.0]
 
@@ -110,7 +121,6 @@ class Example:
         builder = newton.ModelBuilder(gravity=0.0)
         builder.add_ground_plane()
 
-        inertia = wp.mat33(0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01)
         shape_cfg = newton.ModelBuilder.ShapeConfig()
         shape_cfg.density = 0.0
         shape_cfg.has_shape_collision = False
@@ -134,9 +144,9 @@ class Example:
         ):
             beam = builder.add_body_elastic(
                 xform=wp.transform(wp.vec3(0.0, 0.0, self.base_height), orientation),
-                com=wp.vec3(half, 0.0, 0.0),
-                mass=0.2,
-                inertia=inertia,
+                com=wp.vec3(*frame_com),
+                mass=frame_mass,
+                inertia=wp.mat33(*frame_inertia.flatten()),
                 mode_q=[self.deflection, 0.0],
                 modal_basis=basis,
                 label=f"coriolis_{name}_beam",

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Robot Anymal D
@@ -33,6 +21,7 @@ from newton.solvers import SolverMuJoCo
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -64,7 +53,7 @@ class Example:
             hide_collision_shapes=True,
         )
 
-        articulation_builder.joint_q[:3] = [0.0, 0.0, 0.62]
+        articulation_builder.joint_q[:3] = [0.0, 0.0, 0.68]
         if len(articulation_builder.joint_q) > 6:
             articulation_builder.joint_q[3:7] = [0.0, 0.0, 0.0, 1.0]
 
@@ -105,7 +94,8 @@ class Example:
         if use_mujoco_contacts:
             self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
         else:
-            self.contacts = self.model.contacts()
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
@@ -123,7 +113,7 @@ class Example:
     # simulate() performs one frame's worth of updates
     def simulate(self):
         if not self.use_mujoco_contacts:
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -160,6 +150,7 @@ class Example:
         # Only check velocities on CUDA where we run 500 frames (enough time to settle)
         # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
         if self.device.is_cuda:
+            # fmt: off
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
@@ -167,6 +158,7 @@ class Example:
                 lambda q, qd: max(abs(qd))
                 < 0.25,  # Relaxed from 0.1 - collision pipeline has residual velocities up to ~0.2
             )
+            # fmt: on
 
     @staticmethod
     def create_parser():
@@ -181,6 +173,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Provides a unified interface for performing Collision Detection in Kamino.
@@ -46,7 +34,6 @@ from .....core.types import override
 from ...config import CollisionDetectorConfig
 from ..core.data import DataKamino
 from ..core.model import ModelKamino
-from ..core.state import StateKamino
 from ..geometry.contacts import ContactsKamino
 from ..geometry.primitive import CollisionPipelinePrimitive
 from ..geometry.unified import CollisionPipelineUnifiedKamino
@@ -160,6 +147,86 @@ class BroadPhaseType(IntEnum):
 
 
 ###
+# Contact capacity helpers
+###
+
+# Conservative heuristics for the fallback allocation path when pair-based
+# capacity metadata is unavailable (``model_minimum_contacts == 0``).
+_EXPLICIT_CONTACTS_PER_PAIR = 10
+_DYNAMIC_CONTACTS_PER_COLLIDABLE = 20
+
+
+def _cap_world_contacts_at_total(world_max_contacts: list[int], max_total: int) -> list[int]:
+    """Scale per-world contact budgets down so their sum does not exceed ``max_total``."""
+    total = sum(world_max_contacts)
+    if total <= max_total:
+        return list(world_max_contacts)
+    if max_total <= 0:
+        return [0] * len(world_max_contacts)
+
+    capped = [0] * len(world_max_contacts)
+    remainders: list[tuple[float, int]] = []
+    assigned = 0
+    for i, count in enumerate(world_max_contacts):
+        scaled = count * max_total / total
+        floor = int(scaled)
+        capped[i] = floor
+        assigned += floor
+        remainders.append((scaled - floor, i))
+    for _, i in sorted(remainders, key=lambda item: item[0], reverse=True):
+        if assigned >= max_total:
+            break
+        capped[i] += 1
+        assigned += 1
+    return capped
+
+
+def _estimate_fallback_world_max_contacts(
+    model: ModelKamino,
+    config: CollisionDetectorConfig,
+) -> list[int]:
+    """Estimate per-world contact capacity from geometry when pair metadata is unavailable."""
+    num_worlds = model.size.num_worlds
+    world_max_contacts = [0] * num_worlds
+
+    if config.broadphase == "explicit" and model.geoms.collidable_pairs is not None:
+        pairs = model.geoms.collidable_pairs.numpy()
+        wid = model.geoms.wid.numpy()
+        for pair in pairs:
+            g0, g1 = int(pair[0]), int(pair[1])
+            world_id = int(wid[g0]) if wid[g0] >= 0 else int(wid[g1])
+            if 0 <= world_id < num_worlds:
+                world_max_contacts[world_id] += _EXPLICIT_CONTACTS_PER_PAIR
+    else:
+        wid = model.geoms.wid.numpy()
+        group = model.geoms.group.numpy()
+        for geom_id in range(len(wid)):
+            world_id = int(wid[geom_id])
+            if 0 <= world_id < num_worlds and group[geom_id] > 0:
+                world_max_contacts[world_id] += _DYNAMIC_CONTACTS_PER_COLLIDABLE
+
+    return world_max_contacts
+
+
+def _resolve_contact_capacity(
+    model: ModelKamino,
+    config: CollisionDetectorConfig,
+) -> tuple[int, list[int]]:
+    """Resolve model- and per-world contact budgets from geometry and config caps."""
+    if model.geoms.model_minimum_contacts > 0:
+        world_max_contacts = list(model.geoms.world_minimum_contacts)
+    else:
+        world_max_contacts = _estimate_fallback_world_max_contacts(model, config)
+
+    model_max_contacts = sum(world_max_contacts)
+    if config.max_contacts is not None and model_max_contacts > config.max_contacts:
+        world_max_contacts = _cap_world_contacts_at_total(world_max_contacts, config.max_contacts)
+        model_max_contacts = sum(world_max_contacts)
+
+    return model_max_contacts, world_max_contacts
+
+
+###
 # Interfaces
 ###
 
@@ -197,25 +264,20 @@ class CollisionDetector:
         self,
         model: ModelKamino | None = None,
         config: CollisionDetector.Config | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         Initialize the CollisionDetector.
 
         Args:
-            model (`ModelKamino`, optional):
-                The model container holding the time-invariant data of the system being simulated.\n
-                If provided, the detector will be finalized using the provided model and config.\n
+            model: The model container holding the time-invariant data of the system being simulated.
+                If provided, the detector will be finalized using the provided model and config.
                 If `None`, the detector will be created empty without allocating data, and
-                can be finalized later by providing a model to the `finalize` method.\n
-            device (`wp.DeviceLike`, optional):
-                The target Warp device for allocation and execution.\n
-                If `None`, the `model.device` will be used if a model is provided, otherwise
-                it will default to the device preferred by Warp on the given platform.
-
+                can be finalized later by providing a model to the `finalize` method.
+            config: Config for the CollisionDetector.
+                If `None`, uses default config.
         """
-        # Cache the target device
-        self._device: wp.DeviceLike = device
+        # Declare the device cache
+        self._device: wp.DeviceLike = None
 
         # Cache a reference to the target model
         self._model: ModelKamino | None = model
@@ -237,7 +299,7 @@ class CollisionDetector:
 
         # Finalize the collision detector if a model is provided
         if model is not None:
-            self.finalize(model=model, config=config, device=device)
+            self.finalize(model=model, config=config)
 
     ###
     # Properties
@@ -281,24 +343,17 @@ class CollisionDetector:
         self,
         model: ModelKamino | None = None,
         config: CollisionDetector.Config | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         Allocates CollisionDetector data on the target device.
 
         Args:
-            model (ModelKamino, optional):
-                The model container holding the time-invariant data of the system being simulated.\n
-                If provided, the detector will be finalized using the provided model and config.\n
+            model: The model container holding the time-invariant data of the system being simulated.
+                If provided, the detector will be finalized using the provided model and config.
                 If `None`, the detector will be created empty without allocating data, and
-                can be finalized later by providing a model to the `finalize` method.\n
-            config (CollisionDetector.Config, optional):
-                Config for the CollisionDetector.\n
+                can be finalized later by providing a model to the `finalize` method.
+            config: Config for the CollisionDetector.
                 If `None`, uses default config.
-            device (wp.DeviceLike, optional):
-                The target Warp device for allocation and execution.\n
-                If `None`, the `model.device` will be used if a model is provided, otherwise
-                it will default to the device preferred by Warp on the given platform.
         """
         # Override the model if specified explicitly
         if model is not None:
@@ -310,12 +365,8 @@ class CollisionDetector:
         elif not isinstance(self._model, ModelKamino):
             raise TypeError(f"Cannot finalize CollisionDetector: expected ModelKamino, got {type(self._model)}")
 
-        # Override the device if specified explicitly
-        if device is not None:
-            self._device = device
-        # Otherwise, use the device of the model
-        else:
-            self._device = self._model.device
+        # Use the model's device
+        self._device = self._model.device
 
         # Override the config if specified, ensuring that they are valid
         if config is not None:
@@ -331,67 +382,53 @@ class CollisionDetector:
         # Configure the collision detection pipeline type based on the config
         self._pipeline_type = CollisionPipelineType.from_string(self._config.pipeline)
 
-        # TODO: FIX THIS SO THAT PER-WORLD MAX IS ACTUALLY BASED ON THE NUM OF COLLIDABLE
-        # GOEMS IN EACH WORLD, INSTEAD OF JUST DIVIDING THE MODEL MAX BY THE NUM WORLDS
-        # For collision pipeline, we don't multiply by per-pair factors since broad phase
-        # discovers pairs dynamically. Users can provide rigid_contact_max explicitly,
-        # otherwise it is estimated from shape count and broad phase mode.
-        if self._model.geoms.model_minimum_contacts > 0:
-            self._model_max_contacts = self._model.geoms.model_minimum_contacts
-            self._world_max_contacts = self._model.geoms.world_minimum_contacts
-        else:
-            # Estimate based on broad phase mode and available information
-            if self._config.broadphase == "explicit" and self._model.geoms.collidable_pairs is not None:
-                # For EXPLICIT mode, we know the maximum possible pairs
-                # Estimate ~10 contacts per shape pair (conservative for mesh-mesh contacts)
-                self._model_max_contacts = max(self._config.max_contacts, self._model.geoms.num_collidable_pairs * 10)
-            else:
-                # For NXN/SAP dynamic broad phase, estimate based on shape count
-                # Assume each shape contacts ~20 others on average (conservative estimate)
-                # This scales much better than O(N²) while still being safe
-                self._model_max_contacts = max(self._config.max_contacts, self._model.geoms.num_collidable * 20)
-
-            # Set the world max contacts to be the same for all worlds in the model
-            num_worlds = self._model.size.num_worlds
-            self._world_max_contacts = [self._model_max_contacts // num_worlds] * num_worlds
-
-        # Override per-world max contacts if config specifies it.
+        # Resolve contact capacity.
         if self._config.max_contacts_per_world is not None:
+            # Use the explicit per-world override when available.
             num_worlds = self._model.size.num_worlds
             per_world = self._config.max_contacts_per_world
             self._world_max_contacts = [per_world] * num_worlds
             self._model_max_contacts = per_world * num_worlds
-
-        # Create the contacts interface which will allocate all contacts data arrays
-        # NOTE: If internal allocations happen, then they will contain
-        # the contacts generated by the collision detection pipelines
-        self._contacts = ContactsKamino(capacity=self._world_max_contacts, device=self._device)
+        else:
+            # Otherwise estimate per world from geometry.
+            # ``max_contacts`` caps the model total.
+            self._model_max_contacts, self._world_max_contacts = _resolve_contact_capacity(self._model, self._config)
 
         # Proceed with allocations only if the model admits contacts, which
         # occurs when collision geometries defined in the builder and model
+        # can form at least one collidable pair. Otherwise, set the contacts
+        # container and pipeline to `None`.
         if self._model_max_contacts > 0:
+            # Create the contacts interface which will allocate all contacts data arrays
+            # NOTE: If internal allocations happen, then they will contain
+            # the contacts generated by the collision detection pipelines
+            self._contacts = ContactsKamino(capacity=list(self._world_max_contacts), device=self._device)
+
             # Initialize the configured collision detection pipeline
             match self._pipeline_type:
                 case CollisionPipelineType.PRIMITIVE:
                     self._primitive_pipeline = CollisionPipelinePrimitive(
-                        device=self._device,
                         model=self._model,
                         bvtype=self._config.bvtype,
                         default_gap=self._config.default_gap,
                     )
                 case CollisionPipelineType.UNIFIED:
                     self._unified_pipeline = CollisionPipelineUnifiedKamino(
-                        device=self._device,
                         model=self._model,
                         broadphase=self._config.broadphase,
+                        max_contacts=self._model_max_contacts,
                         default_gap=self._config.default_gap,
                         max_triangle_pairs=self._config.max_triangle_pairs,
                         max_contacts_per_pair=self._config.max_contacts_per_pair,
                     )
                 case _:
                     raise ValueError(f"Unsupported CollisionPipelineType: {self._pipeline_type}")
+        else:
+            self._contacts = None
+            self._primitive_pipeline = None
+            self._unified_pipeline = None
 
-    def collide(self, data: DataKamino, state: StateKamino, contacts: ContactsKamino | None = None):
+    def collide(self, data: DataKamino, contacts: ContactsKamino | None = None):
         """
         Executes collision detection given a model and its associated data.
 
@@ -399,12 +436,12 @@ class CollisionDetector:
         the configuration set during the initialization of the CollisionDetector.
 
         Args:
-            data (DataKamino):
-                The solver data container holding solver-specific internal geome/shape data.
-            state (StateKamino):
-                The state container holding the time-varying state of simulation.
-            contacts (ContactsKamino, optional):
-                An optional ContactsKamino container to store the generated contacts.
+            data: The solver data container holding solver-specific internal geome/shape data.
+                Body poses are sourced from ``data.bodies.q_i`` so that detection follows the
+                configuration the integrator is currently working at. Under a mid-point scheme
+                such as :class:`IntegratorMoreauJean` this is the mid-step pose, whereas under
+                :class:`IntegratorEuler` it still equals the pose at the start of the time-step.
+            contacts: An optional ContactsKamino container to store the generated contacts.
                 If `None`, uses the internal ContactsKamino container managed by the CollisionDetector.
         """
         # If no contacts can be generated, skip collision detection
@@ -427,17 +464,11 @@ class CollisionDetector:
         if not isinstance(data, DataKamino):
             raise TypeError(f"Cannot perform collision detection: expected DataKamino, got {type(data)}")
 
-        # Ensure that the state is valid
-        if state is None:
-            raise ValueError("Cannot perform collision detection: state is None")
-        if not isinstance(state, StateKamino):
-            raise TypeError(f"Cannot perform collision detection: expected StateKamino, got {type(state)}")
-
         # Execute the configured collision detection pipeline
         match self._pipeline_type:
             case CollisionPipelineType.PRIMITIVE:
-                self._primitive_pipeline.collide(data, state, _contacts)
+                self._primitive_pipeline.collide(data, _contacts)
             case CollisionPipelineType.UNIFIED:
-                self._unified_pipeline.collide(data, state, _contacts)
+                self._unified_pipeline.collide(data, _contacts)
             case _:
                 raise ValueError(f"Unsupported CollisionPipelineType: {self._pipeline_type}")

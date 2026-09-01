@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Basic URDF
@@ -26,7 +14,7 @@
 #
 ###########################################################################
 
-
+import numpy as np
 import warp as wp
 
 import newton
@@ -35,6 +23,7 @@ import newton.examples
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -50,15 +39,13 @@ class Example:
         quadruped = newton.ModelBuilder()
 
         # set default parameters for the quadruped
-        quadruped.default_body_armature = 0.01
         quadruped.default_joint_cfg.armature = 0.01
 
         if self.solver_type == "vbd":
-            quadruped.default_joint_cfg.target_ke = 2000.0
-            quadruped.default_joint_cfg.target_kd = 1.0e-3
-            quadruped.default_joint_cfg.limit_kd = 1.0e-5
-            quadruped.default_shape_cfg.ke = 1.0e7
-            quadruped.default_shape_cfg.kd = 1.0e-1
+            quadruped.default_joint_cfg.target_ke = 2.0e3
+            quadruped.default_joint_cfg.target_kd = 1.0e1
+            quadruped.default_shape_cfg.ke = 1.0e5
+            quadruped.default_shape_cfg.kd = 1.0e4
             quadruped.default_shape_cfg.mu = 1.0
         else:
             quadruped.default_joint_cfg.target_ke = 2000.0
@@ -74,9 +61,17 @@ class Example:
             ignore_inertial_definitions=True,  # Use geometry-based inertia for stability
         )
 
+        # apply additional inertia to the bodies for better stability
+        body_armature = 0.01
+        for body in range(quadruped.body_count):
+            inertia_np = np.asarray(quadruped.body_inertia[body], dtype=np.float32).reshape(3, 3)
+            inertia_np += np.eye(3, dtype=np.float32) * body_armature
+            inertia = wp.mat33(inertia_np)
+            quadruped.body_inertia[body] = inertia
+
         # set initial joint positions
         quadruped.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-        quadruped.joint_target_pos[-12:] = quadruped.joint_q[-12:]
+        quadruped.joint_target_q[-12:] = quadruped.joint_q[-12:]
 
         # use "scene" for the entire set of worlds
         scene = newton.ModelBuilder()
@@ -92,8 +87,12 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
 
         if self.solver_type == "vbd":
-            self.update_step_interval = 10
-            self.solver = newton.solvers.SolverVBD(self.model, iterations=1, rigid_contact_k_start=1.0e6)
+            self.update_step_interval = 1
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=2,
+                rigid_compliant_alm=True,
+            )
         else:
             self.update_step_interval = 1
             self.solver = newton.solvers.SolverXPBD(self.model)
@@ -102,7 +101,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -110,12 +110,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for substep in range(self.sim_substeps):
@@ -124,12 +121,13 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            update_step_history = (substep % self.update_step_interval) == 0
-            if update_step_history:
-                self.model.collide(self.state_0, self.contacts)
+            # Collision detection and contact refresh cadence.
+            refresh_contacts = (substep % self.update_step_interval) == 0
+            if refresh_contacts:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             if self.solver_type == "vbd":
-                self.solver.set_rigid_history_update(update_step_history)
+                self.solver.set_rigid_history_update(refresh_contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
@@ -188,6 +186,4 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

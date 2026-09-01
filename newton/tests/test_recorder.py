@@ -1,21 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -25,16 +14,57 @@ import newton.examples
 from newton._src.utils.import_mjcf import parse_mjcf
 from newton._src.viewer.viewer_file import (
     HAS_CBOR2,
+    ArrayCache,
     RingBuffer,
     depointer_as_key,
+    deserialize,
     pointer_as_key,
+    serialize,
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.viewer import ViewerFile
 
 
 class TestRecorder(unittest.TestCase):
-    pass
+    def test_viewer_file_is_running_reflects_close(self):
+        """ViewerFile loop lifecycle matches interactive viewers."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=True) as tmp:
+            viewer_file = ViewerFile(tmp.name, auto_save=False)
+
+            self.assertTrue(viewer_file.is_running())
+
+            viewer_file.close()
+            self.assertFalse(viewer_file.is_running())
+
+    def test_numpy_scalar_tags_round_trip(self):
+        """Round-trip the NumPy scalar classes emitted by recordings."""
+
+        def callback(value, _path):
+            return value
+
+        for scalar in (np.int8(-3), np.uint64(7), np.float32(1.25), np.complex64(1.0 + 2.0j)):
+            with self.subTest(scalar_type=type(scalar).__name__):
+                encoded = serialize(scalar, callback)
+                decoded = deserialize(encoded, callback)
+                self.assertIsInstance(decoded, type(scalar))
+                self.assertEqual(decoded, scalar)
+
+    def test_numpy_callable_tags_are_rejected(self):
+        """Reject recording tags that name NumPy callables instead of scalar classes."""
+
+        def callback(value, _path):
+            return value
+
+        for callable_name in ("ones", "fromfile"):
+            with self.subTest(callable_name=callable_name), mock.patch.object(np, callable_name) as callable_mock:
+                with self.assertRaisesRegex(ValueError, "Unsupported NumPy scalar type"):
+                    deserialize({"__type__": f"numpy.{callable_name}", "value": [1]}, callback)
+                callable_mock.assert_not_called()
+
+    def test_unknown_numpy_scalar_tag_is_rejected(self):
+        """Reject unknown NumPy scalar tags with a descriptive error."""
+        with self.assertRaisesRegex(ValueError, "Unsupported NumPy scalar type"):
+            deserialize({"__type__": "numpy.not_a_scalar", "value": 1}, lambda value, _path: value)
 
 
 def test_ringbuffer_basic(test: TestRecorder, device):
@@ -237,8 +267,9 @@ def test_viewer_file_playback(test: TestRecorder, device):
         viewer_file_record.set_model(model)
         for state in states:
             viewer_file_record.log_state(state)
-        viewer_file_record.save_recording()
+
         viewer_file_record.close()
+        test.assertFalse(viewer_file_record.is_running())
 
         # Playback via ViewerFile
         viewer_file_play = ViewerFile(file_path)
@@ -252,6 +283,11 @@ def test_viewer_file_playback(test: TestRecorder, device):
 
         test.assertEqual(restored_model.body_count, model.body_count)
         test.assertEqual(restored_model.shape_count, model.shape_count)
+        test.assertIsInstance(restored_model.attribute_specs["body_q"], newton.Model.AttributeSpec)
+        test.assertIs(
+            restored_model.attribute_specs["body_q"].frequency,
+            newton.Model.AttributeFrequency.BODY,
+        )
 
         for frame_id in range(3):
             restored_state = restored_model.state()
@@ -630,6 +666,29 @@ def test_warp_dtype_file_roundtrip(test: TestRecorder, device):
                     os.remove(file_path)
 
 
+def test_mesh_recording_keeps_distinct_appearance(test: TestRecorder, device):
+    """Keep geometrically shared meshes distinct when appearance differs."""
+    vertices = np.array(
+        [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+        dtype=np.float32,
+    )
+    indices = np.array([0, 1, 2], dtype=np.int32)
+    mesh_a = newton.Mesh(vertices, indices, compute_inertia=False, color=(1.0, 0.0, 0.0), opacity=0.25)
+    mesh_b = newton.Mesh(vertices, indices, compute_inertia=False, color=(0.0, 1.0, 0.0), opacity=0.75)
+    mesh_b.vertices = mesh_a.vertices
+    mesh_b.indices = mesh_a.indices
+
+    serialized = pointer_as_key([mesh_a, mesh_b, mesh_a], cache=ArrayCache())
+    restored = depointer_as_key(serialized, cache=ArrayCache())
+
+    test.assertIs(restored[0], restored[2])
+    test.assertIsNot(restored[0], restored[1])
+    test.assertEqual(restored[0].opacity, 0.25)
+    test.assertEqual(restored[1].opacity, 0.75)
+    test.assertEqual(restored[0].color, (1.0, 0.0, 0.0))
+    test.assertEqual(restored[1].color, (0.0, 1.0, 0.0))
+
+
 add_function_test(
     TestRecorder,
     "test_warp_dtype_roundtrip",
@@ -651,6 +710,13 @@ add_function_test(
     test_warp_dtype_file_roundtrip,
     devices=devices,
     check_output=False,
+)
+
+add_function_test(
+    TestRecorder,
+    "test_mesh_recording_keeps_distinct_appearance",
+    test_mesh_recording_keeps_distinct_appearance,
+    devices=devices,
 )
 
 
@@ -716,22 +782,24 @@ def test_real_model_recording_roundtrip(test: TestRecorder, device):
                 test.assertEqual(restored_model.joint_count, model.joint_count)
                 test.assertEqual(restored_model.shape_count, model.shape_count)
 
-                # Verify MuJoCo attributes loaded (these use dynamic vec5 types)
-                if hasattr(model, "mujoco") and hasattr(restored_model, "mujoco"):
-                    for attr_name in ["geom_solimp", "solimplimit", "solimpfriction"]:
-                        if hasattr(model.mujoco, attr_name):
-                            original = getattr(model.mujoco, attr_name)
-                            restored = getattr(restored_model.mujoco, attr_name, None)
-                            test.assertIsNotNone(
-                                restored, f"MuJoCo attribute {attr_name} not restored in {format_name}"
-                            )
-                            if original is not None and restored is not None:
-                                np.testing.assert_allclose(
-                                    restored.numpy(),
-                                    original.numpy(),
-                                    atol=1e-6,
-                                    err_msg=f"MuJoCo {attr_name} data mismatch in {format_name}",
-                                )
+                # Verify MuJoCo attributes loaded (these use dynamic vec5 types).
+                # SolverMuJoCo.register_custom_attributes guarantees ``model.mujoco`` and
+                # the three attributes below exist after finalize; restored_model.mujoco
+                # must be created during playback.
+                test.assertTrue(
+                    hasattr(restored_model, "mujoco"),
+                    f"mujoco namespace not restored in {format_name}",
+                )
+                for attr_name in ["geom_solimp", "solimplimit", "solimpfriction"]:
+                    original = getattr(model.mujoco, attr_name)
+                    restored = getattr(restored_model.mujoco, attr_name, None)
+                    test.assertIsNotNone(restored, f"MuJoCo attribute {attr_name} not restored in {format_name}")
+                    np.testing.assert_allclose(
+                        restored.numpy(),
+                        original.numpy(),
+                        atol=1e-6,
+                        err_msg=f"MuJoCo {attr_name} data mismatch in {format_name}",
+                    )
 
             finally:
                 if os.path.exists(file_path):

@@ -1,104 +1,56 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+import warnings
 from typing import Any
 
-import numpy as np
 import warp as wp
 
-from ..geometry import GeoType, ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, GaussianRenderMode, RenderContext, RenderLightType, RenderOrder
+from .warp_raytrace import (
+    ClearData,
+    GaussianRenderMode,
+    RenderConfig,
+    RenderContext,
+    RenderLightType,
+    RenderOrder,
+    TextureProjectionMode,
+    Utils,
+)
+
+PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
+
+_RENDER_CONFIG_DEPRECATION_MSG = (
+    "SensorTiledCamera.render_config is deprecated as of Newton 1.4; "
+    "use SensorTiledCamera.default_render_config instead. "
+    "The alias will be removed in a future release."
+)
+_CONFIG_DEPRECATION_MSG = (
+    "SensorTiledCamera(..., config=...) is deprecated as of Newton 1.4; use default_render_config=... instead. "
+    "The alias will be removed in a future release."
+)
 
 
-@wp.kernel(enable_backward=False)
-def convert_newton_transform(
-    in_body_transforms: wp.array(dtype=wp.transform),
-    in_shape_body: wp.array(dtype=wp.int32),
-    in_transform: wp.array(dtype=wp.transformf),
-    in_scale: wp.array(dtype=wp.vec3f),
-    out_transforms: wp.array(dtype=wp.transformf),
-    out_sizes: wp.array(dtype=wp.vec3f),
-):
-    tid = wp.tid()
-
-    body = in_shape_body[tid]
-    body_transform = wp.transform_identity()
-    if body >= 0:
-        body_transform = in_body_transforms[body]
-
-    out_transforms[tid] = wp.mul(body_transform, in_transform[tid])
-    out_sizes[tid] = in_scale[tid]
+class _ConfigUnset:
+    def __repr__(self) -> str:
+        return "_DEPRECATED_CONFIG_UNSET"
 
 
-@wp.func
-def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
-    if shape_type == GeoType.BOX:
-        return True
-    if shape_type == GeoType.CAPSULE:
-        return True
-    if shape_type == GeoType.CYLINDER:
-        return True
-    if shape_type == GeoType.ELLIPSOID:
-        return True
-    if shape_type == GeoType.PLANE:
-        return True
-    if shape_type == GeoType.SPHERE:
-        return True
-    if shape_type == GeoType.CONE:
-        return True
-    if shape_type == GeoType.MESH:
-        return True
-    if shape_type == GeoType.GAUSSIAN:
-        return True
-    wp.printf("Unsupported shape geom type: %d\n", shape_type)
-    return False
-
-
-@wp.kernel(enable_backward=False)
-def compute_enabled_shapes(
-    shape_type: wp.array(dtype=wp.int32),
-    shape_flags: wp.array(dtype=wp.int32),
-    out_shape_enabled: wp.array(dtype=wp.uint32),
-    out_mesh_indices: wp.array(dtype=wp.int32),
-    out_shape_enabled_count: wp.array(dtype=wp.int32),
-):
-    tid = wp.tid()
-
-    out_mesh_indices[tid] = tid
-
-    if not bool(shape_flags[tid] & ShapeFlags.VISIBLE):
-        return
-
-    if not is_supported_shape_type(shape_type[tid]):
-        return
-
-    index = wp.atomic_add(out_shape_enabled_count, 0, 1)
-    out_shape_enabled[index] = wp.uint32(tid)
+_DEPRECATED_CONFIG_UNSET: Any = _ConfigUnset()
 
 
 class SensorTiledCamera:
     """Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
 
-    Renders up to five image channels per (world, camera) pair:
+    Renders up to seven image channels per (world, camera) pair:
 
     - **color** -- RGBA shaded image (``uint32``).
+    - **hdr_color** -- linear shaded RGB image (``vec3f``).
     - **depth** -- ray-hit distance [m] (``float32``); negative means no hit.
+    - **forward_depth** -- ray-hit distance projected onto camera forward [m] (``float32``); negative means no hit.
     - **normal** -- surface normal at hit point (``vec3f``).
     - **albedo** -- unshaded surface color (``uint32``).
     - **shape_index** -- shape id per pixel (``uint32``).
@@ -108,176 +60,135 @@ class SensorTiledCamera:
 
     Shapes without the ``VISIBLE`` flag are excluded.
 
+    Shape colors and base-color textures are interpreted as display/sRGB RGB,
+    converted to linear RGB internally for shading, and packed according to
+    :attr:`RenderConfig.output_color_space` at the output boundary.
+
     Example:
         ::
 
             sensor = SensorTiledCamera(model)
-            rays = sensor.compute_pinhole_camera_rays(width, height, fov)
-            color = sensor.create_color_image_output(width, height)
+            rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=fov)
+            color = sensor.utils.create_color_image_output(width, height)
 
-            # each step
+            # BVHs are built for the initial state by ModelBuilder.finalize().
+            state = model.state()
+
+            # Before each frame that changes geometry, refit BVHs.
+            model.bvh_refit_shapes(state)
+            model.bvh_refit_particles(state)
             sensor.update(state, camera_transforms, rays, color_image=color)
 
-    See :class:`Config` for optional rendering settings and :attr:`ClearData` / :attr:`DEFAULT_CLEAR_DATA` /
+    See :class:`RenderConfig` for optional rendering settings and :attr:`ClearData` / :attr:`DEFAULT_CLEAR_DATA` /
     :attr:`GRAY_CLEAR_DATA` for image-clear presets.
     """
 
-    RenderContext = RenderContext
     RenderLightType = RenderLightType
     RenderOrder = RenderOrder
+    TextureProjectionMode = TextureProjectionMode
     GaussianRenderMode = GaussianRenderMode
+    RenderConfig = RenderConfig
     ClearData = ClearData
+    Utils = Utils
 
     DEFAULT_CLEAR_DATA = ClearData()
     GRAY_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
-    @dataclass
-    class Config:
-        """Rendering configuration."""
+    def __init__(
+        self,
+        model: Model,
+        *,
+        default_render_config: RenderConfig | None = None,
+        config: RenderConfig | None = _DEPRECATED_CONFIG_UNSET,
+        load_textures: bool = True,
+    ):
+        """Initialize the tiled camera sensor from a simulation model.
 
-        checkerboard_texture: bool = False
-        """Apply a checkerboard texture to all shapes."""
+        Builds the internal :class:`RenderContext`, loads shape geometry (and
+        optionally textures) from *model*, and exposes :attr:`utils` for
+        creating output buffers, computing rays, and assigning materials.
 
-        default_light: bool = False
-        """Add a default directional light to the scene."""
-
-        default_light_shadows: bool = False
-        """Enable shadows for the default light (requires ``default_light``)."""
-
-        colors_per_world: bool = False
-        """Assign a random color palette per world."""
-
-        colors_per_shape: bool = False
-        """Assign a random color per shape (ignored when ``colors_per_world`` is True)."""
-
-        backface_culling: bool = True
-        """Cull back-facing triangles."""
-
-    def __init__(self, model: Model, *, config: Config | None = None):
+        Args:
+            model: Simulation model whose shapes will be rendered.
+            default_render_config: Rendering configuration. Pass a :class:`RenderConfig` to
+                control raytrace settings directly, or ``None`` to use
+                defaults. Use ``RenderConfig.output_color_space`` to control
+                whether packed ``color`` and ``albedo`` outputs are
+                display-encoded or left linear.
+            config: Deprecated as of Newton 1.4; use ``default_render_config`` instead.
+            load_textures: Load texture data from the model. Set to ``False``
+                to skip texture loading when textures are not needed.
+        """
         self.model = model
 
-        self.render_context = RenderContext(
+        if config is not _DEPRECATED_CONFIG_UNSET:
+            warnings.warn(_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if default_render_config is not None:
+                raise TypeError("Specify only one of `default_render_config` and deprecated `config`.")
+            default_render_config = config
+
+        self.__default_render_config = default_render_config if default_render_config is not None else RenderConfig()
+        self.__default_clear_data = ClearData()
+
+        self.__render_context = RenderContext(
             world_count=self.model.world_count,
-            config=RenderContext.Config(
-                enable_global_world=True,
-                enable_textures=False,
-                enable_shadows=False,
-                enable_ambient_lighting=True,
-                enable_particles=True,
-                enable_backface_culling=True,
-            ),
             device=self.model.device,
         )
-        self.render_context.shape_source_ptr = model.shape_source_ptr
-        self.render_context.shape_indices = wp.empty(
-            self.model.shape_count, dtype=wp.int32, device=self.render_context.device
-        )
-        self.render_context.shape_bounds = wp.empty(
-            (self.model.shape_count, 2), dtype=wp.vec3f, ndim=2, device=self.render_context.device
-        )
+        self.__utils = Utils(self.__render_context, self.default_render_config)
 
-        if model.particle_q is not None and model.particle_q.shape[0]:
-            self.render_context.particles_position = model.particle_q
-            self.render_context.particles_radius = model.particle_radius
-            self.render_context.particles_world_index = model.particle_world
-            if model.tri_indices is not None and model.tri_indices.shape[0]:
-                self.render_context.triangle_points = model.particle_q
-                self.render_context.triangle_indices = model.tri_indices.flatten()
-                self.render_context.config.enable_particles = False
+        self.__render_context.init_from_model(self.model, load_textures)
 
-        self.render_context.shape_enabled = wp.empty(
-            self.model.shape_count, dtype=wp.uint32, device=self.render_context.device
-        )
-        self.render_context.shape_types = model.shape_type
-        self.render_context.shape_sizes = wp.empty(
-            self.model.shape_count, dtype=wp.vec3f, device=self.render_context.device
-        )
-        self.render_context.shape_transforms = wp.empty(
-            self.model.shape_count, dtype=wp.transformf, device=self.render_context.device
-        )
-        self.render_context.shape_materials = wp.array(
-            np.full(self.model.shape_count, fill_value=-1, dtype=np.int32),
-            dtype=wp.int32,
-            device=self.render_context.device,
-        )
+    @property
+    def default_render_config(self) -> RenderConfig:
+        """The default render config to use if none is passed to :meth:`update`.
 
-        self.render_context.shape_world_index = self.model.shape_world
-        self.render_context.gaussians_data = self.model.gaussians_data
+        Returns:
+            The default :class:`RenderConfig` instance.
+        """
+        return self.__default_render_config
 
-        colors = [(*self.__get_shape_color(i, shape), 1.0) for i, shape in enumerate(self.model.shape_source)]
-        self.render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.render_context.device)
+    @property
+    def default_clear_data(self) -> ClearData:
+        """The default clear data to use if none is passed to :meth:`update`.
 
-        num_enabled_shapes = wp.zeros(1, dtype=wp.int32, device=self.render_context.device)
-        wp.launch(
-            kernel=compute_enabled_shapes,
-            dim=self.model.shape_count,
-            inputs=[
-                model.shape_type,
-                model.shape_flags,
-                self.render_context.shape_enabled,
-                self.render_context.shape_indices,
-                num_enabled_shapes,
-            ],
-            device=self.render_context.device,
-        )
-        self.render_context.shape_count_total = self.model.shape_count
-        self.render_context.shape_count_enabled = int(num_enabled_shapes.numpy()[0])
-
-        self.render_context.utils.compute_shape_bounds()
-
-        if config is not None:
-            self.render_context.config.enable_backface_culling = config.backface_culling
-            if config.checkerboard_texture:
-                self.assign_checkerboard_material_to_all_shapes()
-            if config.default_light:
-                self.create_default_light(config.default_light_shadows)
-            if config.colors_per_world:
-                self.assign_random_colors_per_world()
-            elif config.colors_per_shape:
-                self.assign_random_colors_per_shape()
+        Returns:
+            The default :class:`ClearData` instance.
+        """
+        return self.__default_clear_data
 
     def sync_transforms(self, state: State):
-        """Synchronize shape transforms from the simulation state.
+        """Synchronize triangle-mesh points from the simulation state.
 
         :meth:`update` calls this automatically when *state* is not None.
 
+        Shape and particle BVHs on :attr:`model` are built for the initial
+        state by :meth:`~newton.ModelBuilder.finalize`. Before later frames
+        that change geometry, refit them via
+        :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` prior to calling
+        :meth:`update`.
+
         Args:
-            state: The current simulation state containing body transforms.
+            state: The current simulation state containing particle positions.
         """
-        if self.render_context.has_shapes:
-            wp.launch(
-                kernel=convert_newton_transform,
-                dim=self.model.shape_count,
-                inputs=[
-                    state.body_q,
-                    self.model.shape_body,
-                    self.model.shape_transform,
-                    self.model.shape_scale,
-                    self.render_context.shape_transforms,
-                    self.render_context.shape_sizes,
-                ],
-                device=self.render_context.device,
-            )
-
-        if self.render_context.has_triangle_mesh:
-            self.render_context.triangle_points = state.particle_q
-
-        if self.render_context.has_particles:
-            self.render_context.particles_position = state.particle_q
+        self.__render_context.update(self.model, state)
 
     def update(
         self,
-        state: State | None,
-        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
-        camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
+        state: State,
+        camera_transforms: wp.array2d[wp.transformf] | None = None,
+        camera_rays: wp.array4d[wp.vec3f] | None = None,
         *,
-        color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
-        depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
-        shape_index_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
-        normal_image: wp.array(dtype=wp.vec3f, ndim=4) | None = None,
-        albedo_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
-        refit_bvh: bool = True,
-        clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
+        color_image: wp.array4d[wp.uint32] | None = None,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
+        depth_image: wp.array4d[wp.float32] | None = None,
+        forward_depth_image: wp.array4d[wp.float32] | None = None,
+        shape_index_image: wp.array4d[wp.uint32] | None = None,
+        normal_image: wp.array4d[wp.vec3f] | None = None,
+        albedo_image: wp.array4d[wp.uint32] | None = None,
+        clear_data: ClearData | None = None,
+        render_config: RenderConfig | None = None,
+        kernel_block_dim: int = 64,
     ):
         """Render output images for all worlds and cameras.
 
@@ -285,237 +196,75 @@ class SensorTiledCamera:
         ``[world_id, camera_id, y, x]`` corresponds to the ray in ``camera_rays[camera_id, y, x]``. Each output
         channel is optional -- pass None to skip that channel's rendering entirely.
 
+        Shape and particle BVHs on :attr:`model` are built for the initial
+        state by :meth:`~newton.ModelBuilder.finalize`. Before later frames
+        that change geometry, refit them for *state* via
+        :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` before calling this method.
+
         Args:
-            state: Simulation state with body transforms. If not None, calls :meth:`sync_transforms` first.
+            state: Simulation state with body and particle transforms.
             camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
-            camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
+            camera_rays: Camera-space rays from ``SensorTiledCamera.utils`` ray helpers, shape
                 ``(camera_count, height, width, 2)``.
-            color_image: Output for RGBA color. None to skip.
+            color_image: Output for packed RGBA color. The bytes are
+                display/sRGB by default, or linear when
+                ``self.default_render_config.output_color_space`` is
+                ``newton.utils.ColorSpace.LINEAR``. None to skip.
             depth_image: Output for ray-hit distance [m]. None to skip.
+            forward_depth_image: Output for ray-hit distance projected onto
+                camera forward [m]. None to skip.
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
-            albedo_image: Output for unshaded surface color. None to skip.
-            refit_bvh: Refit the BVH before rendering.
-            clear_data: Values to clear output buffers with. None to skip clearing.
-                See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
+            albedo_image: Output for packed unshaded surface color, using the
+                same output color space as ``color_image``. None to skip.
+            clear_data: Values to clear output buffers with. Packed color and
+                albedo clear values are specified as display/sRGB RGBA and
+                converted to linear when linear output is requested. See
+                :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
+            hdr_color_image: Output for linear HDR color. None to skip.
+            render_config: Render settings for this update. If ``None``, uses
+                :attr:`default_render_config`.
+            kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
+                for the render megakernel.
         """
-        if state is not None:
+
+        with wp.ScopedTimer(
+            "Newton::SensorTiledCamera::update", active=PROFILE_ENABLED, use_nvtx=True, synchronize=True
+        ):
             self.sync_transforms(state)
 
-        self.render_context.render(
-            camera_transforms,
-            camera_rays,
-            color_image,
-            depth_image,
-            shape_index_image,
-            normal_image,
-            albedo_image,
-            refit_bvh=refit_bvh,
-            clear_data=clear_data,
-        )
+            self.__render_context.render(
+                self.model,
+                state,
+                camera_transforms=camera_transforms,
+                camera_rays=camera_rays,
+                color_image=color_image,
+                hdr_color_image=hdr_color_image,
+                depth_image=depth_image,
+                forward_depth_image=forward_depth_image,
+                shape_index_image=shape_index_image,
+                normal_image=normal_image,
+                albedo_image=albedo_image,
+                clear_data=clear_data if clear_data is not None else self.default_clear_data,
+                config=render_config if render_config is not None else self.default_render_config,
+                kernel_block_dim=kernel_block_dim,
+            )
 
-    def compute_pinhole_camera_rays(
-        self, width: int, height: int, camera_fovs: float | list[float] | np.ndarray | wp.array(dtype=wp.float32)
-    ) -> wp.array(dtype=wp.vec3f, ndim=4):
-        """Compute camera-space ray directions for pinhole cameras.
+    @property
+    def render_config(self) -> RenderConfig:
+        """Deprecated alias for :attr:`default_render_config`.
 
-        Generates rays in camera space (origin at the camera center, direction normalized) for each pixel based on the
-        vertical field of view.
-
-        Args:
-            width: Image width [px].
-            height: Image height [px].
-            camera_fovs: Vertical FOV angles [rad], shape ``(camera_count,)``.
-
-        Returns:
-            camera_rays: Shape ``(camera_count, height, width, 2)``, dtype ``vec3f``.
-        """
-
-        if isinstance(camera_fovs, float):
-            camera_fovs = wp.array([camera_fovs], dtype=wp.float32, device=self.render_context.device)
-        elif isinstance(camera_fovs, list):
-            camera_fovs = wp.array(camera_fovs, dtype=wp.float32, device=self.render_context.device)
-        elif isinstance(camera_fovs, np.ndarray):
-            camera_fovs = wp.array(camera_fovs, dtype=wp.float32, device=self.render_context.device)
-        return self.render_context.utils.compute_pinhole_camera_rays(width, height, camera_fovs)
-
-    def flatten_color_image_to_rgba(
-        self,
-        image: wp.array(dtype=wp.uint32, ndim=4),
-        out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
-        worlds_per_row: int | None = None,
-    ):
-        """Flatten rendered color image to a tiled RGBA buffer.
-
-        Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
-
-        Args:
-            image: Color output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
-            out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
-            worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
-        """
-        return self.render_context.utils.flatten_color_image_to_rgba(image, out_buffer, worlds_per_row)
-
-    def flatten_normal_image_to_rgba(
-        self,
-        image: wp.array(dtype=wp.vec3f, ndim=4),
-        out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
-        worlds_per_row: int | None = None,
-    ):
-        """Flatten rendered normal image to a tiled RGBA buffer.
-
-        Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
-
-        Args:
-            image: Normal output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
-            out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
-            worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
-        """
-        return self.render_context.utils.flatten_normal_image_to_rgba(image, out_buffer, worlds_per_row)
-
-    def flatten_depth_image_to_rgba(
-        self,
-        image: wp.array(dtype=wp.float32, ndim=4),
-        out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
-        worlds_per_row: int | None = None,
-        depth_range: wp.array(dtype=wp.float32) | None = None,
-    ):
-        """Flatten rendered depth image to a tiled RGBA buffer.
-
-        Encodes depth as grayscale: inverts values (closer = brighter) and normalizes to the ``[50, 255]``
-        range. Background pixels (no hit) remain black.
-
-        Args:
-            image: Depth output from :meth:`update`, shape ``(world_count, camera_count, height, width)``.
-            out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
-            worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
-            depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.
-        """
-        return self.render_context.utils.flatten_depth_image_to_rgba(image, out_buffer, worlds_per_row, depth_range)
-
-    def assign_random_colors_per_world(self, seed: int = 100):
-        """Assign each world a random color, applied to all its shapes.
-
-        Args:
-            seed: Random seed.
-        """
-        self.render_context.utils.assign_random_colors_per_world(seed)
-
-    def assign_random_colors_per_shape(self, seed: int = 100):
-        """Assign a random color to each shape.
-
-        Args:
-            seed: Random seed.
-        """
-        self.render_context.utils.assign_random_colors_per_shape(seed)
-
-    def create_default_light(self, enable_shadows: bool = True):
-        """Create a default directional light oriented at ``(-1, 1, -1)``.
-
-        Args:
-            enable_shadows: Enable shadow casting for this light.
-        """
-        self.render_context.utils.create_default_light(enable_shadows)
-
-    def assign_checkerboard_material_to_all_shapes(self, resolution: int = 64, checker_size: int = 32):
-        """Assign a gray checkerboard texture material to all shapes.
-        Creates a gray checkerboard pattern texture and applies it to all shapes
-        in the scene.
-
-        Args:
-            resolution: Texture resolution in pixels (square texture).
-            checker_size: Size of each checkerboard square in pixels.
-        """
-        self.render_context.utils.assign_checkerboard_material_to_all_shapes(resolution, checker_size)
-
-    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
-        """Create a color output array for :meth:`update`.
-
-        Args:
-            width: Image width [px].
-            height: Image height [px].
-            camera_count: Number of cameras.
+        .. deprecated:: 1.4
+            Use :attr:`default_render_config` instead.
 
         Returns:
-            Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
+            The live default :class:`RenderConfig` instance.
         """
-        return self.render_context.create_color_image_output(width, height, camera_count)
+        warnings.warn(_RENDER_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self.default_render_config
 
-    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.float32, ndim=4
-    ):
-        """Create a depth output array for :meth:`update`.
-
-        Args:
-            width: Image width [px].
-            height: Image height [px].
-            camera_count: Number of cameras.
-
-        Returns:
-            Array of shape ``(world_count, camera_count, height, width)``, dtype ``float32``.
-        """
-        return self.render_context.create_depth_image_output(width, height, camera_count)
-
-    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
-        """Create a shape-index output array for :meth:`update`.
-
-        Args:
-            width: Image width [px].
-            height: Image height [px].
-            camera_count: Number of cameras.
-
-        Returns:
-            Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
-        """
-        return self.render_context.create_shape_index_image_output(width, height, camera_count)
-
-    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.vec3f, ndim=4
-    ):
-        """Create a normal output array for :meth:`update`.
-
-        Args:
-            width: Image width [px].
-            height: Image height [px].
-            camera_count: Number of cameras.
-
-        Returns:
-            Array of shape ``(world_count, camera_count, height, width)``, dtype ``vec3f``.
-        """
-        return self.render_context.create_normal_image_output(width, height, camera_count)
-
-    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
-        """Create an albedo output array for :meth:`update`.
-
-        Args:
-            width: Image width [px].
-            height: Image height [px].
-            camera_count: Number of cameras.
-
-        Returns:
-            Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
-        """
-        return self.render_context.create_albedo_image_output(width, height, camera_count)
-
-    def __get_shape_color(self, index: int, shape: Any):
-        SHAPE_COLOR_MAP = [
-            (68 / 255.0, 119 / 255.0, 170 / 255.0),  # blue
-            (102 / 255.0, 204 / 255.0, 238 / 255.0),  # cyan
-            (34 / 255.0, 136 / 255.0, 51 / 255.0),  # green
-            (204 / 255.0, 187 / 255.0, 68 / 255.0),  # yellow
-            (238 / 255.0, 102 / 255.0, 119 / 255.0),  # red
-            (170 / 255.0, 51 / 255.0, 119 / 255.0),  # magenta
-            (187 / 255.0, 187 / 255.0, 187 / 255.0),  # grey
-            (238 / 255.0, 153 / 255.0, 51 / 255.0),  # orange
-            (0 / 255.0, 153 / 255.0, 136 / 255.0),  # teal
-        ]
-
-        if color := getattr(shape, "color", None):
-            return color
-        return SHAPE_COLOR_MAP[index % len(SHAPE_COLOR_MAP)]
+    @property
+    def utils(self) -> Utils:
+        """Utility helpers for creating output buffers, computing rays, and assigning materials/lights."""
+        return self.__utils

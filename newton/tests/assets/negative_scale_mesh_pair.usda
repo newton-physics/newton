@@ -1,0 +1,82 @@
+#usda 1.0
+(
+    doc = """Authored manually for negative-scale mesh import regression tests."""
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "World"
+{
+    def Xform "PositiveBody" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        double3 xformOp:translate = (-0.5, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        float physics:mass = 1
+        float3 physics:diagonalInertia = (1, 1, 1)
+        point3f physics:centerOfMass = (0, 0, 0)
+        quatf physics:principalAxes = (1, 0, 0, 0)
+
+        def Mesh "collision_mesh" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "none"
+            uniform token subdivisionScheme = "none"
+            point3f[] points = [
+                (-0.5, -0.5, 0.5),
+                (0.5, -0.5, 0.5),
+                (-0.5, 0.5, 0.5),
+                (0.5, 0.5, 0.5),
+                (-0.5, -0.5, -0.5),
+                (0.5, -0.5, -0.5),
+                (-0.5, 0.5, -0.5),
+                (0.5, 0.5, -0.5),
+            ]
+            int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+            int[] faceVertexIndices = [0, 1, 3, 2, 4, 6, 7, 5, 6, 2, 3, 7, 4, 5, 1, 0, 4, 0, 2, 6, 5, 7, 3, 1]
+        }
+    }
+
+    def Xform "MirroredBody" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        double3 xformOp:translate = (0.5, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        float physics:mass = 1
+        float3 physics:diagonalInertia = (1, 1, 1)
+        point3f physics:centerOfMass = (0, 0, 0)
+        quatf physics:principalAxes = (1, 0, 0, 0)
+
+        def Mesh "collision_mesh" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "none"
+            uniform token subdivisionScheme = "none"
+            double3 xformOp:scale = (-1, 1, 1)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            point3f[] points = [
+                (-0.5, -0.5, 0.5),
+                (0.5, -0.5, 0.5),
+                (-0.5, 0.5, 0.5),
+                (0.5, 0.5, 0.5),
+                (-0.5, -0.5, -0.5),
+                (0.5, -0.5, -0.5),
+                (-0.5, 0.5, -0.5),
+                (0.5, 0.5, -0.5),
+            ]
+            int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+            int[] faceVertexIndices = [0, 1, 3, 2, 4, 6, 7, 5, 6, 2, 3, 7, 4, 5, 1, 0, 4, 0, 2, 6, 5, 7, 3, 1]
+        }
+    }
+}

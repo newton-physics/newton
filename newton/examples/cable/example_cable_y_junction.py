@@ -1,23 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Cable Y-Junction
 #
 # This example shows how to simulate a Y-junction using `builder.add_rod_graph(...)`
 # with a shared junction node.
+#
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --test --viewer null
 #
 ###########################################################################
 
@@ -50,23 +44,24 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 20
         self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         # Cable parameters.
         cable_radius = 0.01
+        contact_gap = 0.002
         num_segments_per_branch = 20
         segment_length = 0.03
 
-        bend_stiffness = 1.0e0
-        bend_damping = 1.0e-1
-        stretch_stiffness = 1.0e9
-        stretch_damping = 0.0
+        stretch_stiffness = 1.0e7
+        bend_stiffness = 5.0e3
+        bend_damping = 1.0e3
 
         builder = newton.ModelBuilder()
+        builder.rigid_gap = contact_gap
         builder.default_shape_cfg.ke = 1.0e4
-        builder.default_shape_cfg.kd = 1.0e-1
+        builder.default_shape_cfg.kd = 0.0
         builder.default_shape_cfg.mu = 1.0
 
         cable_cfg = builder.default_shape_cfg.copy()
@@ -95,11 +90,11 @@ class Example:
             radius=cable_radius,
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
             bend_stiffness=bend_stiffness,
             bend_damping=bend_damping,
             label="y_graph",
             wrap_in_articulation=True,
+            body_frame_origin="com",
         )
 
         # Pin one tip capsule (end of the first branch).
@@ -120,16 +115,17 @@ class Example:
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, float(getattr(args, "gravity_z", -9.81))))
 
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            friction_epsilon=float(getattr(args, "friction_epsilon", 0.1)),
+            rigid_compliant_alm=True,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.contacts = self.collision_pipeline.contacts()
 
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
@@ -137,9 +133,15 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        # Set camera to be closer to the cable
+        picking = getattr(self.viewer, "picking", None)
+        if picking is not None:
+            pick_state = picking.pick_state.numpy()
+            pick_state[0]["pick_stiffness"] = 0.1
+            pick_state[0]["pick_damping"] = 0.01
+            picking.pick_state.assign(pick_state)
+
         self.viewer.set_camera(
-            pos=wp.vec3(6.0, 0.0, 1.5),
+            pos=wp.vec3(2.10, 0.0, z0 - 0.15),
             pitch=0.0,
             yaw=-180.0,
         )
@@ -147,18 +149,15 @@ class Example:
         self.capture()
 
     def capture(self):
-        if self.solver.device.is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -231,5 +230,4 @@ class Example:
 
 if __name__ == "__main__":
     viewer, args = newton.examples.init()
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

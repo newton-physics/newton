@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -27,7 +15,9 @@ class TestControlForce(unittest.TestCase):
 
 
 def test_gravity(test: TestControlForce, device, solver_fn, up_axis: newton.Axis):
-    builder = newton.ModelBuilder(up_axis=up_axis, gravity=-9.81)
+    builder = newton.ModelBuilder(
+        up_axis=up_axis, gravity=tuple(component * -9.81 for component in up_axis.to_vector())
+    )
 
     b = builder.add_body()
     # Apply axis rotation to transform
@@ -59,6 +49,7 @@ solvers = {
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
+    "kamino": newton.solvers.SolverKamino,
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():

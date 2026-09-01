@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import numpy as np
 import warp as wp
@@ -25,9 +13,9 @@ import newton.usd
 @wp.kernel
 def acc_to_color(
     alpha: float,
-    imu_acc: wp.array(dtype=wp.vec3),
-    buffer: wp.array(dtype=wp.vec3),
-    color: wp.array(dtype=wp.vec3),
+    imu_acc: wp.array[wp.vec3],
+    buffer: wp.array[wp.vec3],
+    color: wp.array[wp.vec3],
 ):
     """Kernel mapping an acceleration to a color, with exponential smoothing."""
     idx = wp.tid()
@@ -48,6 +36,7 @@ def acc_to_color(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 200
         self.frame_dt = 1.0 / self.fps
@@ -98,6 +87,7 @@ class Example:
                 hy=scale_filler,
                 hz=scale_filler,
                 cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0),
+                color=(0.1, 0.1, 0.1),
             )
             builder.add_shape_box(
                 body, hx=scale, hy=scale, hz=scale, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=200)
@@ -126,10 +116,7 @@ class Example:
         self.viewer.set_model(self.model)
 
         if isinstance(self.viewer, newton.viewer.ViewerGL):
-            self.viewer.camera.pos = type(self.viewer.camera.pos)(3.0, 0.0, 2.0)
-            self.viewer.camera.pitch = type(self.viewer.camera.pitch)(-20)
-
-        self.viewer.update_shape_colors({cube: (0.1, 0.1, 0.1) for i, cube in enumerate(self.visual_fillers)})
+            self.viewer.set_camera(wp.vec3(3.0, 0.0, 2.0), -20.0, self.viewer.camera.yaw)
 
         # Warm up: run one simulate() step before graph capture to ensure the collision
         # pipeline (and any D2H copies it needs) is initialized outside of capture.
@@ -137,12 +124,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -170,14 +154,16 @@ class Example:
             self.simulate()
 
         self.sim_time += self.frame_dt
-        self.viewer.update_shape_colors({cube: self.colors.numpy()[i] for i, cube in enumerate(self.visual_cubes)})
+        cube_colors = self.colors.numpy()
+        for i, cube in enumerate(self.visual_cubes):
+            self.model.shape_color[cube : cube + 1].fill_(wp.vec3(cube_colors[i]))
 
     def test(self):
         pass
 
     def test_final(self):
         acc = self.imu.accelerometer.numpy()
-        gravity_mag = np.linalg.norm(self.model.gravity.numpy()[0])
+        gravity_mag = np.linalg.norm(self.model.gravity.numpy()[-1])
 
         # Cubes settle with different faces up: cube 0 → Y, cube 1 → X, cube 2 → Z
         expected_axes = [1, 0, 2]
@@ -198,6 +184,4 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create viewer and run
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

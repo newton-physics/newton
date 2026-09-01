@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -49,7 +37,7 @@ def _eval_sdf(primitive: int, point: wp.vec3, p0: float, p1: float, p2: float, u
     if primitive == PRIMITIVE_CAPSULE:
         return kernels.sdf_capsule(point, p0, p1, up_axis)
     if primitive == PRIMITIVE_CYLINDER:
-        return kernels.sdf_cylinder(point, p0, p1, up_axis)
+        return kernels.sdf_cylinder(point, p0, p1, up_axis, -1.0, p2)
     if primitive == PRIMITIVE_ELLIPSOID:
         return kernels.sdf_ellipsoid(point, wp.vec3(p0, p1, p2))
     if primitive == PRIMITIVE_CONE:
@@ -66,7 +54,7 @@ def _eval_grad(primitive: int, point: wp.vec3, p0: float, p1: float, p2: float, 
     if primitive == PRIMITIVE_CAPSULE:
         return kernels.sdf_capsule_grad(point, p0, p1, up_axis)
     if primitive == PRIMITIVE_CYLINDER:
-        return kernels.sdf_cylinder_grad(point, p0, p1, up_axis)
+        return kernels.sdf_cylinder_grad(point, p0, p1, up_axis, -1.0, p2)
     if primitive == PRIMITIVE_ELLIPSOID:
         return kernels.sdf_ellipsoid_grad(point, wp.vec3(p0, p1, p2))
     if primitive == PRIMITIVE_CONE:
@@ -77,14 +65,14 @@ def _eval_grad(primitive: int, point: wp.vec3, p0: float, p1: float, p2: float, 
 @wp.kernel
 def evaluate_gradient_error_kernel(
     primitive: int,
-    points: wp.array(dtype=wp.vec3),
+    points: wp.array[wp.vec3],
     p0: float,
     p1: float,
     p2: float,
     up_axis: int,
     eps: float,
-    dot_alignment: wp.array(dtype=float),
-    analytic_norm: wp.array(dtype=float),
+    dot_alignment: wp.array[float],
+    analytic_norm: wp.array[float],
 ):
     tid = wp.tid()
     point = points[tid]
@@ -209,6 +197,21 @@ def test_sdf_cylinder_grad_matches_finite_difference(test, device):
     _assert_gradient_matches_fd(test, device, PRIMITIVE_CYLINDER, points, 0.7, 1.0, 0.0, int(Axis.Y))
 
 
+def test_sdf_barrel_cylinder_grad_matches_finite_difference(test, device):
+    """Verify barrel-cylinder SDF gradients in every axis orientation."""
+    points = np.array(
+        [
+            [0.9, 0.2, 0.1],
+            [-0.8, -0.6, 0.3],
+            [0.2, 1.3, -0.1],
+            [0.7, 0.8, 0.4],
+        ],
+        dtype=np.float32,
+    )
+    for axis in (Axis.X, Axis.Y, Axis.Z):
+        _assert_gradient_matches_fd(test, device, PRIMITIVE_CYLINDER, points, 0.7, 1.0, 2.0, int(axis))
+
+
 def test_sdf_ellipsoid_grad_matches_finite_difference(test, device):
     points = np.array(
         [
@@ -250,7 +253,7 @@ class TestSdfPrimitive(unittest.TestCase):
     pass
 
 
-_devices = get_test_devices(mode="basic")
+_devices = get_test_devices()
 add_function_test(
     TestSdfPrimitive,
     "test_sdf_sphere_grad_matches_finite_difference",
@@ -273,6 +276,12 @@ add_function_test(
     TestSdfPrimitive,
     "test_sdf_cylinder_grad_matches_finite_difference",
     test_sdf_cylinder_grad_matches_finite_difference,
+    devices=_devices,
+)
+add_function_test(
+    TestSdfPrimitive,
+    "test_sdf_barrel_cylinder_grad_matches_finite_difference",
+    test_sdf_barrel_cylinder_grad_matches_finite_difference,
     devices=_devices,
 )
 add_function_test(

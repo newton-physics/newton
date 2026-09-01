@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Tests for the hash table."""
 
@@ -20,7 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.geometry.contact_reduction_global import reduction_insert_slot
+from newton._src.geometry.contact_reduction_global import GlobalContactReducer, reduction_insert_slot
 from newton._src.geometry.hashtable import HashTable
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -61,15 +49,30 @@ def test_power_of_two_rounding(test, device):
     test.assertEqual(ht3.capacity, 1)
 
 
+def test_global_reducer_hashtable_scales_with_contact_capacity(test, device):
+    """Test contact reduction hashtable sizing and user scaling."""
+    small_reducer = GlobalContactReducer(capacity=64, device=device)
+    test.assertGreaterEqual(small_reducer.hashtable.capacity, 1024)
+
+    large_reducer = GlobalContactReducer(capacity=1500, device=device)
+    test.assertGreaterEqual(large_reducer.hashtable.capacity, 1024)
+
+    scaled_reducer = GlobalContactReducer(capacity=1500, device=device, hashtable_size_factor=2.0)
+    test.assertGreaterEqual(scaled_reducer.hashtable.capacity, 2 * scaled_reducer.capacity)
+
+    with test.assertRaises(ValueError):
+        GlobalContactReducer(capacity=1500, device=device, hashtable_size_factor=0.0)
+
+
 def test_insert_single_slot(test, device):
     """Test inserting values into different slots of the same key."""
     values_per_key = 13
 
     @wp.kernel
     def insert_test_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         # Insert into slot 0
         reduction_insert_slot(wp.uint64(123), 0, wp.uint64(100), keys, values, active_slots)
@@ -88,7 +91,6 @@ def test_insert_single_slot(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Find the entry
     keys_np = ht.keys.numpy()
@@ -110,9 +112,9 @@ def test_atomic_max_behavior(test, device):
 
     @wp.kernel
     def atomic_max_test_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         # All threads try to write to same key and slot
@@ -128,7 +130,6 @@ def test_atomic_max_behavior(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Find the entry
     keys_np = ht.keys.numpy()
@@ -148,9 +149,9 @@ def test_multiple_keys(test, device):
 
     @wp.kernel
     def multi_key_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         key = wp.uint64(tid + 1)  # Keys 1, 2, 3, ...
@@ -166,7 +167,6 @@ def test_multiple_keys(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Check that we have 100 entries
     keys_np = ht.keys.numpy()
@@ -184,9 +184,9 @@ def test_clear(test, device):
 
     @wp.kernel
     def insert_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         reduction_insert_slot(wp.uint64(tid + 1), 0, wp.uint64(tid * 10), keys, values, active_slots)
@@ -201,7 +201,6 @@ def test_clear(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Verify data exists
     keys_np = ht.keys.numpy()
@@ -225,9 +224,9 @@ def test_clear_active(test, device):
 
     @wp.kernel
     def insert_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         reduction_insert_slot(wp.uint64(tid + 1), 0, wp.uint64(tid * 10), keys, values, active_slots)
@@ -242,7 +241,6 @@ def test_clear_active(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Verify data exists
     active_count = ht.active_slots.numpy()[ht.capacity]
@@ -270,9 +268,9 @@ def test_high_collision(test, device):
 
     @wp.kernel
     def collision_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         # Only 10 unique keys, but 1000 threads
@@ -290,7 +288,6 @@ def test_high_collision(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Should have exactly 10 unique keys
     keys_np = ht.keys.numpy()
@@ -312,9 +309,9 @@ def test_early_exit_optimization(test, device):
 
     @wp.kernel
     def insert_descending_kernel(
-        keys: wp.array(dtype=wp.uint64),
-        values: wp.array(dtype=wp.uint64),
-        active_slots: wp.array(dtype=wp.int32),
+        keys: wp.array[wp.uint64],
+        values: wp.array[wp.uint64],
+        active_slots: wp.array[wp.int32],
     ):
         tid = wp.tid()
         # Insert values in descending order: 999, 998, 997, ...
@@ -330,7 +327,6 @@ def test_early_exit_optimization(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Find the entry
     keys_np = ht.keys.numpy()
@@ -353,6 +349,12 @@ devices = get_test_devices()
 # Register tests for all devices (CPU and CUDA)
 add_function_test(TestHashTable, "test_basic_creation", test_basic_creation, devices=devices)
 add_function_test(TestHashTable, "test_power_of_two_rounding", test_power_of_two_rounding, devices=devices)
+add_function_test(
+    TestHashTable,
+    "test_global_reducer_hashtable_scales_with_contact_capacity",
+    test_global_reducer_hashtable_scales_with_contact_capacity,
+    devices=devices,
+)
 add_function_test(TestHashTable, "test_insert_single_slot", test_insert_single_slot, devices=devices)
 add_function_test(TestHashTable, "test_atomic_max_behavior", test_atomic_max_behavior, devices=devices)
 add_function_test(TestHashTable, "test_multiple_keys", test_multiple_keys, devices=devices)

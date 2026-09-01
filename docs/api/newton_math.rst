@@ -4,6 +4,7 @@
 newton.math
 ===========
 
+.. py:module:: newton.math
 .. currentmodule:: newton.math
 
 .. rubric:: Functions

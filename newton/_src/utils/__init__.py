@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from typing import Any
 
@@ -32,6 +20,29 @@ def check_conditional_graph_support():
         bool: True if conditional graph support is available, False otherwise.
     """
     return wp.is_conditional_graph_supported()
+
+
+def is_graph_capture_allocation_enabled(device) -> bool:
+    """Whether device allocation during graph capture is safe on ``device``.
+
+    CUDA needs its stream-ordered memory pool active so that
+    ``cudaMallocAsync`` can be captured as a memory-alloc node in the graph;
+    for CPU the concept does not apply -- plain host allocation is always
+    safe during CPU graph capture -- so this always returns ``True`` for CPU
+    devices. Solvers that grow internal buffers on demand should call this
+    before raising a "cannot allocate during capture" error.
+
+    Args:
+        device: A Warp device or device identifier.
+
+    Returns:
+        ``True`` if allocation during graph capture is currently safe on
+        ``device``; ``False`` otherwise.
+    """
+    device = wp.get_device(device)
+    if device.is_cpu:
+        return True
+    return device.is_mempool_enabled
 
 
 def compute_world_offsets(world_count: int, spacing: tuple[float, float, float], up_axis: Any = None):
@@ -73,8 +84,8 @@ def compute_world_offsets(world_count: int, spacing: tuple[float, float, float],
                 d0 = i // side_length
                 d1 = i % side_length
                 offset = np.zeros(3)
-                offset[nonzeros[0]] = d0 * spacing[nonzeros[0]]
-                offset[nonzeros[1]] = d1 * spacing[nonzeros[1]]
+                offset[nonzeros[0]] = d1 * spacing[nonzeros[0]]
+                offset[nonzeros[1]] = d0 * spacing[nonzeros[1]]
                 spacings.append(offset)
         elif num_dim == 3:
             for i in range(world_count):
@@ -82,9 +93,9 @@ def compute_world_offsets(world_count: int, spacing: tuple[float, float, float],
                 d1 = (i // side_length) % side_length
                 d2 = i % side_length
                 offset = np.zeros(3)
-                offset[0] = d0 * spacing[0]
+                offset[0] = d2 * spacing[0]
                 offset[1] = d1 * spacing[1]
-                offset[2] = d2 * spacing[2]
+                offset[2] = d0 * spacing[2]
                 spacings.append(offset)
 
         spacings = np.array(spacings, dtype=np.float32)
@@ -108,6 +119,7 @@ __all__ = [
     "clear_git_cache",
     "compute_world_offsets",
     "download_asset",
+    "is_graph_capture_allocation_enabled",
     "load_texture",
     "normalize_texture",
     "topological_sort",

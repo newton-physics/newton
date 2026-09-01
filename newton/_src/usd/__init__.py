@@ -1,23 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 try:
     # register the newton schema plugin before any other USD code is executed
     import newton_usd_schemas  # noqa: F401
-except ImportError:
-    pass
+except ImportError as exc:
+    _newton_usd_schemas_import_error = exc
+else:
+    _newton_usd_schemas_import_error = None
 
 from .utils import (
     get_attribute,
@@ -36,6 +26,19 @@ from .utils import (
     value_to_warp,
 )
 
+
+def require_newton_usd_schemas(Usd=None) -> None:
+    """Raise if Newton USD schema support is unavailable."""
+    if Usd is None:
+        return
+
+    if _newton_usd_schemas_import_error is not None:
+        raise ImportError(
+            "Newton USD support requires newton-usd-schemas. Install the USD importer dependencies with "
+            "`pip install 'newton[importers]'`."
+        ) from _newton_usd_schemas_import_error
+
+
 __all__ = [
     "get_attribute",
     "get_attributes_in_namespace",
@@ -49,6 +52,7 @@ __all__ = [
     "get_scale",
     "get_transform",
     "has_attribute",
+    "require_newton_usd_schemas",
     "type_to_warp",
     "value_to_warp",
 ]

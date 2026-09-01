@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Diffsim Drone
@@ -57,20 +45,20 @@ class Propeller:
 
 @wp.kernel
 def increment_seed(
-    seed: wp.array(dtype=int),
+    seed: wp.array[int],
 ):
     seed[0] += 1
 
 
 @wp.kernel
 def sample_gaussian(
-    mean_trajectory: wp.array(dtype=float, ndim=3),
+    mean_trajectory: wp.array3d[float],
     noise_scale: float,
     num_control_points: int,
     control_dim: int,
-    control_limits: wp.array(dtype=float, ndim=2),
-    seed: wp.array(dtype=int),
-    rollout_trajectories: wp.array(dtype=float, ndim=3),
+    control_limits: wp.array2d[float],
+    seed: wp.array[int],
+    rollout_trajectories: wp.array3d[float],
 ):
     world_id, point_id, control_id = wp.tid()
     unique_id = (world_id * num_control_points + point_id) * control_dim + control_id
@@ -88,11 +76,11 @@ def sample_gaussian(
 
 @wp.kernel
 def replicate_states(
-    body_q_in: wp.array(dtype=wp.transform),
-    body_qd_in: wp.array(dtype=wp.spatial_vector),
+    body_q_in: wp.array[wp.transform],
+    body_qd_in: wp.array[wp.spatial_vector],
     bodies_per_world: int,
-    body_q_out: wp.array(dtype=wp.transform),
-    body_qd_out: wp.array(dtype=wp.spatial_vector),
+    body_q_out: wp.array[wp.transform],
+    body_qd_out: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     world_offset = tid * bodies_per_world
@@ -103,14 +91,14 @@ def replicate_states(
 
 @wp.kernel
 def drone_cost(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    targets: wp.array(dtype=wp.vec3),
-    prop_control: wp.array(dtype=float),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    targets: wp.array[wp.vec3],
+    prop_control: wp.array[float],
     step: int,
     horizon_length: int,
     weighting: float,
-    cost: wp.array(dtype=wp.float32),
+    cost: wp.array[wp.float32],
 ):
     world_id = wp.tid()
     tf = body_q[world_id]
@@ -162,16 +150,16 @@ def drone_cost(
 
 @wp.kernel
 def collision_cost(
-    body_q: wp.array(dtype=wp.transform),
-    obstacle_ids: wp.array(dtype=int, ndim=2),
-    shape_X_bs: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
+    obstacle_ids: wp.array2d[int],
+    shape_X_bs: wp.array[wp.transform],
     # geo: wp.sim.ModelShapeGeometry,
-    shape_type: wp.array(dtype=int),
-    shape_scale: wp.array(dtype=wp.vec3),
-    shape_source_ptr: wp.array(dtype=wp.uint64),
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
     margin: float,
     weighting: float,
-    cost: wp.array(dtype=wp.float32),
+    cost: wp.array[wp.float32],
 ):
     world_id, obs_id = wp.tid()
     shape_index = obstacle_ids[world_id, obs_id]
@@ -217,8 +205,8 @@ def collision_cost(
 
 @wp.kernel
 def enforce_control_limits(
-    control_limits: wp.array(dtype=float, ndim=2),
-    control_points: wp.array(dtype=float, ndim=3),
+    control_limits: wp.array2d[float],
+    control_points: wp.array3d[float],
 ):
     world_id, t_id, control_id = wp.tid()
     lo, hi = control_limits[control_id, 0], control_limits[control_id, 1]
@@ -227,9 +215,9 @@ def enforce_control_limits(
 
 @wp.kernel
 def pick_best_trajectory(
-    rollout_trajectories: wp.array(dtype=float, ndim=3),
+    rollout_trajectories: wp.array3d[float],
     lowest_cost_id: int,
-    best_traj: wp.array(dtype=float, ndim=3),
+    best_traj: wp.array3d[float],
 ):
     t_id, control_id = wp.tid()
     best_traj[0, t_id, control_id] = rollout_trajectories[lowest_cost_id, t_id, control_id]
@@ -237,12 +225,12 @@ def pick_best_trajectory(
 
 @wp.kernel
 def interpolate_control_linear(
-    control_points: wp.array(dtype=float, ndim=3),
-    control_dofs: wp.array(dtype=int),
-    control_gains: wp.array(dtype=float),
+    control_points: wp.array3d[float],
+    control_dofs: wp.array[int],
+    control_gains: wp.array[float],
     t: float,
     torque_dim: int,
-    torques: wp.array(dtype=float),
+    torques: wp.array[float],
 ):
     world_id, control_id = wp.tid()
     t_id = int(t)
@@ -256,11 +244,11 @@ def interpolate_control_linear(
 
 @wp.kernel
 def compute_prop_wrenches(
-    props: wp.array(dtype=Propeller),
-    controls: wp.array(dtype=float),
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    body_f: wp.array(dtype=wp.spatial_vector),
+    props: wp.array[Propeller],
+    controls: wp.array[float],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_f: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     prop = props[tid]
@@ -449,14 +437,10 @@ class Drone:
 
 
 class Example:
-    def __init__(
-        self,
-        viewer,
-        verbose=False,
-        num_rollouts=16,
-        render_rollouts=False,
-        drone_path=DEFAULT_DRONE_PATH,
-    ):
+    def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
+        self.args = args
+
         # setup simulation parameters first
         self.fps = 60
         self.frame = 0
@@ -465,11 +449,11 @@ class Example:
         self.sim_substeps = 1
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.verbose = verbose
-        self.rollout_count = num_rollouts
-        self.render_rollouts = render_rollouts
+        self.verbose = args.verbose
+        self.rollout_count = args.num_rollouts
+        self.render_rollouts = args.render_rollouts
         # TODO: Use drone path to load USD asset and draw it
-        self.drone_path = drone_path
+        self.drone_path = args.drone_path
 
         # setup rendering
         self.viewer = viewer
@@ -484,7 +468,7 @@ class Example:
         # We start with -1 since it'll be incremented on the first frame.
         self.target_idx = -1
         # use a Warp array to store the current target so that we can assign
-        # a new target to it while retaining the original CUDA graph.
+        # a new target to it while retaining the original graph.
         self.current_target = wp.array([self.targets[self.target_idx + 1]], dtype=wp.vec3)
 
         # Number of steps to run at each frame for the optimisation pass.
@@ -548,12 +532,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.forward_backward()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.forward_backward()
+        self.graph = capture.graph
 
     def forward_backward(self):
         self.tape = wp.Tape()
@@ -787,34 +768,29 @@ class Example:
 
         self.frame += 1
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--verbose", action="store_true", help="Print out additional status messages during execution."
+        )
+        parser.add_argument("--num_rollouts", type=int, default=16, help="Number of drone rollouts.")
+        parser.add_argument(
+            "--drone_path",
+            type=str,
+            default=os.path.join(newton.examples.get_asset_directory(), "crazyflie.usd"),
+            help="Path to the USD file to use as the reference for the drone prim in the output stage.",
+        )
+        parser.add_argument(
+            "--render_rollouts",
+            action="store_true",
+            help="Add rollout trajectories to the output stage.",
+        )
+        return parser
+
 
 if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds example-specific ones
-    parser = newton.examples.create_parser()
-    parser.add_argument("--verbose", action="store_true", help="Print out additional status messages during execution.")
-    parser.add_argument("--num_rollouts", type=int, default=16, help="Number of drone rollouts.")
-    parser.add_argument(
-        "--drone_path",
-        type=str,
-        default=os.path.join(newton.examples.get_asset_directory(), "crazyflie.usd"),
-        help="Path to the USD file to use as the reference for the drone prim in the output stage.",
-    )
-    parser.add_argument(
-        "--render_rollouts",
-        action="store_true",
-        help="Add rollout trajectories to the output stage.",
-    )
-
-    # Parse arguments and initialize viewer
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(
-        viewer,
-        args.verbose,
-        args.num_rollouts,
-        args.render_rollouts,
-        args.drone_path,
-    )
-
-    # Run example
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

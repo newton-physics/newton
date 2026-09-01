@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Provides a host-side container to summarily describe simulation world."""
 
@@ -53,7 +41,7 @@ class WorldDescriptor(Descriptor):
 
     wid: int = 0
     """
-    Index of the world w.r.t. the entire model. Defaults to `0`.\n
+    Index of the world w.r.t. the entire model. Defaults to `0`.
     Used to identify the world in construction of multi-world models.
     """
 
@@ -73,19 +61,19 @@ class WorldDescriptor(Descriptor):
 
     num_passive_joints: int = 0
     """
-    The number of joints that are passive.\n
+    The number of joints that are passive.
     This is less than or equal to `num_joints`.
     """
 
     num_actuated_joints: int = 0
     """
-    The number of joints that are actuated.\n
+    The number of joints that are actuated.
     This is less than or equal to `num_joints`.
     """
 
     num_dynamic_joints: int = 0
     """
-    The number of joints that are dynamic.\n
+    The number of joints that are dynamic.
     This is less than or equal to `num_joints`.
     """
 
@@ -105,128 +93,147 @@ class WorldDescriptor(Descriptor):
 
     num_body_coords: int = 0
     """
-    The total number of body coordinates.\n
+    The total number of body coordinates.
     This is always equal to `7 * num_bodies`.
     """
 
     num_body_dofs: int = 0
     """
-    The total number of body DoFs.\n
+    The total number of body DoFs.
     This is always equal to `6 * num_bodies`.
     """
 
     num_joint_coords: int = 0
     """
-    The total number of joint coordinates.\n
+    The total number of joint coordinates.
     This is equal to the sum of the coordinates of all joints in the world.
     """
 
     num_joint_dofs: int = 0
     """
-    The total number of joint DoFs.\n
+    The total number of joint DoFs.
     This is equal to the sum of the DoFs of all joints in the world.
     """
 
     num_passive_joint_coords: int = 0
     """
-    The number of passive joint coordinates.\n
+    The number of passive joint coordinates.
     This is equal to the sum of the coordinates of all passive joints defined
-    in the world, and is always less than or equal to `num_joint_coords`.\n
+    in the world, and is always less than or equal to `num_joint_coords`.
     """
 
     num_passive_joint_dofs: int = 0
     """
-    The number of passive joint DoFs.\n
+    The number of passive joint DoFs.
     This is equal to the sum of the DoFs of all passive joints defined
-    in the world, and is always less than or equal to `num_joint_dofs`.\n
+    in the world, and is always less than or equal to `num_joint_dofs`.
     """
 
     num_actuated_joint_coords: int = 0
     """
-    The number of actuated joint coordinates.\n
+    The number of actuated joint coordinates.
     This is equal to the sum of the coordinates of all actuated joints defined
-    in the world, and is always less than or equal to `num_joint_coords`.\n
+    in the world, and is always less than or equal to `num_joint_coords`.
     """
 
     num_actuated_joint_dofs: int = 0
     """
-    The number of actuated joint DoFs.\n
+    The number of actuated joint DoFs.
     This is equal to the sum of the DoFs of all actuated joints defined
-    in the world, and is always less than or equal to `num_joint_dofs`.\n
+    in the world, and is always less than or equal to `num_joint_dofs`.
     """
 
-    num_joint_cts: int = 0
+    num_fk_actuated_joint_coords: int = 0
     """
-    The total number of joint constraints.\n
-    This is equal to the sum of the constraints of all dynamic joints defined in the world.
+    The number of actuated joint coordinates, for FK actuation types.
+    """
+
+    num_fk_actuated_joint_dofs: int = 0
+    """
+    The number of actuated joint DoFs, for FK actuation types.
+    """
+
+    num_bilateral_joint_cts: int = 0
+    """
+    The total number of bilateral joint constraints.
+    This is equal to the sum of the kinematic and dynamic constraints of all joints defined in the world.
     """
 
     num_dynamic_joint_cts: int = 0
     """
-    The total number of joint dynamics constraints.\n
+    The total number of joint dynamics constraints.
     This is equal to the sum of the dynamic constraints of all dynamic joints defined in the world.
     """
 
     num_kinematic_joint_cts: int = 0
     """
-    The total number of joint kinematics constraints.\n
+    The total number of joint kinematics constraints.
     This is equal to the sum of the kinematics constraints of all joints defined in the world.
     """
 
+    num_bounded_joint_cts: int = 0
+    """The number of bounded-multiplier joint constraint rows."""
+
+    num_friction_joint_cts: int = 0
+    """The number of Coulomb joint friction constraint rows."""
+
+    num_effort_joint_cts: int = 0
+    """The number of effort limited implicit-PD actuator constraint rows."""
+
     joint_coords: list[int] = field(default_factory=list)
     """
-    The list of all joint coordinates.\n
+    The list of all joint coordinates.
     This list is ordered according the joint indices in the world,
-    and the sum of all elements is equal to `num_joint_coords`.\n
+    and the sum of all elements is equal to `num_joint_coords`.
     """
 
     joint_dofs: list[int] = field(default_factory=list)
     """
-    The list of all joint DoFs.\n
+    The list of all joint DoFs.
     This list is ordered according the joint indices in the world,
-    and the sum of all elements is equal to `num_joint_dofs`.\n
+    and the sum of all elements is equal to `num_joint_dofs`.
     """
 
     joint_passive_coords: list[int] = field(default_factory=list)
     """
-    The list of all passive joint coordinates.\n
+    The list of all passive joint coordinates.
     This list is ordered according the joint indices in the world,
-    and the sum of all elements is equal to `num_passive_joint_coords`.\n
+    and the sum of all elements is equal to `num_passive_joint_coords`.
     """
 
     joint_passive_dofs: list[int] = field(default_factory=list)
     """
-    The list of all passive joint DoFs.\n
+    The list of all passive joint DoFs.
     This list is ordered according the joint indices in the world,
-    and the sum of all elements is equal to `num_passive_joint_dofs`.\n
+    and the sum of all elements is equal to `num_passive_joint_dofs`.
     """
 
     joint_actuated_coords: list[int] = field(default_factory=list)
     """
-    The list of all actuated joint coordinates.\n
+    The list of all actuated joint coordinates.
     This list is ordered according the joint indices in the world,
-    and the sum of all elements is equal to `num_actuated_joint_coords`.\n
+    and the sum of all elements is equal to `num_actuated_joint_coords`.
     """
 
     joint_actuated_dofs: list[int] = field(default_factory=list)
     """
-    The list of all actuated joint DoFs.\n
+    The list of all actuated joint DoFs.
     This list is ordered according the joint indices in the world,
-    and the sum of all elements is equal to `num_actuated_joint_dofs`.\n
+    and the sum of all elements is equal to `num_actuated_joint_dofs`.
     """
 
     joint_dynamic_cts: list[int] = field(default_factory=list)
     """
-    The list of all joint dynamics constraints.\n
+    The list of all joint dynamics constraints.
     This list is ordered according the joint indices in the world,
-    and the sum of all elements is equal to `num_dynamic_joint_cts`.\n
+    and the sum of all elements is equal to `num_dynamic_joint_cts`.
     """
 
     joint_kinematic_cts: list[int] = field(default_factory=list)
     """
-    The list of all joint kinematics constraints.\n
+    The list of all joint kinematics constraints.
     This list is ordered according the joint indices in the world,
-    and the sum of all elements is equal to `num_kinematic_joint_cts`.\n
+    and the sum of all elements is equal to `num_kinematic_joint_cts`.
     """
 
     ###
@@ -267,7 +274,7 @@ class WorldDescriptor(Descriptor):
     joint_actuated_dofs_idx_offset: int = 0
     """Index offset of the world's actuated joint DoFs w.r.t the entire model."""
 
-    joint_cts_idx_offset: int = 0
+    joint_bilateral_cts_idx_offset: int = 0
     """Index offset of the world's joint constraints w.r.t the entire model."""
 
     joint_dynamic_cts_idx_offset: int = 0
@@ -275,6 +282,15 @@ class WorldDescriptor(Descriptor):
 
     joint_kinematic_cts_idx_offset: int = 0
     """Index offset of the world's joint kinematics constraints w.r.t the entire model."""
+
+    joint_bounded_cts_idx_offset: int = 0
+    """Index offset of the world's bounded constraints w.r.t the entire model."""
+
+    joint_friction_cts_idx_offset: int = 0
+    """Index offset of the world's Coulomb joint friction constraints w.r.t the entire model."""
+
+    joint_effort_cts_idx_offset: int = 0
+    """Index offset of the world's effort limited actuator constraint w.r.t the entire model."""
 
     ###
     # Entity Identifiers
@@ -329,13 +345,13 @@ class WorldDescriptor(Descriptor):
     base_body_idx: int | None = None
     """
     Index of the `base body` w.r.t. the world, i.e., index of the central node of the
-    body-joint connectivity graph.\n
+    body-joint connectivity graph.
 
     The `base body` is connected to the world through a `base joint`, which, if not specified
     is considered to be an implicit 6D free joint, indicating a floating-base system.
-    Otherwise, the `base joint` must be a unary joint connecting the base body to the world.\n
+    Otherwise, the `base joint` must be a unary joint connecting the base body to the world.
 
-    For articulated systems, the base body is the root body of the kinematic tree.\n
+    For articulated systems, the base body is the root body of the kinematic tree.
 
     For general mechanical assemblies, e.g. particle systems, rigid clusters or overconstrained
     multi-body systems, the base body serves only as a reference body for managing the system's
@@ -344,7 +360,7 @@ class WorldDescriptor(Descriptor):
 
     base_joint_idx: int | None = None
     """
-    Index of the base joint w.r.t. the world, i.e. the joint connecting the base body to the world.\n
+    Index of the base joint w.r.t. the world, i.e. the joint connecting the base body to the world.
     See `base_body_idx` for more details.
     """
 
@@ -392,7 +408,7 @@ class WorldDescriptor(Descriptor):
 
     inertia_total: float = 0.0
     """
-    Total diagonal inertia over all bodies in the world.\n
+    Total diagonal inertia over all bodies in the world.
     Equals the trace of the maximal-coordinate generalized mass matrix of the world.
     """
 
@@ -453,13 +469,16 @@ class WorldDescriptor(Descriptor):
         joint.jid = int(self.num_joints)
         joint.coords_offset = int(self.num_joint_coords)
         joint.dofs_offset = int(self.num_joint_dofs)
-        joint.passive_coords_offset = int(self.num_passive_joint_coords) if joint.is_passive else -1
-        joint.passive_dofs_offset = int(self.num_passive_joint_dofs) if joint.is_passive else -1
-        joint.actuated_coords_offset = int(self.num_actuated_joint_coords) if joint.is_actuated else -1
-        joint.actuated_dofs_offset = int(self.num_actuated_joint_dofs) if joint.is_actuated else -1
-        joint.cts_offset = int(self.num_joint_cts)
-        joint.dynamic_cts_offset = int(self.num_dynamic_joint_cts) if joint.num_dynamic_cts > 0 else -1
+        joint.passive_coords_offset = int(self.num_passive_joint_coords)
+        joint.passive_dofs_offset = int(self.num_passive_joint_dofs)
+        joint.actuated_coords_offset = int(self.num_actuated_joint_coords)
+        joint.actuated_dofs_offset = int(self.num_actuated_joint_dofs)
+        joint.bilateral_cts_offset = int(self.num_bilateral_joint_cts)
+        joint.dynamic_cts_offset = int(self.num_dynamic_joint_cts)
         joint.kinematic_cts_offset = int(self.num_kinematic_joint_cts)
+        joint.bounded_cts_offset = int(self.num_bounded_joint_cts)
+        joint.friction_cts_offset = int(self.num_friction_joint_cts)
+        joint.effort_cts_offset = int(self.num_effort_joint_cts)
 
         # Append joint identifiers
         self.joint_names.append(joint.name)
@@ -474,9 +493,12 @@ class WorldDescriptor(Descriptor):
         self.num_joints += 1
         self.num_joint_coords += joint.num_coords
         self.num_joint_dofs += joint.num_dofs
-        self.num_joint_cts += joint.num_cts
+        self.num_bilateral_joint_cts += joint.num_bilateral_cts
         self.num_dynamic_joint_cts += joint.num_dynamic_cts
         self.num_kinematic_joint_cts += joint.num_kinematic_cts
+        self.num_bounded_joint_cts += joint.num_bounded_cts
+        self.num_friction_joint_cts += joint.num_friction_cts
+        self.num_effort_joint_cts += joint.num_effort_cts
 
         # Append joint connection group info
         if joint.bid_B < 0:
@@ -488,8 +510,6 @@ class WorldDescriptor(Descriptor):
 
         # Append joint control group info
         if joint.act_type == JointActuationType.PASSIVE:
-            joint.passive_coords_offset = int(self.num_passive_joint_coords)
-            joint.passive_dofs_offset = int(self.num_passive_joint_dofs)
             self.has_passive_dofs = True
             self.num_passive_joints += 1
             self.num_passive_joint_coords += joint.num_coords
@@ -498,15 +518,19 @@ class WorldDescriptor(Descriptor):
             self.joint_passive_dofs.append(joint.num_dofs)
             self.passive_joint_names.append(joint.name)
         else:
-            joint.actuated_coords_offset = int(self.num_actuated_joint_coords)
-            joint.actuated_dofs_offset = int(self.num_actuated_joint_dofs)
             self.has_actuated_dofs = True
             self.num_actuated_joints += 1
             self.num_actuated_joint_coords += joint.num_coords
             self.num_actuated_joint_dofs += joint.num_dofs
             self.joint_actuated_coords.append(joint.num_coords)
             self.joint_actuated_dofs.append(joint.num_dofs)
+            if joint.fk_act_flag < 0:
+                self.num_fk_actuated_joint_coords += joint.num_coords
+                self.num_fk_actuated_joint_dofs += joint.num_dofs
             self.actuated_joint_names.append(joint.name)
+        if joint.fk_act_flag == 1:
+            self.num_fk_actuated_joint_coords += joint.num_coords
+            self.num_fk_actuated_joint_dofs += joint.num_dofs
 
         # Append joint dynamics group info
         if joint.num_dynamic_cts > 0:

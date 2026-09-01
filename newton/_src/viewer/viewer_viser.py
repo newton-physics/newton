@@ -1,33 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
+import collections
 import inspect
 import os
 import warnings
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
 
 import newton
 
-from ..core.types import nparray, override
-from ..utils.texture import load_texture, normalize_texture
+from ..core.types import override
+from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 
 
@@ -47,6 +37,7 @@ class ViewerViser(ViewerBase):
     """
 
     _viser_module = None
+    _SH_C0 = 0.28209479177387814
 
     @classmethod
     def _get_viser(cls):
@@ -59,25 +50,6 @@ class ViewerViser(ViewerBase):
             except ImportError as e:
                 raise ImportError("viser package is required for ViewerViser. Install with: pip install viser") from e
         return cls._viser_module
-
-    @staticmethod
-    def _to_numpy(x) -> np.ndarray | None:
-        """Convert warp arrays or other array-like objects to numpy arrays."""
-        if x is None:
-            return None
-        if hasattr(x, "numpy"):
-            return x.numpy()
-        return np.asarray(x)
-
-    @staticmethod
-    def _prepare_texture(texture: np.ndarray | str | None) -> np.ndarray | None:
-        """Load and normalize texture data for viser/glTF usage."""
-        return normalize_texture(
-            load_texture(texture),
-            flip_vertical=False,
-            require_channels=True,
-            scale_unit_range=True,
-        )
 
     @staticmethod
     def _build_trimesh_mesh(points: np.ndarray, indices: np.ndarray, uvs: np.ndarray, texture: np.ndarray):
@@ -115,6 +87,7 @@ class ViewerViser(ViewerBase):
         verbose: bool = True,
         share: bool = False,
         record_to_viser: str | None = None,
+        plot_history_size: int = 250,
     ):
         """
         Initialize the ViewerViser backend for Newton using the viser visualization library.
@@ -129,8 +102,27 @@ class ViewerViser(ViewerBase):
             share: If True, create a publicly accessible URL via viser's share feature.
             record_to_viser: Path to record the viewer to a ``*.viser`` recording file
                 (e.g. "my_recording.viser"). If None, the viewer will not record to a file.
+            plot_history_size: Maximum number of samples kept per
+                :meth:`log_scalar` signal for the live time-series plots.
         """
+        if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
+            raise TypeError("plot_history_size must be an integer")
+        if plot_history_size <= 0:
+            raise ValueError("plot_history_size must be > 0")
+
         viser = self._get_viser()
+
+        # Rolling buffers for log_scalar() time-series plots.
+        self._scalar_buffers: dict[str, collections.deque] = {}
+        self._scalar_accumulators: dict[str, list[float]] = {}
+        self._scalar_smoothing: dict[str, int] = {}
+        self._scalar_dirty: set[str] = set()
+        self._plot_handles: dict[str, Any] = {}
+        self._plot_folder: Any = None
+        self._plot_history_size = plot_history_size
+        self._plane_meshes = {}
+        self._plane_handles = {}
+        self._plane_geometry_keys = {}  # Cache of (count, widths, lengths, cell_sizes) per plane batch name
 
         super().__init__()
 
@@ -141,6 +133,9 @@ class ViewerViser(ViewerBase):
         self._meshes = {}
         self._instances = {}
         self._scene_handles = {}  # Track viser scene node handles
+        self._gaussian_splats = {}  # Track cached Gaussian splat upload keys, by name
+        self._line_segment_counts = {}
+        self._line_versions = {}
 
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
@@ -148,6 +143,10 @@ class ViewerViser(ViewerBase):
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
+
+        # Store configuration before any URL generation.
+        self._port = port
+        self.is_jupyter_notebook = is_jupyter_notebook()
 
         if share:
             self._share_url = self._server.request_share_url()
@@ -157,13 +156,7 @@ class ViewerViser(ViewerBase):
             self._share_url = None
 
         if verbose:
-            print(f"Viser server running at: http://localhost:{port}")
-
-        # Store configuration
-        self._port = port
-
-        # Track if running in Jupyter
-        self.is_jupyter_notebook = is_jupyter_notebook()
+            print(f"Viser server running at: {self.url}")
 
         # Recording state
         self._frame_dt = 0.0
@@ -175,6 +168,65 @@ class ViewerViser(ViewerBase):
 
         if self._serializer is not None and verbose:
             print(f"Recording to: {record_to_viser}")
+
+    @override
+    def clear_model(self):
+        """Reset model-dependent state, including scalar plot buffers."""
+        owns = self._is_layer_owned_path
+        for plane_name in list(self._plane_handles.keys()):
+            if owns(plane_name):
+                self._remove_plane_handles(plane_name)
+        self._plane_meshes = {name: value for name, value in self._plane_meshes.items() if not owns(name)}
+
+        for gaussian_name in list(getattr(self, "_gaussian_splats", {}).keys()):
+            if owns(gaussian_name):
+                handle = self._scene_handles.pop(gaussian_name, None)
+                if handle is not None:
+                    try:
+                        handle.remove()
+                    except Exception:
+                        pass
+                self._gaussian_splats.pop(gaussian_name, None)
+
+        for name, handle in list(getattr(self, "_scene_handles", {}).items()):
+            if not owns(name):
+                continue
+            try:
+                handle.remove()
+            except Exception:
+                pass
+            self._scene_handles.pop(name, None)
+            self._instances.pop(name, None)
+            self._meshes.pop(name, None)
+            self._gaussian_splats.pop(name, None)
+            self._line_segment_counts.pop(name, None)
+            self._line_versions.pop(name, None)
+
+        # Remove only scalar plot state owned by the active layer.
+        for name, handle in list(self._plot_handles.items()):
+            if not owns(name):
+                continue
+            try:
+                handle.remove()
+            except Exception:
+                pass
+            self._plot_handles.pop(name, None)
+        if not self._plot_handles and self._plot_folder is not None:
+            try:
+                self._plot_folder.remove()
+            except Exception:
+                pass
+            self._plot_folder = None
+        for name in list(self._scalar_buffers.keys()):
+            if owns(name):
+                self._scalar_buffers.pop(name, None)
+                self._scalar_accumulators.pop(name, None)
+                self._scalar_smoothing.pop(name, None)
+        for name in list(self._scalar_dirty):
+            if owns(name):
+                self._scalar_dirty.discard(name)
+
+        super().clear_model()
 
     def _setup_scene(self):
         """Set up the default scene configuration."""
@@ -189,19 +241,197 @@ class ViewerViser(ViewerBase):
         """Call a viser scene method with only supported keyword args."""
         try:
             signature = inspect.signature(method)
-            allowed = {k: v for k, v in kwargs.items() if k in signature.parameters}
-            return method(**allowed)
-        except Exception:
+        except (TypeError, ValueError):
             return method(**kwargs)
+
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+        allowed = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
+        dropped_appearance = [
+            key
+            for key in ("opacity", "batched_opacities", "color", "batched_colors", "material")
+            if kwargs.get(key) is not None and key not in signature.parameters and not accepts_kwargs
+        ]
+        if dropped_appearance:
+            warnings.warn(
+                f"Viser {method.__name__} does not support requested appearance argument(s): "
+                f"{', '.join(dropped_appearance)}.",
+                stacklevel=2,
+            )
+        return method(**allowed)
 
     @property
     def url(self) -> str:
-        """Get the URL of the viser server.
+        """Get the browser URL of the viser server.
 
         Returns:
-            str: Local HTTP URL for the running viser server.
+            str: Browser URL for the running viser server.
         """
+        if self.is_jupyter_notebook:
+            return self._build_browser_url(self._port)
         return f"http://localhost:{self._port}"
+
+    @staticmethod
+    def _normalize_jupyter_base_url(base_url: str) -> str:
+        """Normalize a Jupyter base URL for proxy path construction."""
+        if not base_url:
+            return ""
+        if not base_url.startswith("/"):
+            base_url = "/" + base_url
+        if base_url != "/":
+            return base_url.rstrip("/")
+        return ""
+
+    @classmethod
+    def _get_jupyter_proxy_base_url(cls) -> str | None:
+        """Return the Jupyter base URL when notebook proxying is available."""
+        try:
+            from importlib.util import find_spec  # noqa: PLC0415
+
+            if find_spec("jupyter_server_proxy") is None:
+                return None
+        except Exception:
+            return None
+
+        # JUPYTER_BASE_URL is not always exported (e.g. CLI --NotebookApp.base_url).
+        for env_name in ("JUPYTER_BASE_URL", "JUPYTERHUB_SERVICE_PREFIX", "NB_PREFIX"):
+            candidate = os.environ.get(env_name)
+            if candidate:
+                return cls._normalize_jupyter_base_url(candidate)
+
+        try:
+            from jupyter_server.serverapp import list_running_servers  # noqa: PLC0415
+
+            for server in list_running_servers():
+                candidate = server.get("base_url")
+                if candidate:
+                    return cls._normalize_jupyter_base_url(candidate)
+        except Exception:
+            pass
+
+        return None
+
+    @classmethod
+    def _build_browser_url(
+        cls,
+        port: int,
+        *,
+        path: str = "/",
+        query: str = "",
+        local_host: str = "localhost",
+    ) -> str:
+        """Build a browser URL, preferring Jupyter proxy routes when available."""
+        normalized_path = "/" if path in ("", "/") else "/" + path.lstrip("/")
+
+        jupyter_base_url = cls._get_jupyter_proxy_base_url()
+        if jupyter_base_url is not None:
+            return f"{jupyter_base_url}/proxy/{port}{normalized_path}{query}"
+
+        return f"http://{local_host}:{port}{normalized_path}{query}"
+
+    @staticmethod
+    def _get_colab_output() -> Any | None:
+        """Return google.colab.output when Colab iframe display is available."""
+        try:
+            from google.colab import output  # noqa: PLC0415
+        except Exception:
+            return None
+
+        if not hasattr(output, "serve_kernel_port_as_iframe"):
+            return None
+
+        return output
+
+    @classmethod
+    def _display_colab_iframe(
+        cls,
+        port: int,
+        *,
+        path: str = "/",
+        query: str = "",
+        width: int | str = "100%",
+        height: int | str = 400,
+    ) -> bool:
+        """Display a local server port in Colab when the Colab helper is available."""
+        output = cls._get_colab_output()
+        if output is None:
+            return False
+
+        normalized_path = "/" if path in ("", "/") else "/" + path.lstrip("/")
+        normalized_query = ""
+        if query:
+            normalized_query = query if query.startswith("?") else "?" + query
+        iframe_path = f"{normalized_path}{normalized_query}"
+
+        try:
+            output.serve_kernel_port_as_iframe(port, path=iframe_path, width=width, height=height)
+        except TypeError:
+            output.serve_kernel_port_as_iframe(port, path=iframe_path, height=height)
+
+        return True
+
+    @classmethod
+    def _colab_iframe_target_from_url(cls, player_url: str) -> tuple[int, str, str] | None:
+        """Extract a Colab iframe target from an absolute or Jupyter proxy URL."""
+        parsed_url = urlparse(player_url)
+
+        proxy_target = None
+        path_segments = parsed_url.path.split("/")
+        for index, segment in enumerate(path_segments[:-1]):
+            if segment != "proxy":
+                continue
+
+            port_text = path_segments[index + 1]
+            if not port_text.isdecimal():
+                continue
+
+            proxy_port = int(port_text)
+            if proxy_port > 65535:
+                continue
+
+            downstream_segments = path_segments[index + 2 :]
+            if not downstream_segments or downstream_segments == [""]:
+                downstream_path = "/"
+            else:
+                downstream_path = "/" + "/".join(downstream_segments)
+            proxy_target = (proxy_port, downstream_path, parsed_url.query)
+
+        if proxy_target is not None:
+            return proxy_target
+
+        try:
+            parsed_port = parsed_url.port
+        except ValueError:
+            parsed_port = None
+
+        if parsed_port is not None:
+            return parsed_port, parsed_url.path or "/", parsed_url.query
+
+        return None
+
+    @classmethod
+    def get_viser_client_dir(cls) -> Path:
+        """Return the installed Viser client build for notebook playback."""
+        viser = cls._get_viser()
+
+        try:
+            viser_package_dir = Path(inspect.getfile(viser)).resolve().parent
+        except Exception:
+            viser_package_dir = None
+
+        if viser_package_dir is not None:
+            # Prefer the client build shipped with the installed viser package so
+            # the playback UI matches the serializer that generated the .viser file.
+            for candidate in (
+                viser_package_dir / "client" / "build",
+                viser_package_dir / "static",
+            ):
+                if (candidate / "index.html").exists():
+                    return candidate.resolve()
+
+        raise FileNotFoundError(
+            "Viser client files not found in the installed viser package. "
+            "The notebook playback feature requires a Viser client build."
+        )
 
     @staticmethod
     def _is_client_camera_ready(client: Any) -> bool:
@@ -374,14 +604,19 @@ class ViewerViser(ViewerBase):
     def log_mesh(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3),
-        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
-        normals: wp.array(dtype=wp.vec3) | None = None,
-        uvs: wp.array(dtype=wp.vec2) | None = None,
+        points: wp.array[wp.vec3],
+        indices: wp.array[wp.int32] | wp.array[wp.uint32],
+        normals: wp.array[wp.vec3] | None = None,
+        uvs: wp.array[wp.vec2] | None = None,
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
-        colors: wp.array(dtype=wp.vec3) | None = None,
+        color: tuple[float, float, float] | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
+        dynamic: bool = False,
+        opacity: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Log a mesh to viser for visualization.
@@ -395,16 +630,26 @@ class ViewerViser(ViewerBase):
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling.
-            colors: Optional per-vertex colors.
+            color: Optional base color as an RGB tuple with values in
+                [0, 1]. Used when no texture is provided.
+            roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
+                smooth, ``1`` is fully rough.
+            metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
+                is metal.
+            dynamic: Whether mesh topology may change between frames.
+            opacity: Optional display opacity in [0, 1].
+            colors: Optional per-vertex colors, overriding ``color`` for each vertex.
         """
+        name = self._qualify(name)
+
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
 
         # Convert to numpy arrays
-        points_np = self._to_numpy(points).astype(np.float32)
-        indices_np = self._to_numpy(indices).astype(np.uint32)
-        uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
-        texture_image = self._prepare_texture(texture)
+        points_np = to_numpy(points).astype(np.float32)
+        indices_np = to_numpy(indices).astype(np.uint32)
+        uvs_np = to_numpy(uvs).astype(np.float32) if uvs is not None else None
+        texture_image = prepare_viewer_texture(texture)
 
         if texture_image is not None and uvs_np is None:
             warnings.warn(f"Mesh {name} has a texture but no UVs; texture will be ignored.", stacklevel=2)
@@ -436,6 +681,7 @@ class ViewerViser(ViewerBase):
             "uvs": uvs_np,
             "texture": texture_image,
             "trimesh": trimesh_mesh,
+            "opacity": opacity,
         }
 
         # Remove existing mesh if present
@@ -444,39 +690,197 @@ class ViewerViser(ViewerBase):
                 self._scene_handles[name].remove()
             except Exception:
                 pass
+            del self._scene_handles[name]
 
         if hidden:
             return
 
         # Add mesh to viser scene
         if trimesh_mesh is not None:
-            handle = self._call_scene_method(
-                self._server.scene.add_mesh_trimesh,
-                name=name,
-                mesh=trimesh_mesh,
-            )
+            mesh_kwargs = {
+                "name": name,
+                "mesh": trimesh_mesh,
+            }
+            if opacity is not None:
+                mesh_kwargs["opacity"] = float(np.clip(opacity, 0.0, 1.0))
+            handle = self._call_scene_method(self._server.scene.add_mesh_trimesh, **mesh_kwargs)
         else:
-            handle = self._call_scene_method(
-                self._server.scene.add_mesh_simple,
-                name=name,
-                vertices=points_np,
-                faces=indices_np,
-                color=(180, 180, 180),  # Default gray color
-                wireframe=False,
-                side="double" if not backface_culling else "front",
-            )
+            mesh_kwargs = {
+                "name": name,
+                "vertices": points_np,
+                "faces": indices_np,
+                "color": (180, 180, 180) if color is None else color,
+                "wireframe": False,
+                "side": "double" if not backface_culling else "front",
+            }
+            if opacity is not None:
+                mesh_kwargs["opacity"] = float(np.clip(opacity, 0.0, 1.0))
+            handle = self._call_scene_method(self._server.scene.add_mesh_simple, **mesh_kwargs)
         self._scene_handles[name] = handle
+
+    @staticmethod
+    def _quats_xyzw_to_wxyz(quats_xyzw: np.ndarray) -> np.ndarray:
+        """Convert quaternions from Warp's XYZW layout to viser's WXYZ layout."""
+        quats_xyzw = np.asarray(quats_xyzw, dtype=np.float32)
+        was_1d = quats_xyzw.ndim == 1
+        if was_1d:
+            quats_xyzw = quats_xyzw.reshape(1, 4)
+        if quats_xyzw.ndim != 2 or quats_xyzw.shape[1] != 4:
+            raise ValueError(f"Expected quaternion array with shape (4,) or (N, 4), got {quats_xyzw.shape}")
+
+        quats_wxyz = np.empty_like(quats_xyzw)
+        quats_wxyz[:, 0] = quats_xyzw[:, 3]
+        quats_wxyz[:, 1] = quats_xyzw[:, 0]
+        quats_wxyz[:, 2] = quats_xyzw[:, 1]
+        quats_wxyz[:, 3] = quats_xyzw[:, 2]
+        return quats_wxyz[0] if was_1d else quats_wxyz
+
+    @staticmethod
+    def _quats_xyzw_to_rotmats(quats_xyzw: np.ndarray) -> np.ndarray:
+        """Convert a batch of XYZW quaternions to (N, 3, 3) rotation matrices."""
+        quats_xyzw = np.asarray(quats_xyzw, dtype=np.float32)
+        quats_xyzw = quats_xyzw / np.maximum(np.linalg.norm(quats_xyzw, axis=1, keepdims=True), 1e-12)
+        x, y, z, w = quats_xyzw[:, 0], quats_xyzw[:, 1], quats_xyzw[:, 2], quats_xyzw[:, 3]
+        n = quats_xyzw.shape[0]
+        rot = np.empty((n, 3, 3), dtype=np.float32)
+        rot[:, 0, 0] = 1.0 - 2.0 * (y * y + z * z)
+        rot[:, 0, 1] = 2.0 * (x * y - w * z)
+        rot[:, 0, 2] = 2.0 * (x * z + w * y)
+        rot[:, 1, 0] = 2.0 * (x * y + w * z)
+        rot[:, 1, 1] = 1.0 - 2.0 * (x * x + z * z)
+        rot[:, 1, 2] = 2.0 * (y * z - w * x)
+        rot[:, 2, 0] = 2.0 * (x * z - w * y)
+        rot[:, 2, 1] = 2.0 * (y * z + w * x)
+        rot[:, 2, 2] = 1.0 - 2.0 * (x * x + y * y)
+        return rot
+
+    def _remove_plane_handles(self, name: str):
+        """Remove any plane-grid handles associated with an instance batch."""
+        self._plane_geometry_keys.pop(name, None)
+        handle = self._plane_handles.pop(name, None)
+        if handle is None:
+            return
+        handles = handle if isinstance(handle, (list, tuple)) else (handle,)
+        for handle in handles:
+            try:
+                handle.remove()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _plane_cell_size(width: float, length: float) -> float:
+        """Pick a grid cell size for a plane of the given extents."""
+        spacing = max(min(float(width), float(length)) / 10.0, 0.25)
+        return min(spacing, 2.0)
+
+    def _log_plane_instances(
+        self,
+        name: str,
+        plane_info: dict[str, float | bool],
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        hidden: bool = False,
+    ):
+        """Render plane instances as viser grids.
+
+        Grid handles are cached by name and only recreated when the instance
+        count, extents, or cell sizes change; a pose-only update (the common case for a
+        static ground plane logged every frame) just moves the existing
+        handles instead of tearing them down and rebuilding, which avoids a
+        visible flicker as handles disappear and reappear over the websocket.
+        """
+        if hidden or xforms is None:
+            for handle in self._plane_handles.get(name, ()):
+                handle.visible = False
+            return
+
+        xforms_np = to_numpy(xforms)
+        if xforms_np is None or len(xforms_np) == 0:
+            self._remove_plane_handles(name)
+            return
+
+        xforms_np = np.asarray(xforms_np, dtype=np.float32)
+        positions = xforms_np[:, :3]
+        quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
+        scales_np = to_numpy(scales) if scales is not None else None
+        if scales_np is not None:
+            scales_np = np.asarray(scales_np, dtype=np.float32)
+
+        base_width = float(plane_info["width"])
+        base_length = float(plane_info["length"])
+
+        widths = []
+        lengths = []
+        cell_sizes = []
+        for idx in range(len(positions)):
+            width = base_width
+            length = base_length
+
+            # TODO: Compute cell size for the scaled width/length directly
+            cell_size = self._plane_cell_size(width, length)
+
+            if scales_np is not None:
+                sx = float(scales_np[idx][0])
+                sy = float(scales_np[idx][1])
+                width *= sx
+                length *= sy
+                cell_size *= max(sx, sy)
+
+            widths.append(width)
+            lengths.append(length)
+            cell_sizes.append(cell_size)
+
+        geometry_key = (len(positions), tuple(widths), tuple(lengths), tuple(cell_sizes))
+        existing = self._plane_handles.get(name)
+
+        if (
+            existing is not None
+            and len(existing) == len(positions)
+            and self._plane_geometry_keys.get(name) == geometry_key
+        ):
+            # Only the pose changed (e.g. a body-attached plane, or the same
+            # static plane logged again this frame) -- move handles in place.
+            for handle, position, quat_wxyz in zip(existing, positions, quats_wxyz, strict=False):
+                handle.position = tuple(float(v) for v in position)
+                handle.wxyz = tuple(float(v) for v in quat_wxyz)
+                handle.visible = True
+            return
+
+        self._remove_plane_handles(name)
+
+        handles = []
+        for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
+            # The plane's local frame has its normal along +Z, so the grid lies in the local XY plane.
+            handle = self._call_scene_method(
+                self._server.scene.add_grid,
+                name=f"{name}/grid_{idx}",
+                width=widths[idx],
+                height=lengths[idx],
+                plane="xy",
+                cell_color=(150, 150, 150),
+                section_color=(110, 110, 110),
+                cell_size=cell_sizes[idx],
+                section_size=cell_sizes[idx],
+                position=tuple(float(v) for v in position),
+                wxyz=tuple(float(v) for v in quat_wxyz),
+            )
+            handles.append(handle)
+
+        if handles:
+            self._plane_handles[name] = handles
+            self._plane_geometry_keys[name] = geometry_key
 
     @override
     def log_instances(
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log instanced mesh data to viser using efficient batched rendering.
@@ -492,7 +896,17 @@ class ViewerViser(ViewerBase):
             colors: Instance colors.
             materials: Instance materials.
             hidden: Whether the instances are hidden.
+            opacities: Instance opacities.
         """
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
+        if mesh in self._plane_meshes:
+            self._log_plane_instances(name, self._plane_meshes[mesh], xforms, scales, hidden=hidden)
+            return
+
+        self._remove_plane_handles(name)
+
         # Check that mesh exists
         if mesh not in self._meshes:
             raise RuntimeError(f"Mesh {mesh} not found. Call log_mesh first.")
@@ -501,8 +915,9 @@ class ViewerViser(ViewerBase):
         base_points = mesh_data["points"]
         base_indices = mesh_data["indices"]
         base_uvs = mesh_data.get("uvs")
-        texture_image = self._prepare_texture(mesh_data.get("texture"))
+        texture_image = prepare_viewer_texture(mesh_data.get("texture"))
         trimesh_mesh = mesh_data.get("trimesh")
+        mesh_opacity = mesh_data.get("opacity")
 
         if hidden:
             # Remove existing instances if present
@@ -520,23 +935,22 @@ class ViewerViser(ViewerBase):
         if xforms is None:
             return
 
-        xforms_np = self._to_numpy(xforms)
-        scales_np = self._to_numpy(scales) if scales is not None else None
-        colors_np = self._to_numpy(colors) if colors is not None else None
+        xforms_np = to_numpy(xforms)
+        scales_np = to_numpy(scales) if scales is not None else None
+        colors_np = to_numpy(colors) if colors is not None else None
 
         num_instances = len(xforms_np)
+        opacities_np = promote_to_clamped_float_array(
+            opacities if opacities is not None else mesh_opacity,
+            num_instances,
+            value_name="Opacity",
+        )
 
         # Extract positions from transforms
         # Warp transform format: [x, y, z, qx, qy, qz, qw]
         positions = xforms_np[:, :3].astype(np.float32)
 
-        # Convert quaternions from Warp format (x, y, z, w) to viser format (w, x, y, z)
-        quats_xyzw = xforms_np[:, 3:7]
-        quats_wxyz = np.zeros((num_instances, 4), dtype=np.float32)
-        quats_wxyz[:, 0] = quats_xyzw[:, 3]  # w
-        quats_wxyz[:, 1] = quats_xyzw[:, 0]  # x
-        quats_wxyz[:, 2] = quats_xyzw[:, 1]  # y
-        quats_wxyz[:, 3] = quats_xyzw[:, 2]  # z
+        quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
 
         # Prepare scales
         if scales_np is not None:
@@ -578,6 +992,15 @@ class ViewerViser(ViewerBase):
                         handle.batched_colors = batched_colors
                         # Cache the colors for future reference
                         self._instances[name]["colors"] = batched_colors
+                    if opacities_np is not None:
+                        if hasattr(handle, "batched_opacities"):
+                            handle.batched_opacities = opacities_np
+                            self._instances[name]["opacities"] = opacities_np
+                        else:
+                            warnings.warn(
+                                f"Viser handle for {name!r} does not support batched opacity updates.",
+                                stacklevel=2,
+                            )
                     return
                 except Exception:
                     # If update fails, recreate the mesh
@@ -592,7 +1015,9 @@ class ViewerViser(ViewerBase):
         if batched_colors is None:
             batched_colors = np.full((num_instances, 3), 180, dtype=np.uint8)
 
-        # Create new batched mesh
+        # Create new batched mesh.
+        # LOD is disabled because viser's automatic mesh simplification creates
+        # holes in complex geometry (e.g. terrain), causing popping artifacts.
         if use_trimesh:
             handle = self._call_scene_method(
                 self._server.scene.add_batched_meshes_trimesh,
@@ -601,7 +1026,8 @@ class ViewerViser(ViewerBase):
                 batched_positions=positions,
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
-                lod="auto",
+                batched_opacities=opacities_np,
+                lod="off",
             )
         else:
             handle = self._call_scene_method(
@@ -613,7 +1039,8 @@ class ViewerViser(ViewerBase):
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
                 batched_colors=batched_colors,
-                lod="auto",
+                batched_opacities=opacities_np,
+                lod="off",
             )
 
         self._scene_handles[name] = handle
@@ -621,6 +1048,7 @@ class ViewerViser(ViewerBase):
             "mesh": mesh,
             "count": num_instances,
             "colors": batched_colors,  # Cache the colors
+            "opacities": opacities_np,
             "use_trimesh": use_trimesh,
         }
 
@@ -641,10 +1069,53 @@ class ViewerViser(ViewerBase):
         End the current frame.
 
         If recording is active, inserts a sleep command for playback timing.
+        Updates scalar plots if any data changed since last frame.
         """
+        self._update_scalar_plots()
+
         if self._serializer is not None:
             # Insert sleep for frame timing during recording
             self._serializer.insert_sleep(self._frame_dt)
+
+    def _update_scalar_plots(self):
+        """Create or update uPlot chart handles for dirty scalar signals."""
+        if not self._scalar_dirty:
+            return
+
+        try:
+            from viser import uplot
+
+            # Create the plots folder on first use.
+            if self._plot_folder is None:
+                self._plot_folder = self._server.gui.add_folder("Plots")
+
+            n = self._plot_history_size
+            x = np.arange(n, dtype=np.float64)
+
+            for name in self._scalar_dirty:
+                buf = self._scalar_buffers[name]
+                y = np.full(n, np.nan, dtype=np.float64)
+                y[n - len(buf) :] = np.array(buf, dtype=np.float64)
+
+                handle = self._plot_handles.get(name)
+                if handle is None:
+                    with self._plot_folder:
+                        handle = self._server.gui.add_uplot(
+                            data=(x, y),
+                            series=(
+                                uplot.Series(label="step"),
+                                uplot.Series(label=name, stroke="#3b82f6", width=2),
+                            ),
+                            scales={"x": uplot.Scale(time=False)},
+                            aspect=2.0,
+                        )
+                    self._plot_handles[name] = handle
+                else:
+                    handle.data = (x, y)
+        except Exception:
+            pass
+
+        self._scalar_dirty.clear()
 
     @override
     def is_running(self) -> bool:
@@ -713,11 +1184,9 @@ class ViewerViser(ViewerBase):
     def log_lines(
         self,
         name: str,
-        starts: wp.array(dtype=wp.vec3) | None,
-        ends: wp.array(dtype=wp.vec3) | None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ),
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
         width: float = 0.01,
         hidden: bool = False,
     ):
@@ -732,23 +1201,32 @@ class ViewerViser(ViewerBase):
             width: Line width.
             hidden: Whether the lines are hidden.
         """
-        # Remove existing lines if present
-        if name in self._scene_handles:
-            try:
-                self._scene_handles[name].remove()
-            except Exception:
-                pass
+        name = self._qualify(name)
+
+        def remove_existing_line(reset_version: bool = True):
+            handle = self._scene_handles.pop(name, None)
+            if handle is not None:
+                try:
+                    handle.remove()
+                except Exception:
+                    pass
+            self._line_segment_counts.pop(name, None)
+            if reset_version:
+                self._line_versions.pop(name, None)
 
         if hidden:
+            remove_existing_line()
             return
 
         if starts is None or ends is None:
+            remove_existing_line()
             return
 
-        starts_np = self._to_numpy(starts)
-        ends_np = self._to_numpy(ends)
+        starts_np = to_numpy(starts)
+        ends_np = to_numpy(ends)
 
         if starts_np is None or ends_np is None or len(starts_np) == 0:
+            remove_existing_line()
             return
 
         starts_np = np.asarray(starts_np, dtype=np.float32)
@@ -765,15 +1243,17 @@ class ViewerViser(ViewerBase):
                 rgb = rgb * 255.0
             return np.clip(rgb, 0, 255).astype(np.uint8)
 
-        # Process colors
-        color_rgb: tuple[int, int, int] | np.ndarray = (0, 255, 0)
+        # Process colors. Keep this as a NumPy array because Viser handle
+        # property updates require the normalized array form, even though
+        # add_line_segments() also accepts RGB tuples on initial creation.
+        color_rgb: np.ndarray = np.array((0, 255, 0), dtype=np.uint8)
         if colors is not None:
-            colors_np = self._to_numpy(colors)
+            colors_np = to_numpy(colors)
             if colors_np is not None:
                 colors_np = np.asarray(colors_np)
                 if colors_np.ndim == 1 and colors_np.shape[0] == 3:
                     # Single color for all lines.
-                    color_rgb = tuple(_rgb_to_uint8_array(colors_np).tolist())
+                    color_rgb = _rgb_to_uint8_array(colors_np)
                 elif colors_np.ndim == 2 and colors_np.shape == (num_lines, 3):
                     # Per-line colors: repeat each line color for [start, end].
                     line_colors = _rgb_to_uint8_array(colors_np)
@@ -782,14 +1262,32 @@ class ViewerViser(ViewerBase):
                     # Already per-point-per-segment colors.
                     color_rgb = _rgb_to_uint8_array(colors_np)
 
-        # Add line segments to viser
+        line_width = width * 100  # Scale for visibility
+        if name in self._scene_handles:
+            handle = self._scene_handles[name]
+            if self._line_segment_counts.get(name) == num_lines:
+                try:
+                    handle.points = line_points
+                    handle.colors = color_rgb
+                    handle.line_width = line_width
+                    return
+                except Exception:
+                    remove_existing_line()
+            else:
+                self._line_versions[name] = self._line_versions.get(name, 0) + 1
+                remove_existing_line(reset_version=False)
+
+        version = self._line_versions.get(name, 0)
+        scene_name = name if version == 0 else f"{name}__line_{version}"
+
         handle = self._server.scene.add_line_segments(
-            name=name,
+            name=scene_name,
             points=line_points,
             colors=color_rgb,
-            line_width=width * 100,  # Scale for visibility
+            line_width=line_width,
         )
         self._scene_handles[name] = handle
+        self._line_segment_counts[name] = num_lines
 
     @override
     def log_geo(
@@ -813,6 +1311,8 @@ class ViewerViser(ViewerBase):
             geo_src: Optional source geometry for mesh-backed types.
             hidden: Whether the resulting geometry is hidden.
         """
+        name = self._qualify(name)
+
         if geo_type == newton.GeoType.PLANE:
             # Handle "infinite" planes encoded with non-positive scales
             if geo_scale[0] == 0.0 or geo_scale[1] == 0.0:
@@ -820,18 +1320,16 @@ class ViewerViser(ViewerBase):
                 if extents is None:
                     width, length = 10.0, 10.0
                 else:
-                    max_extent = max(extents) * 1.5
+                    max_extent = max(max(extents) * 1.5, 8.0)
                     width = max_extent
                     length = max_extent
             else:
                 width = geo_scale[0]
                 length = geo_scale[1] if len(geo_scale) > 1 else 10.0
-            mesh = newton.Mesh.create_plane(width, length, compute_inertia=False)
-            points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
-            normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
-            uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
-            indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
-            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+            self._plane_meshes[name] = {
+                "width": float(width),
+                "length": float(length),
+            }
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
 
@@ -839,11 +1337,9 @@ class ViewerViser(ViewerBase):
     def log_points(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3) | None,
-        radii: wp.array(dtype=wp.float32) | float | None = None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ) = None,
+        points: wp.array[wp.vec3] | None,
+        radii: wp.array[wp.float32] | float | None = None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
     ):
         """
@@ -856,12 +1352,15 @@ class ViewerViser(ViewerBase):
             colors: Point colors (can be a wp.array or a numpy array).
             hidden: Whether the points are hidden.
         """
+        name = self._qualify(name)
+
         # Remove existing points if present
         if name in self._scene_handles:
             try:
                 self._scene_handles[name].remove()
             except Exception:
                 pass
+            del self._scene_handles[name]
 
         if hidden:
             return
@@ -869,7 +1368,7 @@ class ViewerViser(ViewerBase):
         if points is None:
             return
 
-        pts = self._to_numpy(points)
+        pts = to_numpy(points)
         n_points = pts.shape[0]
 
         if n_points == 0:
@@ -877,7 +1376,7 @@ class ViewerViser(ViewerBase):
 
         # Handle radii (point size)
         if radii is not None:
-            size = self._to_numpy(radii)
+            size = to_numpy(radii)
             if size.ndim == 0 or size.shape == ():
                 point_size = float(size)
             elif len(size) == n_points:
@@ -889,7 +1388,7 @@ class ViewerViser(ViewerBase):
 
         # Handle colors
         if colors is not None:
-            cols = self._to_numpy(colors)
+            cols = to_numpy(colors)
             if cols.shape == (n_points, 3):
                 # Convert from 0-1 to 0-255
                 colors_val = (cols * 255).astype(np.uint8)
@@ -911,7 +1410,97 @@ class ViewerViser(ViewerBase):
         self._scene_handles[name] = handle
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: newton.Gaussian | None,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """
+        Log a :class:`newton.Gaussian` splat asset using viser's native Gaussian renderer.
+
+        Note: viser's ``add_gaussian_splats`` is marked experimental upstream and its
+        API may change or be removed in a future viser release.
+
+        Args:
+            name: Unique path/name for the Gaussian splat asset.
+            gaussian: The :class:`newton.Gaussian` asset to visualize, with centers and
+                per-axis scales in meters [m]. ``None`` removes any existing asset at ``name``.
+            xform: Optional world-space transform applied to the splat asset; its
+                translation component is in meters [m].
+            hidden: Whether the splat asset should be hidden.
+        """
+        name = self._qualify(name)
+
+        if gaussian is None or gaussian.count == 0:
+            if name in self._scene_handles:
+                try:
+                    self._scene_handles[name].remove()
+                except Exception:
+                    pass
+                self._scene_handles.pop(name, None)
+            self._gaussian_splats.pop(name, None)
+            return
+
+        if hidden:
+            if name in self._scene_handles:
+                self._scene_handles[name].visible = False
+            return
+
+        cached = self._gaussian_splats.get(name)
+
+        if (
+            cached is None
+            or cached["gaussian"] is not gaussian
+            or cached["count"] != gaussian.count
+            or self._scene_handles.get(name) is not cached["handle"]
+        ):
+            centers = self._to_numpy(gaussian.positions).astype(np.float32)
+            rotations_xyzw = self._to_numpy(gaussian.rotations).astype(np.float32)
+            scales = self._to_numpy(gaussian.scales).astype(np.float32)
+            opacities = self._to_numpy(gaussian.opacities).astype(np.float32).reshape(-1, 1)
+
+            # Local-space covariance per Gaussian: Sigma = R * diag(scale^2) * R^T
+            rot_mats = self._quats_xyzw_to_rotmats(rotations_xyzw)
+            scale_sq = scales * scales
+            covariances = np.einsum("nij,nj,nkj->nik", rot_mats, scale_sq, rot_mats).astype(np.float32)
+
+            sh_coeffs = self._to_numpy(gaussian.sh_coeffs)
+            if sh_coeffs is not None and sh_coeffs.shape[1] >= 3:
+                rgbs = np.clip(self._SH_C0 * sh_coeffs[:, :3] + 0.5, 0.0, 1.0).astype(np.float32)
+            else:
+                rgbs = np.ones((gaussian.count, 3), dtype=np.float32)
+
+            if cached is not None and name in self._scene_handles:
+                try:
+                    self._scene_handles[name].remove()
+                except Exception:
+                    pass
+
+            handle = self._call_scene_method(
+                self._server.scene.add_gaussian_splats,
+                name=name,
+                centers=centers,
+                covariances=covariances,
+                rgbs=rgbs,
+                opacities=opacities,
+            )
+            self._scene_handles[name] = handle
+            self._gaussian_splats[name] = {"gaussian": gaussian, "count": gaussian.count, "handle": handle}
+
+        handle = self._scene_handles[name]
+        handle.visible = True
+        if xform is not None:
+            xform_np = np.asarray(xform, dtype=np.float32)
+            handle.position = xform_np[:3]
+            handle.wxyz = self._quats_xyzw_to_wxyz(xform_np[3:7])
+        else:
+            handle.position = (0.0, 0.0, 0.0)
+            handle.wxyz = (1.0, 0.0, 0.0, 0.0)
+
+    @override
+    def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
         """Viser viewer does not visualize generic arrays.
 
         Args:
@@ -921,14 +1510,57 @@ class ViewerViser(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
-        """Viser viewer does not visualize scalar signals.
+    def log_scalar(
+        self,
+        name: str,
+        value: int | float | bool | np.number,
+        *,
+        clear: bool = False,
+        smoothing: int = 1,
+    ):
+        """
+        Log a scalar value as a live time-series plot.
+
+        Each unique *name* creates a separate uPlot chart in a "Plots"
+        folder in the GUI sidebar.  Values are stored in a rolling
+        buffer of the last ``plot_history_size`` samples.
 
         Args:
             name: Unique path/name for the scalar signal.
-            value: Scalar value to visualize.
+            value: Scalar value to record.
+            clear: If ``True``, discard previously recorded samples for
+                *name* before logging the new value.
+            smoothing: Number of raw samples to average before committing
+                a point to the plot history.  Defaults to ``1`` (no smoothing).
         """
-        pass
+        if smoothing < 1:
+            raise ValueError("smoothing must be >= 1")
+        name = self._qualify(name)
+        val = float(value.item() if hasattr(value, "item") else value)
+        buf = self._scalar_buffers.get(name)
+        if buf is None:
+            buf = collections.deque(maxlen=self._plot_history_size)
+            self._scalar_buffers[name] = buf
+        elif clear:
+            buf.clear()
+            self._scalar_accumulators.pop(name, None)
+
+        if self._scalar_smoothing.get(name, smoothing) != smoothing:
+            self._scalar_accumulators.pop(name, None)
+        self._scalar_smoothing[name] = smoothing
+        if smoothing <= 1:
+            buf.append(val)
+        else:
+            acc = self._scalar_accumulators.get(name)
+            if acc is None:
+                acc = []
+                self._scalar_accumulators[name] = acc
+            acc.append(val)
+            if len(acc) >= smoothing:
+                buf.append(sum(acc) / len(acc))
+                acc.clear()
+
+        self._scalar_dirty.add(name)
 
     def show_notebook(self, width: int | str = "100%", height: int | str = 400):
         """
@@ -959,6 +1591,9 @@ class ViewerViser(ViewerBase):
         from .viewer import is_sphinx_build  # noqa: PLC0415
 
         if self._record_to_viser is None:
+            if self._display_colab_iframe(self._port, width=width, height=height):
+                return None
+
             # No recording - display the live server via IFrame
             return display(IFrame(src=self.url, width=width, height=height))
 
@@ -1010,6 +1645,18 @@ class ViewerViser(ViewerBase):
                 self._record_to_viser,
                 camera_request=self._camera_request,
             )
+            colab_target = self._colab_iframe_target_from_url(player_url)
+            if colab_target is not None:
+                colab_port, colab_path, colab_query = colab_target
+                if self._display_colab_iframe(
+                    colab_port,
+                    path=colab_path,
+                    query=colab_query,
+                    width=width,
+                    height=height,
+                ):
+                    return None
+
             return display(IFrame(src=player_url, width=width, height=height))
 
     def _ipython_display_(self):
@@ -1034,33 +1681,17 @@ class ViewerViser(ViewerBase):
         Returns:
             URL of the player.
         """
-        import socket  # noqa: PLC0415
         import threading  # noqa: PLC0415
         from http.server import HTTPServer, SimpleHTTPRequestHandler  # noqa: PLC0415
 
-        # Get viser client directory (bundled with package at newton/_src/viewer/static/viser)
         recording_path = Path(recording_path).resolve()
         if not recording_path.exists():
             raise FileNotFoundError(f"Recording file not found: {recording_path}")
 
-        viser_client_dir = Path(__file__).parent / "viser" / "static"
-
-        if not viser_client_dir.exists():
-            raise FileNotFoundError(
-                f"Viser client files not found at {viser_client_dir}. "
-                "The notebook playback feature requires the viser client assets."
-            )
+        viser_client_dir = ViewerViser.get_viser_client_dir()
 
         # Read the recording file content
         recording_bytes = recording_path.read_bytes()
-
-        # Find an available port
-        def find_free_port():
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("", 0))
-                return s.getsockname()[1]
-
-        port = find_free_port()
 
         # Create a custom HTTP handler factory that serves both viser client and the recording
         def make_handler(recording_data: bytes, client_dir: str):
@@ -1111,8 +1742,8 @@ class ViewerViser(ViewerBase):
             return RecordingHandler
 
         handler_class = make_handler(recording_bytes, str(viser_client_dir))
-        # Bind to all interfaces so IFrame can access it
-        server = HTTPServer(("", port), handler_class)
+        server = HTTPServer(("127.0.0.1", 0), handler_class)
+        port = server.server_address[1]
 
         # Start server in background thread
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1121,47 +1752,10 @@ class ViewerViser(ViewerBase):
         # Keep playbackPath relative so notebook proxy prefixes (e.g. /lab/proxy/<port>/)
         # are preserved. Each viewer instance uses a different port, so paths stay distinct.
         playback_path = "recording.viser"
-        base_url = f"http://127.0.0.1:{port}"
-        player_url = f"{base_url}/?playbackPath={playback_path}"
-
-        # Route through Jupyter's proxy only when jupyter-server-proxy is installed.
-        # Without that package, proxy URLs may be unavailable and break playback.
-        jupyter_base_url = None
-        try:
-            from importlib.util import find_spec  # noqa: PLC0415
-
-            has_jupyter_server_proxy = find_spec("jupyter_server_proxy") is not None
-        except Exception:
-            has_jupyter_server_proxy = False
-
-        if has_jupyter_server_proxy:
-            # JUPYTER_BASE_URL is not always exported (e.g. CLI --NotebookApp.base_url).
-            # In that case, fall back to common env vars and running server metadata.
-            for env_name in ("JUPYTER_BASE_URL", "JUPYTERHUB_SERVICE_PREFIX", "NB_PREFIX"):
-                candidate = os.environ.get(env_name)
-                if candidate:
-                    jupyter_base_url = candidate
-                    break
-
-            if not jupyter_base_url:
-                try:
-                    from jupyter_server.serverapp import list_running_servers  # noqa: PLC0415
-
-                    for server in list_running_servers():
-                        candidate = server.get("base_url")
-                        if candidate:
-                            jupyter_base_url = candidate
-                            break
-                except Exception:
-                    pass
-
-            if jupyter_base_url:
-                if not jupyter_base_url.startswith("/"):
-                    jupyter_base_url = "/" + jupyter_base_url
-                if jupyter_base_url != "/":
-                    jupyter_base_url = jupyter_base_url.rstrip("/")
-                else:
-                    jupyter_base_url = ""
-                player_url = f"{jupyter_base_url}/proxy/{port}/?playbackPath={playback_path}"
+        player_url = ViewerViser._build_browser_url(
+            port,
+            query=f"?playbackPath={playback_path}",
+            local_host="127.0.0.1",
+        )
 
         return player_url + ViewerViser._camera_query_from_request(camera_request)

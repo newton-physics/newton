@@ -1,21 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Defines the Kamino-specific data containers to hold time-varying simulation data."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import warp as wp
 
@@ -25,6 +16,9 @@ from .geometry import GeometriesData
 from .joints import JointsData
 from .state import StateKamino
 from .time import TimeData
+
+if TYPE_CHECKING:
+    from .model import ModelKamino
 
 ###
 # Module interface
@@ -51,55 +45,66 @@ class DataKaminoInfo:
     # Total Constraints
     ###
 
-    num_total_cts: wp.array | None = None
+    num_total_cts: wp.array[wp.int32] | None = None
     """
-    The total number of active constraints.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The total number of active constraints.
+    Shape of ``(num_worlds,)``.
     """
 
     ###
     # Limits
     ###
 
-    num_limits: wp.array | None = None
+    num_limits: wp.array[wp.int32] | None = None
     """
-    The number of active limits in each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
-    """
-
-    num_limit_cts: wp.array | None = None
-    """
-    The number of active limit constraints.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The number of active limits in each world.
+    Shape of ``(num_worlds,)``.
     """
 
-    limit_cts_group_offset: wp.array | None = None
+    num_limit_cts: wp.array[wp.int32] | None = None
     """
-    The index offset of the limit constraints group within the constraints block of each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The number of active limit constraints.
+    Shape of ``(num_worlds,)``.
+    """
+
+    limit_cts_group_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the limit constraints group within the constraints block of each world.
+    Shape of ``(num_worlds,)``.
     """
 
     ###
     # Contacts
     ###
 
-    num_contacts: wp.array | None = None
+    num_contacts: wp.array[wp.int32] | None = None
     """
-    The number of active contacts in each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
-    """
-
-    num_contact_cts: wp.array | None = None
-    """
-    The number of active contact constraints.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The number of active contacts in each world.
+    Shape of ``(num_worlds,)``.
     """
 
-    contact_cts_group_offset: wp.array | None = None
+    num_contact_cts: wp.array[wp.int32] | None = None
     """
-    The index offset of the contact constraints group within the constraints block of each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The number of active contact constraints.
+    Shape of ``(num_worlds,)``.
     """
+
+    contact_cts_group_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the contact constraints group within the constraints block of each world.
+    Shape of ``(num_worlds,)``.
+    """
+
+    ###
+    # Properties
+    ###
+
+    @property
+    def device(self) -> wp.DeviceLike:
+        """The device on which data is allocated."""
+        if self.num_total_cts is None:
+            raise RuntimeError("DataKaminoInfo has not been finalized.")
+        return self.num_total_cts.device
 
 
 @dataclass
@@ -133,6 +138,17 @@ class DataKamino:
     """Time-varying data of geometries in the model: poses computed in world coordinates."""
 
     ###
+    # Properties
+    ###
+
+    @property
+    def device(self) -> wp.DeviceLike:
+        """The device on which data is allocated."""
+        if self.info is None:
+            raise RuntimeError("DataKamino has not been finalized.")
+        return self.info.device
+
+    ###
     # Operations
     ###
 
@@ -145,14 +161,13 @@ class DataKamino:
         - Body twists
 
         Args:
-            state (StateKamino):
-                The state container holding time-varying state of the simulation.
+            state: The state container holding time-varying state of the simulation.
         """
         # Ensure bodies data has been allocated
         if self.bodies is None:
             raise RuntimeError("DataKamino.bodies is not finalized.")
 
-        # Update rigid bodies data from the model state
+        # Copy rigid bodies data from the source state container
         wp.copy(self.bodies.q_i, state.q_i)
         wp.copy(self.bodies.u_i, state.u_i)
 
@@ -166,14 +181,13 @@ class DataKamino:
         - Body wrenches
 
         Args:
-            state (StateKamino):
-                The state container holding time-varying state of the simulation.
+            state: The state container holding time-varying state of the simulation.
         """
         # Ensure bodies data has been allocated
         if self.bodies is None:
             raise RuntimeError("DataKamino.bodies is not finalized.")
 
-        # Update rigid bodies data from the model state
+        # Copy rigid bodies data to the target state container
         wp.copy(state.q_i, self.bodies.q_i)
         wp.copy(state.u_i, self.bodies.u_i)
         wp.copy(state.w_i, self.bodies.w_i)
@@ -187,14 +201,13 @@ class DataKamino:
         - Joint velocities
 
         Args:
-            state (StateKamino):
-                The state container holding time-varying state of the simulation.
+            state: The state container holding time-varying state of the simulation.
         """
         # Ensure joints data has been allocated
         if self.joints is None:
             raise RuntimeError("DataKamino.joints is not finalized.")
 
-        # Update joint data from the model state
+        # Copy joint data from the source state container
         wp.copy(self.joints.q_j, state.q_j)
         wp.copy(self.joints.q_j_p, state.q_j_p)
         wp.copy(self.joints.dq_j, state.dq_j)
@@ -209,20 +222,22 @@ class DataKamino:
         - Joint constraint reactions
 
         Args:
-            state (StateKamino):
-                The state container holding time-varying state of the simulation.
+            state: The state container holding time-varying state of the simulation.
         """
         # Ensure joints data has been allocated
         if self.joints is None:
             raise RuntimeError("DataKamino.joints is not finalized.")
 
-        # Update joint data from the model state
+        # Copy joint data to the target state container
         wp.copy(state.q_j, self.joints.q_j)
         wp.copy(state.q_j_p, self.joints.q_j_p)
         wp.copy(state.dq_j, self.joints.dq_j)
-        wp.copy(state.lambda_j, self.joints.lambda_j)
+        wp.copy(state.lambda_kin_j, self.joints.lambda_kin_j)
+        wp.copy(state.lambda_dyn_j, self.joints.lambda_dyn_j)
+        wp.copy(state.lambda_f_j, self.joints.lambda_f_j)
+        wp.copy(state.lambda_tau_j, self.joints.lambda_tau_j)
 
-    def copy_joint_control_from(self, control: ControlKamino) -> None:
+    def copy_joint_control_from(self, control: ControlKamino, model: ModelKamino | None = None) -> None:
         """
         Copies the joint control inputs from the given :class:`ControlKamino`.
 
@@ -232,16 +247,38 @@ class DataKamino:
         - Joint velocity targets
         - Joint feedforward efforts
 
+        Any missing control inputs will be set to zero, or its initial value if
+        the :class:`ModelKamino` is provided.
+
         Args:
-            control (ControlKamino):
-                The control container holding the joint control inputs.
+            control: The control container holding the joint control inputs.
+            model: The model providing default values for any missing control
+                inputs.
+
         """
         # Ensure joints data has been allocated
         if self.joints is None:
             raise RuntimeError("DataKamino.joints is not finalized.")
 
-        # Update joint data from the control inputs
-        wp.copy(self.joints.tau_j, control.tau_j)
-        wp.copy(self.joints.q_j_ref, control.q_j_ref)
-        wp.copy(self.joints.dq_j_ref, control.dq_j_ref)
-        wp.copy(self.joints.tau_j_ref, control.tau_j_ref)
+        # Copy joint control inputs from the source control container, with
+        # fallback options of copying the defaults from the model or zeroing them
+        if control.tau_j is not None:
+            wp.copy(self.joints.tau_j, control.tau_j)
+        else:
+            self.joints.tau_j.zero_()
+        if control.q_j_ref is not None:
+            wp.copy(self.joints.q_j_ref, control.q_j_ref)
+        elif model is not None:
+            wp.copy(self.joints.q_j_ref, model.joints.q_j_0)
+        else:
+            self.joints.q_j_ref.zero_()
+        if control.dq_j_ref is not None:
+            wp.copy(self.joints.dq_j_ref, control.dq_j_ref)
+        elif model is not None:
+            wp.copy(self.joints.dq_j_ref, model.joints.dq_j_0)
+        else:
+            self.joints.dq_j_ref.zero_()
+        if control.tau_j_ref is not None:
+            wp.copy(self.joints.tau_j_ref, control.tau_j_ref)
+        else:
+            self.joints.tau_j_ref.zero()

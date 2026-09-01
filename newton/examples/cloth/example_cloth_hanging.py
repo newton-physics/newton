@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Sim Cloth Hanging
@@ -31,19 +19,14 @@ from newton.solvers import style3d
 
 
 class Example:
-    def __init__(
-        self,
-        viewer,
-        args=None,
-        solver_type: str = "vbd",
-        height=32,
-        width=64,
-    ):
-        # setup simulation parameters first
-        self.solver_type = solver_type
+    def __init__(self, viewer, args):
+        self.args = args
 
-        self.sim_height = height
-        self.sim_width = width
+        # setup simulation parameters first
+        self.solver_type = args.solver
+
+        self.sim_height = args.height
+        self.sim_width = args.width
         self.sim_time = 0.0
 
         self.fps = 60
@@ -117,7 +100,7 @@ class Example:
             solver_params = {
                 "tri_ke": 1.0e3,
                 "tri_ka": 1.0e3,
-                "tri_kd": 1.0e-1,
+                "tri_kd": 1.0e2,
             }
 
         if self.solver_type == "style3d":
@@ -130,7 +113,7 @@ class Example:
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = 1.0e2
-        self.model.soft_contact_kd = 1.0e0
+        self.model.soft_contact_kd = 1.0e2 if self.solver_type in ("style3d", "vbd") else 1.0e0
         self.model.soft_contact_mu = 1.0
 
         if self.solver_type == "semi_implicit":
@@ -140,7 +123,6 @@ class Example:
                 model=self.model,
                 iterations=self.iterations,
             )
-            self.solver._precompute(builder)
         elif self.solver_type == "xpbd":
             self.solver = newton.solvers.SolverXPBD(
                 model=self.model,
@@ -159,19 +141,21 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
+        # SolverStyle3D makes host calls (PCG dot products, BVH refit) that CPU graph capture cannot record
+        if self.solver_type == "style3d" and wp.get_device().is_cpu:
             self.graph = None
+            return
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -180,7 +164,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -217,32 +201,23 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--solver",
+            help="Type of solver",
+            type=str,
+            choices=["semi_implicit", "style3d", "xpbd", "vbd"],
+            default="vbd",
+        )
+        parser.add_argument("--width", type=int, default=64, help="Cloth resolution in x.")
+        parser.add_argument("--height", type=int, default=32, help="Cloth resolution in y.")
+        return parser
+
 
 if __name__ == "__main__":
-    # Create parser with base arguments
-    parser = newton.examples.create_parser()
-
-    # Add solver-specific arguments
-    parser.add_argument(
-        "--solver",
-        help="Type of solver",
-        type=str,
-        choices=["semi_implicit", "style3d", "xpbd", "vbd"],
-        default="vbd",
-    )
-    parser.add_argument("--width", type=int, default=64, help="Cloth resolution in x.")
-    parser.add_argument("--height", type=int, default=32, help="Cloth resolution in y.")
-
-    # Parse arguments and initialize viewer
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
-    example = Example(
-        viewer=viewer,
-        args=args,
-        solver_type=args.solver,
-        height=args.height,
-        width=args.width,
-    )
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

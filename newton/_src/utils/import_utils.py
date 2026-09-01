@@ -1,26 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import Any, Literal
 
+import numpy as np
 import warp as wp
 
 from ..sim.builder import ModelBuilder
+from ..sim.enums import JointType
+
+
+def clamp_imported_opacity(value: float, source: str) -> float | None:
+    """Clamp display-only importer data without failing the model import."""
+    opacity = float(value)
+    if not np.isfinite(opacity):
+        warnings.warn(f"Ignoring non-finite opacity {opacity!r} from {source}.", stacklevel=2)
+        return None
+    clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
+    if clamped_opacity != opacity:
+        warnings.warn(
+            f"Clamping opacity {opacity!r} from {source} to {clamped_opacity!r}.",
+            stacklevel=2,
+        )
+    return clamped_opacity
 
 
 def string_to_warp(value: str, warp_dtype: Any, default: Any = None) -> Any:
@@ -192,29 +198,89 @@ def sanitize_name(name: str) -> str:
 
 def should_show_collider(
     force_show_colliders: bool,
-    has_visual_shapes: bool,
+    model_has_visual_shapes: bool,
     parse_visuals_as_colliders: bool = False,
 ) -> bool:
     """Determine whether collision shapes should have the VISIBLE flag.
 
     Collision shapes are shown (VISIBLE flag) when explicitly forced, when
-    visual shapes are used as colliders, or when no visual shapes exist for
-    the owning body (so there is something to render). Otherwise, collision
-    shapes get only COLLIDE_SHAPES and are controlled by the viewer's
-    "Show Collision" toggle.
+    visual shapes are used as colliders, or when the imported model has no
+    visual shapes. Otherwise, collision shapes get only COLLIDE_SHAPES and are
+    controlled by the viewer's "Show Collision" toggle.
 
     Args:
         force_show_colliders: User explicitly wants collision shapes visible.
-        has_visual_shapes: Whether the body/link has visual (non-collision) shapes.
+        model_has_visual_shapes: Whether the current import has visual (non-collision) shapes.
         parse_visuals_as_colliders: Whether visual geometry is repurposed as collision geometry.
 
     Returns:
         True if the collision shape should carry the VISIBLE flag; False if it should
         be hidden by default and only revealed via the viewer's "Show Collision" toggle.
     """
-    if force_show_colliders or parse_visuals_as_colliders:
-        return True
-    return not has_visual_shapes
+    return force_show_colliders or parse_visuals_as_colliders or not model_has_visual_shapes
+
+
+def collapse_massless_fixed_root_joints(
+    builder: ModelBuilder,
+    joint_indices: Sequence[int],
+    root_joint_indices: Sequence[int] | None = None,
+) -> None:
+    """Collapse massless fixed-root chains below imported free root joints.
+
+    Args:
+        builder: The :class:`ModelBuilder` containing the imported joints.
+        joint_indices: Joint indices created by the current import.
+        root_joint_indices: Optional subset of ``joint_indices`` that should be
+            considered articulation roots.
+    """
+    imported_joint_indices = set(joint_indices)
+    if root_joint_indices is None:
+        root_joint_indices = [
+            joint_idx
+            for joint_idx in joint_indices
+            if builder.joint_type[joint_idx] == JointType.FREE and builder.joint_parent[joint_idx] == -1
+        ]
+
+    fixed_joint_indices_to_collapse: set[int] = set()
+    for root_joint_idx in root_joint_indices:
+        if root_joint_idx not in imported_joint_indices:
+            continue
+        if builder.joint_type[root_joint_idx] != JointType.FREE or builder.joint_parent[root_joint_idx] != -1:
+            continue
+
+        root_body = builder.joint_child[root_joint_idx]
+        if root_body < 0 or builder.body_mass[root_body] > 0.0:
+            continue
+
+        massless_chain_parents = {root_body}
+        while True:
+            added_joint = False
+            for joint_idx in joint_indices:
+                if joint_idx in fixed_joint_indices_to_collapse:
+                    continue
+                if builder.joint_type[joint_idx] != JointType.FIXED:
+                    continue
+                if builder.joint_parent[joint_idx] not in massless_chain_parents:
+                    continue
+
+                fixed_joint_indices_to_collapse.add(joint_idx)
+                child = builder.joint_child[joint_idx]
+                if child >= 0 and builder.body_mass[child] <= 0.0:
+                    massless_chain_parents.add(child)
+                added_joint = True
+
+            if not added_joint:
+                break
+
+    if not fixed_joint_indices_to_collapse:
+        return
+
+    fixed_joint_indices_to_keep = {
+        joint_idx
+        for joint_idx in range(builder.joint_count)
+        if builder.joint_type[joint_idx] == JointType.FIXED and joint_idx not in fixed_joint_indices_to_collapse
+    }
+    builder.collapse_fixed_joints(joints_to_keep=fixed_joint_indices_to_keep)
 
 
 def is_xml_content(source: str) -> bool:

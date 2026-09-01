@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 KAMINO: Utilities
@@ -34,6 +22,19 @@ def sparseplot(
     grid: bool = False,
     path: str | None = None,
 ):
+    """Visualize the sparsity pattern of a matrix.
+
+    Zero entries are shown in red. Non-zero entries are shown in grayscale
+    (black to white).
+
+    Args:
+        matrix: 2D array to visualize.
+        title: Title for the plot.
+        tick_fontsize: Font size for axis tick labels.
+        max_ticks: Maximum number of ticks per axis.
+        grid: Whether to overlay a major grid on the plot.
+        path: If provided, save the image to this path; otherwise display it.
+    """
     # Attempt to import matplotlib
     try:
         import matplotlib.pyplot as plt
@@ -42,17 +43,6 @@ def sparseplot(
     except Exception as exc:  # pragma: no cover - optional dependency
         msg.error(f"`matplotlib` is required to plot profiles: {exc}")
         return
-
-    """
-    Visualize the sparsity pattern of a matrix.
-    Zero entries are shown in red.
-    Non-zero entries are shown in grayscale (black to white).
-
-    Parameters:
-    - matrix: 2D numpy array
-    - title: Title for the plot (used for display or saved image)
-    - save_path: If provided, saves the image to this file path; otherwise, displays it.
-    """
 
     # Check if the input is a 2D NumPy array
     if not isinstance(matrix, np.ndarray):

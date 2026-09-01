@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import os
 import unittest
@@ -29,7 +17,7 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
         usd_path = os.path.join(os.path.dirname(__file__), "assets", "pendulum_revolute_vs_d6.usda")
 
         # Parse and build model
-        builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
         builder.add_usd(usd_path, only_load_enabled_rigid_bodies=False)
         model = builder.finalize()
 
@@ -99,13 +87,6 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
             traj[i, 0] = q_cur[rev_qi]
             traj[i, 1] = q_cur[d6_qi]
 
-        # Also print a small preview
-        for i in range(min(10, steps)):
-            t = i * sim_dt
-            qrev = traj[i, 0]
-            qd6 = traj[i, 1]
-            print(f"t:{t:.6f} qrev:{qrev:.6f} qd6:{qd6:.6f} diff:{abs(qrev - qd6):.6f}")
-
         # Basic checks: they should have moved and oscillated
         # Check that min and max are different (pendulum is moving)
         rev_min, rev_max = np.min(traj[:, 0]), np.max(traj[:, 0])
@@ -119,9 +100,6 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
         # Their trajectories should be close (same physics)
         diff = np.mean(np.abs(traj[:, 0] - traj[:, 1]))
         self.assertLess(diff, 0.1, f"Pendulum behaviors differ too much, mean abs diff = {diff}")
-
-        # Do not clean up to allow re-use across runs
-        # os.unlink(usd_path)
 
 
 if __name__ == "__main__":

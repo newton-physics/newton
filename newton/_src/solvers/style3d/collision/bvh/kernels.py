@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import warp as wp
 
@@ -49,11 +37,11 @@ def line_intersects_aabb(v0: wp.vec3, v1: wp.vec3, lower: wp.vec3, upper: wp.vec
 @wp.kernel
 def compute_tri_aabbs_kernel(
     enlarge: float,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     # outputs
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
 ):
     t_id = wp.tid()
 
@@ -71,11 +59,11 @@ def compute_tri_aabbs_kernel(
 @wp.kernel
 def compute_edge_aabbs_kernel(
     enlarge: float,
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
     # outputs
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
 ):
     e_id = wp.tid()
 
@@ -92,10 +80,10 @@ def aabb_vs_aabb_kernel(
     query_list_rows: int,
     query_radius: float,
     ignore_self_hits: bool,
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
     # outputs
-    query_results: wp.array(dtype=int, ndim=2),
+    query_results: wp.array2d[int],
 ):
     tid = wp.int32(wp.tid())
     lower = lower_bounds[tid] - wp.vec3(query_radius)
@@ -118,12 +106,12 @@ def aabb_vs_line_kernel(
     bvh_id: wp.uint64,
     query_list_rows: int,
     ignore_self_hits: bool,
-    vertices: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    vertices: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
     # outputs
-    query_results: wp.array(dtype=int, ndim=2),
+    query_results: wp.array2d[int],
 ):
     eid = wp.int32(wp.tid())
     v1 = vertices[edge_indices[eid, 2]]
@@ -149,11 +137,11 @@ def triangle_vs_point_kernel(
     query_radius: float,
     max_dist: float,
     ignore_self_hits: bool,
-    pos: wp.array(dtype=wp.vec3),
-    tri_pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=int, ndim=2),
+    pos: wp.array[wp.vec3],
+    tri_pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[int],
     # outputs
-    query_results: wp.array(dtype=int, ndim=2),
+    query_results: wp.array2d[int],
 ):
     vid = wp.tid()
 
@@ -190,12 +178,12 @@ def edge_vs_edge_kernel(
     query_radius: float,
     max_dist: float,
     ignore_self_hits: bool,
-    test_pos: wp.array(dtype=wp.vec3),
-    test_edge_indices: wp.array(dtype=int, ndim=2),
-    edge_pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=int, ndim=2),
+    test_pos: wp.array[wp.vec3],
+    test_edge_indices: wp.array2d[int],
+    edge_pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[int],
     # outputs
-    query_results: wp.array(dtype=int, ndim=2),
+    query_results: wp.array2d[int],
 ):
     eid = wp.int32(wp.tid())
 

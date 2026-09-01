@@ -1,19 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -49,13 +38,13 @@ def compute_neo_hookean_energy_and_force_and_hessian(
     # inputs
     tet_id: int,
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     # outputs: particle force and hessian
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
 ):
     v_order = wp.tid()
     f, h = evaluate_volumetric_neo_hookean_force_and_hessian(
@@ -81,13 +70,13 @@ def compute_neo_hookean_energy_and_force(
     # inputs
     tet_id: int,
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     # outputs: particle force and hessian
-    tet_energy: wp.array(dtype=float),
-    particle_forces: wp.array(dtype=float),
+    tet_energy: wp.array[float],
+    particle_forces: wp.array[float],
 ):
     v0_idx = tet_indices[tet_id, 0]
     v1_idx = tet_indices[tet_id, 1]
@@ -112,13 +101,19 @@ def compute_neo_hookean_energy_and_force(
 
     F = Ds * Dm_inv
 
-    # Guard against division by zero in lambda (Lamé's first parameter)
-    lmbd_safe = wp.sign(lmbd) * wp.max(wp.abs(lmbd), 1e-6)
-    a = 1.0 + mu / lmbd_safe
+    # Convert Lamé parameters to stable Neo-Hookean parameters per Smith et al.
+    # 2018, §3.4 (eq. 13): the symbols (mu, lambda) appearing in the NH energy
+    # are not directly the Lamé parameters; matching the small-strain limit
+    # gives mu_NH = mu_Lamé, lambda_NH = lambda_Lamé + mu_Lamé.
+    mu_nh = mu
+    lmbd_nh = lmbd + mu
+    # Guard against division by zero in lambda_NH
+    lmbd_safe = wp.sign(lmbd_nh) * wp.max(wp.abs(lmbd_nh), 1e-6)
+    a = 1.0 + mu_nh / lmbd_safe
 
     det_F = wp.determinant(F)
 
-    E = rest_volume * 0.5 * (mu * (wp.trace(F * wp.transpose(F)) - 3.0) + lmbd * (det_F - a) * (det_F - a))
+    E = rest_volume * 0.5 * (mu_nh * (wp.trace(F * wp.transpose(F)) - 3.0) + lmbd_nh * (det_F - a) * (det_F - a))
     tet_energy[tet_id] = E
 
     F1_1 = F[0, 0]
@@ -156,8 +151,8 @@ def compute_neo_hookean_energy_and_force(
     )
 
     k = det_F - a
-    dPhi_D_dF = dPhi_D_dF * mu
-    dPhi_H_dF = ddetF_dF * lmbd * k
+    dPhi_D_dF = dPhi_D_dF * mu_nh
+    dPhi_H_dF = ddetF_dF * lmbd_nh * k
 
     dE_dF = (dPhi_D_dF + dPhi_H_dF) * rest_volume
 
@@ -243,23 +238,27 @@ PYRAMID_PARTICLES = [
 ]
 
 
-def _build_model_with_soft_mesh(vertices: list[tuple[float, float, float]], tets: np.ndarray):
+def _build_model_with_soft_mesh(vertices: list[tuple[float, float, float]], tets: np.ndarray, device):
     """Use add_soft_mesh (full builder path) to create a soft-body model."""
     builder = ModelBuilder()
-    builder.add_soft_mesh(
-        pos=(0.0, 0.0, 0.0),
-        rot=wp.quat_identity(),
-        scale=1.0,
-        vel=(0.0, 0.0, 0.0),
-        vertices=vertices,
-        indices=tets.flatten().tolist(),
-        density=1.0,
-        k_mu=1.0,
-        k_lambda=1.0,
-        k_damp=0.0,
-    )
+    # Keep the default surface-edge path covered; the pyramid surface is
+    # non-manifold by construction, so tolerate only that advisory.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Detected non-manifold edge")
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            vertices=vertices,
+            indices=tets.flatten().tolist(),
+            density=1.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+        )
     builder.color()
-    return builder.finalize(device="cpu")
+    return builder.finalize(device=device)
 
 
 def _expected_tet_adjacency(particle_count: int, tet_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -279,8 +278,8 @@ def _expected_tet_adjacency(particle_count: int, tet_indices: np.ndarray) -> tup
 
 def _assert_adjacency_matches_tets(test, adjacency, tet_indices: np.ndarray):
     """Check each recorded (tet_id, local_order) really maps back to the vertex being visited."""
-    offsets = adjacency.v_adj_tets_offsets.numpy()
-    flat = adjacency.v_adj_tets.numpy()
+    offsets = adjacency.v_adj_tets_offsets
+    flat = adjacency.v_adj_tets
     particle_count = len(offsets) - 1
     for v in range(particle_count):
         start, end = offsets[v], offsets[v + 1]
@@ -335,46 +334,50 @@ def test_tet_adjacency_single_tet(test, device):
         (0.0, 1.0, 0.0),
         (0.0, 0.0, 1.0),
     ]
-    model = _build_model_with_soft_mesh(particles, tet_indices)
+    model = _build_model_with_soft_mesh(particles, tet_indices, device)
 
     solver = SolverVBD(model)
 
     adjacency = solver._compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(4, tet_indices)
-    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
-    np.testing.assert_array_equal(adjacency.v_adj_tets.numpy(), exp_flat)
+    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets, exp_offsets)
+    np.testing.assert_array_equal(adjacency.v_adj_tets, exp_flat)
     _assert_adjacency_matches_tets(test, adjacency, tet_indices)
 
 
 def test_tet_adjacency_complex_pyramid(test, device):
-    model = _build_model_with_soft_mesh(PYRAMID_PARTICLES, PYRAMID_TET_INDICES)
+    model = _build_model_with_soft_mesh(PYRAMID_PARTICLES, PYRAMID_TET_INDICES, device)
 
     solver = SolverVBD(model)
 
     adjacency = solver._compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(len(PYRAMID_PARTICLES), PYRAMID_TET_INDICES)
-    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
-    np.testing.assert_array_equal(adjacency.v_adj_tets.numpy(), exp_flat)
+    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets, exp_offsets)
+    np.testing.assert_array_equal(adjacency.v_adj_tets, exp_flat)
     _assert_adjacency_matches_tets(test, adjacency, PYRAMID_TET_INDICES)
 
 
 def test_tet_graph_coloring_is_valid(test, device):
     """Color a small tetrahedral mesh and verify the coloring respects graph adjacency."""
     builder = ModelBuilder()
-    builder.add_soft_mesh(
-        pos=(0.0, 0.0, 0.0),
-        rot=wp.quat_identity(),
-        scale=1.0,
-        vel=(0.0, 0.0, 0.0),
-        vertices=PYRAMID_PARTICLES,
-        indices=PYRAMID_TET_INDICES.flatten().tolist(),
-        density=1.0,
-        k_mu=1.0,
-        k_lambda=1.0,
-        k_damp=0.0,
-    )
+    # Keep the default surface-edge path covered; the pyramid surface is
+    # non-manifold by construction, so tolerate only that advisory.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Detected non-manifold edge")
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            vertices=PYRAMID_PARTICLES,
+            indices=PYRAMID_TET_INDICES.flatten().tolist(),
+            density=1.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+        )
     builder.color()
 
     colors = _color_groups_to_array(test, len(PYRAMID_PARTICLES), builder.particle_color_groups)
@@ -425,10 +428,10 @@ def test_tet_energy(test, device):
         )
         dt = 0.001666
 
-        model = builder.finalize(requires_grad=True)
-        tet_energy = wp.zeros(1, dtype=float, requires_grad=True)
-        particle_forces = wp.zeros(12, dtype=float, requires_grad=True)
-        particle_hessian = wp.zeros(4, dtype=wp.mat33, requires_grad=False)
+        model = builder.finalize(device=device, requires_grad=True)
+        tet_energy = wp.zeros(1, dtype=float, device=device, requires_grad=True)
+        particle_forces = wp.zeros(12, dtype=float, device=device, requires_grad=True)
+        particle_hessian = wp.zeros(4, dtype=wp.mat33, device=device, requires_grad=False)
 
         state = model.state(requires_grad=True)
         state.particle_q.assign(state.particle_q.numpy() + rng.standard_normal((4, 3)))
@@ -473,6 +476,7 @@ def test_tet_energy(test, device):
             x[i] = 1.0
             return wp.array(
                 x,
+                device=device,
             )
 
         for v_counter in range(4):
@@ -510,12 +514,22 @@ def test_tet_energy(test, device):
         test.assertTrue(force_comparison.all())
 
         for i in range(4):
+            # The analytical Hessian drops the s * d^2 J / dF^2 term (zero per-vertex
+            # contribution by the Levi-Civita / m x m = 0 identity). The autodiff
+            # path computes it explicitly and only cancels at fp32 precision, so the
+            # residual scales with the magnitude of the analytical Hessian itself.
+            ref = max(np.max(np.abs(particle_hessian_analytical[i])), 1.0)
             test.assertTrue(
-                np.isclose(particle_hessian_auto_diff[i], particle_hessian_analytical[i], rtol=1.0e-2, atol=0.1).all()
+                np.isclose(
+                    particle_hessian_auto_diff[i],
+                    particle_hessian_analytical[i],
+                    rtol=1.0e-2,
+                    atol=1.0e-3 * ref,
+                ).all()
             )
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 add_function_test(TestSoftBody, "test_tet_adjacency_single_tet", test_tet_adjacency_single_tet, devices=devices)
 add_function_test(
     TestSoftBody, "test_tet_adjacency_complex_pyramid", test_tet_adjacency_complex_pyramid, devices=devices

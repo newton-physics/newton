@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import ctypes
 
@@ -28,11 +16,13 @@ layout (location = 5) in vec4 aInstanceTransform2;
 layout (location = 6) in vec4 aInstanceTransform3;
 
 uniform mat4 light_space_matrix;
+uniform vec3 render_origin;
 
 void main()
 {
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
-    gl_Position = light_space_matrix * transform * vec4(aPos, 1.0);
+    vec3 render_position = mat3(transform) * aPos + transform[3].xyz - render_origin;
+    gl_Position = light_space_matrix * vec4(render_position, 1.0);
 }
 """
 
@@ -43,41 +33,12 @@ void main() { }
 """
 
 
-line_vertex_shader = """
-#version 330 core
-layout (location = 0) in vec3 aPos;
-layout (location = 1) in vec3 aColor;
-
-uniform mat4 view;
-uniform mat4 projection;
-
-out vec3 vertexColor;
-
-void main()
-{
-    vertexColor = aColor;
-    gl_Position = projection * view * vec4(aPos, 1.0);
-}
-"""
-
-line_fragment_shader = """
-#version 330 core
-in vec3 vertexColor;
-out vec4 FragColor;
-
-void main()
-{
-    FragColor = vec4(vertexColor, 1.0);
-}
-"""
-
-
 shape_vertex_shader = """
 #version 330 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
-layout (location = 9) in vec3 aVertexColor;
+layout (location = 10) in vec3 aVertexColor;
 
 // column vectors of the instance transform matrix
 layout (location = 3) in vec4 aInstanceTransform0;
@@ -91,51 +52,86 @@ layout (location = 7) in vec3 aObjectColor;
 // material properties
 layout (location = 8) in vec4 aMaterial;
 
+#ifdef ENABLE_TRANSPARENCY
+layout (location = 9) in float aOpacity;
+#endif
+
 uniform mat4 view;
 uniform mat4 projection;
-uniform mat4 light_space_matrix;
+uniform vec3 view_pos;
 
 out vec3 Normal;
-out vec3 FragPos;
 out vec3 LocalPos;
 out vec2 TexCoord;
 out vec3 ObjectColor;
 out vec3 VertexColor;
-out vec4 FragPosLightSpace;
 out vec4 Material;
+#ifdef ENABLE_TRANSPARENCY
+out float Opacity;
+out float ViewDepth;
+#endif
 
 void main()
 {
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
 
-    vec4 worldPos = transform * vec4(aPos, 1.0);
-    gl_Position = projection * view * worldPos;
-    FragPos = vec3(worldPos);
+    // Subtract before rotating to avoid cancellation in a translated view matrix for large coordinates.
+    vec3 camera_relative_position = mat3(transform) * aPos + transform[3].xyz - view_pos;
+    vec3 view_position = mat3(view) * camera_relative_position;
+    gl_Position = projection * vec4(view_position, 1.0);
     LocalPos = aPos;
 
     mat3 rotation = mat3(transform);
-    Normal = mat3(transpose(inverse(rotation))) * aNormal;
+    // transpose(inverse(...)) handles non-uniform scale. The extra sign flip for
+    // det < 0 keeps shading normals outward when the viewer caches a winding-
+    // flipped variant of the source mesh for mirrored instances: the winding
+    // swap exposes the originally-back side of the mesh as front-facing, and
+    // negating here restores the outward-pointing normal in world space.
+    mat3 normalMatrix = transpose(inverse(rotation));
+    if (determinant(rotation) < 0.0) normalMatrix = -normalMatrix;
+    Normal = normalMatrix * aNormal;
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
     VertexColor = aVertexColor;
-    FragPosLightSpace = light_space_matrix * worldPos;
     Material = aMaterial;
+#ifdef ENABLE_TRANSPARENCY
+    Opacity = clamp(aOpacity, 0.0, 1.0);
+    ViewDepth = max(-view_position.z, 0.0);
+#endif
 }
 """
 
 shape_fragment_shader = """
 #version 330 core
+#ifdef ENABLE_TRANSPARENCY
+layout (location = 0) out vec4 FragColor;
+layout (location = 1) out vec4 Revealage;
+#else
 out vec4 FragColor;
+#endif
 
 in vec3 Normal;
-in vec3 FragPos;
 in vec3 LocalPos;
 in vec2 TexCoord;
-in vec3 ObjectColor; // used as albedo
+in vec3 ObjectColor;
 in vec3 VertexColor; // optional per-vertex albedo, negative x means disabled
-in vec4 FragPosLightSpace;
 in vec4 Material;
+#ifdef ENABLE_TRANSPARENCY
+in float Opacity;
+in float ViewDepth;
 
+// Reciprocal of the reference distance to the transparent content. Normalizing
+// view depth by it keeps the OIT weight curve below independent of scene scale.
+uniform float oit_inv_depth_reference;
+// False when the GL context cannot drive the weighted-OIT accumulation buffers
+// and transparency falls back to single-pass alpha blending.
+uniform bool oit_enabled;
+#endif
+
+uniform mat4 view;
+uniform mat4 projection;
+uniform mat4 inverse_projection;
+uniform vec2 viewport_size;
 uniform vec3 view_pos;
 uniform vec3 light_color;
 uniform vec3 sky_color;
@@ -152,10 +148,12 @@ uniform int up_axis;
 uniform mat4 light_space_matrix;
 
 uniform float shadow_radius;
+uniform bool enable_shadows;
 uniform float diffuse_scale;
 uniform float specular_scale;
 uniform bool spotlight_enabled;
 uniform float shadow_extents;
+uniform float exposure;
 
 const float PI = 3.14159265359;
 
@@ -204,7 +202,33 @@ vec2 poissonDisk[16] = vec2[](
    vec2( 0.14383161, -0.14100790 )
 );
 
-float ShadowCalculation()
+vec3 ReconstructCameraRelativePosition()
+{
+    vec2 ndc_xy = gl_FragCoord.xy / viewport_size * 2.0 - 1.0;
+    vec4 near_h = inverse_projection * vec4(ndc_xy, -1.0, 1.0);
+    vec3 near_view = near_h.xyz / near_h.w;
+
+    // gl_FragCoord.w retains reciprocal clip-space W even when interpolated
+    // clip-space depth loses precision across a triangle much larger than the
+    // view frustum. Recover the view-space point along this pixel's camera ray.
+    vec4 clip_w_row = vec4(projection[0][3], projection[1][3], projection[2][3], projection[3][3]);
+    float denominator = dot(clip_w_row.xyz, near_view);
+    if (abs(gl_FragCoord.w) < 1.0e-8 || abs(denominator) < 1.0e-8)
+    {
+        float ndc_z = gl_FragCoord.z * 2.0 - 1.0;
+        vec4 view_h = inverse_projection * vec4(ndc_xy, ndc_z, 1.0);
+        gl_FragDepth = gl_FragCoord.z;
+        return transpose(mat3(view)) * (view_h.xyz / view_h.w);
+    }
+
+    float amount = (1.0 / gl_FragCoord.w - clip_w_row.w) / denominator;
+    vec3 view_position = near_view * amount;
+    vec4 clip_position = projection * vec4(view_position, 1.0);
+    gl_FragDepth = clip_position.z / clip_position.w * 0.5 + 0.5;
+    return transpose(mat3(view)) * view_position;
+}
+
+float ShadowCalculation(vec3 camera_to_fragment)
 {
     vec3 normal = normalize(Normal);
 
@@ -219,7 +243,7 @@ float ShadowCalculation()
 
     // For backfacing triangles, we might need different bias handling
     vec4 light_space_pos;
-    light_space_pos = light_space_matrix * vec4(FragPos + normal * normalBias, 1.0);
+    light_space_pos = light_space_matrix * vec4(camera_to_fragment + normal * normalBias, 1.0);
     vec3 projCoords = light_space_pos.xyz/light_space_pos.w;
 
     // map to [0,1]
@@ -260,16 +284,13 @@ float ShadowCalculation()
     return shadow * fade;
 }
 
-float SpotlightAttenuation()
+float SpotlightAttenuation(vec3 camera_to_fragment)
 {
     if (!spotlight_enabled)
         return 1.0;
 
-    // Calculate spotlight position as 20 units from the camera in sun direction
-    vec3 spotlight_pos = view_pos + sun_direction * 20.0;
-
     // Vector from fragment to spotlight
-    vec3 fragToLight = normalize(spotlight_pos - FragPos);
+    vec3 fragToLight = normalize(sun_direction * 20.0 - camera_to_fragment);
 
     // Angle between spotlight direction (towards origin) and vector from light to fragment
     float cosAngle = dot(normalize(sun_direction), fragToLight);
@@ -301,6 +322,9 @@ vec3 sample_env_map(vec3 dir, float lod)
 
 void main()
 {
+    // This reconstruction also corrects depth before the fragment is committed.
+    vec3 camera_to_fragment = ReconstructCameraRelativePosition();
+
     // material properties from vertex shader
     float roughness = clamp(Material.x, 0.0, 1.0);
     float metallic = clamp(Material.y, 0.0, 1.0);
@@ -327,80 +351,125 @@ void main()
         albedo = mix(albedo, albedo2, cb);
     }
 
+    // Specular color: dielectrics ~0.04, metals use albedo.
+    // Computed before desaturation so F0 reflects true material reflectance.
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+    // Metals appear paler/desaturated because their look is dominated by
+    // bright specular reflections.  Without full IBL we approximate this by
+    // lifting the albedo toward a brighter, less saturated version.
+    float luma = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+    albedo = mix(albedo, vec3(luma * 1.4), metallic * 0.45);
+
     // surface vectors
     vec3 N = normalize(Normal);
+    vec3 V = normalize(-camera_to_fragment);
     // Flip normal for backfacing triangles
-    if (!gl_FrontFacing) {
-        N = -N;
-    }
-    vec3 V = normalize(view_pos - FragPos);
+    if (!gl_FrontFacing) N = -N;
     vec3 L = normalize(sun_direction);
     vec3 H = normalize(V + L);
 
-    // Blinn-Phong terms
+    // Cook-Torrance PBR
     float NdotL = max(dot(N, L), 0.0);
     float NdotH = max(dot(N, H), 0.0);
-    float NdotV = max(dot(N, V), 0.0);
+    float NdotV = max(dot(N, V), 0.001);
+    float HdotV = max(dot(H, V), 0.0);
 
-    // Derive Blinn-Phong exponent from perceptual roughness.
-    // roughness 0 → perfectly smooth, 1 → very rough
-    float gloss = clamp(1.0 - roughness, 0.0, 1.0);
-    // Map gloss to exponent range ~[2, 1024]
-    float shininess = 1.0 + pow(gloss, 4.0) * 1023.0;
+    // GGX/Trowbridge-Reitz normal distribution
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * denom * denom);
 
-    // energy-preserving normalization for Blinn-Phong
-    float normFactor = (shininess + 2.0) / (8.0 * PI);
+    // Schlick-GGX geometry function (Smith method for both view and light)
+    float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+    float G1_V = NdotV / (NdotV * (1.0 - k) + k);
+    float G1_L = NdotL / (NdotL * (1.0 - k) + k);
+    float G = G1_V * G1_L;
 
-    vec3 diffuse  = albedo * light_color * NdotL * 3.0 * diffuse_scale;
+    // Schlick Fresnel, dampened by roughness to reduce edge aliasing
+    vec3 F_max = mix(F0, vec3(1.0), 1.0 - roughness);
+    vec3 F = F0 + (F_max - F0) * pow(1.0 - HdotV, 5.0);
 
-    // Specular color: dielectrics ~0.04, metals use albedo
-    vec3 F0 = mix(vec3(0.04), albedo, metallic);
-    vec3 spec = F0 * light_color * normFactor * pow(NdotH, shininess) * NdotL * specular_scale;
+    // Cook-Torrance specular BRDF
+    vec3 spec = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
 
-    // simple hemispherical ambient term
+    // Diffuse uses remaining energy not reflected
+    vec3 kD = (1.0 - F) * (1.0 - metallic);
+    vec3 diffuse = kD * albedo / PI;
+
+    // Direct lighting
+    vec3 Lo = (diffuse * diffuse_scale + spec * specular_scale) * light_color * NdotL * 3.0;
+
+    // Hemispherical ambient (kept subtle for depth)
     vec3 up = vec3(0.0, 1.0, 0.0);
     if (up_axis == 0) up = vec3(1.0, 0.0, 0.0);
     if (up_axis == 2) up = vec3(0.0, 0.0, 1.0);
     float sky_fac = dot(N, up) * 0.5 + 0.5;
-    vec3 ambient = mix(ground_color, sky_color, sky_fac) * albedo;
-    // Slight boost for metallics to avoid overly dark mid-roughness metals.
-    float metal_ambient_boost = mix(1.0, 1.25, metallic * (1.0 - 0.5 * roughness));
-    ambient *= metal_ambient_boost;
+    vec3 ambient = mix(ground_color, sky_color, sky_fac) * albedo * 0.7;
+    // Fresnel-weighted ambient specular — only significant for metals
+    // (dielectrics need a prefiltered IBL for correct ambient specular)
+    vec3 F_ambient = F0 + (F_max - F0) * pow(1.0 - NdotV, 5.0);
+    vec3 kD_ambient = (1.0 - F_ambient) * (1.0 - metallic);
+    vec3 ambient_spec = F_ambient * mix(ground_color, sky_color, sky_fac) * 0.35;
+    ambient = kD_ambient * ambient + ambient_spec * metallic;
 
     // shadows
-    float shadow = ShadowCalculation();
+    float shadow = enable_shadows ? ShadowCalculation(camera_to_fragment) : 0.0;
 
-    // spotlight attenuation
-    float spotlightAttenuation = SpotlightAttenuation();
+    float spotAttenuation = SpotlightAttenuation(camera_to_fragment);
+    vec3 color = ambient + (1.0 - shadow) * spotAttenuation * Lo;
 
-    // Metals should contribute little diffuse light.
-    diffuse *= 1.0 - metallic;
-    vec3 color = ambient + (1.0 - shadow) * spotlightAttenuation * (diffuse + spec);
-
-    // Fresnel darkening: reduce brightness at glancing angles for metals
-    color *= mix(1.0, pow(NdotV, 2.0), metallic);
-
-    // environment reflection for metallic look (fade with roughness)
-    float env_lod = clamp(pow(roughness, 1.0/4.0), 0.0, 1.0) * 8.0;
+    // Environment / image-based lighting for metals
     vec3 R = reflect(-V, N);
-    vec3 env_color = sample_env_map(R, env_lod);
-    env_color = pow(env_color, vec3(2.2)); // to linear
-    float reflection_strength = clamp(metallic * pow(1.0 - roughness, 2.0), 0.0, 1.0);
-    vec3 env_tint = mix(vec3(1.0), albedo, metallic);
-    vec3 env_reflection = env_color * env_tint * env_intensity;
-    color = mix(color, env_reflection, reflection_strength);
+    float env_lod = roughness * 8.0;
+    vec3 env_color = pow(sample_env_map(R, env_lod), vec3(2.2));
+    vec3 env_F = F0 + (F_max - F0) * pow(1.0 - NdotV, 5.0);
+    vec3 env_spec = env_color * env_F * env_intensity;
+    color += env_spec * metallic;
 
     // fog
-    float dist = length(FragPos - view_pos);
+    float dist = length(camera_to_fragment);
     float fog_start = 20.0;
     float fog_end   = 200.0;
     float fog_factor = clamp((dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
     color = mix(color, pow(fogColor, vec3(2.2)), fog_factor);
 
+    // ACES filmic tone mapping
+    color = color * exposure;
+    vec3 x = color;
+    color = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+    color = clamp(color, 0.0, 1.0);
+
     // gamma correction (sRGB)
     color = pow(color, vec3(1.0 / 2.2));
 
+#ifdef ENABLE_TRANSPARENCY
+    float alpha = clamp(Opacity, 0.0, 1.0);
+    if (oit_enabled)
+    {
+        // Weighted-blended OIT (McGuire & Bavoil 2013, eq. 9). The published
+        // curve is tuned for meter-scale view depth; evaluating it on depth
+        // normalized by the transparent content's reference distance keeps the
+        // weight spread across its clamp range for any scene scale. Feeding it
+        // the raw window-space depth instead pins every fragment to the clamp
+        // ceiling, collapsing the resolve to a plain alpha-weighted average.
+        float d = ViewDepth * oit_inv_depth_reference;
+        float depth_weight = clamp(10.0 / (1e-5 + pow(2.0 * d, 2.0) + pow(0.6 * d, 6.0)), 1e-2, 3e3);
+        float weight = alpha * depth_weight;
+        FragColor = vec4(color * alpha, alpha) * weight;
+        Revealage = vec4(alpha);
+    }
+    else
+    {
+        // Fallback: straight source-alpha blending into the shared color
+        // target. Revealage has no bound draw buffer in this pass.
+        FragColor = vec4(color, alpha);
+        Revealage = vec4(alpha);
+    }
+#else
     FragColor = vec4(color, 1.0);
+#endif
 }
 """
 
@@ -479,9 +548,33 @@ in vec2 TexCoord;
 out vec4 FragColor;
 
 uniform sampler2D texture_sampler;
+uniform bool flip_y;
 
 void main() {
-    FragColor = texture(texture_sampler, TexCoord);
+    vec2 uv = vec2(TexCoord.x, flip_y ? 1.0 - TexCoord.y : TexCoord.y);
+    FragColor = texture(texture_sampler, uv);
+}
+"""
+
+oit_resolve_fragment_shader = """
+#version 330 core
+in vec2 TexCoord;
+
+out vec4 FragColor;
+
+uniform sampler2D accum_texture;
+uniform sampler2D reveal_texture;
+
+void main() {
+    float revealage = clamp(texture(reveal_texture, TexCoord).r, 0.0, 1.0);
+    if (revealage >= 1.0)
+        discard;
+
+    vec4 accum = texture(accum_texture, TexCoord);
+    float alpha = 1.0 - revealage;
+    vec3 transparent_color = accum.a > 1e-5 ? accum.rgb / accum.a : vec3(0.0);
+
+    FragColor = vec4(transparent_color * alpha, alpha);
 }
 """
 
@@ -494,6 +587,10 @@ def str_buffer(string: str):
 def arr_pointer(arr: np.ndarray):
     """Convert numpy array to C-style float pointer for OpenGL."""
     return arr.astype(np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+
+
+def _with_shader_define(source: str, define: str) -> str:
+    return source.replace("#version 330 core\n", f"#version 330 core\n#define {define}\n", 1)
 
 
 class ShaderGL:
@@ -528,19 +625,26 @@ class ShaderGL:
 class ShaderShape(ShaderGL):
     """Shader for rendering 3D shapes with lighting and shadows."""
 
-    def __init__(self, gl):
+    def __init__(self, gl, enable_transparency: bool = False):
         super().__init__()
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
-        self.shader_program = ShaderProgram(
-            Shader(shape_vertex_shader, "vertex"), Shader(shape_fragment_shader, "fragment")
-        )
+        vertex_shader = shape_vertex_shader
+        fragment_shader = shape_fragment_shader
+        if enable_transparency:
+            vertex_shader = _with_shader_define(vertex_shader, "ENABLE_TRANSPARENCY")
+            fragment_shader = _with_shader_define(fragment_shader, "ENABLE_TRANSPARENCY")
+        self.shader_program = ShaderProgram(Shader(vertex_shader, "vertex"), Shader(fragment_shader, "fragment"))
+        self._cached_projection = None
+        self._cached_inverse_projection = None
 
         # Get all uniform locations
         with self:
             self.loc_view = self._get_uniform_location("view")
             self.loc_projection = self._get_uniform_location("projection")
+            self.loc_inverse_projection = self._get_uniform_location("inverse_projection")
+            self.loc_viewport_size = self._get_uniform_location("viewport_size")
             self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
             self.loc_shadow_map = self._get_uniform_location("shadow_map")
@@ -554,22 +658,42 @@ class ShaderShape(ShaderGL):
             self.loc_ground_color = self._get_uniform_location("ground_color")
             self.loc_sky_color = self._get_uniform_location("sky_color")
             self.loc_shadow_radius = self._get_uniform_location("shadow_radius")
+            self.loc_enable_shadows = self._get_uniform_location("enable_shadows")
             self.loc_diffuse_scale = self._get_uniform_location("diffuse_scale")
             self.loc_specular_scale = self._get_uniform_location("specular_scale")
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
+            self.loc_exposure = self._get_uniform_location("exposure")
+            self.loc_oit_inv_depth_reference = None
+            self.loc_oit_enabled = None
+            if enable_transparency:
+                self.loc_oit_inv_depth_reference = self._get_uniform_location("oit_inv_depth_reference")
+                self.loc_oit_enabled = self._get_uniform_location("oit_enabled")
+                self._gl.glUniform1i(self.loc_oit_enabled, 1)
+
+    def set_oit_enabled(self, enabled: bool):
+        """Select weighted-OIT accumulation or the alpha-blended fallback.
+
+        Args:
+            enabled: Whether the weighted-OIT accumulation buffers are bound.
+        """
+        if self.loc_oit_enabled is None:
+            return
+        with self:
+            self._gl.glUniform1i(self.loc_oit_enabled, int(enabled))
 
     def update(
         self,
         view_matrix: np.ndarray,
         projection_matrix: np.ndarray,
+        viewport_size: tuple[int, int],
         view_pos: tuple[float, float, float],
         fog_color: tuple[float, float, float],
         up_axis: int,
         sun_direction: tuple[float, float, float],
         light_color: tuple[float, float, float] = (2.0, 2.0, 2.0),
-        ground_color: tuple[float, float, float] = (0.294, 0.333, 0.592),
-        sky_color: tuple[float, float, float] = (0.745, 0.863, 0.941),
+        ground_color: tuple[float, float, float] = (0.3, 0.3, 0.35),
+        sky_color: tuple[float, float, float] = (0.8, 0.8, 0.85),
         enable_shadows: bool = False,
         shadow_texture: int | None = None,
         light_space_matrix: np.ndarray | None = None,
@@ -580,12 +704,28 @@ class ShaderShape(ShaderGL):
         specular_scale: float = 1.0,
         spotlight_enabled: bool = True,
         shadow_extents: float = 10.0,
+        exposure: float = 1.6,
+        oit_depth_reference: float = 1.0,
     ):
-        """Update all shader uniforms."""
+        """Update all shader uniforms.
+
+        Args:
+            oit_depth_reference: Reference distance [m] to the transparent
+                content, used to normalize the weighted-OIT depth weight.
+                Ignored unless this shader was built with transparency enabled.
+        """
         with self:
             # Basic matrices
             self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
             self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+            projection_array = np.asarray(projection_matrix).reshape(4, 4)
+            if self._cached_projection is None or not np.array_equal(projection_array, self._cached_projection):
+                self._cached_projection = projection_array.copy()
+                self._cached_inverse_projection = np.linalg.inv(projection_array).astype(np.float32)
+            self._gl.glUniformMatrix4fv(
+                self.loc_inverse_projection, 1, self._gl.GL_FALSE, arr_pointer(self._cached_inverse_projection)
+            )
+            self._gl.glUniform2f(self.loc_viewport_size, *viewport_size)
             self._gl.glUniform3f(self.loc_view_pos, *view_pos)
 
             # Lighting
@@ -594,10 +734,14 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform3f(self.loc_ground_color, *ground_color)
             self._gl.glUniform3f(self.loc_sky_color, *sky_color)
             self._gl.glUniform1f(self.loc_shadow_radius, shadow_radius)
+            self._gl.glUniform1i(self.loc_enable_shadows, int(enable_shadows))
             self._gl.glUniform1f(self.loc_diffuse_scale, diffuse_scale)
             self._gl.glUniform1f(self.loc_specular_scale, specular_scale)
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
             self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
+            self._gl.glUniform1f(self.loc_exposure, exposure)
+            if self.loc_oit_inv_depth_reference is not None:
+                self._gl.glUniform1f(self.loc_oit_inv_depth_reference, 1.0 / max(float(oit_depth_reference), 1e-6))
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)
@@ -616,7 +760,9 @@ class ShaderShape(ShaderGL):
             if env_texture is not None:
                 self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, env_texture)
             else:
-                self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, 0)
+                from .opengl import RendererGL  # noqa: PLC0415
+
+                self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
             self._gl.glUniform1i(self.loc_env_map, 2)
             self._gl.glUniform1f(self.loc_env_intensity, float(env_intensity))
 
@@ -685,13 +831,15 @@ class ShadowShader(ShaderGL):
         # Get uniform locations
         with self:
             self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
+            self.loc_render_origin = self._get_uniform_location("render_origin")
 
-    def update(self, light_space_matrix: np.ndarray):
+    def update(self, light_space_matrix: np.ndarray, render_origin: tuple[float, float, float]):
         """Update light space matrix for shadow rendering."""
         with self:
             self._gl.glUniformMatrix4fv(
                 self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(light_space_matrix)
             )
+            self._gl.glUniform3f(self.loc_render_origin, *render_origin)
 
 
 class FrameShader(ShaderGL):
@@ -709,15 +857,17 @@ class FrameShader(ShaderGL):
         # Get uniform locations
         with self:
             self.loc_texture = self._get_uniform_location("texture_sampler")
+            self.loc_flip_y = self._get_uniform_location("flip_y")
 
-    def update(self, texture_unit: int = 0):
-        """Update texture uniform."""
+    def update(self, texture_unit: int = 0, flip_y: bool = False):
+        """Update texture uniforms."""
         with self:
             self._gl.glUniform1i(self.loc_texture, texture_unit)
+            self._gl.glUniform1i(self.loc_flip_y, int(flip_y))
 
 
-class ShaderLine(ShaderGL):
-    """Simple shader for rendering lines with per-vertex colors."""
+class OITResolveShader(ShaderGL):
+    """Shader for compositing weighted blended transparent accumulators."""
 
     def __init__(self, gl):
         super().__init__()
@@ -725,16 +875,304 @@ class ShaderLine(ShaderGL):
 
         self._gl = gl
         self.shader_program = ShaderProgram(
-            Shader(line_vertex_shader, "vertex"), Shader(line_fragment_shader, "fragment")
+            Shader(frame_vertex_shader, "vertex"), Shader(oit_resolve_fragment_shader, "fragment")
         )
 
-        # Get uniform locations
+        with self:
+            self.loc_accum_texture = self._get_uniform_location("accum_texture")
+            self.loc_reveal_texture = self._get_uniform_location("reveal_texture")
+            self._gl.glUniform1i(self.loc_accum_texture, 0)
+            self._gl.glUniform1i(self.loc_reveal_texture, 1)
+
+
+wireframe_vertex_shader = """
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aColor;
+
+uniform mat4 view;
+uniform mat4 projection;
+uniform mat4 world;
+
+out vec3 vertexColor;
+
+void main()
+{
+    vec4 worldPos = world * vec4(aPos, 1.0);
+    vertexColor = aColor;
+    gl_Position = projection * view * worldPos;
+}
+"""
+
+wireframe_geometry_shader = """
+#version 330 core
+layout (lines) in;
+layout (triangle_strip, max_vertices = 6) out;
+
+in vec3 vertexColor[2];
+
+out vec3 lineColor;
+
+uniform float inv_asp_ratio;
+uniform float line_width;
+
+void main()
+{
+    vec4 s = gl_in[0].gl_Position;
+    vec4 e = gl_in[1].gl_Position;
+
+    if (s.w <= 0.0 || e.w <= 0.0) return;
+
+    vec2 s_ndc = s.xy / s.w;
+    vec2 e_ndc = e.xy / e.w;
+    float s_depth = s.z / s.w;
+    float e_depth = e.z / e.w;
+
+    // Compute perpendicular in screen (aspect-corrected) space so line
+    // width is uniform on non-square viewports.
+    float safe_asp = max(inv_asp_ratio, 1e-6);
+    vec2 dir_ndc = e_ndc - s_ndc;
+    vec2 dir_scr = vec2(dir_ndc.x / safe_asp, dir_ndc.y);
+    vec2 right_scr = normalize(vec2(dir_scr.y, -dir_scr.x));
+    vec2 right = vec2(right_scr.x * safe_asp, right_scr.y);
+
+    vec3 color = 0.5 * (vertexColor[0] + vertexColor[1]);
+    vec2 xy = 0.5 * line_width * right;
+
+    gl_Position = vec4(s_ndc - xy, s_depth, 1); lineColor = color;
+    EmitVertex();
+    gl_Position = vec4(e_ndc + xy, e_depth, 1); lineColor = color;
+    EmitVertex();
+    gl_Position = vec4(s_ndc + xy, s_depth, 1); lineColor = color;
+    EmitVertex();
+    EndPrimitive();
+
+    gl_Position = vec4(s_ndc - xy, s_depth, 1); lineColor = color;
+    EmitVertex();
+    gl_Position = vec4(e_ndc - xy, e_depth, 1); lineColor = color;
+    EmitVertex();
+    gl_Position = vec4(e_ndc + xy, e_depth, 1); lineColor = color;
+    EmitVertex();
+    EndPrimitive();
+}
+"""
+
+wireframe_fragment_shader = """
+#version 330 core
+in vec3 lineColor;
+out vec4 FragColor;
+
+uniform float alpha;
+
+void main()
+{
+    FragColor = vec4(lineColor, alpha);
+}
+"""
+
+
+class ShaderLine(ShaderGL):
+    """Geometry-shader-based line renderer that expands GL_LINES into screen-space quads."""
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(wireframe_vertex_shader, "vertex"),
+            Shader(wireframe_geometry_shader, "geometry"),
+            Shader(wireframe_fragment_shader, "fragment"),
+        )
+
         with self:
             self.loc_view = self._get_uniform_location("view")
             self.loc_projection = self._get_uniform_location("projection")
+            self.loc_world = self._get_uniform_location("world")
+            self.loc_inv_asp_ratio = self._get_uniform_location("inv_asp_ratio")
+            self.loc_line_width = self._get_uniform_location("line_width")
+            self.loc_alpha = self._get_uniform_location("alpha")
 
-    def update(self, view_matrix: np.ndarray, projection_matrix: np.ndarray):
-        """Update view and projection matrices for line rendering."""
+    def update_frame(
+        self,
+        view_matrix: np.ndarray,
+        projection_matrix: np.ndarray,
+        inv_asp_ratio: float,
+        line_width: float = 0.003,
+        alpha: float = 0.7,
+    ):
+        """Set per-frame uniforms (call once before rendering all wireframe shapes)."""
+        self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
+        self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+        self._gl.glUniform1f(self.loc_inv_asp_ratio, float(inv_asp_ratio))
+        self._gl.glUniform1f(self.loc_line_width, float(line_width))
+        self._gl.glUniform1f(self.loc_alpha, float(alpha))
+
+    def set_world(self, world: np.ndarray):
+        """Set the per-shape world matrix uniform."""
+        self._gl.glUniformMatrix4fv(self.loc_world, 1, self._gl.GL_FALSE, arr_pointer(world))
+
+
+arrow_geometry_shader = """
+#version 330 core
+layout (lines) in;
+layout (triangle_strip, max_vertices = 9) out;
+
+in vec3 vertexColor[2];
+out vec3 lineColor;
+
+uniform float inv_asp_ratio;
+uniform float line_width;
+uniform float arrow_size;
+
+void main()
+{
+    vec4 s = gl_in[0].gl_Position;
+    vec4 e = gl_in[1].gl_Position;
+    if (s.w <= 0.0 || e.w <= 0.0) return;
+
+    vec2 s_ndc = s.xy / s.w;
+    vec2 e_ndc = e.xy / e.w;
+    float s_depth = s.z / s.w;
+    float e_depth = e.z / e.w;
+
+    // Work in screen space (aspect-corrected) so arrows look correct on
+    // non-square viewports.  screen_x = ndc_x / inv_asp_ratio.
+    float safe_asp = max(inv_asp_ratio, 1e-6);
+    vec2 dir_ndc = e_ndc - s_ndc;
+    vec2 dir_scr = vec2(dir_ndc.x / safe_asp, dir_ndc.y);
+    float len = length(dir_scr);
+
+    vec3 color = 0.5 * (vertexColor[0] + vertexColor[1]);
+
+    // Degenerate case: line points into/out of screen
+    if (len < 1e-6) {
+        float r = arrow_size * 0.4;
+        vec2 up = vec2(0.0, r);
+        vec2 rt = vec2(r * safe_asp, 0.0);
+        gl_Position = vec4(e_ndc + up, e_depth, 1); lineColor = color; EmitVertex();
+        gl_Position = vec4(e_ndc - rt, e_depth, 1); lineColor = color; EmitVertex();
+        gl_Position = vec4(e_ndc + rt, e_depth, 1); lineColor = color; EmitVertex();
+        EndPrimitive();
+        return;
+    }
+
+    // fwd/right in screen space, then convert offsets back to NDC (scale x by safe_asp)
+    vec2 fwd_scr = dir_scr / len;
+    vec2 right_scr = vec2(fwd_scr.y, -fwd_scr.x);
+    vec2 fwd   = vec2(fwd_scr.x * safe_asp, fwd_scr.y);
+    vec2 right = vec2(right_scr.x * safe_asp, right_scr.y);
+
+    // Shorten the line body so it ends at the arrowhead base
+    vec2 xy = 0.5 * line_width * right;
+    vec2 e_body = e_ndc - fwd * arrow_size;
+
+    gl_Position = vec4(s_ndc  - xy, s_depth, 1); lineColor = color; EmitVertex();
+    gl_Position = vec4(e_body + xy, e_depth, 1); lineColor = color; EmitVertex();
+    gl_Position = vec4(s_ndc  + xy, s_depth, 1); lineColor = color; EmitVertex();
+    EndPrimitive();
+
+    gl_Position = vec4(s_ndc  - xy, s_depth, 1); lineColor = color; EmitVertex();
+    gl_Position = vec4(e_body - xy, e_depth, 1); lineColor = color; EmitVertex();
+    gl_Position = vec4(e_body + xy, e_depth, 1); lineColor = color; EmitVertex();
+    EndPrimitive();
+
+    // Triangle 3: arrowhead with tip exactly at the endpoint
+    vec2 tip    = e_ndc;
+    vec2 base_l = e_body - right * arrow_size * 0.5;
+    vec2 base_r = e_body + right * arrow_size * 0.5;
+
+    gl_Position = vec4(tip,    e_depth, 1); lineColor = color; EmitVertex();
+    gl_Position = vec4(base_l, e_depth, 1); lineColor = color; EmitVertex();
+    gl_Position = vec4(base_r, e_depth, 1); lineColor = color; EmitVertex();
+    EndPrimitive();
+}
+"""
+
+
+class ShaderArrow(ShaderGL):
+    """Geometry-shader-based arrow renderer: wide line + arrowhead triangle per segment."""
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(wireframe_vertex_shader, "vertex"),
+            Shader(arrow_geometry_shader, "geometry"),
+            Shader(wireframe_fragment_shader, "fragment"),
+        )
+
+        with self:
+            self.loc_view = self._get_uniform_location("view")
+            self.loc_projection = self._get_uniform_location("projection")
+            self.loc_world = self._get_uniform_location("world")
+            self.loc_inv_asp_ratio = self._get_uniform_location("inv_asp_ratio")
+            self.loc_line_width = self._get_uniform_location("line_width")
+            self.loc_arrow_size = self._get_uniform_location("arrow_size")
+            self.loc_alpha = self._get_uniform_location("alpha")
+
+    def update_frame(
+        self,
+        view_matrix: np.ndarray,
+        projection_matrix: np.ndarray,
+        inv_asp_ratio: float,
+        line_width: float = 0.003,
+        arrow_size: float = 0.01,
+        alpha: float = 1.0,
+    ):
+        """Set per-frame uniforms (call once before rendering all arrow batches)."""
+        self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
+        self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+        self._gl.glUniform1f(self.loc_inv_asp_ratio, float(inv_asp_ratio))
+        self._gl.glUniform1f(self.loc_line_width, float(line_width))
+        self._gl.glUniform1f(self.loc_arrow_size, float(arrow_size))
+        self._gl.glUniform1f(self.loc_alpha, float(alpha))
+
+    def set_world(self, world: np.ndarray):
+        """Set the per-shape world matrix uniform."""
+        self._gl.glUniformMatrix4fv(self.loc_world, 1, self._gl.GL_FALSE, arr_pointer(world))
+
+
+edge_fragment_shader = """
+#version 330 core
+out vec4 FragColor;
+uniform vec4 edge_color;
+void main()
+{
+    FragColor = edge_color;
+}
+"""
+
+
+class ShaderEdge(ShaderGL):
+    """Flat-color shader for the edge/wireframe overlay pass."""
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(shape_vertex_shader, "vertex"), Shader(edge_fragment_shader, "fragment")
+        )
+
+        with self:
+            self.loc_view = self._get_uniform_location("view")
+            self.loc_projection = self._get_uniform_location("projection")
+            self.loc_view_pos = self._get_uniform_location("view_pos")
+            self.loc_edge_color = self._get_uniform_location("edge_color")
+
+    def update(
+        self,
+        view_matrix: np.ndarray,
+        projection_matrix: np.ndarray,
+        view_pos: tuple[float, float, float],
+        edge_color: tuple[float, float, float, float] = (0.05, 0.05, 0.05, 1.0),
+    ):
         with self:
             self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
             self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+            self._gl.glUniform3f(self.loc_view_pos, *view_pos)
+            self._gl.glUniform4f(self.loc_edge_color, *edge_color)

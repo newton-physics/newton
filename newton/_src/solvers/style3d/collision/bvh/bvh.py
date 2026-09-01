@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import warp as wp
 
@@ -139,9 +127,9 @@ class BvhAabb:
 
     def aabb_vs_aabb(
         self,
-        lower_bounds: wp.array(dtype=wp.vec3),
-        upper_bounds: wp.array(dtype=wp.vec3),
-        query_results: wp.array(dtype=int, ndim=2),
+        lower_bounds: wp.array[wp.vec3],
+        upper_bounds: wp.array[wp.vec3],
+        query_results: wp.array2d[int],
         query_radius: float = 0.0,
         ignore_self_hits: bool = False,
     ):
@@ -156,11 +144,11 @@ class BvhAabb:
             - Rows 1..N store the indices of the intersecting leaf nodes.
 
         Args:
-            lower_bounds (wp.array): Array of lower corners of query AABBs.
-            upper_bounds (wp.array): Array of upper corners of query AABBs.
-            query_results (wp.array): 2D integer array for storing results [max_results + 1, num_queries].
-            query_radius (float, optional): Additional padding radius to apply to each query AABB.
-            ignore_self_hits (bool, optional): If True, suppresses self-intersections (e.g., for symmetric queries).
+            lower_bounds: Array of lower corners of query AABBs.
+            upper_bounds: Array of upper corners of query AABBs.
+            query_results: 2D integer array for storing results [max_results + 1, num_queries].
+            query_radius: Additional padding radius to apply to each query AABB.
+            ignore_self_hits: If True, suppresses self-intersections (e.g., for symmetric queries).
 
         Note:
             - query_results.shape[1] must be ≥ number of aabbs (i.e., lower_bounds.shape[0]).
@@ -183,9 +171,9 @@ class BvhAabb:
 
     def aabb_vs_line(
         self,
-        vertices: wp.array(dtype=wp.vec3),
-        edge_indices: wp.array(dtype=int, ndim=2),
-        query_results: wp.array(dtype=int, ndim=2),
+        vertices: wp.array[wp.vec3],
+        edge_indices: wp.array2d[int],
+        query_results: wp.array2d[int],
         ignore_self_hits: bool = False,
     ):
         """Queries the BVH for intersections between line segments and AABBs.
@@ -200,10 +188,10 @@ class BvhAabb:
             - Rows 1..N store the indices of the intersecting leaf nodes.
 
         Args:
-            vertices (wp.array): Array of 3D points representing geometry vertices.
-            edge_indices (wp.array): (N, 2) array of vertex indices forming line segments.
-            query_results (wp.array): 2D int array of shape (max_results + 1, num_segments) for output.
-            ignore_self_hits (bool): Whether to ignore self-intersections (e.g., for symmetric geometry).
+            vertices: Array of 3D points representing geometry vertices.
+            edge_indices: (N, 2) array of vertex indices forming line segments.
+            query_results: 2D int array of shape (max_results + 1, num_segments) for output.
+            ignore_self_hits: Whether to ignore self-intersections (e.g., for symmetric geometry).
 
         Note:
             - query_results.shape[1] must be ≥ number of segments (i.e., edge_indices.shape[0]).
@@ -248,14 +236,14 @@ class BvhEdge(BvhAabb):
     def __init__(self, edge_count: int, device: wp.Device):
         super().__init__(edge_count, device)
 
-    def update_aabbs(self, pos: wp.array(dtype=wp.vec3), edge_indices: wp.array(dtype=int, ndim=2), enlarge: float):
+    def update_aabbs(self, pos: wp.array[wp.vec3], edge_indices: wp.array2d[int], enlarge: float):
         """Computes AABBs for all edges based on current vertex positions and edge indices.
 
         Args:
-            pos (wp.array): Vertex position array (wp.vec3).
-            edge_indices (wp.array): Integer array of shape (M, 4). Columns 2 and 3
+            pos: Vertex position array (wp.vec3).
+            edge_indices: Integer array of shape (M, 4). Columns 2 and 3
                 of each row contain indices into `pos` defining an edge.
-            enlarge (float): Optional margin to expand each bounding box
+            enlarge: Optional margin to expand each bounding box
                 (useful for padding or motion blur).
         """
         # ================================    Runtime checks    ================================
@@ -270,16 +258,16 @@ class BvhEdge(BvhAabb):
             device=self.device,
         )
 
-    def build(self, pos: wp.array(dtype=wp.vec3), edge_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def build(self, pos: wp.array[wp.vec3], edge_indices: wp.array2d[int], enlarge: float = 0.0):
         """Builds the edge BVH from scratch using the given vertex positions and edge indices.
 
         This computes the AABBs for all edges and then constructs a new BVH hierarchy.
 
         Args:
-            pos (wp.array): Vertex positions (wp.vec3).
-            edge_indices (wp.array): Integer array of shape (M, 4). Columns 2 and 3
+            pos: Vertex positions (wp.vec3).
+            edge_indices: Integer array of shape (M, 4). Columns 2 and 3
                 of each row contain the vertex indices defining an edge.
-            enlarge (float): Optional padding value to expand each edge's bounding box (default 0.0).
+            enlarge: Optional padding value to expand each edge's bounding box (default 0.0).
 
         Warning:
             This function **must not** be called inside a `wp.ScopedCapture()` context,
@@ -288,17 +276,17 @@ class BvhEdge(BvhAabb):
         self.update_aabbs(pos, edge_indices, enlarge)
         super().build()
 
-    def rebuild(self, pos: wp.array(dtype=wp.vec3), edge_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def rebuild(self, pos: wp.array[wp.vec3], edge_indices: wp.array2d[int], enlarge: float = 0.0):
         """Rebuilds the edge BVH using the current vertex positions and edge indices.
 
         This recomputes the edge AABBs and reconstructs the BVH hierarchy
         from scratch (i.e., equivalent to `build()` but reuses the existing object).
 
         Args:
-            pos (wp.array): Updated vertex positions (wp.vec3).
-            edge_indices (wp.array): Integer array of shape (M, 4). Columns 2 and 3
+            pos: Updated vertex positions (wp.vec3).
+            edge_indices: Integer array of shape (M, 4). Columns 2 and 3
                 of each row contain the vertex indices defining an edge.
-            enlarge (float): Optional padding value to expand each edge's bounding box (default 0.0).
+            enlarge: Optional padding value to expand each edge's bounding box (default 0.0).
 
         Notes:
             - Unlike :func:`refit`, this recomputes the BVH topology, not just the bounds.
@@ -308,17 +296,17 @@ class BvhEdge(BvhAabb):
         self.update_aabbs(pos, edge_indices, enlarge)
         super().rebuild()
 
-    def refit(self, pos: wp.array(dtype=wp.vec3), edge_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def refit(self, pos: wp.array[wp.vec3], edge_indices: wp.array2d[int], enlarge: float = 0.0):
         """Refits the edge BVH after vertex positions have changed, without rebuilding the hierarchy.
 
         This updates the leaf AABBs for all edges and adjusts the internal BVH bounds,
         while preserving the existing hierarchy structure.
 
         Args:
-            pos (wp.array): Updated vertex positions (wp.vec3).
-            edge_indices (wp.array): Integer array of shape (M, 4). Columns 2 and 3
+            pos: Updated vertex positions (wp.vec3).
+            edge_indices: Integer array of shape (M, 4). Columns 2 and 3
                 of each row contain the vertex indices defining an edge.
-            enlarge (float): Optional padding value to expand each edge's bounding box (default 0.0).
+            enlarge: Optional padding value to expand each edge's bounding box (default 0.0).
 
         Use this for dynamic geometry where connectivity stays the same but positions change.
         """
@@ -327,11 +315,11 @@ class BvhEdge(BvhAabb):
 
     def edge_vs_edge(
         self,
-        test_pos: wp.array(dtype=wp.vec3),
-        test_edge_indices: wp.array(dtype=int, ndim=2),
-        edge_pos: wp.array(dtype=wp.vec3),
-        edge_indices: wp.array(dtype=int, ndim=2),
-        query_results: wp.array(dtype=int, ndim=2),
+        test_pos: wp.array[wp.vec3],
+        test_edge_indices: wp.array2d[int],
+        edge_pos: wp.array[wp.vec3],
+        edge_indices: wp.array2d[int],
+        query_results: wp.array2d[int],
         ignore_self_hits: bool,
         max_dist: float,
         query_radius: float = 0.0,
@@ -348,14 +336,14 @@ class BvhEdge(BvhAabb):
             - Rows 1..N store the indices of the intersecting leaf nodes.
 
         Args:
-            test_pos (wp.array): Query edge vertex positions (wp.vec3).
-            test_edge_indices (wp.array): Query edge indices (M x 4 int array).
-            edge_pos (wp.array): Edge vertex positions (same as used when building BVH).
-            edge_indices (wp.array): Edge indices (M x 4 int array).
-            query_results (wp.array): 2D int array to store the result layout (max_results + 1, P).
-            ignore_self_hits (bool): If True, skips hits between a point and its associated triangle (e.g. for self-collision).
-            max_dist (float): Maximum allowed distance between point and triangle for a match to be considered.
-            query_radius (float): Optional padding to enlarge triangle AABBs during the query (default: 0.0).
+            test_pos: Query edge vertex positions (wp.vec3).
+            test_edge_indices: Query edge indices (M x 4 int array).
+            edge_pos: Edge vertex positions (same as used when building BVH).
+            edge_indices: Edge indices (M x 4 int array).
+            query_results: 2D int array to store the result layout (max_results + 1, P).
+            ignore_self_hits: If True, skips hits between a point and its associated triangle (e.g. for self-collision).
+            max_dist: Maximum allowed distance between point and triangle for a match to be considered.
+            query_radius: Optional padding to enlarge triangle AABBs during the query (default: 0.0).
         """
         wp.launch(
             edge_vs_edge_kernel,
@@ -394,14 +382,14 @@ class BvhTri(BvhAabb):
     def __init__(self, tri_count: int, device: wp.Device):
         super().__init__(tri_count, device)
 
-    def update_aabbs(self, pos: wp.array(dtype=wp.vec3), tri_indices: wp.array(dtype=int, ndim=2), enlarge: float):
+    def update_aabbs(self, pos: wp.array[wp.vec3], tri_indices: wp.array2d[int], enlarge: float):
         """Computes AABBs for all triangles based on current vertex positions and indices.
 
         Args:
-            pos (wp.array): Vertex position array (wp.vec3).
-            tri_indices (wp.array): Integer array of shape (M, 3),
+            pos: Vertex position array (wp.vec3).
+            tri_indices: Integer array of shape (M, 3),
                 where each row contains vertex indices defining a triangle.
-            enlarge (float): Optional margin to expand each bounding box
+            enlarge: Optional margin to expand each bounding box
                 (useful for padding or motion blur).
         """
         # ================================    Runtime checks    ================================
@@ -416,16 +404,16 @@ class BvhTri(BvhAabb):
             device=self.device,
         )
 
-    def build(self, pos: wp.array(dtype=wp.vec3), tri_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def build(self, pos: wp.array[wp.vec3], tri_indices: wp.array2d[int], enlarge: float = 0.0):
         """Builds the triangle BVH from scratch.
 
         This computes AABBs for all triangles and constructs a new BVH hierarchy.
 
         Args:
-            pos (wp.array): Vertex positions (wp.vec3).
-            tri_indices (wp.array): Integer array of shape (M, 3),
+            pos: Vertex positions (wp.vec3).
+            tri_indices: Integer array of shape (M, 3),
                 where each row defines a triangle.
-            enlarge (float): Optional padding value to expand each triangle's bounding box (default 0.0).
+            enlarge: Optional padding value to expand each triangle's bounding box (default 0.0).
 
         Warning:
             This function **must not** be called inside a `wp.ScopedCapture()` context,
@@ -434,7 +422,7 @@ class BvhTri(BvhAabb):
         self.update_aabbs(pos, tri_indices, enlarge)
         super().build()
 
-    def rebuild(self, pos: wp.array(dtype=wp.vec3), tri_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def rebuild(self, pos: wp.array[wp.vec3], tri_indices: wp.array2d[int], enlarge: float = 0.0):
         """Rebuilds the triangle BVH using the current vertex positions and indices.
 
         This recomputes the triangle AABBs and rebuilds the BVH hierarchy
@@ -442,10 +430,10 @@ class BvhTri(BvhAabb):
         move significantly or topology has changed).
 
         Args:
-            pos (wp.array): Updated vertex positions (wp.vec3).
-            tri_indices (wp.array): Integer array of shape (M, 3),
+            pos: Updated vertex positions (wp.vec3).
+            tri_indices: Integer array of shape (M, 3),
                 where each row defines a triangle.
-            enlarge (float): Optional padding value to expand each triangle's bounding box (default 0.0).
+            enlarge: Optional padding value to expand each triangle's bounding box (default 0.0).
 
         Notes:
             - Unlike :func:`refit`, this recomputes the BVH topology,
@@ -455,17 +443,17 @@ class BvhTri(BvhAabb):
         self.update_aabbs(pos, tri_indices, enlarge)
         super().rebuild()
 
-    def refit(self, pos: wp.array(dtype=wp.vec3), tri_indices: wp.array(dtype=int, ndim=2), enlarge: float = 0.0):
+    def refit(self, pos: wp.array[wp.vec3], tri_indices: wp.array2d[int], enlarge: float = 0.0):
         """Refits the triangle BVH after vertex positions have changed, without rebuilding the hierarchy.
 
         This updates AABBs for all triangles and propagates the changes up the hierarchy,
         while preserving the existing BVH structure.
 
         Args:
-            pos (wp.array): Updated vertex positions (wp.vec3).
-            tri_indices (wp.array): Integer array of shape (M, 3),
+            pos: Updated vertex positions (wp.vec3).
+            tri_indices: Integer array of shape (M, 3),
                 where each row defines a triangle.
-            enlarge (float): Optional bounding box padding for each triangle (default 0.0).
+            enlarge: Optional bounding box padding for each triangle (default 0.0).
 
         Use this for dynamic geometry where connectivity stays the same but positions change.
         """
@@ -474,10 +462,10 @@ class BvhTri(BvhAabb):
 
     def triangle_vs_point(
         self,
-        pos: wp.array(dtype=wp.vec3),
-        tri_pos: wp.array(dtype=wp.vec3),
-        tri_indices: wp.array(dtype=int, ndim=2),
-        query_results: wp.array(dtype=int, ndim=2),
+        pos: wp.array[wp.vec3],
+        tri_pos: wp.array[wp.vec3],
+        tri_indices: wp.array2d[int],
+        query_results: wp.array2d[int],
         ignore_self_hits: bool,
         max_dist: float,
         query_radius: float = 0.0,
@@ -494,13 +482,13 @@ class BvhTri(BvhAabb):
             - Rows 1..N store the indices of the intersecting leaf nodes.
 
         Args:
-            pos (wp.array): Query point positions (wp.vec3).
-            tri_pos (wp.array): Triangle vertex positions (same as used when building BVH).
-            tri_indices (wp.array): Triangle indices (M x 3 int array).
-            query_results (wp.array): 2D int array to store the result layout (max_results + 1, P).
-            ignore_self_hits (bool): If True, skips hits between a point and its associated triangle (e.g. for self-collision).
-            max_dist (float): Maximum allowed distance between point and triangle for a match to be considered.
-            query_radius (float): Optional padding to enlarge triangle AABBs during the query (default: 0.0).
+            pos: Query point positions (wp.vec3).
+            tri_pos: Triangle vertex positions (same as used when building BVH).
+            tri_indices: Triangle indices (M x 3 int array).
+            query_results: 2D int array to store the result layout (max_results + 1, P).
+            ignore_self_hits: If True, skips hits between a point and its associated triangle (e.g. for self-collision).
+            max_dist: Maximum allowed distance between point and triangle for a match to be considered.
+            query_radius: Optional padding to enlarge triangle AABBs during the query (default: 0.0).
         """
         # ================================    Runtime checks    ================================
         assert tri_indices.shape[1] == 3, f"tri_indices must be of shape (M, 3), got {tri_indices.shape}"

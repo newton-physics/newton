@@ -1,0 +1,368 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+import warp as wp
+
+from .clamping.base import Clamping
+from .controllers.base import Controller
+from .delay import Delay
+from .effort_mode_explicit import _EffortModeExplicit
+from .effort_mode_implicit import ImplicitOptions, ResponseOracle, _EffortModeImplicit
+
+
+@wp.kernel
+def _scatter_add_kernel(
+    forces: wp.array[float],
+    computed_forces: wp.array[float],
+    indices: wp.array[wp.uint32],
+    output: wp.array[float],
+    computed_output: wp.array[float],
+):
+    """Scatter-add effort into output; optionally scatter computed effort too."""
+    i = wp.tid()
+    idx = indices[i]
+    output[idx] = output[idx] + forces[i]
+    if computed_output:
+        computed_output[idx] = computed_output[idx] + computed_forces[i]
+
+
+class Actuator:
+    """Composed actuator: delay → controller → clamping.
+
+    An actuator reads from simulation state/control arrays, optionally
+    delays command inputs, computes effort via a controller, applies
+    clamping (effort limits, saturation, etc.), and **accumulates** the
+    result into the output array (scatter-add).  The caller must zero the
+    output array before stepping actuators.
+
+    Usage::
+
+        actuator = Actuator(
+            indices=indices,
+            controller=ControllerPD(kp=kp, kd=kd),
+            delay=Delay(delay_steps=wp.array([5, 5], dtype=wp.int32), max_delay=5),
+            clamping=[ClampingMaxEffort(max_effort=max_effort)],
+        )
+
+        # Simulation loop
+        actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
+
+    Effort is computed explicitly by default (control law evaluated at the
+    current state, zero-order hold over the step).
+    """
+
+    @dataclass
+    class State:
+        """Composed state for an :class:`Actuator`.
+
+        Holds the delay state (if a delay is present) and the controller
+        state. Clamping objects are stateless.
+        """
+
+        delay_state: Delay.State | None = None
+        """Delay buffer state, or ``None`` if no delay is used."""
+        controller_state: Controller.State | None = None
+        """Controller-specific state, or ``None`` if stateless."""
+
+        def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
+            """Reset composed state.
+
+            Args:
+                mask: Boolean mask of length N. ``True`` entries are reset.
+                    ``None`` resets all.
+            """
+            if self.delay_state is not None:
+                self.delay_state.reset(mask)
+            if self.controller_state is not None:
+                self.controller_state.reset(mask)
+
+    def __init__(
+        self,
+        indices: wp.array[wp.uint32],
+        controller: Controller,
+        delay: Delay | None = None,
+        clamping: list[Clamping] | None = None,
+        pos_indices: wp.array[wp.uint32] | None = None,
+        target_pos_indices: wp.array[wp.uint32] | None = None,
+        effort_indices: wp.array[wp.uint32] | None = None,
+        state_pos_attr: str = "joint_q",
+        state_vel_attr: str = "joint_qd",
+        control_target_pos_attr: str | None = "joint_target_q",
+        control_target_vel_attr: str | None = "joint_target_qd",
+        control_feedforward_attr: str | None = "joint_act",
+        control_output_attr: str = "joint_f",
+        control_computed_output_attr: str | None = None,
+        requires_grad: bool = False,
+    ):
+        """Initialize actuator.
+
+        Args:
+            indices: DOF indices into velocity-shaped arrays (velocities,
+                velocity targets, feedforward, effort output). Shape ``(N,)``.
+            controller: Controller that computes raw effort.
+            delay: Optional Delay instance for input delay.
+            clamping: List of Clamping objects (post-controller effort bounds).
+            pos_indices: Indices into coordinate-shaped arrays (positions =
+                ``state.joint_q``). Defaults to *indices*. Differs from
+                *indices* when position and velocity arrays have different
+                layouts (e.g. floating-base or ball-joint articulations).
+            target_pos_indices: Indices into ``control.joint_target_q``.
+                Defaults to *pos_indices* when
+                :attr:`newton.use_coord_layout_targets` is ``True`` (coord
+                layout), otherwise to *indices* (legacy DOF layout). The flag is
+                read once here, so toggling ``newton.use_coord_layout_targets``
+                after construction does not change ``target_pos_indices``.
+            effort_indices: DOF indices into effort output arrays. Defaults to
+                *indices*. Differs from *indices* for coupled transmissions
+                or tendon-driven joints.
+            state_pos_attr: Attribute on sim_state for positions.
+            state_vel_attr: Attribute on sim_state for velocities.
+            control_target_pos_attr: Attribute on sim_control for target positions.
+                ``None`` selects the default ``"joint_target_q"``.
+            control_target_vel_attr: Attribute on sim_control for target velocities.
+                ``None`` selects the default ``"joint_target_qd"``.
+            control_feedforward_attr: Attribute on sim_control for feedforward effort. None to skip.
+            control_output_attr: Attribute on sim_control for clamped output effort.
+            control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
+                effort. None to skip writing computed effort.
+            requires_grad: Allocate intermediate arrays with gradient support
+                for differentiable simulation.
+        """
+        self.indices = indices
+        self.pos_indices = pos_indices if pos_indices is not None else indices
+        if target_pos_indices is not None:
+            self.target_pos_indices = target_pos_indices
+        else:
+            import newton  # noqa: PLC0415
+
+            self.target_pos_indices = self.pos_indices if newton.use_coord_layout_targets else indices
+        self.effort_indices = effort_indices if effort_indices is not None else indices
+        if self.pos_indices.shape != indices.shape:
+            raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")
+        if self.target_pos_indices.shape != indices.shape:
+            raise ValueError(
+                f"target_pos_indices shape {self.target_pos_indices.shape} must match indices shape {indices.shape}"
+            )
+        if self.effort_indices.shape != indices.shape:
+            raise ValueError(
+                f"effort_indices shape {self.effort_indices.shape} must match indices shape {indices.shape}"
+            )
+        self.controller = controller
+        self.delay = delay
+        self.clamping = clamping or []
+        self.num_actuators = len(indices)
+
+        self.state_pos_attr = state_pos_attr
+        self.state_vel_attr = state_vel_attr
+        # These used to default to None and resolve against the target layout.
+        # Normalize so callers still passing None explicitly keep working
+        # instead of tripping getattr() with a non-string name in step().
+        self.control_target_pos_attr = "joint_target_q" if control_target_pos_attr is None else control_target_pos_attr
+        self.control_target_vel_attr = "joint_target_qd" if control_target_vel_attr is None else control_target_vel_attr
+        self.control_feedforward_attr = control_feedforward_attr
+        self.control_output_attr = control_output_attr
+        self.control_computed_output_attr = control_computed_output_attr
+
+        self.device = indices.device
+        self.requires_grad = requires_grad
+        self._sequential_indices = wp.array(np.arange(self.num_actuators, dtype=np.uint32), device=self.device)
+        self._computed_forces = wp.zeros(
+            self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+        )
+        self._applied_forces = wp.zeros(
+            self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+        )
+
+        controller.finalize(self.device, self.num_actuators)
+        if delay is not None:
+            delay.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
+        for clamp in self.clamping:
+            clamp.finalize(self.device, self.num_actuators)
+
+        self._effort_mode = _EffortModeExplicit(controller, self.clamping, self.device)
+
+    # To achieve public API Actuator.ImplicitOptions.
+    # Defining ImplicitOptions inside Actuator would create a circular import issue.
+    ImplicitOptions = ImplicitOptions
+
+    def set_effort_mode_implicit(
+        self,
+        response: ResponseOracle,
+        options: Actuator.ImplicitOptions | None = None,
+    ) -> None:
+        """Switch effort computation to implicit mode.
+
+        The control law is solved against the predicted end-of-step state
+        before the solver runs. See :ref:`effort-modes` for details on the
+        computation of effort in the implicit mode, its caveats, and its expected use.
+
+        Args:
+            response: :class:`~newton.actuators.ResponseOracle` supplying the
+                coupled effective inverse mass [1/kg or 1/(kg·m²)]. Refresh it
+                once per step before :meth:`step`.
+            options: Solver options; defaults to :class:`Actuator.ImplicitOptions`.
+
+        Raises:
+            NotImplementedError: The actuator was built with ``requires_grad=True``.
+                The implicit solve is not differentiable.
+        """
+        if self.requires_grad:
+            raise NotImplementedError(
+                "Implicit actuation is not differentiable: the Newton solve has no adjoint, "
+                "and the neural controllers open their own wp.Tape, which cannot nest inside "
+                "an outer tape. Build the Actuator with requires_grad=False."
+            )
+        self._effort_mode = _EffortModeImplicit(
+            self.controller,
+            self.clamping,
+            response,
+            options,
+            self.num_actuators,
+            self.device,
+            self.indices,
+        )
+
+    def set_effort_mode_explicit(self) -> None:
+        """Switch effort computation back to the default explicit mode."""
+        self._effort_mode = _EffortModeExplicit(self.controller, self.clamping, self.device)
+
+    def is_stateful(self) -> bool:
+        """Return True if delay or controller maintains internal state."""
+        return self.delay is not None or self.controller.is_stateful()
+
+    def is_graphable(self) -> bool:
+        """Return True if all components can be captured in a CUDA graph."""
+        return self._effort_mode.is_graphable()
+
+    def state(self) -> Actuator.State | None:
+        """Return a new composed state, or None if fully stateless."""
+        if not self.is_stateful():
+            return None
+        return Actuator.State(
+            delay_state=(self.delay.state(self.num_actuators, self.device) if self.delay is not None else None),
+            controller_state=(
+                self.controller.state(self.num_actuators, self.device) if self.controller.is_stateful() else None
+            ),
+        )
+
+    def step(
+        self,
+        sim_state: Any,
+        sim_control: Any,
+        current_act_state: Actuator.State | None = None,
+        next_act_state: Actuator.State | None = None,
+        dt: float | None = None,
+    ) -> None:
+        """Execute one control step.
+
+        1. **Delay read** — read per-DOF delayed targets from
+           ``current_state`` (falls back to current targets when
+           the buffer is empty).
+        2. **Effort** — raw effort into ``_computed_forces`` (explicit control
+           law, or the implicit end-of-step solve).
+        3. **Clamping** — bounded effort into ``_applied_forces``. Explicit
+           clamps after the control law; implicit enforces them inside the
+           solve.
+        4. **Scatter-add** — *accumulate* applied (and optionally computed)
+           effort into the output array.  The caller must zero the output
+           (e.g. ``control.joint_f.zero_()``) before looping over actuators.
+        5. **State updates** — controller state update, then delay
+           buffer write (push current targets into ``next_state``).
+
+        Args:
+            sim_state: Simulation state with position/velocity arrays.
+            sim_control: Control structure with target/output arrays.
+            current_act_state: Current composed state (None if stateless).
+            next_act_state: Next composed state (None if stateless).
+            dt: Timestep [s].
+        """
+        if self.is_stateful() and (current_act_state is None or next_act_state is None):
+            raise ValueError(
+                "Stateful actuator requires both current_act_state and next_act_state; create them via actuator.state()"
+            )
+
+        positions = getattr(sim_state, self.state_pos_attr)
+        velocities = getattr(sim_state, self.state_vel_attr)
+
+        orig_target_pos = getattr(sim_control, self.control_target_pos_attr)
+        orig_target_vel = getattr(sim_control, self.control_target_vel_attr)
+        orig_feedforward = None
+        if self.control_feedforward_attr is not None:
+            orig_feedforward = getattr(sim_control, self.control_feedforward_attr, None)
+
+        target_pos = orig_target_pos
+        target_vel = orig_target_vel
+        feedforward = orig_feedforward
+        target_pos_indices = self.target_pos_indices
+        target_vel_indices = self.indices
+
+        # --- 1. Delay read (from current_state) ---
+        if self.delay is not None:
+            target_pos, target_vel, feedforward = self.delay.get_delayed_targets(
+                orig_target_pos,
+                orig_target_vel,
+                orig_feedforward,
+                self.target_pos_indices,
+                self.indices,
+                current_act_state.delay_state,
+            )
+            target_pos_indices = self._sequential_indices
+            target_vel_indices = self._sequential_indices
+
+        # --- 2+3. Effort mode: compute raw effort and clamp ---
+        ctrl_state = current_act_state.controller_state if current_act_state else None
+        output_forces = self._effort_mode.compute_force(
+            sim_state,
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            feedforward,
+            self.pos_indices,
+            self.indices,
+            target_pos_indices,
+            target_vel_indices,
+            self._computed_forces,
+            self._applied_forces,
+            ctrl_state,
+            dt,
+        )
+
+        # --- 4. Scatter-add to output ---
+        applied_output = getattr(sim_control, self.control_output_attr)
+        computed_output = None
+        if (
+            self.control_computed_output_attr is not None
+            and self.control_computed_output_attr != self.control_output_attr
+        ):
+            computed_output = getattr(sim_control, self.control_computed_output_attr)
+        wp.launch(
+            kernel=_scatter_add_kernel,
+            dim=self.num_actuators,
+            inputs=[output_forces, self._computed_forces, self.effort_indices],
+            outputs=[applied_output, computed_output],
+            device=self.device,
+        )
+
+        # --- 5. State updates (write to next_state) ---
+        if self.controller.is_stateful():
+            self.controller.update_state(
+                current_act_state.controller_state,
+                next_act_state.controller_state,
+            )
+        if self.delay is not None:
+            self.delay.update_state(
+                orig_target_pos,
+                orig_target_vel,
+                orig_feedforward,
+                self.target_pos_indices,
+                self.indices,
+                current_act_state.delay_state,
+                next_act_state.delay_state,
+            )

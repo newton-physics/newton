@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """The Kamino Linear Algebra Module"""
 
@@ -21,9 +9,16 @@ from .core import (
     DenseRectangularMultiLinearInfo,
     DenseSquareMultiLinearInfo,
 )
+
+# Import the RCM-reordered semi-sparse blocked LLT solver here (rather than
+# from .linear) to avoid a circular import: .factorize.llt_blocked_rcm_solver
+# imports DirectSolver from .linear, so .linear cannot import it back.
+# At this point .linear has been fully resolved, so the downstream import is safe.
+from .factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from .linear import (
     ConjugateGradientSolver,
     ConjugateResidualSolver,
+    ConjugateResidualSolverFused,
     DirectSolver,
     IterativeSolver,
     LinearSolver,
@@ -34,6 +29,23 @@ from .linear import (
     LLTSequentialSolver,
 )
 
+# Register the reordering solver in the name<->type maps so it can be selected
+# via the string "LLTBRCM" in ConstrainedDynamicsConfig.linear_solver_type.
+LinearSolverNameToType["LLTBRCM"] = LLTBlockedRCMSolver
+LinearSolverTypeToName[LLTBlockedRCMSolver] = "LLTBRCM"
+
+# Widen the LinearSolverType alias to include the reordering solver. This
+# matters because `delassus.py` performs a runtime
+# `issubclass(solver, LinearSolverType)` check and would otherwise reject it.
+LinearSolverType = (
+    LLTSequentialSolver
+    | LLTBlockedSolver
+    | LLTBlockedRCMSolver
+    | ConjugateGradientSolver
+    | ConjugateResidualSolver
+    | ConjugateResidualSolverFused
+)
+
 ###
 # Module interface
 ###
@@ -41,11 +53,13 @@ from .linear import (
 __all__ = [
     "ConjugateGradientSolver",
     "ConjugateResidualSolver",
+    "ConjugateResidualSolverFused",
     "DenseLinearOperatorData",
     "DenseRectangularMultiLinearInfo",
     "DenseSquareMultiLinearInfo",
     "DirectSolver",
     "IterativeSolver",
+    "LLTBlockedRCMSolver",
     "LLTBlockedSolver",
     "LLTSequentialSolver",
     "LinearSolver",

@@ -1,147 +1,179 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import warp as wp
 
 from ...geometry import GeoType
+from .types import MeshData, TextureData, TextureProjectionMode
+
+if TYPE_CHECKING:
+    from .render_context import RenderContext
 
 
 @wp.func
-def sample_texture_2d(
-    uv: wp.vec2f, width: wp.int32, height: wp.int32, texture_offsets: wp.int32, texture_data: wp.array(dtype=wp.uint32)
-) -> wp.vec3f:
-    ix = wp.min(width - 1, wp.int32(uv[0] * wp.float32(width)))
-    it = wp.min(height - 1, wp.int32(uv[1] * wp.float32(height)))
-    linear_idx = texture_offsets + (it * width + ix)
-    packed_rgba = texture_data[linear_idx]
-    r = wp.float32((packed_rgba >> wp.uint32(16)) & wp.uint32(0xFF)) / 255.0
-    g = wp.float32((packed_rgba >> wp.uint32(8)) & wp.uint32(0xFF)) / 255.0
-    b = wp.float32(packed_rgba & wp.uint32(0xFF)) / 255.0
-    return wp.vec3f(r, g, b)
+def flip_v(uv: wp.vec2f) -> wp.vec2f:
+    return wp.vec2f(uv[0], 1.0 - uv[1])
+
+
+@wp.func
+def sample_texture_2d(uv: wp.vec2f, texture_data: TextureData) -> wp.vec3f:
+    color = wp.texture_sample(texture_data.texture, uv, dtype=wp.vec4f)
+    return wp.vec3f(color[0], color[1], color[2])
 
 
 @wp.func
 def sample_texture_plane(
     hit_point: wp.vec3f,
     shape_transform: wp.transformf,
-    material_texture_repeat: wp.vec2f,
-    texture_offsets: wp.int32,
-    texture_data: wp.array(dtype=wp.uint32),
-    texture_height: wp.int32,
-    texture_width: wp.int32,
+    texture_data: TextureData,
 ) -> wp.vec3f:
     inv_transform = wp.transform_inverse(shape_transform)
     local = wp.transform_point(inv_transform, hit_point)
-    u = local[0] * material_texture_repeat[0]
-    v = local[1] * material_texture_repeat[1]
-    u = u - wp.floor(u)
-    v = v - wp.floor(v)
-    v = 1.0 - v
-    return sample_texture_2d(wp.vec2f(u, v), texture_width, texture_height, texture_offsets, texture_data)
+    uv = wp.vec2f(local[0], local[1])
+    return sample_texture_2d(flip_v(wp.cw_mul(uv, texture_data.repeat)), texture_data)
 
 
 @wp.func
 def sample_texture_mesh(
     bary_u: wp.float32,
     bary_v: wp.float32,
-    uv_baseadr: wp.int32,
-    v_idx: wp.vec3i,
-    mesh_texcoord: wp.array(dtype=wp.vec2f),
-    material_texture_repeat: wp.vec2f,
-    texture_offsets: wp.int32,
-    texture_data: wp.array(dtype=wp.uint32),
-    texture_height: wp.int32,
-    texture_width: wp.int32,
+    face_id: wp.int32,
+    mesh_id: wp.uint64,
+    mesh_data: MeshData,
+    texture_data: TextureData,
 ) -> wp.vec3f:
-    bw = 1.0 - bary_u - bary_v
-    uv0 = mesh_texcoord[uv_baseadr + v_idx.x]
-    uv1 = mesh_texcoord[uv_baseadr + v_idx.y]
-    uv2 = mesh_texcoord[uv_baseadr + v_idx.z]
-    uv = uv0 * bw + uv1 * bary_u + uv2 * bary_v
-    u = uv[0] * material_texture_repeat[0]
-    v = uv[1] * material_texture_repeat[1]
-    u = u - wp.floor(u)
-    v = v - wp.floor(v)
-    v = 1.0 - v
-    return sample_texture_2d(
-        wp.vec2f(u, v),
-        texture_width,
-        texture_height,
-        texture_offsets,
-        texture_data,
-    )
+    bary_w = 1.0 - bary_u - bary_v
+    uv0 = wp.mesh_get_index(mesh_id, face_id * 3 + 0)
+    uv1 = wp.mesh_get_index(mesh_id, face_id * 3 + 1)
+    uv2 = wp.mesh_get_index(mesh_id, face_id * 3 + 2)
+    uv = mesh_data.uvs[uv0] * bary_u + mesh_data.uvs[uv1] * bary_v + mesh_data.uvs[uv2] * bary_w
+    return sample_texture_2d(flip_v(wp.cw_mul(uv, texture_data.repeat)), texture_data)
 
 
 @wp.func
-def sample_texture(
-    shape_type: wp.int32,
-    shape_transform: wp.transformf,
-    material_index: wp.int32,
-    texture_index: wp.int32,
-    material_texture_repeat: wp.vec2f,
-    texture_offsets: wp.int32,
-    texture_data: wp.array(dtype=wp.uint32),
-    texture_height: wp.int32,
-    texture_width: wp.int32,
-    mesh_face_offsets: wp.array(dtype=wp.int32),
-    mesh_face_vertices: wp.array(dtype=wp.vec3i),
-    mesh_texcoord: wp.array(dtype=wp.vec2f),
-    mesh_texcoord_offsets: wp.array(dtype=wp.int32),
-    hit_point: wp.vec3f,
-    u: wp.float32,
-    v: wp.float32,
-    f: wp.int32,
-    mesh_id: wp.int32,
+def sample_texture_cubic_projection_local(
+    local: wp.vec3f,
+    normal: wp.vec3f,
+    texture_data: TextureData,
 ) -> wp.vec3f:
-    tex_color = wp.vec3f(1.0, 1.0, 1.0)
+    """Cubic projection for local coordinates without UVs, similar to OmniPBR project_uvw."""
+    repeat = texture_data.repeat
+    abs_normal = wp.vec3f(wp.abs(normal[0]), wp.abs(normal[1]), wp.abs(normal[2]))
 
-    if material_index == -1 or texture_index == -1:
-        return tex_color
+    uv = wp.vec2f(local[0], local[1])
+    if abs_normal[0] >= abs_normal[1] and abs_normal[0] >= abs_normal[2]:
+        uv = wp.vec2f(local[1], local[2])
+    elif abs_normal[1] >= abs_normal[2]:
+        uv = wp.vec2f(local[0], local[2])
 
-    if shape_type == GeoType.PLANE:
-        tex_color = sample_texture_plane(
-            hit_point,
-            shape_transform,
-            material_texture_repeat,
-            texture_offsets,
-            texture_data,
-            texture_height,
-            texture_width,
+    return sample_texture_2d(flip_v(wp.cw_mul(uv, repeat)), texture_data)
+
+
+@wp.func
+def sample_texture_cubic_projection_shape(
+    hit_point: wp.vec3f,
+    hit_normal: wp.vec3f,
+    shape_transform: wp.transformf,
+    texture_data: TextureData,
+) -> wp.vec3f:
+    inv_transform = wp.transform_inverse(shape_transform)
+    local = wp.transform_point(inv_transform, hit_point)
+    normal = wp.transform_vector(inv_transform, hit_normal)
+
+    return sample_texture_cubic_projection_local(local, normal, texture_data)
+
+
+@wp.func
+def sample_texture_triplanar_local(
+    local: wp.vec3f,
+    normal: wp.vec3f,
+    texture_data: TextureData,
+) -> wp.vec3f:
+    """Weighted triplanar projection for local coordinates without UVs."""
+    w = wp.vec3f(wp.abs(normal[0]), wp.abs(normal[1]), wp.abs(normal[2]))
+    w_sum = w[0] + w[1] + w[2]
+    if w_sum > 0.0:
+        w = w / w_sum
+    else:
+        w = wp.vec3f(0.0, 0.0, 1.0)
+
+    repeat = texture_data.repeat
+    c_x = sample_texture_2d(flip_v(wp.cw_mul(wp.vec2f(local[1], local[2]), repeat)), texture_data)
+    c_y = sample_texture_2d(flip_v(wp.cw_mul(wp.vec2f(local[0], local[2]), repeat)), texture_data)
+    c_z = sample_texture_2d(flip_v(wp.cw_mul(wp.vec2f(local[0], local[1]), repeat)), texture_data)
+
+    return c_x * w[0] + c_y * w[1] + c_z * w[2]
+
+
+@wp.func
+def sample_texture_triplanar_shape(
+    hit_point: wp.vec3f,
+    hit_normal: wp.vec3f,
+    shape_transform: wp.transformf,
+    texture_data: TextureData,
+) -> wp.vec3f:
+    inv_transform = wp.transform_inverse(shape_transform)
+    local = wp.transform_point(inv_transform, hit_point)
+    normal = wp.transform_vector(inv_transform, hit_normal)
+
+    return sample_texture_triplanar_local(local, normal, texture_data)
+
+
+def create_sample_texture_function(config: RenderContext.Config) -> wp.Function:
+    @wp.func
+    def sample_texture(
+        shape_type: wp.int32,
+        shape_transform: wp.transformf,
+        texture_data: wp.array[TextureData],
+        texture_index: wp.int32,
+        mesh_id: wp.uint64,
+        mesh_data: wp.array[MeshData],
+        mesh_data_index: wp.int32,
+        hit_point: wp.vec3f,
+        hit_normal: wp.vec3f,
+        bary_u: wp.float32,
+        bary_v: wp.float32,
+        face_id: wp.int32,
+    ) -> wp.vec3f:
+        DEFAULT_RETURN = wp.vec3f(1.0, 1.0, 1.0)
+
+        if texture_index == -1:
+            return DEFAULT_RETURN
+
+        if shape_type == GeoType.PLANE:
+            return sample_texture_plane(hit_point, shape_transform, texture_data[texture_index])
+
+        if shape_type == GeoType.MESH:
+            if face_id < 0:
+                return DEFAULT_RETURN
+
+            if mesh_data_index >= 0:
+                if mesh_data[mesh_data_index].uvs.shape[0] > 0:
+                    return sample_texture_mesh(
+                        bary_u, bary_v, face_id, mesh_id, mesh_data[mesh_data_index], texture_data[texture_index]
+                    )
+
+            if wp.static(config.texture_projection_mode == TextureProjectionMode.TRIPLANAR):
+                return sample_texture_triplanar_shape(
+                    hit_point, hit_normal, shape_transform, texture_data[texture_index]
+                )
+
+            return sample_texture_cubic_projection_shape(
+                hit_point, hit_normal, shape_transform, texture_data[texture_index]
+            )
+
+        if shape_type == GeoType.GAUSSIAN:
+            return DEFAULT_RETURN
+
+        if wp.static(config.texture_projection_mode == TextureProjectionMode.TRIPLANAR):
+            return sample_texture_triplanar_shape(hit_point, hit_normal, shape_transform, texture_data[texture_index])
+
+        return sample_texture_cubic_projection_shape(
+            hit_point, hit_normal, shape_transform, texture_data[texture_index]
         )
 
-    if shape_type == GeoType.MESH:
-        if f < 0 or mesh_id < 0 or not mesh_texcoord_offsets.shape[0]:
-            return tex_color
-
-        uv_base = mesh_texcoord_offsets[mesh_id]
-
-        if mesh_texcoord.shape[0] <= uv_base:
-            return tex_color
-
-        tex_color = sample_texture_mesh(
-            u,
-            v,
-            uv_base,
-            # mesh_face[mesh_faceadr[mesh_id] + base_face + f],
-            wp.vec3i(f * 3 + 2, f * 3 + 0, f * 3 + 1),
-            mesh_texcoord,
-            material_texture_repeat,
-            texture_offsets,
-            texture_data,
-            texture_height,
-            texture_width,
-        )
-
-    return tex_color
+    return sample_texture

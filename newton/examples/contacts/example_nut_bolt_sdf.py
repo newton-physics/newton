@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example SDF Mesh Collision
@@ -21,6 +9,9 @@
 # Command: python -m newton.examples nut_bolt_sdf
 #
 ###########################################################################
+
+import tempfile
+from pathlib import Path
 
 import numpy as np
 import trimesh
@@ -48,6 +39,9 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
 )
 MESH_SDF_MAX_RESOLUTION = 512
 MESH_SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
+# Persist cooked SDFs across runs so the (slow) cook only happens once.
+# Entries are content-addressed, so leftovers from older runs are harmless.
+MESH_SDF_CACHE_DIR = Path(tempfile.gettempdir()) / "newton_sdf_cache"
 
 
 def add_mesh_object(
@@ -90,12 +84,14 @@ def load_mesh_with_sdf(
         max_resolution=MESH_SDF_MAX_RESOLUTION,
         narrow_band_range=MESH_SDF_NARROW_BAND_RANGE,
         margin=shape_cfg.gap if shape_cfg and shape_cfg.gap is not None else 0.05,
+        cache_dir=MESH_SDF_CACHE_DIR,
     )
     return mesh, center_vec
 
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -258,23 +254,27 @@ class Example:
         return world_builder
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        self.graph = None
+        self.use_graph = True
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
+        need_state_copy = self.use_graph and self.sim_substeps % 2 == 1
+
         self.collision_pipeline.collide(self.state_0, self.contacts)
-        for _ in range(self.sim_substeps):
+        for i in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             self.viewer.apply_forces(self.state_0)
             # self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            if need_state_copy and i == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         if self.graph:
@@ -405,6 +405,4 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

@@ -1,27 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+
+import inspect
 
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 wp.config.enable_backward = False
-wp.config.quiet = True
+wp.config.log_level = wp.LOG_WARNING
 
 import newton.examples
 from newton.examples.cable.example_cable_pile import Example as ExampleCablePile
 from newton.viewer import ViewerNull
+
+
+def _supports_cable_pile_size_args():
+    parameters = inspect.signature(ExampleCablePile).parameters
+    return "layers" in parameters and "lanes_per_layer" in parameters
 
 
 class FastExampleCablePile:
@@ -35,7 +30,11 @@ class FastExampleCablePile:
             args = newton.examples.default_args()
         else:
             args = None
-        self.example = ExampleCablePile(ViewerNull(num_frames=self.num_frames), args)
+        viewer = ViewerNull(num_frames=self.num_frames)
+        if _supports_cable_pile_size_args():
+            self.example = ExampleCablePile(viewer, args, layers=4, lanes_per_layer=10)
+        else:
+            self.example = ExampleCablePile(viewer, args)
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -56,7 +55,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
-        "-b", "--bench", default=None, action="append", choices=benchmark_list.keys(), help="Run a single benchmark."
+        "-b",
+        "--bench",
+        default=None,
+        action="append",
+        choices=benchmark_list.keys(),
+        help="Run a specific benchmark; may be repeated to run multiple (e.g., --bench A --bench B).",
     )
     args = parser.parse_known_args()[0]
 

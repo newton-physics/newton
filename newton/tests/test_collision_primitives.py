@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 
@@ -125,12 +113,12 @@ def distance_point_to_cylinder(point, cylinder_pos, cylinder_axis, cylinder_radi
 
 @wp.kernel
 def test_plane_sphere_kernel(
-    plane_normals: wp.array(dtype=wp.vec3),
-    plane_positions: wp.array(dtype=wp.vec3),
-    sphere_positions: wp.array(dtype=wp.vec3),
-    sphere_radii: wp.array(dtype=float),
-    distances: wp.array(dtype=float),
-    contact_positions: wp.array(dtype=wp.vec3),
+    plane_normals: wp.array[wp.vec3],
+    plane_positions: wp.array[wp.vec3],
+    sphere_positions: wp.array[wp.vec3],
+    sphere_radii: wp.array[float],
+    distances: wp.array[float],
+    contact_positions: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, pos = geometry.collide_plane_sphere(
@@ -142,13 +130,13 @@ def test_plane_sphere_kernel(
 
 @wp.kernel
 def test_sphere_sphere_kernel(
-    pos1: wp.array(dtype=wp.vec3),
-    radius1: wp.array(dtype=float),
-    pos2: wp.array(dtype=wp.vec3),
-    radius2: wp.array(dtype=float),
-    distances: wp.array(dtype=float),
-    contact_positions: wp.array(dtype=wp.vec3),
-    contact_normals: wp.array(dtype=wp.vec3),
+    pos1: wp.array[wp.vec3],
+    radius1: wp.array[float],
+    pos2: wp.array[wp.vec3],
+    radius2: wp.array[float],
+    distances: wp.array[float],
+    contact_positions: wp.array[wp.vec3],
+    contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, pos, normal = geometry.collide_sphere_sphere(pos1[tid], radius1[tid], pos2[tid], radius2[tid])
@@ -159,15 +147,15 @@ def test_sphere_sphere_kernel(
 
 @wp.kernel
 def test_sphere_capsule_kernel(
-    sphere_positions: wp.array(dtype=wp.vec3),
-    sphere_radii: wp.array(dtype=float),
-    capsule_positions: wp.array(dtype=wp.vec3),
-    capsule_axes: wp.array(dtype=wp.vec3),
-    capsule_radii: wp.array(dtype=float),
-    capsule_half_lengths: wp.array(dtype=float),
-    distances: wp.array(dtype=float),
-    contact_positions: wp.array(dtype=wp.vec3),
-    contact_normals: wp.array(dtype=wp.vec3),
+    sphere_positions: wp.array[wp.vec3],
+    sphere_radii: wp.array[float],
+    capsule_positions: wp.array[wp.vec3],
+    capsule_axes: wp.array[wp.vec3],
+    capsule_radii: wp.array[float],
+    capsule_half_lengths: wp.array[float],
+    distances: wp.array[float],
+    contact_positions: wp.array[wp.vec3],
+    contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, pos, normal = geometry.collide_sphere_capsule(
@@ -185,17 +173,17 @@ def test_sphere_capsule_kernel(
 
 @wp.kernel
 def test_capsule_capsule_kernel(
-    cap1_positions: wp.array(dtype=wp.vec3),
-    cap1_axes: wp.array(dtype=wp.vec3),
-    cap1_radii: wp.array(dtype=float),
-    cap1_half_lengths: wp.array(dtype=float),
-    cap2_positions: wp.array(dtype=wp.vec3),
-    cap2_axes: wp.array(dtype=wp.vec3),
-    cap2_radii: wp.array(dtype=float),
-    cap2_half_lengths: wp.array(dtype=float),
-    distances: wp.array(dtype=wp.vec2),
-    contact_positions: wp.array(dtype=wp.types.matrix((2, 3), wp.float32)),
-    contact_normals: wp.array(dtype=wp.vec3),
+    cap1_positions: wp.array[wp.vec3],
+    cap1_axes: wp.array[wp.vec3],
+    cap1_radii: wp.array[float],
+    cap1_half_lengths: wp.array[float],
+    cap2_positions: wp.array[wp.vec3],
+    cap2_axes: wp.array[wp.vec3],
+    cap2_radii: wp.array[float],
+    cap2_half_lengths: wp.array[float],
+    distances: wp.array[wp.vec2],
+    contact_positions: wp.array[wp.types.matrix((2, 3), wp.float32)],
+    contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dists, positions, normal = geometry.collide_capsule_capsule(
@@ -215,14 +203,14 @@ def test_capsule_capsule_kernel(
 
 @wp.kernel
 def test_plane_ellipsoid_kernel(
-    plane_normals: wp.array(dtype=wp.vec3),
-    plane_positions: wp.array(dtype=wp.vec3),
-    ellipsoid_positions: wp.array(dtype=wp.vec3),
-    ellipsoid_rotations: wp.array(dtype=wp.mat33),
-    ellipsoid_sizes: wp.array(dtype=wp.vec3),
-    distances: wp.array(dtype=float),
-    contact_positions: wp.array(dtype=wp.vec3),
-    contact_normals: wp.array(dtype=wp.vec3),
+    plane_normals: wp.array[wp.vec3],
+    plane_positions: wp.array[wp.vec3],
+    ellipsoid_positions: wp.array[wp.vec3],
+    ellipsoid_rotations: wp.array[wp.mat33],
+    ellipsoid_sizes: wp.array[wp.vec3],
+    distances: wp.array[float],
+    contact_positions: wp.array[wp.vec3],
+    contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, pos, normal = geometry.collide_plane_ellipsoid(
@@ -239,15 +227,15 @@ def test_plane_ellipsoid_kernel(
 
 @wp.kernel
 def test_sphere_cylinder_kernel(
-    sphere_positions: wp.array(dtype=wp.vec3),
-    sphere_radii: wp.array(dtype=float),
-    cylinder_positions: wp.array(dtype=wp.vec3),
-    cylinder_axes: wp.array(dtype=wp.vec3),
-    cylinder_radii: wp.array(dtype=float),
-    cylinder_half_heights: wp.array(dtype=float),
-    distances: wp.array(dtype=float),
-    contact_positions: wp.array(dtype=wp.vec3),
-    contact_normals: wp.array(dtype=wp.vec3),
+    sphere_positions: wp.array[wp.vec3],
+    sphere_radii: wp.array[float],
+    cylinder_positions: wp.array[wp.vec3],
+    cylinder_axes: wp.array[wp.vec3],
+    cylinder_radii: wp.array[float],
+    cylinder_half_heights: wp.array[float],
+    distances: wp.array[float],
+    contact_positions: wp.array[wp.vec3],
+    contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, pos, normal = geometry.collide_sphere_cylinder(
@@ -265,14 +253,14 @@ def test_sphere_cylinder_kernel(
 
 @wp.kernel
 def test_sphere_box_kernel(
-    sphere_positions: wp.array(dtype=wp.vec3),
-    sphere_radii: wp.array(dtype=float),
-    box_positions: wp.array(dtype=wp.vec3),
-    box_rotations: wp.array(dtype=wp.mat33),
-    box_sizes: wp.array(dtype=wp.vec3),
-    distances: wp.array(dtype=float),
-    contact_positions: wp.array(dtype=wp.vec3),
-    contact_normals: wp.array(dtype=wp.vec3),
+    sphere_positions: wp.array[wp.vec3],
+    sphere_radii: wp.array[float],
+    box_positions: wp.array[wp.vec3],
+    box_rotations: wp.array[wp.mat33],
+    box_sizes: wp.array[wp.vec3],
+    distances: wp.array[float],
+    contact_positions: wp.array[wp.vec3],
+    contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, pos, normal = geometry.collide_sphere_box(
@@ -285,15 +273,15 @@ def test_sphere_box_kernel(
 
 @wp.kernel
 def test_plane_capsule_kernel(
-    plane_normals: wp.array(dtype=wp.vec3),
-    plane_positions: wp.array(dtype=wp.vec3),
-    capsule_positions: wp.array(dtype=wp.vec3),
-    capsule_axes: wp.array(dtype=wp.vec3),
-    capsule_radii: wp.array(dtype=float),
-    capsule_half_lengths: wp.array(dtype=float),
-    distances: wp.array(dtype=wp.vec2),
-    contact_positions: wp.array(dtype=wp.types.matrix((2, 3), wp.float32)),
-    contact_frames: wp.array(dtype=wp.mat33),
+    plane_normals: wp.array[wp.vec3],
+    plane_positions: wp.array[wp.vec3],
+    capsule_positions: wp.array[wp.vec3],
+    capsule_axes: wp.array[wp.vec3],
+    capsule_radii: wp.array[float],
+    capsule_half_lengths: wp.array[float],
+    distances: wp.array[wp.vec2],
+    contact_positions: wp.array[wp.types.matrix((2, 3), wp.float32)],
+    contact_frames: wp.array[wp.mat33],
 ):
     tid = wp.tid()
     dist, pos, frame = geometry.collide_plane_capsule(
@@ -311,14 +299,14 @@ def test_plane_capsule_kernel(
 
 @wp.kernel
 def test_plane_box_kernel(
-    plane_normals: wp.array(dtype=wp.vec3),
-    plane_positions: wp.array(dtype=wp.vec3),
-    box_positions: wp.array(dtype=wp.vec3),
-    box_rotations: wp.array(dtype=wp.mat33),
-    box_sizes: wp.array(dtype=wp.vec3),
-    distances: wp.array(dtype=wp.vec4),
-    contact_positions: wp.array(dtype=wp.types.matrix((4, 3), wp.float32)),
-    contact_normals: wp.array(dtype=wp.vec3),
+    plane_normals: wp.array[wp.vec3],
+    plane_positions: wp.array[wp.vec3],
+    box_positions: wp.array[wp.vec3],
+    box_rotations: wp.array[wp.mat33],
+    box_sizes: wp.array[wp.vec3],
+    distances: wp.array[wp.vec4],
+    contact_positions: wp.array[wp.types.matrix((4, 3), wp.float32)],
+    contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, pos, normal = geometry.collide_plane_box(
@@ -331,21 +319,21 @@ def test_plane_box_kernel(
 
 @wp.kernel
 def test_plane_cylinder_kernel(
-    plane_normals: wp.array(dtype=wp.vec3),
-    plane_positions: wp.array(dtype=wp.vec3),
-    cylinder_centers: wp.array(dtype=wp.vec3),
-    cylinder_axes: wp.array(dtype=wp.vec3),
-    cylinder_radii: wp.array(dtype=float),
-    cylinder_half_heights: wp.array(dtype=float),
-    distances: wp.array(dtype=wp.vec4),
-    contact_positions: wp.array(dtype=wp.types.matrix((4, 3), wp.float32)),
-    contact_normals: wp.array(dtype=wp.vec3),
+    plane_normals: wp.array[wp.vec3],
+    plane_positions: wp.array[wp.vec3],
+    cylinder_positions: wp.array[wp.vec3],
+    cylinder_axes: wp.array[wp.vec3],
+    cylinder_radii: wp.array[float],
+    cylinder_half_heights: wp.array[float],
+    distances: wp.array[wp.vec4],
+    contact_positions: wp.array[wp.types.matrix((4, 3), wp.float32)],
+    contact_normals: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, pos, normal = geometry.collide_plane_cylinder(
         plane_normals[tid],
         plane_positions[tid],
-        cylinder_centers[tid],
+        cylinder_positions[tid],
         cylinder_axes[tid],
         cylinder_radii[tid],
         cylinder_half_heights[tid],
@@ -357,15 +345,15 @@ def test_plane_cylinder_kernel(
 
 @wp.kernel
 def test_box_box_kernel(
-    box1_positions: wp.array(dtype=wp.vec3),
-    box1_rotations: wp.array(dtype=wp.mat33),
-    box1_sizes: wp.array(dtype=wp.vec3),
-    box2_positions: wp.array(dtype=wp.vec3),
-    box2_rotations: wp.array(dtype=wp.mat33),
-    box2_sizes: wp.array(dtype=wp.vec3),
-    distances: wp.array(dtype=wp.types.vector(8, wp.float32)),
-    contact_positions: wp.array(dtype=wp.types.matrix((8, 3), wp.float32)),
-    contact_normals: wp.array(dtype=wp.types.matrix((8, 3), wp.float32)),
+    box1_positions: wp.array[wp.vec3],
+    box1_rotations: wp.array[wp.mat33],
+    box1_sizes: wp.array[wp.vec3],
+    box2_positions: wp.array[wp.vec3],
+    box2_rotations: wp.array[wp.mat33],
+    box2_sizes: wp.array[wp.vec3],
+    distances: wp.array[wp.types.vector(8, wp.float32)],
+    contact_positions: wp.array[wp.types.matrix((8, 3), wp.float32)],
+    contact_normals: wp.array[wp.types.matrix((8, 3), wp.float32)],
 ):
     tid = wp.tid()
     dist, pos, normals = geometry.collide_box_box(
@@ -383,16 +371,16 @@ def test_box_box_kernel(
 
 @wp.kernel
 def test_box_box_with_margin_kernel(
-    box1_positions: wp.array(dtype=wp.vec3),
-    box1_rotations: wp.array(dtype=wp.mat33),
-    box1_sizes: wp.array(dtype=wp.vec3),
-    box2_positions: wp.array(dtype=wp.vec3),
-    box2_rotations: wp.array(dtype=wp.mat33),
-    box2_sizes: wp.array(dtype=wp.vec3),
-    margins: wp.array(dtype=float),
-    distances: wp.array(dtype=wp.types.vector(8, wp.float32)),
-    contact_positions: wp.array(dtype=wp.types.matrix((8, 3), wp.float32)),
-    contact_normals: wp.array(dtype=wp.types.matrix((8, 3), wp.float32)),
+    box1_positions: wp.array[wp.vec3],
+    box1_rotations: wp.array[wp.mat33],
+    box1_sizes: wp.array[wp.vec3],
+    box2_positions: wp.array[wp.vec3],
+    box2_rotations: wp.array[wp.mat33],
+    box2_sizes: wp.array[wp.vec3],
+    margins: wp.array[float],
+    distances: wp.array[wp.types.vector(8, wp.float32)],
+    contact_positions: wp.array[wp.types.matrix((8, 3), wp.float32)],
+    contact_normals: wp.array[wp.types.matrix((8, 3), wp.float32)],
 ):
     tid = wp.tid()
     dist, pos, normals = geometry.collide_box_box(
@@ -411,16 +399,16 @@ def test_box_box_with_margin_kernel(
 
 @wp.kernel
 def test_capsule_box_kernel(
-    capsule_positions: wp.array(dtype=wp.vec3),
-    capsule_axes: wp.array(dtype=wp.vec3),
-    capsule_radii: wp.array(dtype=float),
-    capsule_half_lengths: wp.array(dtype=float),
-    box_positions: wp.array(dtype=wp.vec3),
-    box_rotations: wp.array(dtype=wp.mat33),
-    box_sizes: wp.array(dtype=wp.vec3),
-    distances: wp.array(dtype=wp.vec2),
-    contact_positions: wp.array(dtype=wp.types.matrix((2, 3), wp.float32)),
-    contact_normals: wp.array(dtype=wp.types.matrix((2, 3), wp.float32)),
+    capsule_positions: wp.array[wp.vec3],
+    capsule_axes: wp.array[wp.vec3],
+    capsule_radii: wp.array[float],
+    capsule_half_lengths: wp.array[float],
+    box_positions: wp.array[wp.vec3],
+    box_rotations: wp.array[wp.mat33],
+    box_sizes: wp.array[wp.vec3],
+    distances: wp.array[wp.vec2],
+    contact_positions: wp.array[wp.types.matrix((2, 3), wp.float32)],
+    contact_normals: wp.array[wp.types.matrix((2, 3), wp.float32)],
 ):
     tid = wp.tid()
     dist, pos, normals = geometry.collide_capsule_box(
@@ -470,7 +458,6 @@ class TestCollisionPrimitives(unittest.TestCase):
             dim=len(test_cases),
             inputs=[plane_normals, plane_positions, sphere_positions, sphere_radii, distances, contact_positions],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         positions_np = contact_positions.numpy()
@@ -550,7 +537,6 @@ class TestCollisionPrimitives(unittest.TestCase):
             dim=len(test_cases),
             inputs=[pos1, radius1, pos2, radius2, distances, contact_positions, contact_normals],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -651,7 +637,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -836,7 +821,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -952,7 +936,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -986,7 +969,7 @@ class TestCollisionPrimitives(unittest.TestCase):
         - Side surface at radial distance 1.0 from Z-axis
         - Top cap at z=1.0, bottom cap at z=-1.0
         """
-        cylinder_center = [0.0, 0.0, 0.0]
+        cylinder_pos = [0.0, 0.0, 0.0]
         cylinder_axis = [0.0, 0.0, 1.0]
         cylinder_radius = 1.0
         cylinder_half_height = 1.0
@@ -997,7 +980,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [2.0, 0.0, 0.0],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1006,7 +989,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [1.5, 0.0, 0.0],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1015,7 +998,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [1.4, 0.0, 0.0],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1024,7 +1007,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [1.3, 0.0, 0.0],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1034,7 +1017,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [0.0, 0.0, 2.0],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1043,7 +1026,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [0.0, 0.0, 1.5],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1052,7 +1035,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [0.0, 0.0, 1.4],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1061,7 +1044,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             (
                 [0.0, 0.0, 1.3],
                 sphere_radius,
-                cylinder_center,
+                cylinder_pos,
                 cylinder_axis,
                 cylinder_radius,
                 cylinder_half_height,
@@ -1095,7 +1078,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1205,7 +1187,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1320,7 +1301,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_frames,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         frames_np = contact_frames.numpy()
@@ -1405,7 +1385,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1476,7 +1455,7 @@ class TestCollisionPrimitives(unittest.TestCase):
 
         plane_normals = wp.array([wp.vec3(tc[0][0], tc[0][1], tc[0][2]) for tc in test_cases], dtype=wp.vec3)
         plane_positions = wp.array([wp.vec3(tc[1][0], tc[1][1], tc[1][2]) for tc in test_cases], dtype=wp.vec3)
-        cylinder_centers = wp.array([wp.vec3(tc[2][0], tc[2][1], tc[2][2]) for tc in test_cases], dtype=wp.vec3)
+        cylinder_positions = wp.array([wp.vec3(tc[2][0], tc[2][1], tc[2][2]) for tc in test_cases], dtype=wp.vec3)
         cylinder_axes = wp.array([wp.vec3(tc[3][0], tc[3][1], tc[3][2]) for tc in test_cases], dtype=wp.vec3)
         cylinder_radii = wp.array([tc[4] for tc in test_cases], dtype=float)
         cylinder_half_heights = wp.array([tc[5] for tc in test_cases], dtype=float)
@@ -1493,7 +1472,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             inputs=[
                 plane_normals,
                 plane_positions,
-                cylinder_centers,
+                cylinder_positions,
                 cylinder_axes,
                 cylinder_radii,
                 cylinder_half_heights,
@@ -1502,7 +1481,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1589,7 +1567,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1727,7 +1704,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -1832,7 +1808,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()
@@ -2100,7 +2075,6 @@ class TestCollisionPrimitives(unittest.TestCase):
                 contact_normals,
             ],
         )
-        wp.synchronize()
 
         distances_np = distances.numpy()
         normals_np = contact_normals.numpy()

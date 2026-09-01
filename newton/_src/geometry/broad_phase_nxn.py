@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """NxN (all-pairs) broad phase collision detection.
 
@@ -29,24 +17,29 @@ import warp as wp
 
 from ..core.types import Devicelike
 from .broad_phase_common import (
-    check_aabb_overlap,
+    check_aabb_overlap_moving,
     is_pair_excluded,
+    is_shape_pair_immovable_filtered,
     precompute_world_map,
     test_world_and_group_pair,
     write_pair,
 )
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _nxn_broadphase_precomputed_pairs(
     # Input arrays
-    shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
-    shape_bounding_box_upper: wp.array(dtype=wp.vec3, ndim=1),
-    shape_gap: wp.array(dtype=float, ndim=1),  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    nxn_shape_pair: wp.array(dtype=wp.vec2i, ndim=1),
+    shape_bounding_box_lower: wp.array[wp.vec3],
+    shape_bounding_box_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_displacement: wp.array[wp.vec3],  # Optional displacement over the collision-update interval [m]
+    nxn_shape_pair: wp.array[wp.vec2i],
+    shape_body: wp.array[int],
+    body_flags: wp.array[int],
+    include_static_kinematic_pairs: bool,
     # Output arrays
-    candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
 ):
     elementid = wp.tid()
@@ -55,6 +48,9 @@ def _nxn_broadphase_precomputed_pairs(
     shape1 = pair[0]
     shape2 = pair[1]
 
+    if is_shape_pair_immovable_filtered(shape1, shape2, shape_body, body_flags, include_static_kinematic_pairs):
+        return
+
     # Check if gaps are provided (empty array means AABBs are pre-expanded)
     gap1 = 0.0
     gap2 = 0.0
@@ -62,13 +58,8 @@ def _nxn_broadphase_precomputed_pairs(
         gap1 = shape_gap[shape1]
         gap2 = shape_gap[shape2]
 
-    if check_aabb_overlap(
-        shape_bounding_box_lower[shape1],
-        shape_bounding_box_upper[shape1],
-        gap1,
-        shape_bounding_box_lower[shape2],
-        shape_bounding_box_upper[shape2],
-        gap2,
+    if check_aabb_overlap_moving(
+        shape1, shape2, shape_bounding_box_lower, shape_bounding_box_upper, gap1, gap2, shape_displacement
     ):
         write_pair(
             pair,
@@ -103,7 +94,7 @@ def _get_lower_triangular_indices(index: int, matrix_size: int) -> tuple[int, in
 @wp.func
 def _find_world_and_local_id(
     tid: int,
-    world_cumsum_lower_tri: wp.array(dtype=int, ndim=1),
+    world_cumsum_lower_tri: wp.array[int],
 ):
     """Binary search to find world ID and local ID from thread ID.
 
@@ -138,23 +129,27 @@ def _find_world_and_local_id(
     return world_id, local_id
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _nxn_broadphase_kernel(
     # Input arrays
-    shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
-    shape_bounding_box_upper: wp.array(dtype=wp.vec3, ndim=1),
-    shape_gap: wp.array(dtype=float, ndim=1),  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    collision_group: wp.array(dtype=int, ndim=1),  # per-shape
-    shape_world: wp.array(dtype=int, ndim=1),  # per-shape world indices
-    world_cumsum_lower_tri: wp.array(dtype=int, ndim=1),  # Cumulative sum of lower tri elements per world
-    world_slice_ends: wp.array(dtype=int, ndim=1),  # End indices of each world slice
-    world_index_map: wp.array(dtype=int, ndim=1),  # Index map into source geometry
+    shape_bounding_box_lower: wp.array[wp.vec3],
+    shape_bounding_box_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_displacement: wp.array[wp.vec3],  # Optional displacement over the collision-update interval [m]
+    collision_group: wp.array[int],  # per-shape
+    shape_world: wp.array[int],  # per-shape world indices
+    shape_body: wp.array[int],
+    body_flags: wp.array[int],
+    include_static_kinematic_pairs: bool,
+    world_cumsum_lower_tri: wp.array[int],  # Cumulative sum of lower tri elements per world
+    world_slice_ends: wp.array[int],  # End indices of each world slice
+    world_index_map: wp.array[int],  # Index map into source geometry
     num_regular_worlds: int,  # Number of regular world segments (excluding dedicated -1 segment)
-    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Sorted excluded pairs (empty if none)
+    filter_pairs: wp.array[wp.vec2i],  # Sorted excluded pairs (empty if none)
     num_filter_pairs: int,
     # Output arrays
-    candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
 ):
     tid = wp.tid()
@@ -199,6 +194,9 @@ def _nxn_broadphase_kernel(
     if not test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
         return
 
+    if is_shape_pair_immovable_filtered(shape1, shape2, shape_body, body_flags, include_static_kinematic_pairs):
+        return
+
     # Check if gaps are provided (empty array means AABBs are pre-expanded)
     gap1 = 0.0
     gap2 = 0.0
@@ -206,14 +204,8 @@ def _nxn_broadphase_kernel(
         gap1 = shape_gap[shape1]
         gap2 = shape_gap[shape2]
 
-    # Check AABB overlap
-    if check_aabb_overlap(
-        shape_bounding_box_lower[shape1],
-        shape_bounding_box_upper[shape1],
-        gap1,
-        shape_bounding_box_lower[shape2],
-        shape_bounding_box_upper[shape2],
-        gap2,
+    if check_aabb_overlap_moving(
+        shape1, shape2, shape_bounding_box_lower, shape_bounding_box_upper, gap1, gap2, shape_displacement
     ):
         # Skip explicitly excluded pairs (e.g. shape_collision_filter_pairs)
         if num_filter_pairs > 0 and is_pair_excluded(wp.vec2i(shape1, shape2), filter_pairs, num_filter_pairs):
@@ -244,8 +236,8 @@ class BroadPhaseAllPairs:
 
     def __init__(
         self,
-        shape_world: wp.array(dtype=wp.int32, ndim=1) | np.ndarray,
-        shape_flags: wp.array(dtype=wp.int32, ndim=1) | np.ndarray | None = None,
+        shape_world: wp.array[wp.int32] | np.ndarray,
+        shape_flags: wp.array[wp.int32] | np.ndarray | None = None,
         device: Devicelike | None = None,
     ) -> None:
         """Initialize the broad phase with world ID information.
@@ -316,18 +308,24 @@ class BroadPhaseAllPairs:
 
     def launch(
         self,
-        shape_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of shape bounding boxes
-        shape_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of shape bounding boxes
-        shape_gap: wp.array(dtype=float, ndim=1) | None,  # Optional per-shape effective gaps
-        shape_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        shape_world: wp.array(dtype=int, ndim=1),  # World index per box
+        shape_lower: wp.array[wp.vec3],  # Lower bounds of shape bounding boxes
+        shape_upper: wp.array[wp.vec3],  # Upper bounds of shape bounding boxes
+        shape_gap: wp.array[float] | None,  # Optional per-shape effective gaps
+        shape_collision_group: wp.array[int],  # Collision group ID per box
+        shape_world: wp.array[int],  # World index per box
         shape_count: int,  # Number of active bounding boxes
         # Outputs
-        candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
-        candidate_pair_count: wp.array(dtype=int, ndim=1),
+        candidate_pair: wp.array[wp.vec2i],  # Array to store overlapping shape pairs
+        candidate_pair_count: wp.array[int],
         device: Devicelike | None = None,  # Device to launch on
-        filter_pairs: wp.array(dtype=wp.vec2i, ndim=1) | None = None,  # Sorted excluded pairs
+        filter_pairs: wp.array[wp.vec2i] | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
+        skip_count_zero: bool = False,  # Skip candidate_pair_count.zero_() if already zeroed by the caller
+        *,
+        shape_body: wp.array[int] | None = None,
+        body_flags: wp.array[int] | None = None,
+        include_static_kinematic_pairs: bool = True,
+        shape_displacement: wp.array[wp.vec3] | None = None,
     ) -> None:
         """Launch the N x N broad phase collision detection.
 
@@ -349,6 +347,24 @@ class BroadPhaseAllPairs:
             candidate_pair: Output array to store overlapping shape pairs
             candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
+            filter_pairs: Optional sorted shape pairs to exclude.
+            num_filter_pairs: Number of valid entries in ``filter_pairs``. If None, uses ``filter_pairs.shape[0]``.
+            skip_count_zero: If True, skip the internal ``candidate_pair_count.zero_()``.
+                The caller guarantees ``candidate_pair_count[0] == 0`` on entry (e.g. when
+                the counter was zeroed by a preceding fused kernel).  Defaults to False so
+                the launch remains self-contained.
+            shape_body: Optional array mapping each shape to its body index. Negative body indices are static shapes.
+                Omitting this array disables immovable-pair filtering for expert callers.
+            body_flags: Optional body flag array used to identify kinematic bodies. An empty array is valid for
+                an all-static model when ``shape_body`` is provided.
+            include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
+                ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
+            shape_displacement: Optional world-space displacement of each shape over the collision-update interval
+                ``dt``,
+                used for speculative-contact swept-AABB tests [m]. See
+                :ref:`Speculative contacts <speculative-contacts>`. :class:`CollisionPipeline` computes it as the
+                shape-origin velocity, including the angular contribution from its COM offset, times ``dt``; angular
+                travel expands the supplied AABB separately.
 
         The method will populate candidate_pair with the indices of shape pairs (i,j) where i < j whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose world indices are
@@ -357,7 +373,8 @@ class BroadPhaseAllPairs:
         """
         max_candidate_pair = candidate_pair.shape[0]
 
-        candidate_pair_count.zero_()
+        if not skip_count_zero:
+            candidate_pair_count.zero_()
 
         if device is None:
             device = shape_lower.device
@@ -365,6 +382,15 @@ class BroadPhaseAllPairs:
         # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
         if shape_gap is None:
             shape_gap = wp.empty(0, dtype=wp.float32, device=device)
+        if shape_body is None:
+            shape_body = wp.empty(0, dtype=wp.int32, device=device)
+        if body_flags is None:
+            body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        if shape_displacement is not None and shape_displacement.shape[0] != shape_lower.shape[0]:
+            raise ValueError(
+                "shape_displacement length must match the shape bounds "
+                f"({shape_lower.shape[0]}), got {shape_displacement.shape[0]}"
+            )
 
         # Exclusion filter: empty array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
@@ -382,8 +408,12 @@ class BroadPhaseAllPairs:
                 shape_lower,
                 shape_upper,
                 shape_gap,
+                shape_displacement,
                 shape_collision_group,
                 shape_world,
+                shape_body,
+                body_flags,
+                include_static_kinematic_pairs,
                 self.world_cumsum_lower_tri,
                 self.world_slice_ends,
                 self.world_index_map,
@@ -393,6 +423,7 @@ class BroadPhaseAllPairs:
             ],
             outputs=[candidate_pair, candidate_pair_count, max_candidate_pair],
             device=device,
+            record_tape=False,
         )
 
 
@@ -407,20 +438,23 @@ class BroadPhaseExplicit:
     taking into account per-geometry cutoff distances.
     """
 
-    def __init__(self) -> None:
-        pass
-
     def launch(
         self,
-        shape_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of shape bounding boxes
-        shape_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of shape bounding boxes
-        shape_gap: wp.array(dtype=float, ndim=1) | None,  # Optional per-shape effective gaps
-        shape_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Precomputed pairs to check
+        shape_lower: wp.array[wp.vec3],  # Lower bounds of shape bounding boxes
+        shape_upper: wp.array[wp.vec3],  # Upper bounds of shape bounding boxes
+        shape_gap: wp.array[float] | None,  # Optional per-shape effective gaps
+        shape_pairs: wp.array[wp.vec2i],  # Precomputed pairs to check
         shape_pair_count: int,
         # Outputs
-        candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
-        candidate_pair_count: wp.array(dtype=int, ndim=1),
+        candidate_pair: wp.array[wp.vec2i],  # Array to store overlapping shape pairs
+        candidate_pair_count: wp.array[int],
         device: Devicelike | None = None,  # Device to launch on
+        skip_count_zero: bool = False,  # Skip candidate_pair_count.zero_() if already zeroed
+        *,
+        shape_body: wp.array[int] | None = None,
+        body_flags: wp.array[int] | None = None,
+        include_static_kinematic_pairs: bool = True,
+        shape_displacement: wp.array[wp.vec3] | None = None,
     ) -> None:
         """Launch the explicit pairs broad phase collision detection.
 
@@ -438,6 +472,22 @@ class BroadPhaseExplicit:
             candidate_pair: Output array to store overlapping shape pairs
             candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
+            skip_count_zero: If True, skip the internal ``candidate_pair_count.zero_()``.
+                The caller guarantees ``candidate_pair_count[0] == 0`` on entry (e.g. when
+                the counter was zeroed by a preceding fused kernel).  Defaults to False so
+                the launch remains self-contained.
+            shape_body: Optional array mapping each shape to its body index. Negative body indices are static shapes.
+                Omitting this array disables immovable-pair filtering for expert callers.
+            body_flags: Optional body flag array used to identify kinematic bodies. An empty array is valid for
+                an all-static model when ``shape_body`` is provided.
+            include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
+                ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
+            shape_displacement: Optional world-space displacement of each shape over the collision-update interval
+                ``dt``,
+                used for speculative-contact swept-AABB tests [m]. See
+                :ref:`Speculative contacts <speculative-contacts>`. :class:`CollisionPipeline` computes it as the
+                shape-origin velocity, including the angular contribution from its COM offset, times ``dt``; angular
+                travel expands the supplied AABB separately.
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
         (with optional margin expansion), but only checking the explicitly provided pairs.
@@ -445,7 +495,8 @@ class BroadPhaseExplicit:
 
         max_candidate_pair = candidate_pair.shape[0]
 
-        candidate_pair_count.zero_()
+        if not skip_count_zero:
+            candidate_pair_count.zero_()
 
         if device is None:
             device = shape_lower.device
@@ -453,6 +504,15 @@ class BroadPhaseExplicit:
         # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
         if shape_gap is None:
             shape_gap = wp.empty(0, dtype=wp.float32, device=device)
+        if shape_body is None:
+            shape_body = wp.empty(0, dtype=wp.int32, device=device)
+        if body_flags is None:
+            body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        if shape_displacement is not None and shape_displacement.shape[0] != shape_lower.shape[0]:
+            raise ValueError(
+                "shape_displacement length must match the shape bounds "
+                f"({shape_lower.shape[0]}), got {shape_displacement.shape[0]}"
+            )
 
         wp.launch(
             kernel=_nxn_broadphase_precomputed_pairs,
@@ -461,10 +521,15 @@ class BroadPhaseExplicit:
                 shape_lower,
                 shape_upper,
                 shape_gap,
+                shape_displacement,
                 shape_pairs,
+                shape_body,
+                body_flags,
+                include_static_kinematic_pairs,
                 candidate_pair,
                 candidate_pair_count,
                 max_candidate_pair,
             ],
             device=device,
+            record_tape=False,
         )

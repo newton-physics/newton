@@ -1,32 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
 import inspect
 import subprocess
+import warnings
 from typing import Any
+from urllib.parse import urlencode
 
 import numpy as np
 import warp as wp
 
 import newton
 
-from ..core.types import nparray, override
+from ..core.types import override
 from ..utils.mesh import compute_vertex_normals
-from ..utils.texture import load_texture, normalize_texture
+from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 
 try:
@@ -48,33 +38,16 @@ class ViewerRerun(ViewerBase):
     """
 
     @staticmethod
-    def _to_numpy(x) -> np.ndarray | None:
-        """Convert warp arrays or other array-like objects to numpy arrays."""
-        if x is None:
-            return None
-        if hasattr(x, "numpy"):
-            return x.numpy()
-        return np.asarray(x)
-
-    @staticmethod
     def _call_rr_constructor(ctor, **kwargs):
         """Call a rerun constructor with only supported keyword args."""
         try:
             signature = inspect.signature(ctor)
-            allowed = {k: v for k, v in kwargs.items() if k in signature.parameters}
-            return ctor(**allowed)
-        except Exception:
+        except (TypeError, ValueError):
             return ctor(**kwargs)
 
-    @staticmethod
-    def _prepare_texture(texture: np.ndarray | str | None) -> np.ndarray | None:
-        """Load and normalize texture data for rerun."""
-        return normalize_texture(
-            load_texture(texture),
-            flip_vertical=False,
-            require_channels=True,
-            scale_unit_range=True,
-        )
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+        allowed = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
+        return ctor(**allowed)
 
     @staticmethod
     def _flip_uvs_for_rerun(uvs: np.ndarray) -> np.ndarray:
@@ -116,6 +89,20 @@ class ViewerRerun(ViewerBase):
         )
         return texture_buffer, texture_format
 
+    @staticmethod
+    def _rgb_to_u8(color: tuple[float, float, float] | np.ndarray | None, default=(180, 180, 180)) -> np.ndarray:
+        """Convert an RGB color in 0-1 or 0-255 range to uint8."""
+        if color is None:
+            return np.asarray(default, dtype=np.uint8)
+        color_np = np.asarray(color, dtype=np.float32).reshape(3)
+        if np.max(color_np) <= 1.0:
+            color_np = color_np * 255.0
+        return np.clip(np.round(color_np), 0.0, 255.0).astype(np.uint8)
+
+    @staticmethod
+    def _opacity_to_u8(opacity: float | None) -> int:
+        return int(round(float(np.clip(1.0 if opacity is None else opacity, 0.0, 1.0)) * 255.0))
+
     def _mesh3d_supports(self, field_name: str) -> bool:
         if not self._mesh3d_params:
             return True
@@ -125,6 +112,7 @@ class ViewerRerun(ViewerBase):
         self,
         *,
         app_id: str | None = None,
+        rec_id: str | None = None,
         address: str | None = None,
         serve_web_viewer: bool = True,
         web_port: int = 9090,
@@ -143,6 +131,9 @@ class ViewerRerun(ViewerBase):
         Args:
             app_id: Application ID for rerun (defaults to 'newton-viewer').
                                  Use different IDs to differentiate between parallel viewer instances.
+            rec_id: Recording ID for rerun. If provided, multiple processes using the
+                                 same recording ID will share a single recording, allowing their data
+                                 to be visualized together. If None, a random ID is generated.
             address: Optional server address to connect to a remote rerun server via gRPC.
                                   You will need to start a stand-alone rerun server first, e.g. by typing ``rerun`` in your terminal.
                                   See rerun.io documentation for supported address formats.
@@ -153,7 +144,7 @@ class ViewerRerun(ViewerBase):
             web_port: Port to serve the web viewer on. Only used if ``serve_web_viewer`` is True.
             grpc_port: Port to serve the gRPC server on.
             keep_historical_data: If True, keep historical data in the timeline of the web viewer.
-                If False, the web viewer will only show the current frame to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
+                If False, the web viewer will only show the current frame to keep the memory usage constant when sending transform updates via :meth:`~newton.viewer.ViewerBase.log_state`.
                 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
                 If True, the historical simulation data is kept in the viewer to be able to scrub through the simulation timeline. Defaults to False.
             keep_scalar_history: If True, historical scala data logged via :meth:`ViewerRerun.log_scalar` is kept in the viewer.
@@ -162,9 +153,11 @@ class ViewerRerun(ViewerBase):
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
 
+        self._rerun_initialized = False
         super().__init__()
 
         self.app_id = app_id or "newton-viewer"
+        self.rec_id = rec_id
         self._running = True
         self._viewer_process = None
         self.keep_historical_data = keep_historical_data
@@ -179,7 +172,7 @@ class ViewerRerun(ViewerBase):
 
         # Initialize rerun using a blueprint that only shows the 3D view and a collapsed time panel
         blueprint = self._get_blueprint()
-        rr.init(self.app_id, default_blueprint=blueprint)
+        rr.init(self.app_id, recording_id=self.rec_id, default_blueprint=blueprint)
 
         if record_to_rrd is not None:
             rr.save(record_to_rrd, default_blueprint=blueprint)
@@ -199,11 +192,14 @@ class ViewerRerun(ViewerBase):
             if serve_web_viewer:
                 self._grpc_server_uri = rr.serve_grpc(grpc_port=grpc_port, default_blueprint=blueprint)
                 rr.serve_web_viewer(connect_to=self._grpc_server_uri, web_port=web_port)
+                query = urlencode({"url": self._grpc_server_uri})
+                print(f"Rerun web viewer running at: http://127.0.0.1:{web_port}/?{query}", flush=True)
             else:
                 rr.spawn(port=grpc_port)
 
         # Make sure the timeline is set up
         rr.set_time("time", timestamp=0.0)
+        self._rerun_initialized = True
 
     def _get_blueprint(self):
         scalar_panel = None
@@ -219,17 +215,50 @@ class ViewerRerun(ViewerBase):
         )
 
     @override
+    def clear_model(self):
+        """Clear the active layer's local caches and Rerun entity subtree."""
+        owns = self._is_layer_owned_path
+
+        if getattr(self, "_rerun_initialized", False):
+            prefix = self.layer.name_prefix
+            if prefix:
+                rr.log(prefix, rr.Clear(recursive=True))
+            else:
+                names = (
+                    set(getattr(self, "_meshes", {}))
+                    | set(getattr(self, "_instances", {}))
+                    | set(getattr(self, "_scalars", {}))
+                )
+                for name in names:
+                    if owns(name):
+                        rr.log(name, rr.Clear(recursive=True))
+
+        if hasattr(self, "_meshes"):
+            self._meshes = {name: value for name, value in self._meshes.items() if not owns(name)}
+        if hasattr(self, "_instances"):
+            self._instances = {name: value for name, value in self._instances.items() if not owns(name)}
+        if hasattr(self, "_scalars"):
+            self._scalars = {name: value for name, value in self._scalars.items() if not owns(name)}
+
+        super().clear_model()
+
+    @override
     def log_mesh(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3),
-        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
-        normals: wp.array(dtype=wp.vec3) | None = None,
-        uvs: wp.array(dtype=wp.vec2) | None = None,
+        points: wp.array[wp.vec3],
+        indices: wp.array[wp.int32] | wp.array[wp.uint32],
+        normals: wp.array[wp.vec3] | None = None,
+        uvs: wp.array[wp.vec2] | None = None,
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
-        colors: wp.array(dtype=wp.vec3) | None = None,
+        color: tuple[float, float, float] | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
+        dynamic: bool = False,
+        opacity: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Log a mesh to rerun for visualization.
@@ -243,8 +272,20 @@ class ViewerRerun(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling (unused).
-            colors: Optional per-vertex colors.
+            color: Optional base color as an RGB tuple with values in
+                [0, 1]. Used when no texture is provided.
+            roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
+                smooth, ``1`` is fully rough.
+            metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
+                is metal.
+            dynamic: Whether mesh topology may change between frames.
+            opacity: Optional display opacity in [0, 1].
+            colors: Optional per-vertex colors, overriding ``color`` for each vertex.
         """
+        name = self._qualify(name)
+        previous_mesh = self._meshes.get(name)
+        was_visible = isinstance(previous_mesh, dict) and previous_mesh.get("visible", False)
+
         if not hidden:
             assert isinstance(points, wp.array)
             assert isinstance(indices, wp.array)
@@ -252,8 +293,8 @@ class ViewerRerun(ViewerBase):
             assert uvs is None or isinstance(uvs, wp.array)
 
         # Convert to numpy arrays
-        points_np = self._to_numpy(points).astype(np.float32)
-        indices_np = self._to_numpy(indices).astype(np.uint32)
+        points_np = to_numpy(points).astype(np.float32)
+        indices_np = to_numpy(indices).astype(np.uint32)
 
         # Rerun expects indices as (N, 3) for triangles
         if indices_np.ndim == 1:
@@ -266,12 +307,12 @@ class ViewerRerun(ViewerBase):
                 normals_np = None
             else:
                 normals = compute_vertex_normals(points, indices, device=self.device)
-                normals_np = self._to_numpy(normals)
+                normals_np = to_numpy(normals)
         else:
-            normals_np = self._to_numpy(normals)
+            normals_np = to_numpy(normals)
 
-        uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
-        texture_image = self._prepare_texture(texture)
+        uvs_np = to_numpy(uvs).astype(np.float32) if uvs is not None else None
+        texture_image = prepare_viewer_texture(texture)
 
         if uvs_np is not None and len(uvs_np) != len(points_np):
             uvs_np = None
@@ -299,9 +340,14 @@ class ViewerRerun(ViewerBase):
             "texture_image": texture_image,
             "texture_buffer": texture_buffer,
             "texture_format": texture_format,
+            "opacity": opacity,
+            "color": color,
+            "visible": not hidden,
         }
 
         if hidden:
+            if was_visible:
+                rr.log(name, rr.Clear(recursive=False))
             return
 
         mesh_kwargs = {
@@ -317,6 +363,18 @@ class ViewerRerun(ViewerBase):
         elif texture_image is not None and self._mesh3d_supports("albedo_texture"):
             mesh_kwargs["albedo_texture"] = texture_image
 
+        if opacity is not None or color is not None:
+            opacity_u8 = self._opacity_to_u8(opacity)
+            has_texture = texture_buffer is not None or texture_image is not None
+            if not has_texture:
+                vertex_color = self._rgb_to_u8(color)
+                mesh_kwargs["vertex_colors"] = np.tile(vertex_color, (len(points_np), 1))
+                if opacity is not None and self._mesh3d_supports("albedo_factor"):
+                    mesh_kwargs["albedo_factor"] = (255, 255, 255, opacity_u8)
+            elif self._mesh3d_supports("albedo_factor"):
+                base_rgb = self._rgb_to_u8(color, default=(255, 255, 255))
+                mesh_kwargs["albedo_factor"] = (*base_rgb.tolist(), opacity_u8)
+
         # Log the mesh as a static asset
         mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)
 
@@ -327,11 +385,12 @@ class ViewerRerun(ViewerBase):
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log instanced mesh data to rerun using InstancePoses3D.
@@ -344,7 +403,11 @@ class ViewerRerun(ViewerBase):
             colors: Instance colors.
             materials: Instance materials.
             hidden: Whether the instances are hidden.
+            opacities: Instance opacities.
         """
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
         if hidden:
             if name in self._instances:
                 rr.log(name, rr.Clear(recursive=False))
@@ -356,22 +419,68 @@ class ViewerRerun(ViewerBase):
             raise RuntimeError(f"Mesh {mesh} not found. Call log_mesh first.")
 
         # re-run needs to generate a new mesh for each instancer
-        if name not in self._instances:
+        appearance_changed = colors is not None or opacities is not None
+        if name not in self._instances or appearance_changed:
             mesh_data = self._meshes[mesh]
+            previous_appearance = self._instances.get(name)
+            if not isinstance(previous_appearance, dict):
+                previous_appearance = {}
             has_texture = (
                 mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None
             ) or mesh_data.get("texture_image") is not None
 
-            # Handle colors - ReRun doesn't support per-instance colors
-            # so we just use the first instance's color for all instances
+            # Rerun poses do not carry per-instance appearance, so bake one
+            # representative color/opacity into the mesh logged for this batch.
             vertex_colors = None
+            albedo_factor = None
+            first_opacity = 1.0
+            num_instances = len(xforms) if xforms is not None else 0
+            opacity_source = opacities
+            if opacity_source is None:
+                opacity_source = previous_appearance.get("opacities", mesh_data.get("opacity"))
+            opacities_np = promote_to_clamped_float_array(
+                opacity_source,
+                num_instances,
+                value_name="Opacity",
+            )
+            if opacities_np is not None and len(opacities_np) > 0:
+                first_opacity = float(opacities_np[0])
+                if not np.allclose(opacities_np, first_opacity):
+                    warnings.warn(
+                        "ViewerRerun does not support per-instance opacity; using the first opacity for the batch.",
+                        stacklevel=2,
+                    )
             if colors is not None and not has_texture:
-                colors_np = self._to_numpy(colors).astype(np.float32)
+                colors_np = to_numpy(colors).astype(np.float32)
                 # Take the first instance's color and apply to all vertices
-                first_color = colors_np[0]
-                color_rgb = np.array(first_color * 255, dtype=np.uint8)
+                color_rgb = self._rgb_to_u8(colors_np[0])
                 num_vertices = len(mesh_data["points"])
                 vertex_colors = np.tile(color_rgb, (num_vertices, 1))
+                if opacities_np is not None and self._mesh3d_supports("albedo_factor"):
+                    albedo_factor = (255, 255, 255, self._opacity_to_u8(first_opacity))
+            elif previous_appearance.get("vertex_colors") is not None and not has_texture:
+                vertex_colors = previous_appearance["vertex_colors"].copy()
+                if opacities_np is not None and self._mesh3d_supports("albedo_factor"):
+                    previous_albedo = previous_appearance.get("albedo_factor")
+                    albedo_rgb = (255, 255, 255) if previous_albedo is None else tuple(previous_albedo[:3])
+                    albedo_factor = (*albedo_rgb, self._opacity_to_u8(first_opacity))
+            elif (opacities_np is not None or mesh_data.get("color") is not None) and not has_texture:
+                base_rgb = self._rgb_to_u8(mesh_data.get("color"))
+                num_vertices = len(mesh_data["points"])
+                vertex_colors = np.tile(base_rgb, (num_vertices, 1))
+                if opacities_np is not None and self._mesh3d_supports("albedo_factor"):
+                    albedo_factor = (255, 255, 255, self._opacity_to_u8(first_opacity))
+            elif (
+                opacities_np is not None or colors is not None or mesh_data.get("color") is not None
+            ) and self._mesh3d_supports("albedo_factor"):
+                previous_albedo = previous_appearance.get("albedo_factor")
+                if colors is not None:
+                    base_rgb = self._rgb_to_u8(to_numpy(colors)[0], default=(255, 255, 255))
+                elif previous_albedo is not None:
+                    base_rgb = np.asarray(previous_albedo[:3], dtype=np.uint8)
+                else:
+                    base_rgb = self._rgb_to_u8(mesh_data.get("color"), default=(255, 255, 255))
+                albedo_factor = (*base_rgb.tolist(), self._opacity_to_u8(first_opacity))
 
             # Log the base mesh with optional colors
             mesh_kwargs = {
@@ -381,6 +490,8 @@ class ViewerRerun(ViewerBase):
             }
             if vertex_colors is not None:
                 mesh_kwargs["vertex_colors"] = vertex_colors
+            if albedo_factor is not None:
+                mesh_kwargs["albedo_factor"] = albedo_factor
             if mesh_data.get("uvs") is not None and self._mesh3d_supports("vertex_texcoords"):
                 mesh_kwargs["vertex_texcoords"] = mesh_data["uvs"]
             if mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None:
@@ -392,8 +503,12 @@ class ViewerRerun(ViewerBase):
             mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)
             rr.log(name, mesh_3d)
 
-            # save reference
-            self._instances[name] = mesh_3d
+            self._instances[name] = {
+                "mesh_3d": mesh_3d,
+                "vertex_colors": vertex_colors,
+                "albedo_factor": albedo_factor,
+                "opacities": None if opacities_np is None else opacities_np.copy(),
+            }
 
             # hide the reference mesh
             rr.log(mesh, rr.Clear(recursive=False))
@@ -401,7 +516,7 @@ class ViewerRerun(ViewerBase):
         # Convert transforms and properties to numpy
         if xforms is not None:
             # Convert warp arrays to numpy first
-            xforms_np = self._to_numpy(xforms)
+            xforms_np = to_numpy(xforms)
 
             # Extract positions and quaternions using vectorized operations
             # Warp transform format: [x, y, z, qx, qy, qz, qw]
@@ -413,7 +528,7 @@ class ViewerRerun(ViewerBase):
 
             scales_np = None
             if scales is not None:
-                scales_np = self._to_numpy(scales).astype(np.float32)
+                scales_np = to_numpy(scales).astype(np.float32)
 
             # Colors are already handled in the mesh
             # (first instance color applied to all)
@@ -503,11 +618,9 @@ class ViewerRerun(ViewerBase):
     def log_lines(
         self,
         name: str,
-        starts: wp.array(dtype=wp.vec3) | None,
-        ends: wp.array(dtype=wp.vec3) | None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ),
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
         width: float = 0.01,
         hidden: bool = False,
     ):
@@ -522,18 +635,21 @@ class ViewerRerun(ViewerBase):
             width: Line width.
             hidden: Whether the lines are hidden.
         """
+        name = self._qualify(name)
 
         if hidden:
+            rr.log(name, rr.Clear(recursive=False))
             return  # Do not log hidden lines
 
         if starts is None or ends is None:
+            rr.log(name, rr.Clear(recursive=False))
             return  # Nothing to log
 
         # Convert inputs to numpy for rerun API compatibility
         # Expecting starts/ends as wp arrays or numpy arrays
-        starts_np = self._to_numpy(starts)
-        ends_np = self._to_numpy(ends)
-        colors_np = self._to_numpy(colors) if colors is not None else None
+        starts_np = to_numpy(starts)
+        ends_np = to_numpy(ends)
+        colors_np = to_numpy(colors) if colors is not None else None
 
         # Both starts and ends should be (N, 3)
         if starts_np is None or ends_np is None or len(starts_np) == 0:
@@ -561,7 +677,7 @@ class ViewerRerun(ViewerBase):
         rr.log(name, rr.LineStrips3D(line_strips, **rr_kwargs), static=not self.keep_historical_data)
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
         """
         Log a generic array for visualization.
 
@@ -569,13 +685,15 @@ class ViewerRerun(ViewerBase):
             name: Name of the array.
             array: The array data (can be a wp.array or a numpy array).
         """
+        name = self._qualify(name)
+
         if array is None:
             return
-        array_np = self._to_numpy(array)
+        array_np = to_numpy(array)
         rr.log(name, rr.Scalars(array_np), static=not self.keep_historical_data)
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False, smoothing: int = 1):
         """
         Log a scalar value for visualization.
 
@@ -586,6 +704,7 @@ class ViewerRerun(ViewerBase):
         # Basic scalar logging for rerun: log as a 'Scalar' component (if present)
         if name is None:
             return
+        name = self._qualify(name)
 
         # Only support standard Python/numpy scalars, not generic objects for now
         if hasattr(value, "item"):
@@ -650,11 +769,9 @@ class ViewerRerun(ViewerBase):
     def log_points(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3) | None,
-        radii: wp.array(dtype=wp.float32) | float | None = None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ) = None,
+        points: wp.array[wp.vec3] | None,
+        radii: wp.array[wp.float32] | float | None = None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
     ):
         """
@@ -667,19 +784,23 @@ class ViewerRerun(ViewerBase):
             colors: Point colors (can be a wp.array or a numpy array).
             hidden: Whether the points are hidden.
         """
+        name = self._qualify(name)
+
         if hidden:
             # Optionally, skip logging hidden points
+            rr.log(name, rr.Clear(recursive=False))
             return
 
         if points is None:
+            rr.log(name, rr.Clear(recursive=False))
             return
 
-        pts = self._to_numpy(points)
+        pts = to_numpy(points)
         n_points = pts.shape[0]
 
         # Handle radii (point size)
         if radii is not None:
-            size = self._to_numpy(radii)
+            size = to_numpy(radii)
             if size.ndim == 0 or size.shape == ():
                 sizes = np.full((n_points,), float(size))
             elif size.shape == (n_points,):
@@ -691,7 +812,7 @@ class ViewerRerun(ViewerBase):
 
         # Handle colors
         if colors is not None:
-            cols = self._to_numpy(colors)
+            cols = to_numpy(colors)
             if cols.shape == (n_points, 3):
                 colors_val = cols
             elif cols.shape == (3,):

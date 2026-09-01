@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Unit tests for the AnimationJointReference class."""
 
@@ -22,7 +10,6 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
-from newton._src.solvers.kamino._src.core.types import float32
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.control import AnimationJointReference
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
@@ -103,7 +90,6 @@ class TestAnimationJointReference(unittest.TestCase):
             rate=rate,
             loop=loop,
             use_fd=use_fd,
-            device=self.default_device,
         )
         self.assertIsNotNone(animation)
         self.assertIsNotNone(animation.data)
@@ -123,8 +109,8 @@ class TestAnimationJointReference(unittest.TestCase):
         np.testing.assert_array_almost_equal(animation.data.dq_j_ref.numpy(), np.zeros_like(animation_np), decimal=6)
 
         # Allocate output arrays for joint references
-        q_j_ref_out = wp.zeros(njad, dtype=float32, device=self.default_device)
-        dq_j_ref_out = wp.zeros(njad, dtype=float32, device=self.default_device)
+        q_j_ref_out = wp.zeros(njad, dtype=wp.float32, device=self.default_device)
+        dq_j_ref_out = wp.zeros(njad, dtype=wp.float32, device=self.default_device)
 
         # Retrieve the reference at the initial step (0)
         animation.reset(q_j_ref_out=q_j_ref_out, dq_j_ref_out=dq_j_ref_out)
@@ -207,7 +193,6 @@ class TestAnimationJointReference(unittest.TestCase):
             rate=rate,
             loop=loop,
             use_fd=use_fd,
-            device=self.default_device,
         )
         self.assertIsNotNone(animation)
         self.assertIsNotNone(animation.data)
@@ -231,8 +216,8 @@ class TestAnimationJointReference(unittest.TestCase):
         np.testing.assert_array_almost_equal(animation.data.dq_j_ref.numpy(), np.zeros_like(animation_np), decimal=6)
 
         # Allocate output arrays for joint references
-        q_j_ref_out = wp.zeros(njad, dtype=float32, device=self.default_device)
-        dq_j_ref_out = wp.zeros(njad, dtype=float32, device=self.default_device)
+        q_j_ref_out = wp.zeros(njad, dtype=wp.float32, device=self.default_device)
+        dq_j_ref_out = wp.zeros(njad, dtype=wp.float32, device=self.default_device)
 
         # Retrieve the reference at the initial step (0)
         animation.reset(q_j_ref_out=q_j_ref_out, dq_j_ref_out=dq_j_ref_out)
@@ -349,7 +334,6 @@ class TestAnimationJointReference(unittest.TestCase):
             rate=rate,
             loop=loop,
             use_fd=use_fd,
-            device=self.default_device,
         )
         self.assertIsNotNone(animation)
         self.assertIsNotNone(animation.data)
@@ -373,8 +357,8 @@ class TestAnimationJointReference(unittest.TestCase):
         np.testing.assert_array_almost_equal(animation.data.dq_j_ref.numpy(), np.zeros_like(animation_np), decimal=6)
 
         # Allocate output arrays for joint references
-        q_j_ref_out = wp.zeros(njad, dtype=float32, device=self.default_device)
-        dq_j_ref_out = wp.zeros(njad, dtype=float32, device=self.default_device)
+        q_j_ref_out = wp.zeros(njad, dtype=wp.float32, device=self.default_device)
+        dq_j_ref_out = wp.zeros(njad, dtype=wp.float32, device=self.default_device)
 
         # Retrieve the reference at the initial step (0)
         animation.reset(q_j_ref_out=q_j_ref_out, dq_j_ref_out=dq_j_ref_out)
@@ -491,7 +475,6 @@ class TestAnimationJointReference(unittest.TestCase):
             rate=rate,
             loop=loop,
             use_fd=use_fd,
-            device=self.default_device,
         )
         self.assertIsNotNone(animation)
         self.assertIsNotNone(animation.data)
@@ -515,8 +498,8 @@ class TestAnimationJointReference(unittest.TestCase):
         np.testing.assert_array_almost_equal(animation.data.dq_j_ref.numpy(), np.zeros_like(animation_np), decimal=6)
 
         # Allocate output arrays for joint references
-        q_j_ref_out = wp.zeros(njad, dtype=float32, device=self.default_device)
-        dq_j_ref_out = wp.zeros(njad, dtype=float32, device=self.default_device)
+        q_j_ref_out = wp.zeros(njad, dtype=wp.float32, device=self.default_device)
+        dq_j_ref_out = wp.zeros(njad, dtype=wp.float32, device=self.default_device)
 
         # Reset the reference at the initial step (0)
         animation.reset(q_j_ref_out=q_j_ref_out, dq_j_ref_out=dq_j_ref_out)

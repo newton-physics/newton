@@ -1,33 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Tiled Camera Sensor
 #
-# Shows how to use the SensorTiledCamera class.
-# The current view will be rendered using the Tiled Camera Sensor
-# upon pressing ENTER and displayed in the side panel.
+# Shows how to use the SensorTiledCamera class and display its output
+# via Viewer.log_image.
 #
 # Command: python -m newton.examples sensor_tiled_camera
 #
 ###########################################################################
 
-import ctypes
 import math
 import random
 
+import numpy as np
 import warp as wp
 from pxr import Usd
 
@@ -37,26 +24,45 @@ import newton.usd
 from newton.sensors import SensorTiledCamera
 from newton.viewer import ViewerGL
 
-SEMANTIC_COLOR_CYLINDER = 0xFFFF0000
-SEMANTIC_COLOR_SPHERE = 0xFFFFFF00
-SEMANTIC_COLOR_CAPSULE = 0xFF00FFFF
-SEMANTIC_COLOR_BOX = 0xFF0000FF
-SEMANTIC_COLOR_MESH = 0xFF00FF00
-SEMANTIC_COLOR_ROBOT = 0xFFFF00FF
-SEMANTIC_COLOR_GAUSSIAN = 0xFFFF9900
-SEMANTIC_COLOR_GROUND_PLANE = 0xFF444444
+SEMANTIC_COLOR_CYLINDER = (255, 0, 0)
+SEMANTIC_COLOR_SPHERE = (255, 255, 0)
+SEMANTIC_COLOR_CAPSULE = (0, 255, 255)
+SEMANTIC_COLOR_BOX = (0, 0, 255)
+SEMANTIC_COLOR_MESH = (0, 255, 0)
+SEMANTIC_COLOR_ROBOT = (255, 0, 255)
+SEMANTIC_COLOR_GAUSSIAN = (255, 153, 0)
+SEMANTIC_COLOR_GROUND_PLANE = (68, 68, 68)
+
+
+# Sweeping every Franka joint across its full URDF range yields poses that
+# punch the wrist through the ground plane or fold the arm onto itself.
+# Animate each joint as ``home + radius * sin(time + phase)`` instead, where
+# ``home`` sits at the standard "ready" pose and ``radius = alpha * min(home -
+# lower, upper - home)`` uses a per-joint fraction of the symmetric distance
+# to the URDF limits.
+_FRANKA_HOME_AND_ALPHA: dict[str, tuple[float, float]] = {
+    "fr3_joint1": (0.0, 0.6),
+    "fr3_joint2": (-math.pi / 4.0, 0.4),
+    "fr3_joint3": (0.0, 0.5),
+    "fr3_joint4": (-3.0 * math.pi / 4.0, 0.5),
+    "fr3_joint5": (0.0, 0.6),
+    "fr3_joint6": (math.pi / 2.0, 0.5),
+    "fr3_joint7": (math.pi / 4.0, 0.7),
+    "fr3_finger_joint1": (0.02, 1.0),
+    "fr3_finger_joint2": (0.02, 1.0),
+}
 
 
 @wp.kernel(enable_backward=False)
 def animate_franka(
     time: wp.float32,
-    joint_type: wp.array(dtype=wp.int32),
-    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
-    joint_q_start: wp.array(dtype=wp.int32),
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_limit_lower: wp.array(dtype=wp.float32),
-    joint_limit_upper: wp.array(dtype=wp.float32),
-    joint_q: wp.array(dtype=wp.float32),
+    joint_type: wp.array[wp.int32],
+    joint_dof_dim: wp.array2d[wp.int32],
+    joint_q_start: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    dof_home: wp.array[wp.float32],
+    dof_radius: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
 ):
     tid = wp.tid()
 
@@ -69,51 +75,21 @@ def animate_franka(
     q_start = joint_q_start[tid]
     qd_start = joint_qd_start[tid]
     for i in range(num_linear_dofs + num_angular_dofs):
-        joint_q[q_start + i] = joint_limit_lower[qd_start + i] + (
-            joint_limit_upper[qd_start + i] - joint_limit_lower[qd_start + i]
-        ) * ((wp.sin(time + wp.randf(rng)) + 1.0) * 0.5)
-
-
-@wp.kernel
-def shape_index_to_semantic_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
-    colors: wp.array(dtype=wp.uint32),
-    rgba: wp.array(dtype=wp.uint32, ndim=4),
-):
-    world_id, camera_id, y, x = wp.tid()
-    shape_index = shape_indices[world_id, camera_id, y, x]
-    if shape_index < colors.shape[0]:
-        rgba[world_id, camera_id, y, x] = colors[shape_index]
-    else:
-        rgba[world_id, camera_id, y, x] = wp.uint32(0xFF000000)
-
-
-@wp.kernel
-def shape_index_to_random_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
-    rgba: wp.array(dtype=wp.uint32, ndim=4),
-):
-    world_id, camera_id, y, x = wp.tid()
-    shape_index = shape_indices[world_id, camera_id, y, x]
-    random_color = wp.randi(wp.rand_init(12345, wp.int32(shape_index)))
-    rgba[world_id, camera_id, y, x] = wp.uint32(random_color) | wp.uint32(0xFF000000)
+        joint_q[q_start + i] = dof_home[qd_start + i] + dof_radius[qd_start + i] * wp.sin(time + wp.randf(rng))
 
 
 class Example:
     def __init__(self, viewer: ViewerGL, args):
+        newton.use_coord_layout_targets = True
         self.worlds_per_row = 6
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
 
         self.time = 0.0
         self.time_delta = 0.005
-        self.image_output = 0
-        self.texture_id = 0
-        self.show_sensor_output = True
 
         self.viewer = viewer
-        if isinstance(self.viewer, ViewerGL):
-            self.viewer.register_ui_callback(self.display, "free")
+        self.sensor_color_as_main_view = False
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
         bunny_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
@@ -129,6 +105,7 @@ class Example:
         builder = newton.ModelBuilder()
 
         semantic_colors = []
+        robot_shape_indices: list[int] = []
 
         rng = random.Random(1234)
         for _ in range(self.world_count_total):
@@ -138,11 +115,14 @@ class Example:
                     builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -4.0, 0.5), q=wp.quat_identity())),
                     radius=0.4,
                     half_height=0.5,
+                    color=(0.27, 0.47, 0.67),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_CYLINDER)
             if rng.random() < 0.5:
                 builder.add_shape_sphere(
-                    builder.add_body(xform=wp.transform(p=wp.vec3(-2.0, -2.0, 0.5), q=wp.quat_identity())), radius=0.5
+                    builder.add_body(xform=wp.transform(p=wp.vec3(-2.0, -2.0, 0.5), q=wp.quat_identity())),
+                    radius=0.5,
+                    color=(0.40, 0.80, 0.93),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_SPHERE)
             if rng.random() < 0.5:
@@ -150,6 +130,7 @@ class Example:
                     builder.add_body(xform=wp.transform(p=wp.vec3(-4.0, 0.0, 0.75), q=wp.quat_identity())),
                     radius=0.25,
                     half_height=0.5,
+                    color=(0.13, 0.53, 0.20),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_CAPSULE)
             if rng.random() < 0.5:
@@ -158,6 +139,7 @@ class Example:
                     hx=0.5,
                     hy=0.35,
                     hz=0.5,
+                    color=(0.80, 0.73, 0.27),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_BOX)
             if rng.random() < 0.5:
@@ -165,6 +147,7 @@ class Example:
                     builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 4.0, 0.0), q=wp.quat(0.5, 0.5, 0.5, 0.5))),
                     mesh=bunny_mesh,
                     scale=(0.5, 0.5, 0.5),
+                    color=(0.93, 0.40, 0.47),
                 )
                 semantic_colors.append(SEMANTIC_COLOR_MESH)
 
@@ -175,71 +158,100 @@ class Example:
                 )
                 semantic_colors.append(SEMANTIC_COLOR_GAUSSIAN)
 
+            robot_shape_start = builder.shape_count
             builder.add_builder(robot_builder, xform=wp.transform(p=wp.vec3(2.0, 0.0, 0.0), q=wp.quat_identity()))
+            robot_shape_indices.extend(range(robot_shape_start, robot_shape_start + robot_builder.shape_count))
             semantic_colors.extend([SEMANTIC_COLOR_ROBOT] * robot_builder.shape_count)
             builder.end_world()
 
-        builder.add_ground_plane()
+        ground_shape_index = builder.add_ground_plane(color=(0.6, 0.6, 0.6))
         semantic_colors.append(SEMANTIC_COLOR_GROUND_PLANE)
 
         self.model = builder.finalize()
         self.state = self.model.state()
+        self.robot_shape_indices = np.asarray(robot_shape_indices, dtype=np.uint32)
+        self.ground_shape_indices = np.asarray([ground_shape_index], dtype=np.uint32)
 
-        self.semantic_colors = wp.array(semantic_colors, dtype=wp.uint32)
+        # Build per-DOF home pose and oscillation radius for animate_franka.
+        # Joints not listed in _FRANKA_HOME_AND_ALPHA keep radius=0 and stay put.
+        joint_qd_start = self.model.joint_qd_start.numpy()
+        joint_limit_lower = self.model.joint_limit_lower.numpy()
+        joint_limit_upper = self.model.joint_limit_upper.numpy()
+        dof_home = np.zeros(self.model.joint_dof_count, dtype=np.float32)
+        dof_radius = np.zeros(self.model.joint_dof_count, dtype=np.float32)
+        for j_idx, label in enumerate(self.model.joint_label):
+            # URDF parser produces hierarchical labels like "fr3/fr3_joint1".
+            params = _FRANKA_HOME_AND_ALPHA.get(label.rsplit("/", 1)[-1])
+            if params is None:
+                continue
+            home_val, alpha_val = params
+            qd0 = int(joint_qd_start[j_idx])
+            lower = float(joint_limit_lower[qd0])
+            upper = float(joint_limit_upper[qd0])
+            dof_home[qd0] = home_val
+            dof_radius[qd0] = max(0.0, alpha_val * min(home_val - lower, upper - home_val))
+        self.dof_home = wp.array(dof_home, dtype=wp.float32, device=self.model.device)
+        self.dof_radius = wp.array(dof_radius, dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
 
-        self.ui_padding = 10
-        self.ui_side_panel_width = 300
-
         self.camera_count = 1
-        self.sensor_render_width = 64
-        self.sensor_render_height = 64
-
-        if isinstance(self.viewer, ViewerGL):
-            display_width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
-            display_height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
-
-            self.sensor_render_width = int(display_width // self.worlds_per_row)
-            self.sensor_render_height = int(display_height // self.worlds_per_col)
+        self.sensor_render_width = 256
+        self.sensor_render_height = 256
 
         # Setup Tiled Camera Sensor
-        self.tiled_camera_sensor = SensorTiledCamera(
-            model=self.model,
-            config=SensorTiledCamera.Config(
-                default_light=True,
-                default_light_shadows=True,
-                checkerboard_texture=True,
-                backface_culling=True,
-            ),
-        )
+        self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
+        self.tiled_camera_sensor.default_render_config.enable_shadows = True
+        self.tiled_camera_sensor.default_render_config.enable_textures = True
+        self.tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
+        self.tiled_camera_sensor.utils.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
 
         fov = 45.0
         if isinstance(self.viewer, ViewerGL):
             fov = self.viewer.camera.fov
 
-        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
-            self.sensor_render_width, self.sensor_render_height, math.radians(fov)
+        self.camera_rays = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
+            self.sensor_render_width, self.sensor_render_height, camera_fovs=math.radians(fov)
         )
-        self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output(
+        self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.utils.create_color_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output(
+        self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.utils.create_albedo_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.create_normal_image_output(
+        self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.create_shape_index_image_output(
+        self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.utils.create_normal_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.create_albedo_image_output(
+        self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.utils.create_shape_index_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
         )
-        self.depth_range = wp.array([1.0, 100.0], dtype=wp.float32)
 
-        if isinstance(self.viewer, ViewerGL):
-            self.create_texture()
+        # Palette for the "semantic" debug view: looked up by shape index.
+        # Indices written into shape_index_image come from builder shape order,
+        # so the palette must be one entry per shape in that same order.
+        assert len(semantic_colors) == self.model.shape_count, (
+            f"semantic_colors out of sync with model: {len(semantic_colors)} vs {self.model.shape_count}"
+        )
+        self.semantic_palette = wp.array(
+            np.asarray(semantic_colors, dtype=np.uint8),
+            dtype=wp.uint8,
+            device=self.tiled_camera_sensor_color_image.device,
+        )
+
+        device = self.tiled_camera_sensor_color_image.device
+        n = self.world_count_total * self.camera_count
+        H = self.sensor_render_height
+        W = self.sensor_render_width
+        self.color_main_rgba = wp.empty(
+            (self.worlds_per_col * H, self.worlds_per_row * W, 4), dtype=wp.uint8, device=device
+        )
+        self.depth_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
+        self.normal_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
+        self.shape_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
+        self.semantic_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
 
     def step(self):
         wp.launch(
@@ -251,8 +263,8 @@ class Example:
                 self.model.joint_dof_dim,
                 self.model.joint_q_start,
                 self.model.joint_qd_start,
-                self.model.joint_limit_lower,
-                self.model.joint_limit_upper,
+                self.dof_home,
+                self.dof_radius,
             ],
             outputs=[self.state.joint_q],
         )
@@ -260,29 +272,57 @@ class Example:
         self.time += self.time_delta
 
     def render(self):
-        if self.show_sensor_output:
-            self.render_sensors()
+        sensor_image_is_main_view = self.render_sensors()
 
         self.viewer.begin_frame(0.0)
-        if not self.show_sensor_output:
+        if not sensor_image_is_main_view:
             self.viewer.log_state(self.state)
         self.viewer.end_frame()
 
-    def render_sensors(self):
+    def render_sensors(self) -> bool:
+        self.model.bvh_refit_shapes(self.state)
+        self.model.bvh_refit_particles(self.state)
         self.tiled_camera_sensor.update(
             self.state,
             self.get_camera_transforms(),
             self.camera_rays,
             color_image=self.tiled_camera_sensor_color_image,
+            albedo_image=self.tiled_camera_sensor_albedo_image,
             depth_image=self.tiled_camera_sensor_depth_image,
             normal_image=self.tiled_camera_sensor_normal_image,
             shape_index_image=self.tiled_camera_sensor_shape_index_image,
-            albedo_image=self.tiled_camera_sensor_albedo_image,
             clear_data=SensorTiledCamera.GRAY_CLEAR_DATA,
         )
-        self.update_texture()
+        utils = self.tiled_camera_sensor.utils
+        color_rgba = utils.to_rgba_from_color(self.tiled_camera_sensor_color_image)
+        albedo_rgba = utils.to_rgba_from_color(self.tiled_camera_sensor_albedo_image)
+        utils.to_rgba_from_depth(
+            self.tiled_camera_sensor_depth_image, depth_range=(0.0, 10.0), out_buffer=self.depth_rgba
+        )
+        utils.to_rgba_from_normal(self.tiled_camera_sensor_normal_image, out_buffer=self.normal_rgba)
+        utils.to_rgba_from_shape_index(self.tiled_camera_sensor_shape_index_image, out_buffer=self.shape_rgba)
+        utils.to_rgba_from_shape_index(
+            self.tiled_camera_sensor_shape_index_image, colors=self.semantic_palette, out_buffer=self.semantic_rgba
+        )
 
-    def get_camera_transforms(self) -> wp.array(dtype=wp.transformf):
+        sensor_image_is_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
+        self.viewer.log_image("color", color_rgba)
+        if sensor_image_is_main_view:
+            color_main_rgba = utils.flatten_color_image_to_rgba(
+                self.tiled_camera_sensor_color_image,
+                out_buffer=self.color_main_rgba,
+                worlds_per_row=self.worlds_per_row,
+            )
+            self.viewer.log_image("color", color_main_rgba, fullscreen=True)
+
+        self.viewer.log_image("albedo", albedo_rgba)
+        self.viewer.log_image("depth", self.depth_rgba)
+        self.viewer.log_image("normal", self.normal_rgba)
+        self.viewer.log_image("shape_index", self.shape_rgba)
+        self.viewer.log_image("semantic", self.semantic_rgba)
+        return sensor_image_is_main_view
+
+    def get_camera_transforms(self) -> wp.array[wp.transformf]:
         if isinstance(self.viewer, ViewerGL):
             return wp.array(
                 [
@@ -301,198 +341,115 @@ class Example:
             dtype=wp.transformf,
         )
 
-    def create_texture(self):
-        from pyglet import gl  # noqa: PLC0415
-
-        width = self.sensor_render_width * self.worlds_per_row
-        height = self.sensor_render_height * self.worlds_per_col
-
-        texture_id = gl.GLuint()
-        gl.glGenTextures(1, texture_id)
-        self.texture_id = texture_id.value
-
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
-        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, width, height, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-
-        pixel_buffer = gl.GLuint()
-        gl.glGenBuffers(1, pixel_buffer)
-        self.pixel_buffer = pixel_buffer.value
-        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.pixel_buffer)
-        gl.glBufferData(gl.GL_PIXEL_UNPACK_BUFFER, width * height * 4, None, gl.GL_DYNAMIC_DRAW)
-        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
-
-        self.texture_buffer = wp.RegisteredGLBuffer(self.pixel_buffer)
-
-    def update_texture(self):
-        if not self.texture_id:
-            return
-
-        from pyglet import gl  # noqa: PLC0415
-
-        texture_buffer = self.texture_buffer.map(
-            dtype=wp.uint8,
-            shape=(
-                self.worlds_per_col * self.sensor_render_height,
-                self.worlds_per_row * self.sensor_render_width,
-                4,
-            ),
-        )
-        if self.image_output == 0:
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.tiled_camera_sensor_color_image,
-                texture_buffer,
-                self.worlds_per_row,
-            )
-        elif self.image_output == 1:
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.tiled_camera_sensor_albedo_image,
-                texture_buffer,
-                self.worlds_per_row,
-            )
-        elif self.image_output == 2:
-            self.tiled_camera_sensor.flatten_depth_image_to_rgba(
-                self.tiled_camera_sensor_depth_image,
-                texture_buffer,
-                self.worlds_per_row,
-                self.depth_range,
-            )
-        elif self.image_output == 3:
-            self.tiled_camera_sensor.flatten_normal_image_to_rgba(
-                self.tiled_camera_sensor_normal_image,
-                texture_buffer,
-                self.worlds_per_row,
-            )
-        elif self.image_output == 4:
-            wp.launch(
-                shape_index_to_semantic_rgb,
-                self.tiled_camera_sensor_shape_index_image.shape,
-                [self.tiled_camera_sensor_shape_index_image, self.semantic_colors],
-                [self.tiled_camera_sensor_shape_index_image],
-            )
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.tiled_camera_sensor_shape_index_image,
-                texture_buffer,
-                self.worlds_per_row,
-            )
-        elif self.image_output == 5:
-            wp.launch(
-                shape_index_to_random_rgb,
-                self.tiled_camera_sensor_shape_index_image.shape,
-                [self.tiled_camera_sensor_shape_index_image],
-                [self.tiled_camera_sensor_shape_index_image],
-            )
-            self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.tiled_camera_sensor_shape_index_image,
-                texture_buffer,
-                self.worlds_per_row,
-            )
-        self.texture_buffer.unmap()
-
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
-        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.pixel_buffer)
-        gl.glTexSubImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            0,
-            0,
-            self.sensor_render_width * self.worlds_per_row,
-            self.sensor_render_height * self.worlds_per_col,
-            gl.GL_RGBA,
-            gl.GL_UNSIGNED_BYTE,
-            ctypes.c_void_p(0),
-        )
-        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-
     def test_final(self):
-        self.render_sensors()
+        """Verify tiled camera outputs and main-view fallback behavior."""
+        sensor_image_is_main_view = self.render_sensors()
+        expected_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
+        assert sensor_image_is_main_view is expected_main_view
+
+        if not isinstance(self.viewer, ViewerGL):
+            self.sensor_color_as_main_view = True
+            assert self.render_sensors() is False
+
+        expected_shape = (24, 1, self.sensor_render_height, self.sensor_render_width)
 
         color_image = self.tiled_camera_sensor_color_image.numpy()
-        assert color_image.shape == (24, 1, self.sensor_render_height, self.sensor_render_width)
+        assert color_image.shape == expected_shape
         assert color_image.min() < color_image.max()
 
         depth_image = self.tiled_camera_sensor_depth_image.numpy()
-        assert depth_image.shape == (24, 1, self.sensor_render_height, self.sensor_render_width)
+        assert depth_image.shape == expected_shape
         assert depth_image.min() < depth_image.max()
+
+        # Loose allocation-regression checks on the other outputs: just
+        # verify the sensor wrote into arrays with the right shapes/dtypes.
+        albedo_image = self.tiled_camera_sensor_albedo_image.numpy()
+        assert albedo_image.shape == expected_shape
+        assert albedo_image.dtype == np.uint32
+
+        normal_image = self.tiled_camera_sensor_normal_image.numpy()
+        assert normal_image.shape == (24, 1, self.sensor_render_height, self.sensor_render_width, 3)
+        assert normal_image.dtype == np.float32
+
+        shape_index_image = self.tiled_camera_sensor_shape_index_image.numpy()
+        assert shape_index_image.shape == expected_shape
+        assert shape_index_image.dtype == np.uint32
+
+        albedo_rgba = albedo_image.view(np.uint8).reshape(
+            self.world_count_total * self.camera_count, self.sensor_render_height, self.sensor_render_width, 4
+        )
+        ground_shape_mask = np.isin(shape_index_image.reshape(albedo_rgba.shape[:3]), self.ground_shape_indices)
+        ground_albedo = albedo_rgba[..., :3][ground_shape_mask]
+        assert ground_albedo.size > 0
+        assert np.unique(ground_albedo, axis=0).shape[0] > 1
+
+        robot_shape_mask = np.isin(shape_index_image.reshape(albedo_rgba.shape[:3]), self.robot_shape_indices)
+        robot_albedo = albedo_rgba[..., :3][robot_shape_mask]
+        assert robot_albedo.size > 0
+        checker_swatches = np.array([[128, 128, 128], [191, 191, 191]], dtype=np.uint8)
+        checker_swatch_mask = (robot_albedo[:, None, :] == checker_swatches[None, :, :]).all(axis=2).any(axis=1)
+        assert not checker_swatch_mask.any()
 
     def gui(self, ui):
         show_compile_kernel_info = False
 
-        _, self.show_sensor_output = ui.checkbox("Show Sensor Output", self.show_sensor_output)
-        self.viewer.show_gaussians = not self.show_sensor_output
+        if isinstance(self.viewer, ViewerGL):
+            _changed, self.sensor_color_as_main_view = ui.checkbox(
+                "Sensor Color as Main View", self.sensor_color_as_main_view
+            )
 
-        ui.separator()
-
-        if ui.radio_button("Show Color Output", self.image_output == 0):
-            self.image_output = 0
-        if ui.radio_button("Show Albedo Output", self.image_output == 1):
-            self.image_output = 1
-        if ui.radio_button("Show Depth Output", self.image_output == 2):
-            self.image_output = 2
-        if ui.radio_button("Show Normal Output", self.image_output == 3):
-            self.image_output = 3
-        if ui.radio_button("Show Semantic Output", self.image_output == 4):
-            self.image_output = 4
-        if ui.radio_button("Show Shape Index Output", self.image_output == 5):
-            self.image_output = 5
-
-        ui.separator()
         if ui.radio_button(
             "Gaussians: Fast",
-            self.tiled_camera_sensor.render_context.config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
+            self.tiled_camera_sensor.default_render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
         ):
             if (
-                self.tiled_camera_sensor.render_context.config.gaussians_mode
+                self.tiled_camera_sensor.default_render_config.gaussians_mode
                 != SensorTiledCamera.GaussianRenderMode.FAST
             ):
-                self.tiled_camera_sensor.render_context.config.gaussians_mode = (
+                self.tiled_camera_sensor.default_render_config.gaussians_mode = (
                     SensorTiledCamera.GaussianRenderMode.FAST
                 )
                 show_compile_kernel_info = True
 
         if ui.radio_button(
             "Gaussians: Quality",
-            self.tiled_camera_sensor.render_context.config.gaussians_mode
+            self.tiled_camera_sensor.default_render_config.gaussians_mode
             == SensorTiledCamera.GaussianRenderMode.QUALITY,
         ):
             if (
-                self.tiled_camera_sensor.render_context.config.gaussians_mode
+                self.tiled_camera_sensor.default_render_config.gaussians_mode
                 != SensorTiledCamera.GaussianRenderMode.QUALITY
             ):
-                self.tiled_camera_sensor.render_context.config.gaussians_mode = (
+                self.tiled_camera_sensor.default_render_config.gaussians_mode = (
                     SensorTiledCamera.GaussianRenderMode.QUALITY
                 )
                 show_compile_kernel_info = True
 
         changed, value = ui.slider_float(
             "Min Transmittance",
-            self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance,
+            self.tiled_camera_sensor.default_render_config.gaussians_min_transmittance,
             0.0,
             1.0,
             "%.2f",
         )
         if changed:
-            self.tiled_camera_sensor.render_context.config.gaussians_min_transmittance = value
+            self.tiled_camera_sensor.default_render_config.gaussians_min_transmittance = value
             show_compile_kernel_info = True
 
         changed, value = ui.slider_int(
             "Max Num Hits",
-            self.tiled_camera_sensor.render_context.config.gaussians_max_num_hits,
+            self.tiled_camera_sensor.default_render_config.gaussians_max_num_hits,
             1,
             40,
             "%d",
         )
         if changed:
-            self.tiled_camera_sensor.render_context.config.gaussians_max_num_hits = value
+            self.tiled_camera_sensor.default_render_config.gaussians_max_num_hits = value
             show_compile_kernel_info = True
 
         if show_compile_kernel_info:
-            display_width = self.viewer.ui.io.display_size[0]
-            display_height = self.viewer.ui.io.display_size[1]
+            display_width = self.viewer.renderer.window.width
+            display_height = self.viewer.renderer.window.height
 
             overlay_width = 200
             overlay_height = 100
@@ -515,51 +472,6 @@ class Example:
                 ui.set_cursor_pos(ui.ImVec2((overlay_width - text_width) * 0.5, (overlay_height - text_height) * 0.5))
                 ui.text("Rebuilding Kernels")
             ui.end()
-
-    def display(self, imgui):
-        if not self.show_sensor_output:
-            return
-
-        line_color = imgui.get_color_u32(imgui.Col_.window_bg)
-
-        width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
-        height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
-
-        imgui.set_next_window_pos(imgui.ImVec2(0, 0))
-        imgui.set_next_window_size(self.viewer.ui.io.display_size)
-
-        flags = (
-            imgui.WindowFlags_.no_title_bar.value
-            | imgui.WindowFlags_.no_mouse_inputs.value
-            | imgui.WindowFlags_.no_bring_to_front_on_focus.value
-            | imgui.WindowFlags_.no_scrollbar.value
-        )
-
-        if imgui.begin("Sensors", flags=flags):
-            pos_x = self.ui_side_panel_width + self.ui_padding * 2
-            pos_y = self.ui_padding
-
-            if self.texture_id > 0:
-                imgui.set_cursor_pos(imgui.ImVec2(pos_x, pos_y))
-                imgui.image(imgui.ImTextureRef(self.texture_id), imgui.ImVec2(width, height))
-
-            draw_list = imgui.get_window_draw_list()
-            for x in range(1, self.worlds_per_row):
-                draw_list.add_line(
-                    imgui.ImVec2(pos_x + x * (width / self.worlds_per_row), pos_y),
-                    imgui.ImVec2(pos_x + x * (width / self.worlds_per_row), pos_y + height),
-                    line_color,
-                    2.0,
-                )
-            for y in range(1, self.worlds_per_col):
-                draw_list.add_line(
-                    imgui.ImVec2(pos_x, pos_y + y * (height / self.worlds_per_col)),
-                    imgui.ImVec2(pos_x + width, pos_y + y * (height / self.worlds_per_col)),
-                    line_color,
-                    2.0,
-                )
-
-        imgui.end()
 
     @staticmethod
     def create_parser():
@@ -585,6 +497,4 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
 
     # Create viewer and run
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

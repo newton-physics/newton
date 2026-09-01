@@ -1,25 +1,34 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 KAMINO: Utilities: Message Logging
 """
 
 import logging
+import sys
 from enum import IntEnum
 from typing import ClassVar
+
+# Fix rich console output on Windows
+if sys.platform == "win32":
+    import ctypes
+
+    # Enable VT sequences only when stdout is a real console.
+    kernel32 = ctypes.windll.kernel32
+    try:
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        invalid_handle = ctypes.c_void_p(-1).value
+        if handle != 0 and ctypes.c_void_p(handle).value != invalid_handle:
+            mode = ctypes.c_uint()
+            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                new_mode = mode.value | 0x0004  # Set ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                if new_mode != mode.value:
+                    kernel32.SetConsoleMode(handle, new_mode)
+    except Exception:
+        # For some contexts, getting/setting the console mode fails (e.g.,
+        # redirected stdout, services, CI).
+        pass
 
 
 class LogLevel(IntEnum):

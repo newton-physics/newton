@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Diffsim Soft Body
@@ -38,7 +26,7 @@ from newton.utils import bourke_color_map
 
 
 @wp.kernel
-def assign_param(params: wp.array(dtype=wp.float32), tet_materials: wp.array2d(dtype=wp.float32)):
+def assign_param(params: wp.array[wp.float32], tet_materials: wp.array2d[wp.float32]):
     tid = wp.tid()
     params_idx = 2 * wp.tid() % params.shape[0]
     tet_materials[tid, 0] = params[params_idx]
@@ -46,7 +34,7 @@ def assign_param(params: wp.array(dtype=wp.float32), tet_materials: wp.array2d(d
 
 
 @wp.kernel
-def com_kernel(particle_q: wp.array(dtype=wp.vec3), com: wp.array(dtype=wp.vec3)):
+def com_kernel(particle_q: wp.array[wp.vec3], com: wp.array[wp.vec3]):
     tid = wp.tid()
     point = particle_q[tid]
     a = point / wp.float32(particle_q.shape[0])
@@ -58,9 +46,9 @@ def com_kernel(particle_q: wp.array(dtype=wp.vec3), com: wp.array(dtype=wp.vec3)
 @wp.kernel
 def loss_kernel(
     target: wp.vec3,
-    com: wp.array(dtype=wp.vec3),
-    pos_error: wp.array(dtype=float),
-    loss: wp.array(dtype=float),
+    com: wp.array[wp.vec3],
+    pos_error: wp.array[float],
+    loss: wp.array[float],
 ):
     diff = com[0] - target
     pos_error[0] = wp.length(diff)
@@ -68,7 +56,7 @@ def loss_kernel(
 
 
 @wp.kernel
-def enforce_constraint_kernel(lower_bound: wp.float32, upper_bound: wp.float32, x: wp.array(dtype=wp.float32)):
+def enforce_constraint_kernel(lower_bound: wp.float32, upper_bound: wp.float32, x: wp.array[wp.float32]):
     tid = wp.tid()
     if x[tid] < lower_bound:
         x[tid] = lower_bound
@@ -228,12 +216,9 @@ class Example:
         return model
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.forward_backward()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.forward_backward()
+        self.graph = capture.graph
 
     def forward_backward(self):
         self.tape = wp.Tape()
@@ -360,7 +345,7 @@ class Example:
                 newton.GeoType.BOX,
                 (0.1, 0.1, 0.1),
                 wp.array([wp.transform(self.target, wp.quat_identity())], dtype=wp.transform),
-                wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3),
+                wp.array([wp.vec3(0.5, 0.0, 0.5)], dtype=wp.vec3),
             )
             self.viewer.log_lines(
                 f"/traj_{self.train_iter - 1}",
@@ -391,5 +376,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

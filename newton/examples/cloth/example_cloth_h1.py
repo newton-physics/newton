@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example cloth H1 (cloth-robot interaction)
@@ -189,11 +177,11 @@ class Example:
             model=self.model,
             iterations=self.iterations,
         )
-        self.cloth_solver._precompute(h1)
         self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.shape_flags = self.model.shape_flags.numpy()
 
     # ----------------------------------------------------------------------
@@ -201,18 +189,20 @@ class Example:
     # ----------------------------------------------------------------------
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as cap:
-                self.simulate()
-            self.graph = cap.graph
+        # SolverStyle3D makes host calls (PCG dot products, BVH refit) that CPU graph capture cannot record
+        if wp.get_device().is_cpu:
+            return
+        with wp.ScopedCapture() as cap:
+            self.simulate()
+        self.graph = cap.graph
 
     @wp.kernel
     def transform_interpolate(
         ratio: float,
-        transform0: wp.array(dtype=wp.transform),
-        transform1: wp.array(dtype=wp.transform),
+        transform0: wp.array[wp.transform],
+        transform1: wp.array[wp.transform],
         # outputs
-        new_transform: wp.array(dtype=wp.transform),
+        new_transform: wp.array[wp.transform],
     ):
         tid = wp.tid()
         tf0 = transform0[tid]
@@ -240,7 +230,7 @@ class Example:
                 device=self.model.device,
             )
             self.state.body_q.assign(self.state1.body_q)
-            self.model.collide(self.state, self.contacts)
+            self.collision_pipeline.collide(self.state, self.contacts)
             self.cloth_solver.step(self.state, self.state1, self.control, self.contacts, self.sim_dt)
             (self.state, self.state1) = (self.state1, self.state)
 
@@ -336,5 +326,4 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.set_defaults(num_frames=601)
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

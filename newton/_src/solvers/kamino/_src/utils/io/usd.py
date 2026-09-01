@@ -1,20 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Provides mechanisms to import OpenUSD Physics models."""
 
+import math
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
@@ -23,7 +12,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from ......core.types import nparray
+from ......core.types import Axis, AxisType, Transform
 from ......geometry.flags import ShapeFlags
 from ......usd import utils as usd_utils
 from ......utils.topology import topological_sort_undirected
@@ -40,13 +29,12 @@ from ...core.joints import (
     JointDoFType,
 )
 from ...core.materials import (
-    DEFAULT_DENSITY,
     DEFAULT_FRICTION,
     DEFAULT_RESTITUTION,
     MaterialDescriptor,
     MaterialPairProperties,
 )
-from ...core.math import I_3, screw
+from ...core.math import I_3, axis_to_mat33
 from ...core.shapes import (
     BoxShape,
     CapsuleShape,
@@ -57,7 +45,6 @@ from ...core.shapes import (
     PlaneShape,
     SphereShape,
 )
-from ...core.types import Axis, AxisType, Transform, quatf, transformf, vec3f
 from ...utils import logger as msg
 
 ###
@@ -67,15 +54,15 @@ from ...utils import logger as msg
 __axis_rotations = {}
 
 
-def quat_between_axes(*axes: AxisType) -> quatf:
+def quat_between_axes(*axes: AxisType) -> wp.quatf:
     """
     Returns a quaternion that represents the rotations between the given sequence of axes.
 
     Args:
-        axes (AxisType): The axes between to rotate.
+        axes: The axes between to rotate.
 
     Returns:
-        wp.quat: The rotation quaternion.
+        The rotation quaternion.
     """
     q = wp.quat_identity()
     for i in range(len(axes) - 1):
@@ -302,23 +289,29 @@ class USDImporter:
         return wp.quat_from_matrix(R_g)
 
     @staticmethod
-    def _make_faces_from_counts(indices: nparray, counts: Iterable[int], prim_path: str) -> nparray:
-        faces = []
-        face_id = 0
-        for count in counts:
-            if count == 3:
-                faces.append(indices[face_id : face_id + 3])
-            elif count == 4:
-                faces.append(indices[face_id : face_id + 3])
-                faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-            else:
-                msg.error(
-                    f"Error while parsing USD mesh {prim_path}: "
-                    f"encountered polygon with {count} vertices, but only triangles and quads are supported."
-                )
-                continue
-            face_id += count
-        return np.array(faces, dtype=np.int32).flatten()
+    def _read_mesh(geom_prim) -> dict[str, np.ndarray | None]:
+        """Read mesh data from a USD prim via Newton's shared USD reader.
+
+        Delegating keeps this importer's handling of ``primvars:normals``, indexed
+        primvars, face-varying interpolation and n-gon triangulation consistent with
+        :func:`newton.usd.get_mesh`.
+
+        Stage units are deliberately not applied: unlike the primitive shapes above,
+        mesh vertices are consumed in stage-authored units here.
+
+        Args:
+            geom_prim: The ``UsdGeom.Mesh`` prim to read.
+
+        Returns:
+            Keyword arguments for :class:`MeshShape`.
+        """
+        mesh = usd_utils.get_mesh(
+            prim=geom_prim,
+            load_normals=True,
+            compute_inertia=False,
+            apply_stage_units=False,
+        )
+        return {"vertices": mesh.vertices, "indices": mesh.indices, "normals": mesh.normals}
 
     def _get_attribute(self, prim, name) -> Any:
         return prim.GetAttribute(name)
@@ -396,7 +389,7 @@ class USDImporter:
     def _from_gfquat(gfquat) -> wp.quatf:
         return wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real))
 
-    def _parse_quat(self, prim, name, default=None) -> nparray | None:
+    def _parse_quat(self, prim, name, default=None) -> np.ndarray | None:
         attr = self._get_attribute(prim, name)
         if not attr or not attr.HasAuthoredValue():
             return default
@@ -410,7 +403,7 @@ class USDImporter:
             return quat
         return default
 
-    def _parse_vec(self, prim, name, default=None) -> nparray | None:
+    def _parse_vec(self, prim, name, default=None) -> np.ndarray | None:
         attr = self._get_attribute(prim, name)
         if not attr or not attr.HasAuthoredValue():
             return default
@@ -458,6 +451,32 @@ class USDImporter:
         pair_properties.dynamic_friction = 0.5 * (first.dynamic_friction + second.dynamic_friction)
         return pair_properties
 
+    def _is_effectively_visible(self, prim) -> bool:
+        """Return whether ``prim`` is effectively visible in USD.
+
+        A prim is effectively visible only when it is a :class:`UsdGeom.Imageable`
+        whose inherited visibility is not ``invisible``. Non-imageable prims are
+        not renderable in USD, so they are treated as not effectively visible.
+        """
+        imageable = self.UsdGeom.Imageable(prim)
+        if not imageable:
+            return False
+        return imageable.ComputeVisibility() != self.UsdGeom.Tokens.invisible
+
+    def _is_viewport_drawn(self, prim) -> bool:
+        """Return whether a prim is drawn under viewport semantics.
+
+        USD viewports draw the ``default`` and ``proxy`` purposes and hide ``guide`` and
+        ``render``. ``force_show_colliders`` is the explicit override for inspecting
+        collision geometry that is not otherwise viewport-drawn.
+        """
+        if not self._is_effectively_visible(prim):
+            return False
+        return self.UsdGeom.Imageable(prim).ComputePurpose() in (
+            self.UsdGeom.Tokens.default_,
+            self.UsdGeom.Tokens.proxy,
+        )
+
     def _parse_material(
         self,
         material_prim,
@@ -502,12 +521,9 @@ class USDImporter:
         ###
 
         # Retrieve the USD material properties
-        density_scale = mass_unit / distance_unit**3
-        density = (density_scale) * self._parse_float(material_prim, "physics:density", default=DEFAULT_DENSITY)
         restitution = self._parse_float(material_prim, "physics:restitution", default=DEFAULT_RESTITUTION)
         static_friction = self._parse_float(material_prim, "physics:staticFriction", default=DEFAULT_FRICTION)
         dynamic_friction = self._parse_float(material_prim, "physics:dynamicFriction", default=DEFAULT_FRICTION)
-        msg.debug(f"density: {density}")
         msg.debug(f"restitution: {restitution}")
         msg.debug(f"static_friction: {static_friction}")
         msg.debug(f"dynamic_friction: {dynamic_friction}")
@@ -519,7 +535,6 @@ class USDImporter:
         return MaterialDescriptor(
             name=name,
             uid=uid,
-            density=density,
             restitution=restitution,
             static_friction=static_friction,
             dynamic_friction=dynamic_friction,
@@ -591,8 +606,8 @@ class USDImporter:
         # Retrieve the linear and angular velocities
         # NOTE: They are transformed to world coordinates since the
         # RigidBodyAPI specifies them in local body coordinates
-        v_i = wp.transform_vector(body_xform, distance_unit * vec3f(rigid_body_spec.linearVelocity))
-        omega_i = wp.transform_vector(body_xform, rotation_unit * vec3f(rigid_body_spec.angularVelocity))
+        v_i = wp.transform_vector(body_xform, distance_unit * wp.vec3f(rigid_body_spec.linearVelocity))
+        omega_i = wp.transform_vector(body_xform, rotation_unit * wp.vec3f(rigid_body_spec.angularVelocity))
         msg.debug(f"body_xform: {body_xform}")
         msg.debug(f"omega_i: {omega_i}")
         msg.debug(f"v_i: {v_i}")
@@ -656,12 +671,12 @@ class USDImporter:
         msg.debug(f"i_I_i:\n{i_I_i}")
 
         # Compute the center of mass in world coordinates
-        r_com_i = wp.transform_point(body_xform, vec3f(i_r_com_i))
+        r_com_i = wp.transform_point(body_xform, wp.vec3f(i_r_com_i))
         msg.debug(f"r_com_i: {r_com_i}")
 
         # Construct the initial pose and twist of the body in world coordinates
-        q_i_0 = transformf(r_com_i, body_xform.q)
-        u_i_0 = screw(v_i, omega_i)
+        q_i_0 = wp.transformf(r_com_i, body_xform.q)
+        u_i_0 = wp.spatial_vectorf(*v_i, *omega_i)
         msg.debug(f"q_i_0: {q_i_0}")
         msg.debug(f"u_i_0: {u_i_0}")
 
@@ -709,7 +724,13 @@ class USDImporter:
         num_dofs = int(dof_type.num_dofs)
         q_j_min = [JOINT_QMIN] * num_dofs
         q_j_max = [JOINT_QMAX] * num_dofs
-        tau_j_max = [JOINT_TAUMAX] * num_dofs
+        # Mirroring Newton USD importer behavior: Default effort limit on
+        # revolute/prismatic/spherical joints is set to JOINT_TAUMAX. On all
+        # D6-derived joints, the effort limit is set to `math.inf`.
+        if dof_type in (JointDoFType.REVOLUTE, JointDoFType.PRISMATIC, JointDoFType.SPHERICAL):
+            tau_j_max = [JOINT_TAUMAX] * num_dofs
+        else:
+            tau_j_max = [math.inf] * num_dofs
         return q_j_min, q_j_max, tau_j_max
 
     def _make_joint_default_dynamics(
@@ -741,7 +762,7 @@ class USDImporter:
     ):
         dof_type = JointDoFType.REVOLUTE
         act_type = JointActuationType.PASSIVE
-        X_j = self.usd_axis_to_axis[joint_spec.axis].to_mat33()
+        X_j = axis_to_mat33(self.usd_axis_to_axis[joint_spec.axis])
         q_j_min, q_j_max, tau_j_max = self._make_joint_default_limits(dof_type)
         a_j, b_j, k_p_j, k_d_j = self._make_joint_default_dynamics(dof_type)
         if joint_spec.limit.enabled:
@@ -749,7 +770,8 @@ class USDImporter:
             q_j_max[0] = min(rotation_unit * joint_spec.limit.upper, JOINT_QMAX)
         if joint_spec.drive.enabled:
             if not joint_spec.drive.acceleration:
-                tau_j_max[0] = min(joint_spec.drive.forceLimit, JOINT_TAUMAX)
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                tau_j_max[0] = joint_spec.drive.forceLimit
                 has_pd_gains = joint_spec.drive.stiffness > 0.0 or joint_spec.drive.damping > 0.0
                 if load_drive_dynamics and has_pd_gains:
                     a_j = [0.0] * dof_type.num_dofs
@@ -771,7 +793,7 @@ class USDImporter:
     def _parse_joint_prismatic(self, joint_spec, distance_unit: float = 1.0, load_drive_dynamics: bool = False):
         dof_type = JointDoFType.PRISMATIC
         act_type = JointActuationType.PASSIVE
-        X_j = self.usd_axis_to_axis[joint_spec.axis].to_mat33()
+        X_j = axis_to_mat33(self.usd_axis_to_axis[joint_spec.axis])
         q_j_min, q_j_max, tau_j_max = self._make_joint_default_limits(dof_type)
         a_j, b_j, k_p_j, k_d_j = self._make_joint_default_dynamics(dof_type)
         if joint_spec.limit.enabled:
@@ -779,7 +801,8 @@ class USDImporter:
             q_j_max[0] = min(distance_unit * joint_spec.limit.upper, JOINT_QMAX)
         if joint_spec.drive.enabled:
             if not joint_spec.drive.acceleration:
-                tau_j_max[0] = min(joint_spec.drive.forceLimit, JOINT_TAUMAX)
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                tau_j_max[0] = joint_spec.drive.forceLimit
                 has_pd_gains = joint_spec.drive.stiffness > 0.0 or joint_spec.drive.damping > 0.0
                 if load_drive_dynamics and has_pd_gains:
                     a_j = [0.0] * dof_type.num_dofs
@@ -799,7 +822,7 @@ class USDImporter:
 
     def _parse_joint_revolute_from_d6(self, name, joint_prim, joint_spec, joint_dof, rotation_unit: float = 1.0):
         dof_type = JointDoFType.REVOLUTE
-        X_j = self.usd_dofs_to_axis[joint_dof].to_mat33()
+        X_j = axis_to_mat33(self.usd_dofs_to_axis[joint_dof])
         q_j_min, q_j_max, tau_j_max = self._make_joint_default_limits(dof_type)
         for limit in joint_spec.jointLimits:
             dof = limit.first
@@ -816,14 +839,15 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 if drive.first == joint_dof:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                    tau_j_max[0] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, X_j, q_j_min, q_j_max, tau_j_max
 
     def _parse_joint_prismatic_from_d6(self, name, joint_prim, joint_spec, joint_dof, distance_unit: float = 1.0):
         dof_type = JointDoFType.PRISMATIC
-        X_j = self.usd_dofs_to_axis[joint_dof].to_mat33()
+        X_j = axis_to_mat33(self.usd_dofs_to_axis[joint_dof])
         q_j_min, q_j_max, tau_j_max = self._make_joint_default_limits(dof_type)
         for limit in joint_spec.jointLimits:
             dof = limit.first
@@ -840,7 +864,8 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 if drive.first == joint_dof:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                    tau_j_max[0] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, X_j, q_j_min, q_j_max, tau_j_max
@@ -868,10 +893,11 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.TransX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -897,10 +923,11 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -935,12 +962,13 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.TransX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[2] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -969,12 +997,13 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[2] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -1001,14 +1030,14 @@ class USDImporter:
                 q_j_min[2] = max(distance_unit * limit.second.lower, JOINT_QMIN)
                 q_j_max[2] = min(distance_unit * limit.second.upper, JOINT_QMAX)
             elif dof == self.UsdPhysics.JointDOF.RotX:
-                q_j_min[0] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
-                q_j_max[0] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
+                q_j_min[3] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
+                q_j_max[3] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
             elif dof == self.UsdPhysics.JointDOF.RotY:
-                q_j_min[1] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
-                q_j_max[1] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
+                q_j_min[4] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
+                q_j_max[4] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
             elif dof == self.UsdPhysics.JointDOF.RotZ:
-                q_j_min[2] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
-                q_j_max[2] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
+                q_j_min[5] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
+                q_j_max[5] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
 
         num_drives = len(joint_spec.jointDrives)
         if num_drives > 0:
@@ -1020,18 +1049,19 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.TransX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[2] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[3] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[4] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[5] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -1081,8 +1111,8 @@ class USDImporter:
             )
 
         # Extract the relative poses of the joint
-        B_r_Bj = distance_unit * vec3f(joint_spec.localPose0Position)
-        F_r_Fj = distance_unit * vec3f(joint_spec.localPose1Position)
+        B_r_Bj = distance_unit * wp.vec3f(joint_spec.localPose0Position)
+        F_r_Fj = distance_unit * wp.vec3f(joint_spec.localPose1Position)
         B_q_Bj = self._from_gfquat(joint_spec.localPose0Orientation)
         F_q_Fj = self._from_gfquat(joint_spec.localPose1Orientation)
         msg.debug(f"B_r_Bj (before COM correction): {B_r_Bj}")
@@ -1096,7 +1126,7 @@ class USDImporter:
             i_r_com_B = distance_unit * self._parse_vec(
                 body_B_prim, "physics:centerOfMass", default=np.zeros(3, dtype=np.float32)
             )
-            B_r_Bj = B_r_Bj - vec3f(i_r_com_B)
+            B_r_Bj = B_r_Bj - wp.vec3f(i_r_com_B)
             msg.debug(f"i_r_com_B: {i_r_com_B}")
             msg.debug(f"B_r_Bj (after COM correction): {B_r_Bj}")
 
@@ -1105,7 +1135,7 @@ class USDImporter:
             i_r_com_F = distance_unit * self._parse_vec(
                 body_F_prim, "physics:centerOfMass", default=np.zeros(3, dtype=np.float32)
             )
-            F_r_Fj = F_r_Fj - vec3f(i_r_com_F)
+            F_r_Fj = F_r_Fj - wp.vec3f(i_r_com_F)
             msg.debug(f"i_r_com_F: {i_r_com_F}")
             msg.debug(f"F_r_Fj (after COM correction): {F_r_Fj}")
 
@@ -1167,7 +1197,7 @@ class USDImporter:
         elif joint_type == self.UsdPhysics.ObjectType.SphericalJoint:
             dof_type = JointDoFType.SPHERICAL
             act_type = JointActuationType.PASSIVE
-            X_j = self.usd_axis_to_axis[joint_spec.axis].to_mat33()
+            X_j = axis_to_mat33(self.usd_axis_to_axis[joint_spec.axis])
 
         elif joint_type == self.UsdPhysics.ObjectType.DistanceJoint:
             raise NotImplementedError("Distance joints are not yet supported.")
@@ -1281,13 +1311,13 @@ class USDImporter:
         return JointDescriptor(
             name=name,
             uid=uid,
-            act_type=act_type,
+            dof_act_types=[act_type] * dof_type.num_dofs,
             dof_type=dof_type,
             bid_B=bid_B,
             bid_F=bid_F,
             B_r_Bj=B_r_Bj,
             F_r_Fj=F_r_Fj,
-            X_j=wp.quat_to_matrix(B_q_Bj) @ X_j,
+            X_Bj=wp.quat_to_matrix(B_q_Bj) @ X_j,
             q_j_min=q_j_min,
             q_j_max=q_j_max,
             tau_j_max=tau_j_max,
@@ -1362,12 +1392,12 @@ class USDImporter:
             i_r_com = distance_unit * self._parse_vec(
                 body_prim, "physics:centerOfMass", default=np.zeros(3, dtype=np.float32)
             )
-            i_r_ig = i_r_ig - vec3f(i_r_com)
+            i_r_ig = i_r_ig - wp.vec3f(i_r_com)
             msg.debug(f"[{name}]: i_r_com: {i_r_com}")
             msg.debug(f"[{name}]: i_r_ig (after COM correction): {i_r_ig}")
 
         # Construct the transform descriptor
-        i_T_ig = transformf(i_r_ig, i_q_ig)
+        i_T_ig = wp.transformf(i_r_ig, i_q_ig)
         msg.debug(f"[{name}]: i_T_ig: {i_T_ig}")
 
         ###
@@ -1386,8 +1416,8 @@ class USDImporter:
             radius = distance_unit * capsule.GetRadiusAttr().Get()
             axis = Axis.from_string(capsule.GetAxisAttr().Get())
             i_q_ig = self._align_geom_to_axis(axis, i_q_ig)
-            i_T_ig = transformf(i_r_ig, i_q_ig)
-            shape = CapsuleShape(radius=radius, height=height)
+            i_T_ig = wp.transformf(i_r_ig, i_q_ig)
+            shape = CapsuleShape(radius=radius, half_height=0.5 * height)
 
         elif geom_type == self.UsdGeom.Capsule_1:
             raise NotImplementedError("Capsule1 UsdGeom is not yet supported.")
@@ -1398,12 +1428,12 @@ class USDImporter:
             radius = distance_unit * cone.GetRadiusAttr().Get()
             axis = Axis.from_string(cone.GetAxisAttr().Get())
             i_q_ig = self._align_geom_to_axis(axis, i_q_ig)
-            i_T_ig = transformf(i_r_ig, i_q_ig)
-            shape = ConeShape(radius=radius, height=height)
+            i_T_ig = wp.transformf(i_r_ig, i_q_ig)
+            shape = ConeShape(radius=radius, half_height=0.5 * height)
 
         elif geom_type == self.UsdGeom.Cube:
             d, w, h = 2.0 * distance_unit * scale
-            shape = BoxShape(depth=d, width=w, height=h)
+            shape = BoxShape(hx=0.5 * d, hy=0.5 * w, hz=0.5 * h)
 
         elif geom_type == self.UsdGeom.Cylinder:
             cylinder = self.UsdGeom.Cylinder(geom_prim)
@@ -1411,8 +1441,8 @@ class USDImporter:
             radius = distance_unit * cylinder.GetRadiusAttr().Get()
             axis = Axis.from_string(cylinder.GetAxisAttr().Get())
             i_q_ig = self._align_geom_to_axis(axis, i_q_ig)
-            i_T_ig = transformf(i_r_ig, i_q_ig)
-            shape = CylinderShape(radius=radius, height=height)
+            i_T_ig = wp.transformf(i_r_ig, i_q_ig)
+            shape = CylinderShape(radius=radius, half_height=0.5 * height)
 
         elif geom_type == self.UsdGeom.Cylinder_1:
             raise NotImplementedError("Cylinder1 UsdGeom is not yet supported.")
@@ -1429,32 +1459,12 @@ class USDImporter:
             if np.all(scale[0:] == scale[0]):
                 shape = SphereShape(radius=radius)
             else:
-                a, b, c = distance_unit * scale * radius
-                shape = EllipsoidShape(a=a, b=b, c=c)
+                rx, ry, rz = distance_unit * scale * radius
+                shape = EllipsoidShape(rx=rx, ry=ry, rz=rz)
 
         elif geom_type == self.UsdGeom.Mesh:
-            # Retrieve the mesh data from the USD mesh prim
-            usd_mesh = self.UsdGeom.Mesh(geom_prim)
-            usd_mesh_path = usd_mesh.GetPath()
-
-            # Extract mandatory mesh attributes
-            points = np.array(usd_mesh.GetPointsAttr().Get(), dtype=np.float32)
-            indices = np.array(usd_mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
-            counts = usd_mesh.GetFaceVertexCountsAttr().Get()
-
-            # Extract optional normals attribute if defined
-            normals = (
-                np.array(usd_mesh.GetNormalsAttr().Get(), dtype=np.float32)
-                if usd_mesh.GetNormalsAttr().IsDefined()
-                else None
-            )
-
-            # Extract triangle face indices from the mesh data
-            # NOTE: This handles both triangle and quad meshes
-            faces = self._make_faces_from_counts(indices, counts, usd_mesh_path)
-
             # Create the mesh shape (i.e. wrapper around newton.geometry.Mesh)
-            shape = MeshShape(vertices=points, indices=faces, normals=normals)
+            shape = MeshShape(**self._read_mesh(geom_prim))
         else:
             raise ValueError(
                 f"Unsupported UsdGeom type: {geom_type}. Supported types: {self.supported_usd_geom_types}."
@@ -1490,6 +1500,8 @@ class USDImporter:
         distance_unit: float = 1.0,
         meshes_are_collidable: bool = False,
         force_show_colliders: bool = False,
+        hide_collision_shapes: bool = False,
+        bodies_with_visual_shapes: set[int] | None = None,
         prim_path_names: bool = False,
     ) -> GeometryDescriptor | None:
         """
@@ -1533,7 +1545,7 @@ class USDImporter:
         ###
 
         # Extract the relative poses of the geom w.r.t the rigid body frame
-        i_r_ig = distance_unit * vec3f(geom_spec.localPos)
+        i_r_ig = distance_unit * wp.vec3f(geom_spec.localPos)
         i_q_ig = self._from_gfquat(geom_spec.localRot)
         msg.debug(f"[{name}]: i_r_ig (before COM correction): {i_r_ig}")
         msg.debug(f"[{name}]: i_q_ig: {i_q_ig}")
@@ -1544,12 +1556,12 @@ class USDImporter:
             i_r_com = distance_unit * self._parse_vec(
                 body_prim, "physics:centerOfMass", default=np.zeros(3, dtype=np.float32)
             )
-            i_r_ig = i_r_ig - vec3f(i_r_com)
+            i_r_ig = i_r_ig - wp.vec3f(i_r_com)
             msg.debug(f"[{name}]: i_r_com: {i_r_com}")
             msg.debug(f"[{name}]: i_r_ig (after COM correction): {i_r_ig}")
 
         # Construct the transform descriptor
-        i_T_ig = transformf(i_r_ig, i_q_ig)
+        i_T_ig = wp.transformf(i_r_ig, i_q_ig)
 
         ###
         # PhysicsGeom Shape Properties
@@ -1565,22 +1577,31 @@ class USDImporter:
         is_mesh_shape = False
         if geom_type == self.UsdPhysics.ObjectType.CapsuleShape:
             # TODO: axis = geom_spec.axis, how can we use this?
-            shape = CapsuleShape(radius=geom_spec.radius, height=2.0 * geom_spec.halfHeight)
+            shape = CapsuleShape(
+                radius=distance_unit * geom_spec.radius,
+                half_height=distance_unit * geom_spec.halfHeight,
+            )
 
         elif geom_type == self.UsdPhysics.ObjectType.Capsule1Shape:
             raise NotImplementedError("Capsule1Shape is not yet supported.")
 
         elif geom_type == self.UsdPhysics.ObjectType.ConeShape:
             # TODO: axis = geom_spec.axis, how can we use this?
-            shape = ConeShape(radius=geom_spec.radius, height=2.0 * geom_spec.halfHeight)
+            shape = ConeShape(
+                radius=distance_unit * geom_spec.radius,
+                half_height=distance_unit * geom_spec.halfHeight,
+            )
 
         elif geom_type == self.UsdPhysics.ObjectType.CubeShape:
-            d, w, h = 2.0 * distance_unit * vec3f(geom_spec.halfExtents)
-            shape = BoxShape(depth=d, width=w, height=h)
+            he = distance_unit * wp.vec3f(geom_spec.halfExtents)
+            shape = BoxShape(hx=he[0], hy=he[1], hz=he[2])
 
         elif geom_type == self.UsdPhysics.ObjectType.CylinderShape:
             # TODO: axis = geom_spec.axis, how can we use this?
-            shape = CylinderShape(radius=geom_spec.radius, height=2.0 * geom_spec.halfHeight)
+            shape = CylinderShape(
+                radius=distance_unit * geom_spec.radius,
+                half_height=distance_unit * geom_spec.halfHeight,
+            )
 
         elif geom_type == self.UsdPhysics.ObjectType.Cylinder1Shape:
             raise NotImplementedError("Cylinder1Shape is not yet supported.")
@@ -1593,32 +1614,12 @@ class USDImporter:
             if np.all(scale[0:] == scale[0]):
                 shape = SphereShape(radius=distance_unit * geom_spec.radius)
             else:
-                a, b, c = distance_unit * scale
-                shape = EllipsoidShape(a=a, b=b, c=c)
+                rx, ry, rz = distance_unit * scale
+                shape = EllipsoidShape(rx=rx, ry=ry, rz=rz)
 
         elif geom_type == self.UsdPhysics.ObjectType.MeshShape:
-            # Retrieve the mesh data from the USD mesh prim
-            usd_mesh = self.UsdGeom.Mesh(geom_prim)
-            usd_mesh_path = usd_mesh.GetPath()
-
-            # Extract mandatory mesh attributes
-            points = np.array(usd_mesh.GetPointsAttr().Get(), dtype=np.float32)
-            indices = np.array(usd_mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
-            counts = usd_mesh.GetFaceVertexCountsAttr().Get()
-
-            # Extract optional normals attribute if defined
-            normals = (
-                np.array(usd_mesh.GetNormalsAttr().Get(), dtype=np.float32)
-                if usd_mesh.GetNormalsAttr().IsDefined()
-                else None
-            )
-
-            # Extract triangle face indices from the mesh data
-            # NOTE: This handles both triangle and quad meshes
-            faces = self._make_faces_from_counts(indices, counts, usd_mesh_path)
-
             # Create the mesh shape (i.e. wrapper around newton.geometry.Mesh)
-            shape = MeshShape(vertices=points, indices=faces, normals=normals)
+            shape = MeshShape(**self._read_mesh(geom_prim))
             is_mesh_shape = True
         else:
             raise ValueError(
@@ -1673,8 +1674,19 @@ class USDImporter:
                     geom_collides += cgroup
             msg.debug(f"[{name}]: geom_collides: {geom_collides}")
 
-        # Set the geom to be visible if it is a non-collidable mesh and we are forcing show colliders
-        if force_show_colliders:
+        # Explicit hide_collision_shapes overrides drawability:
+        # if the body already has visual shapes, hide its colliders unconditionally.
+        visual_bodies = bodies_with_visual_shapes if bodies_with_visual_shapes is not None else set()
+        has_body_visual_shapes = body_index in visual_bodies
+        hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
+        # A collider is drawn when USD says it is drawn, or when force_show_colliders
+        # overrides authored invisibility (e.g. guide/invisible collision geometry).
+        collider_is_visible = (
+            force_show_colliders or self._is_viewport_drawn(geom_prim)
+        ) and not hide_collider_for_body
+
+        # Set the geom to be visible when the collider display policy says it should be drawn.
+        if collider_is_visible:
             geom_flags = geom_flags | ShapeFlags.VISIBLE
 
         ###
@@ -1718,6 +1730,7 @@ class USDImporter:
         load_materials: bool = True,
         meshes_are_collidable: bool = False,
         force_show_colliders: bool = False,
+        hide_collision_shapes: bool = False,
         use_prim_path_names: bool = False,
         use_articulation_root_name: bool = True,
         use_angular_drive_scaling: bool = True,
@@ -1785,8 +1798,7 @@ class USDImporter:
         # World
         ###
 
-        # Initialize the world properties
-        gravity = GravityDescriptor()
+        stage_up_axis = Axis.from_string(str(self.UsdGeom.GetStageUpAxis(stage)))
 
         # Parse for PhysicsScene prims
         if self.UsdPhysics.ObjectType.Scene in ret_dict:
@@ -1798,16 +1810,25 @@ class USDImporter:
                 msg.error("Multiple PhysicsScene prims found in the USD file. Only the first prim will be considered.")
 
             # Extract the world gravity from the physics scene
-            gravity.acceleration = distance_unit * scene_desc.gravityMagnitude
-            gravity.direction = vec3f(scene_desc.gravityDirection)
+            gravity = GravityDescriptor.from_usd(
+                scene_desc.gravityDirection,
+                scene_desc.gravityMagnitude,
+                stage_up_axis,
+                distance_unit,
+            )
             builder.set_gravity(gravity)
-            msg.debug(f"World gravity: {gravity}")
+            msg.debug(f"World gravity: {gravity.vector}")
 
-            # Set the world up-axis based on the gravity direction
-            up_axis = Axis.from_any(int(np.argmax(np.abs(scene_desc.gravityDirection))))
+            # Set the world up-axis based on the resolved gravity vector.
+            gravity_vector = np.asarray(gravity.vector, dtype=np.float32)
+            up_axis = (
+                stage_up_axis
+                if np.linalg.norm(gravity_vector) == 0.0
+                else Axis.from_any(int(np.argmax(np.abs(gravity_vector))))
+            )
         else:
             # NOTE: Gravity is left with default values
-            up_axis = Axis.from_string(str(self.UsdGeom.GetStageUpAxis(stage)))
+            up_axis = stage_up_axis
 
         # Determine the up-axis transformation
         if apply_up_axis_from_stage:
@@ -1815,7 +1836,7 @@ class USDImporter:
             axis_xform = wp.transform_identity()
             msg.debug(f"Using stage up axis {up_axis} as builder up axis")
         else:
-            axis_xform = wp.transform(vec3f(0.0), quat_between_axes(up_axis, builder.up_axes[0]))
+            axis_xform = wp.transform(wp.vec3f(0.0), quat_between_axes(up_axis, builder.up_axes[0]))
             msg.debug(f"Rotating stage to align its up axis {up_axis} with builder up axis {builder.up_axes[0]}")
 
         # Set the world offset transform based on the provided xform
@@ -1886,34 +1907,12 @@ class USDImporter:
         msg.debug(f"cgroup_count: {cgroup_count}")
         msg.debug(f"cgroup_index_map: {cgroup_index_map}")
 
-        ###
-        # Articulations
-        ###
-
-        # Construct a list of articulation root bodies to create FREE
-        # joints if not already defined explicitly in the USD file
-        articulation_root_body_paths = []
-        if self.UsdPhysics.ObjectType.Articulation in ret_dict:
-            paths, articulation_descs = ret_dict[self.UsdPhysics.ObjectType.Articulation]
-            for path, _desc in zip(paths, articulation_descs, strict=False):
-                articulation_prim = stage.GetPrimAtPath(path)
-                try:
-                    parent_prim = articulation_prim.GetParent()
-                except Exception:
-                    parent_prim = None
-                if articulation_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI):
-                    if self._prim_is_rigid_body(articulation_prim):
-                        msg.debug(f"Adding articulation_prim at '{path}' as articulation root body")
-                        articulation_root_body_paths.append(articulation_prim.GetPath())
-                elif (
-                    parent_prim is not None
-                    and parent_prim.IsValid()
-                    and parent_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI)
-                ):
-                    if self._prim_is_rigid_body(parent_prim):
-                        msg.debug(f"Adding parent_prim at '{parent_prim.GetPath()}' as articulation root body")
-                        articulation_root_body_paths.append(parent_prim.GetPath())
-        msg.debug(f"articulation_root_body_paths: {articulation_root_body_paths}")
+        # Kamino only needs articulation metadata to preserve floating-root state;
+        # authored joints are otherwise represented as maximal-coordinate constraints.
+        articulation_paths, articulation_specs = ret_dict.get(self.UsdPhysics.ObjectType.Articulation, ([], []))
+        articulation_joint_paths = {
+            str(joint_path) for spec in articulation_specs for joint_path in spec.articulatedJoints
+        }
 
         ###
         # Bodies
@@ -1922,7 +1921,6 @@ class USDImporter:
         # Define a mapping from prim paths to body indices
         # NOTE: This can be used for both rigid and flexible bodies
         body_index_map = {}
-        body_path_map = {}
 
         # Parse for and import UsdPhysicsRigidBody prims
         if self.UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -1943,20 +1941,29 @@ class USDImporter:
                     msg.debug(f"Adding body '{builder.num_bodies}':\n{rigid_body_desc}\n")
                     body_index = builder.add_rigid_body_descriptor(body=rigid_body_desc)
                     body_index_map[str(prim_path)] = body_index
-                    body_path_map[body_index] = str(prim_path)
                 else:
                     msg.debug(f"Rigid body @'{prim_path}' not loaded. Will be treated as static geometry.")
                     body_index_map[str(prim_path)] = -1  # Body not loaded, is statically part of the world
         msg.debug(f"body_index_map: {body_index_map}")
-        msg.debug(f"body_path_map: {body_path_map}")
+
+        # Resolve API prims to loaded rigid bodies before constructing joint descriptors.
+        articulation_root_body_indices = []
+        for path in articulation_paths:
+            root_prim = stage.GetPrimAtPath(path)
+            if not root_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI):
+                root_prim = root_prim.GetParent()
+            if root_prim.IsValid() and root_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI):
+                root_body_index = body_index_map.get(str(root_prim.GetPath()), -1)
+                if root_body_index >= 0 and self._prim_is_rigid_body(root_prim):
+                    articulation_root_body_indices.append(root_body_index)
 
         ###
         # Joints
         ###
 
-        # Define a list to hold all joint descriptors to be added to the builder after sorting
+        # Define a list to hold all joint descriptors to be added to the builder
         joint_descriptors: list[JointDescriptor] = []
-        articulation_root_joints: list[JointDescriptor] = []
+        articulation_tree_followers = set()
 
         # If retaining joint ordering, first construct lists of joint prim paths and their
         # types that retain the order of the joints as specified in the USD file, then iterate
@@ -1996,9 +2003,8 @@ class USDImporter:
                         if joint_desc is not None:
                             msg.debug(f"Adding joint '{builder.num_joints}':\n{joint_desc}\n")
                             joint_descriptors.append(joint_desc)
-                            # Check if the joint's Follower body is the articulation root
-                            if body_path_map[joint_desc.bid_F] in articulation_root_body_paths:
-                                articulation_root_joints.append(joint_desc)
+                            if str(prim_path) in articulation_joint_paths and not joint_spec.excludeFromArticulation:
+                                articulation_tree_followers.add(joint_desc.bid_F)
                         else:
                             msg.debug(f"Joint @'{prim_path}' not loaded. Will be ignored.")
                         break  # Stop after the first match
@@ -2035,64 +2041,48 @@ class USDImporter:
                 if joint_desc is not None:
                     msg.debug(f"Adding joint '{builder.num_joints}':\n{joint_desc}\n")
                     joint_descriptors.append(joint_desc)
-                    # Check if the joint's Follower body is the articulation root
-                    if body_path_map[joint_desc.bid_F] in articulation_root_body_paths:
-                        articulation_root_joints.append(joint_desc)
+                    if str(prim_path) in articulation_joint_paths and not joint_spec.excludeFromArticulation:
+                        articulation_tree_followers.add(joint_desc.bid_F)
                 else:
                     msg.debug(f"Joint @'{prim_path}' not loaded. Will be ignored.")
 
-        # For each articulation root body that does not have an explicit joint
-        # defined in the USD file, add a FREE joint to attach it to the world
-        if len(articulation_root_joints) != len(articulation_root_body_paths):
-            for root_body_path in articulation_root_body_paths:
-                # Check if the root body already has a joint defined in the USD file
-                root_body_index = int(body_index_map[str(root_body_path)])
-                has_joint = False
-                for joint_desc in articulation_root_joints:
-                    if joint_desc.has_follower_body(root_body_index):
-                        has_joint = True
-                        break
-                if has_joint:
-                    msg.debug(
-                        f"Articulation root body '{root_body_path}' already has a joint defined. Skipping FREE joint."
-                    )
-                    continue
+        # Match Newton's tree-root selection: excluded loop joints do not make their
+        # follower a tree child or suppress the floating root's generalized state.
+        for root_body_index in articulation_root_body_indices:
+            if root_body_index in articulation_tree_followers:
+                continue
 
-                # If not, create a FREE joint descriptor to attach the root body to the
-                # world and insert it at the beginning of the joint descriptors list
-                root_body_name = builder.bodies[root_body_index].name
+            root_body = builder.bodies[0][root_body_index]
+            joint_desc = JointDescriptor(
+                name=f"world_to_{root_body.name}" if use_articulation_root_name else f"joint_{builder.num_joints + 1}",
+                dof_type=JointDoFType.FREE,
+                dof_act_types=[JointActuationType.PASSIVE] * JointDoFType.FREE.num_dofs,
+                bid_B=-1,
+                bid_F=root_body_index,
+                B_r_Bj=wp.transform_get_translation(root_body.q_i_0),
+                F_r_Fj=wp.vec3f(0.0),
+                X_Bj=axis_to_mat33(Axis.X),
+            )
+            joint_descriptors.insert(0, joint_desc)
 
-                joint_desc = JointDescriptor(
-                    name=f"world_to_{root_body_name}"
-                    if use_articulation_root_name
-                    else f"joint_{builder.num_joints + 1}",
-                    dof_type=JointDoFType.FREE,
-                    act_type=JointActuationType.PASSIVE,
-                    bid_B=-1,
-                    bid_F=root_body_index,
-                    X_j=Axis.X.to_mat33(),
-                )
-                msg.debug(
-                    f"Adding FREE joint '{joint_desc.name}' to attach articulation "
-                    f"root body '{root_body_path}' to the world:\n{joint_desc}\n"
-                )
-                joint_descriptors.insert(0, joint_desc)
-
-        # If an articulation is present, sort joint indices according
-        # to DFS to produce a minimum-depth kinematic tree ordering
-        if len(articulation_root_body_paths) > 0 and len(joint_descriptors) > 0:
-            # Create a list of body-pair indices (B, F) for each joint
+        # Cyclic articulations retain authored order because loop joints have no tree position.
+        if articulation_root_body_indices and joint_descriptors:
             joint_body_pairs = [(joint_desc.bid_B, joint_desc.bid_F) for joint_desc in joint_descriptors]
-            # Perform a topological sort of the joints based on their body-pair indices
-            joint_indices, reversed_joints = topological_sort_undirected(joints=joint_body_pairs, use_dfs=True)
-            # Reverse the order of the joints that were reversed during the topological
-            # sort to maintain the original joint directionality as much as possible
-            for i in reversed_joints:
-                joint_desc = joint_descriptors[i]
-                joint_desc.bid_B, joint_desc.bid_F = joint_desc.bid_F, joint_desc.bid_B
-                joint_desc.B_r_Bj, joint_desc.F_r_Fj = joint_desc.F_r_Fj, joint_desc.B_r_Bj
-            # Reorder the joint descriptors based on the topological sort
-            joint_descriptors = [joint_descriptors[i] for i in joint_indices]
+            try:
+                joint_indices, reversed_joints = topological_sort_undirected(joints=joint_body_pairs, use_dfs=True)
+            except ValueError as error:
+                msg.debug(f"Keeping authored joint order for cyclic articulation: {error}")
+            else:
+                # Parallel loop edges can be omitted by an undirected traversal rather than
+                # reported as a cycle, so only accept an ordering containing every joint.
+                if len(joint_indices) == len(joint_descriptors):
+                    for index in reversed_joints:
+                        joint_desc = joint_descriptors[index]
+                        joint_desc.bid_B, joint_desc.bid_F = joint_desc.bid_F, joint_desc.bid_B
+                        joint_desc.B_r_Bj, joint_desc.F_r_Fj = joint_desc.F_r_Fj, joint_desc.B_r_Bj
+                    joint_descriptors = [joint_descriptors[index] for index in joint_indices]
+                else:
+                    msg.debug("Keeping authored joint order for articulation with parallel loop edges")
 
         # Add all descriptors to the builder
         for joint_desc in joint_descriptors:
@@ -2159,6 +2149,7 @@ class USDImporter:
         # Define separate lists to hold geometry descriptors for visual and physics geometry
         visual_geoms: list[GeometryDescriptor] = []
         physics_geoms: list[GeometryDescriptor] = []
+        bodies_with_visual_shapes: set[int] = set()
 
         # Define a function to process each geometry prim and construct geometry descriptors based on whether
         # they are marked for physics simulation or not. The geometry descriptors are then added to the
@@ -2207,6 +2198,8 @@ class USDImporter:
                                 distance_unit=distance_unit,
                                 meshes_are_collidable=meshes_are_collidable,
                                 force_show_colliders=force_show_colliders,
+                                hide_collision_shapes=hide_collision_shapes,
+                                bodies_with_visual_shapes=bodies_with_visual_shapes,
                                 prim_path_names=use_prim_path_names,
                             )
                             break  # Stop after the first match
@@ -2242,6 +2235,8 @@ class USDImporter:
                     else:
                         msg.debug("Adding visual geom '%d':\n%s\n", builder.num_geoms, geom_desc)
                         visual_geoms.append(geom_desc)
+                        if geom_desc.body >= 0 and self._is_viewport_drawn(prim):
+                            bodies_with_visual_shapes.add(geom_desc.body)
 
             # Indicate to user that a UsdGeom has potentially not been marked for physics simulation
             else:

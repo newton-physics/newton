@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 from functools import partial
@@ -21,6 +9,7 @@ import warp as wp
 
 import newton
 from newton import ParticleFlags
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 # fmt: off
@@ -294,15 +283,15 @@ CLOTH_FACES = [
 
 # fmt: on
 class ClothSim:
-    def __init__(self, device, solver, use_cuda_graph=False, do_rendering=False, use_collision_pipeline=False):
+    def __init__(self, device, solver, use_graph=False, do_rendering=False, use_collision_pipeline=False):
         self.frame_dt = 1 / 60
         self.num_test_frames = 50
         self.iterations = 5
         self.device = device
-        self.use_cuda_graph = self.device.is_cuda and use_cuda_graph
+        self.use_graph = use_graph and is_graph_capture_allocation_enabled(self.device)
         self.builder = newton.ModelBuilder(up_axis="Y")
         self.builder.default_shape_cfg.ke = 1.0e5
-        self.builder.default_shape_cfg.kd = 1.0e3
+        self.builder.default_shape_cfg.kd = 1.0e8 if solver == "vbd" else 1.0e3
 
         self.solver_name = solver
         self.do_rendering = do_rendering
@@ -328,16 +317,16 @@ class ClothSim:
         vertices = [wp.vec3(v) * self.input_scale_factor for v in CLOTH_POINTS]
         faces_flatten = [fv - 1 for fv in CLOTH_FACES]
 
-        kd = 1.0e-7
-
         if self.solver_name != "semi_implicit":
             stretching_stiffness = 1e4
             spring_ke = 1e3
             bending_ke = 10
+            kd = 1.0e-3
         else:
             stretching_stiffness = 1e5
             spring_ke = 1e2
             bending_ke = 0.0
+            kd = 1.0e-7
 
         self.builder.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
@@ -364,8 +353,16 @@ class ClothSim:
 
     def set_up_bending_experiment(self):
         stretching_stiffness = 1e4
-        stretching_damping = 1e-6
-        bending_damping = 1e-3
+        if self.solver_name == "vbd":
+            stretching_damping = 1e-2
+            bending_damping_10 = 1e-2
+            bending_damping_100 = 1e-1
+            bending_damping_1000 = 1e0
+        else:
+            stretching_damping = 1e-6
+            bending_damping_10 = 1e-3
+            bending_damping_100 = 1e-3
+            bending_damping_1000 = 1e-3
         # fmt: off
         vs = [[-6.0, 0.0, -6.0], [-3.6, 0.0, -6.0], [-1.2, 0.0, -6.0], [1.2, 0.0, -6.0], [3.6, 0.0, -6.0], [6.0, 0.0, -6.0],
          [-6.0, 0.0, -3.6], [-3.6, 0.0, -3.6], [-1.2, 0.0, -3.6], [1.2, 0.0, -3.6], [3.6, 0.0, -3.6], [6.0, 0.0, -3.6],
@@ -396,7 +393,7 @@ class ClothSim:
             tri_ka=stretching_stiffness,
             tri_kd=stretching_damping,
             edge_ke=10,
-            edge_kd=bending_damping,
+            edge_kd=bending_damping_10,
             add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
@@ -414,7 +411,7 @@ class ClothSim:
             tri_ka=stretching_stiffness,
             tri_kd=stretching_damping,
             edge_ke=100,
-            edge_kd=bending_damping,
+            edge_kd=bending_damping_100,
             add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
@@ -432,7 +429,7 @@ class ClothSim:
             tri_ka=stretching_stiffness,
             tri_kd=stretching_damping,
             edge_ke=1000,
-            edge_kd=bending_damping,
+            edge_kd=bending_damping_1000,
             add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
@@ -444,7 +441,7 @@ class ClothSim:
 
     def set_collision_experiment(self):
         elasticity_ke = 1e4
-        elasticity_kd = 1e-6
+        elasticity_kd = 1e-2 if self.solver_name == "vbd" else 1e-6
 
         vs1 = [wp.vec3(v) for v in [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]]]
         fs1 = [0, 1, 2, 0, 2, 3]
@@ -488,7 +485,7 @@ class ClothSim:
 
         self.finalize(particle_enable_self_contact=True, ground=False)
         self.model.soft_contact_ke = 1e4
-        self.model.soft_contact_kd = 1e-3
+        self.model.soft_contact_kd = 1e1 if self.solver_name == "vbd" else 1e-3
         self.model.soft_contact_mu = 0.2
         self.model.set_gravity((0.0, -1000.0, 0.0))
         self.num_test_frames = 30
@@ -534,9 +531,13 @@ class ClothSim:
         # fmt: on
 
         stretching_stiffness = 1e5
-        stretching_damping = 1e-5
         edge_ke = 100
-        bending_damping = 1e-4
+        if self.solver_name == "vbd":
+            stretching_damping = 1e0
+            bending_damping = 1e-2
+        else:
+            stretching_damping = 1e-5
+            bending_damping = 1e-4
         vs = [wp.vec3(v) for v in vs]
 
         self.builder.add_cloth_mesh(
@@ -699,7 +700,13 @@ class ClothSim:
             particle_radius=particle_radius,
         )
 
-        self.builder.add_shape_box(-1, wp.transform(wp.vec3(0, -2, 0), wp.quat_identity()), hx=2, hy=2, hz=2)
+        self.builder.add_shape_box(
+            -1,
+            xform=wp.transform(wp.vec3(0, -2, 0), wp.quat_identity()),
+            hx=2,
+            hy=2,
+            hz=2,
+        )
 
         self.renderer_scale_factor = 0.1
 
@@ -838,7 +845,7 @@ class ClothSim:
         self.model = builder.finalize(device=self.device)
         self.model.set_gravity((0.0, -1000.0 if use_gravity else 0.0, 0.0))
         self.model.soft_contact_ke = 1.0e4
-        self.model.soft_contact_kd = 1.0e-2
+        self.model.soft_contact_kd = 1.0e2 if self.solver_name == "vbd" else 1.0e-2
 
         self.set_points_fixed(self.model, self.fixed_particles)
 
@@ -874,7 +881,7 @@ class ClothSim:
         self.init_pos = np.array(self.state0.particle_q.numpy(), copy=True)
 
         self.graph = None
-        if self.use_cuda_graph:
+        if self.use_graph:
             with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -946,7 +953,7 @@ def compute_current_angles(model, state):
 
 
 def test_cloth_sagging(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     example.set_up_sagging_experiment()
 
     initial_pos = example.state0.particle_q.numpy().copy()
@@ -964,7 +971,7 @@ def test_cloth_sagging(test, device, solver):
 
 
 def test_cloth_bending(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     example.set_up_bending_experiment()
 
     example.run()
@@ -977,7 +984,7 @@ def test_cloth_bending(test, device, solver):
 
 
 def test_cloth_bending_non_zero_rest_angle_bending(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     example.set_up_non_zero_rest_angle_bending_experiment()
 
     example.run()
@@ -990,7 +997,7 @@ def test_cloth_bending_non_zero_rest_angle_bending(test, device, solver):
 
 
 def test_cloth_bending_consistent_angle_computation(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
         tri_ke=1e2, tri_kd=0.0, edge_ke=1e-1, edge_kd=0.0, fixed_particles=[1], use_gravity=False
     )
@@ -1013,9 +1020,11 @@ def test_cloth_bending_consistent_angle_computation(test, device, solver):
 
 
 def test_cloth_bending_with_complex_rest_angles(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
+    tri_kd = 0.0 if solver == "vbd" else 1e-2
+    edge_kd = 1e0 if solver == "vbd" else 0.0
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e3, tri_kd=1e-2, edge_ke=1e3, edge_kd=0.0, fixed_particles=[1], use_gravity=True
+        tri_ke=1e3, tri_kd=tri_kd, edge_ke=1e3, edge_kd=edge_kd, fixed_particles=[1], use_gravity=True
     )
 
     # Store rest angles for comparison
@@ -1036,9 +1045,11 @@ def test_cloth_bending_with_complex_rest_angles(test, device, solver):
 
 # Internal forces and damping should not affect free-fall behavior.
 def test_cloth_free_fall_with_internal_forces_and_damping(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
+    tri_kd = 5e0 if solver == "vbd" else 1e-1
+    edge_kd = 1e0 if solver == "vbd" else 1e-1
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=5e1, tri_kd=1e-1, edge_ke=1e1, edge_kd=1e-1, fixed_particles=None, use_gravity=True
+        tri_ke=5e1, tri_kd=tri_kd, edge_ke=1e1, edge_kd=edge_kd, fixed_particles=None, use_gravity=True
     )
 
     # Store initial vertex positions and rest angles for comparison
@@ -1059,7 +1070,7 @@ def test_cloth_free_fall_with_internal_forces_and_damping(test, device, solver):
     position_diff = final_pos - initial_pos
 
     # Get gravity direction (normalized)
-    gravity_vector = example.model.gravity.numpy()[0]  # Extract first element from warp array
+    gravity_vector = example.model.gravity.numpy()[-1]
     gravity_direction = gravity_vector / np.linalg.norm(gravity_vector)
 
     # For each vertex, project its displacement onto gravity direction
@@ -1089,7 +1100,7 @@ def test_cloth_free_fall_with_internal_forces_and_damping(test, device, solver):
 
 
 def test_cloth_collision(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     example.set_collision_experiment()
 
     example.run()
@@ -1116,7 +1127,7 @@ def test_cloth_free_fall(test, device, solver):
     # examine that the simulation has moved
     test.assertTrue((example.init_pos != final_pos).any())
 
-    gravity = example.model.gravity.numpy()[0]
+    gravity = example.model.gravity.numpy()[-1]
     diff = final_pos - initial_pos
     vertical_translation_norm = diff @ gravity[..., None] / (np.linalg.norm(gravity) ** 2)
     # ensure it's free-falling
@@ -1183,6 +1194,7 @@ def test_cloth_enable_tri_contact(test, device, solver):
     test.assertTrue(final_pos[-1, 1] < 0.0)
 
 
+# Cloth solver coverage is intentionally single-GPU here to keep CI time bounded.
 devices = get_test_devices(mode="basic")
 
 
@@ -1247,7 +1259,7 @@ class TestClothCollisionPipeline(unittest.TestCase):
 
 def test_cloth_collision(test, device, solver):
     """Test cloth collision using collision pipeline."""
-    example = ClothSim(device, solver, use_cuda_graph=True, use_collision_pipeline=True)
+    example = ClothSim(device, solver, use_graph=True, use_collision_pipeline=True)
     example.set_collision_experiment()
 
     example.run()

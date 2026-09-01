@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import warp as wp
 
@@ -21,13 +9,13 @@ from ...sim import Control, Model, State
 @wp.func
 def muscle_force(
     i: int,
-    body_X_s: wp.array(dtype=wp.transform),
-    body_v_s: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    muscle_links: wp.array(dtype=int),
-    muscle_points: wp.array(dtype=wp.vec3),
+    body_X_s: wp.array[wp.transform],
+    body_v_s: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    muscle_links: wp.array[int],
+    muscle_points: wp.array[wp.vec3],
     muscle_activation: float,
-    body_f_s: wp.array(dtype=wp.spatial_vector),
+    body_f_s: wp.array[wp.spatial_vector],
 ):
     link_0 = muscle_links[i]
     link_1 = muscle_links[i + 1]
@@ -55,16 +43,16 @@ def muscle_force(
 
 @wp.kernel
 def eval_muscle(
-    body_X_s: wp.array(dtype=wp.transform),
-    body_v_s: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    muscle_start: wp.array(dtype=int),
-    muscle_params: wp.array(dtype=float),
-    muscle_links: wp.array(dtype=int),
-    muscle_points: wp.array(dtype=wp.vec3),
-    muscle_activation: wp.array(dtype=float),
+    body_X_s: wp.array[wp.transform],
+    body_v_s: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    muscle_start: wp.array[int],
+    muscle_params: wp.array[float],
+    muscle_links: wp.array[int],
+    muscle_points: wp.array[wp.vec3],
+    muscle_activation: wp.array[float],
     # output
-    body_f_s: wp.array(dtype=wp.spatial_vector),
+    body_f_s: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 

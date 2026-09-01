@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Provides mechanisms to warm-start constraints.
@@ -37,12 +25,12 @@ from enum import IntEnum
 
 import warp as wp
 
+from .....core.types import override
 from ..core.data import DataKamino
 from ..core.math import contact_wrench_matrix_from_points
 from ..core.model import ModelKamino
-from ..core.types import float32, int32, override, quatf, transformf, uint64, vec2f, vec2i, vec3f, vec6f
 from ..geometry.contacts import ContactsKamino, ContactsKaminoData
-from ..geometry.keying import KeySorter, binary_search_find_range_start, make_bitmask
+from ..geometry.keying import KeySorter, binary_search_find_range_start, make_bitmask, uint64_sentinel_value
 from ..kinematics.limits import LimitsKamino, LimitsKaminoData
 from ..solvers.padmm.math import project_to_coulomb_cone
 
@@ -61,7 +49,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -70,19 +58,32 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.kernel
+def _invalidate_keys_from_select_worlds(
+    world_id: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    world_mask: wp.array[wp.bool],
+):
+    """Reset contact/limit keys to the sentinel value in select worlds."""
+    tid = wp.tid()  # Contact or limit id
+    wid = world_id[tid]
+    if world_mask[wid]:
+        keys[tid] = uint64_sentinel_value()
+
+
+@wp.kernel
 def _warmstart_limits_by_matched_jid_dof_key(
     # Inputs - Previous:
-    sorted_limit_keys_old: wp.array(dtype=uint64),
-    sorted_to_unsorted_map_old: wp.array(dtype=int32),
-    num_active_limits_old: wp.array(dtype=int32),
-    limit_velocity_old: wp.array(dtype=float32),
-    limit_reaction_old: wp.array(dtype=float32),
+    sorted_limit_keys_old: wp.array[wp.uint64],
+    sorted_to_unsorted_map_old: wp.array[wp.int32],
+    num_active_limits_old: wp.array[wp.int32],
+    limit_velocity_old: wp.array[wp.float32],
+    limit_reaction_old: wp.array[wp.float32],
     # Inputs - Next:
-    num_active_limits_new: wp.array(dtype=int32),
-    limit_key_new: wp.array(dtype=uint64),
+    num_active_limits_new: wp.array[wp.int32],
+    limit_key_new: wp.array[wp.uint64],
     # Outputs:
-    limit_reaction_new: wp.array(dtype=float32),
-    limit_velocity_new: wp.array(dtype=float32),
+    limit_reaction_new: wp.array[wp.float32],
+    limit_velocity_new: wp.array[wp.float32],
 ):
     """
     Match current limits to previous timestep limits using joint-DoF index pair keys.
@@ -123,30 +124,68 @@ def _warmstart_limits_by_matched_jid_dof_key(
 
 
 @wp.kernel
+def _aggregate_cached_contact_tangents(
+    sorted_contact_keys: wp.array[wp.uint64],
+    sorted_to_unsorted_map: wp.array[wp.int32],
+    num_active_contacts: wp.array[wp.int32],
+    contact_frame: wp.array[wp.quatf],
+    contact_reaction: wp.array[wp.vec3f],
+    tangent_force_sums: wp.array[wp.vec3f],
+    contact_counts: wp.array[wp.int32],
+):
+    """Aggregate each cached geometry pair once at its first sorted slot."""
+    sorted_id = wp.tid()
+    active_count = num_active_contacts[0]
+    if sorted_id >= active_count:
+        return
+
+    target_key = sorted_contact_keys[sorted_id]
+    if sorted_id > 0 and sorted_contact_keys[sorted_id - 1] == target_key:
+        return
+
+    tangent_force = wp.vec3f(0.0)
+    contact_count = wp.int32(0)
+    cursor = sorted_id
+    while cursor < active_count and sorted_contact_keys[cursor] == target_key:
+        cid = sorted_to_unsorted_map[cursor]
+        reaction = contact_reaction[cid]
+        tangent_force += wp.quat_to_matrix(contact_frame[cid]) @ wp.vec3f(reaction.x, reaction.y, 0.0)
+        contact_count += 1
+        cursor += 1
+
+    tangent_force_sums[sorted_id] = tangent_force
+    contact_counts[sorted_id] = contact_count
+
+
+@wp.kernel
 def _warmstart_contacts_by_matched_geom_pair_key_and_position(
     # Inputs - Common:
-    tolerance: float32,
-    time_dt: wp.array(dtype=float32),
-    body_q_i: wp.array(dtype=transformf),
-    body_u_i: wp.array(dtype=vec6f),
+    tolerance: wp.float32,
+    balance_tangential: wp.bool,
+    time_dt: wp.array[wp.float32],
+    body_q_i: wp.array[wp.transformf],
+    body_u_i: wp.array[wp.spatial_vectorf],
     # Inputs - Previous:
-    sorted_contact_keys_old: wp.array(dtype=uint64),
-    sorted_to_unsorted_map_old: wp.array(dtype=int32),
-    num_active_contacts_old: wp.array(dtype=int32),
-    contact_position_B_old: wp.array(dtype=vec3f),
-    contact_frame_old: wp.array(dtype=quatf),
-    contact_reaction_old: wp.array(dtype=vec3f),
-    contact_velocity_old: wp.array(dtype=vec3f),
+    sorted_contact_keys_old: wp.array[wp.uint64],
+    sorted_to_unsorted_map_old: wp.array[wp.int32],
+    num_active_contacts_old: wp.array[wp.int32],
+    contact_position_B_old: wp.array[wp.vec3f],
+    contact_frame_old: wp.array[wp.quatf],
+    contact_reaction_old: wp.array[wp.vec3f],
+    contact_velocity_old: wp.array[wp.vec3f],
+    tangent_force_sums_old: wp.array[wp.vec3f],
+    pair_contact_counts_old: wp.array[wp.int32],
     # Inputs - Next:
-    num_active_contacts_new: wp.array(dtype=int32),
-    contact_key_new: wp.array(dtype=uint64),
-    contact_wid_new: wp.array(dtype=int32),
-    contact_bid_AB_new: wp.array(dtype=vec2i),
-    contact_position_B_new: wp.array(dtype=vec3f),
-    contact_frame_new: wp.array(dtype=quatf),
+    num_active_contacts_new: wp.array[wp.int32],
+    contact_key_new: wp.array[wp.uint64],
+    contact_wid_new: wp.array[wp.int32],
+    contact_bid_AB_new: wp.array[wp.vec2i],
+    contact_position_B_new: wp.array[wp.vec3f],
+    contact_frame_new: wp.array[wp.quatf],
+    contact_material_new: wp.array[wp.vec2f],
     # Outputs:
-    contact_reaction_new: wp.array(dtype=vec3f),
-    contact_velocity_new: wp.array(dtype=vec3f),
+    contact_reaction_new: wp.array[wp.vec3f],
+    contact_velocity_new: wp.array[wp.vec3f],
 ):
     """
     Match current contacts to previous timestep contacts using geom-pair keys and relative distance.
@@ -168,8 +207,8 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position(
 
     # Initialize the target reaction and velocity to zero
     # to account for the case where no matching contact is found
-    target_reaction = vec3f(0.0)
-    target_velocity = vec3f(0.0)
+    target_reaction = wp.vec3f(0.0)
+    target_velocity = wp.vec3f(0.0)
 
     # Perform binary search to find the start index of the target key - i.e. assuming a geom-pair key
     start = binary_search_find_range_start(0, num_active_old, target_key, sorted_contact_keys_old)
@@ -199,8 +238,9 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position(
     # Iterate through all old contacts with the same key and check if contacts match
     # based on distance of contact points after accounting for associated body motion
     # NOTE: For the comparison, new_idx -> cid, old_idx -> sorted_to_unsorted_map_old[start + k]
-    k = int32(0)
+    k = wp.int32(0)
     old_key = sorted_contact_keys_old[start]
+    found_match = wp.bool(False)
     while target_key == old_key:
         # Retrieve the old contact index from the sorted->unsorted map
         cid_old = sorted_to_unsorted_map_old[start + k]
@@ -215,16 +255,29 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position(
             # from the old contact and transform them to the new contact frame
             q_k_old = contact_frame_old[cid_old]
             lambda_k_old = contact_reaction_old[cid_old]
-            v_k_old = contact_velocity_old[cid_old]
             R_k_old = wp.quat_to_matrix(q_k_old)
+            v_k_old = contact_velocity_old[cid_old]
             R_k_old_to_new = wp.transpose(R_k_target) @ R_k_old
             target_reaction = R_k_old_to_new @ lambda_k_old
             target_velocity = R_k_old_to_new @ v_k_old
+            found_match = wp.bool(True)
             break
 
         # Update the current old-key to check in the next iteration
         k += 1
+        if start + k >= num_active_old:
+            break
         old_key = sorted_contact_keys_old[start + k]
+
+    pair_contact_count = pair_contact_counts_old[start]
+    if balance_tangential and found_match and pair_contact_count > 0:
+        tangent_force_uniform = tangent_force_sums_old[start] / wp.float32(pair_contact_count)
+        tangent_local = wp.transpose(R_k_target) @ tangent_force_uniform
+        tangent_norm = wp.length(wp.vec2f(tangent_local.x, tangent_local.y))
+        tangent_limit = contact_material_new[cid][0] * wp.max(target_reaction.z, 0.0)
+        if tangent_norm > tangent_limit and tangent_norm > 0.0:
+            tangent_local *= tangent_limit / tangent_norm
+        target_reaction = wp.vec3f(tangent_local.x, tangent_local.y, target_reaction.z)
 
     # Store the new contact reaction and velocity
     # NOTE: These will remain zero if no matching contact is found
@@ -235,26 +288,25 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position(
 @wp.kernel
 def _warmstart_contacts_from_geom_pair_net_force(
     # Inputs - Common:
-    scaling: float32,
-    body_q_i: wp.array(dtype=transformf),
-    body_u_i: wp.array(dtype=vec6f),
+    body_q_i: wp.array[wp.transformf],
+    body_u_i: wp.array[wp.spatial_vectorf],
     # Inputs - Previous:
-    sorted_contact_keys_old: wp.array(dtype=uint64),
-    sorted_to_unsorted_map_old: wp.array(dtype=int32),
-    num_active_contacts_old: wp.array(dtype=int32),
-    contact_frame_old: wp.array(dtype=quatf),
-    contact_reaction_old: wp.array(dtype=vec3f),
+    sorted_contact_keys_old: wp.array[wp.uint64],
+    sorted_to_unsorted_map_old: wp.array[wp.int32],
+    num_active_contacts_old: wp.array[wp.int32],
+    contact_frame_old: wp.array[wp.quatf],
+    contact_reaction_old: wp.array[wp.vec3f],
     # Inputs - Next:
-    num_active_contacts_new: wp.array(dtype=int32),
-    contact_key_new: wp.array(dtype=uint64),
-    contact_bid_AB_new: wp.array(dtype=vec2i),
-    contact_position_A_new: wp.array(dtype=vec3f),
-    contact_position_B_new: wp.array(dtype=vec3f),
-    contact_frame_new: wp.array(dtype=quatf),
-    contact_material_new: wp.array(dtype=vec2f),
+    num_active_contacts_new: wp.array[wp.int32],
+    contact_key_new: wp.array[wp.uint64],
+    contact_bid_AB_new: wp.array[wp.vec2i],
+    contact_position_A_new: wp.array[wp.vec3f],
+    contact_position_B_new: wp.array[wp.vec3f],
+    contact_frame_new: wp.array[wp.quatf],
+    contact_material_new: wp.array[wp.vec2f],
     # Outputs:
-    contact_reaction_new: wp.array(dtype=vec3f),
-    contact_velocity_new: wp.array(dtype=vec3f),
+    contact_reaction_new: wp.array[wp.vec3f],
+    contact_velocity_new: wp.array[wp.vec3f],
 ):
     """
     Match current contacts to previous timestep contacts using geom-pair keys and relative distance.
@@ -276,8 +328,8 @@ def _warmstart_contacts_from_geom_pair_net_force(
 
     # Initialize the target reaction and velocity to zero
     # to account for the case where no matching contact is found
-    target_reaction = vec3f(0.0)
-    target_velocity = vec3f(0.0)
+    target_reaction = wp.vec3f(0.0)
+    target_velocity = wp.vec3f(0.0)
 
     # Perform binary search to find the start index of the target key - i.e. assuming a geom-pair key
     start = binary_search_find_range_start(0, num_active_old, target_key, sorted_contact_keys_old)
@@ -301,7 +353,7 @@ def _warmstart_contacts_from_geom_pair_net_force(
     # Retrieve the body indices and states for the contact's associated bodies
     # NOTE: If body A is static, then its velocity contribution is zero by definition
     bid_AB = contact_bid_AB_new[cid]
-    v_Ak = vec3f(0.0)
+    v_Ak = wp.vec3f(0.0)
     if bid_AB[0] >= 0:
         u_A = body_u_i[bid_AB[0]]
         r_A = wp.transform_get_translation(body_q_i[bid_AB[0]])
@@ -318,13 +370,13 @@ def _warmstart_contacts_from_geom_pair_net_force(
     # as the normal velocity should always be non-negative in the local
     # contact frame, and positive if the solver computes an opening contact
     # thus, for warm-starting we only need to consider the tangential velocity
-    target_velocity = scaling * wp.transpose(R_k_target) @ (v_Bk - v_Ak)
+    target_velocity = wp.transpose(R_k_target) @ (v_Bk - v_Ak)
     target_velocity.z = wp.max(target_velocity.z, 0.0)
 
     # Iterate through all old contacts with the same key and accumulate net body-com wrench
     # NOTE: We only need body B since it is the body on which the contact reaction acts positively
-    geom_pair_force_body_B = vec3f(0.0)
-    k = int32(0)
+    geom_pair_force_body_B = wp.vec3f(0.0)
+    k = wp.int32(0)
     old_key = sorted_contact_keys_old[start]
     while target_key == old_key:
         # Retrieve the old contact index from the sorted->unsorted map
@@ -339,22 +391,24 @@ def _warmstart_contacts_from_geom_pair_net_force(
 
         # Update the current old-key to check in the next iteration
         k += 1
+        if start + k >= num_active_old:
+            break
         old_key = sorted_contact_keys_old[start + k]
 
     # TODO: We need to cache this value per geom-pair
     # TODO: Replace this with a new cache instead of recomputing every time --- IGNORE ---
-    num_contacts_gid_AB_new = int32(0)
+    num_contacts_gid_AB_new = wp.int32(0)
     for i in range(num_active_contacts_new[0]):
         if contact_key_new[i] == target_key:
             num_contacts_gid_AB_new += 1
 
     # Average the net body-com force over the number of contacts for this geom-pair
-    contact_force_uniform_new = (1.0 / float32(num_contacts_gid_AB_new)) * geom_pair_force_body_B
+    contact_force_uniform_new = (1.0 / wp.float32(num_contacts_gid_AB_new)) * geom_pair_force_body_B
 
     # Project to the new contact frame and local
     # friction cone to obtain the contact reaction
     target_reaction = wp.transpose(R_k_target) @ contact_force_uniform_new
-    target_reaction = scaling * project_to_coulomb_cone(target_reaction, target_mu)
+    target_reaction = project_to_coulomb_cone(target_reaction, target_mu)
 
     # Store the new contact reaction and velocity
     # NOTE: These will remain zero if no matching contact is found
@@ -365,31 +419,30 @@ def _warmstart_contacts_from_geom_pair_net_force(
 @wp.kernel
 def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup(
     # Inputs - Common:
-    tolerance: float32,
-    scaling: float32,
-    time_dt: wp.array(dtype=float32),
-    body_q_i: wp.array(dtype=transformf),
-    body_u_i: wp.array(dtype=vec6f),
+    tolerance: wp.float32,
+    time_dt: wp.array[wp.float32],
+    body_q_i: wp.array[wp.transformf],
+    body_u_i: wp.array[wp.spatial_vectorf],
     # Inputs - Previous:
-    sorted_contact_keys_old: wp.array(dtype=uint64),
-    sorted_to_unsorted_map_old: wp.array(dtype=int32),
-    num_active_contacts_old: wp.array(dtype=int32),
-    contact_position_B_old: wp.array(dtype=vec3f),
-    contact_frame_old: wp.array(dtype=quatf),
-    contact_reaction_old: wp.array(dtype=vec3f),
-    contact_velocity_old: wp.array(dtype=vec3f),
+    sorted_contact_keys_old: wp.array[wp.uint64],
+    sorted_to_unsorted_map_old: wp.array[wp.int32],
+    num_active_contacts_old: wp.array[wp.int32],
+    contact_position_B_old: wp.array[wp.vec3f],
+    contact_frame_old: wp.array[wp.quatf],
+    contact_reaction_old: wp.array[wp.vec3f],
+    contact_velocity_old: wp.array[wp.vec3f],
     # Inputs - Next:
-    num_active_contacts_new: wp.array(dtype=int32),
-    contact_key_new: wp.array(dtype=uint64),
-    contact_wid_new: wp.array(dtype=int32),
-    contact_bid_AB_new: wp.array(dtype=vec2i),
-    contact_position_A_new: wp.array(dtype=vec3f),
-    contact_position_B_new: wp.array(dtype=vec3f),
-    contact_frame_new: wp.array(dtype=quatf),
-    contact_material_new: wp.array(dtype=vec2f),
+    num_active_contacts_new: wp.array[wp.int32],
+    contact_key_new: wp.array[wp.uint64],
+    contact_wid_new: wp.array[wp.int32],
+    contact_bid_AB_new: wp.array[wp.vec2i],
+    contact_position_A_new: wp.array[wp.vec3f],
+    contact_position_B_new: wp.array[wp.vec3f],
+    contact_frame_new: wp.array[wp.quatf],
+    contact_material_new: wp.array[wp.vec2f],
     # Outputs:
-    contact_reaction_new: wp.array(dtype=vec3f),
-    contact_velocity_new: wp.array(dtype=vec3f),
+    contact_reaction_new: wp.array[wp.vec3f],
+    contact_velocity_new: wp.array[wp.vec3f],
 ):
     """
     Match current contacts to previous timestep contacts using geom-pair keys and relative distance.
@@ -411,8 +464,8 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
 
     # Initialize the target reaction and velocity to zero
     # to account for the case where no matching contact is found
-    target_reaction = vec3f(0.0)
-    target_velocity = vec3f(0.0)
+    target_reaction = wp.vec3f(0.0)
+    target_velocity = wp.vec3f(0.0)
 
     # Perform binary search to find the start index of the target key - i.e. assuming a geom-pair key
     start = binary_search_find_range_start(0, num_active_old, target_key, sorted_contact_keys_old)
@@ -442,8 +495,8 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
     # Iterate through all old contacts with the same key and check if contacts match
     # based on distance of contact points after accounting for associated body motion
     # NOTE: For the comparison, new_idx -> cid, old_idx -> sorted_to_unsorted_map_old[start + k]
-    k = int32(0)
-    found_match = int32(0)
+    k = wp.int32(0)
+    found_match = wp.int32(0)
     old_key = sorted_contact_keys_old[start]
     while target_key == old_key:
         # Retrieve the old contact index from the sorted->unsorted map
@@ -464,11 +517,13 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
             R_k_old_to_new = wp.transpose(R_k_target) @ R_k_old
             target_reaction = R_k_old_to_new @ lambda_k_old
             target_velocity = R_k_old_to_new @ v_k_old
-            found_match = int32(1)
+            found_match = wp.int32(1)
             break
 
         # Update the current old-key to check in the next iteration
         k += 1
+        if start + k >= num_active_old:
+            break
         old_key = sorted_contact_keys_old[start + k]
 
     # If no matching contact found by position, fallback to net wrench approach
@@ -479,7 +534,7 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
 
         # Retrieve the body indices and states for the contact's associated bodies
         # NOTE: If body A is static, then its velocity contribution is zero by definition
-        v_Ak = vec3f(0.0)
+        v_Ak = wp.vec3f(0.0)
         if bid_AB[0] >= 0:
             u_A = body_u_i[bid_AB[0]]
             r_A = wp.transform_get_translation(body_q_i[bid_AB[0]])
@@ -497,13 +552,13 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
         # as the normal velocity should always be non-negative in the local
         # contact frame, and positive if the solver computes an opening contact
         # thus, for warm-starting we only need to consider the tangential velocity
-        target_velocity = scaling * wp.transpose(R_k_target) @ (v_Bk - v_Ak)
+        target_velocity = wp.transpose(R_k_target) @ (v_Bk - v_Ak)
         target_velocity.z = wp.max(target_velocity.z, 0.0)
 
         # Iterate through all old contacts with the same key and accumulate net body-com wrench
         # NOTE: We only need body B since it is the body on which the contact reaction acts positively
-        geom_pair_force_body_B = vec3f(0.0)
-        k = int32(0)
+        geom_pair_force_body_B = wp.vec3f(0.0)
+        k = wp.int32(0)
         old_key = sorted_contact_keys_old[start]
         while target_key == old_key:
             # Retrieve the old contact index from the sorted->unsorted map
@@ -518,22 +573,24 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
 
             # Update the current old-key to check in the next iteration
             k += 1
+            if start + k >= num_active_old:
+                break
             old_key = sorted_contact_keys_old[start + k]
 
         # TODO: We need to cache this value per geom-pair
         # TODO: Replace this with a new cache instead of recomputing every time --- IGNORE ---
-        num_contacts_gid_AB_new = int32(0)
+        num_contacts_gid_AB_new = wp.int32(0)
         for i in range(num_active_contacts_new[0]):
             if contact_key_new[i] == target_key:
                 num_contacts_gid_AB_new += 1
 
         # Average the net body-com force over the number of contacts for this geom-pair
-        contact_force_uniform_new = (1.0 / float32(num_contacts_gid_AB_new)) * geom_pair_force_body_B
+        contact_force_uniform_new = (1.0 / wp.float32(num_contacts_gid_AB_new)) * geom_pair_force_body_B
 
         # Project to the new contact frame and local
         # friction cone to obtain the contact reaction
         target_reaction = wp.transpose(R_k_target) @ contact_force_uniform_new
-        target_reaction = scaling * project_to_coulomb_cone(target_reaction, target_mu)
+        target_reaction = project_to_coulomb_cone(target_reaction, target_mu)
 
     # Store the new contact reaction and velocity
     # NOTE: These will remain zero if no matching contact is found
@@ -555,9 +612,9 @@ def warmstart_limits_by_matched_jid_dof_key(
     Warm-starts limits by matching joint-DoF index-pair keys.
 
     Args:
-        sorter (KeySorter): The key sorter used to sort cached limit keys.
-        cache (LimitsKaminoData): The cached limits data from the previous simulation step.
-        limits (LimitsKaminoData): The current limits data to be warm-started.
+        sorter: The key sorter used to sort cached limit keys.
+        cache: The cached limits data from the previous simulation step.
+        limits: The current limits data to be warm-started.
     """
     # First sort the keys of cached limits to facilitate binary search
     sorter.sort(num_active_keys=cache.model_active_limits, keys=cache.key)
@@ -590,24 +647,48 @@ def warmstart_contacts_by_matched_geom_pair_key_and_position(
     sorter: KeySorter,
     cache: ContactsKaminoData,
     contacts: ContactsKaminoData,
-    tolerance: float32 | None = None,
+    tolerance: wp.float32 | None = None,
+    balance_tangential: bool = False,
+    tangent_force_sums: wp.array[wp.vec3f] | None = None,
+    pair_contact_counts: wp.array[wp.int32] | None = None,
 ):
     """
     Warm-starts contacts by matching geom-pair keys and contact point positions.
 
     Args:
-        model (ModelKamino): The model containing simulation parameters.
-        data (DataKamino): The model data containing body states.
-        sorter (KeySorter): The key sorter used to sort cached contact keys.
-        cache (ContactsKaminoData): The cached contacts data from the previous simulation step.
-        contacts (ContactsKaminoData): The current contacts data to be warm-started.
+        model: The model containing simulation parameters.
+        data: The model data containing body states.
+        sorter: The key sorter used to sort cached contact keys.
+        cache: The cached contacts data from the previous simulation step.
+        contacts: The current contacts data to be warm-started.
+        balance_tangential: Whether to distribute the cached pair tangent force uniformly.
+        tangent_force_sums: Scratch storage for cached geometry-pair tangent forces.
+        pair_contact_counts: Scratch storage for cached geometry-pair contact counts.
     """
     # Define tolerance for matching contact points based on distance after accounting for body motion
     if tolerance is None:
-        tolerance = float32(1e-5)
+        tolerance = wp.float32(1e-5)
 
     # First sort the keys of cached contacts to facilitate binary search
     sorter.sort(num_active_keys=cache.model_active_contacts, keys=cache.key)
+
+    if tangent_force_sums is None or pair_contact_counts is None:
+        raise ValueError("Tangent-force warm-start scratch arrays must be provided.")
+    if balance_tangential:
+        wp.launch(
+            kernel=_aggregate_cached_contact_tangents,
+            dim=cache.model_max_contacts_host,
+            inputs=[
+                sorter.sorted_keys,
+                sorter.sorted_to_unsorted_map,
+                cache.model_active_contacts,
+                cache.frame,
+                cache.reaction,
+                tangent_force_sums,
+                pair_contact_counts,
+            ],
+            device=model.device,
+        )
 
     # Launch kernel to warmstart contacts by matching geom-pair keys and contact point positions
     wp.launch(
@@ -616,6 +697,7 @@ def warmstart_contacts_by_matched_geom_pair_key_and_position(
         inputs=[
             # Inputs - Common:
             tolerance,
+            wp.bool(balance_tangential),
             model.time.dt,
             data.bodies.q_i,
             data.bodies.u_i,
@@ -627,6 +709,8 @@ def warmstart_contacts_by_matched_geom_pair_key_and_position(
             cache.frame,
             cache.reaction,
             cache.velocity,
+            tangent_force_sums,
+            pair_contact_counts,
             # Inputs - Next:
             contacts.model_active_contacts,
             contacts.key,
@@ -634,6 +718,7 @@ def warmstart_contacts_by_matched_geom_pair_key_and_position(
             contacts.bid_AB,
             contacts.position_B,
             contacts.frame,
+            contacts.material,
             # Outputs:
             contacts.reaction,
             contacts.velocity,
@@ -647,22 +732,17 @@ def warmstart_contacts_from_geom_pair_net_force(
     sorter: KeySorter,
     cache: ContactsKaminoData,
     contacts: ContactsKaminoData,
-    scaling: float32 | None = None,
 ):
     """
     Warm-starts contacts by matching geom-pair keys and contact point positions.
 
     Args:
-        model (ModelKamino): The model containing simulation parameters.
-        data (DataKamino): The model data containing body states.
-        sorter (KeySorter): The key sorter used to sort cached contact keys.
-        cache (ContactsKaminoData): The cached contacts data from the previous simulation step.
-        contacts (ContactsKaminoData): The current contacts data to be warm-started.
+        model: The model containing simulation parameters.
+        data: The model data containing body states.
+        sorter: The key sorter used to sort cached contact keys.
+        cache: The cached contacts data from the previous simulation step.
+        contacts: The current contacts data to be warm-started.
     """
-    # Define scaling for warm-started reactions and velocities
-    if scaling is None:
-        scaling = float32(1.0)
-
     # First sort the keys of cached contacts to facilitate binary search
     sorter.sort(num_active_keys=cache.model_active_contacts, keys=cache.key)
 
@@ -672,7 +752,6 @@ def warmstart_contacts_from_geom_pair_net_force(
         dim=contacts.model_max_contacts_host,
         inputs=[
             # Inputs - Common:
-            scaling,
             data.bodies.q_i,
             data.bodies.u_i,
             # Inputs - Previous:
@@ -703,25 +782,21 @@ def warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_back
     sorter: KeySorter,
     cache: ContactsKaminoData,
     contacts: ContactsKaminoData,
-    tolerance: float32 | None = None,
-    scaling: float32 | None = None,
+    tolerance: wp.float32 | None = None,
 ):
     """
     Warm-starts contacts by matching geom-pair keys and contact point positions.
 
     Args:
-        model (ModelKamino): The model containing simulation parameters.
-        data (DataKamino): The model data containing body states.
-        sorter (KeySorter): The key sorter used to sort cached contact keys.
-        cache (ContactsKaminoData): The cached contacts data from the previous simulation step.
-        contacts (ContactsKaminoData): The current contacts data to be warm-started.
+        model: The model containing simulation parameters.
+        data: The model data containing body states.
+        sorter: The key sorter used to sort cached contact keys.
+        cache: The cached contacts data from the previous simulation step.
+        contacts: The current contacts data to be warm-started.
     """
     # Define tolerance for matching contact points based on distance after accounting for body motion
     if tolerance is None:
-        tolerance = float32(1e-5)
-    # Define scaling for warm-started reactions and velocities
-    if scaling is None:
-        scaling = float32(1.0)
+        tolerance = wp.float32(1e-5)
 
     # First sort the keys of cached contacts to facilitate binary search
     sorter.sort(num_active_keys=cache.model_active_contacts, keys=cache.key)
@@ -733,7 +808,6 @@ def warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_back
         inputs=[
             # Inputs - Common:
             tolerance,
-            scaling,
             model.time.dt,
             data.bodies.q_i,
             data.bodies.u_i,
@@ -777,7 +851,7 @@ class WarmstarterLimits:
         Initializes the limits warmstarter using the allocations of the provided limits container.
 
         Args:
-            limits (LimitsKamino): The limits container whose allocations are used to initialize the warmstarter.
+            limits: The limits container whose allocations are used to initialize the warmstarter.
         """
         # Store the device of the provided contacts container
         self._device: wp.DeviceLike = limits.device if limits is not None else None
@@ -798,6 +872,7 @@ class WarmstarterLimits:
                 key=wp.zeros_like(limits.key),
                 velocity=wp.zeros_like(limits.velocity),
                 reaction=wp.zeros_like(limits.reaction),
+                wid=wp.zeros_like(limits.wid),
             )
 
         # Create a key sorter that can handle the maximum number of contacts
@@ -824,9 +899,9 @@ class WarmstarterLimits:
         The current implementation matches contacts based on geom-pair keys and contact point positions.
 
         Args:
-            model (ModelKamino): The model containing simulation parameters.
-            data (DataKamino): The model data containing body states.
-            limits (LimitsKamino): The limits container to warm-start.
+            model: The model containing simulation parameters.
+            data: The model data containing body states.
+            limits: The limits container to warm-start.
         """
         # Early exit if no cache is allocated
         if self._cache is None:
@@ -844,7 +919,7 @@ class WarmstarterLimits:
         Updates the warmstarter's internal cache with the provided limits data.
 
         Args:
-            limits (LimitsKamino): The limits container from which to update the cache.
+            limits: The limits container from which to update the cache.
         """
         # Early exit if no cache is allocated or no limits data is provided
         if self._cache is None or limits is None:
@@ -855,17 +930,31 @@ class WarmstarterLimits:
         wp.copy(self._cache.key, limits.key)
         wp.copy(self._cache.velocity, limits.velocity)
         wp.copy(self._cache.reaction, limits.reaction)
+        wp.copy(self._cache.wid, limits.wid)
 
-    def reset(self):
+    def reset(self, world_mask: wp.array[wp.bool] | None = None):
         """
-        Resets the warmstarter's internal cache by zeroing out all data.
+        Resets the warmstarter's internal cache, for all or a subset of the worlds.
+
+        Args:
+            world_mask: If provided, cached data is invalidated for designated worlds (`True` in the mask),
+                so that new active limits in these worlds won't match any cached active limit.
+                Otherwise, the entire cache is zeroed out.
         """
         if self._cache is None:
             return
-        self._cache.model_active_limits.zero_()
-        self._cache.key.fill_(make_bitmask(63))
-        self._cache.reaction.zero_()
-        self._cache.velocity.zero_()
+        if world_mask is not None:
+            wp.launch(
+                _invalidate_keys_from_select_worlds,
+                dim=self._cache.model_max_limits_host,
+                inputs=[self._cache.wid, self._cache.key, world_mask],
+                device=self.device,
+            )
+        else:
+            self._cache.model_active_limits.zero_()
+            self._cache.key.fill_(make_bitmask(63))
+            self._cache.reaction.zero_()
+            self._cache.velocity.zero_()
 
 
 class WarmstarterContacts:
@@ -875,13 +964,16 @@ class WarmstarterContacts:
     This class supports multiple warm-starting strategies, selectable via the `Method` enum:
     - `KEY_AND_POSITION`:
         Warm-starts contacts by matching geom-pair keys and contact-point positions.
+    - `KEY_AND_POSITION_WITH_TANGENTIAL_NET_FORCE`:
+        Warm-starts contacts by matching geom-pair keys and contact-point positions,
+        while distributing the cached net tangential force uniformly across the geom-pair.
     - `GEOM_PAIR_NET_FORCE`:
         Warm-starts contacts using the net body-CoM contact force per geom-pair.
     - `GEOM_PAIR_NET_WRENCH`:
         Warm-starts contacts using the net body-CoM contact wrench per geom-pair.
     - `KEY_AND_POSITION_WITH_NET_FORCE_BACKUP`:
         Warm-starts contacts by matching geom-pair keys and contact-point positions,
-    - with a backup strategy using the net body-CoM contact force per geom-pair.
+        with a backup strategy using the net body-CoM contact force per geom-pair.
     - `KEY_AND_POSITION_WITH_NET_WRENCH_BACKUP`:
         Warm-starts contacts by matching geom-pair keys and contact-point positions,
         with a backup strategy using the net body-CoM contact wrench per geom-pair.
@@ -916,6 +1008,12 @@ class WarmstarterContacts:
         with a backup strategy using the net body-CoM contact wrench per geom-pair.
         """
 
+        KEY_AND_POSITION_WITH_TANGENTIAL_NET_FORCE = 5
+        """
+        Warm-start contacts by matching geom-pair keys and contact-point positions,
+        while distributing the cached net tangential force uniformly across the geom-pair.
+        """
+
         @classmethod
         def from_string(cls, s: str) -> WarmstarterContacts.Method:
             """Converts a string to a WarmstarterContacts.Method enum value."""
@@ -941,31 +1039,28 @@ class WarmstarterContacts:
         contacts: ContactsKamino | None = None,
         method: Method = Method.KEY_AND_POSITION,
         tolerance: float = 1e-5,
-        scaling: float = 1.0,
     ):
         """
         Initializes the contacts warmstarter using the allocations of the provided contacts container.
 
         Args:
-            contacts (ContactsKamino): The contacts container whose allocations are used to initialize the warmstarter.
-            method (WarmstarterContacts.Method): The warm-starting method to use.
-            tolerance (float): The tolerance used for matching contact point positions.\n
-                Must be a floating-point value specified in meters, and within the range `[0, +inf)`.\n
+            contacts: The contacts container whose allocations are used to initialize the warmstarter.
+            method: The warm-starting method to use.
+            tolerance: The tolerance used for matching contact point positions.
+                Must be a floating-point value specified in meters, and within the range `[0, +inf)`.
                 Setting this to `0.0` requires exact position matches, effectively disabling position-based matching.
-            scaling (float): The scaling factor applied to warm-started reactions and velocities.\n
-                Must be a floating-point value specified in the range `[0, 1.0)`.\n
-                Setting this to `0.0` effectively disables warm-starting.
         """
         # Store the specified warm-starting configurations
         self._method: WarmstarterContacts.Method = method
-        self._tolerance: float32 = float32(tolerance)
-        self._scaling: float32 = float32(scaling)
+        self._tolerance: wp.float32 = wp.float32(tolerance)
 
         # Set the device to use as that of the provided contacts container
         self._device: wp.DeviceLike = contacts.device if contacts is not None else None
 
         # Declare the internal contacts cache
         self._cache: ContactsKaminoData | None = None
+        self._tangent_force_sums: wp.array[wp.vec3f] | None = None
+        self._pair_contact_counts: wp.array[wp.int32] | None = None
 
         # Check if the contacts container has allocations and skip cache allocations if not
         if contacts is None or (contacts is not None and contacts.model_max_contacts_host <= 0):
@@ -977,14 +1072,17 @@ class WarmstarterContacts:
                 model_max_contacts_host=contacts.model_max_contacts_host,
                 world_max_contacts_host=contacts.world_max_contacts_host,
                 model_active_contacts=wp.zeros_like(contacts.model_active_contacts),
-                bid_AB=wp.full_like(contacts.bid_AB, value=vec2i(-1, -1)),
+                bid_AB=wp.full_like(contacts.bid_AB, value=wp.vec2i(-1, -1)),
                 position_A=wp.zeros_like(contacts.position_A),
                 position_B=wp.zeros_like(contacts.position_B),
                 frame=wp.zeros_like(contacts.frame),
                 key=wp.zeros_like(contacts.key),
                 velocity=wp.zeros_like(contacts.velocity),
                 reaction=wp.zeros_like(contacts.reaction),
+                wid=wp.zeros_like(contacts.wid),
             )
+            self._tangent_force_sums = wp.zeros_like(contacts.reaction)
+            self._pair_contact_counts = wp.zeros(contacts.model_max_contacts_host, dtype=wp.int32, device=self._device)
 
         # Create a key sorter that can handle the maximum number of contacts
         self._sorter = KeySorter(max_num_keys=contacts.model_max_contacts_host, device=self._device)
@@ -1010,9 +1108,9 @@ class WarmstarterContacts:
         The current implementation matches contacts based on geom-pair keys and contact point positions.
 
         Args:
-            model (ModelKamino): The model containing simulation parameters.
-            data (DataKamino): The model data containing body states.
-            contacts (ContactsKamino): The contacts container to warm-start.
+            model: The model containing simulation parameters.
+            data: The model data containing body states.
+            contacts: The contacts container to warm-start.
         """
         # Early exit if no cache is allocated
         if self._cache is None:
@@ -1028,6 +1126,21 @@ class WarmstarterContacts:
                     cache=self._cache,
                     contacts=contacts.data,
                     tolerance=self._tolerance,
+                    tangent_force_sums=self._tangent_force_sums,
+                    pair_contact_counts=self._pair_contact_counts,
+                )
+
+            case WarmstarterContacts.Method.KEY_AND_POSITION_WITH_TANGENTIAL_NET_FORCE:
+                warmstart_contacts_by_matched_geom_pair_key_and_position(
+                    model=model,
+                    data=data,
+                    sorter=self._sorter,
+                    cache=self._cache,
+                    contacts=contacts.data,
+                    tolerance=self._tolerance,
+                    balance_tangential=True,
+                    tangent_force_sums=self._tangent_force_sums,
+                    pair_contact_counts=self._pair_contact_counts,
                 )
 
             case WarmstarterContacts.Method.GEOM_PAIR_NET_FORCE:
@@ -1036,7 +1149,6 @@ class WarmstarterContacts:
                     sorter=self._sorter,
                     cache=self._cache,
                     contacts=contacts.data,
-                    scaling=self._scaling,
                 )
 
             case WarmstarterContacts.Method.GEOM_PAIR_NET_WRENCH:
@@ -1050,7 +1162,6 @@ class WarmstarterContacts:
                     cache=self._cache,
                     contacts=contacts.data,
                     tolerance=self._tolerance,
-                    scaling=self._scaling,
                 )
 
             case WarmstarterContacts.Method.KEY_AND_POSITION_WITH_NET_WRENCH_BACKUP:
@@ -1066,7 +1177,8 @@ class WarmstarterContacts:
                     "  - GEOM_PAIR_NET_FORCE (1),"
                     "  - GEOM_PAIR_NET_WRENCH (2),"
                     "  - KEY_AND_POSITION_WITH_NET_FORCE_BACKUP (3),"
-                    "  - KEY_AND_POSITION_WITH_NET_WRENCH_BACKUP (4)."
+                    "  - KEY_AND_POSITION_WITH_NET_WRENCH_BACKUP (4),"
+                    "  - KEY_AND_POSITION_WITH_TANGENTIAL_NET_FORCE (5)."
                 )
 
     def update(self, contacts: ContactsKamino | None = None):
@@ -1074,7 +1186,7 @@ class WarmstarterContacts:
         Updates the warmstarter's internal cache with the provided contacts data.
 
         Args:
-            contacts (ContactsKamino): The contacts container from which to update the cache.
+            contacts: The contacts container from which to update the cache.
         """
         # Early exit if no cache is allocated or no contacts data is provided
         if self._cache is None or contacts is None:
@@ -1089,18 +1201,32 @@ class WarmstarterContacts:
         wp.copy(self._cache.key, contacts.key)
         wp.copy(self._cache.velocity, contacts.velocity)
         wp.copy(self._cache.reaction, contacts.reaction)
+        wp.copy(self._cache.wid, contacts.wid)
 
-    def reset(self):
+    def reset(self, world_mask: wp.array[wp.bool] | None = None):
         """
-        Resets the warmstarter's internal cache by zeroing out all data.
+        Resets the warmstarter's internal cache, for all or a subset of the worlds.
+
+        Args:
+            world_mask: If provided, cached data is invalidated for designated worlds (`True` in the mask),
+                so that new contacts in these worlds won't match any cached contact.
+                Otherwise, the entire cache is zeroed out.
         """
         if self._cache is None or self._cache.model_active_contacts is None:
             return
-        self._cache.model_active_contacts.zero_()
-        self._cache.bid_AB.fill_(vec2i(-1, -1))
-        self._cache.position_A.zero_()
-        self._cache.position_B.zero_()
-        self._cache.frame.zero_()
-        self._cache.key.fill_(make_bitmask(63))
-        self._cache.reaction.zero_()
-        self._cache.velocity.zero_()
+        if world_mask is not None:
+            wp.launch(
+                _invalidate_keys_from_select_worlds,
+                dim=self._cache.model_max_contacts_host,
+                inputs=[self._cache.wid, self._cache.key, world_mask],
+                device=self.device,
+            )
+        else:
+            self._cache.model_active_contacts.zero_()
+            self._cache.bid_AB.fill_(wp.vec2i(-1, -1))
+            self._cache.position_A.zero_()
+            self._cache.position_B.zero_()
+            self._cache.frame.zero_()
+            self._cache.key.fill_(make_bitmask(63))
+            self._cache.reaction.zero_()
+            self._cache.velocity.zero_()

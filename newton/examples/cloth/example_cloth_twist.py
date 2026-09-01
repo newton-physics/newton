@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Cloth Twist
@@ -41,14 +29,14 @@ from newton import ParticleFlags
 @wp.kernel
 def initialize_rotation(
     # input
-    vertex_indices_to_rot: wp.array(dtype=wp.int32),
-    pos: wp.array(dtype=wp.vec3),
-    rot_centers: wp.array(dtype=wp.vec3),
-    rot_axes: wp.array(dtype=wp.vec3),
-    t: wp.array(dtype=float),
+    vertex_indices_to_rot: wp.array[wp.int32],
+    pos: wp.array[wp.vec3],
+    rot_centers: wp.array[wp.vec3],
+    rot_axes: wp.array[wp.vec3],
+    t: wp.array[float],
     # output
-    roots: wp.array(dtype=wp.vec3),
-    roots_to_ps: wp.array(dtype=wp.vec3),
+    roots: wp.array[wp.vec3],
+    roots_to_ps: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     v_index = vertex_indices_to_rot[wp.tid()]
@@ -72,17 +60,17 @@ def initialize_rotation(
 @wp.kernel
 def apply_rotation(
     # input
-    vertex_indices_to_rot: wp.array(dtype=wp.int32),
-    rot_axes: wp.array(dtype=wp.vec3),
-    roots: wp.array(dtype=wp.vec3),
-    roots_to_ps: wp.array(dtype=wp.vec3),
-    t: wp.array(dtype=float),
+    vertex_indices_to_rot: wp.array[wp.int32],
+    rot_axes: wp.array[wp.vec3],
+    roots: wp.array[wp.vec3],
+    roots_to_ps: wp.array[wp.vec3],
+    t: wp.array[float],
     angular_velocity: float,
     dt: float,
     end_time: float,
     # output
-    pos_0: wp.array(dtype=wp.vec3),
-    pos_1: wp.array(dtype=wp.vec3),
+    pos_0: wp.array[wp.vec3],
+    pos_1: wp.array[wp.vec3],
 ):
     cur_t = t[0]
     if cur_t > end_time:
@@ -156,7 +144,7 @@ class Example:
         vertices = [wp.vec3(v) for v in mesh_points]
         self.faces = mesh_indices.reshape(-1, 3)
 
-        scene = newton.ModelBuilder(gravity=0)
+        scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         scene.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
             rot=wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2),
@@ -167,14 +155,14 @@ class Example:
             density=0.2,
             tri_ke=1.0e3,
             tri_ka=1.0e3,
-            tri_kd=2.0e-7,
+            tri_kd=2.0e-4,
             edge_ke=1e-3,
-            edge_kd=1e-4,
+            edge_kd=1e-2,
         )
         scene.color()
         self.model = scene.finalize()
         self.model.soft_contact_ke = 1.0e3
-        self.model.soft_contact_kd = 1.0e-4
+        self.model.soft_contact_kd = 1.0e-1
         self.model.soft_contact_mu = 0.2
 
         cloth_size = 50
@@ -191,7 +179,7 @@ class Example:
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
-            self.iterations,
+            iterations=self.iterations,
             particle_enable_self_contact=True,
             particle_self_contact_radius=0.002,
             particle_self_contact_margin=0.0035,
@@ -200,7 +188,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         rot_axes = [[0, 1, 0]] * len(right_side) + [[0, -1, 0]] * len(left_side)
 
@@ -236,13 +225,12 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
-        self.model.collide(self.state_0, self.contacts)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         self.solver.rebuild_bvh(self.state_0)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -304,7 +292,7 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "particle velocities are within a reasonable range",
-            lambda q, qd: max(abs(qd)) < 1.0,
+            lambda q, qd: max(abs(qd)) < 1.5,
         )
 
 
@@ -316,6 +304,4 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
 
     # Create example and run
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

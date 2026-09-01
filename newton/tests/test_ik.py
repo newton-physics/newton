@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -111,6 +99,87 @@ def _build_free_plus_revolute(device) -> newton.Model:
 
     model = builder.finalize(device=device, requires_grad=True)
     return model
+
+
+def _add_free_distance_joint(builder, joint_type, parent, child, parent_xform, child_xform):
+    if joint_type == newton.JointType.FREE:
+        return builder.add_joint_free(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+    if joint_type == newton.JointType.DISTANCE:
+        return builder.add_joint_distance(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            min_distance=-1.0,
+            max_distance=-1.0,
+        )
+    raise AssertionError(f"Unsupported joint type: {joint_type}")
+
+
+def _joint_type_name(joint_type):
+    if joint_type == newton.JointType.FREE:
+        return "free"
+    if joint_type == newton.JointType.DISTANCE:
+        return "distance"
+    raise AssertionError(f"Unsupported joint type: {joint_type}")
+
+
+def _build_descendant_free_distance(device, joint_type) -> tuple[newton.Model, int]:
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    base = builder.add_link(mass=1.0)
+    child = builder.add_link(mass=1.0)
+    builder.body_com[child] = wp.vec3(0.21, -0.07, 0.16)
+
+    root = builder.add_joint_revolute(
+        parent=-1,
+        child=base,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(
+            wp.vec3(0.2, -0.1, 0.3),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, -0.2, 1.0)), 0.55),
+        ),
+        child_xform=wp.transform_identity(),
+    )
+    child_joint = _add_free_distance_joint(
+        builder=builder,
+        joint_type=joint_type,
+        parent=base,
+        child=child,
+        parent_xform=wp.transform(
+            wp.vec3(0.7, -0.2, 0.4),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, 1.0, -0.3)), 0.7),
+        ),
+        child_xform=wp.transform(
+            wp.vec3(0.15, -0.05, 0.2),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -0.2, 0.4)), -0.9),
+        ),
+    )
+    builder.add_articulation([root, child_joint])
+    return builder.finalize(device=device, requires_grad=True), child
+
+
+def _build_root_free_distance(device, joint_type) -> tuple[newton.Model, int]:
+    builder = newton.ModelBuilder()
+    body = builder.add_link(mass=1.0, inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+    builder.body_com[body] = wp.vec3(0.2, -0.1, 0.3)
+    joint = _add_free_distance_joint(
+        builder=builder,
+        joint_type=joint_type,
+        parent=-1,
+        child=body,
+        parent_xform=wp.transform(
+            wp.vec3(0.3, -0.4, 0.6),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, 1.0, -0.3)), 0.7),
+        ),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([joint])
+    return builder.finalize(device=device, requires_grad=True), body
 
 
 # ----------------------------------------------------------------------------
@@ -323,6 +392,232 @@ def test_convergence_mixed_d6(test, device):
     _convergence_test_d6(test, device, ik.IKJacobianType.MIXED)
 
 
+def test_joint_dof_mask(test, device, mode: ik.IKJacobianType):
+    """The LM solver must leave masked joint DOFs exactly unchanged while the
+    free DOFs still converge, across the batch dimension."""
+    with wp.ScopedDevice(device):
+        model = _build_two_link_planar(device)
+        requires_grad = mode in (ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED)
+        seeds = np.array([[0.4, 0.0], [-0.2, 0.1]], dtype=np.float32)
+        targets = wp.array([[1.0, 1.0, 0.0], [0.5, 1.2, 0.0]], dtype=wp.vec3, device=device)
+        position_objective = ik.IKObjectivePosition(
+            link_index=1,
+            link_offset=wp.vec3(0.5, 0.0, 0.0),
+            target_positions=targets,
+        )
+
+        def solve(mask):
+            joint_q = wp.array(seeds, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            solver = ik.IKSolver(
+                model,
+                2,
+                [position_objective],
+                jacobian_mode=mode,
+                joint_dof_mask=mask,
+            )
+            solver.step(joint_q, joint_q, iterations=40)
+            return joint_q.numpy()
+
+        result = solve(wp.array([False, True], dtype=wp.bool, device=device))
+
+        # Masked deltas are exactly zero by construction (zeroed Jacobian
+        # columns + lambda damping), so fixedness is bit-exact, per problem.
+        for row in range(2):
+            test.assertEqual(float(result[row, 0]), float(seeds[row, 0]))
+        # The free DOF must actually converge, not merely move: compare the
+        # end-effector error against the 1-DOF optimum found by a dense scan.
+        for row in range(2):
+            theta0 = float(seeds[row, 0])
+            tx, ty = float(targets.numpy()[row][0]), float(targets.numpy()[row][1])
+            thetas = np.linspace(-np.pi, np.pi, 20001)
+            ee_x = np.cos(theta0) + np.cos(theta0 + thetas)
+            ee_y = np.sin(theta0) + np.sin(theta0 + thetas)
+            best = float(np.min(np.hypot(ee_x - tx, ee_y - ty)))
+            x = np.cos(theta0) + np.cos(theta0 + result[row, 1])
+            y = np.sin(theta0) + np.sin(theta0 + result[row, 1])
+            achieved = float(np.hypot(x - tx, y - ty))
+            test.assertLess(achieved, best + 1.0e-3)
+
+        # An all-True mask must be exactly equivalent to no mask.
+        all_true = solve(wp.ones(model.joint_dof_count, dtype=wp.bool, device=device))
+        no_mask = solve(None)
+        assert_np_equal(all_true, no_mask, tol=0.0)
+
+
+def test_joint_dof_mask_free_joint(test, device):
+    """A fully-masked FREE joint must keep its pose fixed (up to quaternion
+    renormalization roundoff) while the remaining revolute DOF still updates."""
+    with wp.ScopedDevice(device):
+        model = _build_free_plus_revolute(device)
+        seed = np.zeros((1, model.joint_coord_count), dtype=np.float32)
+        seed[0, 0:3] = [0.1, -0.2, 0.3]
+        rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+        seed[0, 3:7] = [rot[0], rot[1], rot[2], rot[3]]
+        joint_q = wp.array(seed, dtype=wp.float32, device=device)
+        target = wp.array([[1.0, 0.5, 0.0]], dtype=wp.vec3, device=device)
+        position_objective = ik.IKObjectivePosition(
+            link_index=1,
+            link_offset=wp.vec3(0.5, 0.0, 0.0),
+            target_positions=target,
+        )
+        mask = np.ones(model.joint_dof_count, dtype=bool)
+        mask[0:6] = False  # freeze the free joint (6 DOFs, 7 coordinates)
+        solver = ik.IKSolver(
+            model,
+            1,
+            [position_objective],
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
+            joint_dof_mask=wp.array(mask, dtype=wp.bool, device=device),
+        )
+
+        solver.step(joint_q, joint_q, iterations=40)
+
+        result = joint_q.numpy()[0]
+        assert_np_equal(result[0:7], seed[0, 0:7], tol=1.0e-6)
+        test.assertGreater(abs(float(result[7])), 1.0e-3)
+
+
+def test_joint_dof_mask_validation(test, device):
+    """IKSolver must reject incompatible joint DOF masks and modes."""
+    with wp.ScopedDevice(device):
+        model = _build_two_link_planar(device)
+        target = wp.array([[1.0, 1.0, 0.0]], dtype=wp.vec3, device=device)
+        objective = ik.IKObjectivePosition(
+            link_index=1,
+            link_offset=wp.vec3(0.5, 0.0, 0.0),
+            target_positions=target,
+        )
+
+        with test.assertRaisesRegex(ValueError, "dtype wp.bool"):
+            ik.IKSolver(
+                model,
+                1,
+                [objective],
+                joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.int32, device=device),
+            )
+        with test.assertRaisesRegex(ValueError, "shape"):
+            ik.IKSolver(
+                model,
+                1,
+                [objective],
+                joint_dof_mask=wp.ones(model.joint_dof_count + 1, dtype=wp.bool, device=device),
+            )
+        with test.assertRaisesRegex(ValueError, "LM optimizer"):
+            ik.IKSolver(
+                model,
+                1,
+                [objective],
+                optimizer=ik.IKOptimizer.LBFGS,
+                joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.bool, device=device),
+            )
+        with test.assertRaisesRegex(ValueError, "sampler='none'"):
+            ik.IKSolver(
+                model,
+                1,
+                [objective],
+                sampler=ik.IKSampler.GAUSS,
+                joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.bool, device=device),
+            )
+        if device.is_cuda:
+            with test.assertRaisesRegex(ValueError, "model device"):
+                ik.IKSolver(
+                    model,
+                    1,
+                    [objective],
+                    joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.bool, device="cpu"),
+                )
+
+        free_model = _build_free_plus_revolute(device)
+        free_target = wp.array([[1.0, 0.5, 0.0]], dtype=wp.vec3, device=device)
+        free_objective = ik.IKObjectivePosition(
+            link_index=1,
+            link_offset=wp.vec3(0.5, 0.0, 0.0),
+            target_positions=free_target,
+        )
+        partial = np.ones(free_model.joint_dof_count, dtype=bool)
+        partial[0:3] = False  # linear DOFs of the free joint only
+        with test.assertRaisesRegex(ValueError, "masked together"):
+            ik.IKSolver(
+                free_model,
+                1,
+                [free_objective],
+                joint_dof_mask=wp.array(partial, dtype=wp.bool, device=device),
+            )
+
+
+def test_convergence_analytic_descendant_free_distance(test, device, joint_type):
+    with wp.ScopedDevice(device):
+        n_problems = 2
+        model, ee_link = _build_descendant_free_distance(device, joint_type)
+        joint_q_2d = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=False)
+        joint_qd_2d = wp.zeros((n_problems, model.joint_dof_count), dtype=wp.float32)
+        body_q_2d = wp.zeros((n_problems, model.body_count), dtype=wp.transform)
+        body_qd_2d = wp.zeros((n_problems, model.body_count), dtype=wp.spatial_vector)
+
+        q_np = joint_q_2d.numpy()
+        q_start = model.joint_q_start.numpy()
+        child_start = q_start[1]
+        root_angles = [0.35, -0.28]
+        child_translations = [
+            np.array([0.24, -0.17, 0.12], dtype=np.float32),
+            np.array([-0.18, 0.11, 0.16], dtype=np.float32),
+        ]
+        child_axes = [wp.normalize(wp.vec3(1.0, 0.3, -0.2)), wp.normalize(wp.vec3(-0.4, 0.8, 0.5))]
+        child_angles = [0.42, -0.31]
+        for prob in range(n_problems):
+            q_np[prob, 0] = root_angles[prob]
+            q_np[prob, child_start : child_start + 3] = child_translations[prob]
+            child_rot = wp.quat_from_axis_angle(child_axes[prob], child_angles[prob])
+            q_np[prob, child_start + 3 : child_start + 7] = np.array(
+                [child_rot[0], child_rot[1], child_rot[2], child_rot[3]],
+                dtype=np.float32,
+            )
+        joint_q_2d.assign(q_np)
+
+        ee_off = wp.vec3(0.08, -0.04, 0.06)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        initial_pos = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
+        body_q_np = body_q_2d.numpy()
+
+        pos_targets = initial_pos + np.array([[0.16, -0.09, 0.12], [-0.11, 0.08, -0.07]], dtype=np.float32)
+        rot_targets = np.zeros((n_problems, 4), dtype=np.float32)
+        rot_axes = [wp.normalize(wp.vec3(0.5, -0.1, 0.8)), wp.normalize(wp.vec3(-0.2, 0.9, 0.3))]
+        rot_angles = [0.33, -0.27]
+        initial_rot = []
+        for prob in range(n_problems):
+            q_init = wp.quat(*body_q_np[prob, ee_link, 3:7])
+            initial_rot.append(np.array([q_init[0], q_init[1], q_init[2], q_init[3]], dtype=np.float32))
+            q_target = wp.normalize(wp.quat_from_axis_angle(rot_axes[prob], rot_angles[prob]) * q_init)
+            rot_targets[prob] = np.array([q_target[0], q_target[1], q_target[2], q_target[3]], dtype=np.float32)
+
+        pos_obj = ik.IKObjectivePosition(ee_link, ee_off, wp.array(pos_targets, dtype=wp.vec3))
+        rot_obj = ik.IKObjectiveRotation(ee_link, wp.quat_identity(), wp.array(rot_targets, dtype=wp.vec4))
+        solver = ik.IKSolver(
+            model,
+            n_problems,
+            [pos_obj, rot_obj],
+            lambda_initial=1e-3,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
+        )
+
+        solver.step(joint_q_2d, joint_q_2d, iterations=70, step_size=1.0)
+
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        final_pos = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
+        final_q_np = body_q_2d.numpy()
+        for prob in range(n_problems):
+            pos_err_0 = np.linalg.norm(initial_pos[prob] - pos_targets[prob])
+            pos_err_1 = np.linalg.norm(final_pos[prob] - pos_targets[prob])
+            rot_err_0 = 2.0 * math.acos(np.clip(abs(np.dot(initial_rot[prob], rot_targets[prob])), 0.0, 1.0))
+            rot_err_1 = 2.0 * math.acos(
+                np.clip(abs(np.dot(final_q_np[prob, ee_link, 3:7], rot_targets[prob])), 0.0, 1.0)
+            )
+            test.assertLess(pos_err_1, pos_err_0, f"[{joint_type}] problem {prob} position did not improve")
+            test.assertLess(rot_err_1, rot_err_0, f"[{joint_type}] problem {prob} rotation did not improve")
+            test.assertLess(pos_err_1, 5e-3, f"[{joint_type}] problem {prob} final position error too high")
+            test.assertLess(rot_err_1, 2e-2, f"[{joint_type}] problem {prob} final rotation error too high")
+
+
 # ----------------------------------------------------------------------------
 # 2.  Jacobian equality helpers
 # ----------------------------------------------------------------------------
@@ -435,6 +730,54 @@ def test_d6_jacobian_compare(test, device):
     _jacobian_compare(test, device, _d6_objective_builder)
 
 
+def test_free_distance_translated_jacobian_compare(test, device, joint_type, optimizer):
+    """Match analytic and autodiff Jacobians for a translated floating body."""
+    with wp.ScopedDevice(device):
+        translations = (0.0, 1.0, 5.0, 20.0)
+        model, body = _build_root_free_distance(device, joint_type)
+        joint_q = np.zeros((len(translations), model.joint_coord_count), dtype=np.float32)
+        joint_q[:, 0] = translations
+        joint_q[:, 6] = 1.0
+        target_positions = wp.zeros(len(translations), dtype=wp.vec3, device=device)
+
+        solver_auto = ik.IKSolver(
+            model,
+            len(translations),
+            [ik.IKObjectivePosition(body, wp.vec3(), target_positions)],
+            optimizer=optimizer,
+            jacobian_mode=ik.IKJacobianType.AUTODIFF,
+        )
+        solver_ana = ik.IKSolver(
+            model,
+            len(translations),
+            [ik.IKObjectivePosition(body, wp.vec3(), target_positions)],
+            optimizer=optimizer,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
+        )
+        q_auto = wp.array(joint_q, device=device, requires_grad=True)
+        q_ana = wp.array(joint_q, device=device)
+
+        solver_auto._impl._compute_residuals(q_auto)
+        solver_ana._impl._compute_residuals(q_ana)
+        if optimizer == ik.IKOptimizer.LM:
+            jacobian_auto = solver_auto._impl._jacobian_at(solver_auto._impl._ctx_solver(q_auto)).numpy()
+            jacobian_ana = solver_ana._impl._jacobian_at(solver_ana._impl._ctx_solver(q_ana)).numpy()
+            for problem_idx, translation in enumerate(translations):
+                with test.subTest(translation=translation):
+                    assert_np_equal(jacobian_auto[problem_idx], jacobian_ana[problem_idx], tol=1e-4)
+        else:
+            gradient_auto = wp.zeros((len(translations), model.joint_dof_count), dtype=wp.float32, device=device)
+            gradient_ana = wp.zeros_like(gradient_auto)
+            solver_auto._impl._gradient_at(solver_auto._impl._ctx_solver(q_auto), gradient_auto)
+            solver_ana._impl._gradient_at(solver_ana._impl._ctx_solver(q_ana), gradient_ana)
+            assert_np_equal(gradient_auto.numpy(), gradient_ana.numpy(), tol=1e-4)
+
+        motion_subspace = solver_ana._impl.joint_S_s.numpy()
+        for problem_idx, translation in enumerate(translations[1:], start=1):
+            with test.subTest(motion_subspace_translation=translation):
+                assert_np_equal(motion_subspace[0], motion_subspace[problem_idx], tol=1e-6)
+
+
 # ----------------------------------------------------------------------------
 # 3.  Test-class registration per device
 # ----------------------------------------------------------------------------
@@ -456,17 +799,45 @@ add_function_test(TestIKModes, "test_convergence_mixed", test_convergence_mixed,
 add_function_test(TestIKModes, "test_convergence_autodiff_free", test_convergence_autodiff_free, devices)
 add_function_test(TestIKModes, "test_convergence_analytic_free", test_convergence_analytic_free, devices)
 add_function_test(TestIKModes, "test_convergence_mixed_free", test_convergence_mixed_free, devices)
+for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
+    add_function_test(
+        TestIKModes,
+        f"test_convergence_analytic_descendant_{_joint_type_name(joint_type)}",
+        test_convergence_analytic_descendant_free_distance,
+        devices,
+        joint_type=joint_type,
+    )
 
 # D6-joint convergence
 add_function_test(TestIKModes, "test_convergence_autodiff_d6", test_convergence_autodiff_d6, cuda_devices)
 add_function_test(TestIKModes, "test_convergence_analytic_d6", test_convergence_analytic_d6, devices)
 add_function_test(TestIKModes, "test_convergence_mixed_d6", test_convergence_mixed_d6, devices)
+for mode in ik.IKJacobianType:
+    add_function_test(
+        TestIKModes,
+        f"test_joint_dof_mask_{mode.value}",
+        test_joint_dof_mask,
+        devices,
+        mode=mode,
+    )
+add_function_test(TestIKModes, "test_joint_dof_mask_free_joint", test_joint_dof_mask_free_joint, devices)
+add_function_test(TestIKModes, "test_joint_dof_mask_validation", test_joint_dof_mask_validation, devices)
 
 # Jacobian equality
 add_function_test(TestIKModes, "test_position_jacobian_compare", test_position_jacobian_compare, devices)
 add_function_test(TestIKModes, "test_rotation_jacobian_compare", test_rotation_jacobian_compare, cuda_devices)
 add_function_test(TestIKModes, "test_joint_limit_jacobian_compare", test_joint_limit_jacobian_compare, devices)
 add_function_test(TestIKModes, "test_d6_jacobian_compare", test_d6_jacobian_compare, cuda_devices)
+for optimizer, optimizer_name in ((ik.IKOptimizer.LM, "lm"), (ik.IKOptimizer.LBFGS, "lbfgs")):
+    for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
+        add_function_test(
+            TestIKModes,
+            f"test_translated_{_joint_type_name(joint_type)}_{optimizer_name}_jacobian_compare",
+            test_free_distance_translated_jacobian_compare,
+            devices,
+            joint_type=joint_type,
+            optimizer=optimizer,
+        )
 
 
 if __name__ == "__main__":

@@ -1,27 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import warp as wp
 
 from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield
 from .broad_phase_common import binary_search
-from .flags import ParticleFlags, ShapeFlags
+from .contact_data import make_contact_sort_key_with_bits
+from .flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from .types import (
     Axis,
     GeoType,
 )
+
+
+@wp.func
+def resolve_mesh_sign_method(mesh_properties: int):
+    """Resolve the runtime mesh sign method for a shape from its mesh properties.
+
+    Parity for watertight meshes, pseudo-normal otherwise. Normal (rather than
+    the winding number the baked SDF path falls back to) is the open-mesh
+    runtime choice on purpose: for a genuinely open surface the generalized
+    winding number is ~0.5 and gives no clean inside, whereas the pseudo-normal
+    yields a stable local side-of-surface, which is what open collision
+    geometry needs.
+    """
+    if mesh_properties & MeshProperties.WATERTIGHT:
+        return int(MeshSignMethod.PARITY)
+    return int(MeshSignMethod.NORMAL)
 
 
 @wp.func
@@ -341,12 +346,84 @@ def sdf_capsule_grad(point: wp.vec3, radius: float, half_height: float, up_axis:
 
 
 @wp.func
+def _sdf_barrel_cylinder_data_z(point: wp.vec3, radius: float, half_height: float, barrel_radius: float):
+    """Compute the exact SDF and closest boundary point of a Z-up barrel cylinder."""
+    radial = wp.length(wp.vec2(point[0], point[1]))
+    z_abs = wp.abs(point[2])
+    end_radial_offset = wp.sqrt(wp.max(barrel_radius * barrel_radius - half_height * half_height, 0.0))
+    center = radius - end_radial_offset
+
+    # Closest point on the circular side arc in the radial/axial plane.
+    arc_delta = wp.vec2(radial - center, z_abs)
+    arc_delta_len = wp.length(arc_delta)
+    arc_radial = center + barrel_radius
+    arc_z = 0.0
+    if arc_delta_len > 1.0e-8:
+        arc_radial = center + barrel_radius * arc_delta[0] / arc_delta_len
+        arc_z = barrel_radius * arc_delta[1] / arc_delta_len
+    if arc_radial - center < end_radial_offset:
+        arc_radial = radius
+        arc_z = half_height
+
+    arc_offset = wp.vec2(radial - arc_radial, z_abs - arc_z)
+    arc_distance = wp.length(arc_offset)
+
+    # The other boundary segment is the end disk.
+    cap_radial = wp.min(radial, radius)
+    cap_offset = wp.vec2(radial - cap_radial, z_abs - half_height)
+    cap_distance = wp.length(cap_offset)
+    use_cap = cap_distance < arc_distance
+    boundary_radial = wp.where(use_cap, cap_radial, arc_radial)
+    boundary_z = wp.where(use_cap, half_height, arc_z)
+    distance = wp.min(cap_distance, arc_distance)
+
+    profile_radius = center + wp.sqrt(wp.max(barrel_radius * barrel_radius - z_abs * z_abs, 0.0))
+    inside = z_abs <= half_height and radial <= profile_radius
+    signed_distance = wp.where(inside, -distance, distance)
+    return wp.vec4(signed_distance, boundary_radial, boundary_z, wp.where(use_cap, 1.0, 0.0))
+
+
+@wp.func
+def _sdf_barrel_cylinder_z(point: wp.vec3, radius: float, half_height: float, barrel_radius: float):
+    return _sdf_barrel_cylinder_data_z(point, radius, half_height, barrel_radius)[0]
+
+
+@wp.func
+def _sdf_barrel_cylinder_grad_z(point: wp.vec3, radius: float, half_height: float, barrel_radius: float):
+    data = _sdf_barrel_cylinder_data_z(point, radius, half_height, barrel_radius)
+    signed_distance = data[0]
+    boundary_radial = data[1]
+    boundary_z = data[2]
+    use_cap = data[3] > 0.5
+    radial = wp.length(wp.vec2(point[0], point[1]))
+    z_abs = wp.abs(point[2])
+    center = radius - wp.sqrt(wp.max(barrel_radius * barrel_radius - half_height * half_height, 0.0))
+
+    radial_direction = wp.vec3(1.0, 0.0, 0.0)
+    if radial > 1.0e-8:
+        radial_direction = wp.vec3(point[0] / radial, point[1] / radial, 0.0)
+    z_sign = wp.where(point[2] < 0.0, -1.0, 1.0)
+    offset = radial_direction * (radial - boundary_radial) + wp.vec3(0.0, 0.0, z_sign * (z_abs - boundary_z))
+    if signed_distance < 0.0:
+        offset = -offset
+    offset_len = wp.length(offset)
+    if offset_len > 1.0e-8:
+        return offset / offset_len
+    if use_cap:
+        return wp.vec3(0.0, 0.0, z_sign)
+    return radial_direction * ((boundary_radial - center) / barrel_radius) + wp.vec3(
+        0.0, 0.0, z_sign * boundary_z / barrel_radius
+    )
+
+
+@wp.func
 def sdf_cylinder(
     point: wp.vec3,
     radius: float,
     half_height: float,
     up_axis: int = int(Axis.Y),
     top_radius: float = -1.0,
+    barrel_radius: float = 0.0,
 ):
     """Compute signed distance to ``Mesh.create_cylinder`` geometry.
 
@@ -356,11 +433,15 @@ def sdf_cylinder(
         half_height [m]: Half-height along the cylinder axis.
         up_axis: Cylinder long axis as ``int(newton.Axis.*)``.
         top_radius [m]: Top radius. Negative values use ``radius``.
+        barrel_radius [m]: Radius of the circular side profile. Zero creates straight sides. Nonzero
+            values must be at least ``half_height`` and take precedence over ``top_radius``.
 
     Returns:
         Signed distance [m], negative inside, zero on surface, positive outside.
     """
     point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if barrel_radius > 0.0:
+        return _sdf_barrel_cylinder_z(point_z_up, radius, half_height, barrel_radius)
     if top_radius < 0.0 or wp.abs(top_radius - radius) <= 1.0e-6:
         dx = wp.length(wp.vec3(point_z_up[0], point_z_up[1], 0.0)) - radius
         dy = wp.abs(point_z_up[2]) - half_height
@@ -375,6 +456,7 @@ def sdf_cylinder_grad(
     half_height: float,
     up_axis: int = int(Axis.Y),
     top_radius: float = -1.0,
+    barrel_radius: float = 0.0,
 ):
     """Compute outward SDF gradient for ``sdf_cylinder``.
 
@@ -384,12 +466,17 @@ def sdf_cylinder_grad(
         half_height [m]: Half-height along the cylinder axis.
         up_axis: Cylinder long axis as ``int(newton.Axis.*)``.
         top_radius [m]: Top radius. Negative values use ``radius``.
+        barrel_radius [m]: Radius of the circular side profile. Zero creates straight sides. Nonzero
+            values must be at least ``half_height`` and take precedence over ``top_radius``.
 
     Returns:
         Unit-length outward gradient direction in local frame.
     """
     eps = 1.0e-8
     point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if barrel_radius > 0.0:
+        grad_z_up = _sdf_barrel_cylinder_grad_z(point_z_up, radius, half_height, barrel_radius)
+        return _sdf_vector_from_z_up(grad_z_up, up_axis)
     if top_radius >= 0.0 and wp.abs(top_radius - radius) > 1.0e-6:
         # Use finite-difference gradient of the tapered capped-cone SDF.
         fd_eps = 1.0e-4
@@ -878,16 +965,20 @@ def closest_edge_coordinate_cylinder(
 
 
 @wp.func
-def mesh_sdf(mesh: wp.uint64, point: wp.vec3, max_dist: float):
-    face_index = int(0)
-    face_u = float(0.0)
-    face_v = float(0.0)
-    sign = float(0.0)
-    res = wp.mesh_query_point_sign_normal(mesh, point, max_dist, sign, face_index, face_u, face_v)
+def mesh_query_point_sign(mesh: wp.uint64, point: wp.vec3, max_dist: float, sign_method: int):
+    """Closest-point query with the inside/outside sign strategy selected by *sign_method*."""
+    if sign_method == MeshSignMethod.PARITY:
+        return wp.mesh_query_point_sign_parity(mesh, point, max_dist)
+    return wp.mesh_query_point_sign_normal(mesh, point, max_dist)
 
-    if res:
-        closest = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
-        return wp.length(point - closest) * sign
+
+@wp.func
+def mesh_sdf(mesh: wp.uint64, point: wp.vec3, max_dist: float):
+    res = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
+
+    if res.result:
+        closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
+        return wp.length(point - closest) * res.sign
     return max_dist
 
 
@@ -908,14 +999,10 @@ def sdf_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: float):
 
 @wp.func
 def closest_point_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: float):
-    face_index = int(0)
-    face_u = float(0.0)
-    face_v = float(0.0)
-    sign = float(0.0)
-    res = wp.mesh_query_point_sign_normal(mesh, point, max_dist, sign, face_index, face_u, face_v)
+    res = wp.mesh_query_point_no_sign(mesh, point, max_dist)
 
-    if res:
-        return wp.mesh_eval_position(mesh, face_index, face_u, face_v)
+    if res.result:
+        return wp.mesh_eval_position(mesh, res.face, res.u, res.v)
     # return arbitrary point from mesh
     return wp.mesh_eval_position(mesh, 0, 0.0, 0.0)
 
@@ -979,9 +1066,7 @@ def volume_grad(volume: wp.uint64, p: wp.vec3):
 
 
 @wp.func
-def counter_increment(
-    counter: wp.array(dtype=int), counter_index: int, tids: wp.array(dtype=int), tid: int, index_limit: int = -1
-):
+def counter_increment(counter: wp.array[int], counter_index: int, tids: wp.array[int], tid: int, index_limit: int = -1):
     """
     Increment the counter but only if it is smaller than index_limit, remember which thread received which counter value.
     This allows the counter increment function to be used in differentiable computations where the backward pass will
@@ -998,50 +1083,60 @@ def counter_increment(
     """
     count = wp.atomic_add(counter, counter_index, 1)
     if count < index_limit or index_limit < 0:
-        tids[tid] = count
+        if tid < tids.shape[0]:
+            tids[tid] = count
         return count
-    tids[tid] = -1
+    if tid < tids.shape[0]:
+        tids[tid] = -1
     return -1
 
 
 @wp.func_replay(counter_increment)
 def counter_increment_replay(
-    counter: wp.array(dtype=int), counter_index: int, tids: wp.array(dtype=int), tid: int, index_limit: int
+    counter: wp.array[int], counter_index: int, tids: wp.array[int], tid: int, index_limit: int
 ):
-    return tids[tid]
+    if tid < tids.shape[0]:
+        return tids[tid]
+    return -1
 
 
 @wp.kernel
 def create_soft_contacts(
-    particle_q: wp.array(dtype=wp.vec3),
-    particle_radius: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
-    particle_world: wp.array(dtype=int),  # World indices for particles
-    body_q: wp.array(dtype=wp.transform),
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    shape_type: wp.array(dtype=int),
-    shape_scale: wp.array(dtype=wp.vec3),
-    shape_source_ptr: wp.array(dtype=wp.uint64),
-    shape_world: wp.array(dtype=int),  # World indices for shapes
+    soft_rigid_contact_pairs: wp.array[wp.vec2i],
+    particle_q: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_world: wp.array[int],  # World indices for particles
+    body_q: wp.array[wp.transform],
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_mesh_properties: wp.array[wp.int32],
+    shape_world: wp.array[int],  # World indices for shapes
     margin: float,
+    shape_margin: wp.array[float],
     soft_contact_max: int,
-    shape_count: int,
-    shape_flags: wp.array(dtype=wp.int32),
-    shape_heightfield_index: wp.array(dtype=wp.int32),
-    heightfield_data: wp.array(dtype=HeightfieldData),
-    heightfield_elevations: wp.array(dtype=wp.float32),
+    shape_flags: wp.array[wp.int32],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
     # outputs
-    soft_contact_count: wp.array(dtype=int),
-    soft_contact_particle: wp.array(dtype=int),
-    soft_contact_shape: wp.array(dtype=int),
-    soft_contact_body_pos: wp.array(dtype=wp.vec3),
-    soft_contact_body_vel: wp.array(dtype=wp.vec3),
-    soft_contact_normal: wp.array(dtype=wp.vec3),
-    soft_contact_tids: wp.array(dtype=int),
+    soft_contact_count: wp.array[int],
+    soft_contact_particle: wp.array[int],
+    soft_contact_indices: wp.array[wp.vec3i],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_shape: wp.array[int],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    soft_contact_tids: wp.array[int],
 ):
     tid = wp.tid()
-    particle_index, shape_index = tid // shape_count, tid % shape_count
+    pair = soft_rigid_contact_pairs[tid]
+    particle_index = pair[0]
+    shape_index = pair[1]
     if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
         return
     if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
@@ -1075,6 +1170,7 @@ def create_soft_contacts(
     # geo description
     geo_type = shape_type[shape_index]
     geo_scale = shape_scale[shape_index]
+    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
 
     # evaluate shape sdf
     d = 1.0e6
@@ -1094,8 +1190,8 @@ def create_soft_contacts(
         n = sdf_capsule_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
 
     if geo_type == GeoType.CYLINDER:
-        d = sdf_cylinder(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
-        n = sdf_cylinder_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+        d = sdf_cylinder(x_local, geo_scale[0], geo_scale[1], int(Axis.Z), -1.0, geo_scale[2])
+        n = sdf_cylinder_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z), -1.0, geo_scale[2])
 
     if geo_type == GeoType.CONE:
         d = sdf_cone(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
@@ -1113,10 +1209,20 @@ def create_soft_contacts(
         face_v = float(0.0)
         sign = float(0.0)
 
-        min_scale = wp.max(wp.min(geo_scale), 1.0e-8)
-        if wp.mesh_query_point_sign_normal(
-            mesh, wp.cw_div(x_local, geo_scale), margin + radius / min_scale, sign, face_index, face_u, face_v
-        ):
+        # Use magnitude of components: the search radius must always be positive
+        # regardless of mirror parity.
+        min_scale = wp.min(wp.min(wp.abs(geo_scale[0]), wp.abs(geo_scale[1])), wp.abs(geo_scale[2]))
+        query = mesh_query_point_sign(
+            mesh,
+            wp.cw_div(x_local, geo_scale),
+            margin + s_margin / min_scale + radius / min_scale,
+            resolve_mesh_sign_method(shape_mesh_properties[shape_index]),
+        )
+        if query.result:
+            sign = query.sign
+            face_index = query.face
+            face_u = query.u
+            face_v = query.v
             shape_p = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
             shape_v = wp.mesh_eval_velocity(mesh, face_index, face_u, face_v)
 
@@ -1137,11 +1243,13 @@ def create_soft_contacts(
         hfd = heightfield_data[shape_heightfield_index[shape_index]]
         d, n = sample_sdf_grad_heightfield(hfd, heightfield_elevations, x_local)
 
-    if d < margin + radius:
+    if d < margin + s_margin + radius:
         index = counter_increment(soft_contact_count, 0, soft_contact_tids, tid)
 
         if index < soft_contact_max:
-            # compute contact point in body local space
+            # body_pos is the raw closest-surface point; per-shape margin is applied
+            # analytically at force eval. Inflation is just (SDF - margin), so n is
+            # unchanged and the closest point only slides out by margin along n
             body_pos = wp.transform_point(X_bs, x_local - n * d)
             body_vel = wp.transform_vector(X_bs, v)
 
@@ -1150,56 +1258,63 @@ def create_soft_contacts(
             soft_contact_shape[index] = shape_index
             soft_contact_body_pos[index] = body_pos
             soft_contact_body_vel[index] = body_vel
+            # Unified record: a particle contact is (p, -1, -1) with barycentric (1, 0, 0), plus the
+            # particle-only view kept for solvers that consume particle contacts exclusively.
             soft_contact_particle[index] = particle_index
+            soft_contact_indices[index] = wp.vec3i(particle_index, -1, -1)
+            soft_contact_barycentric[index] = wp.vec3(1.0, 0.0, 0.0)
             soft_contact_normal[index] = world_normal
 
 
 @wp.kernel
 def create_elastic_shape_contacts(
-    body_q: wp.array(dtype=wp.transform),
-    joint_q: wp.array(dtype=float),
-    joint_q_start: wp.array(dtype=wp.int32),
-    body_elastic_index: wp.array(dtype=wp.int32),
-    elastic_joint: wp.array(dtype=wp.int32),
-    elastic_mode_count: wp.array(dtype=wp.int32),
+    body_q: wp.array[wp.transform],
+    joint_q: wp.array[float],
+    joint_q_start: wp.array[wp.int32],
+    body_elastic_index: wp.array[wp.int32],
+    elastic_joint: wp.array[wp.int32],
+    elastic_mode_count: wp.array[wp.int32],
     elastic_max_mode_count: int,
     elastic_shape_count: int,
-    elastic_shape_shape: wp.array(dtype=wp.int32),
-    elastic_shape_body: wp.array(dtype=wp.int32),
-    elastic_shape_vertex_start: wp.array(dtype=wp.int32),
-    elastic_shape_vertex_count: wp.array(dtype=wp.int32),
-    elastic_shape_vertex_local: wp.array(dtype=wp.vec3),
-    elastic_shape_vertex_phi: wp.array(dtype=wp.vec3),
+    elastic_shape_shape: wp.array[wp.int32],
+    elastic_shape_body: wp.array[wp.int32],
+    elastic_shape_vertex_start: wp.array[wp.int32],
+    elastic_shape_vertex_count: wp.array[wp.int32],
+    elastic_shape_vertex_local: wp.array[wp.vec3],
+    elastic_shape_vertex_phi: wp.array[wp.vec3],
     elastic_shape_vertex_total_count: int,
-    shape_pairs: wp.array(dtype=wp.vec2i),
-    shape_pair_count: wp.array(dtype=wp.int32),
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=wp.int32),
-    shape_type: wp.array(dtype=wp.int32),
-    shape_scale: wp.array(dtype=wp.vec3),
-    shape_source_ptr: wp.array(dtype=wp.uint64),
-    shape_world: wp.array(dtype=wp.int32),
-    shape_flags: wp.array(dtype=wp.int32),
-    shape_margin: wp.array(dtype=float),
-    shape_gap: wp.array(dtype=float),
-    shape_heightfield_index: wp.array(dtype=wp.int32),
-    heightfield_data: wp.array(dtype=HeightfieldData),
-    heightfield_elevations: wp.array(dtype=wp.float32),
+    shape_pairs: wp.array[wp.vec2i],
+    shape_pair_count: wp.array[wp.int32],
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[wp.int32],
+    shape_type: wp.array[wp.int32],
+    shape_scale: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_world: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    shape_margin: wp.array[float],
+    shape_gap: wp.array[float],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
     rigid_contact_max: int,
+    contact_sort_shape_index_bits: int,
+    contact_sort_sub_key_bits: int,
     # outputs
-    rigid_contact_count: wp.array(dtype=int),
-    rigid_contact_shape0: wp.array(dtype=wp.int32),
-    rigid_contact_shape1: wp.array(dtype=wp.int32),
-    rigid_contact_point0: wp.array(dtype=wp.vec3),
-    rigid_contact_point1: wp.array(dtype=wp.vec3),
-    rigid_contact_offset0: wp.array(dtype=wp.vec3),
-    rigid_contact_offset1: wp.array(dtype=wp.vec3),
-    rigid_contact_normal: wp.array(dtype=wp.vec3),
-    rigid_contact_margin0: wp.array(dtype=float),
-    rigid_contact_margin1: wp.array(dtype=float),
-    rigid_contact_tids: wp.array(dtype=wp.int32),
-    rigid_contact_elastic_sample0: wp.array(dtype=wp.int32),
-    rigid_contact_elastic_sample1: wp.array(dtype=wp.int32),
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[wp.int32],
+    rigid_contact_shape1: wp.array[wp.int32],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
+    rigid_contact_tids: wp.array[wp.int32],
+    rigid_contact_elastic_sample0: wp.array[wp.int32],
+    rigid_contact_elastic_sample1: wp.array[wp.int32],
+    rigid_contact_sort_key: wp.array[wp.int64],
 ):
     tid = wp.tid()
     if elastic_shape_vertex_total_count <= 0:
@@ -1375,6 +1490,14 @@ def create_elastic_shape_contacts(
     rigid_contact_tids[contact_index] = tid
     rigid_contact_elastic_sample0[contact_index] = -1
     rigid_contact_elastic_sample1[contact_index] = vertex_index
+    if rigid_contact_sort_key.shape[0] > 0:
+        rigid_contact_sort_key[contact_index] = make_contact_sort_key_with_bits(
+            rigid_shape,
+            elastic_shape,
+            vertex_index,
+            contact_sort_shape_index_bits,
+            contact_sort_sub_key_bits,
+        )
 
 
 # --------------------------------------
@@ -1410,10 +1533,10 @@ def compute_tri_aabb(
 
 @wp.kernel
 def compute_tri_aabbs(
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
 ):
     t_id = wp.tid()
 
@@ -1429,10 +1552,10 @@ def compute_tri_aabbs(
 
 @wp.kernel
 def compute_edge_aabbs(
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    lower_bounds: wp.array(dtype=wp.vec3),
-    upper_bounds: wp.array(dtype=wp.vec3),
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    lower_bounds: wp.array[wp.vec3],
+    upper_bounds: wp.array[wp.vec3],
 ):
     e_id = wp.tid()
 
@@ -1441,6 +1564,41 @@ def compute_edge_aabbs(
 
     lower_bounds[e_id] = wp.min(v1, v2)
     upper_bounds[e_id] = wp.max(v1, v2)
+
+
+@wp.kernel
+def compute_tri_groups(
+    tri_indices: wp.array2d[wp.int32],
+    particle_world: wp.array[wp.int32],
+    world_count: wp.int32,
+    groups: wp.array[wp.int32],
+):
+    # World group each triangle belongs to, for the grouped BVH. Global (world -1)
+    # primitives go in the group at index world_count. Groups are static (a
+    # triangle's world never changes), so this runs once at construction; rebuild
+    # reuses them and only refreshes the AABBs via compute_tri_aabbs.
+    t_id = wp.tid()
+
+    world_index = particle_world[tri_indices[t_id, 0]]
+    if world_index < 0:
+        world_index = world_count
+    groups[t_id] = world_index
+
+
+@wp.kernel
+def compute_edge_groups(
+    edge_indices: wp.array2d[wp.int32],
+    particle_world: wp.array[wp.int32],
+    world_count: wp.int32,
+    groups: wp.array[wp.int32],
+):
+    # World group each edge belongs to (see compute_tri_groups).
+    e_id = wp.tid()
+
+    world_index = particle_world[edge_indices[e_id, 2]]
+    if world_index < 0:
+        world_index = world_count
+    groups[e_id] = world_index
 
 
 @wp.func
@@ -1469,9 +1627,9 @@ def vertex_adjacent_to_triangle(v: wp.int32, a: wp.int32, b: wp.int32, c: wp.int
 def init_triangle_collision_data_kernel(
     query_radius: float,
     # outputs
-    triangle_colliding_vertices_count: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    triangle_colliding_vertices_count: wp.array[wp.int32],
+    triangle_colliding_vertices_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     tri_index = wp.tid()
 
@@ -1488,23 +1646,26 @@ def vertex_triangle_collision_detection_kernel(
     max_query_radius: float,
     min_query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_buffer_sizes: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_offsets: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_buffer_sizes: wp.array(dtype=wp.int32),
-    vertex_triangle_filtering_list: wp.array(dtype=wp.int32),
-    vertex_triangle_filtering_list_offsets: wp.array(dtype=wp.int32),
-    min_distance_filtering_ref_pos: wp.array(dtype=wp.vec3),
+    bvh_group_roots: wp.array[wp.int32],
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    particle_world: wp.array[wp.int32],
+    world_count: wp.int32,
+    vertex_colliding_triangles_offsets: wp.array[wp.int32],
+    vertex_colliding_triangles_buffer_sizes: wp.array[wp.int32],
+    triangle_colliding_vertices_offsets: wp.array[wp.int32],
+    triangle_colliding_vertices_buffer_sizes: wp.array[wp.int32],
+    vertex_triangle_filtering_list: wp.array[wp.int32],
+    vertex_triangle_filtering_list_offsets: wp.array[wp.int32],
+    min_distance_filtering_ref_pos: wp.array[wp.vec3],
     # outputs
-    vertex_colliding_triangles: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_min_dist: wp.array(dtype=float),
-    triangle_colliding_vertices: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_count: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    vertex_colliding_triangles: wp.array[wp.int32],
+    vertex_colliding_triangles_count: wp.array[wp.int32],
+    vertex_colliding_triangles_min_dist: wp.array[float],
+    triangle_colliding_vertices: wp.array[wp.int32],
+    triangle_colliding_vertices_count: wp.array[wp.int32],
+    triangle_colliding_vertices_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     """
     This function applies discrete collision detection between vertices and triangles. It uses pre-allocated spaces to
@@ -1521,23 +1682,23 @@ def vertex_triangle_collision_detection_kernel(
         and vertex_colliding_triangles_count.
 
     Args:
-        bvh_id (int): the bvh id you want to collide with
-        max_query_radius (float): the upper bound of collision distance.
-        min_query_radius (float): the lower bound of collision distance. This distance is evaluated based on min_distance_filtering_ref_pos
-        pos (array): positions of all the vertices that make up triangles
-        vertex_colliding_triangles_offsets (array): where each vertex' collision buffer starts
-        vertex_colliding_triangles_buffer_sizes (array): size of each vertex' collision buffer, will be modified if resizing is needed
-        vertex_colliding_triangles_min_dist (array): each vertex' min distance to all (non-neighbor) triangles
-        triangle_colliding_vertices_offsets (array): where each triangle's collision buffer starts
-        triangle_colliding_vertices_buffer_sizes (array): size of each triangle's collision buffer, will be modified if resizing is needed
-        min_distance_filtering_ref_pos (array): the position that minimal collision distance evaluation uses.
-        vertex_colliding_triangles (array): flattened buffer of vertices' collision triangles
-        vertex_colliding_triangles_count (array): number of triangles each vertex collides with
-        triangle_colliding_vertices (array): positions of all the triangles' collision vertices, every two elements
+        bvh_id: the bvh id you want to collide with
+        max_query_radius: the upper bound of collision distance.
+        min_query_radius: the lower bound of collision distance. This distance is evaluated based on min_distance_filtering_ref_pos
+        pos: positions of all the vertices that make up triangles
+        vertex_colliding_triangles_offsets: where each vertex' collision buffer starts
+        vertex_colliding_triangles_buffer_sizes: size of each vertex' collision buffer, will be modified if resizing is needed
+        vertex_colliding_triangles_min_dist: each vertex' min distance to all (non-neighbor) triangles
+        triangle_colliding_vertices_offsets: where each triangle's collision buffer starts
+        triangle_colliding_vertices_buffer_sizes: size of each triangle's collision buffer, will be modified if resizing is needed
+        min_distance_filtering_ref_pos: the position that minimal collision distance evaluation uses.
+        vertex_colliding_triangles: flattened buffer of vertices' collision triangles
+        vertex_colliding_triangles_count: number of triangles each vertex collides with
+        triangle_colliding_vertices: positions of all the triangles' collision vertices, every two elements
             records the vertex index and a triangle index it collides to
-        triangle_colliding_vertices_count (array): number of triangles each vertex collides with
-        triangle_colliding_vertices_min_dist (array): each triangle's min distance to all (non-self) vertices
-        resized_flag (array): size == 3, (vertex_buffer_resize_required, triangle_buffer_resize_required, edge_buffer_resize_required)
+        triangle_colliding_vertices_count: number of triangles each vertex collides with
+        triangle_colliding_vertices_min_dist: each triangle's min distance to all (non-self) vertices
+        resized_flag: size == 3, (vertex_buffer_resize_required, triangle_buffer_resize_required, edge_buffer_resize_required)
     """
 
     v_index = wp.tid()
@@ -1548,75 +1709,104 @@ def vertex_triangle_collision_detection_kernel(
     lower = wp.vec3(v[0] - max_query_radius, v[1] - max_query_radius, v[2] - max_query_radius)
     upper = wp.vec3(v[0] + max_query_radius, v[1] + max_query_radius, v[2] + max_query_radius)
 
-    query = wp.bvh_query_aabb(bvh_id, lower, upper)
-
     tri_index = wp.int32(0)
     vertex_num_collisions = wp.int32(0)
     min_dis_to_tris = max_query_radius
-    while wp.bvh_query_next(query, tri_index):
-        t1 = tri_indices[tri_index, 0]
-        t2 = tri_indices[tri_index, 1]
-        t3 = tri_indices[tri_index, 2]
+    vertex_world = particle_world[v_index]
 
-        if vertex_adjacent_to_triangle(v_index, t1, t2, t3):
-            continue
+    # Only collide a vertex with triangles in its own world or in the global
+    # (world -1) group. The BVH is grouped by world, so a real-world vertex queries
+    # two subtrees: its own world's, then the global one. A global (world -1) vertex
+    # can hit any world, so it runs a single pass starting from the BVH root.
+    for query_pass in range(2):
+        run_query = bool(False)
+        query_all = bool(False)
+        group_root = wp.int32(-1)
 
-        if vertex_triangle_filtering_list:
-            fl_start = vertex_triangle_filtering_list_offsets[v_index]
-            fl_end = vertex_triangle_filtering_list_offsets[v_index + 1]  # start of next vertex slice (end exclusive)
+        if vertex_world < 0:
+            if query_pass == 0:
+                run_query = True
+                query_all = True
+        else:
+            if query_pass == 0:
+                group_root = bvh_group_roots[vertex_world]
+            else:
+                group_root = bvh_group_roots[world_count]
+            run_query = group_root >= 0
 
-            if fl_end > fl_start:
-                # Optional fast-fail using first/last elements (remember end is exclusive)
-                first_val = vertex_triangle_filtering_list[fl_start]
-                last_val = vertex_triangle_filtering_list[fl_end - 1]
-                if (tri_index >= first_val) and (tri_index <= last_val):
-                    idx = binary_search(vertex_triangle_filtering_list, tri_index, fl_start, fl_end)
-                    # `idx` is the first index > tri_index within [fl_start, fl_end)
-                    if idx > fl_start and vertex_triangle_filtering_list[idx - 1] == tri_index:
+        if run_query:
+            if query_all:
+                query = wp.bvh_query_aabb(bvh_id, lower, upper)
+            else:
+                query = wp.bvh_query_aabb(bvh_id, lower, upper, group_root)
+
+            tri_index = wp.int32(0)
+            while wp.bvh_query_next(query, tri_index):
+                t1 = tri_indices[tri_index, 0]
+                t2 = tri_indices[tri_index, 1]
+                t3 = tri_indices[tri_index, 2]
+
+                if vertex_adjacent_to_triangle(v_index, t1, t2, t3):
+                    continue
+
+                if vertex_triangle_filtering_list:
+                    fl_start = vertex_triangle_filtering_list_offsets[v_index]
+                    fl_end = vertex_triangle_filtering_list_offsets[
+                        v_index + 1
+                    ]  # start of next vertex slice (end exclusive)
+
+                    if fl_end > fl_start:
+                        # Optional fast-fail using first/last elements (remember end is exclusive)
+                        first_val = vertex_triangle_filtering_list[fl_start]
+                        last_val = vertex_triangle_filtering_list[fl_end - 1]
+                        if (tri_index >= first_val) and (tri_index <= last_val):
+                            idx = binary_search(vertex_triangle_filtering_list, tri_index, fl_start, fl_end)
+                            # `idx` is the first index > tri_index within [fl_start, fl_end)
+                            if idx > fl_start and vertex_triangle_filtering_list[idx - 1] == tri_index:
+                                continue
+
+                u1 = pos[t1]
+                u2 = pos[t2]
+                u3 = pos[t3]
+
+                closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
+
+                dist = wp.length(closest_p - v)
+
+                if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+                    closest_p_ref, _, __ = triangle_closest_point(
+                        min_distance_filtering_ref_pos[t1],
+                        min_distance_filtering_ref_pos[t2],
+                        min_distance_filtering_ref_pos[t3],
+                        min_distance_filtering_ref_pos[v_index],
+                    )
+                    dist_ref = wp.length(closest_p_ref - min_distance_filtering_ref_pos[v_index])
+
+                    if dist_ref < min_query_radius:
                         continue
 
-        u1 = pos[t1]
-        u2 = pos[t2]
-        u3 = pos[t3]
+                if dist < max_query_radius:
+                    # record v-f collision to vertex
+                    min_dis_to_tris = wp.min(min_dis_to_tris, dist)
+                    if vertex_num_collisions < vertex_buffer_size:
+                        vertex_colliding_triangles[2 * (vertex_buffer_offset + vertex_num_collisions)] = v_index
+                        vertex_colliding_triangles[2 * (vertex_buffer_offset + vertex_num_collisions) + 1] = tri_index
+                    else:
+                        resize_flags[VERTEX_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
 
-        closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
+                    vertex_num_collisions = vertex_num_collisions + 1
 
-        dist = wp.length(closest_p - v)
+                    if triangle_colliding_vertices:
+                        wp.atomic_min(triangle_colliding_vertices_min_dist, tri_index, dist)
+                        tri_buffer_size = triangle_colliding_vertices_buffer_sizes[tri_index]
+                        tri_num_collisions = wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
 
-        if min_distance_filtering_ref_pos and min_query_radius > 0.0:
-            closest_p_ref, _, __ = triangle_closest_point(
-                min_distance_filtering_ref_pos[t1],
-                min_distance_filtering_ref_pos[t2],
-                min_distance_filtering_ref_pos[t3],
-                min_distance_filtering_ref_pos[v_index],
-            )
-            dist_ref = wp.length(closest_p_ref - min_distance_filtering_ref_pos[v_index])
-
-            if dist_ref < min_query_radius:
-                continue
-
-        if dist < max_query_radius:
-            # record v-f collision to vertex
-            min_dis_to_tris = wp.min(min_dis_to_tris, dist)
-            if vertex_num_collisions < vertex_buffer_size:
-                vertex_colliding_triangles[2 * (vertex_buffer_offset + vertex_num_collisions)] = v_index
-                vertex_colliding_triangles[2 * (vertex_buffer_offset + vertex_num_collisions) + 1] = tri_index
-            else:
-                resize_flags[VERTEX_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
-
-            vertex_num_collisions = vertex_num_collisions + 1
-
-            if triangle_colliding_vertices:
-                wp.atomic_min(triangle_colliding_vertices_min_dist, tri_index, dist)
-                tri_buffer_size = triangle_colliding_vertices_buffer_sizes[tri_index]
-                tri_num_collisions = wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
-
-                if tri_num_collisions < tri_buffer_size:
-                    tri_buffer_offset = triangle_colliding_vertices_offsets[tri_index]
-                    # record v-f collision to triangle
-                    triangle_colliding_vertices[tri_buffer_offset + tri_num_collisions] = v_index
-                else:
-                    resize_flags[TRI_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
+                        if tri_num_collisions < tri_buffer_size:
+                            tri_buffer_offset = triangle_colliding_vertices_offsets[tri_index]
+                            # record v-f collision to triangle
+                            triangle_colliding_vertices[tri_buffer_offset + tri_num_collisions] = v_index
+                        else:
+                            resize_flags[TRI_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
 
     vertex_colliding_triangles_count[v_index] = vertex_num_collisions
     vertex_colliding_triangles_min_dist[v_index] = min_dis_to_tris
@@ -1627,31 +1817,39 @@ def edge_colliding_edges_detection_kernel(
     max_query_radius: float,
     min_query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_colliding_edges_offsets: wp.array(dtype=wp.int32),
-    edge_colliding_edges_buffer_sizes: wp.array(dtype=wp.int32),
+    bvh_group_roots: wp.array[wp.int32],
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    particle_world: wp.array[wp.int32],
+    world_count: wp.int32,
+    edge_colliding_edges_offsets: wp.array[wp.int32],
+    edge_colliding_edges_buffer_sizes: wp.array[wp.int32],
     edge_edge_parallel_epsilon: float,
-    edge_filtering_list: wp.array(dtype=wp.int32),
-    edge_filtering_list_offsets: wp.array(dtype=wp.int32),
-    min_distance_filtering_ref_pos: wp.array(dtype=wp.vec3),
+    edge_filtering_list: wp.array[wp.int32],
+    edge_filtering_list_offsets: wp.array[wp.int32],
+    min_distance_filtering_ref_pos: wp.array[wp.vec3],
     # outputs
-    edge_colliding_edges: wp.array(dtype=wp.int32),
-    edge_colliding_edges_count: wp.array(dtype=wp.int32),
-    edge_colliding_edges_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    edge_colliding_edges: wp.array[wp.int32],
+    edge_colliding_edges_count: wp.array[wp.int32],
+    edge_colliding_edges_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     """
-    bvh_id (int): the bvh id you want to do collision detection on
-    max_query_radius (float): the upper bound of collision distance.
-    min_query_radius (float): the lower bound of collision distance. This distance is evaluated based on min_distance_filtering_ref_pos
-    pos (array): positions of all the vertices that make up edges
-    edge_colliding_triangles (array): flattened buffer of edges' collision edges
-    edge_colliding_edges_count (array): number of edges each edge collides
-    edge_colliding_triangles_offsets (array): where each edge's collision buffer starts
-    edge_colliding_triangles_buffer_size (array): size of each edge's collision buffer, will be modified if resizing is needed
-    edge_min_dis_to_triangles (array): each vertex' min distance to all (non-neighbor) triangles
-    resized_flag (array): size == 3, (vertex_buffer_resize_required, triangle_buffer_resize_required, edge_buffer_resize_required)
+    bvh_id: the bvh id you want to do collision detection on
+    max_query_radius: the upper bound of collision distance.
+    min_query_radius: the lower bound of collision distance. This distance is evaluated based on min_distance_filtering_ref_pos
+    pos: positions of all the vertices that make up edges
+    edge_indices: vertex index buffer for each edge
+    edge_colliding_edges_offsets: where each edge's collision buffer starts
+    edge_colliding_edges_buffer_sizes: size of each edge's collision buffer, will be modified if resizing is needed
+    edge_edge_parallel_epsilon: threshold for treating edge directions as parallel
+    edge_filtering_list: edge indices to exclude from collision checks
+    edge_filtering_list_offsets: offsets into the edge filtering list
+    min_distance_filtering_ref_pos: reference positions used for minimum-distance filtering
+    edge_colliding_edges: flattened buffer of colliding edge indices
+    edge_colliding_edges_count: number of edges each edge collides
+    edge_colliding_edges_min_dist: each edge's minimum distance to all non-filtered edges
+    resize_flags: global collision resize flags; this kernel sets the edge-buffer overflow entry
     """
     e_index = wp.tid()
 
@@ -1667,66 +1865,91 @@ def edge_colliding_edges_detection_kernel(
     lower = wp.vec3(lower[0] - max_query_radius, lower[1] - max_query_radius, lower[2] - max_query_radius)
     upper = wp.vec3(upper[0] + max_query_radius, upper[1] + max_query_radius, upper[2] + max_query_radius)
 
-    query = wp.bvh_query_aabb(bvh_id, lower, upper)
-
     colliding_edge_index = wp.int32(0)
     edge_num_collisions = wp.int32(0)
     min_dis_to_edges = max_query_radius
-    while wp.bvh_query_next(query, colliding_edge_index):
-        e1_v0 = edge_indices[colliding_edge_index, 2]
-        e1_v1 = edge_indices[colliding_edge_index, 3]
+    edge_world = particle_world[e0_v0]
 
-        if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
-            continue
+    # Only collide an edge with edges in its own world or in the global (world -1)
+    # group. The BVH is grouped by world, so a real-world edge queries two subtrees:
+    # its own world's, then the global one. A global (world -1) edge can hit any
+    # world, so it runs a single pass starting from the BVH root.
+    for query_pass in range(2):
+        run_query = bool(False)
+        query_all = bool(False)
+        group_root = wp.int32(-1)
 
-        if edge_filtering_list:
-            fl_start = edge_filtering_list_offsets[e_index]
-            fl_end = edge_filtering_list_offsets[e_index + 1]  # start of next vertex slice (end exclusive)
-
-            if fl_end > fl_start:
-                # Optional fast-fail using first/last elements (remember end is exclusive)
-                first_val = edge_filtering_list[fl_start]
-                last_val = edge_filtering_list[fl_end - 1]
-                if (colliding_edge_index >= first_val) and (colliding_edge_index <= last_val):
-                    idx = binary_search(edge_filtering_list, colliding_edge_index, fl_start, fl_end)
-                    if idx > fl_start and edge_filtering_list[idx - 1] == colliding_edge_index:
-                        continue
-                # else: key is out of range, cannot be present -> skip_this remains False
-
-        e1_v0_pos = pos[e1_v0]
-        e1_v1_pos = pos[e1_v1]
-
-        std = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
-        dist = std[2]
-
-        if min_distance_filtering_ref_pos and min_query_radius > 0.0:
-            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref = (
-                min_distance_filtering_ref_pos[e0_v0],
-                min_distance_filtering_ref_pos[e0_v1],
-                min_distance_filtering_ref_pos[e1_v0],
-                min_distance_filtering_ref_pos[e1_v1],
-            )
-            std_ref = wp.closest_point_edge_edge(
-                e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
-            )
-
-            dist_ref = std_ref[2]
-            if dist_ref < min_query_radius:
-                continue
-
-        if dist < max_query_radius:
-            edge_buffer_offset = edge_colliding_edges_offsets[e_index]
-            edge_buffer_size = edge_colliding_edges_offsets[e_index + 1] - edge_buffer_offset
-
-            # record e-e collision to e0, and leave e1; e1 will detect this collision from its own thread
-            min_dis_to_edges = wp.min(min_dis_to_edges, dist)
-            if edge_num_collisions < edge_buffer_size:
-                edge_colliding_edges[2 * (edge_buffer_offset + edge_num_collisions)] = e_index
-                edge_colliding_edges[2 * (edge_buffer_offset + edge_num_collisions) + 1] = colliding_edge_index
+        if edge_world < 0:
+            if query_pass == 0:
+                run_query = True
+                query_all = True
+        else:
+            if query_pass == 0:
+                group_root = bvh_group_roots[edge_world]
             else:
-                resize_flags[EDGE_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
+                group_root = bvh_group_roots[world_count]
+            run_query = group_root >= 0
 
-            edge_num_collisions = edge_num_collisions + 1
+        if run_query:
+            if query_all:
+                query = wp.bvh_query_aabb(bvh_id, lower, upper)
+            else:
+                query = wp.bvh_query_aabb(bvh_id, lower, upper, group_root)
+
+            colliding_edge_index = wp.int32(0)
+            while wp.bvh_query_next(query, colliding_edge_index):
+                e1_v0 = edge_indices[colliding_edge_index, 2]
+                e1_v1 = edge_indices[colliding_edge_index, 3]
+
+                if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
+                    continue
+
+                if edge_filtering_list:
+                    fl_start = edge_filtering_list_offsets[e_index]
+                    fl_end = edge_filtering_list_offsets[e_index + 1]  # start of next vertex slice (end exclusive)
+
+                    if fl_end > fl_start:
+                        # Optional fast-fail using first/last elements (remember end is exclusive)
+                        first_val = edge_filtering_list[fl_start]
+                        last_val = edge_filtering_list[fl_end - 1]
+                        if (colliding_edge_index >= first_val) and (colliding_edge_index <= last_val):
+                            idx = binary_search(edge_filtering_list, colliding_edge_index, fl_start, fl_end)
+                            if idx > fl_start and edge_filtering_list[idx - 1] == colliding_edge_index:
+                                continue
+                        # else: key is out of range, cannot be present -> skip_this remains False
+
+                e1_v0_pos = pos[e1_v0]
+                e1_v1_pos = pos[e1_v1]
+
+                std = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
+                dist = std[2]
+
+                if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+                    e0_v0_pos_ref = min_distance_filtering_ref_pos[e0_v0]
+                    e0_v1_pos_ref = min_distance_filtering_ref_pos[e0_v1]
+                    e1_v0_pos_ref = min_distance_filtering_ref_pos[e1_v0]
+                    e1_v1_pos_ref = min_distance_filtering_ref_pos[e1_v1]
+                    std_ref = wp.closest_point_edge_edge(
+                        e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
+                    )
+
+                    dist_ref = std_ref[2]
+                    if dist_ref < min_query_radius:
+                        continue
+
+                if dist < max_query_radius:
+                    edge_buffer_offset = edge_colliding_edges_offsets[e_index]
+                    edge_buffer_size = edge_colliding_edges_offsets[e_index + 1] - edge_buffer_offset
+
+                    # record e-e collision to e0, and leave e1; e1 will detect this collision from its own thread
+                    min_dis_to_edges = wp.min(min_dis_to_edges, dist)
+                    if edge_num_collisions < edge_buffer_size:
+                        edge_colliding_edges[2 * (edge_buffer_offset + edge_num_collisions)] = e_index
+                        edge_colliding_edges[2 * (edge_buffer_offset + edge_num_collisions) + 1] = colliding_edge_index
+                    else:
+                        resize_flags[EDGE_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
+
+                    edge_num_collisions = edge_num_collisions + 1
 
     edge_colliding_edges_count[e_index] = edge_num_collisions
     edge_colliding_edges_min_dist[e_index] = min_dis_to_edges
@@ -1735,13 +1958,13 @@ def edge_colliding_edges_detection_kernel(
 @wp.kernel
 def triangle_triangle_collision_detection_kernel(
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    triangle_intersecting_triangles_offsets: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    triangle_intersecting_triangles_offsets: wp.array[wp.int32],
     # outputs
-    triangle_intersecting_triangles: wp.array(dtype=wp.int32),
-    triangle_intersecting_triangles_count: wp.array(dtype=wp.int32),
-    resize_flags: wp.array(dtype=wp.int32),
+    triangle_intersecting_triangles: wp.array[wp.int32],
+    triangle_intersecting_triangles_count: wp.array[wp.int32],
+    resize_flags: wp.array[wp.int32],
 ):
     tri_index = wp.tid()
     t1_v1 = tri_indices[tri_index, 0]

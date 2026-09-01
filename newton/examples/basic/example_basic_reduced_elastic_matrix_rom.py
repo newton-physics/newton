@@ -609,14 +609,18 @@ class Example:
         self.wrist_qd_start = int(self.model.joint_qd_start.numpy()[self.j_wrist])
         self.left_slide_qd_start = int(self.model.joint_qd_start.numpy()[self.j_left_slide])
         self.right_slide_qd_start = int(self.model.joint_qd_start.numpy()[self.j_right_slide])
+        self.left_slide_q_start = int(self.model.joint_target_q_start.numpy()[self.j_left_slide])
+        self.right_slide_q_start = int(self.model.joint_target_q_start.numpy()[self.j_right_slide])
         self._joint_f = self.control.joint_f.numpy()
-        self._target_pos = self.control.joint_target_pos.numpy()
-        self._target_vel = self.control.joint_target_vel.numpy()
+        self._target_pos = self.control.joint_target_q.numpy()
+        self._target_vel = self.control.joint_target_qd.numpy()
         self.initial_wrist_z = float(self.state_0.body_q.numpy()[self.wrist, 2])
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=36,
+            rigid_compliant_alm=False,
+            rigid_avbd_beta=1.0e5,
             rigid_joint_linear_k_start=1.0e5,
             rigid_joint_angular_k_start=1.0e4,
             rigid_joint_linear_ke=2.5e6,
@@ -721,12 +725,12 @@ class Example:
             body_flag_filter=newton.BodyFlags.KINEMATIC,
         )
 
-        self._target_pos[self.left_slide_qd_start] = lift
-        self._target_pos[self.right_slide_qd_start] = lift
+        self._target_pos[self.left_slide_q_start] = lift
+        self._target_pos[self.right_slide_q_start] = lift
         self._target_vel[self.left_slide_qd_start] = 0.0
         self._target_vel[self.right_slide_qd_start] = 0.0
-        self.control.joint_target_pos.assign(self._target_pos)
-        self.control.joint_target_vel.assign(self._target_vel)
+        self.control.joint_target_q.assign(self._target_pos)
+        self.control.joint_target_qd.assign(self._target_vel)
 
         self._joint_f[:] = 0.0
         modal_start = self.elastic_qd_start + 6

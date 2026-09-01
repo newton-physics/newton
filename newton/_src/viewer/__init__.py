@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Viewer interface for Newton physics simulations.
@@ -36,19 +24,37 @@ Example usage:
 
     viewer.close()
     ```
+
+Layers:
+    The viewer supports rendering multiple models/solvers as overlays in a
+    single window via the layer system. Call :meth:`ViewerBase.activate`
+    to switch the "current write target"; every subsequent ``set_model`` /
+    ``log_state`` / ``log_*`` call is routed into the active layer and
+    object names are prefixed with ``/layers/<layer_id>`` so layers do not
+    collide. Toggle visibility per layer via
+    :meth:`ViewerBase.set_layer_visible` or the "Layers" group in the
+    ``ViewerGL`` sidebar. See ``example_basic_multi_solver_overlay``.
+
+    Picking, wind, and ``apply_forces`` are bound to the most recently
+    activated layer's model.
 """
 
+from .viewer import Layer, ViewerBase
 from .viewer_file import ViewerFile
 from .viewer_gl import ViewerGL
 from .viewer_null import ViewerNull
 from .viewer_rerun import ViewerRerun
+from .viewer_rtx import ViewerRTX
 from .viewer_usd import ViewerUSD
 from .viewer_viser import ViewerViser
 
 __all__ = [
+    "Layer",
+    "ViewerBase",
     "ViewerFile",
     "ViewerGL",
     "ViewerNull",
+    "ViewerRTX",
     "ViewerRerun",
     "ViewerUSD",
     "ViewerViser",

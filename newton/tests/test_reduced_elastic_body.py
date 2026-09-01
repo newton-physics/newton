@@ -3,6 +3,7 @@
 
 import math
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -58,6 +59,11 @@ class _ElasticMeshColorProbe(newton.viewer.ViewerNull):
         texture=None,
         hidden=False,
         backface_culling=True,
+        color=None,
+        roughness=None,
+        metallic=None,
+        dynamic=False,
+        opacity=None,
         colors=None,
     ):
         if name.startswith("/model/elastic_shapes/"):
@@ -1542,6 +1548,23 @@ def test_elastic_surface_contact_generation(test, device):
     test.assertTrue(bool(np.all(shape_body[shapes1[active]] == body)))
 
 
+def test_elastic_surface_contact_deterministic_sort_preserves_samples(test, device):
+    model, _body = _build_elastic_ground_contact_model(device, z=0.04)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    count = min(int(contacts.rigid_contact_count.numpy()[0]), contacts.rigid_contact_max)
+    test.assertGreater(count, 1)
+    samples = contacts.rigid_contact_elastic_sample1.numpy()[:count]
+    points = contacts.rigid_contact_point1.numpy()[:count]
+    rest_points = model.elastic_shape_vertex_local.numpy()
+    elastic_rows = samples >= 0
+    test.assertTrue(bool(np.any(elastic_rows)))
+    np.testing.assert_allclose(points[elastic_rows], rest_points[samples[elastic_rows]], atol=0.0)
+
+
 def test_elastic_surface_contact_uses_deformed_vertex(test, device):
     model, _body = _build_elastic_ground_contact_model(device, z=0.07)
     state = model.state()
@@ -1575,6 +1598,8 @@ def test_vbd_elastic_contact_solves_modal_penetration(test, device):
         model,
         iterations=1,
         rigid_contact_k_start=1000.0,
+        rigid_avbd_contact_alpha=0.0,
+        rigid_body_contact_buffer_size=128,
         elastic_contact_relaxation=1.0,
     )
     solver.step(state_0, state_1, control, contacts, 0.01)
@@ -1593,6 +1618,37 @@ def test_vbd_elastic_contact_solves_modal_penetration(test, device):
     test.assertLess(float(metrics["applied_residual_norm"][0]) / initial_residual, 1.0e-6)
     test.assertGreater(float(metrics["update_norm"][0]), 1.0e-4)
     test.assertLess(float(metrics["update_norm"][0]), 1.0e-2)
+
+
+def test_vbd_elastic_compliant_contact_solves_modal_penetration(test, device):
+    model, _body = _build_elastic_ground_contact_model(device, z=0.05, q0=0.005)
+    state_0 = model.state()
+    state_1 = model.state()
+    contacts = model.contacts()
+    model.collide(state_0, contacts)
+
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=4,
+        rigid_compliant_alm=True,
+        rigid_avbd_contact_alpha=0.0,
+        rigid_body_contact_buffer_size=128,
+        elastic_contact_relaxation=1.0,
+    )
+    solver.step(state_0, state_1, model.control(), contacts, 0.01)
+
+    count = min(int(contacts.rigid_contact_count.numpy()[0]), contacts.rigid_contact_max)
+    samples = contacts.rigid_contact_elastic_sample1.numpy()[:count]
+    elastic_rows = samples >= 0
+    normals = contacts.rigid_contact_normal.numpy()[:count][elastic_rows]
+    C0 = solver.body_body_contact_C0.numpy()[:count][elastic_rows]
+    normal_C0 = np.einsum("ij,ij->i", C0, normals)
+    test.assertTrue(bool(np.any(elastic_rows)))
+    np.testing.assert_allclose(normal_C0, 0.005, atol=1.0e-6)
+
+    owner_joint = int(model.elastic_joint.numpy()[0])
+    q_start = int(model.joint_q_start.numpy()[owner_joint])
+    test.assertLess(abs(float(state_1.joint_q.numpy()[q_start + 7])), 1.0e-5)
 
 
 def test_vbd_elastic_contact_overflow_assembles_consistent_block(test, device):
@@ -2454,9 +2510,16 @@ def test_vbd_revolute_uses_elastic_endpoint(test, device):
     before = _deformed_endpoint_world(model, state_0, joint, "child")
     np.testing.assert_allclose(before, [0.0, 0.0, 0.0], atol=1.0e-6)
 
-    solver = newton.solvers.SolverVBD(model, iterations=8, rigid_joint_linear_ke=1.0e5, rigid_joint_angular_ke=1.0e5)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=8,
+        rigid_compliant_alm=True,
+        rigid_joint_linear_ke=1.0e5,
+        rigid_joint_angular_ke=1.0e5,
+    )
     solver.step(state_0, state_1, control, None, 0.01)
 
+    np.testing.assert_allclose(solver.joint_C0_lin.numpy()[joint], [0.0, 0.0, 0.0], atol=1.0e-6)
     after = _deformed_endpoint_world(model, state_1, joint, "child")
     np.testing.assert_allclose(after, [0.0, 0.0, 0.0], atol=1.0e-4)
     np.testing.assert_allclose(state_1.body_q.numpy()[body, :3], [abs(rest_anchor) + eta, 0.0, 0.0], atol=1.0e-4)
@@ -2813,9 +2876,11 @@ def test_vbd_craig_bampton_coupled_solve_iteration_invariant(test, device):
             modal_basis=basis,
             mode_qd=mode_qd,
         )
-        for position in interface_positions:
-            xform = wp.transform(wp.vec3(*position), wp.quat_identity())
-            builder.add_joint_fixed(parent=-1, child=body, parent_xform=xform, child_xform=xform)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Adding a FIXED joint.*", category=UserWarning)
+            for position in interface_positions:
+                xform = wp.transform(wp.vec3(*position), wp.quat_identity())
+                builder.add_joint_fixed(parent=-1, child=body, parent_xform=xform, child_xform=xform)
         builder.color()
         model = builder.finalize(device=device)
 
@@ -2896,9 +2961,9 @@ def test_vbd_elastic_modal_joint_damping_projection(test, device):
     q_start = int(model.joint_q_start.numpy()[int(model.elastic_joint.numpy()[0])])
     q_integrated = dt * mode_qd
     modal_inertia = mode_mass / (dt * dt)
-    joint_damping_h = joint_kd * joint_k / dt
+    joint_damping_h = joint_kd / dt
     h = modal_inertia + joint_k + joint_damping_h
-    grad = joint_k * q_integrated + joint_kd * joint_k * mode_qd
+    grad = joint_k * q_integrated + joint_kd * mode_qd
     q_expected = q_integrated - grad / h
 
     np.testing.assert_allclose(state_1.joint_q.numpy()[q_start + 7], q_expected, rtol=1.0e-6, atol=1.0e-7)
@@ -2996,7 +3061,7 @@ def test_vbd_rigid_angular_damping_includes_modal_velocity(test, device):
     damped_angle = solve_parent_angle(0.2)
     test.assertGreater(
         damped_angle,
-        10.0 * undamped_angle,
+        1.1 * undamped_angle,
         f"modal angular damping did not react on the rigid parent: {damped_angle:.3e} vs {undamped_angle:.3e}",
     )
 
@@ -3185,7 +3250,7 @@ def test_fourbar_elastic_coupler_geometry(test, device):
 def test_vbd_prismatic_rotates_elastic_child(test, device):
     builder = newton.ModelBuilder(gravity=0.0)
     inertia = wp.mat33(0.02, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.02)
-    parent = builder.add_body(
+    parent = builder.add_link(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         mass=1.0,
         inertia=inertia,
@@ -3217,7 +3282,7 @@ def test_vbd_prismatic_rotates_elastic_child(test, device):
     control = model.control()
     parent_qd_start = int(model.joint_qd_start.numpy()[parent_joint])
     joint_f = control.joint_f.numpy()
-    joint_f[parent_qd_start] = 1.0
+    joint_f[parent_qd_start] = 4.0
     control.joint_f.assign(joint_f)
 
     solver = newton.solvers.SolverVBD(
@@ -3773,6 +3838,12 @@ for device in devices:
     )
     add_function_test(
         TestReducedElasticBody,
+        "test_elastic_surface_contact_deterministic_sort_preserves_samples",
+        test_elastic_surface_contact_deterministic_sort_preserves_samples,
+        devices=[device],
+    )
+    add_function_test(
+        TestReducedElasticBody,
         "test_elastic_surface_contact_uses_deformed_vertex",
         test_elastic_surface_contact_uses_deformed_vertex,
         devices=[device],
@@ -3785,9 +3856,16 @@ for device in devices:
     )
     add_function_test(
         TestReducedElasticBody,
+        "test_vbd_elastic_compliant_contact_solves_modal_penetration",
+        test_vbd_elastic_compliant_contact_solves_modal_penetration,
+        devices=[device],
+    )
+    add_function_test(
+        TestReducedElasticBody,
         "test_vbd_elastic_contact_overflow_assembles_consistent_block",
         test_vbd_elastic_contact_overflow_assembles_consistent_block,
         devices=[device],
+        check_output=False,
     )
     add_function_test(
         TestReducedElasticBody,

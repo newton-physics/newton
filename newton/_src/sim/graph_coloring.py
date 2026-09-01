@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import warnings
 from enum import Enum
@@ -26,8 +14,16 @@ class ColoringAlgorithm(Enum):
     GREEDY = 1
 
 
+def _to_warp_coloring_algorithm(algorithm: ColoringAlgorithm | wp.utils.GraphColoringAlgorithm):
+    if isinstance(algorithm, wp.utils.GraphColoringAlgorithm):
+        return algorithm
+    if isinstance(algorithm, ColoringAlgorithm):
+        return wp.utils.GraphColoringAlgorithm[algorithm.name]
+    return wp.utils.GraphColoringAlgorithm(algorithm)
+
+
 @wp.kernel
-def validate_graph_coloring(edge_indices: wp.array(dtype=int, ndim=2), colors: wp.array(dtype=int)):
+def validate_graph_coloring(edge_indices: wp.array2d[int], colors: wp.array[int]):
     edge_idx = wp.tid()
     e_v_1 = edge_indices[edge_idx, 0]
     e_v_2 = edge_indices[edge_idx, 1]
@@ -35,67 +31,15 @@ def validate_graph_coloring(edge_indices: wp.array(dtype=int, ndim=2), colors: w
     wp.expect_neq(colors[e_v_1], colors[e_v_2])
 
 
-@wp.kernel
-def count_color_group_size(
-    colors: wp.array(dtype=int),
-    group_sizes: wp.array(dtype=int),
-):
-    for particle_idx in range(colors.shape[0]):
-        particle_color = colors[particle_idx]
-        group_sizes[particle_color] = group_sizes[particle_color] + 1
-
-
-@wp.kernel
-def fill_color_groups(
-    colors: wp.array(dtype=int),
-    group_fill_count: wp.array(dtype=int),
-    group_offsets: wp.array(dtype=int),
-    # flattened color groups
-    color_groups_flatten: wp.array(dtype=int),
-):
-    for particle_idx in range(colors.shape[0]):
-        particle_color = colors[particle_idx]
-        group_offset = group_offsets[particle_color]
-        group_idx = group_fill_count[particle_color]
-        color_groups_flatten[group_idx + group_offset] = wp.int32(particle_idx)
-
-        group_fill_count[particle_color] = group_idx + 1
-
-
-def convert_to_color_groups(num_colors, particle_colors, return_wp_array=False, device="cpu") -> list[int]:
-    group_sizes = wp.zeros(shape=(num_colors,), dtype=int, device="cpu")
-    wp.launch(kernel=count_color_group_size, inputs=[particle_colors, group_sizes], device="cpu", dim=1)
-
-    group_sizes_np = group_sizes.numpy()
-    group_offsets_np = np.concatenate([np.array([0]), np.cumsum(group_sizes_np)])
-    group_offsets = wp.array(group_offsets_np, dtype=int, device="cpu")
-
-    group_fill_count = wp.zeros(shape=(num_colors,), dtype=int, device="cpu")
-    color_groups_flatten = wp.empty(shape=(group_sizes_np.sum(),), dtype=int, device="cpu")
-    wp.launch(
-        kernel=fill_color_groups,
-        inputs=[particle_colors, group_fill_count, group_offsets, color_groups_flatten],
-        device="cpu",
-        dim=1,
+def convert_to_color_groups(num_colors, particle_colors, return_wp_array=False, device="cpu"):
+    return list(
+        wp.utils.graph_coloring_get_groups(
+            particle_colors,
+            num_colors,
+            return_wp_array,
+            device,
+        )
     )
-
-    color_groups_flatten_np = color_groups_flatten.numpy()
-
-    color_groups = []
-    if return_wp_array:
-        for color_idx in range(num_colors):
-            color_groups.append(
-                wp.array(
-                    color_groups_flatten_np[group_offsets_np[color_idx] : group_offsets_np[color_idx + 1]],
-                    dtype=int,
-                    device=device,
-                )
-            )
-    else:
-        for color_idx in range(num_colors):
-            color_groups.append(color_groups_flatten_np[group_offsets_np[color_idx] : group_offsets_np[color_idx + 1]])
-
-    return color_groups
 
 
 def _canonicalize_edges_np(edges_np: np.ndarray) -> np.ndarray:
@@ -298,7 +242,7 @@ def construct_particle_graph(
 
 def color_graph(
     num_nodes,
-    graph_edge_indices: wp.array(dtype=int, ndim=2),
+    graph_edge_indices: wp.array2d[int],
     balance_colors: bool = True,
     target_max_min_color_ratio: float = 1.1,
     algorithm: ColoringAlgorithm = ColoringAlgorithm.MCS,
@@ -340,23 +284,21 @@ def color_graph(
     else:
         indices = wp.clone(graph_edge_indices, device="cpu")
 
-    num_colors = wp._src.context.runtime.core.wp_graph_coloring(
-        num_nodes,
-        indices.__ctype__(),
-        algorithm.value,
-        particle_colors.__ctype__(),
+    num_colors = wp.utils.graph_coloring_assign(
+        indices,
+        particle_colors,
+        _to_warp_coloring_algorithm(algorithm),
     )
 
     if balance_colors:
-        max_min_ratio = wp._src.context.runtime.core.wp_balance_coloring(
-            num_nodes,
-            indices.__ctype__(),
+        max_min_ratio = wp.utils.graph_coloring_balance(
+            indices,
+            particle_colors,
             num_colors,
             target_max_min_color_ratio,
-            particle_colors.__ctype__(),
         )
 
-        if max_min_ratio > target_max_min_color_ratio and wp.config.verbose:
+        if max_min_ratio > target_max_min_color_ratio and wp.config.log_level <= wp.LOG_DEBUG:
             warnings.warn(
                 f"Color balancing terminated early: max/min ratio {max_min_ratio:.3f} "
                 f"exceeds target {target_max_min_color_ratio:.3f}. "
@@ -437,7 +379,38 @@ def plot_graph(
     plt.show()
 
 
-def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> list[int]:
+def combine_independent_coloring_plan(sized_groups_1, sized_groups_2) -> list:
+    """
+    Pair the groups of 2 independent colorings without materializing them.
+
+    Items are ``(size, chunks)`` tuples; paired groups get their sizes added and their
+    chunk lists concatenated (first coloring's chunks first). Sorting the first coloring
+    in ascending size order and the second in descending order always combines the
+    smaller group with the larger group, which balances the load of each group.
+    """
+    if len(sized_groups_1) == 0:
+        return sized_groups_2
+    if len(sized_groups_2) == 0:
+        return sized_groups_1
+
+    # this made sure that the leftover groups are always the largest
+    if len(sized_groups_1) < len(sized_groups_2):
+        sized_groups_1, sized_groups_2 = sized_groups_2, sized_groups_1
+
+    groups_1 = sorted(sized_groups_1, key=lambda group: group[0])
+    groups_2 = sorted(sized_groups_2, key=lambda group: -group[0])
+
+    combined = []
+    for i, (size_1, chunks_1) in enumerate(groups_1):
+        if i < len(groups_2):
+            size_2, chunks_2 = groups_2[i]
+            combined.append((size_1 + size_2, chunks_1 + chunks_2))
+        else:
+            combined.append((size_1, chunks_1))
+    return combined
+
+
+def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> list:
     """
     A function that combines 2 independent coloring groups. Note that color_groups_1 and color_groups_2 must be from 2 independent
     graphs so that there is no connection between them. This algorithm will sort color_groups_1 in ascending order and
@@ -451,37 +424,11 @@ def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> lis
             and each `np.array` contains the indices of vertices with this color.
 
     """
-    if len(color_groups_1) == 0:
-        return color_groups_2
-    if len(color_groups_2) == 0:
-        return color_groups_1
-
-    num_colors_after_combining = max(len(color_groups_1), len(color_groups_2))
-    color_groups_combined = []
-
-    # this made sure that the leftover groups are always the largest
-    if len(color_groups_1) < len(color_groups_2):
-        color_groups_1, color_groups_2 = color_groups_2, color_groups_1
-
-    # sort group 1 in ascending order
-    color_groups_1_sorted = sorted(color_groups_1, key=lambda group: len(group))
-    # sort group 1 in descending order
-    color_groups_2_sorted = sorted(color_groups_2, key=lambda group: -len(group))
-    # so that we are combining the smaller group with the larger group
-    # which will balance the load of each group
-
-    for i in range(num_colors_after_combining):
-        group_1 = color_groups_1_sorted[i] if i < len(color_groups_1) else None
-        group_2 = color_groups_2_sorted[i] if i < len(color_groups_2) else None
-
-        if group_1 is not None and group_2 is not None:
-            color_groups_combined.append(np.concatenate([group_1, group_2]))
-        elif group_1 is not None:
-            color_groups_combined.append(group_1)
-        else:
-            color_groups_combined.append(group_2)
-
-    return color_groups_combined
+    plan = combine_independent_coloring_plan(
+        [(len(group), [group]) for group in color_groups_1],
+        [(len(group), [group]) for group in color_groups_2],
+    )
+    return [chunks[0] if len(chunks) == 1 else np.concatenate(chunks) for _, chunks in plan]
 
 
 def color_rigid_bodies(

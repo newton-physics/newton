@@ -1,24 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
+import contextlib
 import ctypes
 import ctypes.util
+import dataclasses
 import importlib.util
 import io
 import os
 import re
+import shlex
 import sys
 import tempfile
 import time
@@ -42,6 +33,32 @@ test_mode = "unique_or_2x"
 coverage_enabled = False
 coverage_temp_dir = None
 coverage_branch = None
+
+# Set by the test runner from the --strict-warnings flag. When True, the example
+# subprocesses spawned by test_examples.py escalate DeprecationWarnings to errors
+# (the in-process tests additionally escalate any warning attributed to a newton.*
+# module). Off by default so verifying an installation does not fail on warnings
+# the user cannot act on.
+strict_warnings = False
+
+# Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
+warp_config_overrides: list[str] = []
+
+
+@contextlib.contextmanager
+def patch_sys_module(name: str, module: Any):
+    """Temporarily replace one module entry without rolling back unrelated imports."""
+    missing = object()
+    original = sys.modules.get(name, missing)
+    sys.modules[name] = module
+    try:
+        yield
+    finally:
+        if original is missing:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = original
+
 
 try:
     if sys.platform == "win32":
@@ -137,10 +154,29 @@ def get_cuda_test_devices(mode=None):
     return [d for d in devices if d.is_cuda]
 
 
+def configure_sdf_for_collision_shapes(builder):
+    """Force volume-SDF construction on every mesh/convex shape that collides with particles.
+
+    Test helper for the full-surface rigid-soft path: sets ``force_sdf`` on the builder's mesh/convex
+    ``COLLIDE_PARTICLES`` shapes (regardless of whether they used the default or an explicit config), so
+    ``finalize()`` provisions their SDFs. Mirrors what a user would do with per-shape
+    ``ShapeConfig.configure_sdf(force_sdf=True)``.
+    """
+    from newton import GeoType  # noqa: PLC0415  (deferred: keep unittest_utils import-light)
+    from newton._src.geometry.flags import ShapeFlags  # noqa: PLC0415
+
+    for i in range(len(builder.shape_type)):
+        if int(builder.shape_type[i]) in (int(GeoType.MESH), int(GeoType.CONVEX_MESH)) and (
+            builder.shape_flags[i] & int(ShapeFlags.COLLIDE_PARTICLES)
+        ):
+            builder.shape_force_sdf[i] = True
+
+
 class StreamCapture:
     def __init__(self, stream_name):
         self.stream_name = stream_name  # 'stdout' or 'stderr'
         self.saved = None
+        self.stream_fd = None
         self.target = None
         self.tempfile = None
 
@@ -153,7 +189,11 @@ class StreamCapture:
 
         # Get the stream object (sys.stdout or sys.stderr)
         self.saved = getattr(sys, self.stream_name)
-        self.target = os.dup(self.saved.fileno())
+        try:
+            self.stream_fd = self.saved.fileno()
+        except (AttributeError, io.UnsupportedOperation):
+            self.stream_fd = getattr(sys, f"__{self.stream_name}__").fileno()
+        self.target = os.dup(self.stream_fd)
 
         # Create temporary capture stream
         self.tempfile = io.TextIOWrapper(
@@ -165,7 +205,7 @@ class StreamCapture:
         )
 
         # Redirect the stream
-        os.dup2(self.tempfile.fileno(), self.saved.fileno())
+        os.dup2(self.tempfile.fileno(), self.stream_fd)
         setattr(sys, self.stream_name, self.tempfile)
 
     def end(self):
@@ -179,7 +219,7 @@ class StreamCapture:
             LIBC.fflush(None)
 
         # Restore the original stream
-        os.dup2(self.target, self.saved.fileno())
+        os.dup2(self.target, self.stream_fd)
         os.close(self.target)
 
         # Read the captured output
@@ -231,6 +271,207 @@ class CheckOutput:
 
             if filtered_s.strip():
                 self.test.fail(f"Unexpected output:\n'{s.rstrip()}'")
+
+
+@dataclasses.dataclass
+class _OutputRegex:
+    """A single output expectation for the strict output contract.
+
+    Attributes:
+        pattern: Regular expression matched against captured output.
+        stream: Which stream the pattern applies to: ``"stdout"``,
+            ``"stderr"``, or ``"any"``.
+        required: Whether the pattern must match (expected output) or is
+            merely permitted (allowed output).
+    """
+
+    pattern: str
+    stream: str
+    required: bool
+
+
+class _OutputCapture:
+    """Captures stdout/stderr during a test and checks it against patterns.
+
+    Output is captured between :meth:`begin` and :meth:`finish`. Registered
+    patterns are then matched against the captured streams: required patterns
+    must appear, and any output left unmatched by every pattern is reported as
+    unexpected. This enforces the strict output contract used by
+    :class:`NewtonTestCase`.
+    """
+
+    def __init__(self):
+        self.stdout_capture = StdOutCapture()
+        self.stderr_capture = StdErrCapture()
+        self.output = {"stdout": [], "stderr": []}
+        self.patterns: list[_OutputRegex] = []
+        self.active = False
+
+    def begin(self):
+        self.stdout_capture.begin()
+        try:
+            self.stderr_capture.begin()
+        except BaseException:
+            self.stdout_capture.end()
+            raise
+        self.active = True
+
+    def add_pattern(self, pattern: str, *, stream: str, required: bool):
+        if stream not in {"stdout", "stderr", "any"}:
+            raise ValueError(f"Unknown stream {stream!r}; expected 'stdout', 'stderr', or 'any'")
+
+        self.patterns.append(_OutputRegex(pattern=pattern, stream=stream, required=required))
+
+    def record(self, stream: str, text: str | bytes | None):
+        if text is None:
+            return
+        if isinstance(text, bytes):
+            text = text.decode("utf-8", errors="replace")
+        if text:
+            self.output[stream].append(str(text))
+
+    def finish(self) -> str | None:
+        if not self.active:
+            return None
+
+        failure = None
+        try:
+            try:
+                # Match CheckOutput: flush async Warp kernel output before reading captured fds.
+                wp.synchronize()
+            except BaseException as exc:
+                failure = exc
+            finally:
+                for stream, capture in (("stderr", self.stderr_capture), ("stdout", self.stdout_capture)):
+                    try:
+                        self.record(stream, capture.end())
+                    except BaseException as exc:
+                        if failure is None:
+                            failure = exc
+        finally:
+            self.active = False
+
+        if failure is not None:
+            raise failure
+
+        return self._check_output()
+
+    def _check_output(self) -> str | None:
+        output_by_stream = {stream: "".join(chunks) for stream, chunks in self.output.items()}
+        unmatched_by_stream = output_by_stream.copy()
+        missing = []
+
+        for pattern in self.patterns:
+            streams = ("stdout", "stderr") if pattern.stream == "any" else (pattern.stream,)
+            matched = any(
+                re.search(pattern.pattern, output_by_stream[stream], flags=re.MULTILINE) for stream in streams
+            )
+
+            if pattern.required and not matched:
+                missing.append(pattern)
+
+            for stream in streams:
+                unmatched_by_stream[stream] = re.sub(
+                    pattern.pattern,
+                    "",
+                    unmatched_by_stream[stream],
+                    flags=re.MULTILINE,
+                )
+
+        failures = []
+        if missing:
+            failures.append(
+                "Missing expected output:\n"
+                + "\n".join(f"- {pattern.stream}: /{pattern.pattern}/" for pattern in missing)
+            )
+
+        for stream, unmatched in unmatched_by_stream.items():
+            if unmatched.strip():
+                failures.append(f"Unexpected {stream}:\n{unmatched.rstrip()}")
+
+        if failures:
+            return "\n\n".join(failures)
+
+        return None
+
+
+class NewtonTestCase(unittest.TestCase):
+    """TestCase with strict stdout/stderr output checking.
+
+    Inheriting this class opts the test into a strict output contract:
+    stdout and stderr must be empty unless a test explicitly expects or
+    allows matching output.
+    """
+
+    _output_capture: _OutputCapture | None = None
+
+    def _callSetUp(self):
+        self._output_capture = _OutputCapture()
+        self._output_capture.begin()
+        self.addCleanup(self._finish_output_capture)
+        super()._callSetUp()
+
+    def expectOutputRegex(self, regex: str, *, stream: str = "any"):
+        """Allow matching stdout/stderr output and fail if it does not appear."""
+
+        self._require_output_capture().add_pattern(regex, stream=stream, required=True)
+
+    def allowOutputRegex(self, regex: str, *, stream: str = "any"):
+        """Allow matching stdout/stderr output without requiring it."""
+
+        self._require_output_capture().add_pattern(regex, stream=stream, required=False)
+
+    def assertSubprocessSuccess(self, result, *, command):
+        """Assert a subprocess succeeded and include its output in this test's output contract."""
+
+        output_capture = self._require_output_capture()
+        stdout = getattr(result, "stdout", None)
+        stderr = getattr(result, "stderr", None)
+
+        if result.returncode != 0:
+            # The primary failure already includes both streams, so leave no output for cleanup to report again.
+            command_text = _format_command(command)
+            self.fail(
+                f"Failed with return code {result.returncode}, command: {command_text}\n\nOutput:\n{stdout}\n{stderr}"
+            )
+
+        output_capture.record("stdout", stdout)
+        output_capture.record("stderr", stderr)
+
+    def _finish_output_capture(self):
+        output_capture = self._output_capture
+        self._output_capture = None
+        if output_capture is None:
+            return
+
+        failure = output_capture.finish()
+        if failure is not None and not self._has_recorded_failure_or_error():
+            self.fail(failure)
+
+    def _require_output_capture(self) -> _OutputCapture:
+        if self._output_capture is None:
+            raise RuntimeError("Output capture is not active for this test")
+
+        return self._output_capture
+
+    def _has_recorded_failure_or_error(self) -> bool:
+        outcome = getattr(self, "_outcome", None)
+        result = getattr(outcome, "result", None)
+        if result is None:
+            return False
+
+        for issue_list in (result.failures, result.errors, result.skipped):
+            if any(test is self for test, _ in issue_list):
+                return True
+
+        return False
+
+
+def _format_command(command) -> str:
+    if isinstance(command, str):
+        return command
+
+    return shlex.join(str(arg) for arg in command)
 
 
 def assert_array_equal(result: wp.array, expect: wp.array):
@@ -285,11 +526,12 @@ def find_nonfinite_members(obj: Any | None) -> list[str]:
     return nonfinite_members
 
 
-# if check_output is True any output to stdout will be treated as an error
+# For legacy TestCase classes, check_output=True wraps the function in CheckOutput.
+# NewtonTestCase subclasses use their own stdout/stderr output contract instead.
 def create_test_func(func, device, check_output, **kwargs):
     # pass args to func
     def test_func(self):
-        if check_output:
+        if check_output and not isinstance(self, NewtonTestCase):
             with CheckOutput(self):
                 func(self, device, **kwargs)
         else:
@@ -302,9 +544,9 @@ def create_test_func(func, device, check_output, **kwargs):
     return test_func
 
 
+@unittest.skip("No selected devices are available for this test.")
 def skip_test_func(self):
-    # A function to use so we can tell unittest that the test was skipped.
-    self.skipTest("No suitable devices to run the test.")
+    pass
 
 
 def sanitize_identifier(s):
@@ -438,7 +680,49 @@ def write_junit_results(
     tree.write(outfile, encoding="utf-8", xml_declaration=True)
 
 
-class ParallelJunitTestResult(unittest.TextTestResult):
+def is_statically_skipped_test(test):
+    """Return whether unittest skips a test before setUp and its body."""
+    method_name = getattr(test, "_testMethodName", "")
+    test_method = getattr(test, method_name, None)
+    return getattr(test.__class__, "__unittest_skip__", False) or getattr(test_method, "__unittest_skip__", False)
+
+
+def cleanup_test_allocations():
+    """Release CPU allocations and unused CUDA mempool memory."""
+    import gc  # noqa: PLC0415
+
+    gc.collect()
+    for device_name in wp.get_cuda_devices():
+        if wp.is_mempool_enabled(device_name):
+            wp.set_mempool_release_threshold(device_name, 0)
+
+
+class AllocationCleanupTestResultMixin:
+    """Bound cleanup overhead while retaining per-test CUDA memory release."""
+
+    _CPU_CLEANUP_INTERVAL = 8
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._tests_since_cleanup = 0
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        if is_statically_skipped_test(test):
+            return
+        self._tests_since_cleanup += 1
+        if wp.get_cuda_devices() or self._tests_since_cleanup >= self._CPU_CLEANUP_INTERVAL:
+            cleanup_test_allocations()
+            self._tests_since_cleanup = 0
+
+    def stopTestRun(self):
+        if self._tests_since_cleanup:
+            cleanup_test_allocations()
+            self._tests_since_cleanup = 0
+        super().stopTestRun()
+
+
+class ParallelJunitTestResult(AllocationCleanupTestResultMixin, unittest.TextTestResult):
     def __init__(self, stream, descriptions, verbosity):
         stream = type(stream)(sys.stderr)
         self.test_record = []
@@ -507,20 +791,6 @@ class ParallelJunitTestResult(unittest.TextTestResult):
             self._add_helper(test, "ERROR")
             # err is (class, error, traceback)
             self._record_test(test, "FAIL", str(err[1]), self._exc_info_to_string(err, test))
-
-    def stopTest(self, test):
-        super().stopTest(test)
-        # Force garbage collection of CPU-side allocations and release unused
-        # CUDA mempool memory to reduce peak host RSS in parallel test runs
-        # (see issue #1881).
-        import gc  # noqa: PLC0415
-
-        gc.collect()
-        import warp as wp  # noqa: PLC0415
-
-        for device_name in wp.get_cuda_devices():
-            if wp.is_mempool_enabled(device_name):
-                wp.set_mempool_release_threshold(device_name, 0)
 
     def printErrors(self):
         pass

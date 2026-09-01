@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Recording
@@ -34,7 +22,8 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, _args):
+    def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # Setup simulation parameters
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -43,7 +32,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
-        self.world_count = 100
+        self.world_count = args.world_count
 
         # Set numpy random seed for reproducibility
         self.seed = 123
@@ -54,6 +43,7 @@ class Example:
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
 
         articulation_builder = newton.ModelBuilder()
+        articulation_builder.default_shape_cfg.gap = 0.0
         articulation_builder.add_mjcf(
             mjcf_filename,
             ignore_names=["floor", "ground"],
@@ -64,6 +54,7 @@ class Example:
         articulation_builder.joint_q[:7] = [0.0, 0.0, 1.5, *start_rot]
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         for _i in range(self.world_count):
             articulation_builder.joint_q[7:] = self.rng.uniform(
                 -1.0, 1.0, size=(len(articulation_builder.joint_q) - 7,)
@@ -87,12 +78,9 @@ class Example:
 
         self.state_0, self.state_1 = self.model.state(), self.model.state()
 
-        self.use_cuda_graph = wp.get_device().is_cuda
-
-        if self.use_cuda_graph:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
         # Set model in viewer (ViewerFile will automatically record it)
         self.viewer.set_model(self.model)
@@ -105,10 +93,7 @@ class Example:
 
     def step(self):
         with wp.ScopedTimer("step", active=False):
-            if self.use_cuda_graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+            wp.capture_launch(self.graph)
         self.sim_time += self.frame_dt
 
     def render(self):
@@ -117,43 +102,52 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "body origins remain above the ground",
+            lambda q, qd: q[2] > -0.1,
+        )
+
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        parser.add_argument("recording_file", nargs="?", default="humanoid_recording.bin")
+        parser.set_defaults(num_frames=1000, world_count=100)
+        return parser
 
 
 if __name__ == "__main__":
-    # Create ViewerFile for automatic recording
-    import sys
+    parser = Example.create_parser()
+    test_args, _ = parser.parse_known_args()
 
-    recording_file = "humanoid_recording.bin"
+    if test_args.test:
+        viewer, args = newton.examples.init(parser)
+        newton.examples.run(Example(viewer, args), args)
+        raise SystemExit(0)
 
-    # Check if user wants a different filename from command line
-    if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
-        recording_file = sys.argv[1]
-
-    print(f"Recording simulation to: {recording_file}")
+    args = parser.parse_args()
+    print(f"Recording simulation to: {args.recording_file}")
     print("ViewerFile will automatically save when the simulation ends.")
 
-    parser = newton.examples.create_parser()
-    args = parser.parse_args()
-
     # Create ViewerFile with auto_save=False to only save at the end
-    viewer = newton.viewer.ViewerFile(recording_file, auto_save=False)
+    viewer = newton.viewer.ViewerFile(args.recording_file, auto_save=False)
 
     # Create example
     example = Example(viewer, args)
 
     # Run for a reasonable number of frames
-    max_frames = 1000
     frame_count = 0
 
-    while frame_count < max_frames:
+    while frame_count < args.num_frames:
         example.step()
         example.render()
         frame_count += 1
 
         if frame_count % 100 == 0:
-            print(f"Frame {frame_count}/{max_frames}")
+            print(f"Frame {frame_count}/{args.num_frames}")
 
     # Close viewer (automatically saves recording)
     viewer.close()
-    print(f"Recording completed: {recording_file}")
+    print(f"Recording completed: {args.recording_file}")

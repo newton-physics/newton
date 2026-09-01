@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Box Pyramid
@@ -48,6 +36,7 @@ XPBD_CONTACT_RELAXATION = 0.8
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -62,7 +51,7 @@ class Example:
         pyramid_size = args.pyramid_size
 
         builder = newton.ModelBuilder()
-        builder.add_shape_plane(-1, wp.transform_identity(), width=0.0, length=0.0)
+        builder.add_shape_plane(xform=wp.transform_identity(), width=0.0, length=0.0)
 
         box_count = 0
         top_body_indices = []
@@ -157,17 +146,14 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -228,5 +214,4 @@ class Example:
 if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

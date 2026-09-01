@@ -19,8 +19,10 @@ Moreover, world-based grouping can also facilitate partitioning of thread grids 
 Such operations facilitate support for simulating multiple, and potentially heterogeneous, worlds defined within a :class:`~newton.Model` instance.
 Lastly, world-based grouping also enables selectively operating on only the entities that belong to a specific world, i.e. masking, as well as partitioning of the :class:`~newton.Model` and :class:`~newton.State` data.
 
-.. note::
-   Support for fully heterogeneous simulations is still under active development and quite experimental.
+.. experimental::
+
+   Support for fully heterogeneous simulations is still under active development
+   and may change without prior notice.
    At present time, although the :class:`~newton.ModelBuilder` and :class:`~newton.Model` objects support instantiating worlds with different disparate entities, not all solvers are able to simulate them.
    Moreover, the selection API still operates under the assumption of model homogeneity, but this is expected to also support heterogeneous simulations in the near future.
 
@@ -94,7 +96,6 @@ Specifically, the entity types that currently support world grouping include:
 - Shapes: :attr:`~newton.Model.shape_world`
 - Joints: :attr:`~newton.Model.joint_world`
 - Articulations: :attr:`~newton.Model.articulation_world`
-- Equality Constraints: :attr:`~newton.Model.equality_constraint_world`
 
 The corresponding world grouping arrays for the example above are:
 
@@ -125,7 +126,6 @@ These arrays include:
 - Shapes: :attr:`~newton.Model.shape_world_start`
 - Joints: :attr:`~newton.Model.joint_world_start`
 - Articulations: :attr:`~newton.Model.articulation_world_start`
-- Equality Constraints: :attr:`~newton.Model.equality_constraint_world_start`
 
 To handle the special case of joint entities, that vary in the number of DOFs, coordinates and constraints, the model also provides arrays that store the per-world starting indices in these specific dimensions:
 
@@ -139,6 +139,33 @@ the second-to-last entry corresponding to the starting index of the global entit
 
 With this format, we can easily compute the number of entities per world by computing the difference between consecutive entries in these arrays (since they are essentially cumulative sums),
 as well as the total number of global entities by summing the first entry with the difference of the last two.
+
+Unlike per-world value and selection arrays, a ``*_world_start`` array does
+not provide one contiguous slot for global world ``-1``. Global entities can
+occur in two ranges because they may be added both before the first local
+world and after the last local world:
+
+* ``[0, world_start[0])`` contains global entities added at the front.
+* ``[world_start[-2], world_start[-1])`` contains global entities added at the
+  back.
+
+For example, the shape arrays in the scene above have this layout:
+
+.. code-block:: text
+
+   shape index:        0   1   2   3   4   5
+   shape_world:       -1   0   0   1   1  -1
+   shape_world_start: [1, 3, 5, 6]
+
+World ``0`` occupies shape indices ``[1, 3)`` and world ``1`` occupies
+``[3, 5)``. The two global shapes are split between index ``0`` at the front
+and index ``5`` at the back, so no single slice from ``shape_world_start``
+selects both. To select every global shape, test the per-shape world indices:
+
+.. code-block:: python
+
+   global_shape_mask = model.shape_world.numpy() == -1
+   # [True, False, False, False, False, True]
 
 Continuing the same example, we can compute the per-world shape counts as follows:
 
@@ -238,6 +265,79 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
    world_count: 4
    body_count: 8
 
+.. important::
+   Call :meth:`~newton.ModelBuilder.approximate_meshes` on the sub-builder
+   **before** passing it to :meth:`~newton.ModelBuilder.replicate`.
+   Replication copies mesh references across worlds, so approximating first
+   produces a single simplified copy shared by all worlds; approximating
+   afterwards allocates one copy per replicated shape.
+
+.. testcode::
+
+   import newton
+
+   arm = newton.ModelBuilder()
+   link = arm.add_link(mass=1.0)
+   mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, compute_inertia=False)
+   arm.add_shape_mesh(body=link, mesh=mesh)
+   arm.approximate_meshes(method="convex_hull")
+
+   scene = newton.ModelBuilder()
+   scene.replicate(arm, world_count=4)
+
+   replicated_model = scene.finalize()
+   print("world_count:", replicated_model.world_count)
+
+.. testoutput::
+
+   world_count: 4
+
+
+.. _implicit-mpm-worlds:
+
+Implicit MPM world isolation
+----------------------------
+
+.. experimental::
+
+    Independent per-world Implicit MPM simulation and collider filtering may
+    change without prior notice.
+
+A multi-world :class:`~newton.solvers.SolverImplicitMPM` uses one shared FEM
+topology by default, so world assignment alone does not isolate overlapping MPM
+particles. Set :attr:`~newton.solvers.SolverImplicitMPM.Config.separate_worlds`
+to create one FEM environment per world and isolate grid mass, momentum,
+stress, and collider response.
+
+Isolated MPM requires every particle to belong to a local world. World-local
+colliders affect only that world, while global static colliders and global
+colliders backed by kinematic bodies affect every world. In isolated mode,
+global colliders backed by dynamic bodies are rejected.
+
+See :class:`~newton.solvers.SolverImplicitMPM` for sparse-grid capacity and
+CUDA graph-capture requirements. See
+:meth:`~newton.solvers.SolverImplicitMPM.setup_collider` and
+:meth:`~newton.solvers.SolverImplicitMPM.reset` for collider configuration and
+selective reset behavior.
+
+.. _Per-world reset masks:
+
+Per-World Reset Masks
+---------------------
+
+The optional ``world_mask`` passed to :meth:`~newton.solvers.SolverBase.reset`
+is a one-dimensional Warp boolean array on the solver device with shape
+``(world_count + 1,)``. Entries ``[0, world_count)`` select local worlds, and
+the final entry selects global entities whose world index is ``-1``. An
+all-true mask therefore selects the same entities as ``None``. ``None`` remains
+the full-reset form, however, so a solver may also clear bookkeeping or caches
+that have no per-world ownership. Solvers that do not support global dynamic
+objects accept the final entry as a no-op.
+
+.. deprecated:: 1.5
+   The legacy shape ``(world_count,)`` remains available during its
+   deprecation period. It selects local worlds only and leaves global entities
+   unselected.
 
 .. _Per-world gravity:
 
@@ -249,9 +349,12 @@ Each world can have its own gravity vector, which is useful for simulating diffe
 Per-world gravity can be configured at build time via the ``gravity`` argument of :meth:`~newton.ModelBuilder.begin_world`,
 or modified at runtime via :meth:`~newton.Model.set_gravity`:
 
-.. note::
-   Global entities (world index ``-1``) use the gravity of world ``0``.
-   Keep this in mind when mixing global and world-specific entities with different gravity vectors.
+The builder's :attr:`~newton.ModelBuilder.gravity` is the default for new local worlds and the
+dedicated gravity for global entities (world index ``-1``). The final element of
+:attr:`~newton.Model.gravity` stores this global gravity, so the array has shape
+``(world_count + 1,)`` and ``vec3`` elements when the builder contains explicit local
+worlds. Legacy implicit single-world models retain one shared entry with shape ``(1,)``;
+updates for world ``0`` therefore continue to affect their global entities.
 
 .. testcode::
 
@@ -269,12 +372,13 @@ or modified at runtime via :meth:`~newton.Model.set_gravity`:
    # Set different gravity for each world
    model.set_gravity((0.0, 0.0, -9.81), world=0)  # Earth
    model.set_gravity((0.0, 0.0, -1.62), world=1)  # Moon
+   model.set_gravity((0.0, 0.0, -3.71), world=-1)  # Global entities
 
-   print("Gravity shape:", model.gravity.numpy().shape)
+   print("Gravity shape:", model.gravity.shape)
 
 .. testoutput::
 
-   Gravity shape: (2, 3)
+   Gravity shape: (3,)
 
 
 .. _World-entity partitioning:
@@ -293,8 +397,8 @@ For example:
 
    @wp.kernel
    def world_body_2d_kernel(
-       body_world_start: wp.array(dtype=wp.int32),
-       body_qd: wp.array(dtype=wp.spatial_vectorf),
+       body_world_start: wp.array[wp.int32],
+       body_qd: wp.array[wp.spatial_vectorf],
    ):
        world_id, body_world_id = wp.tid()
        world_start = body_world_start[world_id]

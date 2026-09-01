@@ -1,19 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 
 
 # Particle flags
@@ -24,6 +12,15 @@ class ParticleFlags(IntEnum):
 
     ACTIVE = 1 << 0
     """Indicates that the particle is active."""
+
+    PROXY = 1 << 1
+    """Indicates that the particle is a solver-coupling proxy.
+
+    .. experimental::
+
+        This flag is part of the experimental coupled-solver contract and may
+        change without prior notice.
+    """
 
 
 # Shape flags
@@ -48,7 +45,25 @@ class ShapeFlags(IntEnum):
     """Indicates that the shape uses hydroelastic collision."""
 
 
+class MeshSignMethod(IntEnum):
+    """Method used to determine the inside/outside sign of a mesh point query."""
+
+    NORMAL = 0
+    """Angle-weighted closest-face pseudo-normal; robust for open surfaces."""
+    PARITY = 1
+    """Ray-crossing parity; correct and cheap for watertight (closed) meshes."""
+
+
+class MeshProperties(IntFlag):
+    """Per-shape mesh properties consumed by the collision kernels."""
+
+    WATERTIGHT = 1 << 0
+    """The source mesh is closed (every edge shared by exactly two triangles)."""
+
+
 __all__ = [
+    "MeshProperties",
+    "MeshSignMethod",
     "ParticleFlags",
     "ShapeFlags",
 ]

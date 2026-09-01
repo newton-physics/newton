@@ -1,0 +1,1 @@
+Replace the experimental `HydroelasticSDF` constructor argument `max_num_blocks_per_shape` with `total_num_active_tiles`, the summed number of non-empty narrow-band subgrids in the SDF selected for each shape pair. Prefer constructing hydroelastic collision handling through `CollisionPipeline`.

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Basic Shapes
@@ -36,11 +24,12 @@ import newton.usd
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -48,11 +37,14 @@ class Example:
 
         builder = newton.ModelBuilder()
 
+        builder.default_shape_cfg.mu = 1.0  # Friction coefficient
+
         if self.solver_type == "vbd":
-            # VBD: Higher stiffness for stable rigid body contacts
-            builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
-            builder.default_shape_cfg.kd = 1.0e1  # Contact damping
-            builder.default_shape_cfg.mu = 0.5  # Friction coefficient
+            builder.default_shape_cfg.ke = 1.0e8
+            builder.default_shape_cfg.kd = 5.0e5
+        else:
+            builder.default_shape_cfg.mu_torsional = 0.01  # Contact stiffness
+            builder.default_shape_cfg.mu_rolling = 3e-3  # Contact stiffness
 
         # add ground plane
         builder.add_ground_plane()
@@ -70,7 +62,7 @@ class Example:
         body_ellipsoid = builder.add_body(
             xform=wp.transform(p=self.ellipsoid_pos, q=wp.quat_identity()), label="ellipsoid"
         )
-        builder.add_shape_ellipsoid(body_ellipsoid, a=0.5, b=0.5, c=0.25)
+        builder.add_shape_ellipsoid(body_ellipsoid, rx=0.5, ry=0.5, rz=0.25)
 
         # CAPSULE
         self.capsule_pos = wp.vec3(0.0, 0.0, drop_z)
@@ -113,16 +105,18 @@ class Example:
         if self.solver_type == "vbd":
             self.solver = newton.solvers.SolverVBD(
                 self.model,
-                iterations=10,
+                iterations=5,
+                rigid_compliant_alm=True,
             )
         else:
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -138,12 +132,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -152,7 +143,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -198,6 +189,7 @@ class Example:
         # Custom test for cylinder: allow 0.01 error for X and Y, strict for Z and rotation
         self.cylinder_pos[2] = 0.6
         cylinder_q = wp.transform(self.cylinder_pos, wp.quat_identity())
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -211,6 +203,7 @@ class Example:
             and abs(q[6] - cylinder_q[6]) < 1e-4,
             [3],
         )
+        # fmt: on
         self.box_pos[2] = 0.25
         box_q = wp.transform(self.box_pos, wp.quat_identity())
         newton.examples.test_body_state(
@@ -250,6 +243,4 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

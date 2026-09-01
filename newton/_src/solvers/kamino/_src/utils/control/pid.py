@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """PID Controller Interfaces"""
 
@@ -27,7 +15,7 @@ from ...core.joints import JointActuationType
 from ...core.model import ModelKamino
 from ...core.state import StateKamino
 from ...core.time import TimeData
-from ...core.types import FloatArrayLike, IntArrayLike, float32, int32
+from ...core.types import FloatArrayLike, IntArrayLike, to_warp_int32_array
 
 ###
 # Module interface
@@ -46,7 +34,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -58,22 +46,29 @@ wp.set_module_options({"enable_backward": False})
 class PIDControllerData:
     """A data container for joint-space PID controller parameters and state."""
 
-    q_j_ref: wp.array | None = None
+    q_j_ref: wp.array[wp.float32] | None = None
     """The reference actuator joint positions."""
-    dq_j_ref: wp.array | None = None
+    dq_j_ref: wp.array[wp.float32] | None = None
     """The reference actuator joint velocities."""
-    tau_j_ref: wp.array | None = None
+    tau_j_ref: wp.array[wp.float32] | None = None
     """The feedforward actuator joint torques."""
-    K_p: wp.array | None = None
+    K_p: wp.array[wp.float32] | None = None
     """The proportional gains."""
-    K_i: wp.array | None = None
+    K_i: wp.array[wp.float32] | None = None
     """The integral gains."""
-    K_d: wp.array | None = None
+    K_d: wp.array[wp.float32] | None = None
     """The derivative gains."""
-    integrator: wp.array | None = None
+    integrator: wp.array[wp.float32] | None = None
     """Integrator of joint-space position tracking error."""
-    decimation: wp.array | None = None
+    decimation: wp.array[wp.int32] | None = None
     """The control decimation for each world expressed as a multiple of simulation steps."""
+
+    @property
+    def device(self) -> wp.DeviceLike:
+        """The device used for allocations and execution."""
+        if self.q_j_ref is None:
+            raise RuntimeError("Controller data is not allocated. Call finalize() first.")
+        return self.q_j_ref.device
 
 
 ###
@@ -84,18 +79,14 @@ class PIDControllerData:
 @wp.kernel
 def _reset_jointspace_pid_references(
     # Inputs
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_act_type: wp.array(dtype=int32),
-    model_joints_num_dofs: wp.array(dtype=int32),
-    model_joints_dofs_offset: wp.array(dtype=int32),
-    model_joints_actuated_dofs_offset: wp.array(dtype=int32),
-    state_joints_q_j: wp.array(dtype=float32),
-    state_joints_dq_j: wp.array(dtype=float32),
+    model_joints_dof_act_types: wp.array[wp.int32],
+    model_joints_dofs_offset: wp.array[wp.int32],
+    model_joints_actuated_dofs_offset: wp.array[wp.int32],
+    state_joints_q_j: wp.array[wp.float32],
+    state_joints_dq_j: wp.array[wp.float32],
     # Outputs
-    controller_q_j_ref: wp.array(dtype=float32),
-    controller_dq_j_ref: wp.array(dtype=float32),
+    controller_q_j_ref: wp.array[wp.float32],
+    controller_dq_j_ref: wp.array[wp.float32],
 ):
     """
     A kernel to reset motion references of the joint-space controller.
@@ -103,34 +94,19 @@ def _reset_jointspace_pid_references(
     # Retrieve the the joint index from the thread indices
     jid = wp.tid()
 
-    # Retrieve the joint actuation type
-    act_type = model_joints_act_type[jid]
-
-    # Retrieve the world index from the thread indices
-    wid = model_joints_wid[jid]
-
-    # Only proceed for force actuated joints and at
-    # simulation steps matching the control decimation
-    if act_type != JointActuationType.FORCE:
-        return
-
-    # Retrieve the offset of the world's joints in the global DoF vector
-    world_dof_offset = model_info_joint_dofs_offset[wid]
-    world_actuated_dof_offset = model_info_joint_actuated_dofs_offset[wid]
-
-    # Retrieve the number of DoFs and offset of the joint
-    num_dofs = model_joints_num_dofs[jid]
+    # Retrieve the number of DoFs and offsets of the joint
     dofs_offset = model_joints_dofs_offset[jid]
+    num_dofs = model_joints_dofs_offset[jid + 1] - dofs_offset
     actuated_dofs_offset = model_joints_actuated_dofs_offset[jid]
-
-    # Compute the global DoF offset of the joint
-    dofs_offset += world_dof_offset
-    actuated_dofs_offset += world_actuated_dof_offset
 
     # Iterate over the DoFs of the joint
     for dof in range(num_dofs):
         # Compute the DoF index in the global DoF vector
         dof_index = dofs_offset + dof
+
+        # Only proceed for force-actuated DoFs
+        if model_joints_dof_act_types[dof_index] != JointActuationType.FORCE:
+            continue
 
         # Compute the actuator index in the controller vectors
         actuator_dof_index = actuated_dofs_offset + dof
@@ -147,37 +123,31 @@ def _reset_jointspace_pid_references(
 @wp.kernel
 def _compute_jointspace_pid_control(
     # Inputs
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_act_type: wp.array(dtype=int32),
-    model_joints_num_dofs: wp.array(dtype=int32),
-    model_joints_dofs_offset: wp.array(dtype=int32),
-    model_joints_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joints_tau_j_max: wp.array(dtype=float32),
-    model_time_dt: wp.array(dtype=float32),
-    state_time_steps: wp.array(dtype=int32),
-    state_joints_q_j: wp.array(dtype=float32),
-    state_joints_dq_j: wp.array(dtype=float32),
-    controller_q_j_ref: wp.array(dtype=float32),
-    controller_dq_j_ref: wp.array(dtype=float32),
-    controller_tau_j_ref: wp.array(dtype=float32),
-    controller_K_p: wp.array(dtype=float32),
-    controller_K_i: wp.array(dtype=float32),
-    controller_K_d: wp.array(dtype=float32),
-    controller_integrator: wp.array(dtype=float32),
-    controller_decimation: wp.array(dtype=int32),
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_dof_act_types: wp.array[wp.int32],
+    model_joints_dofs_offset: wp.array[wp.int32],
+    model_joints_actuated_dofs_offset: wp.array[wp.int32],
+    model_joints_tau_j_max: wp.array[wp.float32],
+    model_time_dt: wp.array[wp.float32],
+    state_time_steps: wp.array[wp.int32],
+    state_joints_q_j: wp.array[wp.float32],
+    state_joints_dq_j: wp.array[wp.float32],
+    controller_q_j_ref: wp.array[wp.float32],
+    controller_dq_j_ref: wp.array[wp.float32],
+    controller_tau_j_ref: wp.array[wp.float32],
+    controller_K_p: wp.array[wp.float32],
+    controller_K_i: wp.array[wp.float32],
+    controller_K_d: wp.array[wp.float32],
+    controller_integrator: wp.array[wp.float32],
+    controller_decimation: wp.array[wp.int32],
     # Outputs
-    control_tau_j: wp.array(dtype=float32),
+    control_tau_j: wp.array[wp.float32],
 ):
     """
     A kernel to compute joint-space PID control outputs for force-actuated joints.
     """
     # Retrieve the the joint index from the thread indices
     jid = wp.tid()
-
-    # Retrieve the joint actuation type
-    act_type = model_joints_act_type[jid]
 
     # Retrieve the world index from the thread indices
     wid = model_joints_wid[jid]
@@ -188,9 +158,8 @@ def _compute_jointspace_pid_control(
     # Retrieve the control decimation for the world
     decimation = controller_decimation[wid]
 
-    # Only proceed for force actuated joints and at
-    # simulation steps matching the control decimation
-    if act_type != JointActuationType.FORCE or step % decimation != 0:
+    # Only proceed at simulation steps matching the control decimation.
+    if step % decimation != 0:
         return
 
     # Retrieve the time step and current time
@@ -198,25 +167,21 @@ def _compute_jointspace_pid_control(
 
     # Decimate the simulation time-step by the control
     # decimation to get the effective control time-step
-    dt *= float32(decimation)
+    dt *= wp.float32(decimation)
 
-    # Retrieve the offset of the world's joints in the global DoF vector
-    world_dof_offset = model_info_joint_dofs_offset[wid]
-    world_actuated_dof_offset = model_info_joint_actuated_dofs_offset[wid]
-
-    # Retrieve the number of DoFs and offset of the joint
-    num_dofs = model_joints_num_dofs[jid]
+    # Retrieve the number of DoFs and offsets of the joint
     dofs_offset = model_joints_dofs_offset[jid]
+    num_dofs = model_joints_dofs_offset[jid + 1] - dofs_offset
     actuated_dofs_offset = model_joints_actuated_dofs_offset[jid]
-
-    # Compute the global DoF offset of the joint
-    dofs_offset += world_dof_offset
-    actuated_dofs_offset += world_actuated_dof_offset
 
     # Iterate over the DoFs of the joint
     for dof in range(num_dofs):
         # Compute the DoF index in the global DoF vector
         joint_dof_index = dofs_offset + dof
+
+        # Only proceed for force-actuated DoFs
+        if model_joints_dof_act_types[joint_dof_index] != JointActuationType.FORCE:
+            continue
 
         # Compute the actuator index in the controller vectors
         actuator_dof_index = actuated_dofs_offset + dof
@@ -282,11 +247,7 @@ def reset_jointspace_pid_references(
         dim=model.size.sum_of_num_joints,
         inputs=[
             # Inputs
-            model.info.joint_dofs_offset,
-            model.info.joint_actuated_dofs_offset,
-            model.joints.wid,
-            model.joints.act_type,
-            model.joints.num_dofs,
+            model.joints.dof_act_types,
             model.joints.dofs_offset,
             model.joints.actuated_dofs_offset,
             state.q_j,
@@ -295,6 +256,7 @@ def reset_jointspace_pid_references(
             controller.q_j_ref,
             controller.dq_j_ref,
         ],
+        device=controller.device,
     )
 
 
@@ -315,11 +277,8 @@ def compute_jointspace_pid_control(
         dim=model.size.sum_of_num_joints,
         inputs=[
             # Inputs
-            model.info.joint_dofs_offset,
-            model.info.joint_actuated_dofs_offset,
             model.joints.wid,
-            model.joints.act_type,
-            model.joints.num_dofs,
+            model.joints.dof_act_types,
             model.joints.dofs_offset,
             model.joints.actuated_dofs_offset,
             model.joints.tau_j_max,
@@ -338,6 +297,7 @@ def compute_jointspace_pid_control(
             # Outputs
             control.tau_j,
         ],
+        device=control.device,
     )
 
 
@@ -360,31 +320,29 @@ class JointSpacePIDController:
         K_i: FloatArrayLike | None = None,
         K_d: FloatArrayLike | None = None,
         decimation: IntArrayLike | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         A simple PID controller in joint space.
 
         Args:
-            model (ModelKamino | None): The model container describing the system to be simulated.
+            model: The model container describing the system to be simulated.
                 If None, call ``finalize()`` later.
-            K_p (FloatArrayLike | None): Proportional gains per actuated joint DoF.
-            K_i (FloatArrayLike | None): Integral gains per actuated joint DoF.
-            K_d (FloatArrayLike | None): Derivative gains per actuated joint DoF.
-            decimation (IntArrayLike | None): Control decimation for each world
+            K_p: Proportional gains per actuated joint DoF.
+            K_i: Integral gains per actuated joint DoF.
+            K_d: Derivative gains per actuated joint DoF.
+            decimation: Control decimation for each world
                 expressed as a multiple of simulation steps.
-            device (wp.DeviceLike | None): Device to use for allocations and execution.
         """
 
-        # Cache the device
-        self._device: wp.DeviceLike = device
+        # Declare the device cache
+        self._device: wp.DeviceLike = None
 
         # Declare the internal controller data
         self._data: PIDControllerData | None = None
 
         # If a model is provided, allocate the controller data
         if model is not None:
-            self.finalize(model, K_p, K_i, K_d, decimation, device)
+            self.finalize(model, K_p, K_i, K_d, decimation)
 
     ###
     # Properties
@@ -413,19 +371,17 @@ class JointSpacePIDController:
         K_i: FloatArrayLike,
         K_d: FloatArrayLike,
         decimation: IntArrayLike | None = None,
-        device: wp.DeviceLike = None,
     ) -> None:
         """
         Allocates all internal data arrays of the controller.
 
         Args:
-            model (ModelKamino): The model container describing the system to be simulated.
-            K_p (FloatArrayLike): Proportional gains per actuated joint DoF.
-            K_i (FloatArrayLike): Integral gains per actuated joint DoF.
-            K_d (FloatArrayLike): Derivative gains per actuated joint DoF.
-            decimation (IntArrayLike | None): Control decimation for each world expressed
+            model: The model container describing the system to be simulated.
+            K_p: Proportional gains per actuated joint DoF.
+            K_i: Integral gains per actuated joint DoF.
+            K_d: Derivative gains per actuated joint DoF.
+            decimation: Control decimation for each world expressed
                 as a multiple of simulation steps. Defaults to 1 for all worlds if None.
-            device (wp.DeviceLike | None): Device to use for allocations and execution.
 
         Raises:
             ValueError: If the model has no actuated DoFs.
@@ -459,9 +415,8 @@ class JointSpacePIDController:
         if decimation is not None and len(decimation) != model.size.num_worlds:
             raise ValueError(f"decimation must have length {model.size.num_worlds}, but has length {len(decimation)}")
 
-        # Override the device if provided
-        if device is not None:
-            self._device = device
+        # Use the model's device
+        self._device = model.device
 
         # Set default decimation if not provided
         if decimation is None:
@@ -470,14 +425,14 @@ class JointSpacePIDController:
         # Allocate the controller data
         with wp.ScopedDevice(self._device):
             self._data = PIDControllerData(
-                q_j_ref=wp.zeros(num_actuated_dofs, dtype=float32),
-                dq_j_ref=wp.zeros(num_actuated_dofs, dtype=float32),
-                tau_j_ref=wp.zeros(num_actuated_dofs, dtype=float32),
-                K_p=wp.array(K_p if K_p is not None else np.zeros(num_actuated_dofs), dtype=float32),
-                K_i=wp.array(K_i if K_i is not None else np.zeros(num_actuated_dofs), dtype=float32),
-                K_d=wp.array(K_d if K_d is not None else np.zeros(num_actuated_dofs), dtype=float32),
-                integrator=wp.zeros(num_actuated_dofs, dtype=float32),
-                decimation=wp.array(decimation, dtype=int32),
+                q_j_ref=wp.zeros(num_actuated_dofs, dtype=wp.float32),
+                dq_j_ref=wp.zeros(num_actuated_dofs, dtype=wp.float32),
+                tau_j_ref=wp.zeros(num_actuated_dofs, dtype=wp.float32),
+                K_p=wp.array(K_p if K_p is not None else np.zeros(num_actuated_dofs), dtype=wp.float32),
+                K_i=wp.array(K_i if K_i is not None else np.zeros(num_actuated_dofs), dtype=wp.float32),
+                K_d=wp.array(K_d if K_d is not None else np.zeros(num_actuated_dofs), dtype=wp.float32),
+                integrator=wp.zeros(num_actuated_dofs, dtype=wp.float32),
+                decimation=to_warp_int32_array(decimation),
             )
 
     def reset(self, model: ModelKamino, state: StateKamino) -> None:
@@ -489,8 +444,8 @@ class JointSpacePIDController:
         forces `tau_j` and the integrator are set to zeros.
 
         Args:
-            model (ModelKamino): The model container holding the time-invariant parameters of the simulation.
-            state (StateKamino): The current state of the system to which the references will be reset.
+            model: The model container holding the time-invariant parameters of the simulation.
+            state: The current state of the system to which the references will be reset.
         """
 
         # First reset the references to the current state
@@ -511,9 +466,9 @@ class JointSpacePIDController:
         Set the controller reference trajectories.
 
         Args:
-            q_j_ref (FloatArrayLike): The reference generalized actuator positions.
-            dq_j_ref (FloatArrayLike | None): The reference generalized actuator velocities.
-            tau_j_ref (FloatArrayLike | None): The feedforward generalized actuator forces.
+            q_j_ref: The reference generalized actuator positions.
+            dq_j_ref: The reference generalized actuator velocities.
+            tau_j_ref: The feedforward generalized actuator forces.
         """
         if len(q_j_ref) != len(self._data.q_j_ref):
             raise ValueError(f"q_j_ref must have length {len(self._data.q_j_ref)}, but has length {len(q_j_ref)}")
@@ -544,10 +499,10 @@ class JointSpacePIDController:
         Compute the control torques.
 
         Args:
-            model (ModelKamino): The input model container holding the time-invariant parameters of the simulation.
-            state (StateKamino): The input state container holding the current state of the simulation.
-            time (TimeData): The input time data container holding the current simulation time and steps.
-            control (ControlKamino): The output control container where the computed control torques will be stored.
+            model: The input model container holding the time-invariant parameters of the simulation.
+            state: The input state container holding the current state of the simulation.
+            time: The input time data container holding the current simulation time and steps.
+            control: The output control container where the computed control torques will be stored.
         """
         compute_jointspace_pid_control(
             model=model,

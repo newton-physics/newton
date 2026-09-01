@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Selection Cartpole
@@ -38,7 +26,7 @@ COLLAPSE_FIXED_JOINTS = False
 
 
 @wp.kernel
-def randomize_states_kernel(joint_q: wp.array3d(dtype=float), seed: int):
+def randomize_states_kernel(joint_q: wp.array3d[float], seed: int):
     tid = wp.tid()
     rng = wp.rand_init(seed, tid)
     joint_q[tid, 0, 0] = 2.0 - 4.0 * wp.randf(rng)
@@ -47,7 +35,7 @@ def randomize_states_kernel(joint_q: wp.array3d(dtype=float), seed: int):
 
 
 @wp.kernel
-def apply_forces_kernel(joint_q: wp.array3d(dtype=float), joint_f: wp.array3d(dtype=float)):
+def apply_forces_kernel(joint_q: wp.array3d[float], joint_f: wp.array3d[float]):
     tid = wp.tid()
     if joint_q[tid, 0, 0] > 0.0:
         joint_f[tid, 0, 0] = -20.0
@@ -69,6 +57,7 @@ class Example:
         verbose = True
 
         world = newton.ModelBuilder()
+        world.default_joint_cfg.armature = 0.1
         world.add_usd(
             newton.examples.get_asset("cartpole.usda"),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
@@ -113,7 +102,9 @@ class Example:
         if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.cartpoles.eval_fk(self.state_0)
 
-        self.viewer.set_model(self.model, max_worlds=max_worlds)
+        self.viewer.set_model(self.model)
+        if max_worlds is not None:
+            self.viewer.set_visible_worlds(range(max_worlds))
         self.viewer.set_world_offsets((1.0, 0.0, 0.0))
 
         # Set camera to view the scene
@@ -135,10 +126,9 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -165,7 +155,7 @@ class Example:
             joint_f = self.cartpoles.get_attribute("joint_f", self.control)
             wp.launch(
                 apply_forces_kernel,
-                dim=joint_f.shape,
+                dim=joint_f.shape[0],
                 inputs=[joint_q, joint_f],
             )
 
@@ -193,6 +183,7 @@ class Example:
             lambda q, qd: q[2] == 0.0 and newton.math.vec_allclose(q.q, wp.quat_identity()),
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -227,6 +218,7 @@ class Example:
             and qd[5] == 0.0,
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
+        # fmt: on
 
     @staticmethod
     def create_parser():
@@ -247,6 +239,4 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

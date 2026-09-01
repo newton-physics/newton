@@ -1,19 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Frame Transform Sensor - measures transforms relative to sites."""
+
+import re
 
 import warp as wp
 
@@ -25,12 +15,12 @@ from ..utils.selection import match_labels
 
 @wp.kernel
 def compute_shape_transforms_kernel(
-    shapes: wp.array(dtype=int),
-    shape_body: wp.array(dtype=int),
-    shape_transform: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
+    shapes: wp.array[int],
+    shape_body: wp.array[int],
+    shape_transform: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
     # output
-    world_transforms: wp.array(dtype=wp.transform),
+    world_transforms: wp.array[wp.transform],
 ):
     """Compute world transforms for a list of shape indices.
 
@@ -57,11 +47,11 @@ def compute_shape_transforms_kernel(
 
 @wp.kernel
 def compute_relative_transforms_kernel(
-    all_shape_transforms: wp.array(dtype=wp.transform),
-    shapes: wp.array(dtype=int),
-    reference_sites: wp.array(dtype=int),
+    all_shape_transforms: wp.array[wp.transform],
+    shapes: wp.array[int],
+    reference_sites: wp.array[int],
     # output
-    relative_transforms: wp.array(dtype=wp.transform),
+    relative_transforms: wp.array[wp.transform],
 ):
     """Compute relative transforms expressing object poses in reference frame coordinates.
 
@@ -132,8 +122,8 @@ class SensorFrameTransform:
     def __init__(
         self,
         model: Model,
-        shapes: str | list[str] | list[int],
-        reference_sites: str | list[str] | list[int],
+        shapes: str | list[str] | re.Pattern[str] | list[int],
+        reference_sites: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
     ):
@@ -141,18 +131,20 @@ class SensorFrameTransform:
 
         Args:
             model: The model to measure.
-            shapes: List of shape indices, single pattern to match against shape
-                labels, or list of patterns where any one matches.
-            reference_sites: List of site indices, single pattern to match against
-                site labels, or list of patterns where any one matches. Must expand
+            shapes: Glob pattern, list of glob patterns, compiled regular-expression
+                pattern to match against shape labels, or list of shape indices. Regular
+                expressions use full matching.
+            reference_sites: Glob pattern, list of glob patterns, compiled regular-expression
+                pattern to match against site labels, or list of site indices. Must expand
                 to one site or the same number as ``shapes``.
-            verbose: If True, print details. If None, uses ``wp.config.verbose``.
+            verbose: If True, print details. If False, suppress details. If None, print details when
+                ``wp.config.log_level`` is configured for debug logging.
 
         Raises:
             ValueError: If arguments are invalid or no labels match.
         """
         self.model = model
-        self.verbose = verbose if verbose is not None else wp.config.verbose
+        self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
 
         # Resolve label patterns to indices
         original_shapes = shapes

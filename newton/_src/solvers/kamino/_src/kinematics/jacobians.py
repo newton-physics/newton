@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 KAMINO: Kinematics: Jacobians
@@ -21,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from ..core.data import DataKamino
@@ -28,25 +17,24 @@ from ..core.joints import JointDoFType
 from ..core.math import (
     FLOAT32_MAX,
     FLOAT32_MIN,
+    concat6d,
     contact_wrench_matrix_from_points,
     expand6d,
     screw_transform_matrix_from_points,
 )
 from ..core.model import ModelKamino
 from ..core.types import (
-    float32,
-    int32,
+    assign_to_warp_int32_array,
+    mat61f,
     mat66f,
-    quatf,
-    transformf,
-    vec2i,
-    vec3f,
+    to_warp_int32_array,
     vec6f,
 )
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.limits import LimitsKamino
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ..linalg.sparse_operator import BlockSparseLinearOperators
+from .joints import gimbal_reciprocal_axes
 
 ###
 # Module interface
@@ -65,12 +53,86 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
 # Functions
 ###
+
+
+@wp.func
+def build_full_joint_jacobian(
+    joint_id: wp.int32,
+    dof_type: wp.int32,
+    bid_B: wp.int32,
+    bid_F: wp.int32,
+    model_joints_X_Bj: wp.array[wp.mat33f],
+    model_joints_X_Fj: wp.array[wp.mat33f],
+    model_joints_coords_offset: wp.array[wp.int32],
+    state_joints_p: wp.array[wp.transformf],
+    state_bodies_q: wp.array[wp.transformf],
+    state_joints_q: wp.array[wp.float32],
+):
+    """
+    Computes the full (6x6) joint Jacobian (constraint and DoFs) for a specific joint.
+    """
+    # Retrieve the pose transform of the joint
+    T_j = state_joints_p[joint_id]
+    r_j = wp.transform_get_translation(T_j)
+    R_X_j = wp.quat_to_matrix(wp.transform_get_rotation(T_j))
+
+    # Retrieve the pose transforms of each body
+    T_B_j = wp.transform_identity()
+    if bid_B > -1:
+        T_B_j = state_bodies_q[bid_B]
+    T_F_j = state_bodies_q[bid_F]
+    r_B_j = wp.transform_get_translation(T_B_j)
+    r_F_j = wp.transform_get_translation(T_F_j)
+
+    if dof_type == JointDoFType.FREE:
+        # By Newton's convention, a free joint's twist and wrench (specified in `joint_qd` and
+        # `joint_f`) are both defined at the child's center of mass, with world-aligned axes. Since
+        # Kamino avoids a conversion, the change of reference frame needs to be taken into account
+        # in the Jacobian.
+        JT_F_j = wp.identity(n=6, dtype=wp.float32)
+        JT_B_j = -screw_transform_matrix_from_points(r_F_j, r_B_j)
+
+    else:
+        # Compute the wrench matrices
+        # TODO: Since the lever-arm is a relative position, can we just use B_r_Bj and F_r_Fj instead?
+        W_j_B = screw_transform_matrix_from_points(r_j, r_B_j)
+        W_j_F = screw_transform_matrix_from_points(r_j, r_F_j)
+
+        # General case: Compute the effective projector to joint frame and expand to 6D
+        if (
+            dof_type != JointDoFType.UNIVERSAL
+            and dof_type != JointDoFType.GIMBAL
+            and dof_type != JointDoFType.GIMBAL_LEFT_HANDED
+        ):
+            R_X_bar_j = expand6d(R_X_j)
+        # Universal joint: replace R_X_j with the frame of the intermediate body for rotation constraints
+        elif dof_type == JointDoFType.UNIVERSAL:
+            j_q_j = compute_joint_relative_quaternion(
+                T_B_j, T_F_j, model_joints_X_Bj[joint_id], model_joints_X_Fj[joint_id]
+            )
+            R_intermediate = compute_intermediate_body_frame_universal_joint(j_q_j)
+            R_X_bar_j = concat6d(R_X_j, R_X_j @ R_intermediate)
+        # Gimbal joint: replace R_X_j with the frame of the reciprocal axes
+        else:
+            third_axis_sign = -1.0 if dof_type == JointDoFType.GIMBAL_LEFT_HANDED else 1.0
+            coords_offset = model_joints_coords_offset[joint_id]
+            coords = wp.vec3f(
+                state_joints_q[coords_offset], state_joints_q[coords_offset + 1], state_joints_q[coords_offset + 2]
+            )
+            reciprocal = gimbal_reciprocal_axes(coords, third_axis_sign)
+            R_X_bar_j = concat6d(R_X_j, R_X_j @ reciprocal)
+
+        # Compute the extended jacobians, i.e. without the selection-matrix multiplication
+        JT_B_j = -W_j_B @ R_X_bar_j  # Reaction is on the Base body body ; (6 x 6)
+        JT_F_j = W_j_F @ R_X_bar_j  # Action is on the Follower body    ; (6 x 6)
+
+    return JT_B_j, JT_F_j
 
 
 def make_store_joint_jacobian_dense_func(axes: Any):
@@ -84,7 +146,7 @@ def make_store_joint_jacobian_dense_func(axes: Any):
         idx: int,
         axis: int,
         JT: mat66f,
-        J_data: wp.array(dtype=float32),
+        J_data: wp.array[wp.float32],
     ):
         for i in range(6):
             J_data[idx + i] = JT[i, axis]
@@ -98,20 +160,20 @@ def make_store_joint_jacobian_dense_func(axes: Any):
         bid_F: int,
         JT_B_j: mat66f,
         JT_F_j: mat66f,
-        J_data: wp.array(dtype=float32),
+        J_data: wp.array[wp.float32],
     ):
         """
         Stores the Jacobian blocks of a joint into the provided flat data array at the specified offset.
 
         Args:
-            J_row_offset (int): The offset at which the Jacobian matrix block of the corresponding world starts.
-            row_size (int): The number of columns in the world's Jacobian block.
-            bid_offset (int): The body index offset of the world's bodies w.r.t the model.
-            bid_B (int): The body index of the base body of the joint w.r.t the model.
-            bid_F (int): The body index of the follower body of the joint w.r.t the model.
-            JT_B_j (mat66f): The 6x6 Jacobian transpose block of the joint's base body.
-            JT_F_j (mat66f): The 6x6 Jacobian transpose block of the joint's follower body.
-            J_data (wp.array(dtype=float32)): The flat data array holding the Jacobian matrix blocks.
+            J_row_offset: The offset at which the Jacobian matrix block of the corresponding world starts.
+            row_size: The number of columns in the world's Jacobian block.
+            bid_offset: The body index offset of the world's bodies w.r.t the model.
+            bid_B: The body index of the base body of the joint w.r.t the model.
+            bid_F: The body index of the follower body of the joint w.r.t the model.
+            JT_B_j: The 6x6 Jacobian transpose block of the joint's base body.
+            JT_F_j: The 6x6 Jacobian transpose block of the joint's follower body.
+            J_data: The flat data array holding the Jacobian matrix blocks.
         """
         # Set the number of rows in the output Jacobian block
         # NOTE: This is evaluated statically at compile time
@@ -147,17 +209,18 @@ def make_store_joint_jacobian_sparse_func(axes: Any):
         JT_B_j: mat66f,
         JT_F_j: mat66f,
         J_nzb_offset: int,
-        J_nzb_values: wp.array(dtype=vec6f),
+        J_nzb_values: wp.array[vec6f],
     ):
         """
         Function extracting rows corresponding to joint axes from the 6x6 joint jacobians,
         and storing them into the appropriate non-zero blocks.
+
         Args:
-            is_binary (bool): Whether the joint is binary
-            JT_B_j (mat66f): The 6x6 Jacobian transpose block of the joint's base body.
-            JT_F_j (mat66f): The 6x6 Jacobian transpose block of the joint's follower body.
-            J_nzb_offset (int): The index of the first nzb corresponding to this joint.
-            J_nzb_values (wp.array(dtype=vec6f)): Array storing the non-zero blocks of the Jacobians.
+            is_binary: Whether the joint is binary.
+            JT_B_j: The 6x6 Jacobian transpose block of the joint's base body.
+            JT_F_j: The 6x6 Jacobian transpose block of the joint's follower body.
+            J_nzb_offset: The index of the first nzb corresponding to this joint.
+            J_nzb_values: Array storing the non-zero blocks of the Jacobians.
         """
         # Set the number of rows in the output Jacobian block
         # NOTE: This is evaluated statically at compile time
@@ -188,7 +251,7 @@ def store_joint_cts_jacobian_dense(
     bid_F: int,
     JT_B: mat66f,
     JT_F: mat66f,
-    J_data: wp.array(dtype=float32),
+    J_data: wp.array[wp.float32],
 ):
     """
     Stores the constraints Jacobian block of a joint into the provided flat data array at the given offset.
@@ -223,6 +286,10 @@ def store_joint_cts_jacobian_dense(
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL.cts_axes))(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
+    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL_LEFT_HANDED.cts_axes))(
+            J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
+        )
 
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.CARTESIAN.cts_axes))(
@@ -245,7 +312,7 @@ def store_joint_dofs_jacobian_dense(
     bid_F: int,
     JT_B: mat66f,
     JT_F: mat66f,
-    J_data: wp.array(dtype=float32),
+    J_data: wp.array[wp.float32],
 ):
     """
     Stores the DoFs Jacobian block of a joint into the provided flat data array at the given offset.
@@ -280,6 +347,10 @@ def store_joint_dofs_jacobian_dense(
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL.dofs_axes))(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
+    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL_LEFT_HANDED.dofs_axes))(
+            J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
+        )
 
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.CARTESIAN.dofs_axes))(
@@ -293,13 +364,35 @@ def store_joint_dofs_jacobian_dense(
 
 
 @wp.func
+def store_joint_dof_jacobian_dense(
+    dof_type: int,
+    axis: int,
+    J_row_offset: int,
+    bid_offset: int,
+    bid_B: int,
+    bid_F: int,
+    JT_B: mat66f,
+    JT_F: mat66f,
+    J_data: wp.array[wp.float32],
+):
+    """Store one selected joint DoF direction in a dense Jacobian."""
+    spatial_axis = JointDoFType.dofs_axis_wp(dof_type, axis)
+    body_offset_F = 6 * (bid_F - bid_offset)
+    body_offset_B = 6 * (bid_B - bid_offset)
+    for i in range(6):
+        J_data[J_row_offset + body_offset_F + i] = JT_F[i, spatial_axis]
+        if bid_B > -1:
+            J_data[J_row_offset + body_offset_B + i] = JT_B[i, spatial_axis]
+
+
+@wp.func
 def store_joint_cts_jacobian_sparse(
     dof_type: int,
     is_binary: bool,
     JT_B_j: mat66f,
     JT_F_j: mat66f,
     J_nzb_offset: int,
-    J_nzb_values: wp.array(dtype=vec6f),
+    J_nzb_values: wp.array[vec6f],
 ):
     """
     Stores the constraints Jacobian block of a joint into the provided flat data array at the given offset.
@@ -334,6 +427,10 @@ def store_joint_cts_jacobian_sparse(
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL.cts_axes))(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
+    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL_LEFT_HANDED.cts_axes))(
+            is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
+        )
 
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.CARTESIAN.cts_axes))(
@@ -353,7 +450,7 @@ def store_joint_dofs_jacobian_sparse(
     JT_B_j: mat66f,
     JT_F_j: mat66f,
     J_nzb_offset: int,
-    J_nzb_values: wp.array(dtype=vec6f),
+    J_nzb_values: wp.array[vec6f],
 ):
     """
     Stores the DoFs Jacobian block of a joint into the provided flat data array at the given offset.
@@ -388,6 +485,10 @@ def store_joint_dofs_jacobian_sparse(
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL.dofs_axes))(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
+    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL_LEFT_HANDED.dofs_axes))(
+            is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
+        )
 
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.CARTESIAN.dofs_axes))(
@@ -400,6 +501,75 @@ def store_joint_dofs_jacobian_sparse(
         )
 
 
+@wp.func
+def store_joint_dof_jacobian_sparse(
+    dof_type: int,
+    axis: int,
+    is_binary: bool,
+    JT_B_j: mat66f,
+    JT_F_j: mat66f,
+    J_nzb_offset: int,
+    num_rows: int,
+    J_nzb_values: wp.array[vec6f],
+):
+    """Store one selected joint DoF direction in a sparse Jacobian."""
+    spatial_axis = JointDoFType.dofs_axis_wp(dof_type, axis)
+    J_nzb_values[J_nzb_offset] = vec6f(
+        JT_F_j[0, spatial_axis],
+        JT_F_j[1, spatial_axis],
+        JT_F_j[2, spatial_axis],
+        JT_F_j[3, spatial_axis],
+        JT_F_j[4, spatial_axis],
+        JT_F_j[5, spatial_axis],
+    )
+    if is_binary:
+        J_nzb_values[J_nzb_offset + num_rows] = vec6f(
+            JT_B_j[0, spatial_axis],
+            JT_B_j[1, spatial_axis],
+            JT_B_j[2, spatial_axis],
+            JT_B_j[3, spatial_axis],
+            JT_B_j[4, spatial_axis],
+            JT_B_j[5, spatial_axis],
+        )
+
+
+@wp.func
+def compute_joint_relative_quaternion(
+    T_B_j: wp.transformf, T_F_j: wp.transformf, X_Bj: wp.mat33f, X_Fj: wp.mat33f
+) -> wp.quatf:
+    """
+    Computes the relative quaternion mapping base to follower joint frame, from the current base
+    and follower pose, and the joint frames in local coordinates on either body.
+    """
+    q_B_j = wp.transform_get_rotation(T_B_j)
+    q_F_j = wp.transform_get_rotation(T_F_j)
+    q_X_Bj = wp.quat_from_matrix(X_Bj)
+    q_X_Fj = wp.quat_from_matrix(X_Fj)
+    q_Bj = q_B_j * q_X_Bj
+    q_Fj = q_F_j * q_X_Fj
+    return wp.quat_inverse(q_Bj) * q_Fj
+
+
+@wp.func
+def compute_intermediate_body_frame_universal_joint(
+    j_q_j: wp.quatf,
+) -> wp.mat33f:
+    """Computes the frame of the intermediate body of a universal joint (i.e. x axis on the base,
+    y axis on the follower, and their cross product), from the relative quaternion mapping base to
+    follower joint frame, as a rotation matrix expressed in the joint frame on the base body.
+
+    The result is orthogonalized in case constraints are violated, and the x and y axes are not orthogonal.
+    """
+    e_x = wp.vec3f(1.0, 0.0, 0.0)
+    e_y = wp.vec3f(0.0, 1.0, 0.0)
+    a_x = e_x  # x axis on base
+    a_y_raw = wp.quat_rotate(j_q_j, e_y)  #  y axis on follower (constrained to be orthogonal to a_x)
+    a_y = a_y_raw - wp.dot(a_y_raw, a_x) * a_x  # orthogonalize (in case of constraint violations)
+    a_y = wp.normalize(a_y)
+    a_z = wp.cross(a_x, a_y)
+    return wp.matrix_from_cols(a_x, a_y, a_z)
+
+
 ###
 # Kernels
 ###
@@ -408,24 +578,42 @@ def store_joint_dofs_jacobian_sparse(
 @wp.kernel
 def _build_joint_jacobians_dense(
     # Inputs
-    model_info_num_body_dofs: wp.array(dtype=int32),
-    model_info_bodies_offset: wp.array(dtype=int32),
-    model_info_joint_dynamic_cts_group_offset: wp.array(dtype=int32),
-    model_info_joint_kinematic_cts_group_offset: wp.array(dtype=int32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_dof_type: wp.array(dtype=int32),
-    model_joints_dofs_offset: wp.array(dtype=int32),
-    model_joints_dynamic_cts_offset: wp.array(dtype=int32),
-    model_joints_kinematic_cts_offset: wp.array(dtype=int32),
-    model_joints_bid_B: wp.array(dtype=int32),
-    model_joints_bid_F: wp.array(dtype=int32),
-    state_joints_p: wp.array(dtype=transformf),
-    state_bodies_q: wp.array(dtype=transformf),
-    jac_cts_offsets: wp.array(dtype=int32),
-    jac_dofs_offsets: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array[wp.int32],
+    model_info_joint_dofs_offset: wp.array[wp.int32],
+    model_info_joint_dynamic_cts_offset: wp.array[wp.int32],
+    model_info_joint_kinematic_cts_offset: wp.array[wp.int32],
+    model_info_joint_friction_cts_offset: wp.array[wp.int32],
+    model_info_joint_effort_cts_offset: wp.array[wp.int32],
+    model_info_joint_dynamic_cts_group_offset: wp.array[wp.int32],
+    model_info_joint_kinematic_cts_group_offset: wp.array[wp.int32],
+    model_info_joint_friction_cts_group_offset: wp.array[wp.int32],
+    model_info_joint_effort_cts_group_offset: wp.array[wp.int32],
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_dof_type: wp.array[wp.int32],
+    model_joints_coords_offset: wp.array[wp.int32],
+    model_joints_dofs_offset: wp.array[wp.int32],
+    model_joints_num_dynamic_cts: wp.array[wp.int32],
+    model_joints_num_friction_cts: wp.array[wp.int32],
+    model_joints_num_effort_cts: wp.array[wp.int32],
+    model_joints_dynamic_cts_offset: wp.array[wp.int32],
+    model_joints_kinematic_cts_offset: wp.array[wp.int32],
+    model_joints_friction_cts_offset: wp.array[wp.int32],
+    model_joints_effort_cts_offset: wp.array[wp.int32],
+    model_joints_dynamic_cts_axis: wp.array[wp.int32],
+    model_joints_friction_cts_axis: wp.array[wp.int32],
+    model_joints_effort_cts_axis: wp.array[wp.int32],
+    model_joints_bid_B: wp.array[wp.int32],
+    model_joints_bid_F: wp.array[wp.int32],
+    model_joints_X_Bj: wp.array[wp.mat33f],
+    model_joints_X_Fj: wp.array[wp.mat33f],
+    state_joints_p: wp.array[wp.transformf],
+    state_bodies_q: wp.array[wp.transformf],
+    state_joints_q: wp.array[wp.float32],
+    jac_cts_offsets: wp.array[wp.int32],
+    jac_dofs_offsets: wp.array[wp.int32],
     # Outputs
-    jac_cts_data: wp.array(dtype=float32),
-    jac_dofs_data: wp.array(dtype=float32),
+    jac_cts_data: wp.array[wp.float32],
+    jac_dofs_data: wp.array[wp.float32],
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
@@ -439,56 +627,82 @@ def _build_joint_jacobians_dense(
     bid_B = model_joints_bid_B[jid]
     bid_F = model_joints_bid_F[jid]
     dofs_offset = model_joints_dofs_offset[jid]
+    num_dyn_cts = model_joints_num_dynamic_cts[jid]
+    num_friction_cts = model_joints_num_friction_cts[jid]
+    num_effort_cts = model_joints_num_effort_cts[jid]
     dyn_cts_offset = model_joints_dynamic_cts_offset[jid]
     kin_cts_offset = model_joints_kinematic_cts_offset[jid]
+    friction_cts_offset = model_joints_friction_cts_offset[jid]
+    effort_cts_offset = model_joints_effort_cts_offset[jid]
 
     # Retrieve the number of body DoFs for corresponding world
-    nbd = model_info_num_body_dofs[wid]
     bio = model_info_bodies_offset[wid]
+    nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
     jdcgo = model_info_joint_dynamic_cts_group_offset[wid]
     jkcgo = model_info_joint_kinematic_cts_group_offset[wid]
+    jfcgo = model_info_joint_friction_cts_group_offset[wid]
+    jecgo = model_info_joint_effort_cts_group_offset[wid]
+
+    # Compute local (within-world) offsets for Jacobian matrix indexing
+    dofs_offset_world = dofs_offset - model_info_joint_dofs_offset[wid]
+    dyn_cts_offset_world = dyn_cts_offset - model_info_joint_dynamic_cts_offset[wid]
+    kin_cts_offset_world = kin_cts_offset - model_info_joint_kinematic_cts_offset[wid]
+    friction_cts_offset_world = friction_cts_offset - model_info_joint_friction_cts_offset[wid]
+    effort_cts_offset_world = effort_cts_offset - model_info_joint_effort_cts_offset[wid]
 
     # Retrieve the Jacobian block offset for this world
     J_cjmio = jac_cts_offsets[wid]
     J_djmio = jac_dofs_offsets[wid]
 
     # Constraint Jacobian row offsets for this joint
-    J_jdof_row_start = J_djmio + nbd * dofs_offset
-    J_jdc_row_start = J_cjmio + nbd * (jdcgo + dyn_cts_offset)
-    J_jkc_row_start = J_cjmio + nbd * (jkcgo + kin_cts_offset)
+    J_jdof_row_start = J_djmio + nbd * dofs_offset_world
+    J_jdc_row_start = J_cjmio + nbd * (jdcgo + dyn_cts_offset_world)
+    J_jkc_row_start = J_cjmio + nbd * (jkcgo + kin_cts_offset_world)
+    J_jfc_row_start = J_cjmio + nbd * (jfcgo + friction_cts_offset_world)
+    J_jec_row_start = J_cjmio + nbd * (jecgo + effort_cts_offset_world)
 
-    # Retrieve the pose transform of the joint
-    T_j = state_joints_p[jid]
-    r_j = wp.transform_get_translation(T_j)
-    R_X_j = wp.quat_to_matrix(wp.transform_get_rotation(T_j))
-
-    # Retrieve the pose transforms of each body
-    T_B_j = wp.transform_identity()
-    if bid_B > -1:
-        T_B_j = state_bodies_q[bid_B]
-    T_F_j = state_bodies_q[bid_F]
-    r_B_j = wp.transform_get_translation(T_B_j)
-    r_F_j = wp.transform_get_translation(T_F_j)
-
-    # Compute the wrench matrices
-    # TODO: Since the lever-arm is a relative position, can we just use B_r_Bj and F_r_Fj instead?
-    W_j_B = screw_transform_matrix_from_points(r_j, r_B_j)
-    W_j_F = screw_transform_matrix_from_points(r_j, r_F_j)
-
-    # Compute the effective projector to joint frame and expand to 6D
-    R_X_bar_j = expand6d(R_X_j)
-
-    # Compute the extended jacobians, i.e. without the selection-matrix multiplication
-    JT_B_j = -W_j_B @ R_X_bar_j  # Reaction is on the Base body body ; (6 x 6)
-    JT_F_j = W_j_F @ R_X_bar_j  # Action is on the Follower body    ; (6 x 6)
+    # Compute the full jacobians, i.e. without the selection-matrix multiplication
+    JT_B_j, JT_F_j = build_full_joint_jacobian(
+        jid,
+        dof_type,
+        bid_B,
+        bid_F,
+        model_joints_X_Bj,
+        model_joints_X_Fj,
+        model_joints_coords_offset,
+        state_joints_p,
+        state_bodies_q,
+        state_joints_q,
+    )
 
     # Store joint dynamic constraint jacobians if applicable
     # NOTE: We use the extraction method for DoFs since dynamic constraints are in DoF-space
-    if dyn_cts_offset >= 0:  # Negative dynamic constraint offset means the joint is not implicit
-        store_joint_dofs_jacobian_dense(dof_type, J_jdc_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data)
+    if num_dyn_cts > 0:
+        for row in range(num_dyn_cts):
+            axis = model_joints_dynamic_cts_axis[dyn_cts_offset + row]
+            J_row_offset = J_jdc_row_start + nbd * row
+            store_joint_dof_jacobian_dense(
+                dof_type, axis, J_row_offset, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data
+            )
 
     # Store joint kinematic constraint jacobians
     store_joint_cts_jacobian_dense(dof_type, J_jkc_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data)
+
+    # Friction rows use the DoF-direction Jacobian.
+    if num_friction_cts > 0:
+        for row in range(num_friction_cts):
+            axis = model_joints_friction_cts_axis[friction_cts_offset + row]
+            J_row_offset = J_jfc_row_start + nbd * row
+            store_joint_dof_jacobian_dense(
+                dof_type, axis, J_row_offset, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data
+            )
+    if num_effort_cts > 0:
+        for row in range(num_effort_cts):
+            axis = model_joints_effort_cts_axis[effort_cts_offset + row]
+            J_row_offset = J_jec_row_start + nbd * row
+            store_joint_dof_jacobian_dense(
+                dof_type, axis, J_row_offset, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data
+            )
 
     # Store the actuation Jacobian block if the joint is actuated
     store_joint_dofs_jacobian_dense(dof_type, J_jdof_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_dofs_data)
@@ -497,32 +711,50 @@ def _build_joint_jacobians_dense(
 @wp.kernel
 def _configure_jacobians_sparse(
     # Input:
-    model_num_joint_cts: wp.array(dtype=int32),
-    num_limits: wp.array(dtype=int32),
-    num_contacts: wp.array(dtype=int32),
+    model_num_bilateral_joint_cts: wp.array[wp.int32],
+    model_num_bounded_cts: wp.array[wp.int32],
+    num_limits: wp.array[wp.int32],
+    num_contacts: wp.array[wp.int32],
     # Output:
-    jac_cts_rows: wp.array(dtype=int32),
+    jac_cts_rows: wp.array[wp.int32],
 ):
     world_id = wp.tid()
 
-    jac_cts_rows[world_id] = model_num_joint_cts[world_id] + num_limits[world_id] + 3 * num_contacts[world_id]
+    jac_cts_rows[world_id] = (
+        model_num_bilateral_joint_cts[world_id]
+        + model_num_bounded_cts[world_id]
+        + num_limits[world_id]
+        + 3 * num_contacts[world_id]
+    )
 
 
 @wp.kernel
 def _build_joint_jacobians_sparse(
     # Inputs
-    model_joints_dof_type: wp.array(dtype=int32),
-    model_joints_num_dofs: wp.array(dtype=int32),
-    model_joints_bid_B: wp.array(dtype=int32),
-    model_joints_bid_F: wp.array(dtype=int32),
-    model_joints_dynamic_cts_offset: wp.array(dtype=int32),
-    state_joints_p: wp.array(dtype=transformf),
-    state_bodies_q: wp.array(dtype=transformf),
-    jacobian_cts_nzb_offsets: wp.array(dtype=int32),
-    jacobian_dofs_nzb_offsets: wp.array(dtype=int32),
+    model_joints_dof_type: wp.array[wp.int32],
+    model_joints_coords_offset: wp.array[wp.int32],
+    model_joints_num_dynamic_cts: wp.array[wp.int32],
+    model_joints_num_kinematic_cts: wp.array[wp.int32],
+    model_joints_num_friction_cts: wp.array[wp.int32],
+    model_joints_num_effort_cts: wp.array[wp.int32],
+    model_joints_bid_B: wp.array[wp.int32],
+    model_joints_bid_F: wp.array[wp.int32],
+    model_joints_X_Bj: wp.array[wp.mat33f],
+    model_joints_X_Fj: wp.array[wp.mat33f],
+    model_joints_dynamic_cts_offset: wp.array[wp.int32],
+    model_joints_friction_cts_offset: wp.array[wp.int32],
+    model_joints_effort_cts_offset: wp.array[wp.int32],
+    model_joints_dynamic_cts_axis: wp.array[wp.int32],
+    model_joints_friction_cts_axis: wp.array[wp.int32],
+    model_joints_effort_cts_axis: wp.array[wp.int32],
+    state_joints_p: wp.array[wp.transformf],
+    state_bodies_q: wp.array[wp.transformf],
+    state_joints_q: wp.array[wp.float32],
+    jacobian_cts_nzb_offsets: wp.array[wp.int32],
+    jacobian_dofs_nzb_offsets: wp.array[wp.int32],
     # Outputs
-    jacobian_cts_nzb_values: wp.array(dtype=vec6f),
-    jacobian_dofs_nzb_values: wp.array(dtype=vec6f),
+    jacobian_cts_nzb_values: wp.array[vec6f],
+    jacobian_dofs_nzb_values: wp.array[vec6f],
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
@@ -532,58 +764,65 @@ def _build_joint_jacobians_sparse(
 
     # Retrieve the joint model data
     dof_type = model_joints_dof_type[jid]
-    num_dofs = model_joints_num_dofs[jid]
+    num_dyn_cts = model_joints_num_dynamic_cts[jid]
+    num_kin_cts = model_joints_num_kinematic_cts[jid]
+    num_friction_cts = model_joints_num_friction_cts[jid]
+    num_effort_cts = model_joints_num_effort_cts[jid]
     bid_B = model_joints_bid_B[jid]
     bid_F = model_joints_bid_F[jid]
-    dyn_cts_offset = model_joints_dynamic_cts_offset[jid]
 
-    # Retrieve the pose transform of the joint
-    T_j = state_joints_p[jid]
-    r_j = wp.transform_get_translation(T_j)
-    R_X_j = wp.quat_to_matrix(wp.transform_get_rotation(T_j))
+    # Compute the full jacobians, i.e. without the selection-matrix multiplication
+    JT_B_j, JT_F_j = build_full_joint_jacobian(
+        jid,
+        dof_type,
+        bid_B,
+        bid_F,
+        model_joints_X_Bj,
+        model_joints_X_Fj,
+        model_joints_coords_offset,
+        state_joints_p,
+        state_bodies_q,
+        state_joints_q,
+    )
 
-    # Retrieve the pose transforms of each body
-    T_B_j = wp.transform_identity()
-    if bid_B > -1:
-        T_B_j = state_bodies_q[bid_B]
-    T_F_j = state_bodies_q[bid_F]
-    r_B_j = wp.transform_get_translation(T_B_j)
-    r_F_j = wp.transform_get_translation(T_F_j)
-
-    # Compute the wrench matrices
-    # TODO: Since the lever-arm is a relative position, can we just use B_r_Bj and F_r_Fj instead?
-    W_j_B = screw_transform_matrix_from_points(r_j, r_B_j)
-    W_j_F = screw_transform_matrix_from_points(r_j, r_F_j)
-
-    # Compute the effective projector to joint frame and expand to 6D
-    R_X_bar_j = expand6d(R_X_j)
-
-    # Compute the extended jacobians, i.e. without the selection-matrix multiplication
-    JT_B_j = -W_j_B @ R_X_bar_j  # Reaction is on the Base body body ; (6 x 6)
-    JT_F_j = W_j_F @ R_X_bar_j  # Action is on the Follower body    ; (6 x 6)
+    is_binary = bid_B > -1
+    nzb_offset = jacobian_cts_nzb_offsets[jid]
+    nzb_advance = 2 if is_binary else 1
 
     # Store joint dynamic constraint jacobians if applicable
     # NOTE: We use the extraction method for DoFs since dynamic constraints are in DoF-space
-    if dyn_cts_offset >= 0:  # Negative dynamic constraint offset means the joint is not implicit
-        store_joint_dofs_jacobian_sparse(
-            dof_type,
-            bid_B > -1,
-            JT_B_j,
-            JT_F_j,
-            jacobian_cts_nzb_offsets[jid],
-            jacobian_cts_nzb_values,
-        )
+    if num_dyn_cts > 0:
+        for row in range(num_dyn_cts):
+            axis = model_joints_dynamic_cts_axis[model_joints_dynamic_cts_offset[jid] + row]
+            store_joint_dof_jacobian_sparse(
+                dof_type, axis, is_binary, JT_B_j, JT_F_j, nzb_offset + row, num_dyn_cts, jacobian_cts_nzb_values
+            )
+        nzb_offset += num_dyn_cts * nzb_advance
 
-    # Store the constraint Jacobian block
-    kinematic_nzb_offset = 0 if dyn_cts_offset < 0 else (2 * num_dofs if bid_B > -1 else num_dofs)
     store_joint_cts_jacobian_sparse(
         dof_type,
-        bid_B > -1,
+        is_binary,
         JT_B_j,
         JT_F_j,
-        jacobian_cts_nzb_offsets[jid] + kinematic_nzb_offset,
+        nzb_offset,
         jacobian_cts_nzb_values,
     )
+    nzb_offset += num_kin_cts * nzb_advance
+
+    if num_friction_cts > 0:
+        for row in range(num_friction_cts):
+            axis = model_joints_friction_cts_axis[model_joints_friction_cts_offset[jid] + row]
+            store_joint_dof_jacobian_sparse(
+                dof_type, axis, is_binary, JT_B_j, JT_F_j, nzb_offset + row, num_friction_cts, jacobian_cts_nzb_values
+            )
+        nzb_offset += num_friction_cts * nzb_advance
+
+    if num_effort_cts > 0:
+        for row in range(num_effort_cts):
+            axis = model_joints_effort_cts_axis[model_joints_effort_cts_offset[jid] + row]
+            store_joint_dof_jacobian_sparse(
+                dof_type, axis, is_binary, JT_B_j, JT_F_j, nzb_offset + row, num_effort_cts, jacobian_cts_nzb_values
+            )
 
     # Store the actuation Jacobian block if the joint is actuated
     store_joint_dofs_jacobian_sparse(
@@ -599,21 +838,21 @@ def _build_joint_jacobians_sparse(
 @wp.kernel
 def _build_limit_jacobians_dense(
     # Inputs:
-    model_info_num_body_dofs: wp.array(dtype=int32),
-    model_info_bodies_offset: wp.array(dtype=int32),
-    data_info_limit_cts_group_offset: wp.array(dtype=int32),
-    limits_model_num: wp.array(dtype=int32),
-    limits_model_max: int32,
-    limits_wid: wp.array(dtype=int32),
-    limits_lid: wp.array(dtype=int32),
-    limits_bids: wp.array(dtype=vec2i),
-    limits_dof: wp.array(dtype=int32),
-    limits_side: wp.array(dtype=float32),
-    jacobian_dofs_offsets: wp.array(dtype=int32),
-    jacobian_dofs_data: wp.array(dtype=float32),
-    jacobian_cts_offsets: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array[wp.int32],
+    model_info_joint_dofs_offset: wp.array[wp.int32],
+    data_info_limit_cts_group_offset: wp.array[wp.int32],
+    limits_model_num: wp.array[wp.int32],
+    limits_model_max: wp.int32,
+    limits_wid: wp.array[wp.int32],
+    limits_lid: wp.array[wp.int32],
+    limits_bids: wp.array[wp.vec2i],
+    limits_dof: wp.array[wp.int32],
+    limits_side: wp.array[wp.float32],
+    jacobian_dofs_offsets: wp.array[wp.int32],
+    jacobian_dofs_data: wp.array[wp.float32],
+    jacobian_cts_offsets: wp.array[wp.int32],
     # Outputs:
-    jacobian_cts_data: wp.array(dtype=float32),
+    jacobian_cts_data: wp.array[wp.float32],
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
@@ -636,14 +875,17 @@ def _build_limit_jacobians_dense(
     side_l = limits_side[lid]
 
     # Retrieve the relevant model info of the world
-    nbd = model_info_num_body_dofs[wid_l]
     bio = model_info_bodies_offset[wid_l]
+    nbd = 6 * (model_info_bodies_offset[wid_l + 1] - bio)
     lcgo = data_info_limit_cts_group_offset[wid_l]
     ajmio = jacobian_dofs_offsets[wid_l]
     cjmio = jacobian_cts_offsets[wid_l]
 
+    # Compute local (within-world) DoF index for Jacobian matrix indexing
+    local_dof_l = dof_l - model_info_joint_dofs_offset[wid_l]
+
     # Append the index offsets to the corresponding rows of the Jacobians
-    ajmio += nbd * dof_l
+    ajmio += nbd * local_dof_l
     cjmio += nbd * (lcgo + lid_l)
 
     # Extract the body ids
@@ -669,26 +911,26 @@ def _build_limit_jacobians_dense(
 @wp.kernel
 def _build_limit_jacobians_sparse(
     # Inputs:
-    model_info_bodies_offset: wp.array(dtype=int32),
-    model_joints_dofs_offset: wp.array(dtype=int32),
-    model_joints_num_dofs: wp.array(dtype=int32),
-    state_info_limit_cts_group_offset: wp.array(dtype=int32),
-    limits_model_num: wp.array(dtype=int32),
-    limits_model_max: int32,
-    limits_wid: wp.array(dtype=int32),
-    limits_jid: wp.array(dtype=int32),
-    limits_lid: wp.array(dtype=int32),
-    limits_bids: wp.array(dtype=vec2i),
-    limits_dof: wp.array(dtype=int32),
-    limits_side: wp.array(dtype=float32),
-    jacobian_dofs_joint_nzb_offsets: wp.array(dtype=int32),
-    jacobian_dofs_nzb_values: wp.array(dtype=vec6f),
-    jacobian_cts_nzb_start: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array[wp.int32],
+    model_joints_dofs_offset: wp.array[wp.int32],
+    model_joints_num_dofs: wp.array[wp.int32],
+    state_info_limit_cts_group_offset: wp.array[wp.int32],
+    limits_model_num: wp.array[wp.int32],
+    limits_model_max: wp.int32,
+    limits_wid: wp.array[wp.int32],
+    limits_jid: wp.array[wp.int32],
+    limits_lid: wp.array[wp.int32],
+    limits_bids: wp.array[wp.vec2i],
+    limits_dof: wp.array[wp.int32],
+    limits_side: wp.array[wp.float32],
+    jacobian_dofs_joint_nzb_offsets: wp.array[wp.int32],
+    jacobian_dofs_nzb_values: wp.array[vec6f],
+    jacobian_cts_nzb_start: wp.array[wp.int32],
     # Outputs:
-    jacobian_cts_num_nzb: wp.array(dtype=int32),
-    jacobian_cts_nzb_coords: wp.array2d(dtype=int32),
-    jacobian_cts_nzb_values: wp.array(dtype=vec6f),
-    jacobian_cts_limit_nzb_offsets: wp.array(dtype=int32),
+    jacobian_cts_num_nzb: wp.array[wp.int32],
+    jacobian_cts_nzb_coords: wp.array2d[wp.int32],
+    jacobian_cts_nzb_values: wp.array[vec6f],
+    jacobian_cts_limit_nzb_offsets: wp.array[wp.int32],
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
@@ -743,21 +985,20 @@ def _build_limit_jacobians_sparse(
 @wp.kernel
 def _build_contact_jacobians_dense(
     # Inputs:
-    model_info_num_body_dofs: wp.array(dtype=int32),
-    model_info_bodies_offset: wp.array(dtype=int32),
-    data_info_contact_cts_group_offset: wp.array(dtype=int32),
-    state_bodies_q: wp.array(dtype=transformf),
-    contacts_model_num: wp.array(dtype=int32),
-    contacts_model_max: int32,
-    contacts_wid: wp.array(dtype=int32),
-    contacts_cid: wp.array(dtype=int32),
-    contacts_bid_AB: wp.array(dtype=vec2i),
-    contacts_position_A: wp.array(dtype=vec3f),
-    contacts_position_B: wp.array(dtype=vec3f),
-    contacts_frame: wp.array(dtype=quatf),
-    jacobian_cts_offsets: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array[wp.int32],
+    data_info_contact_cts_group_offset: wp.array[wp.int32],
+    state_bodies_q: wp.array[wp.transformf],
+    contacts_model_num: wp.array[wp.int32],
+    contacts_model_max: wp.int32,
+    contacts_wid: wp.array[wp.int32],
+    contacts_cid: wp.array[wp.int32],
+    contacts_bid_AB: wp.array[wp.vec2i],
+    contacts_position_A: wp.array[wp.vec3f],
+    contacts_position_B: wp.array[wp.vec3f],
+    contacts_frame: wp.array[wp.quatf],
+    jacobian_cts_offsets: wp.array[wp.int32],
     # Outputs:
-    jacobian_cts_data: wp.array(dtype=float32),
+    jacobian_cts_data: wp.array[wp.float32],
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
@@ -782,8 +1023,8 @@ def _build_contact_jacobians_dense(
     r_Bc_k = contacts_position_B[cid]
 
     # Retrieve the relevant model info for the world
-    nbd = model_info_num_body_dofs[wid]
     bio = model_info_bodies_offset[wid]
+    nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
     ccgo = data_info_contact_cts_group_offset[wid]
     cjmio = jacobian_cts_offsets[wid]
 
@@ -825,23 +1066,23 @@ def _build_contact_jacobians_dense(
 @wp.kernel
 def _build_contact_jacobians_sparse(
     # Inputs:
-    model_info_bodies_offset: wp.array(dtype=int32),
-    state_info_contact_cts_group_offset: wp.array(dtype=int32),
-    state_bodies_q: wp.array(dtype=transformf),
-    contacts_model_num: wp.array(dtype=int32),
-    contacts_model_max: int32,
-    contacts_wid: wp.array(dtype=int32),
-    contacts_cid: wp.array(dtype=int32),
-    contacts_bid_AB: wp.array(dtype=vec2i),
-    contacts_position_A: wp.array(dtype=vec3f),
-    contacts_position_B: wp.array(dtype=vec3f),
-    contacts_frame: wp.array(dtype=quatf),
-    jacobian_cts_nzb_start: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array[wp.int32],
+    state_info_contact_cts_group_offset: wp.array[wp.int32],
+    state_bodies_q: wp.array[wp.transformf],
+    contacts_model_num: wp.array[wp.int32],
+    contacts_model_max: wp.int32,
+    contacts_wid: wp.array[wp.int32],
+    contacts_cid: wp.array[wp.int32],
+    contacts_bid_AB: wp.array[wp.vec2i],
+    contacts_position_A: wp.array[wp.vec3f],
+    contacts_position_B: wp.array[wp.vec3f],
+    contacts_frame: wp.array[wp.quatf],
+    jacobian_cts_nzb_start: wp.array[wp.int32],
     # Outputs:
-    jacobian_cts_num_nzb: wp.array(dtype=int32),
-    jacobian_cts_nzb_coords: wp.array2d(dtype=int32),
-    jacobian_cts_nzb_values: wp.array(dtype=vec6f),
-    jacobian_cts_contact_nzb_offsets: wp.array(dtype=int32),
+    jacobian_cts_num_nzb: wp.array[wp.int32],
+    jacobian_cts_nzb_coords: wp.array2d[wp.int32],
+    jacobian_cts_nzb_values: wp.array[vec6f],
+    jacobian_cts_contact_nzb_offsets: wp.array[wp.int32],
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
@@ -908,12 +1149,12 @@ def _build_contact_jacobians_sparse(
 
 @wp.func
 def store_col_major_jacobian_block(
-    nzb_id: int32,
-    row_id: int32,
-    col_id: int32,
+    nzb_id: wp.int32,
+    row_id: wp.int32,
+    col_id: wp.int32,
     block: mat66f,
-    nzb_coords: wp.array2d(dtype=int32),
-    nzb_values: wp.array(dtype=wp.types.matrix(shape=(6, 1), dtype=float32)),
+    nzb_coords: wp.array2d[wp.int32],
+    nzb_values: wp.array[wp.types.matrix(shape=(6, 1), dtype=wp.float32)],
 ):
     for i in range(6):
         nzb_id_i = nzb_id + i
@@ -923,18 +1164,80 @@ def store_col_major_jacobian_block(
             nzb_values[nzb_id_i][j, 0] = block[j, i]
 
 
+@wp.func
+def _scatter_joint_row_major_body_to_col_major(
+    num_cts: wp.int32,
+    nzb_start_rm: wp.int32,
+    rm_row_offset: wp.int32,
+    nzb_offset_cm: wp.int32,
+    cm_col_offset: wp.int32,
+    block_row_init: wp.int32,
+    row_major_values: wp.array[vec6f],
+    col_major_values: wp.array[wp.types.matrix(shape=(6, 1), dtype=wp.float32)],
+):
+    """Scatter one body's joint constraint rows from row-major vec6f to col-major 6x1 columns."""
+    for i in range(num_cts):
+        block_rm = row_major_values[nzb_start_rm + rm_row_offset + i]
+        for k in range(6):
+            col_major_values[nzb_offset_cm + cm_col_offset + k][block_row_init + i, 0] = block_rm[k]
+
+
+@wp.func
+def _scatter_joint_constraint_group_to_col_major(
+    num_cts: wp.int32,
+    has_base_body: bool,
+    nzb_start_rm: wp.int32,
+    nzb_offset_cm: wp.int32,
+    row_major_coords: wp.array2d[wp.int32],
+    row_major_values: wp.array[vec6f],
+    col_major_values: wp.array[wp.types.matrix(shape=(6, 1), dtype=wp.float32)],
+):
+    """Convert one joint constraint group (dynamic/kinematic/friction/effort) row-major to col-major."""
+    # Offset the Jacobian rows within the 6x6 block to avoid exceeding matrix dimensions.
+    # Since we might not fill the full 6x6 block with Jacobian entries, shifting the block upwards
+    # and filling the bottom part will prevent the block lying outside the matrix dimensions.
+    # We additional guard against the case where the shift would push the block above the start of
+    # the matrix by taking the minimum of the full shift and `row_init`.
+    row_init = row_major_coords[nzb_start_rm, 0]
+    block_row_init = min(6 - num_cts, row_init)
+
+    _scatter_joint_row_major_body_to_col_major(
+        num_cts,
+        nzb_start_rm,
+        0,
+        nzb_offset_cm,
+        0,
+        block_row_init,
+        row_major_values,
+        col_major_values,
+    )
+    if has_base_body:
+        _scatter_joint_row_major_body_to_col_major(
+            num_cts,
+            nzb_start_rm,
+            num_cts,
+            nzb_offset_cm,
+            6,
+            block_row_init,
+            row_major_values,
+            col_major_values,
+        )
+
+
 @wp.kernel
 def _update_col_major_joint_jacobians(
     # Inputs
-    model_joints_num_dynamic_cts: wp.array(dtype=int32),
-    model_joints_num_kinematic_cts: wp.array(dtype=int32),
-    model_joints_bid_B: wp.array(dtype=int32),
-    jac_cts_row_major_joint_nzb_offsets: wp.array(dtype=int32),
-    jac_cts_row_major_nzb_coords: wp.array2d(dtype=int32),
-    jac_cts_row_major_nzb_values: wp.array(dtype=vec6f),
-    jac_cts_col_major_joint_nzb_offsets: wp.array(dtype=int32),
+    model_joints_num_dynamic_cts: wp.array[wp.int32],
+    model_joints_num_kinematic_cts: wp.array[wp.int32],
+    model_joints_num_friction_cts: wp.array[wp.int32],
+    model_joints_num_effort_cts: wp.array[wp.int32],
+    model_joints_bid_B: wp.array[wp.int32],
+    jac_cts_row_major_joint_nzb_offsets: wp.array[wp.int32],
+    jac_cts_row_major_nzb_coords: wp.array2d[wp.int32],
+    jac_cts_row_major_nzb_values: wp.array[vec6f],
+    jac_cts_col_major_joint_nzb_offsets: wp.array[wp.int32],
     # Outputs
-    jac_cts_col_major_nzb_values: wp.array(dtype=wp.types.matrix(shape=(6, 1), dtype=float32)),
+    jac_cts_col_major_nzb_values: wp.array[wp.types.matrix(shape=(6, 1), dtype=wp.float32)],
 ):
     """
     A kernel to compute the Jacobians (constraints and actuated DoFs) for the joints in a model.
@@ -945,76 +1248,85 @@ def _update_col_major_joint_jacobians(
     # Retrieve the joint model data
     num_dynamic_cts = model_joints_num_dynamic_cts[jid]
     num_kinematic_cts = model_joints_num_kinematic_cts[jid]
+    num_friction_cts = model_joints_num_friction_cts[jid]
+    num_effort_cts = model_joints_num_effort_cts[jid]
     bid_B = model_joints_bid_B[jid]
 
     # Retrieve the Jacobian data
-    dynamic_nzb_start_rm_j = jac_cts_row_major_joint_nzb_offsets[jid]
-    kinematic_nzb_start_rm_j = dynamic_nzb_start_rm_j
+    nzb_start_rm_j = jac_cts_row_major_joint_nzb_offsets[jid]
+    nzb_offset_cm = jac_cts_col_major_joint_nzb_offsets[jid]
 
-    dynamic_nzb_offset_cm = jac_cts_col_major_joint_nzb_offsets[jid]
-    kinematic_nzb_offset_cm = dynamic_nzb_offset_cm
+    has_base_body = bid_B > -1
+    rm_advance = 2 if has_base_body else 1
+    cm_advance = 12 if has_base_body else 6
 
-    # Offset the Jacobian rows within the 6x6 block to avoid exceeding matrix dimensions.
-    # Since we might not fill the full 6x6 block with Jacobian entries, shifting the block upwards
-    # and filling the bottom part will prevent the block lying outside the matrix dimensions.
-    # We additional guard against the case where the shift would push the block above the start of
-    # the matrix by taking the minimum of the full shift and `nzb_row_init`.
     if num_dynamic_cts > 0:
-        dynamic_nzb_row_init = jac_cts_row_major_nzb_coords[dynamic_nzb_start_rm_j, 0]
-        dynamic_block_row_init = min(6 - num_dynamic_cts, dynamic_nzb_row_init)
-        for i in range(num_dynamic_cts):
-            nzb_idx_rm = dynamic_nzb_start_rm_j + i
-            block_rm = jac_cts_row_major_nzb_values[nzb_idx_rm]
-            for k in range(6):
-                jac_cts_col_major_nzb_values[dynamic_nzb_offset_cm + k][dynamic_block_row_init + i, 0] = block_rm[k]
+        _scatter_joint_constraint_group_to_col_major(
+            num_dynamic_cts,
+            has_base_body,
+            nzb_start_rm_j,
+            nzb_offset_cm,
+            jac_cts_row_major_nzb_coords,
+            jac_cts_row_major_nzb_values,
+            jac_cts_col_major_nzb_values,
+        )
+        nzb_start_rm_j += num_dynamic_cts * rm_advance
+        nzb_offset_cm += cm_advance
 
-        if bid_B > -1:
-            for i in range(num_dynamic_cts):
-                nzb_idx_rm = dynamic_nzb_start_rm_j + num_dynamic_cts + i
-                block_rm = jac_cts_row_major_nzb_values[nzb_idx_rm]
-                for k in range(6):
-                    jac_cts_col_major_nzb_values[dynamic_nzb_offset_cm + 6 + k][dynamic_block_row_init + i, 0] = (
-                        block_rm[k]
-                    )
-            kinematic_nzb_start_rm_j += 2 * num_dynamic_cts
-            kinematic_nzb_offset_cm += 12
-        else:
-            kinematic_nzb_start_rm_j += num_dynamic_cts
-            kinematic_nzb_offset_cm += 6
+    _scatter_joint_constraint_group_to_col_major(
+        num_kinematic_cts,
+        has_base_body,
+        nzb_start_rm_j,
+        nzb_offset_cm,
+        jac_cts_row_major_nzb_coords,
+        jac_cts_row_major_nzb_values,
+        jac_cts_col_major_nzb_values,
+    )
+    nzb_start_rm_j += num_kinematic_cts * rm_advance
+    nzb_offset_cm += cm_advance
 
-    kinematic_nzb_row_init = jac_cts_row_major_nzb_coords[kinematic_nzb_start_rm_j, 0]
-    kinematic_block_row_init = min(6 - num_kinematic_cts, kinematic_nzb_row_init)
-    for i in range(num_kinematic_cts):
-        nzb_idx_rm = kinematic_nzb_start_rm_j + i
-        block_rm = jac_cts_row_major_nzb_values[nzb_idx_rm]
-        for k in range(6):
-            jac_cts_col_major_nzb_values[kinematic_nzb_offset_cm + k][kinematic_block_row_init + i, 0] = block_rm[k]
+    if num_friction_cts > 0:
+        _scatter_joint_constraint_group_to_col_major(
+            num_friction_cts,
+            has_base_body,
+            nzb_start_rm_j,
+            nzb_offset_cm,
+            jac_cts_row_major_nzb_coords,
+            jac_cts_row_major_nzb_values,
+            jac_cts_col_major_nzb_values,
+        )
+        nzb_start_rm_j += num_friction_cts * rm_advance
+        nzb_offset_cm += cm_advance
 
-    if bid_B > -1:
-        for i in range(num_kinematic_cts):
-            nzb_idx_rm = kinematic_nzb_start_rm_j + num_kinematic_cts + i
-            block_rm = jac_cts_row_major_nzb_values[nzb_idx_rm]
-            for k in range(6):
-                jac_cts_col_major_nzb_values[kinematic_nzb_offset_cm + 6 + k][kinematic_block_row_init + i, 0] = (
-                    block_rm[k]
-                )
+    if num_effort_cts > 0:
+        _scatter_joint_constraint_group_to_col_major(
+            num_effort_cts,
+            has_base_body,
+            nzb_start_rm_j,
+            nzb_offset_cm,
+            jac_cts_row_major_nzb_coords,
+            jac_cts_row_major_nzb_values,
+            jac_cts_col_major_nzb_values,
+        )
+        nzb_start_rm_j += num_effort_cts * rm_advance
+        nzb_offset_cm += cm_advance
 
 
 @wp.kernel
 def _update_col_major_limit_jacobians(
     # Inputs
-    limits_model_num: wp.array(dtype=int32),
-    limits_model_max: int32,
-    limits_wid: wp.array(dtype=int32),
-    limits_bids: wp.array(dtype=vec2i),
-    jac_cts_row_major_limit_nzb_offsets: wp.array(dtype=int32),
-    jac_cts_row_major_nzb_coords: wp.array2d(dtype=int32),
-    jac_cts_row_major_nzb_values: wp.array(dtype=vec6f),
-    jac_cts_col_major_nzb_start: wp.array(dtype=int32),
+    limits_model_num: wp.array[wp.int32],
+    limits_model_max: wp.int32,
+    limits_wid: wp.array[wp.int32],
+    limits_bids: wp.array[wp.vec2i],
+    jac_cts_row_major_limit_nzb_offsets: wp.array[wp.int32],
+    jac_cts_row_major_nzb_coords: wp.array2d[wp.int32],
+    jac_cts_row_major_nzb_values: wp.array[vec6f],
+    jac_cts_col_major_nzb_start: wp.array[wp.int32],
     # Outputs
-    jac_cts_col_major_num_nzb: wp.array(dtype=int32),
-    jac_cts_col_major_nzb_coords: wp.array2d(dtype=int32),
-    jac_cts_col_major_nzb_values: wp.array(dtype=wp.types.matrix(shape=(6, 1), dtype=float32)),
+    jac_cts_col_major_num_nzb: wp.array[wp.int32],
+    jac_cts_col_major_nzb_coords: wp.array2d[wp.int32],
+    jac_cts_col_major_nzb_values: wp.array[wp.types.matrix(shape=(6, 1), dtype=wp.float32)],
 ):
     """
     A kernel to assemble the limit constraint Jacobian in a model.
@@ -1085,18 +1397,18 @@ def _update_col_major_limit_jacobians(
 @wp.kernel
 def _update_col_major_contact_jacobians(
     # Inputs:
-    contacts_model_num: wp.array(dtype=int32),
-    contacts_model_max: int32,
-    contacts_wid: wp.array(dtype=int32),
-    contacts_bid_AB: wp.array(dtype=vec2i),
-    jac_cts_row_major_contact_nzb_offsets: wp.array(dtype=int32),
-    jac_cts_row_major_nzb_coords: wp.array2d(dtype=int32),
-    jac_cts_row_major_nzb_values: wp.array(dtype=vec6f),
-    jac_cts_col_major_nzb_start: wp.array(dtype=int32),
+    contacts_model_num: wp.array[wp.int32],
+    contacts_model_max: wp.int32,
+    contacts_wid: wp.array[wp.int32],
+    contacts_bid_AB: wp.array[wp.vec2i],
+    jac_cts_row_major_contact_nzb_offsets: wp.array[wp.int32],
+    jac_cts_row_major_nzb_coords: wp.array2d[wp.int32],
+    jac_cts_row_major_nzb_values: wp.array[vec6f],
+    jac_cts_col_major_nzb_start: wp.array[wp.int32],
     # Outputs
-    jac_cts_col_major_num_nzb: wp.array(dtype=int32),
-    jac_cts_col_major_nzb_coords: wp.array2d(dtype=int32),
-    jac_cts_col_major_nzb_values: wp.array(dtype=wp.types.matrix(shape=(6, 1), dtype=float32)),
+    jac_cts_col_major_num_nzb: wp.array[wp.int32],
+    jac_cts_col_major_nzb_coords: wp.array2d[wp.int32],
+    jac_cts_col_major_nzb_values: wp.array[wp.types.matrix(shape=(6, 1), dtype=wp.float32)],
 ):
     """
     A kernel to assemble the contact constraint Jacobian in a model.
@@ -1178,32 +1490,32 @@ class DenseSystemJacobiansData:
         # Constraint Jacobian
         ###
 
-        self.J_cts_offsets: wp.array | None = None
+        self.J_cts_offsets: wp.array[wp.int32] | None = None
         """
-        The index offset of the constraint Jacobian matrix block of each world.\n
-        Shape of ``(num_worlds,)`` and type :class:`int32`.\n
+        The index offset of the constraint Jacobian matrix block of each world.
+        Shape of ``(num_worlds,)``.
         """
 
-        self.J_cts_data: wp.array | None = None
+        self.J_cts_data: wp.array[wp.float32] | None = None
         """
-        A flat array containing the constraint Jacobian matrix data of all worlds.\n
-        Shape of ``(sum(ncts_w * nbd_w),)`` and type :class:`float32`.
+        A flat array containing the constraint Jacobian matrix data of all worlds.
+        Shape of ``(sum(ncts_w * nbd_w),)``.
         """
 
         ###
         # DoFs Jacobian
         ###
 
-        self.J_dofs_offsets: wp.array | None = None
+        self.J_dofs_offsets: wp.array[wp.int32] | None = None
         """
-        The index offset of the DoF Jacobian matrix block of each world.\n
-        Shape of ``(num_worlds,)`` and type :class:`int32`.\n
+        The index offset of the DoF Jacobian matrix block of each world.
+        Shape of ``(num_worlds,)``.
         """
 
-        self.J_dofs_data: wp.array | None = None
+        self.J_dofs_data: wp.array[wp.float32] | None = None
         """
-        A flat array containing the joint DoF Jacobian matrix data of all worlds.\n
-        Shape of ``(sum(njad_w * nbd_w),)`` and type :class:`float32`.
+        A flat array containing the joint DoF Jacobian matrix data of all worlds.
+        Shape of ``(sum(njad_w * nbd_w),)``.
         """
 
 
@@ -1222,10 +1534,9 @@ class DenseSystemJacobians:
         model: ModelKamino | None = None,
         limits: LimitsKamino | None = None,
         contacts: ContactsKamino | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
-        Creates a :class:`DenseSystemJacobians` container and allocates the Jacobian data if a model is provided.\n
+        Creates a :class:`DenseSystemJacobians` container and allocates the Jacobian data if a model is provided.
 
         The Jacobians are stored in dense format as flat arrays, and the matrix blocks of each world are stored
         contiguously with the corresponding index offsets. The Jacobian matrix blocks of each world are stored
@@ -1235,25 +1546,19 @@ class DenseSystemJacobians:
         constraint Jacobian matrix blocks of world ``w``.
 
         Args:
-            model (`ModelKamino`, optional):
-                The model container describing the system structure and properties, used
+            model: The model container describing the system structure and properties, used
                 to allocate the Jacobian data and compute the matrix block sizes and index offsets.
-            limits (`LimitsKamino`, optional):
-                The limits container describing the active limits in the system, used
+            limits: The limits container describing the active limits in the system, used
                 to compute the matrix block sizes and index offsets if provided.
-            contacts (`ContactsKamino`, optional):
-                The contacts container describing the active contacts in the system,
+            contacts: The contacts container describing the active contacts in the system,
                 used to compute the matrix block sizes and index offsets if provided.
-            device (`Device` or `str`, optional):
-                The device on which the Jacobian data should be allocated.\n
-                If `None`, the Jacobian data will be allocated on same device as the model.
         """
         # Declare and initialize the Jacobian data container
         self._data = DenseSystemJacobiansData()
 
         # If a model is provided, allocate the Jacobians data
         if model is not None:
-            self.finalize(model=model, limits=limits, contacts=contacts, device=device)
+            self.finalize(model=model, limits=limits, contacts=contacts)
 
     @property
     def data(self) -> DenseSystemJacobiansData:
@@ -1267,7 +1572,6 @@ class DenseSystemJacobians:
         model: ModelKamino,
         limits: LimitsKamino | None = None,
         contacts: ContactsKamino | None = None,
-        device: wp.DeviceLike = None,
     ):
         # Ensure the model container is valid
         if model is None:
@@ -1289,11 +1593,12 @@ class DenseSystemJacobians:
         # Extract the constraint and DoF sizes of each world
         nw = model.info.num_worlds
         nbd = model.info.num_body_dofs.numpy().tolist()
-        njc = model.info.num_joint_cts.numpy().tolist()
+        njc = model.info.num_joint_bilateral_cts.numpy().tolist()
+        nbc = model.info.num_joint_bounded_cts.numpy().tolist()
         njd = model.info.num_joint_dofs.numpy().tolist()
         maxnl = limits.world_max_limits_host if limits and limits.model_max_limits_host > 0 else [0] * nw
         maxnc = contacts.world_max_contacts_host if contacts and contacts.model_max_contacts_host > 0 else [0] * nw
-        maxncts = [njc[w] + maxnl[w] + 3 * maxnc[w] for w in range(nw)]
+        maxncts = [njc[w] + nbc[w] + maxnl[w] + 3 * maxnc[w] for w in range(nw)]
 
         # Compute the sizes of the Jacobian matrix data for each world
         J_cts_sizes = [maxncts[i] * nbd[i] for i in range(nw)]
@@ -1310,16 +1615,15 @@ class DenseSystemJacobians:
             J_cts_offsets[w] = J_cts_offsets[w - 1] + J_cts_sizes[w - 1]
             J_dofs_offsets[w] = J_dofs_offsets[w - 1] + J_dofs_sizes[w - 1]
 
-        # Set the device to that of the model if not specified
-        if device is None:
-            device = model.device
+        # Use the model's device
+        device = model.device
 
         # Allocate the Jacobian arrays
         with wp.ScopedDevice(device):
-            self._data.J_cts_offsets = wp.array(J_cts_offsets, dtype=int32)
-            self._data.J_dofs_offsets = wp.array(J_dofs_offsets, dtype=int32)
-            self._data.J_cts_data = wp.zeros(shape=(total_J_cts_size,), dtype=float32)
-            self._data.J_dofs_data = wp.zeros(shape=(total_J_dofs_size,), dtype=float32)
+            self._data.J_cts_offsets = to_warp_int32_array(J_cts_offsets)
+            self._data.J_dofs_offsets = to_warp_int32_array(J_dofs_offsets)
+            self._data.J_cts_data = wp.zeros(shape=(total_J_cts_size,), dtype=wp.float32)
+            self._data.J_dofs_data = wp.zeros(shape=(total_J_dofs_size,), dtype=wp.float32)
 
     def build(
         self,
@@ -1334,21 +1638,16 @@ class DenseSystemJacobians:
         data of the provided model, data, limits and contacts containers.
 
         Args:
-            model (`ModelKamino`):
-                The model container describing the system structure
+            model: The model container describing the system structure
                 and properties, used to compute the Jacobians.
-            data (`DataKamino`):
-                The data container describing the time-varying state
+            data: The data container describing the time-varying state
                 of the system, used to compute the Jacobians.
-            limits (`LimitsKamino`, optional):
-                The limits container describing the active limits in the system,
+            limits: The limits container describing the active limits in the system,
                 used to compute the limit constraint Jacobians if provided.
-            contacts (`ContactsKamino`, optional):
-                The contacts container describing the active contacts in the system,
+            contacts: The contacts container describing the active contacts in the system,
                 used to compute the contact constraint Jacobians if provided.
-            reset_to_zero (`bool`, optional):
-                Whether to reset the Jacobian values to zero before building.\n
-                If false, the Jacobian values will be accumulated onto existing values.\n
+            reset_to_zero: Whether to reset the Jacobian values to zero before building.
+                If false, the Jacobian values will be accumulated onto existing values.
                 Defaults to `True`.
         """
         # Optionally reset the Jacobian array data to zero
@@ -1363,25 +1662,44 @@ class DenseSystemJacobians:
                 dim=model.size.sum_of_num_joints,
                 inputs=[
                     # Inputs:
-                    model.info.num_body_dofs,
                     model.info.bodies_offset,
+                    model.info.joint_dofs_offset,
+                    model.info.joint_dynamic_cts_offset,
+                    model.info.joint_kinematic_cts_offset,
+                    model.info.joint_friction_cts_offset,
+                    model.info.joint_effort_cts_offset,
                     model.info.joint_dynamic_cts_group_offset,
                     model.info.joint_kinematic_cts_group_offset,
+                    model.info.joint_friction_cts_group_offset,
+                    model.info.joint_effort_cts_group_offset,
                     model.joints.wid,
                     model.joints.dof_type,
+                    model.joints.coords_offset,
                     model.joints.dofs_offset,
+                    model.joints.num_dynamic_cts,
+                    model.joints.num_friction_cts,
+                    model.joints.num_effort_cts,
                     model.joints.dynamic_cts_offset,
                     model.joints.kinematic_cts_offset,
+                    model.joints.friction_cts_offset,
+                    model.joints.effort_cts_offset,
+                    model.joints.dynamic_cts_axis,
+                    model.joints.friction_cts_axis,
+                    model.joints.effort_cts_axis,
                     model.joints.bid_B,
                     model.joints.bid_F,
+                    model.joints.X_Bj,
+                    model.joints.X_Fj,
                     data.joints.p_j,
                     data.bodies.q_i,
+                    data.joints.q_j,
                     self._data.J_cts_offsets,
                     self._data.J_dofs_offsets,
                     # Outputs:
                     self._data.J_cts_data,
                     self._data.J_dofs_data,
                 ],
+                device=model.device,
             )
 
         # Build the limit constraints Jacobians if a limits data container is provided
@@ -1391,8 +1709,8 @@ class DenseSystemJacobians:
                 dim=limits.model_max_limits_host,
                 inputs=[
                     # Inputs:
-                    model.info.num_body_dofs,
                     model.info.bodies_offset,
+                    model.info.joint_dofs_offset,
                     data.info.limit_cts_group_offset,
                     limits.model_active_limits,
                     limits.model_max_limits_host,
@@ -1407,6 +1725,7 @@ class DenseSystemJacobians:
                     # Outputs:
                     self._data.J_cts_data,
                 ],
+                device=model.device,
             )
 
         # Build the contact constraints Jacobians if a contacts data container is provided
@@ -1416,7 +1735,6 @@ class DenseSystemJacobians:
                 dim=contacts.model_max_contacts_host,
                 inputs=[
                     # Inputs:
-                    model.info.num_body_dofs,
                     model.info.bodies_offset,
                     data.info.contact_cts_group_offset,
                     data.bodies.q_i,
@@ -1432,6 +1750,7 @@ class DenseSystemJacobians:
                     # Outputs:
                     self._data.J_cts_data,
                 ],
+                device=model.device,
             )
 
 
@@ -1445,68 +1764,61 @@ class SparseSystemJacobians:
         model: ModelKamino | None = None,
         limits: LimitsKamino | None = None,
         contacts: ContactsKamino | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
-        Creates a :class:`SparseSystemJacobians` container and allocates the Jacobian data if a model is provided.\n
+        Creates a :class:`SparseSystemJacobians` container and allocates the Jacobian data if a model is provided.
 
         The Jacobians are stored in block-sparse format using the :class:`BlockSparseLinearOperators` class, and
         the non-zero block coordinates are stored as local offsets for each world, joint, limit, and contact.
 
         Args:
-            model (`ModelKamino`, optional):
-                The model container describing the system structure and properties, used
+            model: The model container describing the system structure and properties, used
                 to allocate the Jacobian data and compute the non-zero block coordinates.
-            limits (`LimitsKamino`, optional):
-                The limits container describing the active limits in the system, used to
+            limits: The limits container describing the active limits in the system, used to
                 compute the non-zero block coordinates of the limit constraint Jacobian.
-            contacts (`ContactsKamino`, optional):
-                The contacts container describing the active contacts in the system, used to
+            contacts: The contacts container describing the active contacts in the system, used to
                 compute the non-zero block coordinates of the contact constraint Jacobian.
-            device (`wp.DeviceLike`, optional):
-                The device on which to allocate the Jacobian data.
         """
         # Declare and initialize the Jacobian data containers
-        self._J_cts: BlockSparseLinearOperators | None = None
-        self._J_dofs: BlockSparseLinearOperators | None = None
+        self._J_cts: BlockSparseLinearOperators[wp.float32, wp.int32] | None = None
+        self._J_dofs: BlockSparseLinearOperators[wp.float32, wp.int32] | None = None
 
         # Local (in-world) offsets for the non-zero blocks of the constraint and dofs Jacobian for
         # each (global) joint, limit, and contact
-        self._J_cts_joint_nzb_offsets: wp.array | None = None
-        self._J_cts_limit_nzb_offsets: wp.array | None = None
-        self._J_cts_contact_nzb_offsets: wp.array | None = None
-        self._J_dofs_joint_nzb_offsets: wp.array | None = None
+        self._J_cts_joint_nzb_offsets: wp.array[wp.int32] | None = None
+        self._J_cts_limit_nzb_offsets: wp.array[wp.int32] | None = None
+        self._J_cts_contact_nzb_offsets: wp.array[wp.int32] | None = None
+        self._J_dofs_joint_nzb_offsets: wp.array[wp.int32] | None = None
+
+        # Static non-zero block offsets for each bounded-multiplier (currently: joint friction)
+        # constraint row, one entry per adjacent body (the second is -1 for unary joints).
+        self._J_cts_bounded_nzb_offsets: wp.array[wp.vec2i] | None = None
 
         # Lists of number of non-zero blocks in each world connected to joint constraints
-        self._J_cts_num_joint_nzb: wp.array | None = None
+        self._J_cts_num_joint_nzb: wp.array[wp.int32] | None = None
 
         # If a model is provided, allocate the Jacobians data
         if model is not None:
-            self.finalize(model=model, limits=limits, contacts=contacts, device=device)
+            self.finalize(model=model, limits=limits, contacts=contacts)
 
     def finalize(
         self,
         model: ModelKamino,
         limits: LimitsKamino | None = None,
         contacts: ContactsKamino | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         Finalizes the Jacobian data by allocating the Jacobian arrays and computing the non-zero block coordinates
         for each world, joint, limit, and contact based on the provided model, limits, and contacts containers.
 
         Args:
-            model (`ModelKamino`):
-                The model container describing the system structure and properties, used
+            model: The model container describing the system structure and properties, used
                 to allocate the Jacobian data and compute the non-zero block coordinates.
-            limits (`LimitsKamino`, optional):
-                The limits container describing the active limits in the system, used to
+            limits: The limits container describing the active limits in the system, used to
                 compute the non-zero block coordinates of the limit constraint Jacobian.
-            contacts (`ContactsKamino`, optional):
-                The contacts container describing the active contacts in the system, used to
+            contacts: The contacts container describing the active contacts in the system, used to
                 compute the non-zero block coordinates of the contact constraint Jacobian.
-            device (`wp.DeviceLike`, optional):
-                The device on which to allocate the Jacobian data.\n
+            device: The device on which to allocate the Jacobian data.
                 If `None`, the Jacobian data will be allocated on same device as the model.
         """
 
@@ -1530,7 +1842,8 @@ class SparseSystemJacobians:
         # Extract the constraint and DoF sizes of each world
         num_worlds = model.info.num_worlds
         num_body_dofs = model.info.num_body_dofs.numpy().tolist()
-        num_joint_cts = model.info.num_joint_cts.numpy().tolist()
+        num_bilateral_joint_cts = model.info.num_joint_bilateral_cts.numpy().tolist()
+        num_bounded_joint_cts = model.info.num_joint_bounded_cts.numpy().tolist()
         num_joint_dofs = model.info.num_joint_dofs.numpy().tolist()
         max_num_limits = (
             limits.world_max_limits_host if limits and limits.model_max_limits_host > 0 else [0] * num_worlds
@@ -1539,7 +1852,8 @@ class SparseSystemJacobians:
             contacts.world_max_contacts_host if contacts and contacts.model_max_contacts_host > 0 else [0] * num_worlds
         )
         max_num_constraints = [
-            num_joint_cts[w] + max_num_limits[w] + 3 * max_num_contacts[w] for w in range(num_worlds)
+            num_bilateral_joint_cts[w] + num_bounded_joint_cts[w] + max_num_limits[w] + 3 * max_num_contacts[w]
+            for w in range(num_worlds)
         ]
 
         # Compute the number of non-zero blocks required for each Jacobian matrix, as well as the
@@ -1547,23 +1861,33 @@ class SparseSystemJacobians:
         joint_wid = model.joints.wid.numpy()
         joint_bid_B = model.joints.bid_B.numpy()
         joint_bid_F = model.joints.bid_F.numpy()
-        joint_num_cts = model.joints.num_cts.numpy()
+        joint_num_bilateral_cts = model.joints.num_bilateral_cts.numpy()
         joint_num_kinematic_cts = model.joints.num_kinematic_cts.numpy()
         joint_num_dynamic_cts = model.joints.num_dynamic_cts.numpy()
+        joint_num_bounded_cts = model.joints.num_bounded_cts.numpy()
+        joint_num_friction_cts = model.joints.num_friction_cts.numpy()
+        joint_num_effort_cts = model.joints.num_effort_cts.numpy()
+        joint_bounded_cts_offset = model.joints.bounded_cts_offset.numpy()
         joint_num_dofs = model.joints.num_dofs.numpy()
         joint_q_j_min = model.joints.q_j_min.numpy()
         joint_q_j_max = model.joints.q_j_max.numpy()
-        joint_dynamic_cts_offset = model.joints.dynamic_cts_offset.numpy()
-        joint_kinematic_cts_offset = model.joints.kinematic_cts_offset.numpy()
-        joint_dynamic_cts_group_offset = model.info.joint_dynamic_cts_group_offset.numpy()
-        joint_kinematic_cts_group_offset = model.info.joint_kinematic_cts_group_offset.numpy()
+        joint_dynamic_cts_offset_total_cts = model.joints.dynamic_cts_offset_total_cts.numpy()
+        joint_kinematic_cts_offset_total_cts = model.joints.kinematic_cts_offset_total_cts.numpy()
+        joint_friction_cts_offset_total_cts = model.joints.friction_cts_offset_total_cts.numpy()
+        joint_effort_cts_offset_total_cts = model.joints.effort_cts_offset_total_cts.numpy()
+        world_cts_offset = model.info.total_cts_offset.numpy()
         joint_dofs_offset = model.joints.dofs_offset.numpy()
+        world_dofs_offset = model.info.joint_dofs_offset.numpy()
         bodies_offset = model.info.bodies_offset.numpy()
         J_cts_nnzb_min = [0] * num_worlds
         J_cts_nnzb_max = [0] * num_worlds
         J_dofs_nnzb = [0] * num_worlds
         J_cts_joint_nzb_offsets = [0] * model.size.sum_of_num_joints
         J_dofs_joint_nzb_offsets = [0] * model.size.sum_of_num_joints
+        # Static per-row nzb offsets for bounded-multiplier rows: one entry per
+        # adjacent body, with the second body's entry left at -1 for unary joints.
+        J_cts_bounded_nzb_offsets_F = [-1] * model.size.sum_of_num_bounded_joint_cts
+        J_cts_bounded_nzb_offsets_B = [-1] * model.size.sum_of_num_bounded_joint_cts
         J_cts_nzb_row = [[] for _ in range(num_worlds)]
         J_cts_nzb_col = [[] for _ in range(num_worlds)]
         J_dofs_nzb_row = [[] for _ in range(num_worlds)]
@@ -1578,18 +1902,46 @@ class SparseSystemJacobians:
             # Joint nzb counts
             is_binary = joint_bid_B[_j] > -1
             num_adjacent_bodies = 2 if is_binary else 1
-            num_cts = int(joint_num_cts[_j])
+            num_cts = int(joint_num_bilateral_cts[_j])
             num_dynamic_cts = int(joint_num_dynamic_cts[_j])
             num_kinematic_cts = int(joint_num_kinematic_cts[_j])
+            num_bounded_joint_cts = int(joint_num_bounded_cts[_j])
+            num_friction_cts = int(joint_num_friction_cts[_j])
+            num_effort_cts = int(joint_num_effort_cts[_j])
             num_dofs = int(joint_num_dofs[_j])
-            J_cts_nnzb_min[w] += num_adjacent_bodies * num_cts
-            J_cts_nnzb_max[w] += num_adjacent_bodies * num_cts
+            J_cts_nnzb_min[w] += num_adjacent_bodies * (num_cts + num_bounded_joint_cts)
+            J_cts_nnzb_max[w] += num_adjacent_bodies * (num_cts + num_bounded_joint_cts)
             J_dofs_nnzb[w] += num_adjacent_bodies * num_dofs
 
+            # Static bounded-row nzb offsets, still relative to the world's local nzb block
+            # (converted to a global nzb index below, once `J_cts_nzb_start` is known). Block
+            # order within a joint's nzb region is [dynamic_F, dynamic_B, kinematic_F,
+            # kinematic_B, friction_F, friction_B, effort_F, effort_B] (see the nzb coordinate
+            # loops below), so bounded blocks start after both bodies' dynamic+kinematic blocks.
+            if num_bounded_joint_cts > 0:
+                bounded_row_start = joint_bounded_cts_offset[_j]
+                body_F_local_offset = J_cts_joint_nzb_offsets[_j] + num_adjacent_bodies * (
+                    num_dynamic_cts + num_kinematic_cts
+                )
+                body_B_local_offset = body_F_local_offset + num_friction_cts
+                for r in range(num_friction_cts):
+                    J_cts_bounded_nzb_offsets_F[bounded_row_start + r] = body_F_local_offset + r
+                    if is_binary:
+                        J_cts_bounded_nzb_offsets_B[bounded_row_start + r] = body_B_local_offset + r
+                effort_row_start = bounded_row_start + num_friction_cts
+                body_F_local_offset += num_adjacent_bodies * num_friction_cts
+                body_B_local_offset = body_F_local_offset + num_effort_cts
+                for r in range(num_effort_cts):
+                    J_cts_bounded_nzb_offsets_F[effort_row_start + r] = body_F_local_offset + r
+                    if is_binary:
+                        J_cts_bounded_nzb_offsets_B[effort_row_start + r] = body_B_local_offset + r
+
             # Joint nzb coordinates
-            dynamic_cts_offset = joint_dynamic_cts_offset[_j] + joint_dynamic_cts_group_offset[w]
-            kinematic_cts_offset = joint_kinematic_cts_offset[_j] + joint_kinematic_cts_group_offset[w]
-            dofs_offset = joint_dofs_offset[_j]
+            dynamic_cts_offset = joint_dynamic_cts_offset_total_cts[_j] - world_cts_offset[w]
+            kinematic_cts_offset = joint_kinematic_cts_offset_total_cts[_j] - world_cts_offset[w]
+            friction_cts_offset = joint_friction_cts_offset_total_cts[_j] - world_cts_offset[w]
+            effort_cts_offset = joint_effort_cts_offset_total_cts[_j] - world_cts_offset[w]
+            dofs_offset = joint_dofs_offset[_j] - world_dofs_offset[w]
             column_ids = [6 * (joint_bid_F[_j] - bodies_offset[w])]
             if is_binary:
                 column_ids.append(6 * (joint_bid_B[_j] - bodies_offset[w]))
@@ -1600,6 +1952,14 @@ class SparseSystemJacobians:
             for col_id in column_ids:
                 for i in range(num_kinematic_cts):
                     J_cts_nzb_row[w].append(kinematic_cts_offset + i)
+                    J_cts_nzb_col[w].append(col_id)
+            for col_id in column_ids:
+                for i in range(num_friction_cts):
+                    J_cts_nzb_row[w].append(friction_cts_offset + i)
+                    J_cts_nzb_col[w].append(col_id)
+            for col_id in column_ids:
+                for i in range(num_effort_cts):
+                    J_cts_nzb_row[w].append(effort_cts_offset + i)
                     J_cts_nzb_col[w].append(col_id)
             for col_id in column_ids:
                 for i in range(num_dofs):
@@ -1633,41 +1993,40 @@ class SparseSystemJacobians:
         J_dofs_nzb_row = [i for rows in J_dofs_nzb_row for i in rows]
         J_dofs_nzb_col = [j for cols in J_dofs_nzb_col for j in cols]
 
-        # Set the device to that of the model if not specified
-        if device is None:
-            device = model.device
+        # Use the model's device
+        device = model.device
 
         # Allocate the block-sparse linear-operator data to represent each system Jacobian
         with wp.ScopedDevice(device):
             # First allocate the geometric constraint Jacobian
-            bsm_cts = BlockSparseMatrices(
+            bsm_cts: BlockSparseMatrices[wp.float32, wp.int32, vec6f] = BlockSparseMatrices(
                 num_matrices=num_worlds,
-                nzb_dtype=BlockDType(dtype=float32, shape=(6,)),
+                nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(6,)),
                 device=device,
             )
             bsm_cts.finalize(max_dims=J_cts_dims_max, capacities=J_cts_nnzb_max)
-            self._J_cts = BlockSparseLinearOperators(bsm=bsm_cts)
+            self._J_cts = BlockSparseLinearOperators[wp.float32, wp.int32](bsm=bsm_cts)
 
             # Then allocate the geometric DoFs Jacobian
-            bsm_dofs = BlockSparseMatrices(
+            bsm_dofs: BlockSparseMatrices[wp.float32, wp.int32, vec6f] = BlockSparseMatrices(
                 num_matrices=num_worlds,
-                nzb_dtype=BlockDType(dtype=float32, shape=(6,)),
+                nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(6,)),
                 device=device,
             )
             bsm_dofs.finalize(max_dims=J_dofs_dims, capacities=J_dofs_nnzb)
-            self._J_dofs = BlockSparseLinearOperators(bsm=bsm_dofs)
+            self._J_dofs = BlockSparseLinearOperators[wp.float32, wp.int32](bsm=bsm_dofs)
 
             # Set all constant values into BSMs (corresponding to joint dofs/cts)
             if bsm_cts.max_of_max_dims[0] * bsm_cts.max_of_max_dims[1] > 0:
-                bsm_cts.nzb_row.assign(J_cts_nzb_row)
-                bsm_cts.nzb_col.assign(J_cts_nzb_col)
-                bsm_cts.num_cols.assign(num_body_dofs)
+                assign_to_warp_int32_array(bsm_cts.nzb_row, J_cts_nzb_row)
+                assign_to_warp_int32_array(bsm_cts.nzb_col, J_cts_nzb_col)
+                assign_to_warp_int32_array(bsm_cts.num_cols, num_body_dofs)
             if bsm_dofs.max_of_max_dims[0] * bsm_dofs.max_of_max_dims[1] > 0:
-                bsm_dofs.nzb_row.assign(J_dofs_nzb_row)
-                bsm_dofs.nzb_col.assign(J_dofs_nzb_col)
-                bsm_dofs.num_rows.assign(num_joint_dofs)
-                bsm_dofs.num_cols.assign(num_body_dofs)
-                bsm_dofs.num_nzb.assign(J_dofs_nnzb)
+                assign_to_warp_int32_array(bsm_dofs.nzb_row, J_dofs_nzb_row)
+                assign_to_warp_int32_array(bsm_dofs.nzb_col, J_dofs_nzb_col)
+                assign_to_warp_int32_array(bsm_dofs.num_rows, num_joint_dofs)
+                assign_to_warp_int32_array(bsm_dofs.num_cols, num_body_dofs)
+                assign_to_warp_int32_array(bsm_dofs.num_nzb, J_dofs_nnzb)
 
             # Convert per-world nzb offsets to global nzb offsets
             J_cts_nzb_start = bsm_cts.nzb_start.numpy()
@@ -1676,15 +2035,58 @@ class SparseSystemJacobians:
                 w = joint_wid[_j]
                 J_cts_joint_nzb_offsets[_j] += J_cts_nzb_start[w]
                 J_dofs_joint_nzb_offsets[_j] += J_dofs_nzb_start[w]
+                num_bounded_cts = int(joint_num_bounded_cts[_j])
+                if num_bounded_cts > 0:
+                    row_start = joint_bounded_cts_offset[_j]
+                    for r in range(num_bounded_cts):
+                        if J_cts_bounded_nzb_offsets_F[row_start + r] > -1:
+                            J_cts_bounded_nzb_offsets_F[row_start + r] += J_cts_nzb_start[w]
+                        if J_cts_bounded_nzb_offsets_B[row_start + r] > -1:
+                            J_cts_bounded_nzb_offsets_B[row_start + r] += J_cts_nzb_start[w]
 
             # Create/move precomputed helper arrays to device
-            self._J_cts_joint_nzb_offsets = wp.array(J_cts_joint_nzb_offsets, dtype=int32, device=device)
-            self._J_cts_limit_nzb_offsets = wp.zeros(shape=(model.size.sum_of_max_limits,), dtype=int32, device=device)
-            self._J_cts_contact_nzb_offsets = wp.zeros(
-                shape=(model.size.sum_of_max_contacts,), dtype=int32, device=device
+            self._J_cts_joint_nzb_offsets = to_warp_int32_array(J_cts_joint_nzb_offsets, device=device)
+            self._J_cts_limit_nzb_offsets = wp.zeros(
+                shape=(model.size.sum_of_max_limits,), dtype=wp.int32, device=device
             )
-            self._J_dofs_joint_nzb_offsets = wp.array(J_dofs_joint_nzb_offsets, dtype=int32, device=device)
-            self._J_cts_num_joint_nzb = wp.array(J_cts_nnzb_min, dtype=int32, device=device)
+            self._J_cts_contact_nzb_offsets = wp.zeros(
+                shape=(model.size.sum_of_max_contacts,), dtype=wp.int32, device=device
+            )
+            self._J_dofs_joint_nzb_offsets = to_warp_int32_array(J_dofs_joint_nzb_offsets, device=device)
+            self._J_cts_num_joint_nzb = to_warp_int32_array(J_cts_nnzb_min, device=device)
+            bounded_nzb_offsets = np.stack(
+                [
+                    np.asarray(J_cts_bounded_nzb_offsets_F, dtype=np.int32),
+                    np.asarray(J_cts_bounded_nzb_offsets_B, dtype=np.int32),
+                ],
+                axis=-1,
+            )
+            self._J_cts_bounded_nzb_offsets = wp.array(bounded_nzb_offsets, dtype=wp.vec2i, device=device)
+
+    @property
+    def joint_constraint_nzb_count(self) -> wp.array[wp.int32]:
+        """Number of joint-constraint blocks in each world."""
+        return self._J_cts_num_joint_nzb
+
+    @property
+    def limit_constraint_nzb_offsets(self) -> wp.array[wp.int32]:
+        """Global sparse-block offsets for each limit constraint."""
+        return self._J_cts_limit_nzb_offsets
+
+    @property
+    def contact_constraint_nzb_offsets(self) -> wp.array[wp.int32]:
+        """Global sparse-block offsets for each contact constraint."""
+        return self._J_cts_contact_nzb_offsets
+
+    @property
+    def bounded_constraint_nzb_offsets(self) -> wp.array[wp.vec2i]:
+        """Global sparse-block offsets for each bounded-multiplier joint row.
+
+        Entry ``x`` is body F's block offset, ``y`` is body B's (``-1`` for unary joints).
+        Unlike limit/contact offsets, this topology is static and computed once in
+        :meth:`finalize`.
+        """
+        return self._J_cts_bounded_nzb_offsets
 
     def build(
         self,
@@ -1699,19 +2101,14 @@ class SparseSystemJacobians:
         data of the provided model, data, limits and contacts containers.
 
         Args:
-            model (`ModelKamino`):
-                The model containing the system's kinematic structure.
-            data (`DataKamino`):
-                The data container holding the time-varying state of the system.
-            limits (`LimitsKamino`, optional):
-                LimitsKamino data container for joint-limit constraints. Needs to
+            model: The model containing the system's kinematic structure.
+            data: The data container holding the time-varying state of the system.
+            limits: LimitsKamino data container for joint-limit constraints. Needs to
                 be provided if the Jacobian also has limit constraints.
-            contacts (`ContactsKamino`, optional):
-                Contacts data container for contact constraints. Needs to
+            contacts: Contacts data container for contact constraints. Needs to
                 be provided if the Jacobian also has contact constraints.
-            reset_to_zero (`bool`, optional):
-                Whether to reset the Jacobian values to zero before building.\n
-                If false, the Jacobian values will be accumulated onto existing values.\n
+            reset_to_zero: Whether to reset the Jacobian values to zero before building.
+                If false, the Jacobian values will be accumulated onto existing values.
                 Defaults to `True`.
 
         """
@@ -1734,12 +2131,14 @@ class SparseSystemJacobians:
             dim=model.size.num_worlds,
             inputs=[
                 # Inputs:
-                model.info.num_joint_cts,
+                model.info.num_joint_bilateral_cts,
+                model.info.num_joint_bounded_cts,
                 data.info.num_limits,
                 data.info.num_contacts,
                 # Outputs:
                 jacobian_cts.num_rows,
             ],
+            device=model.device,
         )
 
         # Build the joint constraints and actuation Jacobians
@@ -1750,18 +2149,31 @@ class SparseSystemJacobians:
                 inputs=[
                     # Inputs:
                     model.joints.dof_type,
-                    model.joints.num_dofs,
+                    model.joints.coords_offset,
+                    model.joints.num_dynamic_cts,
+                    model.joints.num_kinematic_cts,
+                    model.joints.num_friction_cts,
+                    model.joints.num_effort_cts,
                     model.joints.bid_B,
                     model.joints.bid_F,
+                    model.joints.X_Bj,
+                    model.joints.X_Fj,
                     model.joints.dynamic_cts_offset,
+                    model.joints.friction_cts_offset,
+                    model.joints.effort_cts_offset,
+                    model.joints.dynamic_cts_axis,
+                    model.joints.friction_cts_axis,
+                    model.joints.effort_cts_axis,
                     data.joints.p_j,
                     data.bodies.q_i,
+                    data.joints.q_j,
                     self._J_cts_joint_nzb_offsets,
                     self._J_dofs_joint_nzb_offsets,
                     # Outputs:
                     jacobian_cts.nzb_values,
                     jacobian_dofs.nzb_values,
                 ],
+                device=model.device,
             )
 
             # Initialize the number of NZB with the number of NZB for all joints
@@ -1795,6 +2207,7 @@ class SparseSystemJacobians:
                     jacobian_cts.nzb_values,
                     self._J_cts_limit_nzb_offsets,
                 ],
+                device=model.device,
             )
 
         # Build the contact constraints Jacobians if a contacts data container is provided
@@ -1822,10 +2235,11 @@ class SparseSystemJacobians:
                     jacobian_cts.nzb_values,
                     self._J_cts_contact_nzb_offsets,
                 ],
+                device=model.device,
             )
 
 
-class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
+class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators[wp.float32, wp.int32]):
     """
     Container to hold a column-major version of the constraint Jacobian
     that uses 6x1 blocks instead of the regular 1x6 blocks.
@@ -1845,35 +2259,27 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
         limits: LimitsKamino | None = None,
         contacts: ContactsKamino | None = None,
         jacobians: SparseSystemJacobians | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         Constructs a column-major sparse constraint Jacobian.
 
         Args:
-            model (`ModelKamino`, optional):
-                The model containing the system's kinematic structure. If provided,
+            model: The model containing the system's kinematic structure. If provided,
                 the Jacobian will be immediately finalized with the given model.
-            limits (`LimitsKamino`, optional):
-                LimitsKamino data container for joint limit constraints. Needs to
+            limits: LimitsKamino data container for joint limit constraints. Needs to
                 be provided if the regular Jacobian also has limit constraints.
-            contacts (`ContactsKamino`, optional):
-                Contacts data container for contact constraints. Needs to be
+            contacts: Contacts data container for contact constraints. Needs to be
                 provided if the regular Jacobian also has contact constraints.
-            jacobians (`SparseSystemJacobians`, optional):
-                Row-major sparse Jacobians. If provided, the column-major Jacobian will be
+            jacobians: Row-major sparse Jacobians. If provided, the column-major Jacobian will be
                 immediately updated with values from the provided Jacobians after allocation.
-            device (`wp.DeviceLike`, optional):
-                The device on which to allocate memory for the Jacobian data structures.\n
-                If `None`, the device of the model will be used.
         """
         super().__init__()
 
-        self._joint_nzb_offsets: wp.array | None = None
-        self._num_joint_nzb: wp.array | None = None
+        self._joint_nzb_offsets: wp.array[wp.int32] | None = None
+        self._num_joint_nzb: wp.array[wp.int32] | None = None
 
         if model is not None:
-            self.finalize(model=model, limits=limits, contacts=contacts, jacobians=jacobians, device=device)
+            self.finalize(model=model, limits=limits, contacts=contacts, jacobians=jacobians)
 
     def finalize(
         self,
@@ -1881,31 +2287,24 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
         limits: LimitsKamino | None = None,
         contacts: ContactsKamino | None = None,
         jacobians: SparseSystemJacobians | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         Initializes the data structure of the column-major constraint Jacobian.
 
         Args:
-            model (`ModelKamino`):
-                The model containing the system's kinematic structure.
-            limits (`LimitsKamino`, optional):
-                LimitsKamino data container for joint limit constraints. Needs to
+            model: The model containing the system's kinematic structure.
+            limits: LimitsKamino data container for joint limit constraints. Needs to
                 be provided if the regular Jacobian also has limit constraints.
-            contacts (`ContactsKamino`, optional):
-                Contacts data container for contact constraints. Needs to be
+            contacts: Contacts data container for contact constraints. Needs to be
                 provided if the regular Jacobian also has contact constraints.
-            jacobians (`SparseSystemJacobians`, optional):
-                Row-major sparse Jacobians. If provided, the column-major Jacobian will be
+            jacobians: Row-major sparse Jacobians. If provided, the column-major Jacobian will be
                 immediately updated with values from the provided Jacobians after allocation.
-            device (`wp.DeviceLike`, optional):
-                The device on which to allocate memory for the Jacobian data structures.\n
-                If `None`, the device of the model will be used.
         """
         # Extract the constraint and DoF sizes of each world
         num_worlds = model.info.num_worlds
         num_body_dofs = model.info.num_body_dofs.numpy().tolist()
-        num_joint_cts = model.info.num_joint_cts.numpy().tolist()
+        num_bilateral_joint_cts = model.info.num_joint_bilateral_cts.numpy().tolist()
+        num_bounded_joint_cts = model.info.num_joint_bounded_cts.numpy().tolist()
         max_num_limits = (
             limits.world_max_limits_host if limits and limits.model_max_limits_host > 0 else [0] * num_worlds
         )
@@ -1913,7 +2312,8 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
             contacts.world_max_contacts_host if contacts and contacts.model_max_contacts_host > 0 else [0] * num_worlds
         )
         max_num_constraints = [
-            num_joint_cts[w] + max_num_limits[w] + 3 * max_num_contacts[w] for w in range(num_worlds)
+            num_bilateral_joint_cts[w] + num_bounded_joint_cts[w] + max_num_limits[w] + 3 * max_num_contacts[w]
+            for w in range(num_worlds)
         ]
 
         # Compute the number of non-zero blocks required for Jacobian matrix, using 6 1x6 blocks per
@@ -1923,13 +2323,16 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
         joint_bid_F = model.joints.bid_F.numpy()
         joint_num_kinematic_cts = model.joints.num_kinematic_cts.numpy()
         joint_num_dynamic_cts = model.joints.num_dynamic_cts.numpy()
+        joint_num_friction_cts = model.joints.num_friction_cts.numpy()
+        joint_num_effort_cts = model.joints.num_effort_cts.numpy()
         joint_num_dofs = model.joints.num_dofs.numpy()
         joint_q_j_min = model.joints.q_j_min.numpy()
         joint_q_j_max = model.joints.q_j_max.numpy()
-        joint_dynamic_cts_offset = model.joints.dynamic_cts_offset.numpy()
-        joint_kinematic_cts_offset = model.joints.kinematic_cts_offset.numpy()
-        joint_dynamic_cts_group_offset = model.info.joint_dynamic_cts_group_offset.numpy()
-        joint_kinematic_cts_group_offset = model.info.joint_kinematic_cts_group_offset.numpy()
+        joint_dynamic_cts_offset_total_cts = model.joints.dynamic_cts_offset_total_cts.numpy()
+        joint_kinematic_cts_offset_total_cts = model.joints.kinematic_cts_offset_total_cts.numpy()
+        joint_friction_cts_offset_total_cts = model.joints.friction_cts_offset_total_cts.numpy()
+        joint_effort_cts_offset_total_cts = model.joints.effort_cts_offset_total_cts.numpy()
+        world_cts_offset = model.info.total_cts_offset.numpy()
         bodies_offset = model.info.bodies_offset.numpy()
         J_cts_cm_nnzb_min = [0] * num_worlds
         J_cts_cm_nnzb_max = [0] * num_worlds
@@ -1946,8 +2349,19 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
             is_binary = joint_bid_B[_j] > -1
             num_adjacent_bodies = 2 if is_binary else 1
             num_dynamic_cts = joint_num_dynamic_cts[_j]
-            J_cts_cm_nnzb_min[w] += num_adjacent_bodies * (12 if num_dynamic_cts > 0 else 6)
-            J_cts_cm_nnzb_max[w] += num_adjacent_bodies * (12 if num_dynamic_cts > 0 else 6)
+            num_friction_cts = joint_num_friction_cts[_j]
+            num_effort_cts = joint_num_effort_cts[_j]
+            J_cts_cm_nnzb_min[w] += num_adjacent_bodies * 6
+            J_cts_cm_nnzb_max[w] += num_adjacent_bodies * 6
+            if num_dynamic_cts > 0:
+                J_cts_cm_nnzb_min[w] += num_adjacent_bodies * 6
+                J_cts_cm_nnzb_max[w] += num_adjacent_bodies * 6
+            if num_friction_cts > 0:
+                J_cts_cm_nnzb_min[w] += num_adjacent_bodies * 6
+                J_cts_cm_nnzb_max[w] += num_adjacent_bodies * 6
+            if num_effort_cts > 0:
+                J_cts_cm_nnzb_min[w] += num_adjacent_bodies * 6
+                J_cts_cm_nnzb_max[w] += num_adjacent_bodies * 6
 
             # Joint nzb coordinates
             # Note: compared to the row-major Jacobian, for joints with less than 6 constraints, instead
@@ -1960,20 +2374,35 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
                 col_ids.append(int(6 * (joint_bid_B[_j] - bodies_offset[w])))
             # Dynamic constraint blocks
             if num_dynamic_cts > 0:
-                dynamic_cts_offset = joint_dynamic_cts_offset[_j] + joint_dynamic_cts_group_offset[w]
+                dynamic_cts_offset = joint_dynamic_cts_offset_total_cts[_j] - world_cts_offset[w]
                 dynamic_nzb_row = max(0, dynamic_cts_offset + num_dynamic_cts - 6)
                 for col_id in col_ids:
                     for i in range(6):
                         J_cts_nzb_row[w].append(dynamic_nzb_row)
                         J_cts_nzb_col[w].append(col_id + i)
             # Kinematic constraint blocks
-            kinematic_cts_offset = joint_kinematic_cts_offset[_j] + joint_kinematic_cts_group_offset[w]
+            kinematic_cts_offset = joint_kinematic_cts_offset_total_cts[_j] - world_cts_offset[w]
             num_kinematic_cts = int(joint_num_kinematic_cts[_j])
             kinematic_nzb_row = max(0, kinematic_cts_offset + num_kinematic_cts - 6)
             for col_id in col_ids:
                 for i in range(6):
                     J_cts_nzb_row[w].append(kinematic_nzb_row)
                     J_cts_nzb_col[w].append(col_id + i)
+            # Friction constraint blocks
+            if num_friction_cts > 0:
+                friction_cts_offset = joint_friction_cts_offset_total_cts[_j] - world_cts_offset[w]
+                friction_nzb_row = max(0, friction_cts_offset + num_friction_cts - 6)
+                for col_id in col_ids:
+                    for i in range(6):
+                        J_cts_nzb_row[w].append(friction_nzb_row)
+                        J_cts_nzb_col[w].append(col_id + i)
+            if num_effort_cts > 0:
+                effort_cts_offset = joint_effort_cts_offset_total_cts[_j] - world_cts_offset[w]
+                effort_nzb_row = max(0, effort_cts_offset + num_effort_cts - 6)
+                for col_id in col_ids:
+                    for i in range(6):
+                        J_cts_nzb_row[w].append(effort_nzb_row)
+                        J_cts_nzb_col[w].append(col_id + i)
 
             # Limit nzb counts (maximum)
             if max_num_limits[w] > 0:
@@ -1999,25 +2428,24 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
         J_cts_nzb_row = [i for rows in J_cts_nzb_row for i in rows]
         J_cts_nzb_col = [j for cols in J_cts_nzb_col for j in cols]
 
-        # Set the device to that of the model if not specified
-        if device is None:
-            device = model.device
+        # Use the model's device
+        device = model.device
 
         # Allocate the block-sparse linear-operator data to represent each system Jacobian
         with wp.ScopedDevice(device):
-            # Allocate the column-major constraint Jacobian
-            self.bsm = BlockSparseMatrices(
+            # Allocate the column-major constraint Jacobian.
+            self.bsm: BlockSparseMatrices[wp.float32, wp.int32, mat61f] = BlockSparseMatrices(
                 num_matrices=num_worlds,
-                nzb_dtype=BlockDType(dtype=float32, shape=(6, 1)),
+                nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(6, 1)),
                 device=device,
             )
             self.bsm.finalize(max_dims=J_cts_cm_dims_max, capacities=J_cts_cm_nnzb_max)
 
             # Set all constant values into BSM
             if self.bsm.max_of_max_dims[0] * self.bsm.max_of_max_dims[1] > 0:
-                self.bsm.nzb_row.assign(J_cts_nzb_row)
-                self.bsm.nzb_col.assign(J_cts_nzb_col)
-                self.bsm.num_cols.assign(num_body_dofs)
+                assign_to_warp_int32_array(self.bsm.nzb_row, J_cts_nzb_row)
+                assign_to_warp_int32_array(self.bsm.nzb_col, J_cts_nzb_col)
+                assign_to_warp_int32_array(self.bsm.num_cols, num_body_dofs)
 
             # Convert per-world nzb offsets to global nzb offsets
             nzb_start = self.bsm.nzb_start.numpy()
@@ -2026,8 +2454,8 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
                 J_cts_cm_joint_nzb_offsets[_j] += nzb_start[w]
 
             # Move precomputed helper arrays to device
-            self._joint_nzb_offsets = wp.array(J_cts_cm_joint_nzb_offsets, dtype=int32, device=device)
-            self._num_joint_nzb = wp.array(J_cts_cm_nnzb_min, dtype=int32, device=device)
+            self._joint_nzb_offsets = to_warp_int32_array(J_cts_cm_joint_nzb_offsets, device=device)
+            self._num_joint_nzb = to_warp_int32_array(J_cts_cm_nnzb_min, device=device)
 
         if jacobians is not None:
             self.update(model=model, jacobians=jacobians, limits=limits, contacts=contacts)
@@ -2044,15 +2472,11 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
         values of an already assembled row-major Jacobian.
 
         Args:
-            jacobians (`SparseSystemJacobians`):
-                The row-major sparse system Jacobians containing the constraint Jacobians.
-            model (`ModelKamino`):
-                The model containing the system's kinematic structure.
-            limits (`LimitsKamino`, optional):
-                LimitsKamino data container for joint limit constraints. Needs to be
+            jacobians: The row-major sparse system Jacobians containing the constraint Jacobians.
+            model: The model containing the system's kinematic structure.
+            limits: LimitsKamino data container for joint limit constraints. Needs to be
                 provided if the regular Jacobian also has limit constraints.
-            contacts (`ContactsKamino`, optional):
-                Contacts data container for contact constraints. Needs to be
+            contacts: Contacts data container for contact constraints. Needs to be
                 provided if the regular Jacobian also has contact constraints.
 
         Note:
@@ -2073,6 +2497,8 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
                     # Inputs:
                     model.joints.num_dynamic_cts,
                     model.joints.num_kinematic_cts,
+                    model.joints.num_friction_cts,
+                    model.joints.num_effort_cts,
                     model.joints.bid_B,
                     jacobians._J_cts_joint_nzb_offsets,
                     J_cts.nzb_coords,
@@ -2081,6 +2507,7 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
                     # Outputs:
                     self.bsm.nzb_values,
                 ],
+                device=model.device,
             )
 
         # Initialize the number of NZB with the number of NZB for all joints
@@ -2106,6 +2533,7 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
                     self.bsm.nzb_coords,
                     self.bsm.nzb_values,
                 ],
+                device=model.device,
             )
 
         # Build the contact constraints Jacobians if a contacts data container is provided
@@ -2128,6 +2556,7 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
                     self.bsm.nzb_coords,
                     self.bsm.nzb_values,
                 ],
+                device=model.device,
             )
 
 

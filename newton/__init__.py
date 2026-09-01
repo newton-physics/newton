@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # ==================================================================================
 # core
@@ -23,17 +11,45 @@ from ._src.core import (
 )
 from ._version import __version__
 
+use_coord_layout_targets: bool = False
+"""Use :attr:`joint_q`-aligned layout for joint position targets.
+
+Controls the shape of :attr:`~newton.Model.joint_target_q` and
+:attr:`~newton.Control.joint_target_q`:
+
+- ``True``: shape ``(joint_coord_count,)``, matching
+  :attr:`~newton.State.joint_q`.
+- ``False`` (the default): legacy shape ``(joint_dof_count,)``, which is
+  misaligned with :attr:`~newton.State.joint_q` whenever an articulation
+  contains a free, ball, or distance joint upstream of a position-controlled
+  DOF.
+
+:attr:`joint_target_qd` is shaped ``(joint_dof_count,)`` in both layouts,
+matching :attr:`~newton.State.joint_qd`.
+
+Solvers, the actuator library, importers, and viewers honor this flag. Toggle
+it before constructing a :class:`~newton.ModelBuilder`.
+
+.. deprecated:: 1.5
+    The legacy DOF-shaped layout is deprecated. In a future release the
+    coordinate layout becomes the only layout and this flag is removed;
+    ``finalize()`` warns when building an affected model (one whose joint
+    coordinate and DOF counts differ) under ``False``. Set the flag to
+    ``True`` now to migrate.
+"""
+
 __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
     "__version__",
+    "use_coord_layout_targets",
 ]
 
 # ==================================================================================
 # geometry
 # ==================================================================================
-from ._src.geometry import (
+from ._src.geometry import (  # noqa: E402
     SDF,
     Gaussian,
     GeoType,
@@ -42,6 +58,7 @@ from ._src.geometry import (
     ParticleFlags,
     ShapeFlags,
     TetMesh,
+    intersect_ray,
 )
 
 __all__ += [
@@ -53,6 +70,7 @@ __all__ += [
     "ParticleFlags",
     "ShapeFlags",
     "TetMesh",
+    "intersect_ray",
 ]
 
 # ==================================================================================
@@ -74,11 +92,16 @@ from ._src.sim import (  # noqa: E402
     ModalGeneratorSampled,
     Model,
     ModelBuilder,
+    ModelFlags,
     State,
+    StateFlags,
     eval_fk,
     eval_ik,
+    eval_inverse_dynamics_force,
+    eval_inverse_dynamics_passive,
     eval_jacobian,
     eval_mass_matrix,
+    eval_rigid_contact_kinematics,
 )
 
 __all__ += [
@@ -97,19 +120,26 @@ __all__ += [
     "ModalGeneratorSampled",
     "Model",
     "ModelBuilder",
+    "ModelFlags",
     "State",
+    "StateFlags",
     "eval_fk",
     "eval_ik",
+    "eval_inverse_dynamics_force",
+    "eval_inverse_dynamics_passive",
     "eval_jacobian",
     "eval_mass_matrix",
+    "eval_rigid_contact_kinematics",
 ]
 
 # ==================================================================================
 # submodule APIs
 # ==================================================================================
-from . import geometry, ik, math, selection, sensors, solvers, usd, utils, viewer  # noqa: E402
+from . import actuators, controllers, geometry, ik, math, selection, sensors, solvers, usd, utils, viewer  # noqa: E402
 
 __all__ += [
+    "actuators",
+    "controllers",
     "geometry",
     "ik",
     "math",

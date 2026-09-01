@@ -116,7 +116,7 @@ in the world frame.
 .. code-block:: python
 
   @wp.kernel
-  def get_body_twist(body_qd: wp.array(dtype=wp.spatial_vector)):
+  def get_body_twist(body_qd: wp.array[wp.spatial_vector]):
     body_id = wp.tid()
     # body_qd is a 6D wp.spatial_vector in world frame
     twist = body_qd[body_id]
@@ -134,6 +134,13 @@ This matches the Isaac Lab convention exactly. Note that Newton will automatical
 convert from this convention to MuJoCo's mixed-frame format when using the
 SolverMuJoCo, including both the angular velocity frame conversion (world ↔ body)
 and the linear velocity reference point conversion (CoM ↔ body frame origin).
+
+If you need the velocity of the body-frame origin rather than the COM, shift the
+linear term by the body's COM offset in world coordinates:
+
+.. math::
+
+   v_{\text{origin}}^W = v_{\text{com}}^W - \omega^W \times r_{\text{com}}^W.
 
 
 Summary of Conventions
@@ -171,18 +178,10 @@ Summary of Conventions
      - COM, world frame
      - World frame
      - Not named "twist"; typically treated as :math:`[\mathbf{v}_{com}^W;\ \boldsymbol{\omega}^W]`
-   * - **Newton** (except the Featherstone solver; see below)
+   * - **Newton**
      - COM, world frame
      - World frame
      - :attr:`~newton.State.body_qd`
-
-.. warning::
-
-  :class:`~newton.solvers.SolverFeatherstone` does not correctly handle angular velocity
-  for free-floating bodies with **non-zero center of mass offsets**. The body may not
-  rotate purely about its CoM.
-
-  This issue is tracked at https://github.com/newton-physics/newton/issues/1366.
 
 Mapping Between Representations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -268,24 +267,17 @@ the wrench to a point offset by :math:`\mathbf{r}` changes the torque as:
 
    \boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}.
 
-This convention is used in all Newton solvers, except for :class:`~newton.solvers.SolverFeatherstone`, which does not correctly handle torque application for free-floating bodies with **non-zero center of mass offsets**.
-
-.. warning::
-
-  :class:`~newton.solvers.SolverFeatherstone` does not correctly handle torque application
-  for free-floating bodies with **non-zero center of mass offsets**. A pure torque will
-  incorrectly cause the CoM to translate instead of remaining stationary.
-
-  This issue is tracked at https://github.com/newton-physics/newton/issues/1366.
+This convention is used in all Newton solvers.
 
 The array of joint forces (torques) in generalized coordinates is stored in :attr:`Control.joint_f <newton.Control.joint_f>`.
-For free joints, the corresponding 6 dimensions in this array are the spatial wrench applied at the body's center of mass (COM)
-in world frame, following exactly the same convention as :attr:`State.body_f <newton.State.body_f>`.
+For ``FREE`` and ``DISTANCE`` joints, the corresponding 6 dimensions in this
+array are the physical wrench in world coordinates, with the force and torque
+referenced at the child body's center of mass (COM).
 
 .. note::
 
-  MuJoCo represents free-joint generalized forces in a mixed-frame convention in ``qfrc_applied``. To preserve Newton's
-  COM-wrench semantics, :class:`~newton.solvers.SolverMuJoCo` applies free-joint
+  MuJoCo represents root free-joint generalized forces in a mixed-frame convention in ``qfrc_applied``. To preserve Newton's
+  COM-wrench semantics for that root-free-joint case, :class:`~newton.solvers.SolverMuJoCo` applies free-joint
   :attr:`Control.joint_f <newton.Control.joint_f>` through ``xfrc_applied`` (world-frame wrench at the COM) and
   uses ``qfrc_applied`` only for non-free joints. This keeps free-joint ``joint_f`` behavior aligned with
   :attr:`State.body_f <newton.State.body_f>`.
@@ -411,14 +403,50 @@ apply the appropriate rotation transforms:
    import newton
    
    # Configure Newton for Z-up coordinate system (robotics convention)
-   builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=-9.81)
+   builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, -9.81))
    
-   # Or use Y-up (graphics/animation convention)  
-   builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=-9.81)
-   
-   # Gravity vector will automatically align with the chosen up axis:
-   # - Y-up: gravity = (0, -9.81, 0)
-   # - Z-up: gravity = (0, 0, -9.81)
+   # Or use Y-up (graphics/animation convention)
+   builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, -9.81, 0.0))
+
+The up axis controls geometry conventions but does not constrain an explicit
+gravity vector. Omitting ``gravity`` defaults to ``-9.81`` along the configured
+up axis. Passing a scalar gravity value is deprecated.
+
+Color Space Handling
+--------------------
+
+Newton treats authored surface colors as display/sRGB RGB values by default.
+Public color inputs such as :attr:`newton.Model.shape_color`,
+:attr:`newton.Mesh.color`, and the ``color`` arguments on
+:class:`newton.ModelBuilder` shape helpers should be passed as the values you
+want to see on screen, with components in ``[0, 1]``.
+
+Rendering backends convert authored display colors to linear light for shading.
+In other words, do not pre-linearize shape or mesh colors before assigning them
+to Newton. When you need linear-light math explicitly, convert at the boundary
+with :func:`newton.utils.color_srgb_to_linear` and
+:func:`newton.utils.color_linear_to_srgb`.
+
+.. code-block:: python
+
+   import newton
+
+   display_color = (0.125, 0.125, 0.15)
+
+   builder = newton.ModelBuilder()
+   builder.add_ground_plane(color=display_color)
+
+   linear_color = newton.utils.color_srgb_to_linear(display_color)
+
+Base-color textures stored on Newton models follow the same convention and are
+kept display/sRGB-encoded.
+
+Packed color and albedo outputs from :class:`newton.sensors.SensorTiledCamera`
+use display/sRGB encoding by default. Set
+``SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
+when linear RGB bytes are required for downstream processing. Clear colors are
+specified as display/sRGB packed RGBA values and are converted to linear when
+linear output is requested.
 
 Collision Primitive Conventions
 -------------------------------
@@ -456,8 +484,8 @@ Newton defines collision primitives with consistent conventions across all shape
      - Extends along Z-axis; half_height excludes hemispherical caps
    * - **Cylinder**
      - Geometric center
-     - ``radius``, ``half_height``
-     - Extends along Z-axis
+     - ``radius``, ``half_height``, optional ``barrel_radius``
+     - Extends along Z-axis; ``barrel_radius`` curves the side as a symmetric circular arc
    * - **Cone**
      - Geometric center
      - ``radius`` (base), ``half_height``
@@ -469,11 +497,15 @@ Newton defines collision primitives with consistent conventions across all shape
    * - **Mesh**
      - User-defined
      - Vertex and triangle arrays
-     - General triangle mesh (can be non-convex)
+     - General triangle mesh (can be non-convex); CCW winding defines outward face normal
 
 **Shape Orientation and Alignment**
 
 All Newton primitives that have a primary axis (capsule, cylinder, cone) are aligned along the Z-axis in their local coordinate frame. The shape's transform determines its final position and orientation in the world or parent body frame.
+
+For a cylinder, ``radius`` is the radius at both ends. Setting ``barrel_radius`` to a nonzero value replaces the
+straight side profile with a symmetric circular arc of that radius before revolving it around the Z-axis.
+``barrel_radius`` must then be at least ``half_height``. Its default value of zero selects a regular cylinder.
 
 **Center of Mass Considerations**
 
@@ -562,7 +594,7 @@ The following tables compare how different engines and formats define common col
      - **Parameter Convention**
      - **Notes**
    * - **Newton**
-     - ``radius``, ``half_height``
+     - ``radius``, ``half_height``, optional ``barrel_radius``
      - Extends along Z-axis
    * - **MuJoCo**
      - ``size[0]`` = radius, ``size[1]`` = half-length

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # This code is based on the MPR implementation from Jitter Physics 2
 # Original: https://github.com/notgiven688/jitterphysics2
@@ -47,6 +35,11 @@ from typing import Any
 
 import warp as wp
 
+from .support_function import (
+    create_shape_center_function,
+    create_shape_support_function,
+)
+
 
 @wp.struct
 class Vert:
@@ -62,7 +55,7 @@ def vert_a(vert: Vert) -> wp.vec3:
     return vert.B + vert.BtoA
 
 
-def create_support_map_function(support_func: Any):
+def create_support_map_function(support_func: Any, use_precomputed_center: bool = False):
     """
     Factory function to create support mapping functions for MPR algorithm.
 
@@ -72,6 +65,7 @@ def create_support_map_function(support_func: Any):
     Args:
         support_func: Support mapping function for individual shapes that takes
                      (geometry, direction, data_provider) and returns a support point
+        use_precomputed_center: Whether the geometry data supplies a cached center.
 
     Returns:
         Tuple of three functions:
@@ -79,6 +73,9 @@ def create_support_map_function(support_func: Any):
         - minkowski_support: Support mapping for Minkowski difference A - B
         - geometric_center: Computes geometric center of Minkowski difference
     """
+
+    shape_support = create_shape_support_function(support_func)
+    geometric_center = create_shape_center_function(use_precomputed_center)
 
     # Support mapping functions (these replace the MinkowskiDiff struct methods)
     @wp.func
@@ -106,7 +103,7 @@ def create_support_map_function(support_func: Any):
         tmp = wp.quat_rotate_inv(orientation_b, direction)
 
         # Get support point in local space
-        result = support_func(geom_b, tmp, data_provider)
+        result = shape_support(geom_b, tmp, data_provider)
 
         # Transform result to world space
         result = wp.quat_rotate(orientation_b, result)
@@ -133,7 +130,7 @@ def create_support_map_function(support_func: Any):
             direction: Support direction
             orientation_b: Orientation of shape B
             position_b: Position of shape B
-            extend: Contact offset extension
+            extend: Combined margin extension [m]
             data_provider: Support mapping data provider
 
         Returns:
@@ -142,7 +139,7 @@ def create_support_map_function(support_func: Any):
         v = Vert()
 
         # Support point on A in positive direction
-        point_a = support_func(geom_a, direction, data_provider)
+        point_a = shape_support(geom_a, direction, data_provider)
 
         # Support point on B in negative direction
         tmp_direction = -direction
@@ -158,36 +155,6 @@ def create_support_map_function(support_func: Any):
         v.BtoA = point_a - v.B
 
         return v
-
-    @wp.func
-    def geometric_center(
-        geom_a: Any,
-        geom_b: Any,
-        orientation_b: wp.quat,
-        position_b: wp.vec3,
-        data_provider: Any,
-    ) -> Vert:
-        """
-        Compute geometric center of Minkowski difference.
-
-        Args:
-            geom_a: Shape A geometry data
-            geom_b: Shape B geometry data
-            orientation_b: Orientation of shape B
-            position_b: Position of shape B
-            data_provider: Support mapping data provider
-
-        Returns:
-            Vert containing geometric centers of both shapes
-        """
-        center = Vert()
-
-        # Both shape centers are at their local origins, so in the relative frame:
-        # center_A = vec3(0), center_B = position_b
-        center.B = position_b
-        center.BtoA = -position_b
-
-        return center
 
     return support_map_b, minkowski_support, geometric_center
 
@@ -210,9 +177,12 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
     """
 
     if _support_funcs is not None:
-        _support_map_b, minkowski_support, geometric_center = _support_funcs
+        _support_map_b, _minkowski_support, geometric_center = _support_funcs
     else:
-        _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
+        _support_map_b, _minkowski_support, geometric_center = create_support_map_function(support_func)
+
+    shape_support = create_shape_support_function(support_func, center_ties=True)
+    _, mpr_support, _ = create_support_map_function(shape_support)
 
     @wp.func
     def solve_mpr_core(
@@ -263,18 +233,26 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         v0 = geometric_center(geom_a, geom_b, orientation_b, position_b, data_provider)
 
         normal = v0.BtoA
-        if (
-            wp.abs(normal[0]) < NUMERIC_EPSILON
-            and wp.abs(normal[1]) < NUMERIC_EPSILON
-            and wp.abs(normal[2]) < NUMERIC_EPSILON
-        ):
-            # Any direction is fine - add small perturbation
-            v0.BtoA = wp.vec3(1e-05, 0.0, 0.0)
+        if wp.length_sq(normal) < NUMERIC_EPSILON:
+            v0.BtoA = geometric_center.fallback(geom_a, v0.B)
+            if wp.length_sq(v0.BtoA) < NUMERIC_EPSILON:
+                # Probe three axes and use the direction with most support.
+                best_dot = float(-1.0e30)
+                best_dir = wp.vec3(1.0, 0.0, 0.0)
+                for axis_idx in range(3):
+                    probe = wp.vec3(0.0, 0.0, 0.0)
+                    probe[axis_idx] = 1.0
+                    sv = mpr_support(geom_a, geom_b, probe, orientation_b, position_b, extend, data_provider)
+                    d = wp.dot(sv.BtoA, probe)
+                    if d > best_dot:
+                        best_dot = d
+                        best_dir = probe
+                v0.BtoA = best_dir * 1e-05
 
         normal = -v0.BtoA
 
         # First support point
-        v1 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+        v1 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
         point_a = vert_a(v1)
         point_b = v1.B
@@ -294,7 +272,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
             return True, point_a, point_b, normal, penetration
 
         # Second support point
-        v2 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+        v2 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
         if wp.dot(v2.BtoA, normal) <= 0.0:
             return False, point_a, point_b, normal, penetration
@@ -329,7 +307,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
             phase1 += 1
 
-            v3 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+            v3 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
             if wp.dot(v3.BtoA, normal) <= 0.0:
                 return False, point_a, point_b, normal, penetration
@@ -376,7 +354,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                 # If the origin is inside the wedge, we have a hit
                 hit = d >= 0.0
 
-            v4 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+            v4 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
             temp3 = v4.BtoA - v3.BtoA
             delta = wp.dot(temp3, normal)
@@ -432,7 +410,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         orientation_b: wp.quat,
         position_a: wp.vec3,
         position_b: wp.vec3,
-        sum_of_contact_offsets: float,
+        combined_margin: float,
         data_provider: Any,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-5,
@@ -447,17 +425,17 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
             orientation_b: Orientation of shape B
             position_a: Position of shape A
             position_b: Position of shape B
-            sum_of_contact_offsets: Sum of contact offsets for both shapes
+            combined_margin: Sum of margin extensions for both shapes [m]
             data_provider: Support mapping data provider
             MAX_ITER: Maximum number of iterations for MPR algorithm
-            NUMERIC_EPSILON: Small number for numerical comparisons
+            COLLIDE_EPSILON: Small number for numerical comparisons
 
         Returns:
             Tuple of:
-                collision detected (bool): True if shapes are colliding
-                signed_distance (float): Signed distance (negative indicates overlap)
-                contact point center (wp.vec3): Midpoint between witness points in world space
-                normal (wp.vec3): Contact normal from A to B in world space
+                collision detected: True if shapes are colliding
+                signed_distance: Signed distance (negative indicates overlap)
+                contact point center: Midpoint between witness points in world space
+                normal: Contact normal from A to B in world space
         """
         # Transform shape B to local space of shape A
         relative_orientation_b = wp.quat_inverse(orientation_a) * orientation_b
@@ -469,7 +447,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
             geom_b,
             relative_orientation_b,
             relative_position_b,
-            sum_of_contact_offsets,
+            combined_margin,
             data_provider,
             MAX_ITER,
             COLLIDE_EPSILON,

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Marching Cubes utilities for SDF isosurface extraction.
 
@@ -31,6 +19,32 @@ from newton._src.core.types import MAXVAL
 
 #: Corner values for a single voxel (8 corners)
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
+
+# Marching cubes edge-interpolation constants.  Shared by sdf_mc.py and
+# sdf_hydroelastic.py — import from here to keep values in one place.
+
+MC_EDGE_VAL_DIFF_EPS = 1.0e-10
+"""Minimum |val_diff| below which the edge midpoint is used instead of
+interpolation.  Well below float32 ULP for typical SDF magnitudes, so this
+branch only fires for nearly-identical corner values."""
+
+MC_EDGE_CLAMP_MIN = 0.02
+"""Lower t-clamp for edge interpolation.  Prevents vertex collapse when
+corner values are near zero (e.g. at SDF ridge boundaries where both
+shapes share the same nearest face).  Without the clamp, t close to 0 or 1
+places multiple vertices at the same corner, producing degenerate
+(zero-area) triangles."""
+
+MC_EDGE_CLAMP_MAX = 0.98
+"""Upper t-clamp (``1 - MC_EDGE_CLAMP_MIN``)."""
+
+MC_DEGENERATE_N_SQ_EPS = 1.0e-20
+"""Squared-length threshold below which a triangle cross-product is treated
+as degenerate.  With t-clamping producing minimum edge lengths of ~0.02
+voxel edges, near-collinear triangles can have n_sq in the 1e-20..1e-14
+range and still yield an unreliable normal after division.  A threshold of
+1e-20 is conservative with negligible false-positive risk (affected
+triangles contribute near-zero area anyway)."""
 
 
 def get_mc_tables(device):
@@ -62,18 +76,18 @@ def get_mc_tables(device):
         ]
     )
 
-    tri_range_table = wp._src.marching_cubes._get_mc_case_to_tri_range_table(device)
-    tri_local_inds_table = wp._src.marching_cubes._get_mc_tri_local_inds_table(device)
-    corner_offsets_table = wp.array(wp._src.marching_cubes.mc_cube_corner_offsets, dtype=wp.vec3ub, device=device)
+    tri_local_inds = np.asarray(wp.MarchingCubes.TRI_LOCAL_INDICES, dtype=np.int32)
+    tri_range_table = wp.array(wp.MarchingCubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=device)
+    tri_local_inds_table = wp.array(tri_local_inds, dtype=wp.int32, device=device)
+    corner_offsets_table = wp.array(wp.MarchingCubes.CUBE_CORNER_OFFSETS, dtype=wp.vec3ub, device=device)
     edge_to_verts_table = wp.array(edge_to_verts, dtype=wp.vec2ub, device=device)
 
     # Create flattened table:
     # Instead of tri_local_inds_table[i] -> edge_to_verts_table[edge_idx, 0/1],
     # we directly map tri_local_inds_table[i] -> vec2i(v_from, v_to)
-    tri_local_inds_np = tri_local_inds_table.numpy()
-    flat_edge_verts = np.zeros((len(tri_local_inds_np), 2), dtype=np.uint8)
+    flat_edge_verts = np.zeros((len(tri_local_inds), 2), dtype=np.uint8)
 
-    for i, edge_idx in enumerate(tri_local_inds_np):
+    for i, edge_idx in enumerate(tri_local_inds):
         flat_edge_verts[i, 0] = edge_to_verts[edge_idx, 0]
         flat_edge_verts[i, 1] = edge_to_verts[edge_idx, 1]
 
@@ -108,25 +122,31 @@ def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.flo
     if num_inside == 0:
         return 0.0
 
-    # Find the vertex with different inside/outside status
-    # With standard convention: negative depth = inside (penetrating)
-    idx = wp.int32(0)
+    # Rotate the distinct vertex into d0 without dynamic vector indexing. The
+    # latter forces this three-float value into thread-local memory on CUDA.
+    d0 = vert_depths[0]
+    d1 = vert_depths[1]
+    d2 = vert_depths[2]
     if num_inside == 1:
         # Find the one vertex that IS inside (negative depth)
         if vert_depths[1] < 0.0:
-            idx = 1
+            d0 = vert_depths[1]
+            d1 = vert_depths[2]
+            d2 = vert_depths[0]
         elif vert_depths[2] < 0.0:
-            idx = 2
+            d0 = vert_depths[2]
+            d1 = vert_depths[0]
+            d2 = vert_depths[1]
     else:  # num_inside == 2
         # Find the one vertex that is NOT inside (non-negative depth)
         if vert_depths[1] >= 0.0:
-            idx = 1
+            d0 = vert_depths[1]
+            d1 = vert_depths[2]
+            d2 = vert_depths[0]
         elif vert_depths[2] >= 0.0:
-            idx = 2
-
-    d0 = vert_depths[idx]
-    d1 = vert_depths[(idx + 1) % 3]
-    d2 = vert_depths[(idx + 2) % 3]
+            d0 = vert_depths[2]
+            d1 = vert_depths[0]
+            d2 = vert_depths[1]
 
     denom = (d0 - d1) * (d0 - d2)
     eps = wp.float32(1e-8)
@@ -145,14 +165,15 @@ def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.flo
 
 @wp.func
 def mc_calc_face(
-    flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    flat_edge_verts_table: wp.array[wp.vec2ub],
+    corner_offsets_table: wp.array[wp.vec3ub],
     tri_range_start: wp.int32,
     corner_vals: vec8f,
     sdf_a: wp.uint64,
     x_id: wp.int32,
     y_id: wp.int32,
     z_id: wp.int32,
+    isovalue: wp.float32 = 0.0,
 ) -> tuple[float, wp.vec3, wp.vec3, float, wp.mat33f]:
     """Extract a triangle face from a marching cubes voxel.
 
@@ -180,10 +201,14 @@ def mc_calc_face(
         p_0 = wp.vec3f(corner_offsets_table[v_idx_from])
         p_1 = wp.vec3f(corner_offsets_table[v_idx_to])
         val_diff = wp.float32(val_1 - val_0)
-        if wp.abs(val_diff) < 1e-8:
+        if wp.abs(val_diff) < MC_EDGE_VAL_DIFF_EPS:
             p = 0.5 * (p_0 + p_1)
         else:
-            t = (0.0 - val_0) / val_diff
+            # Clamp t away from cube corners to prevent vertex collapse when
+            # corner values are near zero (e.g. at SDF ridge boundaries).
+            # Without the clamp, t close to 0 or 1 places multiple vertices
+            # at the same corner, producing degenerate (zero-area) triangles.
+            t = wp.clamp((isovalue - val_0) / val_diff, MC_EDGE_CLAMP_MIN, MC_EDGE_CLAMP_MAX)
             p = p_0 + t * (p_1 - p_0)
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         p_scaled = wp.volume_index_to_world(sdf_a, vol_idx)
@@ -196,8 +221,15 @@ def mc_calc_face(
             num_inside += 1
 
     n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
-    normal = wp.normalize(n)
-    area = wp.length(n) / 2.0
+    n_sq = wp.dot(n, n)
+    if n_sq < MC_DEGENERATE_N_SQ_EPS:
+        # Degenerate triangle — return zero area with a valid (non-NaN) normal.
+        area = 0.0
+        normal = wp.vec3(0.0, 0.0, 1.0)
+    else:
+        n_len = wp.sqrt(n_sq)
+        normal = n / n_len
+        area = n_len / 2.0
     center = (face_verts[0] + face_verts[1] + face_verts[2]) / 3.0
     pen_depth = (vert_depths[0] + vert_depths[1] + vert_depths[2]) / 3.0
     area *= get_triangle_fraction(vert_depths, num_inside)

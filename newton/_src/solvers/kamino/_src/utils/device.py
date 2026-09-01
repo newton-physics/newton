@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """KAMINO: Utilities: CPU/GPU Warp Device Info"""
 
@@ -39,11 +27,9 @@ def _fmt_bytes(bytes: int) -> str:
     Helper function to format a byte value into a human-readable string with appropriate units.
 
     Args:
-        bytes (int):
-            The number of bytes to format.
+        bytes: The number of bytes to format.
     Returns:
-        str:
-            A formatted string representing the byte value in appropriate units (bytes, KB, MB, GB, etc.).
+        A formatted string representing the byte value in appropriate units (bytes, KB, MB, GB, etc.).
     """
     if bytes < 1024:
         return f"{bytes} bytes"
@@ -62,12 +48,10 @@ def get_device_spec_info(device: wp.DeviceLike) -> str:
     Retrieves detailed specifications of a given Warp device as a formatted string.
 
     Args:
-        device (wp.DeviceLike):
-            The device for which to retrieve specifications.
+        device: The device for which to retrieve specifications.
 
     Returns:
-        str:
-            A formatted string containing detailed specifications for the specified device.
+        A formatted string containing detailed specifications for the specified device.
     """
     spec_info: str = f"[device: `{device}`]:\n"
     spec_info += f"                name: {device.name}\n"
@@ -103,12 +87,10 @@ def get_device_malloc_info(
     Retrieves memory allocation information for the specified device as a formatted string.
 
     Args:
-        device (wp.DeviceLike):
-            The device for which to retrieve memory allocation information.
+        device: The device for which to retrieve memory allocation information.
 
     Returns:
-        str:
-            A formatted string containing memory allocation information for the specified device.
+        A formatted string containing memory allocation information for the specified device.
     """
     # Initialize the info string
     malloc_info: str = f"[device: `{device}`][{usage}]: "

@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -37,11 +25,11 @@ def topological_sort(
     Topological sort of a list of joints connecting rigid bodies.
 
     Args:
-        joints (Sequence[tuple[int, int]] | Sequence[tuple[str, str]]): A list of body link pairs (parent, child). Bodies can be identified by their name or index.
-        custom_indices (Sequence[int] | None): A list of custom indices to return for the joints. If None, the joint indices will be used.
-        use_dfs (bool): If True, use depth-first search for topological sorting.
+        joints: A list of body link pairs (parent, child). Bodies can be identified by their name or index.
+        custom_indices: A list of custom indices to return for the joints. If None, the joint indices will be used.
+        use_dfs: If True, use depth-first search for topological sorting.
             If False, use Kahn's algorithm. Default is True.
-        ensure_single_root (bool): If True, raise a ValueError if there is more than one root body. Default is False.
+        ensure_single_root: If True, raise a ValueError if there is more than one root body. Default is False.
 
     Returns:
         list[int]: A list of joint indices in topological order.
@@ -119,13 +107,13 @@ def topological_sort_undirected(
     relative to the input orientation.
 
     Args:
-        joints (Sequence[tuple[int, int]] | Sequence[tuple[str, str]]): A list of body link pairs.
+        joints: A list of body link pairs.
             Bodies can be identified by their name or index.
-        custom_indices (Sequence[int] | None): A list of custom indices to return for the joints.
+        custom_indices: A list of custom indices to return for the joints.
             If None, the joint indices will be used.
-        use_dfs (bool): If True, use depth-first search for topological sorting.
+        use_dfs: If True, use depth-first search for topological sorting.
             If False, use a breadth-first traversal. Default is True.
-        ensure_single_root (bool): If True, raise a ValueError if there is more than one root
+        ensure_single_root: If True, raise a ValueError if there is more than one root
             component. Default is False.
 
     Returns:

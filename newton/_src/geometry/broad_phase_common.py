@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Common utilities for broad phase collision detection.
 
@@ -25,6 +13,8 @@ import numpy as np
 import warp as wp
 
 from .flags import ShapeFlags
+
+BODY_FLAG_KINEMATIC = wp.constant(1 << 1)
 
 
 @wp.func
@@ -48,7 +38,54 @@ def check_aabb_overlap(
 
 
 @wp.func
-def binary_search(values: wp.array(dtype=Any), value: Any, lower: int, upper: int) -> int:
+def check_aabb_overlap_moving(
+    shape1: int,
+    shape2: int,
+    box_lower: wp.array[wp.vec3],
+    box_upper: wp.array[wp.vec3],
+    cutoff1: float,
+    cutoff2: float,
+    shape_displacement: wp.array[wp.vec3],
+) -> bool:
+    """Return static or continuous overlap according to the optional sweep array."""
+    if shape_displacement.shape[0] == 0:
+        return check_aabb_overlap(
+            box_lower[shape1], box_upper[shape1], cutoff1, box_lower[shape2], box_upper[shape2], cutoff2
+        )
+
+    cutoff_combined = cutoff1 + cutoff2
+    relative_displacement = shape_displacement[shape1] - shape_displacement[shape2]
+    lower_box1 = box_lower[shape1]
+    upper_box1 = box_upper[shape1]
+    lower_box2 = box_lower[shape2]
+    upper_box2 = box_upper[shape2]
+    enter = float(0.0)
+    exit_time = float(1.0)
+    for axis in range(3):
+        lower1 = lower_box1[axis]
+        upper1 = upper_box1[axis]
+        lower2 = lower_box2[axis] - cutoff_combined
+        upper2 = upper_box2[axis] + cutoff_combined
+        delta = relative_displacement[axis]
+        if delta == 0.0:
+            if lower1 > upper2 or upper1 < lower2:
+                return False
+        else:
+            axis_enter = (lower2 - upper1) / delta
+            axis_exit = (upper2 - lower1) / delta
+            if axis_enter > axis_exit:
+                tmp = axis_enter
+                axis_enter = axis_exit
+                axis_exit = tmp
+            enter = wp.max(enter, axis_enter)
+            exit_time = wp.min(exit_time, axis_exit)
+            if enter > exit_time:
+                return False
+    return True
+
+
+@wp.func
+def binary_search(values: wp.array[Any], value: Any, lower: int, upper: int) -> int:
     while lower < upper:
         mid = (lower + upper) >> 1
         if values[mid] > value:
@@ -94,7 +131,7 @@ def _vec2i_equal(p: wp.vec2i, q: wp.vec2i) -> bool:
 @wp.func
 def is_pair_excluded(
     pair: wp.vec2i,
-    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),
+    filter_pairs: wp.array[wp.vec2i],
     num_filter_pairs: int,
 ) -> bool:
     """Check whether a shape pair is in the sorted exclusion list via binary search.
@@ -126,10 +163,49 @@ def is_pair_excluded(
 
 
 @wp.func
+def is_shape_pair_immovable_filtered(
+    shape_a: int,
+    shape_b: int,
+    shape_body: wp.array[int],
+    body_flags: wp.array[int],
+    include_static_kinematic_pairs: bool,
+) -> bool:
+    """Return whether a shape pair should be skipped by immovable-body filtering."""
+    # Empty shape metadata is the expert-call opt-out. An empty body array,
+    # however, is valid for an all-static model and must still filter the pair.
+    if include_static_kinematic_pairs or shape_body.shape[0] == 0:
+        return False
+
+    body_a = shape_body[shape_a]
+    body_b = shape_body[shape_b]
+
+    static_a = body_a < 0
+    static_b = body_b < 0
+
+    if static_a and static_b:
+        return True
+
+    # Without body metadata we cannot distinguish dynamic from kinematic.
+    if body_flags.shape[0] == 0:
+        return False
+
+    kinematic_a = False
+    kinematic_b = False
+    if not static_a:
+        kinematic_a = (body_flags[body_a] & BODY_FLAG_KINEMATIC) != 0
+    if not static_b:
+        kinematic_b = (body_flags[body_b] & BODY_FLAG_KINEMATIC) != 0
+
+    immovable_a = static_a or kinematic_a
+    immovable_b = static_b or kinematic_b
+    return immovable_a and immovable_b
+
+
+@wp.func
 def write_pair(
     pair: wp.vec2i,
-    candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
 ):
     pairid = wp.atomic_add(candidate_pair_count, 0, 1)

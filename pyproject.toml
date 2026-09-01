@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.11.0"]
+build-backend = "uv_build"
 
 [project]
 name = "newton"
-dynamic = ["version"]
+version = "1.6.0.dev0"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
@@ -28,8 +28,7 @@ description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "warp-lang>=1.12.0",
-    "newton-actuators",
+    "warp-lang>=1.16.0",
 ]
 
 [project.optional-dependencies]
@@ -37,8 +36,13 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp>=3.5.0.2; python_version < '3.14'",  # MuJoCo, warp-accelerated (depends on mujoco which has no 3.14 wheels yet)
-    "mujoco>=3.5.0; python_version < '3.14'",        # MuJoCo physics engine (no 3.14 wheels yet)
+    "mujoco-warp~=3.11.0",  # MuJoCo, warp-accelerated
+    "mujoco~=3.11.0",       # MuJoCo physics engine
+]
+
+# Optional ONNX policy inference for neural actuators and RL policy examples.
+onnx = [
+    "warp-nn[onnx]==0.3.1",
 ]
 
 # Asset import and mesh processing dependencies
@@ -47,27 +51,27 @@ importers = [
     "requests>=2.25.0",
 
     # Mesh processing dependencies used by ModelBuilder.approximate_meshes
-    "scipy",                       # for convex hull approximation
+    "scipy>=1.11.0",               # for convex hull approximation
     "fast-simplification>=0.1.11", # for mesh simplification
     "alphashape>=1.3.1",           # for alphashape remeshing
     "coacd>=1.0.7; python_version < '3.14'",  # for convex decomposition (no 3.14 wheels yet)
     "trimesh>=4.6.8",              # for mesh operations and V-HACD
-    "meshio>=5.3.0",               # alternative mesh file loader (fallback)
+    "meshio>=5.3.5",               # alternative mesh file loader (fallback)
     "pycollada>=0.9",              # transitive dependency of trimesh for COLLADA (.dae) mesh support
     "resolve-robotics-uri-py>=0.4.0",  # for resolving ROS/Gazebo-style URIs (package://, model://)
-    "open3d>=0.18.0; python_version < '3.14' and (sys_platform != 'linux' or platform_machine != 'aarch64')",  # for importing Gaussian .ply files where wheels are available
+    "open3d>=0.19.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",
 
     # USD core libraries
-    "usd-core>=25.5 ; platform_machine != 'aarch64' and python_version < '3.14'",
-    "usd-exchange>=2.2.0 ; platform_machine == 'aarch64' and python_version < '3.13'",
+    "usd-core>=25.5,<26.5 ; platform_machine != 'aarch64' and python_version < '3.14'",
+    "usd-exchange>=2.2.0,<3 ; platform_machine == 'aarch64' and python_version < '3.13'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.1.0",
+    "newton-usd-schemas>=0.5.0",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)
 remesh = [
-    "open3d>=0.18.0; python_version < '3.14' and (sys_platform != 'linux' or platform_machine != 'aarch64')",  # for Poisson surface reconstruction where wheels are available
+    "open3d>=0.19.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",
     "pyfqmr>=0.5.0",               # for fast mesh simplification
 ]
 
@@ -75,15 +79,24 @@ remesh = [
 examples = [
     "newton[sim]",          # include simulation dependencies
     "newton[importers]",    # include import dependencies
+    "newton[onnx]",         # for RL policy examples
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
-    "GitPython>=3.1.44",    # for downloading assets via newton.utils.download_asset()
+    "GitPython>=3.1.58",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
-    "Pillow>=9.0.0",        # for image processing (viewer icons, heightfield loading, textures)
+    "Pillow>=11.3.0",
 ]
 
-# Extra dependency needed to run examples that inference an RL policy
+# OVRTX real-time ray tracing viewer
+rtx = [
+    "newton[importers]",    # include import dependencies (USD)
+    "pyglet>=2.1.6,<3",     # for the viewer window/presentation
+    "ovrtx>=0.3",           # NVIDIA OVRTX renderer
+]
+
+# PyTorch is not required for ONNX policy inference. These extras cover
+# workflows that still need PyTorch explicitly, including .pt/.pth policies.
 torch-cu12 = [
     "newton[examples]", # include example dependencies
     "torch>=2.7.0",     # CUDA 12 PyTorch
@@ -108,27 +121,30 @@ docs = [
     "pydata_sphinx_theme>=0.16.1",
     "sphinxcontrib-mermaid>=1.0.0",
     "sphinx-copybutton>=0.5.0",
-    "sphinx-design<=0.6.1",
+    "sphinx-design>=0.5.0,<=0.6.1",
     "sphinx-tabs>=3.3.0",
     "nbsphinx>=0.9.0",              # for Jupyter notebook integration
     "ipykernel>=6.0.0,<7.0.0",      # required by nbsphinx to execute notebooks (pinned <7 for rerun-sdk compatibility)
     "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
     "pypandoc_binary>=1.11",        # bundled pandoc binary
-    "viser>=1.0.16",                # required for ViewerViser in tutorial notebooks
+    "GitPython>=3.1.58",            # for downloading tutorial assets via newton.utils.download_asset()
+    # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
+    "viser==1.0.26",
 ]
 
 # Dependencies for Jupyter notebook compatibility
 notebook = [
     "newton[examples]",
     "rerun-sdk[notebook]>=0.27.1; python_version < '3.14'",
-    "jupyterlab>=4.4.10",
+    "jupyterlab>=4.5.7",
+    "jupyter-server-proxy>=4.5.0",
+    # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
+    "viser==1.0.26",
 ]
 
-[tool.hatch.version]
-path = "newton/_version.py"
-
-[tool.hatch.build.targets.wheel]
-include = ["/newton", "/newton/licenses"]
+[tool.uv.build-backend]
+module-name = "newton"
+module-root = ""
 
 [[tool.uv.index]]
 url = "https://pypi.org/simple"
@@ -222,6 +238,7 @@ banned-module-level-imports = [
     "networkx",
     "open3d",
     "openmesh",
+    "ovrtx",
     "PIL",
     "point_cloud_utils",
     "pxr",
@@ -279,12 +296,51 @@ reportUnknownParameterType = false
 reportOptionalOperand = false
 reportUnusedCallResult = false
 
+[tool.towncrier]
+directory = "changelog"
+filename = "CHANGELOG.md"
+start_string = "<!-- towncrier release notes start -->\n"
+title_format = "## [{version}] - {project_date}"
+issue_format = "[#{issue}](https://github.com/newton-physics/newton/issues/{issue})"
+issue_pattern = "\\d+"
+ignore = ["*.skip"]
+wrap = false
+
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "changed"
+name = "Changed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "deprecated"
+name = "Deprecated"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+showcontent = true
+
 [tool.typos]
 files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf", "*.js"]
 
 [tool.typos.default.extend-words]
 arange = "arange"
+precess = "precess"
 ba = "ba"
+ix = "ix"
+iy = "iy"
+iz = "iz"
 HAA = "HAA"
 lod = "lod"
 # MuJoCo Menagerie brand/product names
@@ -301,3 +357,8 @@ pnd = "pnd"
 PNGs = "PNGs"
 Haa = "Haa"
 iy = "iy"
+# Wonik Allegro thumb-adduction joint names
+tha0 = "tha0"
+tha1 = "tha1"
+tha2 = "tha2"
+tha3 = "tha3"

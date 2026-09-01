@@ -19,7 +19,9 @@ A more stable `BETA 2` version is planned for release during the summer of 2026.
 It currently supports:
 - Constrained rigid multi-body systems with arbitrary joint topologies (i.e. a kinematic tree is not assumed)
 - A large set of common and advanced bilateral joint constraints
-- Unilateral joint-limit and contact constraints with spatial friction and restitutive impacts
+- Unilateral joint-limit, and contact constraints with spatial friction and restitutive impacts
+- Joint Coulomb friction
+- Bounded joint effort for explicit commands and implicit PD drives
 - Fully configurable constraint stabilization that can be specified per constraint subset
 - Hard joint-limit and contact constraints enforced via an advanced Proximal-ADMM forward dynamics solver
 
@@ -30,7 +32,7 @@ Kamino is being developed and maintained by [Disney Research](https://www.disney
 
 ### Installing
 
-For plain users, the official [installation instructions](https://newton-physics.github.io/newton/guide/installation.html) of Newton are recommended.
+For plain users, the official [installation instructions](https://newton-physics.github.io/newton/latest/guide/installation.html) of Newton are recommended.
 
 For developers, please refer to the [Development](#development) section below.
 
@@ -66,7 +68,7 @@ Development of Kamino requires the installation of [Newton](https://github.com/n
 The first step involves setting-up a python environment.
 
 The simplest is to create a new `virtualenv`. Alternatively one could
-follow the [instructions](https://newton-physics.github.io/newton/guide/installation.html) from Newton.
+follow the [instructions](https://newton-physics.github.io/newton/latest/guide/installation.html) from Newton.
 
 ### Virtual environments using `pyenv`
 Because we're working on a fork of the main Newton repository, it can be useful to create two `virtualenv|conda|uv` environments.
@@ -136,11 +138,6 @@ Newton needs to be installed from source for Kamino development using:
 ```bash
 git clone git@github.com:newton-physics/newton-usd-schemas.git
 cd newton-usd-schemas
-pip install -e .[dev,docs,notebook]
-```
-```bash
-git clone git@github.com:newton-physics/newton-actuators.git
-cd newton-actuators
 pip install -e .[dev,docs,notebook]
 ```
 ```bash

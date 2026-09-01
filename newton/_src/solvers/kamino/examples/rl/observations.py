@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
@@ -22,9 +10,16 @@ from abc import ABC, abstractmethod
 import torch  # noqa: TID253
 import warp as wp
 
+from newton._src.solvers.kamino._src.core.joints import JointDoFType
 from newton._src.solvers.kamino._src.utils.sim import Simulator
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
 from newton._src.solvers.kamino.examples.rl.utils import StackedIndices, periodic_encoding
+
+###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 # ---------------------------------------------------------------------------
 # Warp helpers for BipedalObservation
@@ -44,7 +39,7 @@ def _projected_yaw(q: wp.quat) -> float:
 
 
 @wp.func
-def _write_vec3(obs: wp.array(dtype=wp.float32), idx: int, v: wp.vec3):
+def _write_vec3(obs: wp.array[wp.float32], idx: int, v: wp.vec3):
     obs[idx + 0] = v[0]
     obs[idx + 1] = v[1]
     obs[idx + 2] = v[2]
@@ -83,18 +78,18 @@ _OBS_NAMES = [
 
 @wp.kernel
 def _compute_bipedal_obs_core(
-    obs: wp.array(dtype=wp.float32),
-    q_i: wp.array(dtype=wp.float32),
-    u_i: wp.array(dtype=wp.float32),
-    q_j: wp.array(dtype=wp.float32),
-    dq_j: wp.array(dtype=wp.float32),
-    command: wp.array(dtype=wp.float32),
-    phase: wp.array(dtype=wp.float32),
-    freq_2pi: wp.array(dtype=wp.float32),
-    offset_enc: wp.array(dtype=wp.float32),
-    joint_default: wp.array(dtype=wp.float32),
-    joint_range: wp.array(dtype=wp.float32),
-    obs_offsets: wp.array(dtype=wp.int32),
+    obs: wp.array[wp.float32],
+    q_i: wp.array[wp.float32],
+    u_i: wp.array[wp.float32],
+    q_j: wp.array[wp.float32],
+    dq_j: wp.array[wp.float32],
+    command: wp.array[wp.float32],
+    phase: wp.array[wp.float32],
+    freq_2pi: wp.array[wp.float32],
+    offset_enc: wp.array[wp.float32],
+    joint_default: wp.array[wp.float32],
+    joint_range: wp.array[wp.float32],
+    obs_offsets: wp.array[wp.int32],
     num_bodies: int,
     num_joint_coords: int,
     num_joint_dofs: int,
@@ -223,7 +218,7 @@ def _projected_yaw(q: wp.quat) -> float:
 
 
 @wp.func
-def _write_vec3(obs: wp.array(dtype=wp.float32), idx: int, v: wp.vec3):
+def _write_vec3(obs: wp.array[wp.float32], idx: int, v: wp.vec3):
     obs[idx + 0] = v[0]
     obs[idx + 1] = v[1]
     obs[idx + 2] = v[2]
@@ -262,18 +257,18 @@ _OBS_NAMES = [
 
 @wp.kernel
 def _compute_bipedal_obs_core(
-    obs: wp.array(dtype=wp.float32),
-    q_i: wp.array(dtype=wp.float32),
-    u_i: wp.array(dtype=wp.float32),
-    q_j: wp.array(dtype=wp.float32),
-    dq_j: wp.array(dtype=wp.float32),
-    command: wp.array(dtype=wp.float32),
-    phase: wp.array(dtype=wp.float32),
-    freq_2pi: wp.array(dtype=wp.float32),
-    offset_enc: wp.array(dtype=wp.float32),
-    joint_default: wp.array(dtype=wp.float32),
-    joint_range: wp.array(dtype=wp.float32),
-    obs_offsets: wp.array(dtype=wp.int32),
+    obs: wp.array[wp.float32],
+    q_i: wp.array[wp.float32],
+    u_i: wp.array[wp.float32],
+    q_j: wp.array[wp.float32],
+    dq_j: wp.array[wp.float32],
+    command: wp.array[wp.float32],
+    phase: wp.array[wp.float32],
+    freq_2pi: wp.array[wp.float32],
+    offset_enc: wp.array[wp.float32],
+    joint_default: wp.array[wp.float32],
+    joint_range: wp.array[wp.float32],
+    obs_offsets: wp.array[wp.int32],
     num_bodies: int,
     num_joint_coords: int,
     num_joint_dofs: int,
@@ -518,7 +513,17 @@ class DrlegsBaseObservation(ObservationBuilder):
         )
         self._body_sim = body_sim
         self._num_actions = body_sim.num_actuated
-        self._num_dofs = body_sim.num_joint_coords
+        # Exclude the floating-base root joint's coordinates, if present
+        # (e.g. a FREE joint contributes 7 pose coords); the root is
+        # already represented separately via root position/orientation
+        # observations.
+        root_dof_type = int(wp.to_torch(body_sim.sim.model.joints.dof_type)[0].item())
+        if root_dof_type in (JointDoFType.FREE, JointDoFType.SPHERICAL):
+            num_root_coords = int(wp.to_torch(body_sim.sim.model.joints.num_coords)[0].item())
+        else:
+            num_root_coords = 0
+        self._num_root_coords = num_root_coords
+        self._num_coords = body_sim.num_joint_coords - num_root_coords
         self._action_scale = action_scale
 
         # Action history buffers (actuated joints only).
@@ -535,14 +540,14 @@ class DrlegsBaseObservation(ObservationBuilder):
 
         # Pre-allocated observation buffer (eliminates torch.cat)
         self._obs_buffer = torch.zeros(
-            (body_sim.num_worlds, 3 + self._num_dofs + 2 * self._num_actions),
+            (body_sim.num_worlds, 3 + self._num_coords + 2 * self._num_actions),
             device=body_sim.torch_device,
             dtype=torch.float32,
         )
 
     @property
     def num_observations(self) -> int:
-        return 3 + self._num_dofs + self._num_actions + self._num_actions  # 63
+        return 3 + self._num_coords + self._num_actions + self._num_actions  # 63
 
     def compute(self, actions: torch.Tensor | None = None) -> torch.Tensor:
         if actions is not None:
@@ -550,9 +555,9 @@ class DrlegsBaseObservation(ObservationBuilder):
             self._action_history[:] = self._action_scale * actions
 
         root_pos = self._get_root_positions()
-        q_j = self._get_joint_positions()
+        q_j = self._get_joint_positions()[:, self._num_root_coords :]
 
-        d = self._num_dofs
+        d = self._num_coords
         a = self._num_actions
         self._obs_buffer[:, :3] = root_pos
         self._obs_buffer[:, 3 : 3 + d] = q_j

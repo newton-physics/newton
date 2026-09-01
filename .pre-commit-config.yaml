@@ -5,8 +5,9 @@ ci:
   autoupdate_branch: ""
   autoupdate_commit_msg: "[pre-commit.ci] pre-commit autoupdate"
   autoupdate_schedule: quarterly
-  # pre-commit.ci runs hooks without network access, but uv-lock needs to
-  # resolve hatchling for this dynamically-versioned project.
+  # pre-commit.ci has no network access, but uv-lock needs to resolve
+  # dependencies from remote indexes (PyPI, nvidia, pytorch).
+  # Lockfile freshness is checked by a separate CI workflow instead.
   skip:
     - uv-lock
   submodules: false
@@ -14,9 +15,23 @@ ci:
 # See https://pre-commit.com for more information
 # See https://pre-commit.com/hooks.html for more hooks
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-case-conflict
+      - id: check-illegal-windows-names
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-yaml
+      - id: debug-statements
+      - id: detect-private-key
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
-    rev: v0.14.10
+    rev: v0.15.20
     hooks:
       # Run the linter.
       - id: ruff
@@ -25,13 +40,21 @@ repos:
       - id: ruff-format
   - repo: https://github.com/astral-sh/uv-pre-commit
     # uv version.
-    rev: 0.9.21
+    rev: 0.11.26
     hooks:
       # Update the uv lockfile
       - id: uv-lock
   - repo: https://github.com/crate-ci/typos
-    rev: v1.42.0
+    rev: v1.48.0
     hooks:
       - id: typos
         args: []
         exclude: \.(js|css)$
+  - repo: local
+    hooks:
+      - id: check-warp-array-syntax
+        name: check warp array syntax
+        entry: python scripts/check_warp_array_syntax.py
+        language: python
+        types: [python]
+        exclude: ^(scripts/check_warp_array_syntax\.py)

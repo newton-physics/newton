@@ -1,19 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """IMU Sensor - measures accelerations and angular velocities at sensor sites."""
+
+import re
 
 import warp as wp
 
@@ -25,18 +15,19 @@ from ..utils.selection import match_labels
 
 @wp.kernel
 def compute_sensor_imu_kernel(
-    gravity: wp.array(dtype=wp.vec3),
-    body_world: wp.array(dtype=wp.int32),
-    body_com: wp.array(dtype=wp.vec3),
-    shape_body: wp.array(dtype=int),
-    shape_transform: wp.array(dtype=wp.transform),
-    sensor_sites: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_qdd: wp.array(dtype=wp.spatial_vector),
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    shape_body: wp.array[int],
+    shape_world: wp.array[wp.int32],
+    shape_transform: wp.array[wp.transform],
+    sensor_sites: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_qdd: wp.array[wp.spatial_vector],
     # output
-    accelerometer: wp.array(dtype=wp.vec3),
-    gyroscope: wp.array(dtype=wp.vec3),
+    accelerometer: wp.array[wp.vec3],
+    gyroscope: wp.array[wp.vec3],
 ):
     """Compute accelerations and angular velocities at sensor sites."""
     sensor_idx = wp.tid()
@@ -50,12 +41,14 @@ def compute_sensor_imu_kernel(
     site_transform = shape_transform[site_idx]
 
     if body_idx < 0:
-        accelerometer[sensor_idx] = wp.quat_rotate_inv(site_transform.q, -gravity[0])
+        world_idx = shape_world[site_idx]
+        world_g = gravity[world_idx]
+        accelerometer[sensor_idx] = wp.quat_rotate_inv(site_transform.q, -world_g)
         gyroscope[sensor_idx] = wp.vec3(0.0)
         return
 
     world_idx = body_world[body_idx]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     body_acc = body_qdd[body_idx]
 
@@ -117,16 +110,16 @@ class SensorIMU:
             gyro = imu.gyroscope.numpy()
     """
 
-    accelerometer: wp.array(dtype=wp.vec3)
+    accelerometer: wp.array[wp.vec3]
     """Linear acceleration readings [m/s²] in sensor frame, shape ``(n_sensors,)``."""
 
-    gyroscope: wp.array(dtype=wp.vec3)
+    gyroscope: wp.array[wp.vec3]
     """Angular velocity readings [rad/s] in sensor frame, shape ``(n_sensors,)``."""
 
     def __init__(
         self,
         model: Model,
-        sites: str | list[str] | list[int],
+        sites: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
         request_state_attributes: bool = True,
@@ -138,9 +131,11 @@ class SensorIMU:
 
         Args:
             model: The model to use.
-            sites: List of site indices, single pattern to match against site
-                labels, or list of patterns where any one matches.
-            verbose: If True, print details. If None, uses ``wp.config.verbose``.
+            sites: Glob pattern, list of glob patterns, compiled regular-expression
+                pattern to match against site labels, or list of site indices. Regular
+                expressions use full matching.
+            verbose: If True, print details. If False, suppress details. If None, print details when
+                ``wp.config.log_level`` is configured for debug logging.
             request_state_attributes: If True (default), transparently request the extended state attribute ``body_qdd`` from the model.
                 If False, ``model`` is not modified and the attribute must be requested elsewhere before calling ``model.state()``.
         Raises:
@@ -148,7 +143,7 @@ class SensorIMU:
         """
 
         self.model = model
-        self.verbose = verbose if verbose is not None else wp.config.verbose
+        self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
 
         original_sites = sites
         sites = match_labels(model.shape_label, sites)
@@ -199,6 +194,7 @@ class SensorIMU:
                 self.model.body_world,
                 self.model.body_com,
                 self.model.shape_body,
+                self.model.shape_world,
                 self.model.shape_transform,
                 self.sensor_sites_arr,
                 state.body_q,

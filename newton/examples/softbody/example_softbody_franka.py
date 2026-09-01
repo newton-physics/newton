@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Soft Body Franka
@@ -39,18 +27,20 @@ import newton.utils
 from newton import ModelBuilder, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
 
+DUCK_OPACITY = 0.55
+
 
 @wp.kernel
-def set_gripper_q(joint_q: wp.array2d(dtype=float), finger_pos: wp.array(dtype=float), idx0: int, idx1: int):
+def set_gripper_q(joint_q: wp.array2d[float], finger_pos: wp.array[float], idx0: int, idx1: int):
     joint_q[0, idx0] = finger_pos[0]
     joint_q[0, idx1] = finger_pos[0]
 
 
 @wp.kernel
 def compute_joint_qd(
-    target_q: wp.array(dtype=float),
-    current_q: wp.array(dtype=float),
-    out_qd: wp.array(dtype=float),
+    target_q: wp.array[float],
+    current_q: wp.array[float],
+    out_qd: wp.array[float],
     inv_frame_dt: float,
 ):
     i = wp.tid()
@@ -74,10 +64,10 @@ class Example:
         self.particle_self_contact_margin = 0.005
 
         self.soft_contact_ke = 2e6
-        self.soft_contact_kd = 1e-7
+        self.soft_contact_kd = 2e-1
         self.self_contact_friction = 0.5
 
-        self.scene = ModelBuilder(gravity=-9.81)
+        self.scene = ModelBuilder(gravity=(0.0, 0.0, -9.81))
 
         self.viewer = viewer
 
@@ -93,7 +83,7 @@ class Example:
         table_pos = wp.vec3(0.0, -0.5, 0.1)
         self.scene.add_shape_box(
             -1,
-            wp.transform(table_pos, wp.quat_identity()),
+            xform=wp.transform(table_pos, wp.quat_identity()),
             hx=table_hx,
             hy=table_hy,
             hz=table_hz,
@@ -103,7 +93,9 @@ class Example:
         duck_path = newton.utils.download_asset("manipulation_objects/rubber_duck")
         usd_stage = Usd.Stage.Open(str(duck_path / "model.usda"))
         prim = usd_stage.GetPrimAtPath("/root/Model/TetMesh")
-        tetmesh = newton.TetMesh.create_from_usd(prim)
+        # The duck authors no physics material; canonical-only reads avoid the
+        # legacy-default deprecation window.
+        tetmesh = newton.TetMesh.create_from_usd(prim, compat_namespaces=())
 
         # Duck USDA is in meters (metersPerUnit=1.0).
         # Table top is at z=0.2m. Duck center offset ~0.03m above table.
@@ -116,8 +108,9 @@ class Example:
             density=100.0,
             k_mu=1.0e6,
             k_lambda=1.0e6,
-            k_damp=1e-6,
+            k_damp=1e0,
             particle_radius=self.particle_radius,
+            opacity=DUCK_OPACITY,
         )
 
         self.scene.color()
@@ -172,8 +165,10 @@ class Example:
         self.viewer.set_camera(wp.vec3(-0.6, 0.6, 1.24), -42.0, -58.0)
 
         # gravity arrays for swapping during simulation
-        self.gravity_zero = wp.zeros(1, dtype=wp.vec3)
-        self.gravity_earth = wp.array(wp.vec3(0.0, 0.0, -9.81), dtype=wp.vec3)
+        self.gravity_zero = wp.zeros(self.model.gravity.shape[0], dtype=wp.vec3, device=self.model.device)
+        self.gravity_earth = wp.full(
+            self.model.gravity.shape[0], wp.vec3(0.0, 0.0, -9.81), dtype=wp.vec3, device=self.model.device
+        )
 
         # evaluate FK for initial state
         eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
@@ -238,12 +233,9 @@ class Example:
         self.ik_iters = 24
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def create_articulation(self, builder):
         asset_path = newton.utils.download_asset("franka_emika_panda")
@@ -409,6 +401,4 @@ if __name__ == "__main__":
     parser.set_defaults(num_frames=1000)
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

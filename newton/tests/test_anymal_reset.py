@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Tests that reset results in the same data and converge of solver is preserved."""
 
@@ -22,7 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.utils
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -44,6 +32,7 @@ class TestAnymalReset(unittest.TestCase):
         builder.default_shape_cfg.kd = 5.0e2
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
+        builder.default_shape_cfg.gap = 0.0
 
         asset_path = newton.utils.download_asset("anybotics_anymal_d")
         stage_path = str(asset_path / "usd" / "anymal_d.usda")
@@ -101,8 +90,8 @@ class TestAnymalReset(unittest.TestCase):
         self.simulate()
         self.save_initial_mjw_data()
 
-        self.use_cuda_graph = self.device.is_cuda and wp.is_mempool_enabled(self.device)
-        if self.use_cuda_graph:
+        self.use_graph = is_graph_capture_allocation_enabled(self.device)
+        if self.use_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -120,7 +109,7 @@ class TestAnymalReset(unittest.TestCase):
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        if self.use_cuda_graph:
+        if self.use_graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
@@ -243,7 +232,7 @@ class TestAnymalReset(unittest.TestCase):
         self.sim_time = 0.0
 
     def propagate_reset_state(self):
-        if self.use_cuda_graph and self.graph:
+        if self.use_graph and self.graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()

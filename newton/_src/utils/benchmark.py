@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import functools
 import itertools
@@ -55,7 +43,7 @@ class EventTracer:
     def __init__(self, enabled: bool = True):
         """
         Args:
-            enabled (bool): If True, elapsed times of annotated functions are measured.
+            enabled: If True, elapsed times of annotated functions are measured.
         """
         if enabled:
             self._STACK = {}
@@ -187,13 +175,20 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
     else:
         combinations = [()]
 
+    cache = None
+    has_cache = hasattr(benchmark_cls, "setup_cache")
+    if has_cache:
+        cache = benchmark_cls().setup_cache()
+        has_cache = cache is not None
+
     results = {}
     # For each parameter combination:
     for params in combinations:
+        call_params = (cache, *params) if has_cache else params
         # Create a fresh benchmark instance.
         instance = benchmark_cls()
         if hasattr(instance, "setup"):
-            instance.setup(*params)
+            instance.setup(*call_params)
         # Iterate over all attributes to find benchmark methods.
         for attr in dir(instance):
             if attr.startswith("time_") or attr.startswith("track_"):
@@ -201,22 +196,25 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
                 print(f"\n[Benchmark] Running {benchmark_cls.__name__}.{attr} with parameters {params}")
                 samples = []
                 if attr.startswith("time_"):
+                    # Warmup run (not measured).
+                    method(*call_params)
+                    wp.synchronize()
                     # Run timing benchmarks multiple times and measure elapsed time.
                     for _ in range(number):
                         start = time.perf_counter()
-                        method(*params)
+                        method(*call_params)
                         t = time.perf_counter() - start
                         samples.append(t)
                 elif attr.startswith("track_"):
                     # Run tracking benchmarks multiple times and record returned values.
                     for _ in range(number):
-                        val = method(*params)
+                        val = method(*call_params)
                         samples.append(val)
                 # Compute the average result.
                 avg = sum(samples) / len(samples)
                 results[(attr, params)] = avg
         if hasattr(instance, "teardown"):
-            instance.teardown(*params)
+            instance.teardown(*call_params)
 
     if print_results:
         print("\n=== Benchmark Results ===")

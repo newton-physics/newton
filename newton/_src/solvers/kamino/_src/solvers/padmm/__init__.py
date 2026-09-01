@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Proximal-ADMM Solver
@@ -23,7 +11,7 @@ et al in [2]. It solves the Lagrange dual of the constrained forward dynamics pr
 in constraint reactions (i.e. impulses) and post-event constraint-space velocities. The
 diagonal preconditioner strategy described in [3] is also implemented to improve
 numerical conditioning. This version also incorporates Nesterov-style gradient
-acceleration with adaptive restarts based on the work of O'Donoghue and Candes in [4].
+acceleration with the Fast ADMM restart rule of Goldstein et al. in [4].
 
 Notes
 ----
@@ -69,7 +57,7 @@ A typical example for using this module is:
     ...
 
     # Create a forward-dynamics DualProblem to be solved
-    dual = DualProblem(model, limits, contacts)
+    dual = DualProblem(model, limits, contacts, jacobians)
     dual.build(model, data, limits, contacts, jacobians)
 
     # Create a forward-dynamics PADMM solver

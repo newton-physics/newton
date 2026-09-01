@@ -1,17 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+
+from __future__ import annotations
 
 import warp as wp
 import warp.fem as fem
@@ -23,9 +13,9 @@ __all__ = ["sample_render_grains", "update_render_grains"]
 
 @wp.kernel
 def sample_grains(
-    particles: wp.array(dtype=wp.vec3),
-    radius: wp.array(dtype=float),
-    positions: wp.array2d(dtype=wp.vec3),
+    particles: wp.array[wp.vec3],
+    radius: wp.array[float],
+    positions: wp.array2d[wp.vec3],
 ):
     pid, k = wp.tid()
 
@@ -37,11 +27,11 @@ def sample_grains(
 
 @wp.kernel
 def transform_grains(
-    particle_pos_prev: wp.array(dtype=wp.vec3),
-    particle_transform_prev: wp.array(dtype=wp.mat33),
-    particle_pos: wp.array(dtype=wp.vec3),
-    particle_transform: wp.array(dtype=wp.mat33),
-    positions: wp.array2d(dtype=wp.vec3),
+    particle_pos_prev: wp.array[wp.vec3],
+    particle_transform_prev: wp.array[wp.mat33],
+    particle_pos: wp.array[wp.vec3],
+    particle_transform: wp.array[wp.mat33],
+    positions: wp.array2d[wp.vec3],
 ):
     pid, k = wp.tid()
 
@@ -58,13 +48,24 @@ def transform_grains(
     positions[pid, k] = p_pos_adv
 
 
+@wp.kernel
+def repeat_particle_environment(
+    particle_environment: wp.array[int],
+    grains_per_particle: int,
+    grain_environment: wp.array[int],
+):
+    grain_index = wp.tid()
+    particle_index = grain_index // grains_per_particle
+    grain_environment[grain_index] = particle_environment[particle_index]
+
+
 @fem.integrand
 def advect_grains(
     s: fem.Sample,
     domain: fem.Domain,
     grid_vel: fem.Field,
     dt: float,
-    positions: wp.array(dtype=wp.vec3),
+    positions: wp.array[wp.vec3],
 ):
     x = domain(s)
     vel = grid_vel(s)
@@ -75,10 +76,10 @@ def advect_grains(
 @wp.kernel
 def advect_grains_from_particles(
     dt: float,
-    particle_pos_prev: wp.array(dtype=wp.vec3),
-    particle_pos: wp.array(dtype=wp.vec3),
-    particle_vel_grad: wp.array(dtype=wp.mat33),
-    positions: wp.array2d(dtype=wp.vec3),
+    particle_pos_prev: wp.array[wp.vec3],
+    particle_pos: wp.array[wp.vec3],
+    particle_vel_grad: wp.array[wp.mat33],
+    positions: wp.array2d[wp.vec3],
 ):
     pid, k = wp.tid()
 
@@ -95,10 +96,10 @@ def advect_grains_from_particles(
 
 @wp.kernel
 def project_grains(
-    radius: wp.array(dtype=float),
-    particle_pos: wp.array(dtype=wp.vec3),
-    particle_frames: wp.array(dtype=wp.mat33),
-    positions: wp.array2d(dtype=wp.vec3),
+    radius: wp.array[float],
+    particle_pos: wp.array[wp.vec3],
+    particle_frames: wp.array[wp.mat33],
+    positions: wp.array2d[wp.vec3],
 ):
     pid, k = wp.tid()
 
@@ -106,13 +107,6 @@ def project_grains(
 
     p_pos = particle_pos[pid]
     p_frame = particle_frames[pid]
-
-    # keep within source particle
-    # pos_loc = wp.inverse(p_frame) @ (pos_adv - p_pos)
-    # dist = wp.max(wp.abs(pos_loc))
-    # if dist > radius:
-    #     pos_loc = pos_loc / dist * radius
-    # p_pos_adv = p_frame @ pos_loc + p_pos
 
     p_frame = (radius[pid] * radius[pid]) * p_frame * wp.transpose(p_frame)
     pos_loc = pos_adv - p_pos
@@ -163,6 +157,9 @@ def update_render_grains(
     grains: wp.array,
     particle_radius: wp.array,
     dt: float,
+    *,
+    particle_environment: wp.array[int] | None = None,
+    temporary_store: fem.TemporaryStore | None = None,
 ):
     """Advect grain samples with the grid velocity and keep them inside the deformed particle.
 
@@ -182,48 +179,76 @@ def update_render_grains(
          grains: 2D array of grain positions per particle to be updated in place.
          particle_radius: Per-particle radius used for projection.
          dt: Time step duration.
+         particle_environment: Per-particle world IDs for isolated multi-world advection.
+         temporary_store: Temporary storage used by grain binning and interpolation.
     """
 
-    if state.velocity_field is None:
+    if getattr(state, "velocity_field", None) is None or grains.size == 0:
         return
+
     grain_pos = grains.flatten()
     domain = fem.Cells(state.velocity_field.space.geometry)
-    grain_pic = fem.PicQuadrature(domain, positions=grain_pos)
+    grain_environment = None
+    try:
+        if particle_environment is not None:
+            grain_environment = fem.borrow_temporary(
+                temporary_store,
+                shape=grain_pos.shape,
+                dtype=int,
+                device=grains.device,
+            )
+            wp.launch(
+                repeat_particle_environment,
+                dim=grain_pos.shape,
+                inputs=[particle_environment, grains.shape[1], grain_environment],
+                device=grains.device,
+            )
 
-    wp.launch(
-        advect_grains_from_particles,
-        dim=grains.shape,
-        inputs=[
-            dt,
-            state_prev.particle_q,
-            state.particle_q,
-            state.mpm.particle_qd_grad,
-            grains,
-        ],
-        device=grains.device,
-    )
+        grain_pic = fem.PicQuadrature(
+            domain,
+            positions=grain_pos,
+            env_indices=grain_environment,
+            temporary_store=temporary_store,
+        )
 
-    fem.interpolate(
-        advect_grains,
-        quadrature=grain_pic,
-        values={
-            "dt": dt,
-            "positions": grain_pos,
-        },
-        fields={
-            "grid_vel": state.velocity_field,
-        },
-        device=grains.device,
-    )
+        wp.launch(
+            advect_grains_from_particles,
+            dim=grains.shape,
+            inputs=[
+                dt,
+                state_prev.particle_q,
+                state.particle_q,
+                state.mpm.particle_qd_grad,
+                grains,
+            ],
+            device=grains.device,
+        )
 
-    wp.launch(
-        project_grains,
-        dim=grains.shape,
-        inputs=[
-            particle_radius,
-            state.particle_q,
-            state.mpm.particle_transform,
-            grains,
-        ],
-        device=grains.device,
-    )
+        fem.interpolate(
+            advect_grains,
+            at=grain_pic,
+            values={
+                "dt": dt,
+                "positions": grain_pos,
+            },
+            fields={
+                "grid_vel": state.velocity_field,
+            },
+            device=grains.device,
+            temporary_store=temporary_store,
+        )
+
+        wp.launch(
+            project_grains,
+            dim=grains.shape,
+            inputs=[
+                particle_radius,
+                state.particle_q,
+                state.mpm.particle_transform,
+                grains,
+            ],
+            device=grains.device,
+        )
+    finally:
+        if grain_environment is not None:
+            grain_environment.release()

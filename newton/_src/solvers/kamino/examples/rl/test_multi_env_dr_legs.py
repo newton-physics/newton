@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Quick smoke test: DR Legs with many parallel environments
@@ -42,6 +30,7 @@ wp.set_module_options({"enable_backward": False})
 def make_settings(sim_dt: float = 0.004) -> Simulator.Config:
     settings = Simulator.Config()
     settings.dt = sim_dt
+    settings.solver.use_collision_detector = True
     settings.solver.integrator = "moreau"
     settings.solver.constraints.alpha = 0.1
     settings.solver.padmm.primal_tolerance = 1e-6
@@ -75,8 +64,6 @@ def run_test(num_worlds: int, num_steps: int, device):
     builder.max_contacts_per_pair = 8  # Cap contact budget to avoid Warp tile API shared memory bug
     offset = wp.transformf(0.0, 0.0, 0.265, 0.0, 0.0, 0.0, 1.0)
     set_uniform_body_pose_offset(builder=builder, offset=offset)
-    for w in range(builder.num_worlds):
-        builder.gravity[w].enabled = True
 
     # Create simulator
     msg.info("Creating simulator...")

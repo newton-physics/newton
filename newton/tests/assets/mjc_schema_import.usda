@@ -1,0 +1,137 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Articulation" (
+        apiSchemas = ["PhysicsArticulationRootAPI"]
+    )
+    {
+        def Cube "Root" (
+            apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+
+        def Cube "Link1" (
+            apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+
+        def Cube "Link2" (
+            apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+
+        def Cube "Link3" (
+            apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+
+        def PhysicsFixedJoint "RootToWorld"
+        {
+            rel physics:body0 = </World/Articulation/Root>
+            point3f physics:localPos0 = (0, 0, 0)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+
+        def PhysicsRevoluteJoint "Joint1" (
+            apiSchemas = ["MjcJointAPI"]
+        )
+        {
+            uniform double[] mjc:solreflimit = [0.03, 0.8]
+            uniform token physics:axis = "Z"
+            rel physics:body0 = </World/Articulation/Root>
+            rel physics:body1 = </World/Articulation/Link1>
+            point3f physics:localPos0 = (0, 0, 0)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+
+        def PhysicsRevoluteJoint "Joint2" (
+            apiSchemas = ["MjcEqualityJointAPI", "MjcJointAPI"]
+        )
+        {
+            uniform double mjc:coef0 = 0.5
+            uniform double mjc:coef1 = 1.5
+            rel mjc:target = </World/Articulation/Joint1>
+            uniform token physics:axis = "Z"
+            rel physics:body0 = </World/Articulation/Link1>
+            rel physics:body1 = </World/Articulation/Link2>
+            point3f physics:localPos0 = (0, 0, 0)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+
+        def PhysicsRevoluteJoint "Joint3"
+        {
+            uniform token physics:axis = "Z"
+            rel physics:body0 = </World/Articulation/Link2>
+            rel physics:body1 = </World/Articulation/Link3>
+            point3f physics:localPos0 = (0, 0, 0)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+
+        def PhysicsSphericalJoint "Connect" (
+            apiSchemas = ["MjcEqualityConnectAPI"]
+        )
+        {
+            rel physics:body0 = </World/Articulation/Link1>
+            rel physics:body1 = </World/Articulation/Link2>
+            bool physics:excludeFromArticulation = true
+            point3f physics:localPos0 = (0.1, 0.2, 0.3)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+
+        def PhysicsFixedJoint "Weld" (
+            apiSchemas = ["MjcEqualityWeldAPI"]
+        )
+        {
+            uniform float mjc:torqueScale = 2.5
+            rel physics:body0 = </World/Articulation/Root>
+            rel physics:body1 = </World/Articulation/Link2>
+            bool physics:excludeFromArticulation = true
+            point3f physics:localPos0 = (0, 0, 0)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+
+        def MjcActuator "Actuator"
+        {
+            uniform token mjc:biasType = "affine"
+            uniform double[] mjc:biasPrm = [0, -10, -1, 0, 0, 0, 0, 0, 0, 0]
+            uniform token mjc:dynType = "none"
+            uniform token mjc:gainType = "fixed"
+            uniform double[] mjc:gainPrm = [10, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform double[] mjc:gear = [1, 0, 0, 0, 0, 0]
+            rel mjc:target = </World/Articulation/Joint1>
+        }
+    }
+}
+
+def PhysicsScene "PhysicsScene"
+{
+    vector3f physics:gravityDirection = (0, 0, -1)
+    float physics:gravityMagnitude = 9.81
+}

@@ -5,24 +5,25 @@ name: GPU Unit Tests on AWS EC2 (Reusable)
 #   - pr_target_aws_gpu_tests.yml (for pull requests)
 #   - merge_queue_aws_gpu.yml (for merge groups)
 #   - push_aws_gpu.yml (for pushes to main/release branches)
-#   - scheduled_weekly_gpu_tests.yml (for weekly multi-GPU tests)
+#   - scheduled_nightly.yml (for nightly multi-GPU tests)
 
 # Workflow configuration variables
 env:
   AWS_REGION: us-east-2
+  # Prefer the validated US capacity order before Asia-Pacific fallback.
+  AWS_REGION_CANDIDATES: ${{ inputs.region-candidates || 'us-east-1 us-east-2 us-west-2 ap-northeast-1 ap-northeast-2' }}
   AWS_INSTANCE_TYPE: ${{ inputs.instance-type || 'g7e.2xlarge' }}
   AWS_VOLUME_SIZE: ${{ inputs.volume-size || '92' }}
   AWS_VOLUME_TYPE: gp3
-  AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
   AWS_ROLE_DURATION: 7200
-  HOME: /actions-runner
+  AWS_RUNNER_RESOURCE_TAG: newton-github-runner
 
 on:
   workflow_call:
     inputs:
       ref:
-        description: 'Git ref to checkout'
+        description: 'Commit SHA to checkout and attribute coverage uploads to'
         required: false
         type: string
         default: ''
@@ -36,12 +37,40 @@ on:
         required: false
         type: string
         default: '92'
+      region-candidates:
+        description: 'Space-separated AWS regions to try'
+        required: false
+        type: string
+        default: ''
+      trigger-category:
+        description: 'Normalized workflow trigger category'
+        required: true
+        type: string
     secrets:
       GH_PERSONAL_ACCESS_TOKEN:
         required: true
       CODECOV_TOKEN:
         required: true
   workflow_dispatch:
+    inputs:
+      instance-type:
+        description: 'EC2 instance type'
+        required: false
+        type: string
+        default: 'g7e.2xlarge'
+      region-candidates:
+        description: 'Space-separated AWS regions to try'
+        required: false
+        type: string
+        default: ''
+      trigger-category:
+        description: 'Normalized workflow trigger category'
+        required: false
+        type: choice
+        options:
+          - manual
+          - scheduled-nightly
+        default: 'manual'
 
 jobs:
   start-runner:
@@ -54,56 +83,57 @@ jobs:
     outputs:
       label: ${{ steps.start-ec2-runner.outputs.label }}
       ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
+      region: ${{ steps.start-ec2-runner.outputs.region }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
         with:
           egress-policy: audit
 
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          persist-credentials: false
+
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708  # v5.1.1
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
-      - name: Get the latest AWS Deep Learning Base GPU AMI
-        run: |
-          echo "Finding the latest AWS Deep Learning Base GPU AMI..."
-          LATEST_AMI_ID=$(aws ec2 describe-images --region ${{ env.AWS_REGION }} \
-            --owners amazon \
-            --filters 'Name=name,Values=Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) ????????' 'Name=state,Values=available' \
-            --query 'reverse(sort_by(Images, &CreationDate))[:1].ImageId' \
-            --output text)
-          if [[ -z "$LATEST_AMI_ID" ]]; then
-            echo "❌ No AMI ID found. Exiting."
-            exit 1
-          fi
-          echo "Latest AMI ID found: $LATEST_AMI_ID"
-          echo "LATEST_AMI_ID=$LATEST_AMI_ID" >> "$GITHUB_ENV"
+
+      - name: Discover AWS runner networking
+        id: discover-runner-config
+        run: python scripts/ci/discover_aws_runner_config.py
+
       - name: Start EC2 runner
         id: start-ec2-runner
-        uses: machulav/ec2-github-runner@a6dbcefcf8a31a861f5e078bb153ed332130c512  # v2.4.3
+        uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
         with:
           mode: start
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
           ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
           ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
-          availability-zones-config: >
-            [
-              {"imageId": "${{ env.LATEST_AMI_ID }}", "subnetId": "subnet-051b9d2e71acf8047", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"},
-              {"imageId": "${{ env.LATEST_AMI_ID }}", "subnetId": "subnet-0c98bd06abe8ee5eb", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"}
-            ]
+          availability-zones-config: ${{ steps.discover-runner-config.outputs.availability-zones-config }}
           pre-runner-script: |
             if [ -d /opt/dlami/nvme ]; then
               mkdir -p /opt/dlami/nvme/actions-runner/_work
+              mkdir -p /opt/dlami/nvme/actions-runner/.local
+              mkdir -p /opt/dlami/nvme/actions-runner/.cache
               ln -s /opt/dlami/nvme/actions-runner/_work /actions-runner/_work
+              ln -s /opt/dlami/nvme/actions-runner/.local /actions-runner/.local
+              ln -s /opt/dlami/nvme/actions-runner/.cache /actions-runner/.cache
             fi
           aws-resource-tags: >
             [
               {"Key": "Name", "Value": "ec2-github-runner"},
               {"Key": "created-by", "Value": "github-actions-newton-role"},
-              {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"}
+              {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"},
+              {"Key": "Newton-Trigger", "Value": ${{ toJSON(inputs['trigger-category']) }}},
+              {"Key": "Newton-Workload", "Value": "gpu-unit-tests"},
+              {"Key": "GitHub-Run-ID", "Value": "${{ github.run_id }}"},
+              {"Key": "GitHub-Run-Attempt", "Value": "${{ github.run_attempt }}"}
             ]
 
   gpu-unit-tests:
@@ -113,26 +143,41 @@ jobs:
     permissions:
       contents: read
     env:
+      HOME: /actions-runner
       PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867  # v7.1.6
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.9.0"
+          version: "0.11.26"
 
       - name: Set up Python
         run: uv python install
+
+      - name: Restore Warp kernel cache
+        if: github.event_name != 'merge_group'
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: /actions-runner/.cache/warp
+          key: warp-kernels-gpu-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          restore-keys: |
+            warp-kernels-gpu-
 
       - name: Check disk space
         run: df -h
 
       - name: Run Tests
-        run: uv run --extra dev --extra torch-cu13 -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        env:
+          PYTHONFAULTHANDLER: "1"
+          # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
+          COVERAGE_CORE: "sysmon"
+        run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
       - name: Check disk space (post-test)
         if: always()
@@ -140,19 +185,19 @@ jobs:
 
       - name: Test Summary
         if: ${{ !cancelled() }}
-        uses: test-summary/action@31493c76ec9e7aa675f1585d3ed6f1da69269a86  # v2.4
+        uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
           paths: "rspec.xml"
           show: "fail"
 
-      - name: Upload coverage reports to Codecov
+      - name: Upload coverage artifact
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de  # v5.5.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          env_vars: AWS_INSTANCE_TYPE
-          files: ./coverage.xml
-          flags: unittests
-          token: ${{ secrets.CODECOV_TOKEN }}
+          name: coverage-gpu
+          path: coverage.xml
+          retention-days: 1
+          overwrite: true
 
       - name: Re-run instructions
         if: failure()
@@ -192,6 +237,58 @@ jobs:
 
           EOF
 
+  codecov-upload:
+    name: Upload coverage to Codecov
+    needs: gpu-unit-tests
+    if: ${{ !cancelled() && needs.gpu-unit-tests.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    # Same-run artifact downloads use the runtime token; contents access is
+    # only used to build Codecov's source network for coverage path mapping.
+    permissions:
+      contents: read
+    steps:
+      # *.blob.core.windows.net is intentionally broad: GitHub artifact storage
+      # uses rotating productionresultssaN hosts and harden-runner only supports
+      # leading full-label wildcards.
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            *.blob.core.windows.net:443
+            cli.codecov.io:443
+            github.com:443
+            ingest.codecov.io:443
+            keybase.io:443
+            o26192.ingest.us.sentry.io:443
+            results-receiver.actions.githubusercontent.com:443
+            storage.googleapis.com:443
+      - name: Checkout source for coverage path mapping
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            newton
+      - name: Download coverage artifact
+        id: download-coverage
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: coverage-gpu
+      - name: Upload coverage reports to Codecov
+        if: ${{ steps.download-coverage.outcome == 'success' }}
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        with:
+          disable_search: true
+          env_vars: AWS_INSTANCE_TYPE
+          files: ./coverage.xml
+          flags: unittests
+          plugins: noop
+          override_commit: ${{ inputs.ref || github.sha }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   stop-runner:
     name: Stop self-hosted EC2 runner
     runs-on: ubuntu-latest
@@ -201,22 +298,30 @@ jobs:
     needs:
       - start-runner
       - gpu-unit-tests
-    if: always() && github.repository == 'newton-physics/newton'
+    if: always() && needs.start-runner.result != 'skipped' && github.repository == 'newton-physics/newton'
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
         with:
           egress-policy: audit
 
+      - name: Validate launch region
+        if: ${{ needs.start-runner.outputs.ec2-instance-id != '' && needs.start-runner.outputs.region == '' }}
+        run: |
+          echo "::error::EC2 instance ID exists but the launch region output is empty."
+          exit 1
+
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708  # v5.1.1
+        if: ${{ needs.start-runner.outputs.ec2-instance-id != '' }}
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
         with:
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ needs.start-runner.outputs.region }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
 
       - name: Stop EC2 runner
-        uses: machulav/ec2-github-runner@a6dbcefcf8a31a861f5e078bb153ed332130c512  # v2.4.3
+        if: ${{ needs.start-runner.outputs.ec2-instance-id != '' }}
+        uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
         with:
           mode: stop
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}

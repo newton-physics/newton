@@ -1,22 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Tests for GJK distance computation using the new simplex solver."""
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 from newton import GeoType
@@ -24,6 +13,23 @@ from newton._src.geometry.simplex_solver import create_solve_closest_distance
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
 
 MAX_ITERATIONS = 30
+
+
+@wp.kernel
+def _support_map_kernel(scale: wp.vec3, direction: wp.vec3, support_out: wp.array[wp.vec3]):
+    """Evaluate one cylinder support point."""
+    shape = GenericShapeData()
+    shape.shape_type = GeoType.CYLINDER
+    shape.scale = scale
+    shape.auxiliary = wp.vec3(0.0)
+    support_out[0] = support_map(shape, direction, SupportMapDataProvider())
+
+
+def _cylinder_support(scale, direction):
+    """Return a cylinder support point for a local direction."""
+    support_out = wp.zeros(1, dtype=wp.vec3)
+    wp.launch(_support_map_kernel, dim=1, inputs=[wp.vec3(*scale), wp.vec3(*direction)], outputs=[support_out])
+    return support_out.numpy()[0]
 
 
 @wp.kernel
@@ -37,10 +43,10 @@ def _gjk_kernel(
     pos_b: wp.vec3,
     quat_b: wp.quat,
     # Outputs:
-    collision_out: wp.array(dtype=int),
-    dist_out: wp.array(dtype=float),
-    point_out: wp.array(dtype=wp.vec3),
-    normal_out: wp.array(dtype=wp.vec3),
+    collision_out: wp.array[int],
+    dist_out: wp.array[float],
+    point_out: wp.array[wp.vec3],
+    normal_out: wp.array[wp.vec3],
 ):
     """Kernel to compute GJK distance between two shapes."""
     # Create shape data for both geometries
@@ -64,7 +70,7 @@ def _gjk_kernel(
         quat_b,
         pos_a,
         pos_b,
-        0.0,  # sum_of_contact_offsets
+        0.0,  # combined_margin
         data_provider,
         MAX_ITERATIONS,
         1e-6,  # COLLIDE_EPSILON
@@ -118,6 +124,38 @@ def _geom_dist(
 
 class TestGJK(unittest.TestCase):
     """Tests for GJK distance computation using the new simplex solver."""
+
+    def test_cylinder_barrel_support(self):
+        """Verify cylinder support follows the symmetric circular barrel profile."""
+        radius = 0.5
+        half_height = 1.0
+        barrel_radius = 2.0
+        equatorial_radius = radius + barrel_radius - np.sqrt(barrel_radius**2 - half_height**2)
+
+        np.testing.assert_allclose(
+            _cylinder_support((radius, half_height, 0.0), (1.0, 0.0, 0.0)),
+            (radius, 0.0, 0.0),
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            _cylinder_support((radius, half_height, barrel_radius), (1.0, 0.0, 0.0)),
+            (equatorial_radius, 0.0, 0.0),
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            _cylinder_support((radius, half_height, barrel_radius), (0.0, 0.0, 1.0)),
+            (radius, 0.0, half_height),
+            atol=1.0e-6,
+        )
+
+        direction = np.array([1.0, 0.0, 0.25])
+        support_z = barrel_radius * direction[2] / np.linalg.norm(direction)
+        support_radius = radius - np.sqrt(barrel_radius**2 - half_height**2) + np.sqrt(barrel_radius**2 - support_z**2)
+        np.testing.assert_allclose(
+            _cylinder_support((radius, half_height, barrel_radius), direction),
+            (support_radius, 0.0, support_z),
+            atol=1.0e-6,
+        )
 
     def test_spheres_distance(self):
         """Test distance between two separated spheres."""

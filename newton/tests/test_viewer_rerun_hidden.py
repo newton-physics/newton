@@ -1,23 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
+import inspect
 import unittest
 import warnings
 from unittest.mock import Mock, patch
 
 import numpy as np
+import warp as wp
 
 # ruff: noqa: PLC0415
 
@@ -35,7 +25,23 @@ class TestViewerRerunHidden(unittest.TestCase):
         self.mock_rr.save = Mock()
         self.mock_rr.log = Mock()
         self.mock_rr.Clear = Mock(return_value=Mock())
+        mesh3d_params = [
+            "vertex_positions",
+            "triangle_indices",
+            "vertex_normals",
+            "vertex_colors",
+            "vertex_texcoords",
+            "albedo_texture",
+            "albedo_texture_buffer",
+            "albedo_texture_format",
+            "albedo_factor",
+            "class_ids",
+        ]
+        mesh3d_signature = inspect.Signature(
+            [inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, default=None) for name in mesh3d_params]
+        )
         self.mock_rr.Mesh3D = Mock(return_value=Mock())
+        self.mock_rr.Mesh3D.__signature__ = mesh3d_signature
         self.mock_rr.InstancePoses3D = Mock(return_value=Mock())
 
         self.mock_rrb = Mock()
@@ -55,6 +61,21 @@ class TestViewerRerunHidden(unittest.TestCase):
                         viewer = ViewerRerun(serve_web_viewer=False)
 
         return viewer
+
+    def test_constructor_filter_does_not_retry_failures(self):
+        """Propagate constructor failures without retrying unsupported arguments."""
+        from newton._src.viewer.viewer_rerun import ViewerRerun
+
+        calls = []
+
+        def constructor(*, supported=None):
+            calls.append(supported)
+            raise RuntimeError("constructor failed")
+
+        with self.assertRaisesRegex(RuntimeError, "constructor failed"):
+            ViewerRerun._call_rr_constructor(constructor, supported=1, ignored=2)
+
+        self.assertEqual(calls, [1])
 
     def _make_mock_wp_array(self, data):
         """Create a mock warp array that behaves enough for ViewerRerun."""
@@ -79,6 +100,36 @@ class TestViewerRerunHidden(unittest.TestCase):
 
         self.assertIn("hidden_mesh", viewer._meshes)
         self.mock_rr.log.assert_not_called()
+
+    def test_log_mesh_hidden_uses_layer_namespace(self):
+        """Layer-qualified hidden mesh templates should not collide across layers."""
+        viewer = self._create_viewer()
+        viewer.activate("solverA")
+
+        points = self._make_mock_wp_array([[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+        indices = self._make_mock_wp_array([0, 1, 2])
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("hidden_mesh", points, indices, hidden=True)
+
+        self.assertIn("/layers/solverA/hidden_mesh", viewer._meshes)
+        self.mock_rr.log.assert_not_called()
+
+    def test_log_mesh_hidden_clears_previously_visible_entity(self):
+        """Clear a mesh entity when a visible mesh becomes hidden."""
+        viewer = self._create_viewer()
+
+        points = wp.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("mesh", points, indices)
+            self.mock_rr.log.reset_mock()
+            self.mock_rr.Clear.reset_mock()
+            viewer.log_mesh("mesh", points, indices, hidden=True)
+
+        self.mock_rr.Clear.assert_called_once_with(recursive=False)
+        self.mock_rr.log.assert_called_once_with("mesh", self.mock_rr.Clear.return_value)
 
     def test_log_mesh_hidden_preserves_uvs_and_texture(self):
         """Hidden mesh templates should retain shading data for later instancing."""
@@ -108,6 +159,111 @@ class TestViewerRerunHidden(unittest.TestCase):
         np.testing.assert_allclose(mesh_data["uvs"][:, 1], np.array([0.8, 0.6, 0.4], dtype=np.float32))
         self.mock_rr.log.assert_not_called()
 
+    def test_log_mesh_opacity_uses_albedo_factor_alpha(self):
+        """Rerun uses albedo_factor alpha for mesh transparency."""
+        viewer = self._create_viewer()
+
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        normals = wp.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=wp.vec3)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("transparent_mesh", points, indices, normals=normals, opacity=0.5, color=(0.2, 0.4, 0.6))
+
+        mesh_kwargs = self.mock_rr.Mesh3D.call_args.kwargs
+        self.assertEqual(mesh_kwargs["albedo_factor"], (255, 255, 255, 128))
+        self.assertEqual(mesh_kwargs["vertex_colors"].shape, (3, 3))
+        np.testing.assert_array_equal(mesh_kwargs["vertex_colors"][0], np.array([51, 102, 153], dtype=np.uint8))
+
+    def test_log_instances_opacity_uses_albedo_factor_alpha(self):
+        """Instanced Rerun meshes bake supported batch opacity into albedo_factor."""
+        viewer = self._create_viewer()
+
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        normals = wp.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=wp.vec3)
+        xforms = wp.array([wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0]], dtype=wp.vec3)
+        opacities = wp.array([0.25], dtype=wp.float32)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("transparent_template", points, indices, normals=normals, hidden=True)
+            self.mock_rr.Mesh3D.reset_mock()
+            viewer.log_instances(
+                "transparent_instances",
+                "transparent_template",
+                xforms,
+                scales,
+                colors=None,
+                materials=None,
+                opacities=opacities,
+            )
+
+        mesh_kwargs = self.mock_rr.Mesh3D.call_args.kwargs
+        self.assertEqual(mesh_kwargs["albedo_factor"], (255, 255, 255, 64))
+        self.assertEqual(mesh_kwargs["vertex_colors"].shape, (3, 3))
+
+    def test_opacity_only_instance_update_preserves_previous_color(self):
+        """Preserve cached color when only instance opacity changes."""
+        viewer = self._create_viewer()
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        normals = wp.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=wp.vec3)
+        xforms = wp.array([wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0]], dtype=wp.vec3)
+        colors = wp.array([[0.2, 0.4, 0.6]], dtype=wp.vec3)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("template", points, indices, normals=normals, hidden=True)
+            viewer.log_instances(
+                "instances",
+                "template",
+                xforms,
+                scales,
+                colors=colors,
+                materials=None,
+                opacities=wp.array([0.5], dtype=wp.float32),
+            )
+            previous_colors = self.mock_rr.Mesh3D.call_args.kwargs["vertex_colors"].copy()
+            self.mock_rr.Mesh3D.reset_mock()
+
+            viewer.log_instances(
+                "instances",
+                "template",
+                xforms,
+                scales,
+                colors=None,
+                materials=None,
+                opacities=wp.array([0.25], dtype=wp.float32),
+            )
+
+        mesh_kwargs = self.mock_rr.Mesh3D.call_args.kwargs
+        np.testing.assert_array_equal(mesh_kwargs["vertex_colors"], previous_colors)
+        self.assertEqual(mesh_kwargs["albedo_factor"], (255, 255, 255, 64))
+
+    def test_varying_instance_opacity_warns_about_uniform_fallback(self):
+        """Warn when Rerun can only apply the first batch opacity."""
+        viewer = self._create_viewer()
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        xforms = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], dtype=wp.vec3)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("template", points, indices, hidden=True)
+            with self.assertWarnsRegex(UserWarning, "first opacity"):
+                viewer.log_instances(
+                    "instances",
+                    "template",
+                    xforms,
+                    scales,
+                    colors=None,
+                    materials=None,
+                    opacities=wp.array([0.25, 0.75], dtype=wp.float32),
+                )
+
+        self.assertEqual(self.mock_rr.Mesh3D.call_args.kwargs["albedo_factor"], (255, 255, 255, 64))
+
     def test_log_instances_hidden_clears_entity(self):
         """log_instances(hidden=True) should clear a previously visible entity."""
         viewer = self._create_viewer()
@@ -133,6 +289,53 @@ class TestViewerRerunHidden(unittest.TestCase):
         # Verify rr.Clear was constructed and logged
         self.mock_rr.Clear.assert_called_once_with(recursive=False)
         self.mock_rr.log.assert_called_once_with("my_instance", self.mock_rr.Clear.return_value)
+
+    def test_log_instances_hidden_clears_layer_entity(self):
+        """Hidden instance updates should clear the active layer's entity path."""
+        viewer = self._create_viewer()
+        viewer.activate("solverA")
+
+        viewer._meshes["/layers/solverA/my_mesh"] = {
+            "points": np.array([[0, 0, 0]], dtype=np.float32),
+            "indices": np.array([[0, 0, 0]], dtype=np.uint32),
+            "normals": np.array([[0, 0, 1]], dtype=np.float32),
+            "uvs": None,
+            "texture_image": None,
+            "texture_buffer": None,
+            "texture_format": None,
+        }
+        viewer._instances["/layers/solverA/my_instance"] = Mock()
+
+        xforms = self._make_mock_wp_array([[0, 0, 0, 0, 0, 0, 1]])
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_instances(
+                "my_instance", "my_mesh", xforms, scales=None, colors=None, materials=None, hidden=True
+            )
+
+        self.mock_rr.Clear.assert_called_once_with(recursive=False)
+        self.mock_rr.log.assert_called_once_with("/layers/solverA/my_instance", self.mock_rr.Clear.return_value)
+
+    def test_remove_layer_clears_rerun_layer_subtree(self):
+        """Removing a layer should clear its entity subtree from the Rerun stream."""
+        viewer = self._create_viewer()
+        viewer.activate("solverA")
+        viewer._meshes["/layers/solverA/my_mesh"] = Mock()
+        viewer._instances["/layers/solverA/my_instance"] = Mock()
+        viewer.activate("solverB")
+        viewer._meshes["/layers/solverB/my_mesh"] = Mock()
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            self.mock_rr.log.reset_mock()
+            self.mock_rr.Clear.reset_mock()
+
+            viewer.remove_layer("solverA")
+
+        self.mock_rr.Clear.assert_called_once_with(recursive=True)
+        self.mock_rr.log.assert_called_once_with("/layers/solverA", self.mock_rr.Clear.return_value)
+        self.assertNotIn("/layers/solverA/my_mesh", viewer._meshes)
+        self.assertNotIn("/layers/solverA/my_instance", viewer._instances)
+        self.assertIn("/layers/solverB/my_mesh", viewer._meshes)
 
     def test_log_instances_hidden_noop_when_not_created(self):
         """log_instances(hidden=True) for a never-visible entity should not crash or log."""

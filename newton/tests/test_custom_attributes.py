@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """
 Custom attributes tests for ModelBuilder kwargs functionality.
@@ -910,7 +898,7 @@ class TestCustomAttributes(unittest.TestCase):
         )
         sub_builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="shape_color",
+                name="custom_shape_color",
                 frequency=AttributeFrequency.SHAPE,
                 dtype=wp.vec3,
                 assignment=AttributeAssignment.MODEL,
@@ -930,7 +918,7 @@ class TestCustomAttributes(unittest.TestCase):
             mass=1.0,
             custom_attributes={"robot_id": 100, "temperature": 37.5},
         )
-        sub_builder.add_shape_sphere(body1, radius=0.1, custom_attributes={"shape_color": [1.0, 0.0, 0.0]})
+        sub_builder.add_shape_sphere(body1, radius=0.1, custom_attributes={"custom_shape_color": [1.0, 0.0, 0.0]})
 
         body2 = sub_builder.add_link(
             mass=0.5,
@@ -941,7 +929,7 @@ class TestCustomAttributes(unittest.TestCase):
             hx=0.05,
             hy=0.05,
             hz=0.05,
-            custom_attributes={"shape_color": [0.0, 1.0, 0.0]},
+            custom_attributes={"custom_shape_color": [0.0, 1.0, 0.0]},
         )
 
         sub_joint = sub_builder.add_joint_revolute(
@@ -973,14 +961,14 @@ class TestCustomAttributes(unittest.TestCase):
         # Verify custom attributes were merged
         self.assertIn("robot_id", main_builder.custom_attributes)
         self.assertIn("temperature", main_builder.custom_attributes)
-        self.assertIn("shape_color", main_builder.custom_attributes)
+        self.assertIn("custom_shape_color", main_builder.custom_attributes)
         self.assertIn("gain_dof", main_builder.custom_attributes)
 
         # Verify frequencies and assignments
         self.assertEqual(main_builder.custom_attributes["robot_id"].frequency, AttributeFrequency.BODY)
         self.assertEqual(main_builder.custom_attributes["robot_id"].assignment, AttributeAssignment.MODEL)
         self.assertEqual(main_builder.custom_attributes["temperature"].assignment, AttributeAssignment.STATE)
-        self.assertEqual(main_builder.custom_attributes["shape_color"].frequency, AttributeFrequency.SHAPE)
+        self.assertEqual(main_builder.custom_attributes["custom_shape_color"].frequency, AttributeFrequency.SHAPE)
         self.assertEqual(main_builder.custom_attributes["gain_dof"].frequency, AttributeFrequency.JOINT_DOF)
 
         # Build model and verify values
@@ -997,7 +985,7 @@ class TestCustomAttributes(unittest.TestCase):
         np.testing.assert_array_almost_equal(temperatures, [0.0, 0.0, 37.5, 38.0, 37.5, 38.0], decimal=5)
 
         # Verify SHAPE attributes
-        shape_colors = model.shape_color.numpy()
+        shape_colors = model.custom_shape_color.numpy()
 
         np.testing.assert_array_almost_equal(shape_colors[0], [0.0, 0.0, 0.0], decimal=5)
         np.testing.assert_array_almost_equal(shape_colors[1], [0.0, 0.0, 0.0], decimal=5)
@@ -1254,8 +1242,11 @@ class TestCustomAttributes(unittest.TestCase):
                 assignment=AttributeAssignment.MODEL,
             )
         )
-        # Should still work
-        self.assertEqual(len(builder5.custom_attributes), 1)
+        # Should still work. ModelBuilder.__init__ also auto-registers the canonical
+        # ``mujoco:equality_constraint_*`` CustomAttributes, so account for those alongside the
+        # single attribute declared by this test.
+        baseline = len(ModelBuilder().custom_attributes)
+        self.assertEqual(len(builder5.custom_attributes), baseline + 1)
 
         # Test 6: Same key with different frequency - SHOULD FAIL
         builder6 = ModelBuilder()
@@ -1648,8 +1639,27 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertIn("global_freq", builder.custom_frequencies)
 
         # Test 4: Duplicate registration should be silently ignored (idempotent)
+        # ModelBuilder.__init__ auto-registers the canonical ``mujoco:equality_constraint``
+        # custom frequency, so take a baseline from a freshly-constructed builder.
+        baseline = len(ModelBuilder().custom_frequencies)
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="freq1", namespace="ns"))  # Should not raise
-        self.assertEqual(len(builder.custom_frequencies), 3)  # Still 3 frequencies
+        self.assertEqual(len(builder.custom_frequencies), baseline + 3)
+
+    def test_custom_frequency_metadata_names_follow_convention(self):
+        """Reject owner and label attributes that do not follow the frequency naming convention."""
+        with self.assertRaisesRegex(ValueError, "test:item_articulation"):
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                articulation_owner_attribute="test:owner",
+            )
+
+        with self.assertRaisesRegex(ValueError, "test:item_label"):
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                label_attribute="test:label",
+            )
 
     def test_custom_frequency_validation_inconsistent_counts(self):
         """Test that inconsistent counts for same custom frequency are handled gracefully with warnings."""
@@ -1697,6 +1707,31 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # Verify values: pair_a should have [1, 2, 0] (padded), pair_b should have [0, 0, 10]
         np.testing.assert_array_equal(model.test.pair_a.numpy(), [1, 2, 0])  # 0 is default for int32
         np.testing.assert_array_equal(model.test.pair_b.numpy(), [0, 0, 10])  # None values replaced with defaults
+
+    def test_custom_frequency_owner_resolver_validates_row_count(self):
+        """Reject owner resolver output that does not cover every frequency row."""
+        builder = ModelBuilder()
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                articulation_owner_attribute="test:item_articulation",
+                articulation_owner_resolver=lambda _builder: [],
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_articulation",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.int32,
+                references="articulation",
+            )
+        )
+        builder.add_custom_values(**{"test:item_articulation": -1})
+
+        with self.assertRaisesRegex(ValueError, "returned 0 values, expected 1"):
+            builder.finalize(device=self.device)
 
     def test_custom_frequency_add_custom_values_rejects_enum_frequency(self):
         """Test that add_custom_values() rejects enum frequency attributes."""
@@ -1936,8 +1971,8 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         with self.assertRaisesRegex(KeyError, "unknown"):
             model.get_custom_frequency_count("test:unknown")
 
-    def test_custom_frequency_articulation_view_rejection(self):
-        """Test that ArticulationView raises error for custom string frequency attributes."""
+    def test_custom_frequency_articulation_view_rejects_unscoped_rows(self):
+        """Reject custom-frequency rows without articulation ownership."""
 
         builder = ModelBuilder()
 
@@ -1971,6 +2006,151 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertIn("custom frequency", str(context.exception).lower())
         self.assertIn("item", str(context.exception))
 
+    def test_custom_frequency_articulation_view_uses_declared_owners(self):
+        """Expose every attribute whose custom frequency declares articulation owners."""
+        robot = ModelBuilder()
+        body = robot.add_link(mass=1.0)
+        joint = robot.add_joint_revolute(parent=-1, child=body)
+        robot.add_articulation([joint], label="robot")
+
+        def resolve_item_owners(builder: ModelBuilder) -> list[int]:
+            item_joints = builder.custom_attributes["test:item_joint"].values
+            return [int(builder.joint_articulation[int(item_joint)]) for item_joint in item_joints]
+
+        robot.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                articulation_owner_attribute="test:item_articulation",
+                articulation_owner_resolver=resolve_item_owners,
+                label_attribute="test:item_label",
+            )
+        )
+        robot.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_articulation",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.int32,
+                references="articulation",
+            )
+        )
+        robot.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_joint",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.int32,
+                references="joint",
+            )
+        )
+        robot.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_label",
+                namespace="test",
+                frequency="test:item",
+                dtype=str,
+            )
+        )
+        robot.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.float32,
+            )
+        )
+        robot.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_control",
+                namespace="test",
+                frequency="test:item",
+                assignment=AttributeAssignment.CONTROL,
+                dtype=wp.float32,
+            )
+        )
+        robot.add_custom_values(
+            **{
+                "test:item_joint": joint,
+                "test:item_label": "tool/item",
+                "test:item_value": 42.0,
+                "test:item_control": 3.0,
+            }
+        )
+
+        world = ModelBuilder()
+        world.add_builder(robot, label_prefix="left")
+        world.add_builder(robot, label_prefix="right")
+        scene = ModelBuilder()
+        scene.replicate(world, world_count=2)
+        model = scene.finalize(device=self.device)
+        control = model.control()
+
+        view = ArticulationView(model, "*/robot")
+        self.assertEqual(view.custom_frequency_counts["test:item"], 1)
+        self.assertEqual(view.custom_frequency_labels["test:item"], ["item"])
+        np.testing.assert_array_equal(model.custom_frequency_articulation["test:item"].numpy(), [0, 1, 2, 3])
+        np.testing.assert_array_equal(model.test.item_joint.numpy(), [0, 1, 2, 3])
+        self.assertEqual(
+            model.test.item_label,
+            ["left/tool/item", "right/tool/item", "left/tool/item", "right/tool/item"],
+        )
+        np.testing.assert_allclose(view.get_attribute("test.item_value", model).numpy(), 42.0)
+        np.testing.assert_allclose(view.get_attribute("test.item_control", control).numpy(), 3.0)
+
+        values = np.arange(4, dtype=np.float32).reshape(2, 2, 1)
+        view.set_attribute("test.item_control", control, values)
+        np.testing.assert_allclose(view.get_attribute("test.item_control", control).numpy(), values)
+
+    def test_custom_frequency_articulation_view_handles_sparse_rows(self):
+        """Expose non-contiguous rows owned by one articulation."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(parent=-1, child=body)
+        builder.add_articulation([joint], label="robot")
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                articulation_owner_attribute="test:item_articulation",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_articulation",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.int32,
+                references="articulation",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.float32,
+            )
+        )
+
+        for owner, value in ((0, 10.0), (-1, 20.0), (0, 30.0)):
+            builder.add_custom_values(
+                **{
+                    "test:item_articulation": owner,
+                    "test:item_value": value,
+                }
+            )
+
+        model = builder.finalize(device=self.device)
+        view = ArticulationView(model, "robot")
+
+        self.assertEqual(view.custom_frequency_counts["test:item"], 2)
+        self.assertEqual(view.frequency_layouts["test:item"].value_count, 3)
+        np.testing.assert_allclose(view.get_attribute("test.item_value", model).numpy(), [[[10.0, 30.0]]])
+
+        view.set_attribute("test.item_value", model, np.array([[[11.0, 31.0]]], dtype=np.float32))
+        np.testing.assert_allclose(model.test.item_value.numpy(), [11.0, 20.0, 31.0])
+
     def test_world_frequency_merge_add_world(self):
         """Test that WORLD-frequency attributes are correctly indexed when using add_world()."""
         sub = ModelBuilder()
@@ -1997,6 +2177,37 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertEqual(len(arr), 2)
         self.assertEqual(arr[0], 42)
         self.assertEqual(arr[1], 42)
+
+    def test_custom_attribute_model_finalizer_rejects_conflicting_registration(self):
+        builder = ModelBuilder()
+
+        def finalizer_a(_builder, _model, _custom_attr):
+            pass
+
+        def finalizer_b(_builder, _model, _custom_attr):
+            pass
+
+        builder._add_custom_attribute_model_finalizer("test:value", finalizer_a)
+        builder._add_custom_attribute_model_finalizer("test:value", finalizer_a)
+
+        with self.assertRaisesRegex(ValueError, "test:value"):
+            builder._add_custom_attribute_model_finalizer("test:value", finalizer_b)
+
+    def test_add_builder_rejects_conflicting_custom_attribute_model_finalizers(self):
+        main = ModelBuilder()
+        sub = ModelBuilder()
+
+        def finalizer_a(_builder, _model, _custom_attr):
+            pass
+
+        def finalizer_b(_builder, _model, _custom_attr):
+            pass
+
+        main._add_custom_attribute_model_finalizer("test:value", finalizer_a)
+        sub._add_custom_attribute_model_finalizer("test:value", finalizer_b)
+
+        with self.assertRaisesRegex(ValueError, "test:value"):
+            main.add_builder(sub)
 
     def test_transform_value_list_and_sentinel_shape_refs(self):
         """Test that transform_value handles lists with negative sentinel values correctly."""

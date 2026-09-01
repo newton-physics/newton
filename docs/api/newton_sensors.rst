@@ -4,6 +4,7 @@
 newton.sensors
 ==============
 
+.. py:module:: newton.sensors
 .. currentmodule:: newton.sensors
 
 .. rubric:: Classes
@@ -15,5 +16,4 @@ newton.sensors
    SensorContact
    SensorFrameTransform
    SensorIMU
-   SensorRaycast
    SensorTiledCamera

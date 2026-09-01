@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Sim Cloth Bending
@@ -60,7 +48,7 @@ class Example:
         builder = newton.ModelBuilder()
 
         contact_ke = 1.0e2
-        contact_kd = 1.0e0
+        contact_kd = 1.0e2
         contact_mu = 1.5
         builder.default_shape_cfg.ke = contact_ke
         builder.default_shape_cfg.kd = contact_kd
@@ -75,9 +63,9 @@ class Example:
             density=0.02,
             tri_ke=5.0e1,
             tri_ka=5.0e1,
-            tri_kd=1.0e-1,
+            tri_kd=5.0e0,
             edge_ke=1.0e1,
-            edge_kd=1.0e0,
+            edge_kd=1.0e1,
         )
 
         builder.color(include_bending=True)
@@ -90,7 +78,7 @@ class Example:
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
-            self.iterations,
+            iterations=self.iterations,
             particle_enable_self_contact=True,
             particle_self_contact_radius=0.2,
             particle_self_contact_margin=0.35,
@@ -113,12 +101,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -184,6 +169,4 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create viewer and run
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

@@ -1,28 +1,31 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
+import logging
+import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import warp as wp
 
-from ..core.types import MAXVAL, Axis, Devicelike, nparray
+from ..core.types import MAXVAL, Axis, Devicelike
 from .kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_ellipsoid, sdf_sphere
-from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
+from .sdf_mc import (
+    MC_DEGENERATE_N_SQ_EPS,
+    MC_EDGE_CLAMP_MAX,
+    MC_EDGE_CLAMP_MIN,
+    MC_EDGE_VAL_DIFF_EPS,
+    get_mc_tables,
+    int_to_vec3f,
+    mc_calc_face,
+    vec8f,
+)
 from .types import GeoType, Mesh
+
+logger = logging.getLogger(__name__)
+
+SignMethod = Literal["auto", "parity", "winding", "normal"]
 
 if TYPE_CHECKING:
     from .sdf_texture import TextureSDFData
@@ -172,7 +175,15 @@ def sample_sdf_grad_extrapolated(
 
 
 class SDF:
-    """Opaque SDF container owning kernel payload and runtime references."""
+    """Opaque SDF container owning kernel payload and runtime references.
+
+    .. experimental::
+
+        The ``SDF`` API (including ``newton.SDF``, ``newton.geometry.SDF`` and
+        related helpers such as :meth:`SDF.create_from_mesh`,
+        :meth:`SDF.create_from_points`, :meth:`SDF.create_from_data` and the
+        SDF storage on :class:`~newton.Model`) may change without notice.
+    """
 
     def __init__(
         self,
@@ -180,9 +191,10 @@ class SDF:
         data: SDFData,
         sparse_volume: wp.Volume | None = None,
         coarse_volume: wp.Volume | None = None,
-        block_coords: nparray | Sequence[wp.vec3us] | None = None,
-        texture_block_coords: Sequence[wp.vec3us] | None = None,
+        block_coords: np.ndarray | Sequence[wp.vec3us] | None = None,
         texture_data: "TextureSDFData | None" = None,
+        shape_margin: float = 0.0,
+        construction_padding: float | None = None,
         _coarse_texture: wp.Texture3D | None = None,
         _subgrid_texture: wp.Texture3D | None = None,
         _internal: bool = False,
@@ -195,8 +207,9 @@ class SDF:
         self.sparse_volume = sparse_volume
         self.coarse_volume = coarse_volume
         self.block_coords = block_coords
-        self.texture_block_coords = texture_block_coords
         self.texture_data = texture_data
+        self.shape_margin = shape_margin
+        self._construction_padding = construction_padding
         # Keep texture references alive to prevent GC
         self._coarse_texture = _coarse_texture
         self._subgrid_texture = _subgrid_texture
@@ -210,8 +223,8 @@ class SDF:
         return self.texture_data
 
     def is_empty(self) -> bool:
-        """Return True when this SDF has no sparse/coarse payload."""
-        return int(self.data.sparse_sdf_ptr) == 0 and int(self.data.coarse_sdf_ptr) == 0
+        """Return True when this SDF has no sparse/coarse or texture payload."""
+        return int(self.data.sparse_sdf_ptr) == 0 and int(self.data.coarse_sdf_ptr) == 0 and self.texture_data is None
 
     def validate(self) -> None:
         """Validate consistency of kernel pointers and owned volumes."""
@@ -219,6 +232,67 @@ class SDF:
             raise ValueError("SDFData sparse pointer is empty but sparse_volume is set.")
         if int(self.data.coarse_sdf_ptr) == 0 and self.coarse_volume is not None:
             raise ValueError("SDFData coarse pointer is empty but coarse_volume is set.")
+
+    def extract_isomesh(self, isovalue: float = 0.0, device: "Devicelike | None" = None) -> "Mesh | None":
+        """Extract an isosurface mesh at the requested isovalue.
+
+        Uses the texture SDF path for mesh-generated SDFs (the only path
+        populated by :meth:`create_from_mesh`).  For primitive SDFs built
+        via :meth:`create_from_data` with a NanoVDB ``sparse_volume``, the
+        fallback branch extracts from the sparse volume instead.
+
+        The ``isovalue`` argument is always interpreted in raw mesh-distance
+        units: ``0.0`` yields the base geometry surface regardless of how
+        the SDF was constructed, and positive values give an outward
+        offset.  Both storage backends are normalized to this convention:
+
+        * Texture SDFs store unmodified signed distance ``d`` (the texture
+          builder does not bake ``shape_margin``), so the requested
+          isovalue is forwarded as-is to the isomesh extractor.
+        * NanoVDB sparse volumes built via :class:`_compute_sdf_from_shape_impl`
+          store ``d - shape_margin``.  The extractor compensates with
+          ``corrected_isovalue = isovalue - shape_margin`` so external
+          behavior matches the texture path.
+
+        As a consequence, :attr:`shape_margin` is only consulted on the
+        legacy sparse-volume branch; on the texture branch it is stored
+        for backward compatibility with callers that introspect the SDF
+        but has no effect on the extracted surface.
+
+        Args:
+            isovalue: Surface level to extract [m] in base geometry
+                distance units.  ``0.0`` gives the original surface;
+                positive values give an outward offset.
+            device: CUDA device.  When ``None`` uses the current device.
+
+        Returns:
+            :class:`Mesh` or ``None`` when the SDF has no data or the
+            isovalue falls outside the stored narrow band.
+        """
+        if self.texture_data is not None and self._coarse_texture is not None:
+            from .sdf_texture import TextureSDFData, compute_isomesh_from_texture_sdf  # noqa: PLC0415
+
+            with wp.ScopedDevice(device):
+                tex_arr = wp.array([self.texture_data], dtype=TextureSDFData, device=device)
+                ct = self._coarse_texture
+                coarse_dims = (ct.width - 1, ct.height - 1, ct.depth - 1)
+                slots = self.texture_data.subgrid_start_slots
+                # Texture SDF stores raw mesh distance (shape_margin is not
+                # baked in), so forward isovalue directly.  See class docstring.
+                result = compute_isomesh_from_texture_sdf(
+                    tex_arr, 0, slots, coarse_dims, device=device, isovalue=isovalue
+                )
+                if result is not None:
+                    return result
+
+        if self.sparse_volume is not None:
+            # Legacy NanoVDB sparse volumes (produced by
+            # _compute_sdf_from_shape_impl) store d - shape_margin, so
+            # compensate to match the texture branch semantics above.
+            corrected_isovalue = isovalue - self.shape_margin if self.shape_margin else isovalue
+            return compute_isomesh(self.sparse_volume, isovalue=corrected_isovalue, device=device)
+
+        return None
 
     def __copy__(self) -> "SDF":
         """Return self; SDF runtime handles are immutable and shared."""
@@ -235,8 +309,8 @@ class SDF:
 
     @staticmethod
     def create_from_points(
-        points: nparray | Sequence[Sequence[float]],
-        indices: nparray | Sequence[int],
+        points: np.ndarray | Sequence[Sequence[float]],
+        indices: np.ndarray | Sequence[int],
         *,
         device: Devicelike | None = None,
         narrow_band_range: tuple[float, float] = (-0.1, 0.1),
@@ -288,8 +362,16 @@ class SDF:
         margin: float = 0.05,
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
+        texture_format: str = "uint16",
+        sign_method: SignMethod = "auto",
+        cache_dir: str | os.PathLike[str] | None = None,
+        paired_samples: bool = True,
     ) -> "SDF":
         """Create an SDF from a mesh in local mesh coordinates.
+
+        The SDF is built entirely via the texture-based sparse construction
+        path.  NanoVDB volumes are **not** created; all downstream collision
+        and simulation code uses the texture SDF.
 
         Args:
             mesh: Source mesh geometry.
@@ -312,62 +394,173 @@ class SDF:
                 resulting SDF. Required for hydroelastic collision with
                 non-unit shape scale. Defaults to ``None`` (no scale baking;
                 scale applied at runtime).
+            texture_format: Subgrid texture storage format. ``"uint16"``
+                (default) uses 16-bit normalized textures for half the memory
+                of ``"float32"`` with negligible precision loss. ``"uint8"``
+                uses 8-bit textures for minimum memory.
+            sign_method: Inside/outside sign query strategy.
+
+                * ``"auto"`` (default): use parity rays if
+                  :attr:`Mesh.is_watertight` is ``True``, else fall back to
+                  winding numbers.
+                * ``"parity"``: always use ``wp.mesh_query_point_sign_parity``.
+                  Cheaper per sample but requires a watertight mesh; results on
+                  open meshes are undefined.
+                * ``"winding"``: always use
+                  ``wp.mesh_query_point_sign_winding_number``. Robust for
+                  general (possibly open or non-manifold) meshes but more
+                  expensive to build and query.
+                * ``"normal"``: always use
+                  ``wp.mesh_query_point_sign_normal`` (angle-weighted
+                  pseudo-normal). Signs voxels by the local side of the
+                  nearest surface; the choice for open sheets, where
+                  neither parity nor winding defines a consistent inside.
+            cache_dir: Optional directory holding cached cooked SDFs. When
+                provided, the cooked SDF data (everything that backs the
+                GPU 3D textures) is keyed by mesh content + build
+                parameters and persisted as a single ``{hash}.sdf.npz``
+                file (an uncompressed ``np.savez`` bundle of typed
+                numpy arrays). A subsequent call with the same inputs
+                reloads from disk and skips the expensive mesh-SDF
+                build. ``shape_margin`` is applied at sample time and
+                is *not* part of the cache key. Defaults to ``None``
+                (cache disabled).
+            paired_samples: Store each SDF sample with its positive-X
+                neighbor for faster software interpolation. Disable to halve
+                texture memory at the cost of slower hydroelastic sampling.
 
         Returns:
-            A validated :class:`SDF` runtime handle with sparse/coarse volumes.
+            A validated :class:`SDF` runtime handle.
+
+        Raises:
+            RuntimeError: if no CUDA device is available. The texture SDF build
+                pipeline requires CUDA kernels and 3D textures.
+            ValueError: if ``texture_format`` or ``sign_method`` is not one of
+                the supported values.
         """
+        if not wp.is_cuda_available():
+            raise RuntimeError(
+                "SDF.create_from_mesh requires a CUDA device: the texture SDF "
+                "build pipeline uses CUDA kernels and wp.Texture3D. "
+                "No CUDA-capable device was detected."
+            )
+
+        valid_sign_methods: tuple[SignMethod, ...] = ("auto", "parity", "winding", "normal")
+        if sign_method not in valid_sign_methods:
+            raise ValueError(f"Unknown sign_method {sign_method!r}. Expected one of {list(valid_sign_methods)}.")
+
         effective_max_resolution = 64 if max_resolution is None and target_voxel_size is None else max_resolution
         bake_scale = scale is not None
         effective_scale = scale if scale is not None else (1.0, 1.0, 1.0)
-        sdf_data, sparse_volume, coarse_volume, block_coords = _compute_sdf_from_shape_impl(
-            shape_type=GeoType.MESH,
-            shape_geo=mesh,
-            shape_scale=effective_scale,
-            shape_margin=shape_margin,
-            narrow_band_distance=narrow_band_range,
-            margin=margin,
-            target_voxel_size=target_voxel_size,
-            max_resolution=effective_max_resolution if effective_max_resolution is not None else 64,
-            bake_scale=bake_scale,
-            device=device,
+        is_watertight = mesh.is_watertight
+
+        if sign_method == "auto":
+            sign_method_resolved = "parity" if is_watertight else "winding"
+        else:
+            sign_method_resolved = sign_method
+
+        from .sdf_texture import (  # noqa: PLC0415
+            SIGN_MODE_NORMAL,
+            SIGN_MODE_PARITY,
+            SIGN_MODE_WINDING,
+            QuantizationMode,
+            create_sparse_sdf_textures,
+            create_texture_sdf_from_mesh,
         )
 
-        # Build texture SDF alongside NanoVDB
-        texture_data = None
-        coarse_texture = None
-        subgrid_texture = None
-        tex_block_coords = None
-        if wp.is_cuda_available():
-            from .sdf_texture import QuantizationMode, create_texture_sdf_from_mesh  # noqa: PLC0415
+        _sign_mode_map = {
+            "winding": SIGN_MODE_WINDING,
+            "parity": SIGN_MODE_PARITY,
+            "normal": SIGN_MODE_NORMAL,
+        }
 
-            with wp.ScopedDevice(device):
+        _tex_fmt_map = {
+            "float32": QuantizationMode.FLOAT32,
+            "uint16": QuantizationMode.UINT16,
+            "uint8": QuantizationMode.UINT8,
+        }
+        if texture_format not in _tex_fmt_map:
+            raise ValueError(f"Unknown texture_format {texture_format!r}. Expected one of {list(_tex_fmt_map)}.")
+        qmode = _tex_fmt_map[texture_format]
+
+        cache_hash: str | None = None
+        loaded_sparse_data = None
+        if cache_dir is not None:
+            from . import _sdf_cache  # noqa: PLC0415
+
+            verts_for_hash = np.asarray(mesh.vertices, dtype=np.float32) * np.array(effective_scale, dtype=np.float32)
+            indices_for_hash = np.asarray(mesh.indices, dtype=np.int32).reshape(-1)
+            cache_hash = _sdf_cache.hash_inputs(
+                vertices=verts_for_hash,
+                indices=indices_for_hash,
+                is_solid=bool(getattr(mesh, "is_solid", True)),
+                narrow_band_range=narrow_band_range,
+                target_voxel_size=target_voxel_size,
+                max_resolution=effective_max_resolution,
+                margin=margin,
+                texture_format=texture_format,
+                sign_method_resolved=sign_method_resolved,
+                # winding_threshold's actual value is set post-cook, but
+                # the cooked output's equivalence class only depends on
+                # its sign. +0.5 is the canonical positive case.
+                winding_threshold=0.5,
+                scale=scale,
+            )
+            loaded_sparse_data = _sdf_cache.try_load_sparse_data(cache_dir, cache_hash)
+
+        with wp.ScopedDevice(device):
+            if loaded_sparse_data is not None:
+                sdf_device = str(wp.get_device())
+                sdf_params, coarse_texture, subgrid_texture = create_sparse_sdf_textures(
+                    loaded_sparse_data, sdf_device, paired_samples
+                )
+                sdf_params.scale_baked = bake_scale
+                texture_data = sdf_params
+            else:
                 verts = mesh.vertices * np.array(effective_scale)[None, :]
                 pos = wp.array(verts, dtype=wp.vec3)
                 indices = wp.array(mesh.indices, dtype=wp.int32)
-                tex_mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
 
-                signed_volume = compute_mesh_signed_volume(pos, indices)
-                winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
+                winding_threshold = 0.5
+                if sign_method_resolved == "winding":
+                    tex_mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
+                    signed_volume = compute_mesh_signed_volume(pos, indices)
+                    winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
+                else:
+                    # Parity and pseudo-normal queries need no winding-number
+                    # acceleration on the mesh.
+                    tex_mesh = wp.Mesh(points=pos, indices=indices)
 
+                want_sparse = cache_dir is not None
                 res = effective_max_resolution if effective_max_resolution is not None else 64
-                texture_data, coarse_texture, subgrid_texture, tex_block_coords = create_texture_sdf_from_mesh(
+                result = create_texture_sdf_from_mesh(
                     tex_mesh,
                     margin=margin,
                     narrow_band_range=narrow_band_range,
                     max_resolution=res,
-                    quantization_mode=QuantizationMode.FLOAT32,
+                    target_voxel_size=target_voxel_size,
+                    quantization_mode=qmode,
                     winding_threshold=winding_threshold,
                     scale_baked=bake_scale,
+                    sign_mode=_sign_mode_map[sign_method_resolved],
+                    return_sparse_data=want_sparse,
+                    paired_samples=paired_samples,
                 )
-                wp.synchronize()
+                if want_sparse:
+                    texture_data, coarse_texture, subgrid_texture, sparse_data = result
+                    if sparse_data is not None:
+                        _sdf_cache.write(cache_dir, cache_hash, sparse_data)
+                else:
+                    texture_data, coarse_texture, subgrid_texture = result
 
         sdf = SDF(
-            data=sdf_data,
-            sparse_volume=sparse_volume,
-            coarse_volume=coarse_volume,
-            block_coords=block_coords,
-            texture_block_coords=tex_block_coords,
+            data=create_empty_sdf_data(),
+            sparse_volume=None,
+            coarse_volume=None,
+            block_coords=[],
             texture_data=texture_data,
+            shape_margin=shape_margin,
+            construction_padding=margin,
             _coarse_texture=coarse_texture,
             _subgrid_texture=subgrid_texture,
             _internal=True,
@@ -380,14 +573,43 @@ class SDF:
         *,
         sparse_volume: wp.Volume | None = None,
         coarse_volume: wp.Volume | None = None,
-        block_coords: nparray | Sequence[wp.vec3us] | None = None,
+        block_coords: np.ndarray | Sequence[wp.vec3us] | None = None,
         center: Sequence[float] | None = None,
         half_extents: Sequence[float] | None = None,
         background_value: float = MAXVAL,
         scale_baked: bool = False,
+        shape_margin: float = 0.0,
         texture_data: "TextureSDFData | None" = None,
+        construction_padding: float | None = None,
     ) -> "SDF":
-        """Create an SDF from precomputed runtime resources."""
+        """Create an SDF from precomputed runtime resources.
+
+        Args:
+            sparse_volume: Sparse narrow-band SDF volume.
+            coarse_volume: Coarse background SDF volume.
+            block_coords: Sparse-volume block coordinates.
+            center: Shared SDF extent center [m].
+            half_extents: Shared SDF extent half extents [m].
+            background_value: Value [m] identifying unallocated sparse voxels.
+            scale_baked: Whether shape scale is already baked into the SDF.
+            shape_margin: Shape margin offset [m] subtracted from sampled SDF values.
+            texture_data: Precomputed texture SDF runtime data.
+            construction_padding: AABB padding [m] used when constructing
+                ``texture_data``. Hydroelastic shape validation uses this value
+                to verify that the SDF covers the shape's margin and gap. Leave
+                as ``None`` when the construction padding is unknown.
+
+        Returns:
+            A validated :class:`SDF` runtime handle.
+
+        Raises:
+            ValueError: If ``construction_padding`` is negative or non-finite.
+        """
+        if construction_padding is not None:
+            construction_padding = float(construction_padding)
+            if not np.isfinite(construction_padding) or construction_padding < 0.0:
+                raise ValueError(f"construction_padding must be finite and >= 0, got {construction_padding}.")
+
         sdf_data = create_empty_sdf_data()
         if sparse_volume is not None:
             sdf_data.sparse_sdf_ptr = sparse_volume.id
@@ -409,7 +631,11 @@ class SDF:
             sparse_volume=sparse_volume,
             coarse_volume=coarse_volume,
             block_coords=block_coords,
+            shape_margin=shape_margin,
             texture_data=texture_data,
+            construction_padding=construction_padding,
+            _coarse_texture=texture_data.coarse_texture if texture_data is not None else None,
+            _subgrid_texture=texture_data.subgrid_texture if texture_data is not None else None,
             _internal=True,
         )
         sdf.validate()
@@ -443,9 +669,9 @@ def create_empty_sdf_data() -> SDFData:
 
 @wp.kernel
 def compute_mesh_signed_volume_kernel(
-    points: wp.array(dtype=wp.vec3),
-    indices: wp.array(dtype=wp.int32),
-    volume_sum: wp.array(dtype=wp.float32),
+    points: wp.array[wp.vec3],
+    indices: wp.array[wp.int32],
+    volume_sum: wp.array[wp.float32],
 ):
     """Compute signed volume contribution from each triangle."""
     tri_idx = wp.tid()
@@ -478,11 +704,40 @@ def get_distance_to_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32, 
     return max_dist
 
 
+@wp.func
+def get_distance_to_mesh_parity(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32):
+    """Signed distance using parity-based ray-cast for inside/outside classification.
+
+    Cheaper than :func:`get_distance_to_mesh` (no winding-number accumulation)
+    but requires a watertight mesh for correct results.
+    """
+    res = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
+    if res.result:
+        closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
+        return res.sign * wp.length(closest - point)
+    return max_dist
+
+
+@wp.func
+def get_distance_to_mesh_normal(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32):
+    """Signed distance using the angle-weighted pseudo-normal for the sign.
+
+    Gives a stable local side-of-surface classification for open
+    (non-watertight) meshes, where neither parity nor winding numbers define
+    a consistent inside. Needs no winding-number acceleration on the mesh.
+    """
+    res = wp.mesh_query_point_sign_normal(mesh, point, max_dist)
+    if res.result:
+        closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
+        return res.sign * wp.length(closest - point)
+    return max_dist
+
+
 @wp.kernel
 def sdf_from_mesh_kernel(
     mesh: wp.uint64,
     sdf: wp.uint64,
-    tile_points: wp.array(dtype=wp.vec3i),
+    tile_points: wp.array[wp.vec3i],
     shape_margin: wp.float32,
     winding_threshold: wp.float32,
 ):
@@ -509,7 +764,7 @@ def sdf_from_primitive_kernel(
     shape_type: wp.int32,
     shape_scale: wp.vec3,
     sdf: wp.uint64,
-    tile_points: wp.array(dtype=wp.vec3i),
+    tile_points: wp.array[wp.vec3i],
     shape_margin: wp.float32,
 ):
     """
@@ -532,7 +787,7 @@ def sdf_from_primitive_kernel(
     elif shape_type == GeoType.CAPSULE:
         signed_distance = sdf_capsule(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
     elif shape_type == GeoType.CYLINDER:
-        signed_distance = sdf_cylinder(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
+        signed_distance = sdf_cylinder(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z), -1.0, shape_scale[2])
     elif shape_type == GeoType.ELLIPSOID:
         signed_distance = sdf_ellipsoid(sample_pos, shape_scale)
     elif shape_type == GeoType.CONE:
@@ -544,10 +799,10 @@ def sdf_from_primitive_kernel(
 @wp.kernel
 def check_tile_occupied_mesh_kernel(
     mesh: wp.uint64,
-    tile_points: wp.array(dtype=wp.vec3f),
+    tile_points: wp.array[wp.vec3f],
     threshold: wp.vec2f,
     winding_threshold: wp.float32,
-    tile_occupied: wp.array(dtype=bool),
+    tile_occupied: wp.array[bool],
 ):
     tid = wp.tid()
     sample_pos = tile_points[tid]
@@ -565,9 +820,9 @@ def check_tile_occupied_mesh_kernel(
 def check_tile_occupied_primitive_kernel(
     shape_type: wp.int32,
     shape_scale: wp.vec3,
-    tile_points: wp.array(dtype=wp.vec3f),
+    tile_points: wp.array[wp.vec3f],
     threshold: wp.vec2f,
-    tile_occupied: wp.array(dtype=bool),
+    tile_occupied: wp.array[bool],
 ):
     tid = wp.tid()
     sample_pos = tile_points[tid]
@@ -580,7 +835,7 @@ def check_tile_occupied_primitive_kernel(
     elif shape_type == GeoType.CAPSULE:
         signed_distance = sdf_capsule(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
     elif shape_type == GeoType.CYLINDER:
-        signed_distance = sdf_cylinder(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
+        signed_distance = sdf_cylinder(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z), -1.0, shape_scale[2])
     elif shape_type == GeoType.ELLIPSOID:
         signed_distance = sdf_ellipsoid(sample_pos, shape_scale)
     elif shape_type == GeoType.CONE:
@@ -617,8 +872,11 @@ def get_primitive_extents(shape_type: int, shape_scale: Sequence[float]) -> tupl
         min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1] - shape_scale[0]]
         max_ext = [shape_scale[0], shape_scale[0], shape_scale[1] + shape_scale[0]]
     elif shape_type == GeoType.CYLINDER:
-        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1]]
-        max_ext = [shape_scale[0], shape_scale[0], shape_scale[1]]
+        radial_extent = shape_scale[0]
+        if shape_scale[2] > 0.0:
+            radial_extent += shape_scale[2] - (shape_scale[2] ** 2 - shape_scale[1] ** 2) ** 0.5
+        min_ext = [-radial_extent, -radial_extent, -shape_scale[1]]
+        max_ext = [radial_extent, radial_extent, shape_scale[1]]
     elif shape_type == GeoType.ELLIPSOID:
         min_ext = [-shape_scale[0], -shape_scale[1], -shape_scale[2]]
         max_ext = [shape_scale[0], shape_scale[1], shape_scale[2]]
@@ -700,15 +958,13 @@ def _compute_sdf_from_shape_impl(
             pos = wp.array(verts, dtype=wp.vec3)
             indices = wp.array(shape_geo.indices, dtype=wp.int32)
 
+            winding_threshold = 0.5
             mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
-            m_id = mesh.id
-
-            # Compute winding threshold based on mesh volume sign
-            # Positive volume = correct winding (threshold 0.5), negative = inverted (threshold -0.5)
             signed_volume = compute_mesh_signed_volume(pos, indices)
             winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
             if verbose and signed_volume < 0:
                 print("Mesh has inverted winding (negative volume), using threshold -0.5")
+            m_id = mesh.id
 
             min_ext = np.min(verts, axis=0).tolist()
             max_ext = np.max(verts, axis=0).tolist()
@@ -788,8 +1044,6 @@ def _compute_sdf_from_shape_impl(
             bg_value=SDF_BACKGROUND_VALUE,
         )
 
-        # populate the sparse volume with the sdf values
-        # Only process allocated tiles (num_tiles x 8x8x8)
         num_allocated_tiles = len(tile_points)
         if shape_type == GeoType.MESH:
             wp.launch(
@@ -820,7 +1074,6 @@ def _compute_sdf_from_shape_impl(
             bg_value=SDF_BACKGROUND_VALUE,
         )
 
-        # Populate the coarse volume with SDF values (single tile)
         if shape_type == GeoType.MESH:
             wp.launch(
                 sdf_from_mesh_kernel,
@@ -927,8 +1180,8 @@ def compute_sdf_from_shape(
     )
 
 
-def compute_isomesh(volume: wp.Volume) -> Mesh | None:
-    """Compute an isosurface mesh from an SDFData struct.
+def compute_isomesh(volume: wp.Volume, isovalue: float = 0.0, device: Devicelike | None = None) -> Mesh | None:
+    """Compute an isosurface mesh from a sparse SDF volume.
 
     Uses a two-pass approach to minimize memory allocation:
     1. First pass: count actual triangles produced
@@ -937,14 +1190,20 @@ def compute_isomesh(volume: wp.Volume) -> Mesh | None:
 
     Args:
         volume: The SDF volume.
+        isovalue: Surface level to extract [m].  ``0.0`` gives the
+            zero-isosurface; positive values extract an outward offset surface.
+        device: CUDA device for GPU allocations.  When ``None``, uses the
+            current :class:`wp.ScopedDevice` or the Warp default device.
 
     Returns:
         Mesh object containing the isosurface mesh.
     """
-    device = wp.get_device()
+    if device is not None:
+        device = wp.get_device(device)
+    else:
+        device = wp.get_device()
     mc_tables = get_mc_tables(device)
 
-    # Get allocated tile points from the sparse volume
     tile_points = volume.get_tiles()
     tile_points_wp = wp.array(tile_points, dtype=wp.vec3i, device=device)
     num_tiles = tile_points.shape[0]
@@ -952,12 +1211,11 @@ def compute_isomesh(volume: wp.Volume) -> Mesh | None:
     if num_tiles == 0:
         return None
 
-    # Pass 1: Count faces (no vertex allocation needed)
     face_count = wp.zeros((1,), dtype=int, device=device)
     wp.launch(
         count_isomesh_faces_kernel,
         dim=(num_tiles, 8, 8, 8),
-        inputs=[volume.id, tile_points_wp, mc_tables[0], mc_tables[3]],
+        inputs=[volume.id, tile_points_wp, mc_tables[0], mc_tables[3], float(isovalue)],
         outputs=[face_count],
         device=device,
     )
@@ -966,17 +1224,15 @@ def compute_isomesh(volume: wp.Volume) -> Mesh | None:
     if num_faces == 0:
         return None
 
-    # Allocate exact memory needed (not worst-case 5*voxels)
     max_verts = 3 * num_faces
     verts = wp.empty((max_verts,), dtype=wp.vec3, device=device)
     face_normals = wp.empty((num_faces,), dtype=wp.vec3, device=device)
 
-    # Pass 2: Generate vertices with exact allocation
     face_count.zero_()
     wp.launch(
         generate_isomesh_kernel,
         dim=(num_tiles, 8, 8, 8),
-        inputs=[volume.id, tile_points_wp, mc_tables[0], mc_tables[4], mc_tables[3]],
+        inputs=[volume.id, tile_points_wp, mc_tables[0], mc_tables[4], mc_tables[3], float(isovalue)],
         outputs=[face_count, verts, face_normals],
         device=device,
     )
@@ -984,31 +1240,119 @@ def compute_isomesh(volume: wp.Volume) -> Mesh | None:
     verts_np = verts.numpy()
     faces_np = np.arange(3 * num_faces).reshape(-1, 3)
 
-    # reverse order of triangles indices for correctly displayed normals
     faces_np = faces_np[:, ::-1]
     return Mesh(verts_np, faces_np)
+
+
+def compute_offset_mesh(
+    shape_type: int,
+    shape_geo: Mesh | None = None,
+    shape_scale: Sequence[float] = (1.0, 1.0, 1.0),
+    offset: float = 0.0,
+    max_resolution: int = 48,
+    device: Devicelike | None = None,
+) -> Mesh | None:
+    """Compute the offset (Minkowski-inflated) isosurface mesh of a shape.
+
+    For primitive shapes with analytical SDFs (sphere, box, capsule, cylinder,
+    ellipsoid, cone) this evaluates the SDF directly on a dense grid, avoiding
+    NanoVDB volume construction.  For mesh / convex-mesh shapes with a
+    pre-built :class:`SDF` (via :meth:`Mesh.build_sdf`), the existing volume
+    or texture SDF is reused.  Only when no pre-built SDF is available does
+    this fall back to constructing a temporary NanoVDB volume.
+
+    Args:
+        shape_type: Geometry type identifier from :class:`GeoType`.
+        shape_geo: Source mesh geometry when *shape_type* is
+            :attr:`GeoType.MESH` or :attr:`GeoType.CONVEX_MESH`.
+        shape_scale: Shape scale factors [unitless].
+        offset: Outward surface offset [m].  Use ``0`` for the original surface.
+        max_resolution: Maximum grid dimension [voxels].
+        device: CUDA device for GPU allocations.
+
+    Returns:
+        A :class:`Mesh` representing the offset isosurface, or ``None`` when
+        the shape type is unsupported (plane, heightfield) or the resulting
+        mesh would be empty.
+    """
+    if shape_type in (GeoType.PLANE, GeoType.HFIELD):
+        return None
+
+    if shape_type in _ANALYTICAL_SDF_TYPES:
+        return compute_offset_mesh_analytical(
+            shape_type=shape_type,
+            shape_scale=shape_scale,
+            offset=offset,
+            max_resolution=max_resolution,
+            device=device,
+        )
+
+    # Reuse existing SDF on the mesh when available (avoids building a
+    # NanoVDB volume from scratch).  This assumes the stored SDF was built
+    # with shape_margin=0 (default) so that extracting at isovalue=offset
+    # yields the correct inflated surface.  The fallback path below uses
+    # bake_scale=True, so we skip the shortcut when scale hasn't been baked
+    # AND the caller requests non-unit scale — otherwise the extracted
+    # vertices would be in unscaled mesh-local space.
+    if shape_geo is not None:
+        existing_sdf = getattr(shape_geo, "sdf", None)
+        if existing_sdf is not None:
+            scale_ok = existing_sdf.data.scale_baked or all(abs(s - 1.0) < 1e-6 for s in shape_scale)
+            if scale_ok:
+                result = existing_sdf.extract_isomesh(isovalue=offset, device=device)
+                if result is not None:
+                    return result
+
+    if shape_type not in (GeoType.MESH, GeoType.CONVEX_MESH):
+        raise ValueError(
+            f"compute_offset_mesh: unsupported shape type {shape_type} "
+            f"without an analytical SDF or a pre-built SDF on the geometry."
+        )
+
+    if shape_geo is None:
+        raise ValueError("shape_geo must be provided for mesh/convex-mesh offset meshing.")
+
+    padding = max(abs(offset) * 0.5, 0.02)
+    narrow_band = (-abs(offset) - padding, abs(offset) + padding)
+    margin = max(padding, 0.05)
+
+    _sdf_data, sparse_volume, _coarse_volume, _block_coords = _compute_sdf_from_shape_impl(
+        shape_type=GeoType.MESH,
+        shape_geo=shape_geo,
+        shape_scale=shape_scale,
+        shape_margin=offset,
+        narrow_band_distance=narrow_band,
+        margin=margin,
+        max_resolution=max_resolution,
+        bake_scale=True,
+        device=device,
+    )
+
+    if sparse_volume is None:
+        return None
+
+    return compute_isomesh(sparse_volume, device=device)
 
 
 @wp.kernel(enable_backward=False)
 def count_isomesh_faces_kernel(
     sdf: wp.uint64,
-    tile_points: wp.array(dtype=wp.vec3i),
-    tri_range_table: wp.array(dtype=wp.int32),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
-    face_count: wp.array(dtype=int),
+    tile_points: wp.array[wp.vec3i],
+    tri_range_table: wp.array[wp.int32],
+    corner_offsets_table: wp.array[wp.vec3ub],
+    isovalue: wp.float32,
+    face_count: wp.array[int],
 ):
     """Count isosurface faces without generating vertices (first pass of two-pass approach).
     Only processes specified tiles. Launch with dim=(num_tiles, 8, 8, 8).
     """
     tile_idx, local_x, local_y, local_z = wp.tid()
 
-    # Get the tile origin and compute global voxel coordinates
     tile_origin = tile_points[tile_idx]
     x_id = tile_origin[0] + local_x
     y_id = tile_origin[1] + local_y
     z_id = tile_origin[2] + local_z
 
-    isovalue = 0.0
     cube_idx = wp.int32(0)
     for i in range(8):
         corner_offset = wp.vec3i(corner_offsets_table[i])
@@ -1034,26 +1378,25 @@ def count_isomesh_faces_kernel(
 @wp.kernel(enable_backward=False)
 def generate_isomesh_kernel(
     sdf: wp.uint64,
-    tile_points: wp.array(dtype=wp.vec3i),
-    tri_range_table: wp.array(dtype=wp.int32),
-    flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
-    face_count: wp.array(dtype=int),
-    vertices: wp.array(dtype=wp.vec3),
-    face_normals: wp.array(dtype=wp.vec3),
+    tile_points: wp.array[wp.vec3i],
+    tri_range_table: wp.array[wp.int32],
+    flat_edge_verts_table: wp.array[wp.vec2ub],
+    corner_offsets_table: wp.array[wp.vec3ub],
+    isovalue: wp.float32,
+    face_count: wp.array[int],
+    vertices: wp.array[wp.vec3],
+    face_normals: wp.array[wp.vec3],
 ):
     """Generate isosurface mesh vertices and normals using marching cubes.
     Only processes specified tiles. Launch with dim=(num_tiles, 8, 8, 8).
     """
     tile_idx, local_x, local_y, local_z = wp.tid()
 
-    # Get the tile origin and compute global voxel coordinates
     tile_origin = tile_points[tile_idx]
     x_id = tile_origin[0] + local_x
     y_id = tile_origin[1] + local_y
     z_id = tile_origin[2] + local_z
 
-    isovalue = 0.0
     cube_idx = wp.int32(0)
     corner_vals = vec8f()
     for i in range(8):
@@ -1069,10 +1412,9 @@ def generate_isomesh_kernel(
         if v < isovalue:
             cube_idx |= 1 << i
 
-    # look up the tri range for the cube index
     tri_range_start = tri_range_table[cube_idx]
     tri_range_end = tri_range_table[cube_idx + 1]
-    num_verts = tri_range_end - tri_range_start  # number of intersected edges
+    num_verts = tri_range_end - tri_range_start
 
     num_faces = num_verts // 3
     out_idx_faces = wp.atomic_add(face_count, 0, num_faces)
@@ -1092,8 +1434,305 @@ def generate_isomesh_kernel(
             x_id,
             y_id,
             z_id,
+            isovalue,
         )
         vertices[3 * out_idx_faces + 3 * fi + 0] = wp.vec3(face_verts[0])
         vertices[3 * out_idx_faces + 3 * fi + 1] = wp.vec3(face_verts[1])
         vertices[3 * out_idx_faces + 3 * fi + 2] = wp.vec3(face_verts[2])
         face_normals[out_idx_faces + fi] = normal
+
+
+# ---------------------------------------------------------------------------
+# Dense-grid analytical marching cubes for primitive shapes
+# ---------------------------------------------------------------------------
+# These kernels skip NanoVDB volume construction entirely and evaluate the
+# analytical SDF on a flat dense grid, which is significantly faster for
+# primitives (sphere, box, capsule, cylinder, ellipsoid, cone).
+# ---------------------------------------------------------------------------
+
+_ANALYTICAL_SDF_TYPES = frozenset(
+    {
+        GeoType.SPHERE,
+        GeoType.BOX,
+        GeoType.CAPSULE,
+        GeoType.CYLINDER,
+        GeoType.ELLIPSOID,
+        GeoType.CONE,
+    }
+)
+
+
+@wp.kernel(enable_backward=False)
+def _populate_dense_sdf_kernel(
+    shape_type: wp.int32,
+    shape_scale: wp.vec3,
+    origin: wp.vec3,
+    voxel_size: wp.vec3,
+    ny: wp.int32,
+    nz: wp.int32,
+    shape_offset: wp.float32,
+    sdf_values: wp.array[wp.float32],
+):
+    """Evaluate analytical SDF at every point of a dense regular grid."""
+    x, y, z = wp.tid()
+    pos = wp.vec3(
+        origin[0] + float(x) * voxel_size[0],
+        origin[1] + float(y) * voxel_size[1],
+        origin[2] + float(z) * voxel_size[2],
+    )
+    d = float(1.0e6)
+    if shape_type == GeoType.SPHERE:
+        d = sdf_sphere(pos, shape_scale[0])
+    elif shape_type == GeoType.BOX:
+        d = sdf_box(pos, shape_scale[0], shape_scale[1], shape_scale[2])
+    elif shape_type == GeoType.CAPSULE:
+        d = sdf_capsule(pos, shape_scale[0], shape_scale[1], int(Axis.Z))
+    elif shape_type == GeoType.CYLINDER:
+        d = sdf_cylinder(pos, shape_scale[0], shape_scale[1], int(Axis.Z), -1.0, shape_scale[2])
+    elif shape_type == GeoType.ELLIPSOID:
+        d = sdf_ellipsoid(pos, shape_scale)
+    elif shape_type == GeoType.CONE:
+        d = sdf_cone(pos, shape_scale[0], shape_scale[1], int(Axis.Z))
+    sdf_values[x * ny * nz + y * nz + z] = d - shape_offset
+
+
+@wp.kernel(enable_backward=False)
+def _count_dense_mc_faces_kernel(
+    sdf_values: wp.array[wp.float32],
+    ny: wp.int32,
+    nz: wp.int32,
+    tri_range_table: wp.array[wp.int32],
+    corner_offsets_table: wp.array[wp.vec3ub],
+    face_count: wp.array[int],
+):
+    """Count marching-cubes faces on a dense SDF grid (first MC pass)."""
+    x, y, z = wp.tid()
+    cube_idx = wp.int32(0)
+    for i in range(8):
+        co = wp.vec3i(corner_offsets_table[i])
+        v = sdf_values[(x + co[0]) * ny * nz + (y + co[1]) * nz + (z + co[2])]
+        if v < 0.0:
+            cube_idx |= 1 << i
+    tri_start = tri_range_table[cube_idx]
+    tri_end = tri_range_table[cube_idx + 1]
+    num_faces = (tri_end - tri_start) // 3
+    if num_faces > 0:
+        wp.atomic_add(face_count, 0, num_faces)
+
+
+@wp.kernel(enable_backward=False)
+def _generate_dense_mc_kernel(
+    sdf_values: wp.array[wp.float32],
+    ny: wp.int32,
+    nz: wp.int32,
+    origin: wp.vec3,
+    voxel_size: wp.vec3,
+    tri_range_table: wp.array[wp.int32],
+    flat_edge_verts_table: wp.array[wp.vec2ub],
+    corner_offsets_table: wp.array[wp.vec3ub],
+    face_count: wp.array[int],
+    vertices: wp.array[wp.vec3],
+    face_normals: wp.array[wp.vec3],
+):
+    """Generate marching-cubes vertices on a dense SDF grid (second MC pass)."""
+    x, y, z = wp.tid()
+    cube_idx = wp.int32(0)
+    corner_vals = vec8f()
+    for i in range(8):
+        co = wp.vec3i(corner_offsets_table[i])
+        v = sdf_values[(x + co[0]) * ny * nz + (y + co[1]) * nz + (z + co[2])]
+        corner_vals[i] = v
+        if v < 0.0:
+            cube_idx |= 1 << i
+
+    tri_start = tri_range_table[cube_idx]
+    tri_end = tri_range_table[cube_idx + 1]
+    num_verts = tri_end - tri_start
+    num_faces = num_verts // 3
+    out_idx = wp.atomic_add(face_count, 0, num_faces)
+    if num_verts == 0:
+        return
+
+    base = wp.vec3(float(x), float(y), float(z))
+    for fi in range(5):
+        if fi >= num_faces:
+            return
+        face_verts = wp.mat33f()
+        for vi in range(3):
+            ev = wp.vec2i(flat_edge_verts_table[tri_start + 3 * fi + vi])
+            val_0 = wp.float32(corner_vals[ev[0]])
+            val_1 = wp.float32(corner_vals[ev[1]])
+            p_0 = wp.vec3f(corner_offsets_table[ev[0]])
+            p_1 = wp.vec3f(corner_offsets_table[ev[1]])
+            val_diff = val_1 - val_0
+            if wp.abs(val_diff) < MC_EDGE_VAL_DIFF_EPS:
+                p = 0.5 * (p_0 + p_1)
+            else:
+                t = wp.clamp((0.0 - val_0) / val_diff, MC_EDGE_CLAMP_MIN, MC_EDGE_CLAMP_MAX)
+                p = p_0 + t * (p_1 - p_0)
+            local = base + p
+            face_verts[vi] = wp.vec3(
+                origin[0] + local[0] * voxel_size[0],
+                origin[1] + local[1] * voxel_size[1],
+                origin[2] + local[2] * voxel_size[2],
+            )
+        n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
+        n_sq = wp.dot(n, n)
+        if n_sq < MC_DEGENERATE_N_SQ_EPS:
+            normal = wp.vec3(0.0, 0.0, 1.0)
+        else:
+            normal = n / wp.sqrt(n_sq)
+        vertices[3 * out_idx + 3 * fi + 0] = wp.vec3(face_verts[0])
+        vertices[3 * out_idx + 3 * fi + 1] = wp.vec3(face_verts[1])
+        vertices[3 * out_idx + 3 * fi + 2] = wp.vec3(face_verts[2])
+        face_normals[out_idx + fi] = normal
+
+
+def compute_offset_mesh_analytical(
+    shape_type: int,
+    shape_scale: Sequence[float] = (1.0, 1.0, 1.0),
+    offset: float = 0.0,
+    max_resolution: int = 48,
+    device: Devicelike | None = None,
+) -> Mesh | None:
+    """Compute the offset isosurface mesh for a primitive via direct analytical SDF evaluation.
+
+    Unlike :func:`compute_offset_mesh` this skips NanoVDB volume construction
+    and evaluates the analytical SDF on a dense regular grid before running
+    marching cubes.  This is faster for primitive shapes.
+
+    Args:
+        shape_type: Geometry type identifier from :class:`GeoType`.  Must be a
+            primitive with an analytical SDF (sphere, box, capsule, cylinder,
+            ellipsoid, or cone).
+        shape_scale: Shape scale factors [unitless].
+        offset: Outward surface offset [m].  Use ``0`` for the original surface.
+        max_resolution: Maximum grid dimension [voxels].
+        device: CUDA device for GPU allocations.
+
+    Returns:
+        A :class:`Mesh` representing the offset isosurface, or ``None`` when
+        the shape type is unsupported or the mesh would be empty.
+    """
+    if shape_type not in _ANALYTICAL_SDF_TYPES:
+        return None
+
+    if device is None:
+        cur = wp.get_device()
+        device = cur if cur.is_cuda else "cuda:0"
+
+    with wp.ScopedDevice(device):
+        min_ext_list, max_ext_list = get_primitive_extents(shape_type, shape_scale)
+
+        padding = max(abs(offset) * 0.5, 0.02)
+        total_expansion = max(abs(offset) + padding, 0.05)
+
+        min_ext = np.array(min_ext_list, dtype=np.float64) - total_expansion
+        max_ext = np.array(max_ext_list, dtype=np.float64) + total_expansion
+        ext = max_ext - min_ext
+
+        # Adaptively increase resolution when the expansion dominates the
+        # shape extents (e.g. a 1 mm sphere with 0.05 m expansion).  This
+        # ensures at least ~4 voxels span the smallest shape dimension while
+        # capping total memory via a voxel budget (default ~4M voxels ≈ 16 MB
+        # of float32) so thin/flat shapes don't cause OOM.
+        max_voxel_budget = 4_000_000
+        shape_ext = np.array(max_ext_list, dtype=np.float64) - np.array(min_ext_list, dtype=np.float64)
+        min_shape_dim = float(np.min(shape_ext))
+        if min_shape_dim > 0.0:
+            effective_resolution = max(max_resolution, int(np.ceil(float(np.max(ext)) / min_shape_dim * 4)))
+        else:
+            effective_resolution = max_resolution
+
+        max_extent = float(np.max(ext))
+        voxel_target = max_extent / effective_resolution
+        grid_dims = np.maximum(np.round(ext / voxel_target).astype(int), 2)
+
+        total_voxels = int(np.prod(grid_dims))
+        if total_voxels > max_voxel_budget:
+            scale_factor = (max_voxel_budget / total_voxels) ** (1.0 / 3.0)
+            grid_dims = np.maximum(np.round(grid_dims * scale_factor).astype(int), 2)
+            logger.warning(
+                "compute_offset_mesh_analytical: clamped grid from %d voxels to %dx%dx%d (%d voxels) "
+                "for shape type %d with scale %s. Visualization may be lower-fidelity for this shape.",
+                total_voxels,
+                grid_dims[0],
+                grid_dims[1],
+                grid_dims[2],
+                int(np.prod(grid_dims)),
+                shape_type,
+                shape_scale,
+            )
+
+        actual_voxel_size = ext / (grid_dims - 1)
+
+        nx, ny, nz = int(grid_dims[0]), int(grid_dims[1]), int(grid_dims[2])
+
+        sdf_values = wp.empty((nx * ny * nz,), dtype=wp.float32, device=device)
+        wp.launch(
+            _populate_dense_sdf_kernel,
+            dim=(nx, ny, nz),
+            inputs=[
+                int(shape_type),
+                wp.vec3(float(shape_scale[0]), float(shape_scale[1]), float(shape_scale[2])),
+                wp.vec3(float(min_ext[0]), float(min_ext[1]), float(min_ext[2])),
+                wp.vec3(float(actual_voxel_size[0]), float(actual_voxel_size[1]), float(actual_voxel_size[2])),
+                ny,
+                nz,
+                float(offset),
+            ],
+            outputs=[sdf_values],
+            device=device,
+        )
+
+        mc_tables = get_mc_tables(device)
+
+        face_count = wp.zeros((1,), dtype=int, device=device)
+        wp.launch(
+            _count_dense_mc_faces_kernel,
+            dim=(nx - 1, ny - 1, nz - 1),
+            inputs=[sdf_values, ny, nz, mc_tables[0], mc_tables[3]],
+            outputs=[face_count],
+            device=device,
+        )
+
+        num_faces = int(face_count.numpy()[0])
+        if num_faces == 0:
+            logger.warning(
+                "compute_offset_mesh_analytical: marching cubes produced no faces for shape type %d "
+                "with scale %s and offset %.4g (grid %dx%dx%d). "
+                "The shape may be too small for the grid resolution.",
+                shape_type,
+                shape_scale,
+                offset,
+                nx,
+                ny,
+                nz,
+            )
+            return None
+
+        verts = wp.empty((3 * num_faces,), dtype=wp.vec3, device=device)
+        face_normals_out = wp.empty((num_faces,), dtype=wp.vec3, device=device)
+
+        face_count.zero_()
+        wp.launch(
+            _generate_dense_mc_kernel,
+            dim=(nx - 1, ny - 1, nz - 1),
+            inputs=[
+                sdf_values,
+                ny,
+                nz,
+                wp.vec3(float(min_ext[0]), float(min_ext[1]), float(min_ext[2])),
+                wp.vec3(float(actual_voxel_size[0]), float(actual_voxel_size[1]), float(actual_voxel_size[2])),
+                mc_tables[0],
+                mc_tables[4],
+                mc_tables[3],
+            ],
+            outputs=[face_count, verts, face_normals_out],
+            device=device,
+        )
+
+        verts_np = verts.numpy()
+        faces_np = np.arange(3 * num_faces).reshape(-1, 3)
+        faces_np = faces_np[:, ::-1]
+        return Mesh(verts_np, faces_np)

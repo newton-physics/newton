@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Brick Stacking
@@ -49,8 +37,8 @@ BRICK_MARGIN = 4.0e-5
 
 # SDF mesh parameters
 SDF_RESOLUTION = 256
-SDF_NARROW_BAND = 0.004
-SDF_MARGIN = 0.002
+SDF_NARROW_BAND = 0.01
+SDF_MARGIN = 0.01
 
 # Gripper finger positions [m]
 GRIPPER_OPEN = 0.5 * (2 * PITCH * BRICK_SCALE + 0.004)
@@ -131,7 +119,9 @@ def _combine_meshes(mesh_list):
 
 
 STUD_RADIUS = 0.0024
+STUD_COLLIDER_RADIUS = STUD_RADIUS - 0.0002
 STUD_HEIGHT = 0.0017
+COLLIDER_INSET = 0.0001
 WALL_THICKNESS = 0.0012
 TOP_THICKNESS = 0.001
 TUBE_OUTER_RADIUS = 0.003255
@@ -250,13 +240,13 @@ class TaskType(enum.IntEnum):
 
 @wp.kernel(enable_backward=False)
 def set_target_pose_kernel(
-    task_schedule: wp.array(dtype=wp.int32),
-    task_time_limits: wp.array(dtype=float),
-    task_pick_body: wp.array(dtype=int),
-    task_drop_body: wp.array(dtype=int),
-    task_drop_layer: wp.array(dtype=int),
-    task_idx: wp.array(dtype=int),
-    task_time_elapsed: wp.array(dtype=float),
+    task_schedule: wp.array[wp.int32],
+    task_time_limits: wp.array[float],
+    task_pick_body: wp.array[int],
+    task_drop_body: wp.array[int],
+    task_drop_layer: wp.array[int],
+    task_idx: wp.array[int],
+    task_time_elapsed: wp.array[float],
     task_dt: float,
     offset_approach: wp.vec3,
     offset_lift: wp.vec3,
@@ -264,15 +254,15 @@ def set_target_pose_kernel(
     drop_z_offset: wp.vec3,
     brick_stack_height: float,
     home_pos: wp.vec3,
-    task_init_body_q: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
+    task_init_body_q: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
     ee_index: int,
     # outputs
-    ee_pos_target: wp.array(dtype=wp.vec3),
-    ee_pos_interp: wp.array(dtype=wp.vec3),
-    ee_rot_target: wp.array(dtype=wp.vec4),
-    ee_rot_interp: wp.array(dtype=wp.vec4),
-    gripper_target: wp.array2d(dtype=wp.float32),
+    ee_pos_target: wp.array[wp.vec3],
+    ee_pos_interp: wp.array[wp.vec3],
+    ee_rot_target: wp.array[wp.vec4],
+    ee_rot_interp: wp.array[wp.vec4],
+    gripper_target: wp.array2d[wp.float32],
 ):
     tid = wp.tid()
 
@@ -362,15 +352,15 @@ def set_target_pose_kernel(
 
 @wp.kernel(enable_backward=False)
 def advance_task_kernel(
-    task_time_limits: wp.array(dtype=float),
-    ee_pos_target: wp.array(dtype=wp.vec3),
-    ee_rot_target: wp.array(dtype=wp.vec4),
-    body_q: wp.array(dtype=wp.transform),
+    task_time_limits: wp.array[float],
+    ee_pos_target: wp.array[wp.vec3],
+    ee_rot_target: wp.array[wp.vec4],
+    body_q: wp.array[wp.transform],
     ee_index: int,
     # outputs
-    task_idx: wp.array(dtype=int),
-    task_time_elapsed: wp.array(dtype=float),
-    task_init_body_q: wp.array(dtype=wp.transform),
+    task_idx: wp.array[int],
+    task_time_elapsed: wp.array[float],
+    task_init_body_q: wp.array[wp.transform],
 ):
     tid = wp.tid()
     idx = task_idx[tid]
@@ -400,6 +390,7 @@ def advance_task_kernel(
 
 class Example:
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -442,21 +433,23 @@ class Example:
         franka_builder.joint_q[:7] = init_joints.tolist()
         franka_builder.joint_q[7] = GRIPPER_OPEN
         franka_builder.joint_q[8] = GRIPPER_OPEN
-        franka_builder.joint_target_pos[:9] = franka_builder.joint_q[:9]
+        franka_builder.joint_target_q[:9] = franka_builder.joint_q[:9]
 
         # Build full scene
         scene = newton.ModelBuilder()
         scene.add_builder(franka_builder)
         self.add_bricks(scene)
-        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.75))
+        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.75, gap=0.01))
 
         self.model = scene.finalize()
-        self.model.rigid_contact_max = 8192
+
+        contact_max = 16384
+        self.model.rigid_contact_max = contact_max
 
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
-            rigid_contact_max=8192,
+            rigid_contact_max=contact_max,
             broad_phase="nxn",
         )
 
@@ -466,8 +459,8 @@ class Example:
             integrator="implicitfast",
             iterations=15,
             ls_iterations=100,
-            nconmax=8000,
-            njmax=16000,
+            nconmax=contact_max,
+            njmax=contact_max * 2,
             cone="elliptic",
             impratio=50.0,
             use_mujoco_contacts=False,
@@ -479,7 +472,7 @@ class Example:
         self.contacts = self.collision_pipeline.contacts()
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-        wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
+        wp.copy(self.control.joint_target_q[:9], self.model.joint_q[:9])
 
         self.setup_ik()
         self.setup_tasks()
@@ -500,6 +493,7 @@ class Example:
 
     def build_franka_with_table(self):
         builder = newton.ModelBuilder()
+        builder.rigid_gap = 0.005
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_urdf(
@@ -521,7 +515,7 @@ class Example:
             GRIPPER_OPEN,
             GRIPPER_OPEN,
         ]
-        builder.joint_target_pos[:9] = builder.joint_q[:9]
+        builder.joint_target_q[:9] = builder.joint_q[:9]
         builder.joint_target_ke[:9] = [400, 400, 400, 400, 400, 400, 400, 100, 100]
         builder.joint_target_kd[:9] = [40, 40, 40, 40, 40, 40, 40, 10, 10]
         builder.joint_effort_limit[:9] = [87, 87, 87, 87, 12, 12, 12, 100, 100]
@@ -571,7 +565,7 @@ class Example:
 
         return builder
 
-    def add_board_floor(self, scene, center_x, center_y, brick_cfg):
+    def add_board_floor(self, scene, center_x, center_y, brick_cfg, collider_cfg):
         """Add a static gray brick floor centered at (center_x, center_y)."""
         gray_mesh = _build_mesh_with_sdf(
             self.v_2x4,
@@ -586,20 +580,69 @@ class Example:
         solimp_attr = scene.custom_attributes.get("mujoco:geom_solimp")
         bw = self.brick_width_scaled
         bl = self.brick_length_scaled
+        inset = COLLIDER_INSET * BRICK_SCALE
+        box_hz = 0.5 * (BRICK_HEIGHT - STUD_HEIGHT) * BRICK_SCALE - inset
+        box_cz = STUD_HEIGHT * BRICK_SCALE + inset + box_hz
+        stud_hh = 0.5 * STUD_HEIGHT * BRICK_SCALE - inset
+        stud_cz = BRICK_HEIGHT * BRICK_SCALE + stud_hh
+        nx, ny = 4, 2
+        ox = 0.5 * nx * PITCH * BRICK_SCALE
+        oy = 0.5 * ny * PITCH * BRICK_SCALE
+        wt = WALL_THICKNESS * BRICK_SCALE
+        wall_hz = 0.5 * BRICK_HEIGHT * BRICK_SCALE - inset
+        wall_cz = wall_hz + inset
+        wall_boxes = [
+            (wp.vec3(ox - 0.5 * wt, 0.0, wall_cz), 0.5 * wt - inset, oy - inset, wall_hz),
+            (wp.vec3(-(ox - 0.5 * wt), 0.0, wall_cz), 0.5 * wt - inset, oy - inset, wall_hz),
+            (wp.vec3(0.0, oy - 0.5 * wt, wall_cz), ox - inset, 0.5 * wt - inset, wall_hz),
+            (wp.vec3(0.0, -(oy - 0.5 * wt), wall_cz), ox - inset, 0.5 * wt - inset, wall_hz),
+        ]
         for dx in (-1.5 * bw, -0.5 * bw, 0.5 * bw, 1.5 * bw):
             for dy in (-0.5 * bl, 0.5 * bl):
                 pos = wp.vec3(center_x + dx, center_y + dy, floor_z)
+                brick_xform = wp.transform(pos, floor_rot)
                 shape_idx = scene.shape_count
                 scene.add_shape_mesh(
                     body=-1,
                     mesh=gray_mesh,
                     cfg=brick_cfg,
-                    xform=wp.transform(pos, floor_rot),
+                    xform=brick_xform,
                 )
                 if solimp_attr is not None:
                     if solimp_attr.values is None:
                         solimp_attr.values = {}
                     solimp_attr.values[shape_idx] = (0.6, 0.95, 0.00075, 0.5, 2.5)
+                box_local = wp.transform(wp.vec3(0.0, 0.0, box_cz), wp.quat_identity())
+                scene.add_shape_box(
+                    body=-1,
+                    hx=ox - inset,
+                    hy=oy - inset,
+                    hz=box_hz,
+                    xform=wp.transform_multiply(brick_xform, box_local),
+                    cfg=collider_cfg,
+                )
+                for w_pos, w_hx, w_hy, w_hz in wall_boxes:
+                    w_local = wp.transform(w_pos, wp.quat_identity())
+                    scene.add_shape_box(
+                        body=-1,
+                        hx=w_hx,
+                        hy=w_hy,
+                        hz=w_hz,
+                        xform=wp.transform_multiply(brick_xform, w_local),
+                        cfg=collider_cfg,
+                    )
+                for si in range(nx):
+                    for sj in range(ny):
+                        sx = (si - (nx - 1) / 2.0) * PITCH * BRICK_SCALE
+                        sy = (sj - (ny - 1) / 2.0) * PITCH * BRICK_SCALE
+                        stud_local = wp.transform(wp.vec3(sx, sy, stud_cz), wp.quat_identity())
+                        scene.add_shape_cylinder(
+                            body=-1,
+                            radius=STUD_COLLIDER_RADIUS * BRICK_SCALE,
+                            half_height=stud_hh,
+                            xform=wp.transform_multiply(brick_xform, stud_local),
+                            cfg=collider_cfg,
+                        )
 
     def add_bricks(self, scene):
         brick_cfg = newton.ModelBuilder.ShapeConfig(
@@ -610,13 +653,30 @@ class Example:
             margin=BRICK_MARGIN,
             gap=SDF_MARGIN,
         )
+        # Invisible primitive colliders (box walls, floor slab, stud cylinders)
+        # approximate the brick geometry to make brick-brick contacts more robust,
+        # i.e. reduce interpenetration that can occur with the compliant SDF model
+        # when bricks move quickly or collide violently, outside the gentle Franka
+        # pick-and-place regime this example is designed around.
+        #
+        # Keep the proxies collision-only with zero density so they do not add to
+        # mass and inertia on top of the visible SDF mesh.
+        collider_cfg = newton.ModelBuilder.ShapeConfig(
+            density=0.0,
+            ke=BRICK_KE,
+            kd=BRICK_KD,
+            mu=0.7,
+            margin=BRICK_MARGIN,
+            gap=SDF_MARGIN,
+            is_visible=False,
+        )
         bh = 0.5 * self.brick_height_scaled
         sqrt2_2 = float(np.sqrt(2.0) / 2.0)
         rot_90z = wp.quat(0.0, 0.0, sqrt2_2, sqrt2_2)
 
         blue_x = self.table_top_center[0] - 0.05
         blue_y = self.table_top_center[1] - 0.04
-        self.add_board_floor(scene, blue_x, blue_y, brick_cfg)
+        self.add_board_floor(scene, blue_x, blue_y, brick_cfg, collider_cfg)
 
         positions = [
             self.table_top_center + wp.vec3(0.0, 0.06, bh),
@@ -628,6 +688,23 @@ class Example:
         labels = ["brick_red", "brick_green", "brick_blue"]
 
         solimp_attr = scene.custom_attributes.get("mujoco:geom_solimp")
+        nx, ny = 4, 2
+        inset = COLLIDER_INSET * BRICK_SCALE
+        box_hz = 0.5 * (BRICK_HEIGHT - STUD_HEIGHT) * BRICK_SCALE - inset
+        box_cz = STUD_HEIGHT * BRICK_SCALE + inset + box_hz
+        stud_hh = 0.5 * STUD_HEIGHT * BRICK_SCALE - inset
+        stud_cz = BRICK_HEIGHT * BRICK_SCALE + stud_hh
+        ox = 0.5 * nx * PITCH * BRICK_SCALE
+        oy = 0.5 * ny * PITCH * BRICK_SCALE
+        wt = WALL_THICKNESS * BRICK_SCALE
+        wall_hz = 0.5 * BRICK_HEIGHT * BRICK_SCALE - inset
+        wall_cz = wall_hz + inset
+        wall_boxes = [
+            (wp.vec3(ox - 0.5 * wt, 0.0, wall_cz), 0.5 * wt - inset, oy - inset, wall_hz),
+            (wp.vec3(-(ox - 0.5 * wt), 0.0, wall_cz), 0.5 * wt - inset, oy - inset, wall_hz),
+            (wp.vec3(0.0, oy - 0.5 * wt, wall_cz), ox - inset, 0.5 * wt - inset, wall_hz),
+            (wp.vec3(0.0, -(oy - 0.5 * wt), wall_cz), ox - inset, 0.5 * wt - inset, wall_hz),
+        ]
         self.brick_bodies = []
         for i in range(self.brick_count):
             mesh = _build_mesh_with_sdf(self.v_2x4, self.f_2x4, color=colors[i], scale=BRICK_SCALE)
@@ -638,6 +715,34 @@ class Example:
                 if solimp_attr.values is None:
                     solimp_attr.values = {}
                 solimp_attr.values[shape_idx] = (0.6, 0.95, 0.00075, 0.5, 2.5)
+            scene.add_shape_box(
+                body=body,
+                hx=ox - inset,
+                hy=oy - inset,
+                hz=box_hz,
+                xform=wp.transform(wp.vec3(0.0, 0.0, box_cz), wp.quat_identity()),
+                cfg=collider_cfg,
+            )
+            for w_pos, w_hx, w_hy, w_hz in wall_boxes:
+                scene.add_shape_box(
+                    body=body,
+                    hx=w_hx,
+                    hy=w_hy,
+                    hz=w_hz,
+                    xform=wp.transform(w_pos, wp.quat_identity()),
+                    cfg=collider_cfg,
+                )
+            for si in range(nx):
+                for sj in range(ny):
+                    sx = (si - (nx - 1) / 2.0) * PITCH * BRICK_SCALE
+                    sy = (sj - (ny - 1) / 2.0) * PITCH * BRICK_SCALE
+                    scene.add_shape_cylinder(
+                        body=body,
+                        radius=STUD_COLLIDER_RADIUS * BRICK_SCALE,
+                        half_height=stud_hh,
+                        xform=wp.transform(wp.vec3(sx, sy, stud_cz), wp.quat_identity()),
+                        cfg=collider_cfg,
+                    )
             self.brick_bodies.append(body)
 
     # -- IK ------------------------------------------------------------------
@@ -828,8 +933,8 @@ class Example:
         else:
             self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
 
-        wp.copy(dest=self.control.joint_target_pos[:7], src=self.joint_q_ik.flatten()[:7])
-        wp.copy(dest=self.control.joint_target_pos[7:9], src=self.gripper_target.flatten()[:2])
+        wp.copy(dest=self.control.joint_target_q[:7], src=self.joint_q_ik.flatten()[:7])
+        wp.copy(dest=self.control.joint_target_q[7:9], src=self.gripper_target.flatten()[:2])
 
         wp.launch(
             advance_task_kernel,
@@ -849,13 +954,12 @@ class Example:
     def capture(self):
         self.graph = None
         self.graph_ik = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-            with wp.ScopedCapture() as capture:
-                self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
-            self.graph_ik = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
+        self.graph_ik = capture.graph
 
     def simulate(self):
         self.collision_pipeline.collide(self.state_0, self.contacts)
@@ -870,7 +974,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-        wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
+        wp.copy(self.control.joint_target_q[:9], self.model.joint_q[:9])
         self.joint_q_ik = wp.clone(self.model.joint_q[: self.model_ik.joint_coord_count].reshape((1, -1)))
         self.setup_tasks()
         self.capture()
@@ -935,14 +1039,9 @@ class Example:
         if errors:
             raise ValueError("Brick stacking verification failed:\n  " + "\n  ".join(errors))
 
-    def gui(self, ui):
-        if ui.button("Reset"):
-            self.reset()
-
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
 
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

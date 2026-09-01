@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Cloth Rollers
@@ -32,7 +20,7 @@ from newton import ParticleFlags
 
 
 @wp.kernel
-def increment_time(time: wp.array(dtype=float), dt: float):
+def increment_time(time: wp.array[float], dt: float):
     """Increment time by dt."""
     time[0] = time[0] + dt
 
@@ -41,12 +29,12 @@ def increment_time(time: wp.array(dtype=float), dt: float):
 def rotate_cylinder(
     angular_speed: float,
     dt: float,
-    time: wp.array(dtype=float),
+    time: wp.array[float],
     center_x: float,
     center_z: float,
-    q0: wp.array(dtype=wp.vec3),
-    indices: wp.array(dtype=wp.int64),
-    q1: wp.array(dtype=wp.vec3),
+    q0: wp.array[wp.vec3],
+    indices: wp.array[wp.int64],
+    q1: wp.array[wp.vec3],
 ):
     """Rotate cylinder vertices around their center axis."""
     i = wp.tid()
@@ -234,7 +222,7 @@ class Example:
         target_local_y = target_world_z - cloth_offset_z
 
         # Build model with zero gravity
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
         # Generate cloth mesh with extension going directly to target
         self.cloth_verts, self.cloth_faces, self.spiral_rows, self.ext_rows = rolled_cloth_mesh(
@@ -249,12 +237,25 @@ class Example:
         self.num_cloth_verts = len(self.cloth_verts)
         self.total_rows = self.spiral_rows + self.ext_rows
 
+        # Give both triangles in each quad the same checker color so the
+        # material pattern makes the rolling motion easier to follow.
+        checker_indices = np.indices((self.total_rows - 1, self.nv - 1)).sum(axis=0) % 2
+        checker_palette = np.array(((0.08, 0.24, 0.65), (0.9, 0.9, 0.9)), dtype=np.float32)
+        self.cloth_colors = np.repeat(checker_palette[checker_indices.reshape(-1)], 2, axis=0)
+
         # Generate cylinder meshes
         cylinder_segments = 128
         self.cyl1_verts, self.cyl1_faces = cylinder_mesh(radius=self.cyl1_radius, segments=cylinder_segments)
         self.cyl2_verts, self.cyl2_faces = cylinder_mesh(radius=self.cyl2_radius, segments=cylinder_segments)
         self.num_cyl1_verts = len(self.cyl1_verts)
         self.num_cyl2_verts = len(self.cyl2_verts)
+
+        # Alternate colors around the circumference in broad axial stripes.
+        # Each angular segment contributes two triangles, which share a color.
+        stripe_width = 8
+        stripe_indices = (np.arange(cylinder_segments) // stripe_width) % 2
+        stripe_palette = np.array(((0.55, 0.23, 0.07), (0.9, 0.48, 0.16)), dtype=np.float32)
+        self.roller_colors = np.repeat(stripe_palette[stripe_indices], 2, axis=0)
 
         # Add cloth mesh
         builder.add_cloth_mesh(
@@ -267,10 +268,11 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=1.0e-5,
+            tri_kd=1.0e0,
             edge_ke=1e2,
-            edge_kd=0.1,
+            edge_kd=1.0e1,
             particle_radius=0.5,
+            color=self.cloth_colors,
         )
 
         # Add first cylinder
@@ -284,9 +286,10 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=1.0e-5,
+            tri_kd=1.0e0,
             edge_ke=1e2,
             edge_kd=0.0,
+            color=self.roller_colors,
         )
 
         # Add second cylinder
@@ -300,13 +303,14 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=1.0e-5,
+            tri_kd=1.0e0,
             edge_ke=1,
             edge_kd=0.01,
+            color=self.roller_colors,
         )
 
         # Add ground plane
-        builder.add_ground_plane(-1.0)
+        builder.add_ground_plane(height=-1.0)
 
         # Color for VBD solver
         builder.color(include_bending=False)
@@ -314,7 +318,7 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
         self.model.soft_contact_ke = 5.0e5
-        self.model.soft_contact_kd = 1.0e-5
+        self.model.soft_contact_kd = 5.0
         self.model.soft_contact_mu = 0.1
 
         # Fix outer edge of cloth to cylinder 2 and set up cylinder rotation
@@ -413,12 +417,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         self.solver.rebuild_bvh(self.state_0)
@@ -539,7 +540,4 @@ if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
-    example = Example(viewer=viewer, args=args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer=viewer, args=args), args)

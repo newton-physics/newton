@@ -1,26 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 ###########################################################################
 # Example Contact Sensor
 #
-# Shows how to use the SensorContact class to evaluate both net contact
-# forces and contact forces between individual objects.
-# The flap has a contact sensor registering the net contact force of the
-# objects on top. The upper and lower plates' sensors will only register
-# contacts with the cube and with the ball, respectively.
+# Shows how to use the SensorContact class to evaluate contact forces,
+# including per-counterpart breakdowns.
+# The flap has a contact sensor registering the total contact force of
+# the objects on top. The plates' sensors register per-counterpart forces
+# for the cube and the ball to detect which object touched which plate. Each
+# plate will light up when touched by the matching object.
+#
 #
 # Command: python -m newton.examples sensor_contact
 #
@@ -38,6 +28,7 @@ from newton.tests.unittest_utils import find_nonfinite_members
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
@@ -46,11 +37,6 @@ class Example:
         self.reset_interval = 8.0
 
         self.viewer = viewer
-        self.plot_window = ViewerPlot(
-            viewer, "Flap Contact Force", n_points=100, avg=10, scale_min=0, graph_size=(400, 200)
-        )
-        if isinstance(self.viewer, newton.viewer.ViewerGL):
-            self.viewer.register_ui_callback(self.plot_window.render, "free")
 
         builder = newton.ModelBuilder()
         builder.add_usd(newton.examples.get_asset("sensor_contact_scene.usda"))
@@ -61,16 +47,19 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.flap_contact_sensor = SensorContact(self.model, sensing_obj_shapes="*Flap", verbose=True)
+        self.flap_contact_sensor = SensorContact(self.model, sensing_shapes="*Flap", verbose=True)
 
+        # String patterns return matches in ascending shape index order.
+        # Plate1 has a lower index than Plate2 (added first), so row 0 → Plate1, row 1 → Plate2.
+        plate_labels = ["*Plate1", "*Plate2"]
+        counterpart_labels = ["*Cube*", "*Sphere*"]
         self.plate_contact_sensor = SensorContact(
             self.model,
-            sensing_obj_shapes="*Plate*",
-            counterpart_shapes=["*Cube*", "*Sphere*"],
-            include_total=False,
+            sensing_shapes=plate_labels,
+            counterpart_shapes=counterpart_labels,
+            measure_total=False,
             verbose=True,
         )
-
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             njmax=100,
@@ -88,7 +77,16 @@ class Example:
 
         self.viewer.set_model(self.model)
 
+        self.shape_map = {key: s for s, key in enumerate(self.model.shape_label)}
         self.plates_touched = 2 * [False]
+        # Each plate watches one counterpart — Plate1 watches Cube, Plate2 watches Sphere.
+        # Look up the counterpart column for each plate's target.
+        cube_shape = self.shape_map["/env/Cube"]
+        sphere_shape = self.shape_map["/env/Sphere"]
+        self.counterpart_col = [
+            self.plate_contact_sensor.counterpart_indices[0].index(cube_shape),
+            self.plate_contact_sensor.counterpart_indices[1].index(sphere_shape),
+        ]
         self.shape_colors = {
             "/env/Plate1": 3 * [0.4],
             "/env/Plate2": 3 * [0.4],
@@ -96,7 +94,6 @@ class Example:
             "/env/Cube": [0.2, 0.4, 0.8],
             "/env/Flap": 3 * [0.8],
         }
-        self.shape_map = {key: s for s, key in enumerate(self.model.shape_label)}
 
         self.state_0 = self.model.state()
 
@@ -111,6 +108,10 @@ class Example:
         self.initial_joint_qd = wp.clone(self.state_0.joint_qd)
 
         self.capture()
+
+    def _set_shape_colors(self, shape_colors: dict[int, list[float] | tuple[float, float, float]]):
+        for shape_idx, color in shape_colors.items():
+            self.model.shape_color[shape_idx : shape_idx + 1].fill_(wp.vec3(color))
 
     def capture(self):
         self.graph = None
@@ -133,7 +134,7 @@ class Example:
             self.reset()
 
         hinge_angle = min(self.sim_time / 3, 1.6)
-        self.control.joint_target_pos[self.hinge_joint_q_start : self.hinge_joint_q_start + 1].fill_(hinge_angle)
+        self.control.joint_target_q[self.hinge_joint_q_start : self.hinge_joint_q_start + 1].fill_(hinge_angle)
 
         with wp.ScopedTimer("step", active=False):
             if self.graph:
@@ -142,31 +143,35 @@ class Example:
                 self.simulate()
         self.plate_contact_sensor.update(self.state_0, self.contacts)
 
-        net_force = self.plate_contact_sensor.net_force.numpy()
+        # Check if any object touched the matching plate by looking up per-counterpart forces.
+        net_force = self.plate_contact_sensor.force_matrix.numpy()
         for i in range(2):
-            if np.abs(net_force[i, i]).max() == 0:
-                continue
             if self.plates_touched[i]:
                 continue
-
-            # color newly touched plate
-            plate = self.plate_contact_sensor.sensing_objs[0][i][0]
-            obj = self.plate_contact_sensor.counterparts[0][i][0]
-            obj_key = self.model.shape_label[obj]
+            if np.abs(net_force[i, self.counterpart_col[i]]).max() == 0:
+                continue
+            plate_shape = self.plate_contact_sensor.sensing_indices[i]
+            counterpart_shape = self.plate_contact_sensor.counterpart_indices[i][self.counterpart_col[i]]
             self.plates_touched[i] = True
-            print(f"Plate {self.model.shape_label[plate]} was touched by counterpart {obj_key}")
-            self.viewer.update_shape_colors({plate: self.shape_colors[obj_key]})
+            plate_label = self.model.shape_label[plate_shape]
+            counterpart_label = self.model.shape_label[counterpart_shape]
+            print(f"Plate {plate_label} was touched by counterpart {counterpart_label}")
+            self._set_shape_colors({plate_shape: self.shape_colors[counterpart_label]})
 
         self.flap_contact_sensor.update(self.state_0, self.contacts)
-        self.plot_window.add_point(np.abs(self.flap_contact_sensor.net_force.numpy()[0, 0, 2]))
+        self.viewer.log_scalar(
+            "Flap Contact Force",
+            np.abs(self.flap_contact_sensor.total_force.numpy()[0, 2]),
+            smoothing=10,
+        )
         self.sim_time += self.frame_dt
 
     def reset(self):
         self.sim_time = 0
         self.next_reset = self.sim_time + self.reset_interval
-        self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.shape_colors.items()})
+        self._set_shape_colors({self.shape_map[s]: v for s, v in self.shape_colors.items()})
         self.plates_touched = 2 * [False]
-        self.plot_window.reset()
+        self.viewer.log_scalar("Flap Contact Force", 0.0, clear=True)
 
         print("Resetting")
         # Restore initial joint positions and velocities in-place.
@@ -189,7 +194,7 @@ class Example:
         if self.sim_time > 1.4:
             assert self.plates_touched[0]
         if self.sim_time > 2.8:
-            assert self.flap_contact_sensor.net_force.numpy().sum() == 0
+            assert self.flap_contact_sensor.total_force.numpy().sum() == 0
         # if self.sim_time > 4.0: assert self.plates_touched[1]   # unreliable due to jerky cube motion
 
     def test_final(self):
@@ -202,58 +207,9 @@ class Example:
         )
         assert len(find_nonfinite_members(self.flap_contact_sensor)) == 0
         assert len(find_nonfinite_members(self.plate_contact_sensor)) == 0
-
-
-class ViewerPlot:
-    """ImGui plot window"""
-
-    def __init__(self, viewer=None, title="Plot", n_points=200, avg=1, **kwargs):
-        self.viewer = viewer
-        self.avg = avg
-        self.title = title
-        self.data = np.zeros(n_points, dtype=np.float32)
-        self.plot_kwargs = kwargs
-        self.cache = []
-
-    def add_point(self, point):
-        self.cache.append(point)
-        if len(self.cache) == self.avg:
-            self.data[0] = sum(self.cache) / self.avg
-            self.data = np.roll(self.data, -1)
-            self.cache.clear()
-
-    def reset(self):
-        self.data.fill(0)
-        self.cache.clear()
-
-    def render(self, imgui):
-        """
-        Render the replay UI controls.
-
-        Args:
-            imgui: The ImGui object passed by the ViewerGL callback system
-        """
-        if not self.viewer or not self.viewer.ui.is_available:
-            return
-
-        io = self.viewer.ui.io
-
-        # Position the plot window
-        window_shape = (400, 350)
-        imgui.set_next_window_pos(
-            imgui.ImVec2(io.display_size[0] - window_shape[0] - 10, io.display_size[1] - window_shape[1] - 10)
-        )
-        imgui.set_next_window_size(imgui.ImVec2(*window_shape))
-
-        flags = imgui.WindowFlags_.no_resize.value
-
-        if imgui.begin(self.title, flags=flags):
-            imgui.text("Flap contact force")
-            avail = imgui.get_content_region_avail()
-            plot_kwargs = dict(self.plot_kwargs)
-            plot_kwargs["graph_size"] = (avail.x, plot_kwargs.get("graph_size", (0, 0))[1])
-            imgui.plot_lines("##force", self.data, **plot_kwargs)
-        imgui.end()
+        # sensing_indices preserves the input order given to the sensor.
+        assert self.model.shape_label[self.plate_contact_sensor.sensing_indices[0]] == "/env/Plate1"
+        assert self.model.shape_label[self.plate_contact_sensor.sensing_indices[1]] == "/env/Plate2"
 
 
 if __name__ == "__main__":
@@ -261,6 +217,4 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

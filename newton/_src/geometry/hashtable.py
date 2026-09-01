@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """GPU-friendly hash table for concurrent key-to-index mapping.
 
@@ -77,7 +65,7 @@ def _hashtable_hash(key: wp.uint64, capacity_mask: int) -> int:
 @wp.func
 def hashtable_find(
     key: wp.uint64,
-    keys: wp.array(dtype=wp.uint64),
+    keys: wp.array[wp.uint64],
 ) -> int:
     """Find a key and return its entry index (read-only lookup).
 
@@ -118,8 +106,8 @@ def hashtable_find(
 @wp.func
 def hashtable_find_or_insert(
     key: wp.uint64,
-    keys: wp.array(dtype=wp.uint64),
-    active_slots: wp.array(dtype=wp.int32),
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
 ) -> int:
     """Find or insert a key and return the entry index.
 
@@ -171,10 +159,10 @@ def hashtable_find_or_insert(
     return -1
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _hashtable_clear_keys_kernel(
-    keys: wp.array(dtype=wp.uint64),
-    active_slots: wp.array(dtype=wp.int32),
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
     capacity: int,
     num_threads: int,
 ):
@@ -197,9 +185,9 @@ def _hashtable_clear_keys_kernel(
         i += num_threads
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _zero_count_kernel(
-    active_slots: wp.array(dtype=wp.int32),
+    active_slots: wp.array[wp.int32],
     capacity: int,
 ):
     """Zero the count element after clearing."""

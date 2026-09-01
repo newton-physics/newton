@@ -1,22 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Unit tests for the USD importer utility."""
 
 import math
-import os
 import unittest
 
 import numpy as np
@@ -24,16 +11,19 @@ import warp as wp
 
 import newton
 from newton import Model, ModelBuilder
+from newton._src.core.types import Axis
+from newton._src.geometry.flags import ShapeFlags
+from newton._src.geometry.types import GeoType
 from newton._src.solvers.kamino import SolverKamino
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton._src.solvers.kamino._src.core.gravity import GravityDescriptor
 from newton._src.solvers.kamino._src.core.joints import JOINT_QMAX, JOINT_QMIN, JointActuationType, JointDoFType
-from newton._src.solvers.kamino._src.core.shapes import ShapeType
-from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path, get_testing_usd_assets_path
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.checks import assert_builders_equal
+from newton.tests import get_kamino_basics_asset, get_kamino_testing_asset
+from newton.tests.kamino.utils.checks import assert_builders_equal
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 ###
@@ -48,10 +38,6 @@ class TestUSDImporter(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
-        # Set the paths to the assets provided by the kamino package
-        self.TEST_USD_ASSETS_PATH = get_testing_usd_assets_path()
-        self.BASICS_USD_ASSETS_PATH = get_basics_usd_assets_path()
-
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
             print("\n")  # Add newline before test output for better readability
@@ -64,187 +50,269 @@ class TestUSDImporter(unittest.TestCase):
         if self.verbose:
             msg.reset_log_level()
 
+    def test_gravity_descriptor_from_usd_default_magnitude(self):
+        """Resolve OpenUSD's negative-infinity gravity sentinel."""
+        gravity = GravityDescriptor.from_usd((0.0, 0.0, 0.0), -float("inf"), Axis.Y, 1.0)
+
+        np.testing.assert_array_equal(gravity.vector, np.array([0.0, -9.81, 0.0], dtype=np.float32))
+
+    def test_gravity_descriptor_from_usd_negative_magnitude(self):
+        """Preserve an explicitly authored negative gravity magnitude."""
+        gravity = GravityDescriptor.from_usd((0.0, 0.0, -1.0), -1.0, Axis.Y, 1.0)
+
+        np.testing.assert_array_equal(gravity.vector, np.array([0.0, 0.0, 1.0], dtype=np.float32))
+
+    def test_gravity_descriptor_from_usd_explicit_values(self):
+        """Normalize and scale explicitly authored OpenUSD gravity."""
+        gravity = GravityDescriptor.from_usd((3.0, 4.0, 0.0), 8.0, Axis.Z, 0.5)
+
+        np.testing.assert_allclose(gravity.vector, np.array([2.4, 3.2, 0.0], dtype=np.float32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_default_physics_scene_gravity(self):
+        """Import the resolved default gravity of a USD physics scene."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+        builder = USDImporter().import_from(stage, load_static_geometry=False, load_materials=False)
+
+        np.testing.assert_array_equal(builder.gravity[0].vector, np.array([0.0, -9.81, 0.0], dtype=np.float32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_zero_gravity_uses_stage_up_axis(self):
+        """Retain the stage up axis when imported gravity is zero."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        scene = UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+        scene.CreateGravityMagnitudeAttr(0.0)
+
+        builder = USDImporter().import_from(stage, load_static_geometry=False, load_materials=False)
+
+        self.assertEqual(builder.up_axes[0], Axis.Y)
+        np.testing.assert_array_equal(builder.gravity[0].vector, np.zeros(3, dtype=np.float32))
+
     ###
     # Joints supported natively by USD
     ###
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_preserve_floating_articulation_root_free_joint_with_loop(self):
+        """Test preserving a floating root while importing a loop without tree sorting."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Cube.Define(stage, "/Root")
+        child = UsdGeom.Cube.Define(stage, "/Child")
+        for body in (root, child):
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass.CreateMassAttr(1.0)
+            mass.CreateDiagonalInertiaAttr(Gf.Vec3f(1.0, 1.0, 1.0))
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        primary = UsdPhysics.FixedJoint.Define(stage, "/Primary")
+        primary.CreateBody0Rel().SetTargets([root.GetPath()])
+        primary.CreateBody1Rel().SetTargets([child.GetPath()])
+        loop = UsdPhysics.FixedJoint.Define(stage, "/Loop")
+        loop.CreateBody0Rel().SetTargets([child.GetPath()])
+        loop.CreateBody1Rel().SetTargets([root.GetPath()])
+        loop.CreateExcludeFromArticulationAttr().Set(True)
+
+        builder = USDImporter().import_from(stage, load_static_geometry=False, load_materials=False)
+
+        self.assertEqual(builder.num_joints, 3)
+        self.assertEqual(builder.num_joint_coords, 7)
+        self.assertEqual(builder.num_joint_dofs, 6)
+        self.assertEqual([joint.name for joint in builder.joints[0]], ["world_to_Root", "Primary", "Loop"])
+        self.assertEqual(builder.joints[0][0].dof_type, JointDoFType.FREE)
+
+        model = builder.finalize(device=self.default_device)
+        self.assertEqual(model.info.base_joint_index.numpy().tolist(), [0])
+
     def test_import_joint_revolute_passive_unary(self):
         """Test importing a passive revolute joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_revolute_passive_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_revolute_passive_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 1)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.REVOLUTE)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, -1)
-        self.assertEqual(builder_usd.joints[0].bid_F, 0)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 1)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 1)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.REVOLUTE)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 1)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [0.5 * math.pi])
 
     def test_import_joint_revolute_passive(self):
         """Test importing a passive revolute joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_revolute_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_revolute_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.REVOLUTE)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 1)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 1)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.REVOLUTE)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 1)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [0.5 * math.pi])
 
     def test_import_joint_revolute_actuated(self):
         """Test importing a actuated revolute joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_revolute_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_revolute_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.REVOLUTE)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 1)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 1)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.REVOLUTE)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 1)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0])
 
     def test_import_joint_prismatic_passive_unary(self):
         """Test importing a passive prismatic joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_prismatic_passive_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_prismatic_passive_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 1)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.PRISMATIC)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, -1)
-        self.assertEqual(builder_usd.joints[0].bid_F, 0)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 1)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 1)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-1.0])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [1.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.PRISMATIC)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 1)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-1.0])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [1.0])
 
     def test_import_joint_prismatic_passive(self):
         """Test importing a passive prismatic joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_prismatic_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_prismatic_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.PRISMATIC)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 1)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 1)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-1.0])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [1.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.PRISMATIC)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 1)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-1.0])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [1.0])
 
     def test_import_joint_prismatic_actuated(self):
         """Test importing a actuated prismatic joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_prismatic_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_prismatic_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.PRISMATIC)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 1)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 1)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-1.0])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [1.0])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.PRISMATIC)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 1)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-1.0])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [1.0])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0])
 
     def test_import_joint_spherical_unary(self):
         """Test importing a passive spherical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_spherical_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_spherical_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 1)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.SPHERICAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, -1)
-        self.assertEqual(builder_usd.joints[0].bid_F, 0)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 3)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 3)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 3)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [JOINT_QMIN, JOINT_QMIN, JOINT_QMIN])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [JOINT_QMAX, JOINT_QMAX, JOINT_QMAX])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.SPHERICAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 3)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [JOINT_QMIN, JOINT_QMIN, JOINT_QMIN])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [JOINT_QMAX, JOINT_QMAX, JOINT_QMAX])
 
     def test_import_joint_spherical(self):
         """Test importing a passive spherical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_spherical.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_spherical.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.SPHERICAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 3)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 3)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 3)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [JOINT_QMIN, JOINT_QMIN, JOINT_QMIN])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [JOINT_QMAX, JOINT_QMAX, JOINT_QMAX])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.SPHERICAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 3)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [JOINT_QMIN, JOINT_QMIN, JOINT_QMIN])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [JOINT_QMAX, JOINT_QMAX, JOINT_QMAX])
 
     ###
     # Joints based on specializations of UsdPhysicsD6Joint
@@ -252,208 +320,208 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_cylindrical_passive_unary(self):
         """Test importing a passive cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cylindrical_passive_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cylindrical_passive_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 1)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.CYLINDRICAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, -1)
-        self.assertEqual(builder_usd.joints[0].bid_F, 0)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 2)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 2)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 2)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-1, JOINT_QMIN])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [1, JOINT_QMAX])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CYLINDRICAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 2)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-1, JOINT_QMIN])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [1, JOINT_QMAX])
 
     def test_import_joint_cylindrical_passive(self):
         """Test importing a passive cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cylindrical_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cylindrical_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.CYLINDRICAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 2)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 2)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 2)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-1, JOINT_QMIN])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [1, JOINT_QMAX])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CYLINDRICAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 2)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-1, JOINT_QMIN])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [1, JOINT_QMAX])
 
     def test_import_joint_cylindrical_actuated(self):
         """Test importing a actuated cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cylindrical_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cylindrical_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.CYLINDRICAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 2)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 2)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 2)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-1, JOINT_QMIN])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [1, JOINT_QMAX])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0, 200.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CYLINDRICAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 2)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-1, JOINT_QMIN])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [1, JOINT_QMAX])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0, 200.0])
 
     def test_import_joint_universal_passive_unary(self):
         """Test importing a passive universal joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_universal_passive_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_universal_passive_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 1)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.UNIVERSAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, -1)
-        self.assertEqual(builder_usd.joints[0].bid_F, 0)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 2)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 2)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 2)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-0.5 * math.pi, -0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [0.5 * math.pi, 0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.UNIVERSAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 2)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-0.5 * math.pi, -0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [0.5 * math.pi, 0.5 * math.pi])
 
     def test_import_joint_universal_passive(self):
         """Test importing a passive universal joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_universal_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_universal_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.UNIVERSAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 2)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 2)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 2)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-0.5 * math.pi, -0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [0.5 * math.pi, 0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.UNIVERSAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 2)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-0.5 * math.pi, -0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [0.5 * math.pi, 0.5 * math.pi])
 
     def test_import_joint_universal_actuated(self):
         """Test importing a actuated universal joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_universal_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_universal_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.UNIVERSAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 2)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 2)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 2)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-0.5 * math.pi, -0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [0.5 * math.pi, 0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0, 200.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.UNIVERSAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 2)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-0.5 * math.pi, -0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [0.5 * math.pi, 0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0, 200.0])
 
     def test_import_joint_cartesian_passive_unary(self):
         """Test importing a passive cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cartesian_passive_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cartesian_passive_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 1)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.CARTESIAN)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, -1)
-        self.assertEqual(builder_usd.joints[0].bid_F, 0)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 3)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 3)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 3)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-10.0, -20.0, -30.0])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [10.0, 20.0, 30.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CARTESIAN)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, -1)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 0)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 3)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-10.0, -20.0, -30.0])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [10.0, 20.0, 30.0])
 
     def test_import_joint_cartesian_passive(self):
         """Test importing a passive cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cartesian_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cartesian_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.CARTESIAN)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 3)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 3)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 3)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-10.0, -20.0, -30.0])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [10.0, 20.0, 30.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CARTESIAN)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 3)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-10.0, -20.0, -30.0])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [10.0, 20.0, 30.0])
 
     def test_import_joint_cartesian_actuated(self):
         """Test importing a actuated cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cartesian_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cartesian_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.CARTESIAN)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 3)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 3)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 3)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-10.0, -20.0, -30.0])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [10.0, 20.0, 30.0])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0, 200.0, 300.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CARTESIAN)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 3)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-10.0, -20.0, -30.0])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [10.0, 20.0, 30.0])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0, 200.0, 300.0])
 
     ###
     # Joints based on UsdPhysicsD6Joint
@@ -461,273 +529,273 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_revolute_passive(self):
         """Test importing a passive revolute joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_revolute_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_revolute_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.REVOLUTE)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 1)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 1)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [math.pi])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.REVOLUTE)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 1)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [math.pi])
 
     def test_import_joint_d6_revolute_actuated(self):
         """Test importing a actuated revolute joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_revolute_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_revolute_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.REVOLUTE)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 1)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 1)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [math.pi])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.REVOLUTE)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 1)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [math.pi])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0])
 
     def test_import_joint_d6_prismatic_passive(self):
         """Test importing a passive prismatic joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_prismatic_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_prismatic_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.PRISMATIC)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 1)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 1)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-10.0])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [10.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.PRISMATIC)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 1)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-10.0])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [10.0])
 
     def test_import_joint_d6_prismatic_actuated(self):
         """Test importing a actuated prismatic joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_prismatic_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_prismatic_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.PRISMATIC)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 1)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 1)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-10.0])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [10.0])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.PRISMATIC)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 1)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 1)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-10.0])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [10.0])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0])
 
     def test_import_joint_d6_cylindrical_passive(self):
         """Test importing a passive cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_cylindrical_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_cylindrical_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.CYLINDRICAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 2)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 2)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 2)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-1.0, JOINT_QMIN])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [1.0, JOINT_QMAX])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CYLINDRICAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 2)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-1.0, JOINT_QMIN])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [1.0, JOINT_QMAX])
 
     def test_import_joint_d6_cylindrical_actuated(self):
         """Test importing a actuated cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_cylindrical_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_cylindrical_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.CYLINDRICAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 2)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 2)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 2)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-1.0, JOINT_QMIN])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [1.0, JOINT_QMAX])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0, 200.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CYLINDRICAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 2)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-1.0, JOINT_QMIN])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [1.0, JOINT_QMAX])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0, 200.0])
 
     def test_import_joint_d6_universal_passive(self):
         """Test importing a passive universal joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_universal_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_universal_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.UNIVERSAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 2)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 2)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 2)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-0.5 * math.pi, -0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [0.5 * math.pi, 0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.UNIVERSAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 2)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-0.5 * math.pi, -0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [0.5 * math.pi, 0.5 * math.pi])
 
     def test_import_joint_d6_universal_actuated(self):
         """Test importing a actuated universal joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_universal_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_universal_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.UNIVERSAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 2)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 2)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 2)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-0.5 * math.pi, -0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [0.5 * math.pi, 0.5 * math.pi])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0, 200.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.UNIVERSAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 2)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 2)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-0.5 * math.pi, -0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [0.5 * math.pi, 0.5 * math.pi])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0, 200.0])
 
     def test_import_joint_d6_cartesian_passive(self):
         """Test importing a passive cartesian joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_cartesian_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_cartesian_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.CARTESIAN)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 3)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 3)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 3)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-10.0, -20.0, -30.0])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [10.0, 20.0, 30.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CARTESIAN)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 3)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-10.0, -20.0, -30.0])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [10.0, 20.0, 30.0])
 
     def test_importjoint__d6_cartesian_actuated(self):
         """Test importing a actuated cartesian joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_cartesian_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_cartesian_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.CARTESIAN)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 3)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 3)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 3)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-10.0, -20.0, -30.0])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [10.0, 20.0, 30.0])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0, 200.0, 300.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.CARTESIAN)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 3)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-10.0, -20.0, -30.0])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [10.0, 20.0, 30.0])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0, 200.0, 300.0])
 
     def test_import_joint_d6_spherical_passive(self):
         """Test importing a passive spherical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_spherical_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_spherical_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.SPHERICAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 3)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 3)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 3)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-math.pi, -math.pi, -math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [math.pi, math.pi, math.pi])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.SPHERICAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 3)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-math.pi, -math.pi, -math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [math.pi, math.pi, math.pi])
 
     def test_import_joint_d6_spherical_actuated(self):
         """Test importing a actuated spherical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_spherical_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_spherical_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 2)
         self.assertEqual(builder_usd.num_joints, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.SPHERICAL)
-        self.assertEqual(builder_usd.joints[0].wid, 0)
-        self.assertEqual(builder_usd.joints[0].jid, 0)
-        self.assertEqual(builder_usd.joints[0].cts_offset, 0)
-        self.assertEqual(builder_usd.joints[0].dofs_offset, 0)
-        self.assertEqual(builder_usd.joints[0].bid_B, 0)
-        self.assertEqual(builder_usd.joints[0].bid_F, 1)
-        self.assertEqual(len(builder_usd.joints[0].q_j_min), 3)
-        self.assertEqual(len(builder_usd.joints[0].q_j_max), 3)
-        self.assertEqual(len(builder_usd.joints[0].tau_j_max), 3)
-        self.assertEqual(builder_usd.joints[0].q_j_min, [-math.pi, -math.pi, -math.pi])
-        self.assertEqual(builder_usd.joints[0].q_j_max, [math.pi, math.pi, math.pi])
-        self.assertEqual(builder_usd.joints[0].tau_j_max, [100.0, 200.0, 300.0])
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.SPHERICAL)
+        self.assertEqual(builder_usd.joints[0][0].wid, 0)
+        self.assertEqual(builder_usd.joints[0][0].jid, 0)
+        self.assertEqual(builder_usd.joints[0][0].bilateral_cts_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].dofs_offset, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_B, 0)
+        self.assertEqual(builder_usd.joints[0][0].bid_F, 1)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_min), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].q_j_max), 3)
+        self.assertEqual(len(builder_usd.joints[0][0].tau_j_max), 3)
+        self.assertEqual(builder_usd.joints[0][0].q_j_min, [-math.pi, -math.pi, -math.pi])
+        self.assertEqual(builder_usd.joints[0][0].q_j_max, [math.pi, math.pi, math.pi])
+        self.assertEqual(builder_usd.joints[0][0].tau_j_max, [100.0, 200.0, 300.0])
 
     ###
     # Primitive geometries/shapes
@@ -735,7 +803,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_geom_capsule(self):
         """Test importing a body with geometric primitive capsule shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_capsule.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_capsule.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -745,32 +813,34 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.num_geoms, 2)
 
         # Visual geoms are loaded first
-        self.assertEqual(builder_usd.geoms[0].wid, 0)
-        self.assertEqual(builder_usd.geoms[0].gid, 0)
-        self.assertEqual(builder_usd.geoms[0].body, 0)
-        self.assertEqual(builder_usd.geoms[0].shape.type, ShapeType.CAPSULE)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.radius, 0.2)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.height, 3.3)
-        self.assertEqual(builder_usd.geoms[0].mid, -1)
-        self.assertEqual(builder_usd.geoms[0].group, 0)
-        self.assertEqual(builder_usd.geoms[0].collides, 0)
-        self.assertEqual(builder_usd.geoms[0].max_contacts, 0)
+        self.assertEqual(builder_usd.geoms[0][0].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].gid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][0].uid]
+        self.assertEqual(shape.type, GeoType.CAPSULE)
+        self.assertAlmostEqual(shape.radius, 0.2)
+        self.assertAlmostEqual(shape.half_height, 1.65)
+        self.assertEqual(builder_usd.geoms[0][0].mid, -1)
+        self.assertEqual(builder_usd.geoms[0][0].group, 0)
+        self.assertEqual(builder_usd.geoms[0][0].collides, 0)
+        self.assertEqual(builder_usd.geoms[0][0].max_contacts, 0)
 
         # Collidable geoms are loaded after visual geoms
-        self.assertEqual(builder_usd.geoms[1].wid, 0)
-        self.assertEqual(builder_usd.geoms[1].gid, 1)
-        self.assertEqual(builder_usd.geoms[1].body, 0)
-        self.assertEqual(builder_usd.geoms[1].shape.type, ShapeType.CAPSULE)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.radius, 0.1)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.height, 2.2)
-        self.assertEqual(builder_usd.geoms[1].mid, 0)
-        self.assertEqual(builder_usd.geoms[1].group, 1)
-        self.assertEqual(builder_usd.geoms[1].collides, 1)
-        self.assertEqual(builder_usd.geoms[1].max_contacts, 10)
+        self.assertEqual(builder_usd.geoms[0][1].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].gid, 1)
+        self.assertEqual(builder_usd.geoms[0][1].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][1].uid]
+        self.assertEqual(shape.type, GeoType.CAPSULE)
+        self.assertAlmostEqual(shape.radius, 0.1)
+        self.assertAlmostEqual(shape.half_height, 1.1)
+        self.assertEqual(builder_usd.geoms[0][1].mid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].group, 1)
+        self.assertEqual(builder_usd.geoms[0][1].collides, 1)
+        self.assertEqual(builder_usd.geoms[0][1].max_contacts, 10)
 
     def test_import_geom_cone(self):
         """Test importing a body with geometric primitive cone shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_cone.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_cone.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -780,32 +850,34 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.num_geoms, 2)
 
         # Visual geoms are loaded first
-        self.assertEqual(builder_usd.geoms[0].wid, 0)
-        self.assertEqual(builder_usd.geoms[0].gid, 0)
-        self.assertEqual(builder_usd.geoms[0].body, 0)
-        self.assertEqual(builder_usd.geoms[0].shape.type, ShapeType.CONE)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.radius, 0.2)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.height, 3.3)
-        self.assertEqual(builder_usd.geoms[0].mid, -1)
-        self.assertEqual(builder_usd.geoms[0].group, 0)
-        self.assertEqual(builder_usd.geoms[0].collides, 0)
-        self.assertEqual(builder_usd.geoms[0].max_contacts, 0)
+        self.assertEqual(builder_usd.geoms[0][0].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].gid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][0].uid]
+        self.assertEqual(shape.type, GeoType.CONE)
+        self.assertAlmostEqual(shape.radius, 0.2)
+        self.assertAlmostEqual(shape.half_height, 1.65)
+        self.assertEqual(builder_usd.geoms[0][0].mid, -1)
+        self.assertEqual(builder_usd.geoms[0][0].group, 0)
+        self.assertEqual(builder_usd.geoms[0][0].collides, 0)
+        self.assertEqual(builder_usd.geoms[0][0].max_contacts, 0)
 
         # Collidable geoms are loaded after visual geoms
-        self.assertEqual(builder_usd.geoms[1].wid, 0)
-        self.assertEqual(builder_usd.geoms[1].gid, 1)
-        self.assertEqual(builder_usd.geoms[1].body, 0)
-        self.assertEqual(builder_usd.geoms[1].shape.type, ShapeType.CONE)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.radius, 0.1)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.height, 2.2)
-        self.assertEqual(builder_usd.geoms[1].mid, 0)
-        self.assertEqual(builder_usd.geoms[1].group, 1)
-        self.assertEqual(builder_usd.geoms[1].collides, 1)
-        self.assertEqual(builder_usd.geoms[1].max_contacts, 10)
+        self.assertEqual(builder_usd.geoms[0][1].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].gid, 1)
+        self.assertEqual(builder_usd.geoms[0][1].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][1].uid]
+        self.assertEqual(shape.type, GeoType.CONE)
+        self.assertAlmostEqual(shape.radius, 0.1)
+        self.assertAlmostEqual(shape.half_height, 1.1)
+        self.assertEqual(builder_usd.geoms[0][1].mid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].group, 1)
+        self.assertEqual(builder_usd.geoms[0][1].collides, 1)
+        self.assertEqual(builder_usd.geoms[0][1].max_contacts, 10)
 
     def test_import_geom_cylinder(self):
         """Test importing a body with geometric primitive cylinder shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_cylinder.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_cylinder.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -815,32 +887,34 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.num_geoms, 2)
 
         # Visual geoms are loaded first
-        self.assertEqual(builder_usd.geoms[0].wid, 0)
-        self.assertEqual(builder_usd.geoms[0].gid, 0)
-        self.assertEqual(builder_usd.geoms[0].body, 0)
-        self.assertEqual(builder_usd.geoms[0].shape.type, ShapeType.CYLINDER)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.radius, 0.2)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.height, 3.3)
-        self.assertEqual(builder_usd.geoms[0].mid, -1)
-        self.assertEqual(builder_usd.geoms[0].group, 0)
-        self.assertEqual(builder_usd.geoms[0].collides, 0)
-        self.assertEqual(builder_usd.geoms[0].max_contacts, 0)
+        self.assertEqual(builder_usd.geoms[0][0].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].gid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][0].uid]
+        self.assertEqual(shape.type, GeoType.CYLINDER)
+        self.assertAlmostEqual(shape.radius, 0.2)
+        self.assertAlmostEqual(shape.half_height, 1.65)
+        self.assertEqual(builder_usd.geoms[0][0].mid, -1)
+        self.assertEqual(builder_usd.geoms[0][0].group, 0)
+        self.assertEqual(builder_usd.geoms[0][0].collides, 0)
+        self.assertEqual(builder_usd.geoms[0][0].max_contacts, 0)
 
         # Collidable geoms are loaded after visual geoms
-        self.assertEqual(builder_usd.geoms[1].wid, 0)
-        self.assertEqual(builder_usd.geoms[1].gid, 1)
-        self.assertEqual(builder_usd.geoms[1].body, 0)
-        self.assertEqual(builder_usd.geoms[1].shape.type, ShapeType.CYLINDER)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.radius, 0.1)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.height, 2.2)
-        self.assertEqual(builder_usd.geoms[1].mid, 0)
-        self.assertEqual(builder_usd.geoms[1].group, 1)
-        self.assertEqual(builder_usd.geoms[1].collides, 1)
-        self.assertEqual(builder_usd.geoms[1].max_contacts, 10)
+        self.assertEqual(builder_usd.geoms[0][1].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].gid, 1)
+        self.assertEqual(builder_usd.geoms[0][1].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][1].uid]
+        self.assertEqual(shape.type, GeoType.CYLINDER)
+        self.assertAlmostEqual(shape.radius, 0.1)
+        self.assertAlmostEqual(shape.half_height, 1.1)
+        self.assertEqual(builder_usd.geoms[0][1].mid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].group, 1)
+        self.assertEqual(builder_usd.geoms[0][1].collides, 1)
+        self.assertEqual(builder_usd.geoms[0][1].max_contacts, 10)
 
     def test_import_geom_sphere(self):
         """Test importing a body with geometric primitive sphere shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_sphere.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_sphere.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -850,30 +924,32 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.num_geoms, 2)
 
         # Visual geoms are loaded first
-        self.assertEqual(builder_usd.geoms[0].wid, 0)
-        self.assertEqual(builder_usd.geoms[0].gid, 0)
-        self.assertEqual(builder_usd.geoms[0].body, 0)
-        self.assertEqual(builder_usd.geoms[0].shape.type, ShapeType.SPHERE)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.radius, 0.22)
-        self.assertEqual(builder_usd.geoms[0].mid, -1)
-        self.assertEqual(builder_usd.geoms[0].group, 0)
-        self.assertEqual(builder_usd.geoms[0].collides, 0)
-        self.assertEqual(builder_usd.geoms[0].max_contacts, 0)
+        self.assertEqual(builder_usd.geoms[0][0].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].gid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][0].uid]
+        self.assertEqual(shape.type, GeoType.SPHERE)
+        self.assertAlmostEqual(shape.radius, 0.22)
+        self.assertEqual(builder_usd.geoms[0][0].mid, -1)
+        self.assertEqual(builder_usd.geoms[0][0].group, 0)
+        self.assertEqual(builder_usd.geoms[0][0].collides, 0)
+        self.assertEqual(builder_usd.geoms[0][0].max_contacts, 0)
 
         # Collidable geoms are loaded after visual geoms
-        self.assertEqual(builder_usd.geoms[1].wid, 0)
-        self.assertEqual(builder_usd.geoms[1].gid, 1)
-        self.assertEqual(builder_usd.geoms[1].body, 0)
-        self.assertEqual(builder_usd.geoms[1].shape.type, ShapeType.SPHERE)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.radius, 0.11)
-        self.assertEqual(builder_usd.geoms[1].mid, 0)
-        self.assertEqual(builder_usd.geoms[1].group, 1)
-        self.assertEqual(builder_usd.geoms[1].collides, 1)
-        self.assertEqual(builder_usd.geoms[1].max_contacts, 10)
+        self.assertEqual(builder_usd.geoms[0][1].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].gid, 1)
+        self.assertEqual(builder_usd.geoms[0][1].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][1].uid]
+        self.assertEqual(shape.type, GeoType.SPHERE)
+        self.assertAlmostEqual(shape.radius, 0.11)
+        self.assertEqual(builder_usd.geoms[0][1].mid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].group, 1)
+        self.assertEqual(builder_usd.geoms[0][1].collides, 1)
+        self.assertEqual(builder_usd.geoms[0][1].max_contacts, 10)
 
     def test_import_geom_ellipsoid(self):
         """Test importing a body with geometric primitive ellipsoid shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_ellipsoid.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_ellipsoid.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -883,34 +959,36 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.num_geoms, 2)
 
         # Visual geoms are loaded first
-        self.assertEqual(builder_usd.geoms[0].wid, 0)
-        self.assertEqual(builder_usd.geoms[0].gid, 0)
-        self.assertEqual(builder_usd.geoms[0].body, 0)
-        self.assertEqual(builder_usd.geoms[0].shape.type, ShapeType.ELLIPSOID)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.a, 0.22)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.b, 0.33)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.c, 0.44)
-        self.assertEqual(builder_usd.geoms[0].mid, -1)
-        self.assertEqual(builder_usd.geoms[0].group, 0)
-        self.assertEqual(builder_usd.geoms[0].collides, 0)
-        self.assertEqual(builder_usd.geoms[0].max_contacts, 0)
+        self.assertEqual(builder_usd.geoms[0][0].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].gid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][0].uid]
+        self.assertEqual(shape.type, GeoType.ELLIPSOID)
+        self.assertAlmostEqual(shape.rx, 0.22)
+        self.assertAlmostEqual(shape.ry, 0.33)
+        self.assertAlmostEqual(shape.rz, 0.44)
+        self.assertEqual(builder_usd.geoms[0][0].mid, -1)
+        self.assertEqual(builder_usd.geoms[0][0].group, 0)
+        self.assertEqual(builder_usd.geoms[0][0].collides, 0)
+        self.assertEqual(builder_usd.geoms[0][0].max_contacts, 0)
 
         # Collidable geoms are loaded after visual geoms
-        self.assertEqual(builder_usd.geoms[1].wid, 0)
-        self.assertEqual(builder_usd.geoms[1].gid, 1)
-        self.assertEqual(builder_usd.geoms[1].body, 0)
-        self.assertEqual(builder_usd.geoms[1].shape.type, ShapeType.ELLIPSOID)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.a, 0.11)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.b, 0.22)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.c, 0.33)
-        self.assertEqual(builder_usd.geoms[1].mid, 0)
-        self.assertEqual(builder_usd.geoms[1].group, 1)
-        self.assertEqual(builder_usd.geoms[1].collides, 1)
-        self.assertEqual(builder_usd.geoms[1].max_contacts, 10)
+        self.assertEqual(builder_usd.geoms[0][1].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].gid, 1)
+        self.assertEqual(builder_usd.geoms[0][1].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][1].uid]
+        self.assertEqual(shape.type, GeoType.ELLIPSOID)
+        self.assertAlmostEqual(shape.rx, 0.11)
+        self.assertAlmostEqual(shape.ry, 0.22)
+        self.assertAlmostEqual(shape.rz, 0.33)
+        self.assertEqual(builder_usd.geoms[0][1].mid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].group, 1)
+        self.assertEqual(builder_usd.geoms[0][1].collides, 1)
+        self.assertEqual(builder_usd.geoms[0][1].max_contacts, 10)
 
     def test_import_geom_box(self):
         """Test importing a body with geometric primitive box shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_box.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_box.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -920,30 +998,32 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.num_geoms, 2)
 
         # Visual geoms are loaded first
-        self.assertEqual(builder_usd.geoms[0].wid, 0)
-        self.assertEqual(builder_usd.geoms[0].gid, 0)
-        self.assertEqual(builder_usd.geoms[0].body, 0)
-        self.assertEqual(builder_usd.geoms[0].shape.type, ShapeType.BOX)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.depth, 0.222)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.width, 0.444)
-        self.assertAlmostEqual(builder_usd.geoms[0].shape.height, 0.666)
-        self.assertEqual(builder_usd.geoms[0].mid, -1)
-        self.assertEqual(builder_usd.geoms[0].group, 0)
-        self.assertEqual(builder_usd.geoms[0].collides, 0)
-        self.assertEqual(builder_usd.geoms[0].max_contacts, 0)
+        self.assertEqual(builder_usd.geoms[0][0].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].gid, 0)
+        self.assertEqual(builder_usd.geoms[0][0].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][0].uid]
+        self.assertEqual(shape.type, GeoType.BOX)
+        self.assertAlmostEqual(shape.hx, 0.111)
+        self.assertAlmostEqual(shape.hy, 0.222)
+        self.assertAlmostEqual(shape.hz, 0.333)
+        self.assertEqual(builder_usd.geoms[0][0].mid, -1)
+        self.assertEqual(builder_usd.geoms[0][0].group, 0)
+        self.assertEqual(builder_usd.geoms[0][0].collides, 0)
+        self.assertEqual(builder_usd.geoms[0][0].max_contacts, 0)
 
         # Collidable geoms are loaded after visual geoms
-        self.assertEqual(builder_usd.geoms[1].wid, 0)
-        self.assertEqual(builder_usd.geoms[1].gid, 1)
-        self.assertEqual(builder_usd.geoms[1].body, 0)
-        self.assertEqual(builder_usd.geoms[1].shape.type, ShapeType.BOX)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.depth, 0.22)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.width, 0.44)
-        self.assertAlmostEqual(builder_usd.geoms[1].shape.height, 0.66)
-        self.assertEqual(builder_usd.geoms[1].mid, 0)
-        self.assertEqual(builder_usd.geoms[1].group, 1)
-        self.assertEqual(builder_usd.geoms[1].collides, 1)
-        self.assertEqual(builder_usd.geoms[1].max_contacts, 10)
+        self.assertEqual(builder_usd.geoms[0][1].wid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].gid, 1)
+        self.assertEqual(builder_usd.geoms[0][1].body, 0)
+        shape = builder_usd.shapes[builder_usd.geoms[0][1].uid]
+        self.assertEqual(shape.type, GeoType.BOX)
+        self.assertAlmostEqual(shape.hx, 0.11)
+        self.assertAlmostEqual(shape.hy, 0.22)
+        self.assertAlmostEqual(shape.hz, 0.33)
+        self.assertEqual(builder_usd.geoms[0][1].mid, 0)
+        self.assertEqual(builder_usd.geoms[0][1].group, 1)
+        self.assertEqual(builder_usd.geoms[0][1].collides, 1)
+        self.assertEqual(builder_usd.geoms[0][1].max_contacts, 10)
 
     ###
     # Basic models
@@ -953,7 +1033,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic box_on_plane model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "box_on_plane.usda")
+        usd_asset_filename = get_kamino_basics_asset("box_on_plane.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -969,7 +1049,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic box_pendulum model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "box_pendulum.usda")
+        usd_asset_filename = get_kamino_basics_asset("box_pendulum.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -985,7 +1065,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic boxes_hinged model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "boxes_hinged.usda")
+        usd_asset_filename = get_kamino_basics_asset("boxes_hinged.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -1001,7 +1081,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic boxes_nunchaku model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "boxes_nunchaku.usda")
+        usd_asset_filename = get_kamino_basics_asset("boxes_nunchaku.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -1017,7 +1097,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic boxes_fourbar model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "boxes_fourbar.usda")
+        usd_asset_filename = get_kamino_basics_asset("boxes_fourbar.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -1033,7 +1113,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic cartpole model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "cartpole.usda")
+        usd_asset_filename = get_kamino_basics_asset("cartpole.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=True, load_materials=False
@@ -1064,34 +1144,34 @@ class TestUSDImporter(unittest.TestCase):
         self.assertEqual(builder_usd.num_joints, 14)
         self.assertEqual(builder_usd.num_geoms, 10)
         self.assertEqual(builder_usd.num_materials, 1)
-        self.assertEqual(builder_usd.joints[0].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[0].dof_type, JointDoFType.FIXED)
-        self.assertEqual(builder_usd.joints[1].act_type, JointActuationType.FORCE)
-        self.assertEqual(builder_usd.joints[1].dof_type, JointDoFType.REVOLUTE)
-        self.assertEqual(builder_usd.joints[2].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[2].dof_type, JointDoFType.SPHERICAL)
-        self.assertEqual(builder_usd.joints[3].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[3].dof_type, JointDoFType.UNIVERSAL)
-        self.assertEqual(builder_usd.joints[4].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[4].dof_type, JointDoFType.SPHERICAL)
-        self.assertEqual(builder_usd.joints[5].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[5].dof_type, JointDoFType.REVOLUTE)
-        self.assertEqual(builder_usd.joints[6].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[6].dof_type, JointDoFType.UNIVERSAL)
-        self.assertEqual(builder_usd.joints[7].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[7].dof_type, JointDoFType.SPHERICAL)
-        self.assertEqual(builder_usd.joints[8].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[8].dof_type, JointDoFType.CYLINDRICAL)
-        self.assertEqual(builder_usd.joints[9].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[9].dof_type, JointDoFType.REVOLUTE)
-        self.assertEqual(builder_usd.joints[10].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[10].dof_type, JointDoFType.PRISMATIC)
-        self.assertEqual(builder_usd.joints[11].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[11].dof_type, JointDoFType.FIXED)
-        self.assertEqual(builder_usd.joints[12].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[12].dof_type, JointDoFType.SPHERICAL)
-        self.assertEqual(builder_usd.joints[13].act_type, JointActuationType.PASSIVE)
-        self.assertEqual(builder_usd.joints[13].dof_type, JointDoFType.CARTESIAN)
+        self.assertEqual(builder_usd.joints[0][0].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][0].dof_type, JointDoFType.FIXED)
+        self.assertEqual(builder_usd.joints[0][1].act_type, JointActuationType.FORCE)
+        self.assertEqual(builder_usd.joints[0][1].dof_type, JointDoFType.REVOLUTE)
+        self.assertEqual(builder_usd.joints[0][2].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][2].dof_type, JointDoFType.SPHERICAL)
+        self.assertEqual(builder_usd.joints[0][3].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][3].dof_type, JointDoFType.UNIVERSAL)
+        self.assertEqual(builder_usd.joints[0][4].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][4].dof_type, JointDoFType.SPHERICAL)
+        self.assertEqual(builder_usd.joints[0][5].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][5].dof_type, JointDoFType.REVOLUTE)
+        self.assertEqual(builder_usd.joints[0][6].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][6].dof_type, JointDoFType.UNIVERSAL)
+        self.assertEqual(builder_usd.joints[0][7].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][7].dof_type, JointDoFType.SPHERICAL)
+        self.assertEqual(builder_usd.joints[0][8].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][8].dof_type, JointDoFType.CYLINDRICAL)
+        self.assertEqual(builder_usd.joints[0][9].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][9].dof_type, JointDoFType.REVOLUTE)
+        self.assertEqual(builder_usd.joints[0][10].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][10].dof_type, JointDoFType.PRISMATIC)
+        self.assertEqual(builder_usd.joints[0][11].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][11].dof_type, JointDoFType.FIXED)
+        self.assertEqual(builder_usd.joints[0][12].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][12].dof_type, JointDoFType.SPHERICAL)
+        self.assertEqual(builder_usd.joints[0][13].act_type, JointActuationType.PASSIVE)
+        self.assertEqual(builder_usd.joints[0][13].dof_type, JointDoFType.CARTESIAN)
 
     def test_import_model_dr_legs(self):
         """Test importing the `DR Legs` example model from a USD file"""
@@ -1105,8 +1185,8 @@ class TestUSDImporter(unittest.TestCase):
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 31)
-        self.assertEqual(builder_usd.num_joints, 36)
-        self.assertEqual(builder_usd.num_geoms, 31)
+        self.assertEqual(builder_usd.num_joints, 37)
+        self.assertEqual(builder_usd.num_geoms, 81)
 
     def test_import_model_dr_legs_with_boxes(self):
         """Test importing the `DR Legs` example model from a USD file"""
@@ -1120,7 +1200,7 @@ class TestUSDImporter(unittest.TestCase):
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 31)
-        self.assertEqual(builder_usd.num_joints, 36)
+        self.assertEqual(builder_usd.num_joints, 37)
         self.assertEqual(builder_usd.num_geoms, 3)
 
     def test_import_model_dr_legs_with_meshes_and_boxes(self):
@@ -1135,8 +1215,119 @@ class TestUSDImporter(unittest.TestCase):
 
         # Check the loaded contents
         self.assertEqual(builder_usd.num_bodies, 31)
-        self.assertEqual(builder_usd.num_joints, 36)
-        self.assertEqual(builder_usd.num_geoms, 34)
+        self.assertEqual(builder_usd.num_joints, 37)
+        self.assertEqual(builder_usd.num_geoms, 84)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_hide_collision_shapes_is_body_aware(self):
+        """Hide colliders only on bodies that already have viewport-drawn visual geometry."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def add_body(path: str, pos: tuple[float, float, float], *, with_visual: bool) -> None:
+            xform = UsdGeom.Xform.Define(stage, path)
+            xform.AddTranslateOp().Set(Gf.Vec3d(*pos))
+            UsdPhysics.RigidBodyAPI.Apply(xform.GetPrim())
+            mass = UsdPhysics.MassAPI.Apply(xform.GetPrim())
+            mass.CreateMassAttr(1.0)
+            mass.CreateDiagonalInertiaAttr(Gf.Vec3f(1.0, 1.0, 1.0))
+            cube = UsdGeom.Cube.Define(stage, f"{path}/CollisionBox")
+            UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+            cube.CreateSizeAttr(1.0)
+            if with_visual:
+                sphere = UsdGeom.Sphere.Define(stage, f"{path}/VisualSphere")
+                sphere.CreateRadiusAttr(0.3)
+
+        add_body("/BodyWithVisuals", (0.0, 0.0, 1.0), with_visual=True)
+        add_body("/BodyWithoutVisuals", (2.0, 0.0, 1.0), with_visual=False)
+
+        def collider_visible(builder: ModelBuilderKamino, body_name: str) -> bool:
+            for geom in builder.all_geoms:
+                if body_name in geom.name and "CollisionBox" in geom.name:
+                    return bool(geom.flags & ShapeFlags.VISIBLE)
+            self.fail(f"Missing collider for {body_name}")
+
+        builder_default = USDImporter().import_from(stage, load_materials=False)
+        self.assertTrue(collider_visible(builder_default, "BodyWithVisuals"))
+        self.assertTrue(collider_visible(builder_default, "BodyWithoutVisuals"))
+
+        builder_hidden = USDImporter().import_from(stage, load_materials=False, hide_collision_shapes=True)
+        self.assertFalse(collider_visible(builder_hidden, "BodyWithVisuals"))
+        self.assertTrue(collider_visible(builder_hidden, "BodyWithoutVisuals"))
+
+    def _only_mesh_data(self, builder: ModelBuilderKamino):
+        """Return the ``Mesh`` data of the builder's single mesh shape."""
+        meshes = [shape.data for shape in builder.shapes.values() if hasattr(shape, "data")]
+        self.assertEqual(len(meshes), 1)
+        return meshes[0]
+
+    @staticmethod
+    def _define_mesh_quad(stage, path: str):
+        """Define a unit quad mesh, returning the UsdGeom.Mesh."""
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        xform = UsdGeom.Xform.Define(stage, path)
+        UsdPhysics.RigidBodyAPI.Apply(xform.GetPrim())
+        mass = UsdPhysics.MassAPI.Apply(xform.GetPrim())
+        mass.CreateMassAttr(1.0)
+        mass.CreateDiagonalInertiaAttr(Gf.Vec3f(1.0, 1.0, 1.0))
+
+        mesh = UsdGeom.Mesh.Define(stage, f"{path}/Mesh")
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        mesh.CreatePointsAttr([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(1, 1, 0), Gf.Vec3f(0, 1, 0)])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        mesh.CreateFaceVertexCountsAttr([4])
+        return mesh
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_mesh_with_declared_but_unauthored_normals(self):
+        """Import a mesh whose normals attribute is declared without a value.
+
+        ``CreateNormalsAttr()`` leaves ``IsDefined()`` true while ``Get()`` returns
+        ``None``, so guarding on ``IsDefined()`` alone used to pass ``None`` through to
+        ``Mesh`` and raise ``cannot reshape array of size 1 into shape (3)``.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        mesh = self._define_mesh_quad(stage, "/Body")
+        mesh.CreateNormalsAttr()  # declared, never authored
+        self.assertTrue(mesh.GetNormalsAttr().IsDefined())
+        self.assertIsNone(mesh.GetNormalsAttr().Get())
+
+        builder = USDImporter().import_from(stage, load_materials=False)
+
+        mesh_data = self._only_mesh_data(builder)
+        self.assertIsNone(mesh_data.normals)
+        # The quad is fan-triangulated into two triangles.
+        self.assertEqual(len(mesh_data.indices), 6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_mesh_prefers_primvars_normals(self):
+        """Read normals from ``primvars:normals`` in preference to the mesh attribute."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        mesh = self._define_mesh_quad(stage, "/Body")
+        primvar = UsdGeom.PrimvarsAPI(mesh.GetPrim()).CreatePrimvar(
+            "normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex
+        )
+        primvar.Set([Gf.Vec3f(0, 0, 1)] * 4)
+
+        builder = USDImporter().import_from(stage, load_materials=False)
+
+        normals = self._only_mesh_data(builder).normals
+        self.assertIsNotNone(normals)
+        np.testing.assert_allclose(normals, np.tile([0.0, 0.0, 1.0], (4, 1)), atol=1e-6)
 
 
 class TestUSDKaminoSceneAPIImport(unittest.TestCase):
@@ -1145,10 +1336,6 @@ class TestUSDKaminoSceneAPIImport(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
-
-        # Set the paths to the assets provided by the kamino package
-        self.TEST_USD_ASSETS_PATH = get_testing_usd_assets_path()
-        self.BASICS_USD_ASSETS_PATH = get_basics_usd_assets_path()
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
@@ -1237,13 +1424,13 @@ class TestUSDKaminoSceneAPIImport(unittest.TestCase):
         )
         self.assertTrue(
             hasattr(kamino_attr, "padmm_use_acceleration")
-            and isinstance(kamino_attr.padmm_use_acceleration.numpy()[0], np.bool)
+            and isinstance(kamino_attr.padmm_use_acceleration.numpy()[0], np.bool_)
         )
         self.assertTrue(hasattr(kamino_attr, "joint_correction") and isinstance(kamino_attr.joint_correction[0], str))
 
         self.assertTrue(
             hasattr(kamino_attr, "constraints_use_preconditioning")
-            and isinstance(kamino_attr.constraints_use_preconditioning.numpy()[0], np.bool)
+            and isinstance(kamino_attr.constraints_use_preconditioning.numpy()[0], np.bool_)
         )
         self.assertTrue(
             hasattr(kamino_attr, "constraints_alpha")

@@ -1,38 +1,38 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
+from __future__ import annotations
+
+from typing import Any
 
 import warp as wp
 
+from ..core.reset import normalize_reset_world_mask
 from ..geometry import ParticleFlags
-from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, State
+from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
+
+
+def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
+    current_options = wp.get_module_options(module=module)
+    if any(current_options.get(name) != value for name, value in options.items()):
+        wp.set_module_options(options, module=module)
+        return True
+    return False
 
 
 @wp.kernel
 def integrate_particles(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    f: wp.array(dtype=wp.vec3),
-    w: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
-    particle_world: wp.array(dtype=wp.int32),
-    gravity: wp.array(dtype=wp.vec3),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    f: wp.array[wp.vec3],
+    w: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
     dt: float,
     v_max: float,
-    x_new: wp.array(dtype=wp.vec3),
-    v_new: wp.array(dtype=wp.vec3),
+    x_new: wp.array[wp.vec3],
+    v_new: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     x0 = x[tid]
@@ -46,7 +46,7 @@ def integrate_particles(
 
     inv_mass = w[tid]
     world_idx = particle_world[tid]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     # simple semi-implicit Euler. v1 = v0 + a dt, x1 = x0 + v1 dt
     v1 = v0 + (f0 * inv_mass + world_g * wp.step(-inv_mass)) * dt
@@ -110,22 +110,22 @@ def integrate_rigid_body(
 # semi-implicit Euler integration
 @wp.kernel
 def integrate_bodies(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_f: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    m: wp.array(dtype=float),
-    I: wp.array(dtype=wp.mat33),
-    inv_m: wp.array(dtype=float),
-    inv_I: wp.array(dtype=wp.mat33),
-    body_flags: wp.array(dtype=wp.int32),
-    body_world: wp.array(dtype=wp.int32),
-    gravity: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    m: wp.array[float],
+    I: wp.array[wp.mat33],
+    inv_m: wp.array[float],
+    inv_I: wp.array[wp.mat33],
+    body_flags: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
     angular_damping: float,
     dt: float,
     # outputs
-    body_q_new: wp.array(dtype=wp.transform),
-    body_qd_new: wp.array(dtype=wp.spatial_vector),
+    body_q_new: wp.array[wp.transform],
+    body_qd_new: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 
@@ -151,7 +151,7 @@ def integrate_bodies(
 
     com = body_com[tid]
     world_idx = body_world[tid]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     q_new, qd_new = integrate_rigid_body(
         q,
@@ -172,11 +172,11 @@ def integrate_bodies(
 
 @wp.kernel
 def _update_effective_inv_mass_inertia(
-    body_flags: wp.array(dtype=wp.int32),
-    model_inv_mass: wp.array(dtype=float),
-    model_inv_inertia: wp.array(dtype=wp.mat33),
-    eff_inv_mass: wp.array(dtype=float),
-    eff_inv_inertia: wp.array(dtype=wp.mat33),
+    body_flags: wp.array[wp.int32],
+    model_inv_mass: wp.array[float],
+    model_inv_inertia: wp.array[wp.mat33],
+    eff_inv_mass: wp.array[float],
+    eff_inv_inertia: wp.array[wp.mat33],
 ):
     tid = wp.tid()
     if (body_flags[tid] & BodyFlags.KINEMATIC) != 0:
@@ -196,8 +196,38 @@ class SolverBase:
     necessary.
     """
 
+    _module_options_revision = 0
+
     def __init__(self, model: Model):
         self.model = model
+        self._module_options: dict[Any, dict[str, Any]] = {}
+        self._applied_module_options_revision = -1
+
+    def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
+        self._module_options[module] = dict(options)
+        if _set_module_options_if_changed(options, module):
+            SolverBase._module_options_revision += 1
+        self._applied_module_options_revision = SolverBase._module_options_revision
+
+    def _apply_module_options(self) -> None:
+        if self._applied_module_options_revision == SolverBase._module_options_revision:
+            return
+
+        changed = False
+        for module, options in self._module_options.items():
+            changed |= _set_module_options_if_changed(options, module)
+        if changed:
+            SolverBase._module_options_revision += 1
+        self._applied_module_options_revision = SolverBase._module_options_revision
+
+    def _normalize_reset_world_mask(self, world_mask: wp.array[wp.bool] | None) -> wp.array[wp.bool] | None:
+        """Validate a reset mask and return the canonical shape."""
+        return normalize_reset_world_mask(
+            world_mask,
+            world_count=int(self.model.world_count),
+            device=self.model.device,
+            allow_legacy=True,
+        )
 
     @property
     def device(self) -> wp.Device:
@@ -246,11 +276,11 @@ class SolverBase:
         Integrate the rigid bodies of the model.
 
         Args:
-            model (Model): The model to integrate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
-            angular_damping (float, optional): The angular damping factor.
+            model: The model to integrate.
+            state_in: The input state.
+            state_out: The output state.
+            dt: The time step (typically in seconds).
+            angular_damping: The angular damping factor.
                 Defaults to 0.0.
         """
         if model.body_count:
@@ -287,10 +317,10 @@ class SolverBase:
         Integrate the particles of the model.
 
         Args:
-            model (Model): The model to integrate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
+            model: The model to integrate.
+            state_in: The input state.
+            state_out: The output state.
+            dt: The time step (typically in seconds).
         """
         if model.particle_count:
             wp.launch(
@@ -311,6 +341,39 @@ class SolverBase:
                 device=model.device,
             )
 
+    def reset(
+        self,
+        state: State,
+        world_mask: wp.array[wp.bool] | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Reset the solver internal state data.
+
+        Modifies the given *state* in place.  Derived solvers override this
+        to reset solver-specific internal buffers or custom state attributes
+        when environments are reset (e.g. during RL training).
+
+        The default implementation is a no-op so solvers that do not require
+        special reset logic need not override this method.
+
+        Args:
+            state: The simulation state to reset (modified in place).
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)``
+                specifying which worlds to reset. Entries before the last select
+                local worlds by index, and the final entry selects global entities
+                whose world is ``-1``. If ``None``, all local and global entities
+                are reset.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
+            flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
+                which state attributes need to be reset.  If ``None``, all
+                state attributes are reset.
+        """
+        self._normalize_reset_world_mask(world_mask)
+
     def step(
         self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
     ) -> None:
@@ -328,42 +391,51 @@ class SolverBase:
         """
         raise NotImplementedError()
 
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the
-        ``SolverNotifyFlags`` enums defined in :mod:`newton.solvers`.
+        :class:`~newton.ModelFlags` enums or custom ``int`` bits.
         Each flag represents a category of model data that may have been
         updated after the solver was created.  Passing the appropriate
         combination of flags enables a solver implementation to refresh its
         internal buffers without having to recreate the whole solver object.
         Valid flags are:
 
-        ==============================================  =============================================================
-        Constant                                        Description
-        ==============================================  =============================================================
-        ``SolverNotifyFlags.JOINT_PROPERTIES``            Joint transforms or coordinates have changed.
-        ``SolverNotifyFlags.JOINT_DOF_PROPERTIES``        Joint axis limits, targets, modes, DOF state, or force buffers have changed.
-        ``SolverNotifyFlags.BODY_PROPERTIES``             Rigid-body pose or velocity buffers have changed.
-        ``SolverNotifyFlags.BODY_INERTIAL_PROPERTIES``    Rigid-body mass or inertia tensors have changed.
-        ``SolverNotifyFlags.SHAPE_PROPERTIES``            Shape transforms or geometry have changed.
-        ``SolverNotifyFlags.MODEL_PROPERTIES``            Model global properties (e.g., gravity) have changed.
-        ==============================================  =============================================================
+        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms or coordinates
+          have changed.
+        * ``ModelFlags.JOINT_DOF_PROPERTIES``: Joint axis limits, targets,
+          modes, DOF state, or force buffers have changed.
+        * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
+          have changed.
+        * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia
+          tensors have changed.
+        * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms or geometry have
+          changed.
+        * ``ModelFlags.MODEL_PROPERTIES``: Model global properties (e.g.,
+          gravity) have changed.
+        * ``ModelFlags.CONSTRAINT_PROPERTIES``: Constraint definitions,
+          coefficients, or enable flags have changed.
+        * ``ModelFlags.TENDON_PROPERTIES``: Tendon stiffness or related tendon
+          properties have changed.
+        * ``ModelFlags.ACTUATOR_PROPERTIES``: Actuator gains, biases, limits,
+          or force properties have changed.
 
         Args:
-            flags (int): Bit-mask of model-update flags indicating which model
-                properties changed.
+            flags: Bit-mask of :class:`~newton.ModelFlags` or custom ``int``
+                bits indicating which model properties changed.
 
         """
         pass
 
-    def update_contacts(self, contacts: Contacts) -> None:
+    def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """
         Update a Contacts object with forces from the solver state. Where the solver state contains
         other contact data, convert that data to the Contacts format.
 
         Args:
             contacts: The object to update from the solver state.
+            state: Optional simulation state, used by some solvers.
         """
         raise NotImplementedError()
 
@@ -373,6 +445,6 @@ class SolverBase:
         Register custom attributes for the solver.
 
         Args:
-            builder (ModelBuilder): The model builder to register the custom attributes to.
+            builder: The model builder to register the custom attributes to.
         """
         pass

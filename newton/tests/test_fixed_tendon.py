@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import unittest
 from enum import IntEnum
@@ -19,6 +7,7 @@ from enum import IntEnum
 import warp as wp
 
 import newton
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.solvers import SolverMuJoCo
 
 
@@ -74,19 +63,19 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
 """
 
-        individual_builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         # Use geometry-based inertia since MJCF-defined values are unrealistic (20x too high)
         individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for _i in range(0, 2):
             builder.add_world(individual_builder)
         model = builder.finalize()
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        contacts = model.contacts()
-        model.collide(state_in, contacts)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_in, contacts)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 
@@ -102,8 +91,8 @@ class TestMujocoFixedTendon(unittest.TestCase):
         state_in.joint_q.assign(joint_start_positions)
 
         device = model.device
-        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
-        if use_cuda_graph:
+        use_graph = is_graph_capture_allocation_enabled(device)
+        if use_graph:
             # warmup (2 steps for full ping-pong cycle)
             solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
             solver.step(state_in=state_out, state_out=state_in, contacts=contacts, control=control, dt=dt)
@@ -112,14 +101,14 @@ class TestMujocoFixedTendon(unittest.TestCase):
                 solver.step(state_in=state_out, state_out=state_in, contacts=contacts, control=control, dt=dt)
             graph = capture.graph
 
-        remaining = 200 - (4 if use_cuda_graph else 0)
-        for _i in range(remaining // 2 if use_cuda_graph else remaining):
-            if use_cuda_graph:
+        remaining = 200 - (4 if use_graph else 0)
+        for _i in range(remaining // 2 if use_graph else remaining):
+            if use_graph:
                 wp.capture_launch(graph)
             else:
                 solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
                 state_in, state_out = state_out, state_in
-        if use_cuda_graph and remaining % 2 == 1:
+        if use_graph and remaining % 2 == 1:
             solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
             state_in, state_out = state_out, state_in
 
@@ -222,19 +211,19 @@ class TestMujocoFixedTendon(unittest.TestCase):
         joint_start_positions[2] = joint_start_positions[0]
         joint_start_velocities[2] = joint_start_velocities[0]
 
-        individual_builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         # Use geometry-based inertia since MJCF-defined values are unrealistic (20x too high)
         individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for _i in range(0, 2):
             builder.add_world(individual_builder)
         model = builder.finalize()
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        contacts = model.contacts()
-        model.collide(state_in, contacts)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_in, contacts)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 

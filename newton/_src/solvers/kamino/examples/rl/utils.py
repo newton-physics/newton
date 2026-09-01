@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Standalone math utilities for RL observation builders.
 
@@ -29,6 +17,12 @@ import numpy as np
 import torch  # noqa: TID253
 import warp as wp
 
+###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
 # ---------------------------------------------------------------------------
 # Rotation helpers  (xyzw convention, warp kernels with torch tensor wrappers)
 # ---------------------------------------------------------------------------
@@ -38,8 +32,8 @@ _Z_AXIS = wp.constant(wp.vec3(0.0, 0.0, 1.0))
 
 @wp.kernel
 def _quat_to_projected_yaw_kernel(
-    q: wp.array(dtype=wp.float32),
-    yaw: wp.array(dtype=wp.float32),
+    q: wp.array[wp.float32],
+    yaw: wp.array[wp.float32],
 ):
     i = wp.tid()
     base = i * 4
@@ -66,9 +60,9 @@ def quat_to_projected_yaw(q: torch.Tensor) -> torch.Tensor:
 
 @wp.kernel
 def _yaw_apply_2d_kernel(
-    yaw: wp.array(dtype=wp.float32),
-    v: wp.array(dtype=wp.float32),
-    out: wp.array(dtype=wp.float32),
+    yaw: wp.array[wp.float32],
+    v: wp.array[wp.float32],
+    out: wp.array[wp.float32],
 ):
     i = wp.tid()
     q = wp.quat_from_axis_angle(_Z_AXIS, yaw[i])

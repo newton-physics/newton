@@ -1,31 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from __future__ import annotations
 
+import logging
+import math
 import os
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 import warp as wp
 
-from ..core.types import Axis, AxisType, nparray
+from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
+from ..utils.color import color_linear_to_srgb
+from ..utils.deprecation import deprecate_nonkeyword_arguments
+from ..utils.import_usd_deformable_utils import _validate_mass_array, _warn_geometry_authored_material_attrs
+from ..utils.texture import linear_texture_to_srgb, load_texture
+
+logger = logging.getLogger("newton")
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
@@ -35,11 +31,12 @@ if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
 
 try:
-    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 except ImportError:
     Usd = None
     Gf = None
     UsdGeom = None
+    UsdPhysics = None
     Sdf = None
     UsdShade = None
 
@@ -107,6 +104,34 @@ def has_attribute(prim: Usd.Prim, name: str) -> bool:
     return attr and attr.HasAuthoredValue()
 
 
+def _get_raw_api_schemas(prim: Usd.Prim) -> list[str]:
+    """Return API schema tokens from raw ``apiSchemas`` list-op metadata."""
+    listop = prim.GetMetadata("apiSchemas")
+    if listop is None:
+        return []
+    return (
+        list(getattr(listop, "prependedItems", []))
+        + list(getattr(listop, "appendedItems", []))
+        + list(getattr(listop, "explicitItems", []))
+    )
+
+
+def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
+    """Return the API schema tokens applied to *prim*.
+
+    Falls back to raw ``apiSchemas`` list-op metadata when the schema plugin
+    is not loaded and :meth:`pxr.Usd.Prim.GetAppliedSchemas` returns nothing.
+
+    Args:
+        prim: Prim to query.
+
+    Returns:
+        Applied API schema tokens (e.g. ``["NewtonPDControlAPI"]``).
+    """
+    schemas = list(prim.GetAppliedSchemas())
+    return schemas if schemas else _get_raw_api_schemas(prim)
+
+
 def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
     """
     Check if a USD prim has an applied API schema, even if the schema is not
@@ -125,19 +150,7 @@ def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
     Returns:
         True if the schema is applied to the prim, False otherwise.
     """
-    if prim.HasAPI(schema_name):
-        return True
-
-    schemas_listop = prim.GetMetadata("apiSchemas")
-    if schemas_listop:
-        all_schemas = (
-            list(schemas_listop.prependedItems)
-            + list(schemas_listop.appendedItems)
-            + list(schemas_listop.explicitItems)
-        )
-        return schema_name in all_schemas
-
-    return False
+    return prim.HasAPI(schema_name) or schema_name in _get_raw_api_schemas(prim)
 
 
 @overload
@@ -229,14 +242,14 @@ def get_quat(prim: Usd.Prim, name: str, default: wp.quat | None = None) -> wp.qu
 
 
 @overload
-def get_vector(prim: Usd.Prim, name: str, default: nparray) -> nparray: ...
+def get_vector(prim: Usd.Prim, name: str, default: np.ndarray) -> np.ndarray: ...
 
 
 @overload
-def get_vector(prim: Usd.Prim, name: str, default: None = None) -> nparray | None: ...
+def get_vector(prim: Usd.Prim, name: str, default: None = None) -> np.ndarray | None: ...
 
 
-def get_vector(prim: Usd.Prim, name: str, default: nparray | None = None) -> nparray | None:
+def get_vector(prim: Usd.Prim, name: str, default: np.ndarray | None = None) -> np.ndarray | None:
     """
     Get a vector attribute value from a USD prim, validating that all components are finite.
 
@@ -303,7 +316,54 @@ def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCach
     """
     mat = get_transform_matrix(prim, local=local, xform_cache=xform_cache)
     _pos, _rot, scale = wp.transform_decompose(mat)
+    scale = np.array(scale, dtype=np.float32)
+
+    authored_scale = _get_authored_scale(prim, local=local)
+    if authored_scale is not None:
+        sign = np.sign(authored_scale)
+        sign[sign == 0.0] = 1.0
+        scale = np.abs(scale) * sign
+
     return wp.vec3(*scale)
+
+
+def _get_authored_scale(prim: Usd.Prim, local: bool = True) -> np.ndarray | None:
+    """Return the product of authored scale ops, preserving negative signs."""
+    if UsdGeom is None:
+        return None
+
+    prims = [prim]
+    if not local:
+        prims = []
+        current = prim
+        while current and current.IsValid() and not current.IsPseudoRoot():
+            prims.append(current)
+            current = current.GetParent()
+        prims.reverse()
+
+    scale = np.ones(3, dtype=np.float32)
+    found = False
+    for p in prims:
+        xformable = UsdGeom.Xformable(p)
+        if not xformable:
+            continue
+        if not local and xformable.GetResetXformStack():
+            scale = np.ones(3, dtype=np.float32)
+            found = False
+        for op in xformable.GetOrderedXformOps():
+            if op.GetOpType() != UsdGeom.XformOp.TypeScale:
+                continue
+            value = op.Get()
+            if value is None:
+                continue
+            op_scale = np.array(value, dtype=np.float32)
+            if op.IsInverseOp():
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    op_scale = np.divide(1.0, op_scale, out=np.ones_like(op_scale), where=op_scale != 0.0)
+            scale *= op_scale
+            found = True
+
+    return scale if found else None
 
 
 def get_gprim_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") -> Axis:
@@ -542,8 +602,8 @@ def get_custom_attribute_values(
 ) -> dict[str, Any]:
     """
     Get custom attribute values from a USD prim and a set of known custom attributes.
-    Returns a dictionary mapping from :attr:`ModelBuilder.CustomAttribute.key` to the converted Warp value.
-    The conversion is performed by :meth:`ModelBuilder.CustomAttribute.usd_value_transformer`.
+    Returns a dictionary mapping from :attr:`~newton.ModelBuilder.CustomAttribute.key` to the converted Warp value.
+    The conversion is performed by the ``CustomAttribute.usd_value_transformer`` callable.
 
     The context dictionary passed to the transformer function always contains:
     - ``"prim"``: The USD prim to query.
@@ -586,6 +646,31 @@ def get_custom_attribute_values(
                 out[attr.key] = value
             else:
                 out[attr.key] = value_to_warp(usd_attr.Get(), attr.dtype)
+    return out
+
+
+def _get_tetmesh_custom_attribute_values(
+    prim: Usd.Prim,
+    custom_attributes: Sequence[ModelBuilder.CustomAttribute],
+) -> dict[str, np.ndarray]:
+    """Read builder-declared TetMesh arrays without inferring their frequency."""
+    out: dict[str, np.ndarray] = {}
+    for spec in custom_attributes:
+        usd_name = spec.usd_attribute_name
+        if not usd_name or usd_name == "*":
+            continue
+        usd_attr = prim.GetAttribute(usd_name)
+        if not usd_attr or not usd_attr.HasAuthoredValue():
+            continue
+        primvar = UsdGeom.Primvar(usd_attr)
+        value = primvar.ComputeFlattened() if primvar else usd_attr.Get()
+        if value is None:
+            continue
+        if spec.usd_value_transformer is not None:
+            value = spec.usd_value_transformer(value, {"prim": prim, "attr": spec})
+            if value is None:
+                continue
+        out[spec.key] = np.asarray(value)
     return out
 
 
@@ -691,7 +776,7 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
     return angles
 
 
-def fan_triangulate_faces(counts: nparray, indices: nparray) -> nparray:
+def fan_triangulate_faces(counts: np.ndarray, indices: np.ndarray) -> np.ndarray:
     """
     Perform fan triangulation on polygonal faces.
 
@@ -774,6 +859,143 @@ def _expand_indexed_primvar(
     return values[indices]
 
 
+def _split_corners_into_vertices(
+    points: np.ndarray,
+    indices: np.ndarray,
+    corner_dirs: np.ndarray,
+    corner_uvs: np.ndarray | None,
+    angle_threshold_deg: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    """Duplicate vertices whose faceVarying corners disagree in normal direction or UV.
+
+    The corners of a vertex are clustered greedily in corner order: a corner joins the
+    first cluster whose mean direction is within ``angle_threshold_deg`` and whose UV
+    matches, otherwise it starts a new cluster. Every cluster becomes one output vertex,
+    numbered by the corner that created it.
+
+    Most vertices resolve to a single cluster, which is decided for all of them at once
+    with array operations; only the vertices that fail that test run the sequential
+    clustering. A vertex whose corner directions all lie within half the threshold angle
+    of their mean lie within the full threshold of each other, so the sequential pass
+    would place every one of them in the first cluster.
+
+    A corner whose angle to the cluster mean is exactly ``angle_threshold_deg`` may fall
+    on either side of the comparison: the dot product is rounded differently depending on
+    the arithmetic used, so which cluster such a corner lands in is not defined beyond
+    "one of the clusters it is within the threshold of".
+
+    Args:
+        points: Source vertex positions, shape [vertex_count, 3].
+        indices: Face-corner vertex indices, shape [corner_count].
+        corner_dirs: Unit corner normals, shape [corner_count, 3].
+        corner_uvs: Per-corner UVs, shape [corner_count, channels], or ``None``.
+        angle_threshold_deg: Maximum angle between a corner normal and its cluster mean [deg].
+
+    Returns:
+        Split positions, the remapped corner indices, the per-vertex normals, and the
+        per-vertex UVs (``None`` when ``corner_uvs`` is ``None``).
+    """
+    corner_count = len(indices)
+    if corner_count == 0:
+        empty_uvs = None if corner_uvs is None else corner_uvs[:0]
+        return points[:0], indices.copy(), np.zeros((0, 3), dtype=np.float32), empty_uvs
+
+    cos_thresh = math.cos(math.radians(angle_threshold_deg))
+    cos_half_thresh = math.cos(math.radians(angle_threshold_deg) * 0.5)
+
+    # Group the corners by vertex; the stable sort keeps corner order inside each group.
+    order = np.argsort(indices, kind="stable")
+    grouped_vertices = indices[order]
+    grouped_dirs = corner_dirs[order]
+    grouped_uvs = None if corner_uvs is None else corner_uvs[order]
+
+    starts = np.flatnonzero(np.concatenate(([True], grouped_vertices[1:] != grouped_vertices[:-1])))
+    group_sizes = np.diff(np.append(starts, corner_count))
+    group_vertices = grouped_vertices[starts]
+    group_of_corner = np.repeat(np.arange(len(starts)), group_sizes)
+
+    # The normalized sum of a group's corner directions is the cluster mean it would end
+    # up with if every corner joined the same cluster.
+    dir_sums = np.add.reduceat(grouped_dirs, starts, axis=0)
+    dir_means = dir_sums / np.clip(np.linalg.norm(dir_sums, axis=1, keepdims=True), 1e-30, None)
+    dots = np.einsum("ij,ij->i", grouped_dirs, dir_means[group_of_corner])
+    single_cluster = np.minimum.reduceat(dots, starts) >= cos_half_thresh
+    if grouped_uvs is not None:
+        same_uv = np.all(grouped_uvs == grouped_uvs[starts][group_of_corner], axis=1)
+        single_cluster &= np.logical_and.reduceat(same_uv, starts)
+
+    # Provisional ids: the single-cluster groups first, then the sequential pass.
+    simple_groups = np.flatnonzero(single_cluster)
+    provisional_of_group = np.full(len(starts), -1, dtype=np.int64)
+    provisional_of_group[simple_groups] = np.arange(len(simple_groups))
+    provisional_of_corner = provisional_of_group[group_of_corner]
+
+    next_id = len(simple_groups)
+    split_creation: list[int] = []
+    split_vertices: list[int] = []
+    split_dir_sums: list[tuple[float, float, float]] = []
+    split_uvs: list[tuple[float, ...]] = []
+    for group in np.flatnonzero(~single_cluster):
+        begin = int(starts[group])
+        end = begin + int(group_sizes[group])
+        source_vertex = int(group_vertices[group])
+        clusters: list[list] = []
+        for corner in range(begin, end):
+            dir_x, dir_y, dir_z = (float(value) for value in grouped_dirs[corner])
+            corner_uv = None if grouped_uvs is None else tuple(grouped_uvs[corner].tolist())
+            for cluster in clusters:
+                sum_x, sum_y, sum_z = cluster[0], cluster[1], cluster[2]
+                # Scalar arithmetic rounds this dot product differently from the
+                # equivalent NumPy expression (which uses FMA and a scaled norm), so a
+                # corner sitting exactly on the threshold can cluster either way.
+                scale = max(math.sqrt(sum_x * sum_x + sum_y * sum_y + sum_z * sum_z), 1e-30)
+                if (sum_x * dir_x + sum_y * dir_y + sum_z * dir_z) / scale < cos_thresh:
+                    continue
+                if corner_uv is not None and cluster[3] != corner_uv:
+                    continue
+                cluster[0] = sum_x + dir_x
+                cluster[1] = sum_y + dir_y
+                cluster[2] = sum_z + dir_z
+                provisional_of_corner[corner] = cluster[4]
+                break
+            else:
+                clusters.append([dir_x, dir_y, dir_z, corner_uv, next_id])
+                provisional_of_corner[corner] = next_id
+                split_creation.append(int(order[corner]))
+                split_vertices.append(source_vertex)
+                if corner_uv is not None:
+                    split_uvs.append(corner_uv)
+                next_id += 1
+        # Cluster order matches the id order assigned above.
+        split_dir_sums.extend((cluster[0], cluster[1], cluster[2]) for cluster in clusters)
+
+    creation_corners = np.concatenate([order[starts[simple_groups]], np.asarray(split_creation, dtype=np.int64)])
+    source_vertices = np.concatenate([group_vertices[simple_groups], np.asarray(split_vertices, dtype=np.int64)])
+    new_dir_sums = np.concatenate(
+        [dir_sums[simple_groups], np.asarray(split_dir_sums, dtype=np.float64).reshape(-1, 3)]
+    )
+
+    # Number the output vertices by the corner that created them, matching the order a
+    # purely sequential pass over the corners would produce.
+    final_of_provisional = np.empty(len(creation_corners), dtype=np.int64)
+    final_of_provisional[np.argsort(creation_corners, kind="stable")] = np.arange(len(creation_corners))
+    provisional_in_final_order = np.argsort(final_of_provisional, kind="stable")
+
+    new_indices = np.empty(corner_count, dtype=indices.dtype)
+    new_indices[order] = final_of_provisional[provisional_of_corner]
+    new_points = points[source_vertices[provisional_in_final_order]]
+    ordered_sums = new_dir_sums[provisional_in_final_order]
+    lengths = np.clip(np.linalg.norm(ordered_sums, axis=1, keepdims=True), 1e-30, None)
+    new_normals = (ordered_sums / lengths).astype(np.float32)
+
+    new_uvs = None
+    if grouped_uvs is not None:
+        split_uv_rows = np.asarray(split_uvs, dtype=grouped_uvs.dtype).reshape(-1, grouped_uvs.shape[1])
+        new_uvs = np.concatenate([grouped_uvs[starts[simple_groups]], split_uv_rows])[provisional_in_final_order]
+
+    return new_points, new_indices, new_normals, new_uvs
+
+
 def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool) -> np.ndarray:
     """Return flattened corner indices for fan-triangulated face-varying data."""
     counts_i32 = np.asarray(counts, dtype=np.int32)
@@ -794,9 +1016,324 @@ def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool)
     return corner_faces.reshape(-1)
 
 
+def _is_usd_url(source: str) -> bool:
+    """Return True when ``source`` is an HTTPS USD asset URL."""
+    return source.startswith("https://")
+
+
+def _open_usd_stage(source: str | os.PathLike[str]):
+    """Open a USD stage from a local path or resolved URL."""
+    if Usd is None:
+        raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).")
+
+    source_path = os.fspath(source)
+    if source_path.startswith("http://"):
+        raise ValueError("HTTP USD URLs are not supported; use HTTPS or download the asset explicitly.")
+    if _is_usd_url(source_path):
+        from ..utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
+
+        source_path = resolve_usd_from_url(source_path)
+
+    stage = Usd.Stage.Open(source_path, Usd.Stage.LoadAll)
+    if stage is None:
+        raise FileNotFoundError(f"Unable to open USD stage: {source_path}")
+    return stage
+
+
+def _get_root_prim(stage, root_path: str | None):
+    """Return the merge root prim for a stage-backed mesh load."""
+    if root_path is None or root_path == "/":
+        return stage.GetPseudoRoot()
+
+    root = stage.GetPrimAtPath(root_path)
+    if not root or not root.IsValid():
+        raise ValueError(f"USD root path '{root_path}' does not exist.")
+    return root
+
+
+def _iter_mesh_prims(root) -> list[Any]:
+    """Return all mesh prims under ``root`` in traversal order."""
+    return [prim for prim in Usd.PrimRange(root) if prim.IsA(UsdGeom.Mesh)]
+
+
+def _matrix_to_numpy(matrix) -> np.ndarray:
+    """Convert a USD matrix value into a NumPy row-vector matrix."""
+    return np.array(matrix, dtype=np.float64)
+
+
+def _relative_transform_matrix(prim, root, xform_cache) -> np.ndarray:
+    """Return ``prim`` transform relative to the selected merge ``root``."""
+    prim_world = _matrix_to_numpy(xform_cache.GetLocalToWorldTransform(prim))
+    if root.IsPseudoRoot():
+        return prim_world
+
+    root_world = _matrix_to_numpy(xform_cache.GetLocalToWorldTransform(root))
+    return prim_world @ np.linalg.inv(root_world)
+
+
+def _transform_mesh_data(mesh: Mesh, matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Apply a row-vector USD transform to mesh vertices, winding, and normals."""
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    vertices_h = np.concatenate((vertices, np.ones((len(vertices), 1), dtype=np.float64)), axis=1)
+    transformed_vertices = (vertices_h @ matrix)[:, :3].astype(np.float32)
+
+    indices = np.asarray(mesh.indices, dtype=np.int32).copy()
+    linear = matrix[:3, :3]
+    if np.linalg.det(linear) < 0.0:
+        indices = indices.reshape(-1, 3)
+        indices[:, [1, 2]] = indices[:, [2, 1]]
+        indices = indices.reshape(-1)
+
+    normals = None
+    if mesh.normals is not None:
+        try:
+            normal_matrix = np.linalg.inv(linear).T
+        except np.linalg.LinAlgError:
+            normal_matrix = None
+        if normal_matrix is not None:
+            normals = np.asarray(mesh.normals, dtype=np.float64) @ normal_matrix
+            lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+            lengths[lengths < 1e-20] = 1.0
+            normals = (normals / lengths).astype(np.float32)
+
+    return transformed_vertices, indices, normals
+
+
+def _get_mesh_from_source(
+    source,
+    *,
+    root_path: str | None,
+    load_normals: bool,
+    load_uvs: bool,
+    maxhullvert: int | None,
+    face_varying_normal_conversion: Literal["vertex_averaging", "angle_weighted", "vertex_splitting"],
+    vertex_splitting_angle_threshold_deg: float,
+    preserve_facevarying_uvs: bool,
+    compute_inertia: bool,
+    apply_stage_units: bool,
+    load_visual_materials: bool,
+) -> Mesh:
+    """Load and merge mesh prims from a USD stage, path, URL, or prim subtree."""
+    if Usd is None or UsdGeom is None:
+        raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).")
+    if preserve_facevarying_uvs:
+        raise ValueError(
+            "preserve_facevarying_uvs is not supported for merged USD sources; "
+            "load a single mesh prim with return_uv_indices=True or use preserve_facevarying_uvs=False."
+        )
+
+    if isinstance(source, str | os.PathLike):
+        stage = _open_usd_stage(source)
+        root = _get_root_prim(stage, root_path)
+    elif isinstance(source, Usd.Stage):
+        stage = source
+        root = _get_root_prim(stage, root_path)
+    elif isinstance(source, Usd.Prim):
+        stage = source.GetStage()
+        root = source if root_path is None else _get_root_prim(stage, root_path)
+    else:
+        raise TypeError(
+            f"get_mesh() expected a USD prim, USD stage, filesystem path, or URL; received {type(source).__name__}."
+        )
+
+    mesh_prims = _iter_mesh_prims(root)
+    if not mesh_prims:
+        raise ValueError(f"No UsdGeom.Mesh prims found under '{root.GetPath()}'.")
+
+    linear_unit = 1.0
+    if apply_stage_units and UsdGeom.StageHasAuthoredMetersPerUnit(stage):
+        linear_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
+
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    vertices_parts = []
+    indices_parts = []
+    normals_parts = []
+    uvs_parts = []
+    vertex_offset = 0
+    all_have_normals = True
+    all_have_uvs = True
+    source_meshes = []
+
+    for prim in mesh_prims:
+        source_mesh = get_mesh(
+            prim,
+            load_normals=load_normals,
+            load_uvs=load_uvs,
+            maxhullvert=maxhullvert,
+            face_varying_normal_conversion=face_varying_normal_conversion,
+            vertex_splitting_angle_threshold_deg=vertex_splitting_angle_threshold_deg,
+            preserve_facevarying_uvs=preserve_facevarying_uvs,
+            compute_inertia=False,
+            load_visual_materials=load_visual_materials,
+        )
+        source_meshes.append(source_mesh)
+        matrix = _relative_transform_matrix(prim, root, xform_cache)
+        vertices, indices, normals = _transform_mesh_data(source_mesh, matrix)
+
+        vertices_parts.append(vertices)
+        indices_parts.append(indices + vertex_offset)
+        vertex_offset += len(vertices)
+
+        if normals is None:
+            all_have_normals = False
+        else:
+            normals_parts.append(normals)
+
+        if source_mesh.uvs is None:
+            all_have_uvs = False
+        else:
+            uvs_parts.append(np.asarray(source_mesh.uvs, dtype=np.float32))
+
+    vertices = np.concatenate(vertices_parts, axis=0)
+    if linear_unit != 1.0:
+        vertices *= linear_unit
+    indices = np.concatenate(indices_parts, axis=0)
+    normals = np.concatenate(normals_parts, axis=0) if all_have_normals else None
+    uvs = np.concatenate(uvs_parts, axis=0) if all_have_uvs else None
+
+    material_source = source_meshes[0] if len(source_meshes) == 1 else None
+    return Mesh(
+        vertices,
+        indices,
+        normals=normals,
+        uvs=uvs,
+        maxhullvert=maxhullvert,
+        compute_inertia=compute_inertia,
+        color=material_source.color if material_source is not None else None,
+        texture=material_source.texture if material_source is not None else None,
+        metallic=material_source.metallic if material_source is not None else None,
+        roughness=material_source.roughness if material_source is not None else None,
+        texture_transform=material_source.texture_transform
+        if material_source is not None
+        else ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    )
+
+
+def _material_surface_shader(material: UsdShade.Material | None) -> UsdShade.Shader | None:
+    """Return the surface shader driving a material (UsdPreviewSurface or MDL)."""
+    if not material:
+        return None
+    surface_output = material.GetSurfaceOutput() or material.GetOutput("surface") or material.GetOutput("mdl:surface")
+    if surface_output:
+        source = surface_output.GetConnectedSource()
+        if source:
+            return UsdShade.Shader(source[0].GetPrim())
+    for child in material.GetPrim().GetChildren():
+        if child.IsA(UsdShade.Shader):
+            return UsdShade.Shader(child)
+    return None
+
+
+def _uvtexture_reader_varname(texture_shader: UsdShade.Shader) -> str | None:
+    """Return the primvar read by a ``UsdUVTexture``, through an optional ``UsdTransform2d``."""
+    st_input = texture_shader.GetInput("st")
+    source = st_input.GetConnectedSource() if st_input else None
+    if not source:
+        return None
+    reader = UsdShade.Shader(source[0].GetPrim())
+    if reader.GetIdAttr().Get() == "UsdTransform2d":
+        transform_input = reader.GetInput("in")
+        source = transform_input.GetConnectedSource() if transform_input else None
+        if not source:
+            return None
+        reader = UsdShade.Shader(source[0].GetPrim())
+    varname = reader.GetInput("varname")
+    if not varname:
+        return None
+    value = varname.Get()
+    if value is None:
+        try:
+            attrs = UsdShade.Utils.GetValueProducingAttributes(varname)
+        except Exception:
+            attrs = ()
+        value = attrs[0].Get() if attrs else None
+    return str(value) if value else None
+
+
+def _uv_primvar_name_from_shader(shader: UsdShade.Shader | None) -> str | None:
+    """Resolve the texcoord primvar name a shader's base-color texture reads, or ``None``.
+
+    - ``UsdPreviewSurface``: follow the base-color ``UsdUVTexture``'s ``st`` input to its
+      ``UsdPrimvarReader_float2`` and read ``inputs:varname``.
+    - ``OmniPBR`` and other MDL shaders: ``st_<inputs:uv_space_index>``.
+    """
+    if shader is None:
+        return None
+    try:
+        shader_id = shader.GetIdAttr().Get()
+    except Exception:
+        shader_id = None
+    if shader_id == "UsdPreviewSurface":
+        for color_name in ("baseColor", "diffuseColor"):
+            color_input = shader.GetInput(color_name)
+            source = color_input.GetConnectedSource() if color_input else None
+            if not source:
+                continue
+            texture = UsdShade.Shader(source[0].GetPrim())
+            if texture.GetIdAttr().Get() == "UsdUVTexture":
+                name = _uvtexture_reader_varname(texture)
+                if name:
+                    return name
+    uv_index_input = shader.GetInput("uv_space_index")
+    if uv_index_input:
+        value = uv_index_input.Get()
+        if value is not None:
+            return f"st_{int(value)}"
+    return None
+
+
+def _resolve_material_uv_primvar_name(prim: Usd.Prim) -> str | None:
+    """Resolve the texcoord primvar name from the material(s) bound to a mesh or its subsets."""
+    candidate_prims = [prim]
+    try:
+        subsets = UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
+        candidate_prims += [subset.GetPrim() for subset in subsets]
+    except Exception:
+        pass
+    for candidate in candidate_prims:
+        name = _uv_primvar_name_from_shader(_material_surface_shader(_get_bound_material(candidate)))
+        if name:
+            return name
+    return None
+
+
+def _find_uv_primvar(prim: Usd.Prim):
+    """Return a mesh's texture-coordinate primvar, or ``None``.
+
+    The primvar name is resolved from the bound material's shader network — the
+    ``UsdPreviewSurface`` texture reader's ``varname`` or an MDL/OmniPBR
+    ``uv_space_index`` — because a mesh may carry several UV sets and only the
+    material identifies the correct one. Falls back to the conventional ``st``
+    primvar, then to the first ``float2``/``texCoord2f`` primvar named ``st*``/``uv*``.
+    """
+    api = UsdGeom.PrimvarsAPI(prim)
+
+    resolved = _resolve_material_uv_primvar_name(prim)
+    if resolved:
+        primvar = api.GetPrimvar(resolved)
+        if primvar and primvar.HasValue():
+            return primvar
+
+    primvar = api.GetPrimvar("st")
+    if primvar and primvar.HasValue():
+        return primvar
+
+    fallback = None
+    for candidate in api.GetPrimvarsWithValues():
+        if candidate.GetTypeName() not in (Sdf.ValueTypeNames.TexCoord2fArray, Sdf.ValueTypeNames.Float2Array):
+            continue
+        name = candidate.GetPrimvarName().lower()
+        if name.startswith("st"):
+            return candidate
+        if (name.startswith("uv") or name == "map1") and fallback is None:
+            fallback = candidate
+    return fallback
+
+
 @overload
 def get_mesh(
-    prim: Usd.Prim,
+    source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -806,12 +1343,17 @@ def get_mesh(
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
     return_uv_indices: Literal[False] = False,
+    root_path: str | None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    load_visual_materials: bool = True,
 ) -> Mesh: ...
 
 
 @overload
 def get_mesh(
-    prim: Usd.Prim,
+    source: Usd.Prim,
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -821,11 +1363,59 @@ def get_mesh(
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
     return_uv_indices: Literal[True] = True,
+    root_path: None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    load_visual_materials: bool = True,
 ) -> tuple[Mesh, np.ndarray | None]: ...
 
 
+@overload
 def get_mesh(
+    source: None = None,
+    *,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int | None = None,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: Literal[False] = False,
+    root_path: str | None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
     prim: Usd.Prim,
+    load_visual_materials: bool = True,
+) -> Mesh: ...
+
+
+@overload
+def get_mesh(
+    source: None = None,
+    *,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int | None = None,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: Literal[True] = True,
+    root_path: None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    prim: Usd.Prim,
+    load_visual_materials: bool = True,
+) -> tuple[Mesh, np.ndarray | None]: ...
+
+
+@deprecate_nonkeyword_arguments
+def get_mesh(
+    source: Usd.Prim | Usd.Stage | str | os.PathLike[str] | None = None,
+    *,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -835,9 +1425,19 @@ def get_mesh(
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
     return_uv_indices: bool = False,
+    root_path: str | None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    prim: Usd.Prim | None = None,
+    load_visual_materials: bool = True,
 ) -> Mesh | tuple[Mesh, np.ndarray | None]:
     """
-    Load a triangle mesh from a USD prim that has the ``UsdGeom.Mesh`` schema.
+    Load a triangle mesh from a USD mesh prim, stage, file path, or URL.
+
+    When ``source`` is a mesh prim, the mesh is loaded in the prim's local
+    coordinates. When ``source`` is a stage, path, URL, or non-mesh prim, all
+    ``UsdGeom.Mesh`` prims under ``root_path`` are merged into one
+    :class:`newton.Mesh` with authored transforms applied relative to that root.
 
     Example:
 
@@ -859,11 +1459,12 @@ def get_mesh(
             assert len(demo_mesh.normals) == 6102
 
     Args:
-        prim (Usd.Prim): The USD prim to load the mesh from.
-        load_normals (bool): Whether to load the normals.
-        load_uvs (bool): Whether to load the UVs.
-        maxhullvert (int): The maximum number of vertices for the convex hull approximation.
-        face_varying_normal_conversion (Literal["vertex_averaging", "angle_weighted", "vertex_splitting"]):
+        source: USD mesh prim, stage, file path, or URL to load the mesh from.
+        prim: Legacy keyword alias for ``source`` when loading a USD prim.
+        load_normals: Whether to load the normals.
+        load_uvs: Whether to load the UVs.
+        maxhullvert: The maximum number of vertices for the convex hull approximation.
+        face_varying_normal_conversion:
             This argument specifies how to convert "faceVarying" normals
             (normals defined per-corner rather than per-vertex) into per-vertex normals for the mesh.
             If ``load_normals`` is False, this argument is ignored.
@@ -882,24 +1483,82 @@ def get_mesh(
                 * - ``"vertex_splitting"``
                   - Splits a vertex into multiple vertices if the difference between the corner normals exceeds a threshold angle (see ``vertex_splitting_angle_threshold_deg``). This preserves sharp features by assigning separate (duplicated) vertices to corners with widely different normals.
 
-        vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
+        vertex_splitting_angle_threshold_deg: The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than ``vertex_splitting_angle_threshold_deg`` will be split
             into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
-        preserve_facevarying_uvs (bool): If True, keep faceVarying UVs in their
+        preserve_facevarying_uvs: If True, keep faceVarying UVs in their
             original corner layout and avoid UV-driven vertex splitting. The
             returned mesh keeps its original topology. This is useful when the
             caller needs the original UV indexing (e.g., panel-space cloth).
-        return_uv_indices (bool): If True, return a tuple ``(mesh, uv_indices)``
+        return_uv_indices: If True, return a tuple ``(mesh, uv_indices)``
             where ``uv_indices`` is a flattened triangle index buffer for the
             UVs when available. For faceVarying UVs and
             ``preserve_facevarying_uvs=True``, these indices reference the
-            face-varying UV array.
+            face-varying UV array. Only supported for a single
+            ``UsdGeom.Mesh`` prim when ``root_path`` is None.
+        root_path: USD prim path to use as the merge root for stage, file path,
+            URL, or non-mesh prim sources. Defaults to the stage pseudo-root for
+            stages and paths, or the provided prim for non-mesh prim sources.
+        compute_inertia: If True, compute mass properties for the returned
+            :class:`newton.Mesh`.
+        apply_stage_units: If True, convert merged stage, file path, URL, or
+            non-mesh prim sources from authored USD distance units to meters.
+            Single mesh prim sources keep their authored coordinates for
+            backward compatibility unless ``root_path`` is provided.
+        load_visual_materials: If True, resolve the mesh's visual material and
+            populate :attr:`newton.Mesh.color`, :attr:`newton.Mesh.texture`,
+            :attr:`newton.Mesh.metallic`, and :attr:`newton.Mesh.roughness`.
+            Resolution also covers materials bound through an instance
+            prototype or a ``UsdGeom.Subset`` child, and the ``displayColor``
+            primvar fallback. If False, those attributes keep their
+            :class:`newton.Mesh` defaults; set it to False when only mesh
+            geometry is needed. If ``load_uvs`` is True, the material's shader
+            network may still be inspected to select the UV primvar used by
+            the texture.
 
     Returns:
         newton.Mesh: The loaded mesh, or ``(mesh, uv_indices)`` if
         ``return_uv_indices`` is True.
     """
+    if prim is not None:
+        if source is not None:
+            raise TypeError("get_mesh() received both 'source' and legacy 'prim'; pass only one.")
+        source = prim
+    elif source is None:
+        raise TypeError("get_mesh() missing required argument: 'source'.")
+
     if maxhullvert is None:
         maxhullvert = Mesh.MAX_HULL_VERTICES
+
+    should_load_source = isinstance(source, str | os.PathLike) or (
+        Usd is not None
+        and (
+            isinstance(source, Usd.Stage)
+            or (isinstance(source, Usd.Prim) and (root_path is not None or not source.IsA(UsdGeom.Mesh)))
+        )
+    )
+    if should_load_source:
+        if return_uv_indices:
+            raise ValueError("return_uv_indices is only supported when loading a single UsdGeom.Mesh prim.")
+        return _get_mesh_from_source(
+            source,
+            root_path=root_path,
+            load_normals=load_normals,
+            load_uvs=load_uvs,
+            maxhullvert=maxhullvert,
+            face_varying_normal_conversion=face_varying_normal_conversion,
+            vertex_splitting_angle_threshold_deg=vertex_splitting_angle_threshold_deg,
+            preserve_facevarying_uvs=preserve_facevarying_uvs,
+            compute_inertia=compute_inertia,
+            apply_stage_units=apply_stage_units,
+            load_visual_materials=load_visual_materials,
+        )
+
+    if Usd is not None and isinstance(source, Usd.Prim):
+        prim = source
+    else:
+        raise TypeError(
+            f"get_mesh() expected a USD prim, USD stage, filesystem path, or URL; received {type(source).__name__}."
+        )
 
     mesh = UsdGeom.Mesh(prim)
 
@@ -913,7 +1572,7 @@ def get_mesh(
     # faceVarying normal conversion, so we don't split again in the UV pass.
     did_split_vertices = False
     if load_uvs:
-        uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
+        uv_primvar = _find_uv_primvar(prim)
         if uv_primvar:
             uvs = uv_primvar.Get()
             if uvs is not None:
@@ -956,6 +1615,21 @@ def get_mesh(
 
     if normals is not None:
         normals = np.array(normals, dtype=np.float64)
+        if normals_interpolation == UsdGeom.Tokens.uniform:
+            # One normal per face, commonly indexed so that flat-shaded geometry stores each
+            # distinct direction once. Resolve the indices and hand each face's normal to its
+            # own corners, which is the faceVarying form the rest of this function expects.
+            prim_path = str(prim.GetPath())
+            if normal_indices is not None and len(normal_indices) > 0:
+                normals = _expand_indexed_primvar(normals, normal_indices, "Normal", prim_path)
+                normal_indices = None
+            if len(normals) != len(counts):
+                raise ValueError(
+                    f"Length of uniform normals ({len(normals)}) does not match number of faces "
+                    f"({len(counts)}) for mesh {prim_path}"
+                )
+            normals = np.repeat(normals, np.asarray(counts, dtype=np.int32), axis=0)
+            normals_interpolation = UsdGeom.Tokens.faceVarying
         if normals_interpolation == UsdGeom.Tokens.faceVarying:
             prim_path = str(prim.GetPath())
             if normal_indices is not None and len(normal_indices) > 0:
@@ -983,68 +1657,33 @@ def get_mesh(
                 nlen = np.clip(nlen, 1e-30, None)
                 Ndir = Nfv / nlen
 
-                cos_thresh = np.cos(np.deg2rad(vertex_splitting_angle_threshold_deg))
+                # faceVarying UVs carry one value per corner; if the count does
+                # not match, they can't be indexed per-corner, so drop them
+                # (matching the non-splitting UV path below).
+                uvs_facevarying = uvs is not None and uvs_interpolation == UsdGeom.Tokens.faceVarying
+                if uvs_facevarying and len(uvs) != C:
+                    logger.info(
+                        "Mesh %s: UV primvar length (%d) does not match corner count (%d); dropping UVs.",
+                        prim.GetPath(),
+                        len(uvs),
+                        C,
+                    )
+                    uvs = None
+                    uvs_facevarying = False
 
-                # For each original vertex v, we'll keep a list of clusters:
-                # each cluster stores (sum_dir, count, new_vid)
-                clusters_per_v = [[] for _ in range(V)]
+                # Corners that share a smooth normal but carry different faceVarying UVs
+                # lie on a texture seam and must not be merged, or the seam's UVs would
+                # collapse onto one value.
+                if uvs is None:
+                    corner_uvs = None
+                else:
+                    corner_uvs = np.asarray(uvs).reshape(len(uvs), -1)
+                    if not uvs_facevarying:
+                        corner_uvs = corner_uvs[indices]
 
-                new_points = []
-                new_norm_sums = []  # accumulate directions per new vertex id
-                new_indices = np.empty_like(indices)
-                new_uvs = [] if uvs is not None else None
-
-                # Helper to create a new vertex clone from original v
-                def _new_vertex_from(v, n_dir, corner_idx):
-                    new_vid = len(new_points)
-                    new_points.append(points[v])
-                    new_norm_sums.append(n_dir.copy())
-                    clusters_per_v[v].append([n_dir.copy(), 1, new_vid])
-                    if new_uvs is not None:
-                        # Use corner UV if faceVarying, otherwise use vertex UV
-                        if uvs_interpolation == UsdGeom.Tokens.faceVarying:
-                            new_uvs.append(uvs[corner_idx])
-                        else:
-                            new_uvs.append(uvs[v])
-                    return new_vid
-
-                # Assign each corner to a cluster (new vertex) based on angular proximity
-                for c in range(C):
-                    v = int(indices[c])
-                    n_dir = Ndir[c]
-
-                    clusters = clusters_per_v[v]
-                    assigned = False
-                    # try to match an existing cluster
-                    for cl in clusters:
-                        sum_dir, cnt, new_vid = cl
-                        # compare with current mean direction (sum_dir normalized)
-                        mean_dir = sum_dir / max(np.linalg.norm(sum_dir), 1e-30)
-                        if float(np.dot(mean_dir, n_dir)) >= cos_thresh:
-                            # assign to this cluster
-                            cl[0] = sum_dir + n_dir
-                            cl[1] = cnt + 1
-                            new_norm_sums[new_vid] += n_dir
-                            new_indices[c] = new_vid
-                            assigned = True
-                            break
-
-                    if not assigned:
-                        new_vid = _new_vertex_from(v, n_dir, c)
-                        new_indices[c] = new_vid
-
-                new_points = np.asarray(new_points, dtype=np.float64)
-
-                # Produce per-vertex normalized normals for the new vertices
-                new_norm_sums = np.asarray(new_norm_sums, dtype=np.float64)
-                nn = np.linalg.norm(new_norm_sums, axis=1, keepdims=True)
-                nn = np.clip(nn, 1e-30, None)
-                new_vertex_normals = (new_norm_sums / nn).astype(np.float32)
-
-                points = new_points
-                indices = new_indices
-                normals = new_vertex_normals
-                uvs = new_uvs
+                points, indices, normals, uvs = _split_corners_into_vertices(
+                    points, indices, Ndir, corner_uvs, vertex_splitting_angle_threshold_deg
+                )
                 # Vertex splitting creates a new per-vertex layout (and UVs
                 # if available). Skip the later faceVarying UV split to avoid
                 # dropping/duplicating UVs.
@@ -1094,10 +1733,11 @@ def get_mesh(
         # were converted to per-vertex. Avoid a second split here.
         if uvs_interpolation == UsdGeom.Tokens.faceVarying and not did_split_vertices:
             if len(uvs) != len(indices):
-                warnings.warn(
-                    f"UV primvar length ({len(uvs)}) does not match indices length ({len(indices)}) for mesh {prim.GetPath()}; "
-                    "dropping UVs.",
-                    stacklevel=2,
+                logger.info(
+                    "Mesh %s: UV primvar length (%d) does not match indices length (%d); dropping UVs.",
+                    prim.GetPath(),
+                    len(uvs),
+                    len(indices),
                 )
                 uvs = None
             else:
@@ -1125,7 +1765,7 @@ def get_mesh(
     if return_uv_indices and uvs is not None and uv_indices is None:
         uv_indices = faces.reshape(-1)
 
-    material_props = resolve_material_properties_for_prim(prim)
+    material_props = resolve_material_properties_for_prim(prim) if load_visual_materials else {}
 
     mesh_out = Mesh(
         points,
@@ -1133,10 +1773,15 @@ def get_mesh(
         normals=normals,
         uvs=uvs,
         maxhullvert=maxhullvert,
+        compute_inertia=compute_inertia,
         color=material_props.get("color"),
+        opacity=material_props.get("opacity"),
         texture=material_props.get("texture"),
         metallic=material_props.get("metallic"),
         roughness=material_props.get("roughness"),
+        texture_transform=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+        if material_props.get("texture_transform") is None
+        else material_props["texture_transform"],
     )
     if return_uv_indices:
         return mesh_out, uv_indices
@@ -1153,23 +1798,95 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
         "orientation",
         "purpose",
         "visibility",
+        "displayOpacity",
         "xformOpOrder",
         "proxyPrim",
+        # Standard UsdGeom.PointBased attributes (velocities, accelerations, normals): importing them
+        # is deferred to a follow-up, so skip them here rather than capturing them as custom data.
+        "velocities",
+        "accelerations",
+        "normals",
     }
 )
 
 
-def get_tetmesh(prim: Usd.Prim) -> TetMesh:
+# Vendor attribute namespaces that get_tetmesh() read by default before the canonical
+# ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to read them
+# off a bound material.
+DEFORMABLE_LEGACY_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
+
+
+def _material_authors_legacy_deformable_attrs(prim: Usd.Prim) -> bool:
+    """Return whether ``prim``'s bound physics material authors deformable moduli only under
+    the legacy vendor namespaces (see :data:`DEFORMABLE_LEGACY_NAMESPACES`).
+
+    True means a canonical-only read would silently drop the authored stiffness/density:
+    the material lacks ``PhysicsVolumeDeformableMaterialAPI`` but carries vendor-namespaced
+    ``youngsModulus`` / ``poissonsRatio`` / ``density``. Callers use this to keep a
+    deprecation window for such assets.
+    """
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
+        return False
+    return any(
+        material_prim.GetAttribute(f"{namespace}:{name}").HasAuthoredValue()
+        for namespace in DEFORMABLE_LEGACY_NAMESPACES
+        for name in ("youngsModulus", "poissonsRatio", "density")
+    )
+
+
+def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
+    """Return whether ``prim``'s bound physics material authors canonical ``physics:``
+    deformable moduli without ``PhysicsVolumeDeformableMaterialAPI``.
+
+    The deprecated ``get_tetmesh()`` default reads these off any bound material, while
+    canonical-only behavior (``compat_namespaces=()``) scopes moduli to materials with the
+    applied API and would silently drop them -- the second case where the legacy default
+    is load-bearing and deserves the deprecation warning.
+    """
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
+        return False
+    return any(
+        material_prim.GetAttribute(f"physics:{name}").HasAuthoredValue()
+        for name in ("youngsModulus", "poissonsRatio", "density")
+    )
+
+
+def get_tetmesh(
+    prim: Usd.Prim,
+    *,
+    compat_namespaces: Sequence[str] | None = None,
+    _load_custom_attributes: bool = True,
+) -> TetMesh:
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
     Reads vertex positions from the ``points`` attribute and tetrahedral
     connectivity from ``tetVertexIndices``. If a physics material is bound
     to the prim (via ``material:binding:physics``) and contains
-    ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
-    (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+    ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
+    ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
     those values are read and converted to Lame parameters (``k_mu``,
     ``k_lambda``) and density on the returned TetMesh. Material properties
     are set to ``None`` if not present.
+
+    Custom primvars use their resolved interpolation to determine attribute
+    frequency. Other custom arrays use length-based inference; arrays whose
+    frequency is ambiguous or cannot be inferred emit a warning and are
+    omitted without preventing the TetMesh from loading.
+
+    Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
+    (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
+    are read off any bound material, matching the pre-canonical behavior. That default is
+    deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
+    authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
+    without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
+    materials do not warn); a future
+    release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
+    the canonical-only behavior now -- moduli are then read only from a material that applies
+    ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
+    ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
+    warning.
 
     Example:
 
@@ -1187,6 +1904,10 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
 
     Args:
         prim: The USD prim to load the tetrahedral mesh from.
+        compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
+            ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
+            gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
+            canonical-only.
 
     Returns:
         TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
@@ -1206,28 +1927,107 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
     vertices = np.array(points_attr, dtype=np.float32)
     tet_indices = np.array(tet_indices_attr, dtype=np.int32).flatten()
 
+    # Flip winding order for left-handed meshes (e.g. Houdini exports)
+    handedness = tet_mesh.GetOrientationAttr().Get()
+    if handedness and handedness.lower() == "lefthanded" and tet_indices.size % 4 == 0:
+        tet_indices = tet_indices.reshape(-1, 4)
+        tet_indices[:, [1, 2]] = tet_indices[:, [2, 1]]
+        tet_indices = tet_indices.reshape(-1)
+
     # Try to read physics material properties if bound
     k_mu = None
     k_lambda = None
     density = None
 
-    material_prim = _find_physics_material_prim(prim)
-    if material_prim is not None:
-        youngs = _read_physics_attr(material_prim, "youngsModulus")
-        poissons = _read_physics_attr(material_prim, "poissonsRatio")
-        density_val = _read_physics_attr(material_prim, "density")
+    # Volume material moduli (youngsModulus/poissonsRatio/...) belong on the bound material, not the
+    # geometry; warn if authored on the TetMesh prim itself so the misplacement is visible to direct
+    # get_tetmesh() callers too (add_usd's deformable pass warns separately).
+    _warn_geometry_authored_material_attrs(
+        prim, str(prim.GetPath()), "PhysicsVolumeDeformableMaterialAPI", _read_physics_attr
+    )
 
-        if youngs is not None and poissons is not None:
+    material_prim = _find_physics_material_prim(prim)
+    if compat_namespaces is None:
+        # Deprecated legacy default: read vendor namespaces off any bound material, and
+        # canonical moduli off materials without the deformable material API. Warn only when
+        # that default is load-bearing -- vendor attrs authored, or canonical attrs on an
+        # API-less material -- so materials whose reads the default change does not alter
+        # (API-applied canonical, render-only) never warn.
+        if _material_authors_legacy_deformable_attrs(prim) or _material_authors_unscoped_canonical_attrs(prim):
+            warnings.warn(
+                "get_tetmesh(): the default reads deformable material attributes off any bound "
+                "material (canonical physics: and legacy omniphysics: / physxDeformableBody: "
+                "namespaces); this is deprecated, and a future release will read canonical "
+                "physics: attributes only off a material applying "
+                "PhysicsVolumeDeformableMaterialAPI. Pass compat_namespaces=() to adopt the "
+                "canonical-only behavior now, or compat_namespaces="
+                "newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep the current behavior explicitly.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        compat_namespaces = DEFORMABLE_LEGACY_NAMESPACES
+    # Canonical behavior (compat_namespaces=()) scopes the moduli to the volume deformable material
+    # API, so they are not read off an unrelated physics material. A non-empty compat_namespaces reads
+    # the listed vendor namespaces off any bound material.
+    read_material = material_prim is not None and (
+        bool(compat_namespaces) or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI")
+    )
+    if read_material:
+        youngs = _read_physics_attr(material_prim, "youngsModulus", compat_namespaces)
+        poissons = _read_physics_attr(material_prim, "poissonsRatio", compat_namespaces)
+        density_val = _read_physics_attr(material_prim, "density", compat_namespaces)
+
+        # The proposal declares youngsModulus with a fallback of -inf, meaning "simulator
+        # default": treat it like an unauthored modulus rather than an invalid value.
+        if youngs is not None and float(youngs) == float("-inf"):
+            youngs = None
+        if youngs is not None:
             E = float(youngs)
-            nu = float(poissons)
-            # Clamp Poisson's ratio to the open interval (-1, 0.5) to avoid
-            # division by zero in the Lame parameter conversion.
-            nu = max(-0.999, min(nu, 0.499))
-            k_mu = E / (2.0 * (1.0 + nu))
-            k_lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+            # The proposal declares physics:poissonsRatio with a fallback of 0.3. The schema
+            # is not registered with USD, so the fallback cannot be injected by composition
+            # and must be applied here; otherwise an authored Young's modulus would be
+            # silently discarded whenever the ratio is left at its default.
+            nu = 0.3 if poissons is None else float(poissons)
+            if not (math.isfinite(E) and E >= 0.0 and math.isfinite(nu)):
+                warnings.warn(
+                    f"{material_prim.GetPath()}: invalid volume material (youngsModulus={E}, "
+                    f"poissonsRatio={nu}); ignoring the authored elastic moduli.",
+                    stacklevel=2,
+                )
+            else:
+                # Clamp Poisson's ratio to the open interval (-1, 0.5) to avoid
+                # division by zero in the Lame parameter conversion.
+                nu = max(-0.999, min(nu, 0.499))
+                k_mu = E / (2.0 * (1.0 + nu))
+                k_lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
 
         if density_val is not None:
-            density = float(density_val)
+            authored_density = float(density_val)
+            # The proposal declares density with a range of (0, inf) and a fallback of 0
+            # meaning "ignored": zero falls through to the caller's density precedence
+            # (body override, then the builder default) without being an invalid value.
+            if math.isfinite(authored_density) and authored_density > 0.0:
+                density = authored_density
+            elif authored_density != 0.0:
+                warnings.warn(
+                    f"{material_prim.GetPath()}: invalid volume material density "
+                    f"{authored_density}; expected a finite positive value, ignoring it.",
+                    stacklevel=2,
+                )
+
+    if density is None:
+        # The base UsdPhysicsMaterialAPI (which the family APIs extend) supplies
+        # density too; a plain rigid-style physics material is a valid source.
+        density = _get_physics_material_density(material_prim)
+
+    if not _load_custom_attributes:
+        return TetMesh(
+            vertices=vertices,
+            tet_indices=tet_indices,
+            k_mu=k_mu,
+            k_lambda=k_lambda,
+            density=density,
+        )
 
     # Read custom primvars and attributes (per-vertex, per-tet, etc.)
     # Primvar interpolation is used to determine the attribute frequency
@@ -1249,9 +2049,9 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
     primvars_api = UsdGeom.PrimvarsAPI(prim)
     for primvar in primvars_api.GetPrimvarsWithValues():
         name = primvar.GetPrimvarName()
-        if name in ("st", "normals"):
+        if name in ("st", "normals", "displayColor", "displayOpacity"):
             continue  # skip well-known primvars handled elsewhere
-        val = primvar.Get()
+        val = primvar.ComputeFlattened()
         if val is not None:
             arr = np.array(val)
             interp = primvar.GetInterpolation()
@@ -1269,6 +2069,12 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
             continue
         if name.startswith("primvars:") or name.startswith("xformOp:"):
             continue
+        # Deformable physics-schema attributes are handled by the deformable importer
+        # where supported (e.g. physics:masses) or intentionally skipped (e.g.
+        # physics:restShapePoints, whose rest-shape import is not yet supported and is
+        # warned about by the importer); none are carried as generic mesh data here.
+        if name.startswith(("physics:", "omniphysics:", "physxDeformableBody:")):
+            continue
         if not attr.HasAuthoredValue():
             continue
         val = attr.Get()
@@ -1280,38 +2086,394 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
             except (TypeError, ValueError):
                 pass  # skip non-array attributes
 
-    return TetMesh(
+    result = TetMesh(
         vertices=vertices,
         tet_indices=tet_indices,
         k_mu=k_mu,
         k_lambda=k_lambda,
         density=density,
-        custom_attributes=custom_attributes if custom_attributes else None,
     )
+    tri_count = len(result.surface_tri_indices) // 3
+    for name, value in custom_attributes.items():
+        if name in result._RESERVED_ATTR_KEYS:
+            warnings.warn(
+                f"{prim.GetPath()}: custom attribute '{name}' uses a reserved TetMesh name; skipping the attribute.",
+                stacklevel=2,
+            )
+            continue
+        if isinstance(value, tuple):
+            arr, frequency = value
+        else:
+            arr = value
+            try:
+                frequency = result._infer_frequency(arr, result.vertex_count, result.tet_count, tri_count, name)
+            except ValueError as exc:
+                warnings.warn(f"{prim.GetPath()}: {exc}; skipping the attribute.", stacklevel=2)
+                continue
+        result.custom_attributes[name] = (np.asarray(arr), frequency)
+    return result
 
 
 def _find_physics_material_prim(prim: Usd.Prim):
-    """Find the physics material prim bound to a prim or its ancestors."""
+    """Resolve the ``physics``-purpose bound material prim (or ``None``).
+
+    Via :meth:`UsdShade.MaterialBindingAPI.ComputeBoundMaterial`, honoring inherited,
+    collection-based, and strength-resolved (``bindMaterialAs``) bindings.
+    """
+    material, _rel = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial("physics")
+    mat_prim = material.GetPrim()
+    return mat_prim if mat_prim and mat_prim.IsValid() else None
+
+
+def _read_physics_attr(prim: Usd.Prim, name: str, compat_namespaces: Sequence[str] = ()):
+    """Read a deformable physics attribute, canonical ``physics:`` namespace first.
+
+    The AOUSD deformable proposal authors under ``physics:``; this is parsed as
+    written. ``compat_namespaces`` lists vendor namespaces (e.g. ``omniphysics``,
+    ``physxDeformableBody``) accepted as a fallback, sourced from the active
+    schema resolvers (see :meth:`SchemaResolverManager.deformable_compat_namespaces`),
+    so a default import reads only the canonical schema.
+    """
+    for prefix in ("physics", *compat_namespaces):
+        attr = prim.GetAttribute(f"{prefix}:{name}")
+        if attr and attr.HasAuthoredValue():
+            return attr.Get()
+    return None
+
+
+def _read_deformable_material(
+    prim: Usd.Prim,
+    read_attr: Callable[[Usd.Prim, str], Any],
+    api_schema: str,
+    attr_names: Sequence[str],
+    *,
+    attr_namespace: str = "physics",
+    material_prim: Usd.Prim | None = None,
+) -> dict[str, float] | None:
+    """Read a per-family deformable material's authored, in-range parameters bound to a prim.
+
+    Shared by the per-family readers (:func:`_get_curve_deformable_material`,
+    :func:`_get_surface_deformable_material`): resolves the physics material bound via
+    ``material:binding:physics`` and reads ``attr_names`` through ``read_attr`` (the resolver's
+    single-source namespace read, see :meth:`SchemaResolverManager.read_deformable_attr`) when the
+    bound material declares ``api_schema``.
+
+    Returns a dict of the authored, in-range values among ``attr_names``, or ``None`` if the bound
+    material does not declare ``api_schema``; an applied API with no valid authored values returns
+    an empty dict. ``attr_namespace`` identifies the schema namespace in diagnostics; ``read_attr``
+    remains responsible for the actual namespace resolution. ``material_prim`` may supply an
+    already-resolved binding when one caller reads multiple APIs from the same material. Stiffness,
+    damping, and Young's modulus accept zero; thickness must be positive; density must be positive
+    to be returned, while zero is its ignored sentinel; and Poisson's ratio must lie in
+    ``(-1, 0.5]``. The ``-inf`` simulator-default sentinel used by stiffness, damping, Young's
+    modulus, and thickness is silently dropped. Other out-of-range or non-finite values are dropped
+    with a warning.
+
+    Args:
+        prim: Prim whose bound physics material is resolved.
+        read_attr: Callable that reads an attribute from the bound material.
+        api_schema: Applied material API required on the bound material.
+        attr_names: Attribute names to read and validate.
+        attr_namespace: Namespace used when reporting invalid attributes.
+        material_prim: Previously resolved bound material, if available.
+    """
+    if material_prim is None:
+        material_prim = _find_physics_material_prim(prim)
+    if material_prim is None or not has_applied_api_schema(material_prim, api_schema):
+        return None
+    out: dict[str, float] = {}
+    for name in attr_names:
+        val = read_attr(material_prim, name)
+        if val is None:
+            continue
+        val = float(val)
+        has_negative_infinity_sentinel = name not in ("density", "poissonsRatio")
+        if val == -math.inf and has_negative_infinity_sentinel:
+            continue  # schema "simulator default" sentinel
+        if not math.isfinite(val):
+            expected = "a finite value or the -inf sentinel" if has_negative_infinity_sentinel else "a finite value"
+            warnings.warn(
+                f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} (expected {expected}); "
+                f"treating it as unauthored.",
+                stacklevel=2,
+            )
+            continue
+        # Stiffness, damping, and Young's modulus accept [0, inf), so an authored zero is preserved.
+        # Thickness and density must be strictly positive.
+        if name in ("thickness", "curvesThickness", "density"):
+            if val > 0.0:
+                out[name] = val
+            elif name == "density" and val == 0.0:
+                # The AOUSD deformables proposal defines zero density as an ignored sentinel.
+                continue
+            else:
+                # A finite non-positive thickness (or negative density) is malformed, not the
+                # unauthored sentinel (-inf); say it is dropped so users can tell it apart
+                # from an unauthored value.
+                warnings.warn(
+                    f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} (expected > 0); "
+                    f"treating it as unauthored.",
+                    stacklevel=2,
+                )
+        elif name == "poissonsRatio":
+            if -1.0 < val <= 0.5:
+                out[name] = val
+            else:
+                warnings.warn(
+                    f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} "
+                    f"(expected -1 < value <= 0.5); treating it as unauthored.",
+                    stacklevel=2,
+                )
+        elif val >= 0.0:
+            out[name] = val
+        else:
+            warnings.warn(
+                f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} "
+                f"(expected >= 0); treating it as unauthored.",
+                stacklevel=2,
+            )
+    return out
+
+
+_NEWTON_CURVE_DAMPING_ATTRS = (
+    "curvesStretchDamping",
+    "curvesShearDamping",
+    "curvesBendDamping",
+    "curvesTwistDamping",
+)
+
+
+def _get_curve_deformable_material(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+) -> dict[str, float] | None:
+    """Read curve-deformable (cable) ``PhysicsCurvesDeformableMaterialAPI`` parameters bound to a prim.
+
+    Returns a dict of authored, in-range values from the current AOUSD curve material proposal,
+    the earlier unprefixed material attributes during their deprecation window, and the four
+    per-mode ``newton:curves*Damping`` values when ``NewtonCurvesDeformableMaterialAPI`` is also
+    applied. Returns ``None`` if the bound material does not declare
+    ``PhysicsCurvesDeformableMaterialAPI``. See :func:`_read_deformable_material` for
+    value-validation rules.
+
+    Args:
+        prim: Curve prim whose bound physics material is read.
+        read_attr: Callable that reads an AOUSD attribute from the bound material.
+    """
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None:
+        return None
+
+    material = _read_deformable_material(
+        prim,
+        read_attr,
+        "PhysicsCurvesDeformableMaterialAPI",
+        (
+            "curvesThickness",
+            "youngsModulus",
+            "poissonsRatio",
+            "curvesStretchStiffness",
+            "curvesShearStiffness",
+            "curvesBendStiffness",
+            "curvesTwistStiffness",
+            "density",
+            # Compatibility with the proposal revision imported by Newton 1.4.
+            "thickness",
+            "stretchStiffness",
+            "shearStiffness",
+            "bendStiffness",
+            "twistStiffness",
+        ),
+        material_prim=material_prim,
+    )
+    if material is None:
+        return None
+
+    newton_damping = _read_deformable_material(
+        prim,
+        lambda mat_prim, name: get_attribute(mat_prim, f"newton:{name}"),
+        "NewtonCurvesDeformableMaterialAPI",
+        _NEWTON_CURVE_DAMPING_ATTRS,
+        attr_namespace="newton",
+        material_prim=material_prim,
+    )
+    if newton_damping is not None:
+        material.update(newton_damping)
+    return material
+
+
+def _get_surface_deformable_material(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+) -> dict[str, float] | None:
+    """Read surface-deformable (cloth) ``PhysicsSurfaceDeformableMaterialAPI`` parameters bound to a prim.
+
+    Returns a dict of authored, in-range values among ``thickness``, ``stretchStiffness``,
+    ``shearStiffness``, ``bendStiffness`` and ``density``; or ``None`` if the bound material does not
+    declare ``PhysicsSurfaceDeformableMaterialAPI``. See :func:`_read_deformable_material` for the
+    value-validation rules.
+    """
+    return _read_deformable_material(
+        prim,
+        read_attr,
+        "PhysicsSurfaceDeformableMaterialAPI",
+        ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "density"),
+    )
+
+
+def _get_physics_material_density(material_prim) -> float | None:
+    """Read a bound material's base ``UsdPhysicsMaterialAPI`` density.
+
+    The proposal reuses the rigid ``UsdPhysicsMaterialAPI`` for deformables, so a
+    material applying only the base API still supplies density (the family
+    material APIs extend it). Accepts a finite value greater than zero; zero is
+    the proposal's ignored fallback; other values warn and are ignored.
+    """
+    from pxr import UsdPhysics
+
+    if material_prim is None or not (
+        material_prim.HasAPI(UsdPhysics.MaterialAPI) or has_applied_api_schema(material_prim, "PhysicsMaterialAPI")
+    ):
+        return None
+    attr = material_prim.GetAttribute("physics:density")
+    value = attr.Get() if attr else None
+    if value is None:
+        return None
+    density = float(value)
+    if math.isfinite(density) and density > 0.0:
+        return density
+    if density != 0.0:
+        warnings.warn(
+            f"{material_prim.GetPath()}: invalid physics material density {density}; "
+            f"expected a finite positive value, ignoring it.",
+            stacklevel=2,
+        )
+    return None
+
+
+def _deformable_body_ancestor(prim: Usd.Prim) -> Usd.Prim | None:
+    """Find the deformable body whose subtree contains ``prim`` (ownership, not governance).
+
+    Unlike :func:`_find_deformable_body_prim`, which resolves the *governing* body of a
+    simulation geometry (the prim itself or its direct parent), this walks every ancestor
+    to answer subtree containment: the proposal makes all PointBased prims in a body's
+    subtree part of that body. The walk stops at a rigid body or articulation root, whose
+    subtree is native content the deformable must not claim.
+    """
+    from pxr import UsdPhysics
+
     p = prim
     while p and p.IsValid():
-        binding_api = UsdShade.MaterialBindingAPI(p)
-        rel = binding_api.GetDirectBindingRel("physics")
-        if rel and rel.GetTargets():
-            mat_path = rel.GetTargets()[0]
-            mat_prim = prim.GetStage().GetPrimAtPath(mat_path)
-            if mat_prim and mat_prim.IsValid():
-                return mat_prim
+        if has_applied_api_schema(p, "PhysicsDeformableBodyAPI"):
+            return p
+        if p.HasAPI(UsdPhysics.RigidBodyAPI) or p.HasAPI(UsdPhysics.ArticulationRootAPI):
+            return None
         p = p.GetParent()
     return None
 
 
-def _read_physics_attr(prim: Usd.Prim, name: str):
-    """Read a physics attribute from a prim, trying known namespaces."""
-    for prefix in ("omniphysics:", "physxDeformableBody:", "physics:"):
-        attr = prim.GetAttribute(f"{prefix}{name}")
-        if attr and attr.HasAuthoredValue():
-            return attr.Get()
+def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
+    """Find the ``PhysicsDeformableBodyAPI`` prim governing a simulation geometry.
+
+    The deformable proposal allows the body API on the simulation geometry itself or
+    on the prim whose direct child is the simulation geometry; nothing deeper governs
+    it. A body API found only on a distant ancestor warns (so its intended overrides
+    are not silently dropped) and is not used.
+    """
+    from pxr import UsdPhysics
+
+    if has_applied_api_schema(prim, "PhysicsDeformableBodyAPI"):
+        return prim
+    parent = prim.GetParent()
+    if parent and parent.IsValid():
+        if has_applied_api_schema(parent, "PhysicsDeformableBodyAPI"):
+            return parent
+        # Advisory walk: warn when a body API sits deeper, so its intended overrides
+        # are not dropped silently. Stop at a rigid or articulation boundary: that
+        # content is native and a body API above it does not relate to this prim.
+        p = parent
+        while p and p.IsValid():
+            if p.HasAPI(UsdPhysics.RigidBodyAPI) or p.HasAPI(UsdPhysics.ArticulationRootAPI):
+                break
+            if has_applied_api_schema(p, "PhysicsDeformableBodyAPI"):
+                warnings.warn(
+                    f"{prim.GetPath()}: PhysicsDeformableBodyAPI on ancestor {p.GetPath()} does not "
+                    f"govern this simulation geometry (the deformable proposal allows the body API "
+                    f"only on the geometry itself or its direct parent); ignoring it.",
+                    stacklevel=2,
+                )
+                break
+            p = p.GetParent()
     return None
+
+
+def _get_deformable_body_overrides(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+) -> tuple[float | None, float | None]:
+    """Read ``PhysicsDeformableBodyAPI`` ``mass`` / ``density`` overrides.
+
+    Both default to 0 in the schema, meaning "ignore for mass distribution"; only
+    positive authored values are returned. ``density`` here overrides the bound
+    material's density (see the precedence in :meth:`ModelBuilder.add_usd`).
+
+    Returns:
+        ``(mass, density)`` with each entry ``None`` when unset / non-positive.
+    """
+    body_prim = _find_deformable_body_prim(prim)
+    if body_prim is None:
+        return None, None
+    mass = read_attr(body_prim, "mass")
+    density = read_attr(body_prim, "density")
+    # Require a finite positive value; drop unset, non-positive, or inf/nan overrides.
+    mass = float(mass) if mass is not None and math.isfinite(float(mass)) and float(mass) > 0.0 else None
+    density = float(density) if density is not None and math.isfinite(float(density)) and float(density) > 0.0 else None
+    return mass, density
+
+
+def _get_deformable_point_masses(prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]) -> list[float] | None:
+    """Read the simulation API's per-point ``physics:masses`` array.
+
+    Per-point masses take precedence over body and material mass/density (proposal
+    "Simulation Geometry and Rest Shape"). Returns ``None`` when unauthored/empty.
+    """
+    val = read_attr(prim, "masses")
+    if val is None:
+        return None
+    return _validate_mass_array(val, str(prim.GetPath()))
+
+
+def _get_physics_scenes_from_results(stage: Usd.Stage, physics_results: dict[Any, Any]) -> list[UsdPhysics.Scene]:
+    """Get physics scenes from parsed OpenUSD physics results."""
+    scene_results = physics_results.get(UsdPhysics.ObjectType.Scene)
+    if scene_results is None:
+        return []
+
+    scene_paths, _ = scene_results
+    return [UsdPhysics.Scene.Get(stage, path) for path in scene_paths]
+
+
+def get_physics_scenes(
+    stage: Usd.Stage,
+    root_path: str = "/",
+    exclude_paths: Sequence[str] | None = None,
+) -> list[UsdPhysics.Scene]:
+    """Get physics scenes from a USD stage.
+
+    The search uses OpenUSD's physics parser, including its instance-proxy
+    traversal and subtree-pruning behavior.
+
+    Args:
+        stage: The USD stage to search.
+        root_path: The root of the subtree to search.
+        exclude_paths: Prim paths whose subtrees should be excluded from the search.
+
+    Returns:
+        Physics scenes in parser order.
+    """
+    physics_results = UsdPhysics.LoadUsdPhysicsFromRange(
+        stage,
+        [root_path],
+        excludePaths=list(exclude_paths or ()),
+    )
+    return _get_physics_scenes_from_results(stage, physics_results)
 
 
 def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
@@ -1423,7 +2585,87 @@ def _resolve_asset_path(
     return asset_path
 
 
-def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> str | None:
+def _get_attribute_color_space(attr: Usd.Attribute | None) -> str:
+    """Return directly authored or inherited USD color-space metadata."""
+    color_space = None
+    if attr is not None:
+        try:
+            color_space = attr.GetColorSpace()
+        except Exception:
+            color_space = None
+        if not color_space and Usd is not None:
+            try:
+                color_space = Usd.ColorSpaceAPI.ComputeColorSpaceName(attr, None)
+            except Exception:
+                color_space = None
+    return str(color_space or "")
+
+
+def _get_texture_source_color_space(shader: UsdShade.Shader | None, file_attr: Usd.Attribute | None = None) -> str:
+    source_color_space = None
+    if shader is not None:
+        inp = shader.GetInput("sourceColorSpace")
+        if inp:
+            try:
+                source_color_space = inp.Get()
+            except Exception:
+                source_color_space = None
+            if source_color_space is None:
+                try:
+                    attrs = UsdShade.Utils.GetValueProducingAttributes(inp)
+                except Exception:
+                    attrs = ()
+                if attrs:
+                    try:
+                        source_color_space = attrs[0].Get()
+                    except Exception:
+                        source_color_space = None
+
+    if isinstance(source_color_space, str) and source_color_space.strip().lower() == "auto":
+        source_color_space = None
+
+    if source_color_space is None and file_attr is not None:
+        source_color_space = _get_attribute_color_space(file_attr)
+
+    return str(source_color_space or "")
+
+
+def _texture_source_is_linear(color_space: str) -> bool:
+    token = color_space.strip().lower()
+    return token in ("identity", "raw", "data", "linear", "lin_rec709_scene") or token.startswith("lin_")
+
+
+def _color_to_display_space(
+    color: tuple[float, float, float],
+    attr: Usd.Attribute | None,
+) -> tuple[float, float, float]:
+    """Normalize a USD scalar color to Newton's display/sRGB model color space."""
+    color_space = _get_attribute_color_space(attr)
+    if not color_space or _texture_source_is_linear(color_space):
+        return color_linear_to_srgb(color)
+    return color
+
+
+def _resolve_color_texture_asset(
+    asset: Any,
+    prim: Usd.Prim,
+    asset_attr: Usd.Attribute | None,
+    shader: UsdShade.Shader | None = None,
+) -> str | np.ndarray | None:
+    texture = _resolve_asset_path(asset, prim, asset_attr)
+    if not texture:
+        return None
+
+    if not _texture_source_is_linear(_get_texture_source_color_space(shader, asset_attr)):
+        return texture
+
+    pixels = load_texture(texture)
+    if pixels is None:
+        return texture
+    return linear_texture_to_srgb(pixels)
+
+
+def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> str | np.ndarray | None:
     """Search a shader network for a connected texture asset.
 
     Args:
@@ -1431,7 +2673,8 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Resolved texture asset path, or ``None`` if not found.
+        Resolved texture asset path, converted display texture array, or
+        ``None`` if not found.
     """
     if shader is None:
         return None
@@ -1442,7 +2685,10 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
             attrs = UsdShade.Utils.GetValueProducingAttributes(file_input)
             if attrs:
                 asset = attrs[0].Get()
-                return _resolve_asset_path(asset, prim, attrs[0])
+                return _resolve_color_texture_asset(asset, prim, attrs[0], shader)
+            asset = file_input.Get()
+            if asset:
+                return _resolve_color_texture_asset(asset, prim, file_input.GetAttr(), shader)
         return None
     if shader_id == "UsdPreviewSurface":
         for input_name in ("diffuseColor", "baseColor"):
@@ -1452,20 +2698,23 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
                 if source:
                     source_shader = UsdShade.Shader(source[0].GetPrim())
                     texture = _find_texture_in_shader(source_shader, prim)
-                    if texture:
+                    if texture is not None:
                         return texture
     return None
 
 
-def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> Any | None:
-    """Fetch the effective input value from a shader, following connections."""
+def _get_input_value_and_attr(
+    shader: UsdShade.Shader | None,
+    names: tuple[str, ...],
+) -> tuple[Any | None, Usd.Attribute | None]:
+    """Fetch the effective input value and producing attribute from a shader."""
     if shader is None:
-        return None
+        return None, None
     try:
         if not shader.GetPrim().IsValid():
-            return None
+            return None, None
     except Exception:
-        return None
+        return None, None
 
     for name in names:
         inp = shader.GetInput(name)
@@ -1478,19 +2727,35 @@ def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> 
         if attrs:
             value = attrs[0].Get()
             if value is not None:
-                return value
-    return None
+                return value, attrs[0]
+    return None, None
+
+
+def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> Any | None:
+    """Fetch the effective input value from a shader, following connections."""
+    return _get_input_value_and_attr(shader, names)[0]
 
 
 def _empty_material_properties() -> dict[str, Any]:
     """Return an empty material properties dictionary."""
-    return {"color": None, "metallic": None, "roughness": None, "texture": None}
+    return {
+        "color": None,
+        "opacity": None,
+        "metallic": None,
+        "roughness": None,
+        "texture": None,
+        "texture_transform": None,
+    }
 
 
 def _coerce_color(value: Any) -> tuple[float, float, float] | None:
     """Coerce a value to an RGB color tuple, or None if not possible."""
     if value is None:
         return None
+    # A per-vertex or per-face primvar holds one entry per element and only the leading one
+    # is used, so take it before the numpy conversion rather than flattening the whole array.
+    if hasattr(value, "__len__") and len(value) > 0 and hasattr(value[0], "__len__"):
+        value = value[0]
     color_np = np.array(value, dtype=np.float32).reshape(-1)
     if color_np.size >= 3:
         return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
@@ -1507,6 +2772,113 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _coerce_opacity(value: Any, *, warn_on_multiple: bool = False) -> float | None:
+    """Coerce an opacity value to a clamped scalar, or None if not possible."""
+    if value is None:
+        return None
+    try:
+        value_np = np.array(value, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        value_np = np.asarray([_coerce_float(value)], dtype=np.float32)
+    if value_np.size == 0:
+        return None
+    if value_np.size > 1 and warn_on_multiple:
+        warnings.warn(
+            f"Opacity data contains {value_np.size} values; using the first value as the shape opacity.",
+            stacklevel=2,
+        )
+    opacity = float(value_np[0])
+    if not np.isfinite(opacity):
+        warnings.warn(f"Ignoring non-finite imported opacity {opacity!r}.", stacklevel=2)
+        return None
+    clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
+    if clamped_opacity != opacity:
+        warnings.warn(
+            f"Clamping imported opacity {opacity!r} to {clamped_opacity!r}.",
+            stacklevel=2,
+        )
+    return clamped_opacity
+
+
+def _coerce_color_opacity(value: Any) -> float | None:
+    """Extract alpha only from a single four-component color value."""
+    if value is None:
+        return None
+    try:
+        value_np = np.array(value, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if value_np.size != 4:
+        return None
+    return _coerce_opacity(value_np[3])
+
+
+def _extract_display_primvar_properties(prim: Usd.Prim) -> dict[str, Any]:
+    """Extract displayColor/displayOpacity primvars from a prim."""
+    properties = _empty_material_properties()
+    if UsdGeom is None or not prim or not prim.IsValid():
+        return properties
+    primvars_api = UsdGeom.PrimvarsAPI(prim)
+
+    display_color = primvars_api.FindPrimvarWithInheritance("displayColor")
+    if display_color:
+        color_value = display_color.Get()
+        color = _coerce_color(color_value)
+        if color is not None:
+            properties["color"] = _color_to_display_space(color, display_color.GetAttr())
+
+    display_opacity = primvars_api.FindPrimvarWithInheritance("displayOpacity")
+    if display_opacity:
+        opacity = _coerce_opacity(display_opacity.Get(), warn_on_multiple=True)
+        if opacity is not None:
+            properties["opacity"] = opacity
+
+    if properties["opacity"] is None:
+        attr = prim.GetAttribute("displayOpacity")
+        if attr:
+            properties["opacity"] = _coerce_opacity(attr.Get(), warn_on_multiple=True)
+
+    return properties
+
+
+def _coerce_vec2(value: Any) -> tuple[float, float] | None:
+    """Coerce a value to a finite two-component tuple, or ``None``."""
+    if value is None:
+        return None
+    try:
+        result = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if result.size != 2 or not np.all(np.isfinite(result)):
+        return None
+    return (float(result[0]), float(result[1]))
+
+
+def _extract_usd_transform2d(
+    texture_shader: UsdShade.Shader,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    """Resolve the standard ``UsdTransform2d`` directly feeding a ``UsdUVTexture``."""
+    st_input = texture_shader.GetInput("st")
+    source = st_input.GetConnectedSource() if st_input else None
+    if not source:
+        return None
+    transform = UsdShade.Shader(source[0].GetPrim())
+    if transform.GetIdAttr().Get() != "UsdTransform2d":
+        return None
+
+    scale = _coerce_vec2(_get_input_value(transform, ("scale",))) or (1.0, 1.0)
+    translation = _coerce_vec2(_get_input_value(transform, ("translation",))) or (0.0, 0.0)
+    rotation = _coerce_float(_get_input_value(transform, ("rotation",)))
+    rotation = rotation if rotation is not None and math.isfinite(rotation) else 0.0
+    cosine, sine = math.cos(math.radians(rotation)), math.sin(math.radians(rotation))
+
+    # UsdTransform2d is scale, then counter-clockwise rotation, then translation.
+    return (
+        (cosine * scale[0], -sine * scale[1], translation[0]),
+        (sine * scale[0], cosine * scale[1], translation[1]),
+    )
+
+
 def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract material properties from a UsdPreviewSurface shader.
 
@@ -1515,7 +2887,8 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with scalar surface properties (including opacity), texture
+        data, and a standard texture-coordinate transform.
     """
     properties = _empty_material_properties()
     if shader is None:
@@ -1530,8 +2903,10 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         if source:
             source_shader = UsdShade.Shader(source[0].GetPrim())
             properties["texture"] = _find_texture_in_shader(source_shader, prim)
+            if properties["texture"] is not None:
+                properties["texture_transform"] = _extract_usd_transform2d(source_shader)
             if properties["texture"] is None:
-                color_value = _get_input_value(
+                color_value, color_attr = _get_input_value_and_attr(
                     source_shader,
                     (
                         "diffuseColor",
@@ -1542,9 +2917,32 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
                         "displayColor",
                     ),
                 )
-                properties["color"] = _coerce_color(color_value)
+                coerced_color = _coerce_color(color_value)
+                if coerced_color is not None:
+                    properties["color"] = _color_to_display_space(coerced_color, color_attr)
+                if properties["opacity"] is None:
+                    properties["opacity"] = _coerce_color_opacity(color_value)
         else:
-            properties["color"] = _coerce_color(color_input.Get())
+            color_value = color_input.Get()
+            coerced_color = _coerce_color(color_value)
+            if coerced_color is not None:
+                properties["color"] = _color_to_display_space(coerced_color, color_input.GetAttr())
+            if properties["opacity"] is None:
+                properties["opacity"] = _coerce_color_opacity(color_value)
+
+    opacity_input = shader.GetInput("opacity") or shader.GetInput("alpha")
+    if opacity_input:
+        try:
+            has_opacity_source = opacity_input.HasConnectedSource()
+        except Exception:
+            has_opacity_source = False
+        if has_opacity_source:
+            source = opacity_input.GetConnectedSource()
+            source_shader = UsdShade.Shader(source[0].GetPrim()) if source else None
+            opacity_value = _get_input_value(source_shader, ("opacity", "alpha", "opacity_constant", "alpha_constant"))
+            properties["opacity"] = _coerce_opacity(opacity_value)
+        else:
+            properties["opacity"] = _coerce_opacity(opacity_input.Get())
 
     metallic_input = shader.GetInput("metallic")
     if metallic_input:
@@ -1590,6 +2988,72 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
     return properties
 
 
+def _output_channel_count(type_name: Sdf.ValueTypeName) -> int:
+    """Return the component count of a shader output value type (float -> 1, float3 -> 3)."""
+    default = type_name.defaultValue
+    if hasattr(default, "__len__"):
+        return len(default)
+    return 1
+
+
+# Base-color input name fragments used to identify the diffuse/albedo parameter
+# feeding a surface shader. A texture connection's shape alone is ambiguous
+# (a normal map is a 3-channel ``rgb`` connection like a diffuse map), so the
+# input name is the disambiguator for both connected and direct-asset textures.
+_COLOR_TEXTURE_INPUT_NAMES = ("diffuse", "albedo", "basecolor", "base_color", "displaycolor")
+
+
+def _is_color_texture_input_name(base_name: str) -> bool:
+    """Return whether an input name denotes a base-color/albedo texture parameter."""
+    name = base_name.lower()
+    return any(fragment in name for fragment in _COLOR_TEXTURE_INPUT_NAMES)
+
+
+def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> str | np.ndarray | None:
+    """Return the base-color texture feeding a surface shader input, if any.
+
+    The input must be a base-color/albedo parameter by name: a normal map is
+    conventionally wired as ``UsdUVTexture.outputs:rgb`` too, so its 3-channel
+    connection is indistinguishable from a diffuse map by shape alone. Two
+    shapes are then supported:
+
+    - A connected ``UsdUVTexture``: accepted only when the connected output is a
+      multi-channel color output (``rgb`` / ``rgba``). Single-channel outputs
+      (``r``/``g``/``b``/``a``) are scalar data maps (roughness, metallic, ...)
+      and are ignored.
+    - A direct asset value (e.g. an MDL ``diffuse_texture`` parameter): there is
+      no texture node to inspect, so the base-color input is identified by name.
+    """
+    if not _is_color_texture_input_name(surface_input.GetBaseName()):
+        return None
+    try:
+        producing = UsdShade.Utils.GetValueProducingAttributes(surface_input)
+    except Exception:
+        producing = ()
+    for attr in producing:
+        source_shader = UsdShade.Shader(attr.GetPrim())
+        try:
+            if source_shader.GetIdAttr().Get() != "UsdUVTexture":
+                continue
+        except Exception:
+            continue
+        if _output_channel_count(attr.GetTypeName()) < 3:
+            continue
+        texture = _find_texture_in_shader(source_shader, prim)
+        if texture is not None:
+            return texture
+
+    try:
+        connected = surface_input.HasConnectedSource()
+    except Exception:
+        connected = False
+    if not connected:
+        asset = surface_input.Get()
+        if asset:
+            return _resolve_color_texture_asset(asset, prim, surface_input.GetAttr())
+    return None
+
+
 def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract common material properties from a shader node.
 
@@ -1601,7 +3065,8 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with scalar surface properties (including opacity), texture
+        data, and a standard texture-coordinate transform.
     """
     properties = _extract_preview_surface_properties(shader, prim)
     if shader is None:
@@ -1613,7 +3078,7 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         return properties
 
     if properties["color"] is None:
-        color_value = _get_input_value(
+        color_value, color_attr = _get_input_value_and_attr(
             shader,
             (
                 "diffuse_color_constant",
@@ -1624,7 +3089,17 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
                 "displayColor",
             ),
         )
-        properties["color"] = _coerce_color(color_value)
+        color = _coerce_color(color_value)
+        if color is not None:
+            properties["color"] = _color_to_display_space(color, color_attr)
+        if properties["opacity"] is None:
+            properties["opacity"] = _coerce_color_opacity(color_value)
+    if properties["opacity"] is None:
+        opacity_value = _get_input_value(
+            shader,
+            ("opacity", "alpha", "displayOpacity", "opacity_constant", "alpha_constant"),
+        )
+        properties["opacity"] = _coerce_opacity(opacity_value)
     if properties["metallic"] is None:
         metallic_value = _get_input_value(shader, ("metallic_constant", "metallic"))
         properties["metallic"] = _coerce_float(metallic_value)
@@ -1634,19 +3109,10 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
 
     if properties["texture"] is None:
         for inp in shader.GetInputs():
-            name = inp.GetBaseName()
-            if inp.HasConnectedSource():
-                source = inp.GetConnectedSource()
-                source_shader = UsdShade.Shader(source[0].GetPrim())
-                texture = _find_texture_in_shader(source_shader, prim)
-                if texture:
-                    properties["texture"] = texture
-                    break
-            elif "file" in name or "texture" in name:
-                asset = inp.Get()
-                if asset:
-                    properties["texture"] = _resolve_asset_path(asset, prim, inp.GetAttr())
-                    break
+            texture = _color_texture_from_input(inp, prim)
+            if texture is not None:
+                properties["texture"] = texture
+                break
 
     return properties
 
@@ -1674,8 +3140,8 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             continue
 
         if properties["texture"] is None and ("texture" in name_lower or "file" in name_lower):
-            texture = _resolve_asset_path(value, prim, inp.GetAttr())
-            if texture:
+            texture = _resolve_color_texture_asset(value, prim, inp.GetAttr())
+            if texture is not None:
                 properties["texture"] = texture
                 continue
 
@@ -1688,7 +3154,21 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
         ):
             color = _coerce_color(value)
             if color is not None:
-                properties["color"] = color
+                properties["color"] = _color_to_display_space(color, inp.GetAttr())
+                if properties["opacity"] is None:
+                    properties["opacity"] = _coerce_color_opacity(value)
+                continue
+
+        if properties["opacity"] is None and name_lower in (
+            "opacity",
+            "alpha",
+            "displayopacity",
+            "opacity_constant",
+            "alpha_constant",
+        ):
+            opacity = _coerce_opacity(value)
+            if opacity is not None:
+                properties["opacity"] = opacity
                 continue
 
         if properties["metallic"] is None and name_lower in ("metallic", "metallic_constant"):
@@ -1710,32 +3190,21 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
 
 
 def _get_bound_material(target_prim: Usd.Prim) -> UsdShade.Material | None:
-    """Get the material bound to a prim."""
+    """Get the material bound to a prim.
+
+    Resolution is UsdShade's canonical ``ComputeBoundMaterial``: ancestor bindings, binding
+    strength, collection-based bindings, and purpose all follow the USD spec instead of a
+    partial reimplementation. Prims that author ``material:binding`` without applying
+    ``MaterialBindingAPI`` are invalid USD; resolution still tolerates them but emits one
+    ``TfWarn`` per query (there is no Python-side suppression API, and instanced prims cannot
+    be normalized in-session). Import caches material resolution per prim, so the warning
+    volume is bounded by the number of non-conformant prims — fix such assets at source with
+    ``usdchecker`` or ``usd-validation-nvidia``.
+    """
     if not target_prim or not target_prim.IsValid():
         return None
-    if target_prim.HasAPI(UsdShade.MaterialBindingAPI):
-        binding_api = UsdShade.MaterialBindingAPI(target_prim)
-        bound_material, _ = binding_api.ComputeBoundMaterial()
-        return bound_material
-
-    # Some assets author material:binding relationships without applying MaterialBindingAPI.
-    rels = [rel for rel in target_prim.GetRelationships() if rel.GetName().startswith("material:binding")]
-    if not rels:
-        return None
-    rels.sort(
-        key=lambda rel: 0
-        if rel.GetName() == "material:binding"
-        else 1
-        if rel.GetName() == "material:binding:preview"
-        else 2
-    )
-    for rel in rels:
-        targets = rel.GetTargets()
-        if targets:
-            mat_prim = target_prim.GetStage().GetPrimAtPath(targets[0])
-            if mat_prim and mat_prim.IsValid():
-                return UsdShade.Material(mat_prim)
-    return None
+    bound_material, _ = UsdShade.MaterialBindingAPI(target_prim).ComputeBoundMaterial()
+    return bound_material if bound_material else None
 
 
 def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] | None:
@@ -1772,17 +3241,18 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
             return material_props
         return None
 
-    # Always call _extract_shader_properties even if shader_id is None (e.g., for MDL shaders like OmniPBR)
-    # because _extract_shader_properties has fallback logic for common input names
+    # Always call _extract_shader_properties even if shader_id is None because
+    # it has fallback logic for common shader input names.
     properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
-    for key in ("texture", "color", "metallic", "roughness"):
+    for key in ("texture", "color", "opacity", "metallic", "roughness"):
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
-    if properties["color"] is None and properties["texture"] is None:
-        display_color = UsdGeom.PrimvarsAPI(target_prim).GetPrimvar("displayColor")
-        if display_color:
-            properties["color"] = _coerce_color(display_color.Get())
+    display_props = _extract_display_primvar_properties(target_prim)
+    if properties["color"] is None and properties["texture"] is None and display_props.get("color") is not None:
+        properties["color"] = display_props["color"]
+    if properties["opacity"] is None and display_props.get("opacity") is not None:
+        properties["opacity"] = display_props["opacity"]
 
     return properties
 
@@ -1794,7 +3264,8 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
         prim: The prim whose bound material should be inspected.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with scalar surface properties (including opacity), texture
+        data, and a standard texture-coordinate transform.
     """
     if not prim or not prim.IsValid():
         return _empty_material_properties()
@@ -1833,12 +3304,20 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
                 subset_props = _resolve_prim_material_properties(child)
                 if subset_props is None:
                     continue
-                if subset_props.get("texture") is not None or subset_props.get("color") is not None:
+                if (
+                    subset_props.get("texture") is not None
+                    or subset_props.get("color") is not None
+                    or subset_props.get("opacity") is not None
+                ):
                     return subset_props
                 if fallback_props is None:
                     fallback_props = subset_props
             if fallback_props is not None:
                 return fallback_props
+
+    display_props = _extract_display_primvar_properties(prim)
+    if display_props.get("color") is not None or display_props.get("opacity") is not None:
+        return display_props
 
     return _empty_material_properties()
 
@@ -1871,6 +3350,17 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     if positions is None:
         raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
 
+    sorting_mode = Gaussian.SortingMode.RAY_HIT_DISTANCE
+    if usd_sorting_mode := get_attribute(prim, "sortingModeHint"):
+        if usd_sorting_mode == "zDepth":
+            sorting_mode = Gaussian.SortingMode.Z_DEPTH
+        elif usd_sorting_mode == "cameraDistance":
+            sorting_mode = Gaussian.SortingMode.CAMERA_DISTANCE
+        elif usd_sorting_mode == "rayHitDistance":
+            sorting_mode = Gaussian.SortingMode.RAY_HIT_DISTANCE
+        else:
+            raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
+
     return Gaussian(
         positions=positions,
         rotations=_get_float_array_attr("orientations"),
@@ -1879,4 +3369,5 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
         sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
         min_response=min_response,
+        sorting_mode=sorting_mode,
     )

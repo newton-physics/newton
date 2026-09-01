@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import warp as wp
 
@@ -25,9 +13,10 @@ def tid_to_coord_tiled(
     tile_width: wp.int32,
     tile_height: wp.int32,
 ):
-    num_pixels_per_view = width * height
     num_pixels_per_tile = tile_width * tile_height
-    num_tiles_per_row = width // tile_width
+    num_tiles_per_row = (width + tile_width - 1) // tile_width
+    num_tiles_per_col = (height + tile_height - 1) // tile_height
+    num_pixels_per_view = num_tiles_per_row * num_tiles_per_col * num_pixels_per_tile
 
     pixel_idx = tid % num_pixels_per_view
     view_idx = tid // num_pixels_per_view
