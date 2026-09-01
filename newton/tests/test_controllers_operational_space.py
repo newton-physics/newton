@@ -1830,7 +1830,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -1857,7 +1857,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -1881,7 +1881,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerOperationalSpace(
                 model,
-                tool="nonexistent_site",
+                tool_sites="nonexistent_site",
                 motion_stiffness=1.0,
                 motion_damping=1.0,
                 operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -1909,7 +1909,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerOperationalSpace(
                 model,
-                tool=["site_a", "site_b"],
+                tool_sites=["site_a", "site_b"],
                 motion_stiffness=1.0,
                 motion_damping=1.0,
                 operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -1935,7 +1935,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerOperationalSpace(
                 model,
-                tool="tool_site",
+                tool_sites="tool_site",
                 motion_stiffness=1.0,
                 motion_damping=1.0,
                 operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -1950,7 +1950,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool=site_index,
+            tool_sites=site_index,
             motion_stiffness=100.0,
             motion_damping=10.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -1964,7 +1964,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
         with self.assertRaises(TypeError):
             ControllerOperationalSpace(
                 "not a model",
-                tool="tool_site",
+                tool_sites="tool_site",
                 motion_stiffness=1.0,
                 motion_damping=1.0,
                 operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -1992,7 +1992,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -2056,7 +2056,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
             operational_frame_pose_world=operational_frame_pose_world,
@@ -2154,7 +2154,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -2195,7 +2195,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=0.0,
             motion_damping=0.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -2233,7 +2233,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -2272,7 +2272,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=0.0,
             motion_damping=0.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -2315,7 +2315,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=0.0,
             motion_damping=0.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -2349,7 +2349,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
 
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -2392,7 +2392,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
         def run(*, use_motion, use_wrench, use_null_space):
             ctrl = ControllerOperationalSpace(
                 model,
-                tool="tool_site",
+                tool_sites="tool_site",
                 motion_stiffness=100.0 if use_motion else 0.0,
                 motion_damping=10.0 if use_motion else 0.0,
                 operational_frame_pose_world=_IDENTITY_TRANSFORM,
@@ -2446,7 +2446,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
         s_f = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), s_f_angle)
         ctrl = ControllerOperationalSpace(
             model,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=100.0,
             motion_damping=10.0,
             operational_frame_pose_world=_IDENTITY_TRANSFORM,

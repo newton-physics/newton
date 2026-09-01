@@ -295,7 +295,7 @@ class Example:
         self.controller = ControllerOperationalSpace(
             self.model,
             joints=franka_joints + ur10_joints,
-            tool="tool_site",
+            tool_sites="tool_site",
             motion_stiffness=wp.array(
                 [
                     wp.spatial_vector(

@@ -52,10 +52,10 @@ class ControllerOperationalSpace(ControllerBase):
     component of :attr:`~newton.Model.joint_label` respectively. Only joints
     spanning a single coordinate and a single DOF can be controlled.
 
-    **Tool selection.** ``tool`` selects one Newton *site* per robot that
-    ends up with controlled joints — the point on the robot whose pose/twist
-    is controlled. This need not be the same frame commands are specified in
-    — see ``operational_frame_pose_world``. It follows the same
+    **Tool selection.** ``tool_sites`` selects one Newton *site* per robot
+    that ends up with controlled joints — the point on the robot whose
+    pose/twist is controlled. This need not be the same frame commands are
+    specified in — see ``operational_frame_pose_world``. It follows the same
     ``list[index/pattern] | index | pattern`` shape as ``joints``, matched
     against the leaf component of each site's label. Every controlled robot
     must match exactly one site.
@@ -80,7 +80,7 @@ class ControllerOperationalSpace(ControllerBase):
             articulation; any other joint is left uncontrolled instead of
             rejected. A joint named explicitly is not filtered this way and
             still raises ``ValueError`` if it is not 1-coordinate/1-DOF.
-        tool: Site index(es) or label pattern(s) selecting each controlled
+        tool_sites: Site indices or label patterns selecting each controlled
             robot's controlled point, as a list or as a single pattern.
             Required — there is no default tool site. Raises if a
             controlled robot matches zero or more than one site.
@@ -257,7 +257,7 @@ class ControllerOperationalSpace(ControllerBase):
         *,
         articulations: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
         joints: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
-        tool: list[int | str | re.Pattern[str]] | str | re.Pattern[str],
+        tool_sites: list[int | str | re.Pattern[str]] | str | re.Pattern[str],
         motion_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
         motion_damping: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None,
         operational_frame_pose_world: wp.array[wp.transform] | wp.transform | None = _IDENTITY_TRANSFORM,
@@ -440,17 +440,17 @@ class ControllerOperationalSpace(ControllerBase):
         site_articulation_np = body_to_articulation_np[shape_body_np[site_indices_np]]
         site_names = [get_name_from_label(model.shape_label[s]) for s in site_indices_np]
 
-        tool_entries = [tool] if isinstance(tool, (int, str, re.Pattern)) else tool
+        tool_site_entries = [tool_sites] if isinstance(tool_sites, (int, str, re.Pattern)) else tool_sites
         matched_sites: list[int] = []
-        for entry in tool_entries:
+        for entry in tool_site_entries:
             if isinstance(entry, int):
                 if entry not in site_indices_np:
-                    raise ValueError(f"tool site index {entry} is not a site in the model.")
+                    raise ValueError(f"tool_sites site index {entry} is not a site in the model.")
                 matched_sites.append(entry)
             else:
                 local_matches = match_labels(site_names, entry)
                 if not local_matches:
-                    raise ValueError(f"tool pattern {entry!r} matches no site in the model.")
+                    raise ValueError(f"tool_sites pattern {entry!r} matches no site in the model.")
                 matched_sites.extend(int(site_indices_np[m]) for m in local_matches)
         matched_sites_set = sorted(set(matched_sites))
 
@@ -460,10 +460,10 @@ class ControllerOperationalSpace(ControllerBase):
         for robot_slot, art in enumerate(model_robot_index_np.tolist()):
             sites_on_robot = [s for s in matched_sites_set if site_index_to_articulation[s] == art]
             if len(sites_on_robot) == 0:
-                raise ValueError(f"tool matches no site on articulation {art}.")
+                raise ValueError(f"tool_sites matches no site on articulation {art}.")
             if len(sites_on_robot) > 1:
                 raise ValueError(
-                    f"tool matches {len(sites_on_robot)} sites on articulation {art}; exactly one "
+                    f"tool_sites matches {len(sites_on_robot)} sites on articulation {art}; exactly one "
                     f"tool site is required per robot."
                 )
             site = sites_on_robot[0]
