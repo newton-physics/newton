@@ -659,41 +659,31 @@ def _null_space_projector_kernel(
 # ---------------------------------------------------------------------------
 # Motion/force selection and contact-wrench control.
 #
-# Which of the 6 task axes are motion-controlled vs. force-controlled is
-# naturally not a single-frame choice: the linear/force selection is most
-# naturally expressed relative to a frame S_f (e.g. aligned to a contact
-# surface's normal) and the angular/moment selection relative to a possibly
-# *different* frame S_tau (e.g. the compliant-rotation axis) -- the
+# Motion- vs. force-controlled task axes need not share one frame: the
+# linear/force selection is most naturally expressed relative to a frame S_f
+# (e.g. a contact surface's normal), the angular/moment selection relative to
+# a possibly *different* frame S_tau (e.g. a compliant-rotation axis) -- the
 # generalized task specification matrix from Khatib, O. (1987), "A unified
 # approach for motion and force control of robot manipulators: The
 # operational space formulation," IEEE Journal of Robotics and Automation,
-# 3(1), 43-53: Omega = diag(S_f^T . Sigma_f . S_f, S_tau^T . Sigma_tau . S_tau)
-# in the paper's own convention, where S_f/S_tau rotate FROM the operational
-# frame INTO the selection frame. This file names transforms the opposite
-# way (``coordinate_change_TARGET_from_SOURCE``, i.e. quat_operational_from_sf
-# rotates INTO the operational frame), so with S_f/S_tau meaning this file's
-# own quat_operational_from_sf/quat_operational_from_stau (the paper's S_f/S_tau
-# transposed), the same matrix is Omega = diag(S_f . Sigma_f . S_f^T,
-# S_tau . Sigma_tau . S_tau^T). Both S_f and S_tau are themselves specified
-# relative to the operational frame, and applied to task-space vectors that
-# are already expressed there (:func:`_apply_generalized_task_specification_matrix_kernel`),
-# so selection never touches world frame at all.
+# 3(1), 43-53. In this file's own S_f/S_tau convention (quat_operational_from_sf/
+# quat_operational_from_stau, rotating INTO the operational frame -- the
+# paper's S_f/S_tau transposed): Omega = diag(S_f . Sigma_f . S_f^T,
+# S_tau . Sigma_tau . S_tau^T). S_f/S_tau are themselves relative to the
+# operational frame, applied to vectors already expressed there
+# (:func:`_apply_generalized_task_specification_matrix_kernel`), so selection
+# never touches world frame.
 #
-# Applied once, before Lambda for the motion branch (masking the desired
-# acceleration, matching Khatib's ``F_m = Lambda . Omega . F*_m``) and once
-# on the combined wrench command for the force branch -- not a second time
-# afterward, since Lambda's own coupling is exactly what should propagate
-# through a selected acceleration; see the module-level docstring in
-# ``model_free.py`` for the full derivation.
+# Applied once, before Lambda for the motion branch and once on the combined
+# wrench command for the force branch -- not a second time afterward, since
+# Lambda's own coupling is exactly what should propagate through a selected
+# acceleration; see the module-level docstring in ``model_free.py`` for the
+# full derivation.
 #
-# The motion, force, and (if used) null-space joint torques are each mapped
-# to joint space by their own :func:`_jacobian_transpose_force_kernel` call
-# and then summed there -- not summed as task-space forces first. This
-# matches how the reference controller (Isaac Lab's OperationalSpaceController)
-# accumulates every contribution as ``joint_efforts +=``, and lets the
-# summation reuse ``_add_term_kernel`` from ``controllers/impl/_common.py``
-# (shared with the joint-impedance family) rather than needing a
-# task-space-vector accumulator kernel here.
+# Motion, force, and null-space joint torques are each mapped to joint space
+# by their own :func:`_jacobian_transpose_force_kernel` call and summed there
+# via ``_add_term_kernel`` (``controllers/impl/_common.py``) -- not summed as
+# task-space forces first.
 # ---------------------------------------------------------------------------
 
 
