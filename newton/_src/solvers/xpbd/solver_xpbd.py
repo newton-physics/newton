@@ -181,7 +181,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
         if rigid_contact_restitution_iterations < 1:
             raise ValueError("rigid_contact_restitution_iterations must be at least 1")
         self.rigid_contact_restitution_iterations = rigid_contact_restitution_iterations
-        # Fixed Gauss-Seidel sweeps inside the per-manifold restitution solve.
+        # Eight local sweeps converge flat manifolds in one pass; outer iterations couple manifolds.
         self._restitution_manifold_inner_iterations = 8
         self.rigid_contact_con_weighting = rigid_contact_con_weighting
 
@@ -189,8 +189,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
         self.enable_restitution = enable_restitution
         self._rigid_restitution_enabled = False
-        if enable_restitution:
-            self._refresh_rigid_restitution_enabled()
+        self._refresh_rigid_restitution_enabled()
 
         self._init_kinematic_state()
 
@@ -871,6 +870,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                             self.particle_qd_init,
                             model.particle_radius,
                             model.particle_flags,
+                            model.particle_world,
                             body_q,
                             body_q_pre_solve,
                             body_qd_for_restitution,
@@ -879,6 +879,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
                             model.shape_body,
                             model.particle_adhesion,
                             model.soft_contact_restitution,
+                            model.gravity,
+                            dt,
                             contacts.soft_contact_count,
                             contacts.soft_contact_particle,
                             contacts.soft_contact_shape,
@@ -968,7 +970,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                     for outer_iteration in range(self.rigid_contact_restitution_iterations):
                         if requires_grad:
                             body_deltas = wp.zeros_like(body_deltas)
-                            restitution_body_manifold_count.zero_()
+                            restitution_body_manifold_count = wp.zeros_like(restitution_body_manifold_count)
 
                         wp.launch(
                             kernel=solve_manifold_restitution,

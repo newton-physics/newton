@@ -39,6 +39,7 @@ def apply_particle_shape_restitution(
     particle_v_old: wp.array[wp.vec3],
     particle_radius: wp.array[float],
     particle_flags: wp.array[wp.int32],
+    particle_world: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     body_q_pre_solve: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -47,6 +48,8 @@ def apply_particle_shape_restitution(
     shape_body: wp.array[int],
     particle_ka: float,
     restitution: float,
+    gravity: wp.array[wp.vec3],
+    dt: float,
     contact_count: wp.array[int],
     contact_particle: wp.array[int],
     contact_shape: wp.array[int],
@@ -106,7 +109,8 @@ def apply_particle_shape_restitution(
     rel_vel_old = wp.dot(n, v_old - bv_old)
     rel_vel_new = wp.dot(n, v_new - bv_new)
 
-    if rel_vel_old < 0.0:
+    impact_threshold = 2.0 * wp.length(gravity[particle_world[particle_index]]) * dt
+    if rel_vel_old < -impact_threshold:
         dv = n * (-rel_vel_new + wp.max(-restitution * rel_vel_old, 0.0))
 
         wp.atomic_add(particle_v_out, particle_index, dv)

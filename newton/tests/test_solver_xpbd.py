@@ -9,12 +9,14 @@ Includes tests for particle-particle friction using relative velocity correctly.
 
 import unittest
 import warnings
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+from newton._src.solvers.xpbd import kernels as xpbd_kernels
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -686,6 +688,33 @@ def test_particle_shape_restitution_accounts_for_body_velocity(test, device):
     )
 
 
+def test_particle_shape_restitution_does_not_launch_resting_particle(test, device):
+    """Ignore gravity-scale closing velocity for a particle already resting on a shape."""
+    radius = 0.1
+    builder = newton.ModelBuilder(up_axis="Y")
+    builder.add_particle(
+        pos=(0.0, radius, 0.0),
+        vel=(0.0, 0.0, 0.0),
+        mass=1.0,
+        radius=radius,
+    )
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    model.soft_contact_restitution = 1.0
+    solver = newton.solvers.SolverXPBD(model, iterations=10, enable_restitution=True)
+    state_in = model.state()
+    state_out = model.state()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+
+    state_in.clear_forces()
+    collision_pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, None, contacts, 1.0 / 60.0)
+
+    vy = float(state_out.particle_qd.numpy()[0, 1])
+    test.assertAlmostEqual(vy, 0.0, delta=1.0e-6)
+
+
 def test_restitution_flag_does_not_change_body_integration(test, device):
     """Keep rigid-body integration independent of the restitution flag."""
     builder = newton.ModelBuilder(gravity=(0.0, -10.0, 0.0), up_axis=newton.Axis.Y)
@@ -753,6 +782,34 @@ def test_rigid_restitution_uses_integrated_velocity(test, device):
 
     vz = float(state_out.body_qd.numpy()[body, 2])
     test.assertGreater(vz, 0.1, f"Restitution should reflect the force-integrated impact velocity, got {vz:.4f} m/s")
+
+
+def test_rigid_restitution_can_be_enabled_after_construction(test, device):
+    """Honor the public restitution flag when it is enabled after construction."""
+    radius = 0.05
+    cfg = newton.ModelBuilder.ShapeConfig(restitution=1.0, mu=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_ground_plane(cfg=cfg)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(model, enable_restitution=False)
+    solver.enable_restitution = True
+
+    state_in = model.state()
+    state_out = model.state()
+    mass = float(model.body_mass.numpy()[body])
+    body_f = np.zeros((model.body_count, 6), dtype=np.float32)
+    body_f[body, 2] = -10.0 * mass
+    state_in.body_f.assign(wp.array(body_f, dtype=wp.spatial_vector, device=device))
+
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, None, contacts, 1.0 / 60.0)
+
+    vz = float(state_out.body_qd.numpy()[body, 2])
+    test.assertGreater(vz, 0.1, f"Restitution enabled after construction should reflect the impact, got {vz:.4f} m/s")
 
 
 def test_rigid_restitution_zero_settles(test, device):
@@ -1011,6 +1068,84 @@ def test_rigid_restitution_runs_with_requires_grad(test, device):
             f"peak was {peak_no_grad:.4f} m. Post-impact z values: {post_impact_no_grad}."
         ),
     )
+
+
+@wp.kernel
+def _scale_restitution_grad_input(
+    x: wp.array[float],
+    scale: float,
+    out: wp.array[wp.spatial_vector],
+):
+    tid = wp.tid()
+    out[tid] = wp.spatial_vector(scale * x[tid], 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+@wp.kernel
+def _sum_restitution_linear_x(qd: wp.array[wp.spatial_vector], loss: wp.array[float]):
+    tid = wp.tid()
+    wp.atomic_add(loss, 0, qd[tid][0])
+
+
+def test_rigid_restitution_grad_keeps_iteration_counts(test, device):
+    """Keep each recorded restitution iteration's manifold counts alive through backward."""
+    radius = 0.1
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+    cfg = newton.ModelBuilder.ShapeConfig(restitution=1.0, mu=0.0)
+    builder.add_ground_plane(cfg=cfg)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(model, rigid_contact_restitution_iterations=2, enable_restitution=True)
+    state_in = model.state(requires_grad=True)
+    state_out = model.state(requires_grad=True)
+    qd = state_in.body_qd.numpy()
+    qd[body, 2] = -1.0
+    state_in.body_qd.assign(qd)
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(state_in, contacts)
+
+    iteration_counts = []
+    original_launch = wp.launch
+
+    def record_iteration_counts(*args, **kwargs):
+        result = original_launch(*args, **kwargs)
+        kernel = kwargs.get("kernel", args[0] if args else None)
+        if kernel is xpbd_kernels.apply_body_delta_velocities:
+            inputs = kwargs.get("inputs", args[2] if len(args) > 2 else None)
+            iteration_counts.append(inputs[1])
+        return result
+
+    with mock.patch.object(wp, "launch", side_effect=record_iteration_counts):
+        state_in.clear_forces()
+        solver.step(state_in, state_out, None, contacts, 1.0e-3)
+
+    test.assertEqual(len(iteration_counts), 2)
+    test.assertIsNot(iteration_counts[0], iteration_counts[1])
+
+    x = wp.array([2.0, 3.0], dtype=float, device=device, requires_grad=True)
+    q0 = wp.zeros(2, dtype=wp.spatial_vector, device=device, requires_grad=True)
+    q1 = wp.zeros_like(q0)
+    q2 = wp.zeros_like(q0)
+    delta0 = wp.zeros_like(q0)
+    delta1 = wp.zeros_like(q0)
+    count0 = wp.array([2.0, 2.0], dtype=float, device=device)
+    count1 = wp.array([1.0, 1.0], dtype=float, device=device)
+    loss = wp.zeros(1, dtype=float, device=device, requires_grad=True)
+
+    with wp.Tape() as tape:
+        wp.launch(_scale_restitution_grad_input, dim=2, inputs=[x, 1.0], outputs=[q0], device=device)
+        wp.launch(_scale_restitution_grad_input, dim=2, inputs=[x, 2.0], outputs=[delta0], device=device)
+        wp.copy(q1, q0)
+        wp.launch(xpbd_kernels.apply_body_delta_velocities, dim=2, inputs=[delta0, count0], outputs=[q1], device=device)
+        wp.launch(_scale_restitution_grad_input, dim=2, inputs=[x, 1.0], outputs=[delta1], device=device)
+        wp.copy(q2, q1)
+        wp.launch(xpbd_kernels.apply_body_delta_velocities, dim=2, inputs=[delta1, count1], outputs=[q2], device=device)
+        wp.launch(_sum_restitution_linear_x, dim=2, inputs=[q2], outputs=[loss], device=device)
+
+    tape.backward(loss)
+    np.testing.assert_allclose(q2.numpy()[:, 0], [6.0, 9.0])
+    np.testing.assert_allclose(tape.gradients[x].numpy(), [3.0, 3.0])
 
 
 def test_particle_shape_restitution_runs_with_requires_grad(test, device):
@@ -2374,6 +2509,14 @@ add_function_test(
 
 add_function_test(
     TestSolverXPBD,
+    "test_rigid_restitution_can_be_enabled_after_construction",
+    test_rigid_restitution_can_be_enabled_after_construction,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
     "test_particle_shape_restitution_correct_particle",
     test_particle_shape_restitution_correct_particle,
     devices=devices,
@@ -2385,6 +2528,14 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_shape_restitution_accounts_for_body_velocity",
     test_particle_shape_restitution_accounts_for_body_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_particle_shape_restitution_does_not_launch_resting_particle",
+    test_particle_shape_restitution_does_not_launch_resting_particle,
     devices=devices,
     check_output=False,
 )
@@ -2417,6 +2568,14 @@ add_function_test(
     TestSolverXPBD,
     "test_rigid_restitution_multi_manifold_energy",
     test_rigid_restitution_multi_manifold_energy,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_grad_keeps_iteration_counts",
+    test_rigid_restitution_grad_keeps_iteration_counts,
     devices=devices,
     check_output=False,
 )
