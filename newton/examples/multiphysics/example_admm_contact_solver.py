@@ -74,12 +74,12 @@ class Example:
             entries=[
                 SolverCoupled.Entry(
                     name="drop_a",
-                    solver=lambda v: SolverXPBD(model=v, iterations=args.xpbd_iterations, enable_restitution=True),
+                    solver=lambda v: SolverXPBD(model=v, iterations=args.xpbd_iterations),
                     particles=self.falling_particles_a,
                 ),
                 SolverCoupled.Entry(
                     name="drop_b",
-                    solver=lambda v: SolverXPBD(model=v, iterations=args.xpbd_iterations, enable_restitution=True),
+                    solver=lambda v: SolverXPBD(model=v, iterations=args.xpbd_iterations),
                     particles=self.falling_particles_b,
                 ),
                 SolverCoupled.Entry(

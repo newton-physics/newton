@@ -531,7 +531,7 @@ class TestMeshBackfaceSimulation(unittest.TestCase):
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
         builder.add_shape_sphere(body, radius=0.1)
         model = builder.finalize()
-        solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+        solver = newton.solvers.SolverXPBD(model)
         cp = newton.CollisionPipeline(model, broad_phase="explicit", max_triangle_pairs=100_000)
         s0 = model.state()
         s1 = model.state()
@@ -1092,7 +1092,7 @@ class TestTrianglePreconditioning(unittest.TestCase):
             raise ValueError(f"Unsupported shape type: {shape_type}")
 
         model = builder.finalize()
-        solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+        solver = newton.solvers.SolverXPBD(model)
         cp = newton.CollisionPipeline(model, broad_phase="explicit", max_triangle_pairs=100_000)
         s0 = model.state()
         s1 = model.state()

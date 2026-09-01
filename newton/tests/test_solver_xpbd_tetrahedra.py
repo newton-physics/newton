@@ -46,7 +46,7 @@ def _step_compressed_tet(points, device, k_mu, k_lambda):
     state_0.particle_q = wp.array(compressed_q, dtype=wp.vec3, device=device)
     state_0.particle_qd.zero_()
 
-    solver = newton.solvers.SolverXPBD(model, iterations=20, enable_restitution=True)
+    solver = newton.solvers.SolverXPBD(model, iterations=20)
     dt = 1.0 / (60.0 * 32.0)
     for _ in range(10):
         state_0.clear_forces()
@@ -73,7 +73,7 @@ def _step_activated_tet(points, device, activation):
     tet = model.tet_indices.numpy().reshape(-1, 4)[0]
     rest_volume = abs(_tet_volume(rest_q, tet))
 
-    solver = newton.solvers.SolverXPBD(model, iterations=20, enable_restitution=True)
+    solver = newton.solvers.SolverXPBD(model, iterations=20)
     dt = 1.0 / (60.0 * 32.0)
     for _ in range(5):
         state_0.clear_forces()

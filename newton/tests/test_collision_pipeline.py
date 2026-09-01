@@ -423,7 +423,7 @@ def test_collision_pipeline(
     setup = CollisionSetup(
         viewer=viewer,
         device=device,
-        solver_fn=lambda model: newton.solvers.SolverXPBD(model, enable_restitution=True),
+        solver_fn=newton.solvers.SolverXPBD,
         sim_substeps=10,
         shape_type_a=shape_type_a,
         shape_type_b=shape_type_b,
@@ -531,7 +531,7 @@ def test_mesh_mesh_sdf_modes(
     setup = CollisionSetup(
         viewer=viewer,
         device=device,
-        solver_fn=lambda model: newton.solvers.SolverXPBD(model, enable_restitution=True),
+        solver_fn=newton.solvers.SolverXPBD,
         sim_substeps=10,
         shape_type_a=GeoType.MESH,
         shape_type_b=GeoType.MESH,
@@ -3009,7 +3009,7 @@ def test_deterministic_pipeline_500_steps(test, device):
         contacts_a = pipeline_a.contacts()
         contacts_b = pipeline_b.contacts()
 
-        solver = newton.solvers.SolverXPBD(model, iterations=2, rigid_contact_relaxation=0.8, enable_restitution=True)
+        solver = newton.solvers.SolverXPBD(model, iterations=2, rigid_contact_relaxation=0.8)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -3439,7 +3439,7 @@ def test_deterministic_pipeline_sticky_500_steps(test, device):
         contacts_a = pipeline_a.contacts()
         contacts_b = pipeline_b.contacts()
 
-        solver = newton.solvers.SolverXPBD(model, iterations=2, rigid_contact_relaxation=0.8, enable_restitution=True)
+        solver = newton.solvers.SolverXPBD(model, iterations=2, rigid_contact_relaxation=0.8)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()

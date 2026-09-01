@@ -320,7 +320,7 @@ solvers = {
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
         model, use_mujoco_cpu=False, update_data_interval=0, disable_contacts=True
     ),
-    "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0, enable_restitution=True),
+    "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "kamino": newton.solvers.SolverKamino,
 }

@@ -1585,7 +1585,7 @@ for device in devices:
             True,
         ),
         "xpbd": (
-            lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0, enable_restitution=True),
+            lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
             False,
         ),
         "semi_implicit": (
@@ -1650,7 +1650,7 @@ for device in devices:
             False,
         ),
         "xpbd": (
-            lambda model: newton.solvers.SolverXPBD(model, iterations=20, angular_damping=0.0, enable_restitution=True),
+            lambda model: newton.solvers.SolverXPBD(model, iterations=20, angular_damping=0.0),
             False,
         ),
         "kamino": (

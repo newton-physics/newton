@@ -1436,7 +1436,7 @@ def test_proxy_particle_gravity_is_not_coupling_feedback(test, device):
         entries=[
             SolverCoupled.Entry(
                 name="xpbd",
-                solver=lambda view: SolverXPBD(model=view, iterations=1, enable_restitution=True),
+                solver=lambda view: SolverXPBD(model=view, iterations=1),
                 particles=[0],
             ),
             SolverCoupled.Entry(

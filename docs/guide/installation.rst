@@ -168,7 +168,7 @@ required dependencies installed by ``pip install newton``:
     model = builder.finalize()
 
     # Create a solver and allocate state
-    solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+    solver = newton.solvers.SolverXPBD(model)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()

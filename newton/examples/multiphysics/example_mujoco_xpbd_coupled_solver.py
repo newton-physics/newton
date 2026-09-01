@@ -153,7 +153,7 @@ class Example:
                     ),
                     SolverCoupledProxy.Entry(
                         name="xpbd",
-                        solver=lambda v: SolverXPBD(model=v, enable_restitution=True, **xpbd_kwargs),
+                        solver=lambda v: SolverXPBD(model=v, **xpbd_kwargs),
                         bodies=[int(i) for i in xpbd_body_indices.numpy()],
                         particles=list(range(self.model.particle_count)),
                     ),
@@ -172,7 +172,7 @@ class Example:
             )
         else:
             # ---------- Pure-XPBD path (reference baseline) ----------
-            self.solver = newton.solvers.SolverXPBD(model=self.model, enable_restitution=True, **xpbd_kwargs)
+            self.solver = newton.solvers.SolverXPBD(model=self.model, **xpbd_kwargs)
 
         # Simulation state
         self.state_0 = self.model.state()

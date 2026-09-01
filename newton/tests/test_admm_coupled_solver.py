@@ -218,7 +218,7 @@ def _make_vbd_xpbd_particle_solver(model: newton.Model):
             ),
             SolverCoupled.Entry(
                 name="xpbd",
-                solver=lambda v: SolverXPBD(model=v, iterations=2, enable_restitution=True),
+                solver=lambda v: SolverXPBD(model=v, iterations=2),
                 particles=[1],
             ),
         ],
@@ -815,7 +815,7 @@ class TestAdmmGraphCapture(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(
                     name="xpbd",
-                    solver=lambda v: SolverXPBD(model=v, iterations=1, enable_restitution=True),
+                    solver=lambda v: SolverXPBD(model=v, iterations=1),
                     bodies=[body_a],
                 ),
                 SolverCoupled.Entry(

@@ -192,7 +192,7 @@ class Example:
                 rigid_joint_angular_ke=1.0e6,
             )
         else:
-            self.solver = newton.solvers.SolverXPBD(self.model, enable_restitution=True)
+            self.solver = newton.solvers.SolverXPBD(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

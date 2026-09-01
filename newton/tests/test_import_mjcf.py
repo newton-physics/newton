@@ -198,7 +198,7 @@ class TestImportMjcfBasic(unittest.TestCase):
                 root_body = int(model.joint_child.numpy()[0])
                 start_z = float(state_0.body_q.numpy()[root_body][2])
 
-                solver = newton.solvers.SolverXPBD(model, iterations=2, enable_restitution=True)
+                solver = newton.solvers.SolverXPBD(model, iterations=2)
                 for _ in range(step_count):
                     state_0.clear_forces()
                     solver.step(state_0, state_1, control, contacts, dt)

@@ -109,7 +109,7 @@ class Example:
                 rigid_compliant_alm=True,
             )
         else:
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=5, enable_restitution=True)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

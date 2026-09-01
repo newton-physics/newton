@@ -235,7 +235,6 @@ class Example:
                 self.model,
                 iterations=10,
                 rigid_contact_relaxation=self.xpbd_contact_relaxation,
-                enable_restitution=True,
                 deterministic=wp.DeterministicMode.RUN_TO_RUN
                 if self.deterministic_solver
                 else wp.DeterministicMode.NOT_GUARANTEED,
