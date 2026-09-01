@@ -16,35 +16,15 @@
 # The operational frame's local Z (into the table) is wrench-controlled
 # with a feedforward press force; the other five task axes (the two
 # in-plane directions along the table, and full orientation) are
-# motion-controlled, tracking a desired (x, y) on the table's surface. The
-# desired orientation is held fixed at whatever the gripper's own starting
-# orientation is (zero initial error, in both position and orientation, so
-# the arm starts at rest instead of snapping toward a new target) -- the
-# gripper does not itself tilt to match the table. This is a true
-# zero-stiffness hybrid split: the press axis carries no position spring
-# at all, only the feedforward force -- the same design Isaac Lab's own
-# test_franka_hybrid_decoupled_motion (isaaclab/test/controllers/
-# test_operational_space.py) uses on this exact robot. A secondary
-# null-space posture task pulls the redundant DOF back toward the ready
-# pose without disturbing either the force or the motion task, since the
-# null-space projector guarantees zero task-space disturbance across all 6
-# task dimensions, regardless of which of them are currently wrench- vs
-# motion-controlled.
+# motion-controlled, tracking a desired (x, y) on the table's surface.
+# A secondary null-space posture task pulls the redundant DOF back toward the ready
+# pose without disturbing either the force or the motion task
 #
 # Three sliders (x, y, press force) let you steer the commanded task
 # directly; a SensorContact on the two gripper fingers reads back the
 # actual contact force the table exerts on the tool, and the GUI panel
 # prints commanded vs. measured/actual for all three so tracking can be
 # confirmed directly, not just assumed from the control law.
-#
-# An earlier version of this example built its own lightweight, procedural
-# 7/8-DOF arm instead of loading a real robot asset, and the same
-# zero-stiffness split diverged on it: with inertia decoupling, the
-# task-space effective mass (Lambda) on a redundant, very lightly built arm
-# varies enormously with configuration, and a direction with no spring
-# holding it near a well-conditioned pose has nothing to keep it there. A
-# real Franka's masses/inertias and its well-conditioned "ready" pose don't
-# have that problem.
 #
 # Command: python -m newton.examples controller_operational_space_hybrid_force_motion
 ###########################################################################
@@ -64,9 +44,7 @@ from newton.sensors import SensorContact
 # Robot configuration
 # ---------------------------------------------------------------------------
 
-# Franka's standard "ready" pose: well clear of joint limits and singularities,
-# with the gripper pointing straight down (world -Z) -- also the null-space
-# posture target throughout the run.
+# Franka's standard "ready" pose
 READY_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
 ARM_DOFS = len(READY_POSE)  # 7; the two finger joints are left uncontrolled
 
@@ -80,22 +58,15 @@ FORCE_SLIDER_MAX = 80.0  # [N]
 # TABLE_HALF_EXTENT, centered 0.5m in front of the robot, tilted
 # TABLE_TILT_ANGLE about world Y so its top surface faces up and toward the
 # robot. TABLE_POSITION/TABLE_ROTATION are the box's own (center) pose; the
-# operational frame is built from these but offset onto the top surface --
-# see __init__.
+# operational frame is built from these but offset onto the top surface.
 TABLE_HALF_EXTENT = 0.35
 TABLE_HEIGHT = 0.15
 TABLE_TILT_ANGLE = np.pi / 4.0
 TABLE_ROTATION = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -TABLE_TILT_ANGLE)
-# Center height chosen so every corner of the tilted table clears the
-# ground plane: tilting a TABLE_HALF_EXTENT x TABLE_HEIGHT/2 box 45 degrees
-# drops its lowest corner ~sqrt(TABLE_HALF_EXTENT**2 + (TABLE_HEIGHT/2)**2)
-# below the table's own center, so the center needs to sit at least that
-# far above z=0, plus a margin.
 TABLE_POSITION = wp.vec3(0.5, 0.0, np.sqrt(TABLE_HALF_EXTENT**2 + (TABLE_HEIGHT / 2.0) ** 2) + 0.05)
 
 # Gains -- use_inertia_decoupling=True, so these are in the mass-normalized
-# (acceleration) domain: [1/s^2] for stiffness, [1/s] for damping. Same
-# order of magnitude as Isaac Lab's own Franka OSC tests (200-1000).
+# (acceleration) domain: [1/s^2] for stiffness, [1/s] for damping.
 MOTION_KP = 300.0
 MOTION_KD = 2.0 * MOTION_KP**0.5  # critically damped
 NULL_KP = 50.0
@@ -129,13 +100,6 @@ class Example:
 
         builder.add_ground_plane()
 
-        # A physical table in front of the robot, tilted 45 degrees toward
-        # it -- this, not the ground plane, is what the gripper presses
-        # into. The table body's own transform is its geometric center (the
-        # natural pose for a box shape); the operational frame (below) sits
-        # on its TOP surface instead -- where the tool actually presses --
-        # offset from the center along the table's own normal by half its
-        # thickness, same orientation (Z normal to the tilted surface).
         table_transform = wp.transform(TABLE_POSITION, TABLE_ROTATION)
         table_body = builder.add_link()
         builder.add_shape_box(table_body, hx=TABLE_HALF_EXTENT, hy=TABLE_HALF_EXTENT, hz=TABLE_HEIGHT / 2.0)
@@ -153,13 +117,7 @@ class Example:
         self._table_position_np = np.array(TABLE_POSITION, dtype=np.float32) + table_normal_world * (TABLE_HEIGHT / 2.0)
         operational_frame_transform = wp.transform(wp.vec3(*self._table_position_np.tolist()), TABLE_ROTATION)
 
-        # A static RGB axis triad (X red, Y green, Z blue) at the
-        # operational frame, drawn every frame in render() -- log_gizmo's
-        # "gizmo" is its interactive drag handles, so an empty
-        # translate/rotate list draws nothing at all; log_lines is the
-        # primitive for a plain, non-interactive marker. Longer than the
-        # table's half-extent so X/Y visibly poke out past its edge, rather
-        # than being lost against the table surface they lie flat against.
+        # A static axis triad at the operational frame, drawn every frame in render()
         axis_length = TABLE_HALF_EXTENT + 0.1
         origin = self._table_position_np
         axis_tips = origin + axis_length * self._table_rotation_np.T
@@ -189,9 +147,10 @@ class Example:
         # default budgets for.
         self.solver = newton.solvers.SolverMuJoCo(self.model, nconmax=200)
 
-        # Force sensor: reads back the actual contact force the table
-        # exerts on the gripper fingers, so the commanded press force can be
-        # checked against what's really happening, not just assumed.
+        # SensorContact + Contacts is Newton's contact-force readback API (see
+        # example_sensor_contact.py) -- reads back the actual contact force the
+        # table exerts on the gripper fingers, so the commanded press force can
+        # be checked against what's really happening, not just assumed.
         self.force_sensor = SensorContact(self.model, sensing_bodies=finger_bodies)
         self.contacts = Contacts(
             self.solver.get_max_contact_count(),
@@ -234,10 +193,8 @@ class Example:
         wrench_selection = wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
 
         # ---- Operational-space controller -------------------------------------
-        # "tool_site" matches the one site on this robot. joints restricts
-        # control to the 7 arm joints, leaving the 2 gripper finger joints
-        # uncontrolled. The controller reads its FK and dynamics terms from
-        # the same model the solver simulates.
+        # The controller reads its FK and dynamics terms from the same model
+        # the solver simulates.
         self.controller = ControllerOperationalSpace(
             self.model,
             joints=arm_joints,
@@ -342,8 +299,8 @@ class Example:
         # themselves come from Python-side UI state read after capture).
         # Position: (x, y) along the table's tangent plane, relative to the
         # operational frame; z left at 0 (wrench-, not motion-, controlled).
-        # Orientation: home_pose's, unchanged -- composed with the tilted
-        # operational frame, this keeps the gripper perpendicular to the table.
+        # Orientation left at home_pose's: composed with the tilted operational
+        # frame, this keeps the gripper perpendicular to the table.
         desired_pose = self._home_pose.copy()[None, :]
         desired_pose[0, 0] = self.desired_x
         desired_pose[0, 1] = self.desired_y
