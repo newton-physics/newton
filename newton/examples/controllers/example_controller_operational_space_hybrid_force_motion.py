@@ -20,9 +20,9 @@
 #
 # Each operational frame's local Z (into its table) is wrench-controlled
 # with a feedforward press force plus feedback from the measured contact
-# force; the other five task axes (the two in-plane directions along the
-# table, and full orientation) are motion-controlled, tracking a desired
-# (x, y) on the table's surface.
+# force, plus a light superimposed motion-control term damping out
+# bounce; the other five task axes are purely motion-controlled, tracking
+# a desired (x, y) on the table's surface.
 #
 # Two sets of three sliders (x, y, press force) let you steer each robot's
 # commanded task directly; a SensorContact reads back the actual contact
@@ -51,8 +51,9 @@ from newton.sensors import SensorContact
 
 # Franka's standard "ready" pose.
 FRANKA_READY_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
-FRANKA_ARM_DOFS = len(FRANKA_READY_POSE)  # 7; the two finger joints are left uncontrolled
+FRANKA_ARM_DOFS = len(FRANKA_READY_POSE)  # 7; the OSC controller's controlled DOFs
 FRANKA_BASE_POSITION = wp.vec3(0.0, 0.0, 0.0)
+
 
 # A UR10 configuration reaching forward and down, chosen (via forward
 # kinematics) to put its tool roughly chest-height in front of the base,
@@ -89,6 +90,10 @@ TABLE_HEIGHT = 0.15
 TABLE_TILT_ANGLE = np.pi / 4.0
 TABLE_ROTATION = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -TABLE_TILT_ANGLE)
 TABLE_OFFSET = wp.vec3(0.5, 0.0, np.sqrt(TABLE_HALF_EXTENT**2 + (TABLE_HEIGHT / 2.0) ** 2) + 0.05)
+# Low friction between each tool and its table -- the wrench controller
+# handles pressing into the surface; sliding shouldn't cost extra drag force
+# on top of that.
+TOOL_TABLE_FRICTION_CFG = newton.ModelBuilder.ShapeConfig(mu=0.05)
 # The UR10's table is flat (0 degrees), unlike the Franka's tilted one.
 UR10_TABLE_ROTATION = wp.quat_identity()
 # UR10_READY_POSE's tool tip reaches further forward than the Franka's does
@@ -104,6 +109,13 @@ FRANKA_MOTION_KP = 600.0
 FRANKA_MOTION_KD = 2.0 * FRANKA_MOTION_KP**0.5  # critically damped
 UR10_MOTION_KP = 600.0
 UR10_MOTION_KD = 2.0 * UR10_MOTION_KP**0.5  # critically damped
+# A much lighter motion gain layered onto the press axis (Z) alongside the
+# wrench control there, targeting the table surface (z=0 in the operational
+# frame) -- its damping term pulls the tool's velocity toward zero, damping
+# out the bounce a pure feedforward+feedback wrench term otherwise leaves
+# unchecked, without fighting the commanded press force at steady state.
+Z_MOTION_KP = 50.0
+Z_MOTION_KD = 2.0 * Z_MOTION_KP**0.5  # critically damped
 # Dimensionless: multiplies a wrench error (already in N/N*m) directly, not a pose error.
 WRENCH_KP = 0.5
 
@@ -154,8 +166,8 @@ class Example:
         ur10_asset_file = str(newton.utils.download_asset("universal_robots_ur10") / "usd/ur10_instanceable.usda")
         builder = newton.ModelBuilder()
 
-        franka_joints, franka_coords, franka_tool_body, franka_tool_site_transform = self._add_franka(
-            builder, franka_urdf_path, FRANKA_BASE_POSITION
+        franka_joints, franka_coords, franka_tool_body, franka_tool_site_transform, franka_finger_dofs = (
+            self._add_franka(builder, franka_urdf_path, FRANKA_BASE_POSITION)
         )
         ur10_joints, ur10_coords, ur10_tool_body, ur10_tool_site_transform = self._add_ur10(
             builder, ur10_asset_file, UR10_BASE_POSITION
@@ -166,7 +178,13 @@ class Example:
         builder.add_ground_plane()
 
         franka_table_body = builder.add_link()
-        builder.add_shape_box(franka_table_body, hx=TABLE_HALF_EXTENT, hy=TABLE_HALF_EXTENT, hz=TABLE_HEIGHT / 2.0)
+        builder.add_shape_box(
+            franka_table_body,
+            hx=TABLE_HALF_EXTENT,
+            hy=TABLE_HALF_EXTENT,
+            hz=TABLE_HEIGHT / 2.0,
+            cfg=TOOL_TABLE_FRICTION_CFG,
+        )
         franka_table_joint = builder.add_joint_fixed(
             parent=-1,
             child=franka_table_body,
@@ -175,7 +193,13 @@ class Example:
         builder.add_articulation([franka_table_joint], label="franka_table")
 
         ur10_table_body = builder.add_link()
-        builder.add_shape_box(ur10_table_body, hx=TABLE_HALF_EXTENT, hy=TABLE_HALF_EXTENT, hz=TABLE_HEIGHT / 2.0)
+        builder.add_shape_box(
+            ur10_table_body,
+            hx=TABLE_HALF_EXTENT,
+            hy=TABLE_HALF_EXTENT,
+            hz=TABLE_HEIGHT / 2.0,
+            cfg=TOOL_TABLE_FRICTION_CFG,
+        )
         ur10_table_joint = builder.add_joint_fixed(
             parent=-1,
             child=ur10_table_body,
@@ -183,7 +207,15 @@ class Example:
         )
         builder.add_articulation([ur10_table_joint], label="ur10_table")
 
+        # Every controlled-arm and table DOF is driven by joint_f (through
+        # the OSC controller, or not at all for the tables), so it's put
+        # into EFFORT mode with zero gains here. The Franka's finger DOFs
+        # are skipped -- left at the URDF's own POSITION-mode target and
+        # gains, closed and held there by the solver's own implicit PD
+        # instead of drifting open under blanket EFFORT/zero gains.
         for i in range(builder.joint_dof_count):
+            if i in franka_finger_dofs:
+                continue
             builder.joint_target_ke[i] = 0.0
             builder.joint_target_kd[i] = 0.0
             builder.joint_target_mode[i] = int(JointTargetMode.EFFORT)
@@ -243,13 +275,15 @@ class Example:
         ]
 
         # The operational frame's local Z (below) is the press axis (index
-        # 2); the other five task axes are motion-controlled. The linear and
-        # angular selection frames (below) are both left at identity
-        # relative to the operational frame, so "axis 2" here is literally
-        # each table's normal -- independent of the tool's own orientation.
-        # Same selection pattern for both robots, since both tables use the
-        # same convention.
-        motion_selection = wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0)
+        # 2); every axis is motion-controlled, and Z is additionally
+        # wrench-controlled -- motion and wrench control are superimposed
+        # there, rather than one replacing the other (see Z_MOTION_KP
+        # above). The linear and angular selection frames (below) are both
+        # left at identity relative to the operational frame, so "axis 2"
+        # here is literally each table's normal -- independent of the
+        # tool's own orientation. Same selection pattern for both robots,
+        # since both tables use the same convention.
+        motion_selection = wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
         wrench_selection = wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
 
         # ---- Operational-space controller -------------------------------------
@@ -264,16 +298,34 @@ class Example:
             tool="tool_site",
             motion_stiffness=wp.array(
                 [
-                    wp.spatial_vector(*([FRANKA_MOTION_KP] * 6)),
-                    wp.spatial_vector(*([UR10_MOTION_KP] * 6)),
+                    wp.spatial_vector(
+                        FRANKA_MOTION_KP,
+                        FRANKA_MOTION_KP,
+                        Z_MOTION_KP,
+                        FRANKA_MOTION_KP,
+                        FRANKA_MOTION_KP,
+                        FRANKA_MOTION_KP,
+                    ),
+                    wp.spatial_vector(
+                        UR10_MOTION_KP, UR10_MOTION_KP, Z_MOTION_KP, UR10_MOTION_KP, UR10_MOTION_KP, UR10_MOTION_KP
+                    ),
                 ],
                 dtype=wp.spatial_vector,
                 device=self.device,
             ),
             motion_damping=wp.array(
                 [
-                    wp.spatial_vector(*([FRANKA_MOTION_KD] * 6)),
-                    wp.spatial_vector(*([UR10_MOTION_KD] * 6)),
+                    wp.spatial_vector(
+                        FRANKA_MOTION_KD,
+                        FRANKA_MOTION_KD,
+                        Z_MOTION_KD,
+                        FRANKA_MOTION_KD,
+                        FRANKA_MOTION_KD,
+                        FRANKA_MOTION_KD,
+                    ),
+                    wp.spatial_vector(
+                        UR10_MOTION_KD, UR10_MOTION_KD, Z_MOTION_KD, UR10_MOTION_KD, UR10_MOTION_KD, UR10_MOTION_KD
+                    ),
                 ],
                 dtype=wp.spatial_vector,
                 device=self.device,
@@ -353,8 +405,9 @@ class Example:
         # relative to the operational frame's own origin. Initialized to the
         # tool's actual starting (x, y) in that same frame -- zero initial
         # error -- rather than to the origin, which would otherwise be a
-        # sudden, large initial position command. z is left at 0 since that
-        # axis is wrench-, not motion-, controlled.
+        # sudden, large initial position command. z is left at 0 -- the
+        # table surface -- since that axis's light motion control (see
+        # Z_MOTION_KP) is there only to damp the press, not to reposition it.
         home_pos_operational = table_rotation_np.T @ (home_pose_world[:3] - operational_position_np)
 
         axis_length = TABLE_HALF_EXTENT + 0.1
@@ -390,10 +443,12 @@ class Example:
 
         Returns:
             Tuple of (arm joint indices, arm coordinate indices, fr3_hand_tcp
-            body index, tool site's body-local transform).
+            body index, tool site's body-local transform, finger DOF
+            indices).
         """
         joint_count_before = builder.joint_count
         coord_count_before = builder.joint_coord_count
+        dof_count_before = builder.joint_dof_count
         body_count_before = builder.body_count
         builder.add_urdf(urdf_path, xform=wp.transform(base_position, wp.quat_identity()), floating=False)
 
@@ -408,6 +463,12 @@ class Example:
         for coord, angle in zip(arm_coords, FRANKA_READY_POSE, strict=True):
             builder.joint_q[coord] = angle
 
+        # fr3_finger_joint1/2, the two single-coordinate/single-DOF prismatic
+        # joints immediately after the arm joints (and the 3 fixed joints
+        # between the arm and the hand, which contribute no coordinates or
+        # DOFs).
+        finger_dofs = [dof_count_before + FRANKA_ARM_DOFS, dof_count_before + FRANKA_ARM_DOFS + 1]
+
         # Body 11 (0-based) this URDF adds is fr3_hand_tcp, the fixed frame
         # between the fingers -- give it a small ball as the pressing tool
         # (rounds off what would otherwise be a flat-fingered contact), and
@@ -420,11 +481,12 @@ class Example:
             tool_body,
             xform=wp.transform(wp.vec3(0.0, 0.0, FRANKA_BALL_OFFSET), wp.quat_identity()),
             radius=FRANKA_BALL_RADIUS,
+            cfg=TOOL_TABLE_FRICTION_CFG,
         )
         tool_site_transform = wp.transform(wp.vec3(0.0, 0.0, FRANKA_BALL_OFFSET), wp.quat_identity())
         builder.add_site(tool_body, xform=tool_site_transform, label="tool_site")
 
-        return arm_joints, arm_coords, tool_body, tool_site_transform
+        return arm_joints, arm_coords, tool_body, tool_site_transform, finger_dofs
 
     @staticmethod
     def _add_ur10(builder, asset_file, base_position):
@@ -475,6 +537,7 @@ class Example:
             xform=wp.transform(wp.vec3(TOOL_CYLINDER_HALF_HEIGHT, 0.0, 0.0), tool_direction_rotation),
             radius=TOOL_CYLINDER_RADIUS,
             half_height=TOOL_CYLINDER_HALF_HEIGHT,
+            cfg=TOOL_TABLE_FRICTION_CFG,
         )
         # The site sits at the capsule's rounded tip: half_height along its
         # axis, plus the radius of the rounded cap itself.
@@ -519,10 +582,11 @@ class Example:
             # here. Cannot be graph-captured (assign() is, but the desired
             # values themselves come from Python-side UI state read after
             # capture). Position: (x, y) along the table's tangent plane,
-            # relative to the operational frame; z left at 0 (wrench-, not
-            # motion-, controlled). Orientation left at home_pose's:
-            # composed with the tilted operational frame, this keeps the
-            # tool perpendicular to the table.
+            # relative to the operational frame; z left at 0 (the table
+            # surface -- its light motion control only damps the press,
+            # see Z_MOTION_KP). Orientation left at home_pose's: composed
+            # with the tilted operational frame, this keeps the tool
+            # perpendicular to the table.
             desired_pose[i] = rig.home_pose
             desired_pose[i, 0] = rig.desired_x
             desired_pose[i, 1] = rig.desired_y
