@@ -187,8 +187,9 @@ class ControllerOperationalSpace(ControllerBase):
             task-space motion. Requires every robot to have more than 6
             controlled DOFs (redundant relative to the 6D task). The
             null-space projector is dynamically consistent (accounts for
-            the robot's own inertia) when ``use_inertia_decoupling=True``,
-            or a kinematics-only (Moore-Penrose) projector otherwise.
+            the robot's own inertia) when ``use_inertia_decoupling=True``
+            and ``use_partial_inertia_decoupling=False``, or a
+            kinematics-only (Moore-Penrose) projector otherwise.
         null_space_stiffness: Joint-space posture position-error gain Kp.
             Units depend on ``use_inertia_decoupling``: [1/s²] when enabled,
             since the posture PD term is then premultiplied by the mass
