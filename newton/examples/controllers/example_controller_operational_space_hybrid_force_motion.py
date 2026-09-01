@@ -4,31 +4,38 @@
 ###########################################################################
 # Example Controllers — Operational Space Hybrid Force/Motion
 #
-# Demonstrates ControllerOperationalSpace on one real 7-DOF Franka Panda arm
-# (redundant against the 6D task), pressing its gripper into a table
-# tilted 45 degrees toward it, with its position along the table steered
-# interactively. The operational frame is placed on the table's top
-# surface, oriented so its Z axis is normal to the (tilted) table -- so the
-# same operational-frame-relative command works regardless of the tilt, and
-# the axis triad drawn each frame at that frame lets you see exactly where
-# the controller thinks "the table" and "into the table" are.
+# Demonstrates ControllerOperationalSpace on two real, heterogeneous robots
+# at once -- a 7-DOF Franka Panda arm (redundant against the 6D task) and a
+# 6-DOF UR10 arm (not redundant) -- each independently pressing a tool into
+# its own table, with its position along the table steered interactively.
+# The Franka's table is tilted 45 degrees toward it; the UR10's is flat.
+# One controller call handles both, each robot resolved through its own
+# tool site, Jacobian, and operational frame.
 #
-# The operational frame's local Z (into the table) is wrench-controlled
+# Each operational frame is placed on its table's top surface, oriented so
+# its Z axis is normal to the table -- so the same operational-frame-relative
+# command works regardless of the table's tilt, and the axis triad drawn
+# each frame lets you see exactly where the controller thinks "the table"
+# and "into the table" are.
+#
+# Each operational frame's local Z (into its table) is wrench-controlled
 # with a feedforward press force plus feedback from the measured contact
 # force; the other five task axes (the two in-plane directions along the
 # table, and full orientation) are motion-controlled, tracking a desired
-# (x, y) on the table's surface.
-# A secondary null-space posture task pulls the redundant DOF back toward the ready
-# pose without disturbing either the force or the motion task
+# (x, y) on the table's surface. The UR10 has no redundant DOF (exactly 6
+# controlled), so unlike the Franka there is no secondary null-space
+# posture task -- use_null_space_control requires every controlled robot
+# to have more than 6 controlled DOFs.
 #
-# Three sliders (x, y, press force) let you steer the commanded task
-# directly; a SensorContact on the two gripper fingers reads back the
-# actual contact force the table exerts on the tool, and the GUI panel
-# prints commanded vs. measured for all three so tracking can be confirmed
-# directly, not just assumed from the control law.
+# Two sets of three sliders (x, y, press force) let you steer each robot's
+# commanded task directly; a SensorContact reads back the actual contact
+# force each tool exerts on its table, fed into the controller as wrench
+# feedback and shown in the GUI alongside the commanded force.
 #
 # Command: python -m newton.examples controller_operational_space_hybrid_force_motion
 ###########################################################################
+
+from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
@@ -45,35 +52,86 @@ from newton.sensors import SensorContact
 # Robot configuration
 # ---------------------------------------------------------------------------
 
-# Franka's standard "ready" pose
-READY_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
-ARM_DOFS = len(READY_POSE)  # 7; the two finger joints are left uncontrolled
+# Franka's standard "ready" pose.
+FRANKA_READY_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+FRANKA_ARM_DOFS = len(FRANKA_READY_POSE)  # 7; the two finger joints are left uncontrolled
+FRANKA_BASE_POSITION = wp.vec3(0.0, 0.0, 0.0)
 
-# Slider ranges, centered on the gripper's actual starting (x, y) in the
+# A UR10 configuration reaching forward and down, chosen (via forward
+# kinematics) to put its tool roughly chest-height in front of the base,
+# the same reach scale as the Franka's.
+UR10_READY_POSE = [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
+UR10_ARM_DOFS = len(UR10_READY_POSE)  # 6; no redundant DOF, unlike the Franka
+UR10_BASE_POSITION = wp.vec3(0.0, 1.8, 0.0)  # separated from the Franka along Y
+
+# The UR10 asset is a bare arm with no gripper; a small cylinder fixed to
+# its wrist flange (ee_link) stands in as its pressing tool.
+TOOL_CYLINDER_RADIUS = 0.02
+TOOL_CYLINDER_HALF_HEIGHT = 0.05
+
+# Slider ranges, centered on each tool's actual starting (x, y) in its own
 # operational frame -- so the initial commanded position matches where the
-# gripper already is, along the table's tilted surface.
+# tool already is, along its table's tilted surface.
 XY_SLIDER_RANGE = 0.15  # [m]
 FORCE_SLIDER_MAX = 80.0  # [N]
 
-# The table: a box of half-height TABLE_HEIGHT/2 and half-footprint
-# TABLE_HALF_EXTENT, centered 0.5m in front of the robot, tilted
+# Each table: a box of half-height TABLE_HEIGHT/2 and half-footprint
+# TABLE_HALF_EXTENT, offset TABLE_OFFSET from its robot's own base, tilted
 # TABLE_TILT_ANGLE about world Y so its top surface faces up and toward the
-# robot. TABLE_POSITION/TABLE_ROTATION are the box's own (center) pose; the
-# operational frame is built from these but offset onto the top surface.
+# robot. TABLE_OFFSET/TABLE_ROTATION give the box's own (center) pose
+# relative to the base; the operational frame is built from these but
+# offset onto the top surface.
 TABLE_HALF_EXTENT = 0.35
 TABLE_HEIGHT = 0.15
 TABLE_TILT_ANGLE = np.pi / 4.0
 TABLE_ROTATION = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -TABLE_TILT_ANGLE)
-TABLE_POSITION = wp.vec3(0.5, 0.0, np.sqrt(TABLE_HALF_EXTENT**2 + (TABLE_HEIGHT / 2.0) ** 2) + 0.05)
+TABLE_OFFSET = wp.vec3(0.5, 0.0, np.sqrt(TABLE_HALF_EXTENT**2 + (TABLE_HEIGHT / 2.0) ** 2) + 0.05)
+# The UR10's table is flat (0 degrees), unlike the Franka's tilted one.
+UR10_TABLE_ROTATION = wp.quat_identity()
+# UR10_READY_POSE's tool tip reaches further forward (~0.69m) than the
+# Franka's does at TABLE_OFFSET's 0.5m, landing inside the table box at
+# TABLE_OFFSET -- push the UR10's table further out to actually clear it
+# (verified: the tool's table-local Z clears the table's +-0.075m half
+# height with this offset).
+UR10_TABLE_OFFSET = TABLE_OFFSET + wp.vec3(0.3, 0.0, 0.0)
 
-# Gains -- use_inertia_decoupling=True, so these are in the mass-normalized
-# (acceleration) domain: [1/s^2] for stiffness, [1/s] for damping.
-MOTION_KP = 300.0
-MOTION_KD = 2.0 * MOTION_KP**0.5  # critically damped
-NULL_KP = 50.0
-NULL_KD = 2.0 * NULL_KP**0.5
+# Gains -- use_inertia_decoupling=True (the default), so these are in the
+# mass-normalized (acceleration) domain: [1/s^2] for stiffness, [1/s] for
+# damping.
+# TEMPORARY, for debugging: full inertia decoupling (no
+# use_partial_inertia_decoupling) and equal gains for both robots. The UR10
+# (unlike the redundant Franka) has no spare DOF to route around a
+# kinematic singularity; earlier instability during the settle-into-contact
+# transient turned out to be caused by real tool/table geometry penetration
+# (a wrong cylinder axis and insufficient table clearance, both now fixed),
+# so this configuration is being re-tested to see if it's actually stable
+# without needing use_partial_inertia_decoupling or softer UR10 gains.
+FRANKA_MOTION_KP = 300.0
+FRANKA_MOTION_KD = 2.0 * FRANKA_MOTION_KP**0.5  # critically damped
+UR10_MOTION_KP = 300.0
+UR10_MOTION_KD = 2.0 * UR10_MOTION_KP**0.5  # critically damped
 # Dimensionless: multiplies a wrench error (already in N/N*m) directly, not a pose error.
 WRENCH_KP = 0.5
+
+
+@dataclass
+class _RobotRig:
+    """Per-robot table geometry, gizmo, and slider/measurement state -- identical shape for each robot."""
+
+    label: str
+    operational_position_np: np.ndarray
+    operational_frame_transform: wp.transform
+    table_rotation_np: np.ndarray
+    table_normal_world: np.ndarray
+    home_pose: np.ndarray
+    home_pos_operational: np.ndarray
+    desired_x: float
+    desired_y: float
+    desired_force: float
+    measured_force_normal: float
+    gizmo_starts: wp.array
+    gizmo_ends: wp.array
+    gizmo_colors: wp.array
 
 
 # ---------------------------------------------------------------------------
@@ -96,41 +154,38 @@ class Example:
         self.device = wp.get_device()
 
         # ---- Physics scene ---------------------------------------------------
-        urdf_path = str(newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf")
+        franka_urdf_path = str(newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf")
+        ur10_asset_file = str(newton.utils.download_asset("universal_robots_ur10") / "usd/ur10_instanceable.usda")
         builder = newton.ModelBuilder()
 
-        arm_joints, tool_body, finger_bodies = self._add_franka(builder, urdf_path)
+        franka_joints, franka_coords, franka_tool_body, franka_tool_site_transform, finger_bodies = self._add_franka(
+            builder, franka_urdf_path, FRANKA_BASE_POSITION
+        )
+        ur10_joints, ur10_coords, ur10_tool_body, ur10_tool_site_transform = self._add_ur10(
+            builder, ur10_asset_file, UR10_BASE_POSITION
+        )
+        self._franka_coords = franka_coords
+        self._ur10_coords = ur10_coords
 
         builder.add_ground_plane()
 
-        table_transform = wp.transform(TABLE_POSITION, TABLE_ROTATION)
-        table_body = builder.add_link()
-        builder.add_shape_box(table_body, hx=TABLE_HALF_EXTENT, hy=TABLE_HALF_EXTENT, hz=TABLE_HEIGHT / 2.0)
-        table_joint = builder.add_joint_fixed(parent=-1, child=table_body, parent_xform=table_transform)
-        builder.add_articulation([table_joint], label="table")
-
-        # Cached for step()/gui()/render(): the operational frame's
-        # numpy-side rotation/position/normal, so the world-frame
-        # wrench/position math below doesn't need to redo transform algebra
-        # in Warp every frame.
-        table_rotation_np = np.array(wp.quat_to_matrix(TABLE_ROTATION), dtype=np.float32).reshape(3, 3)
-        table_normal_world = table_rotation_np @ np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        self._table_rotation_np = table_rotation_np
-        self._table_normal_world = table_normal_world
-        self._table_position_np = np.array(TABLE_POSITION, dtype=np.float32) + table_normal_world * (TABLE_HEIGHT / 2.0)
-        operational_frame_transform = wp.transform(wp.vec3(*self._table_position_np.tolist()), TABLE_ROTATION)
-
-        # A static axis triad at the operational frame, drawn every frame in render()
-        axis_length = TABLE_HALF_EXTENT + 0.1
-        origin = self._table_position_np
-        axis_tips = origin + axis_length * self._table_rotation_np.T
-        self._operational_frame_gizmo_starts = wp.array([origin] * 3, dtype=wp.vec3, device=self.device)
-        self._operational_frame_gizmo_ends = wp.array(axis_tips, dtype=wp.vec3, device=self.device)
-        self._operational_frame_gizmo_colors = wp.array(
-            [wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)],
-            dtype=wp.vec3,
-            device=self.device,
+        franka_table_body = builder.add_link()
+        builder.add_shape_box(franka_table_body, hx=TABLE_HALF_EXTENT, hy=TABLE_HALF_EXTENT, hz=TABLE_HEIGHT / 2.0)
+        franka_table_joint = builder.add_joint_fixed(
+            parent=-1,
+            child=franka_table_body,
+            parent_xform=wp.transform(FRANKA_BASE_POSITION + TABLE_OFFSET, TABLE_ROTATION),
         )
+        builder.add_articulation([franka_table_joint], label="franka_table")
+
+        ur10_table_body = builder.add_link()
+        builder.add_shape_box(ur10_table_body, hx=TABLE_HALF_EXTENT, hy=TABLE_HALF_EXTENT, hz=TABLE_HEIGHT / 2.0)
+        ur10_table_joint = builder.add_joint_fixed(
+            parent=-1,
+            child=ur10_table_body,
+            parent_xform=wp.transform(UR10_BASE_POSITION + UR10_TABLE_OFFSET, UR10_TABLE_ROTATION),
+        )
+        builder.add_articulation([ur10_table_joint], label="ur10_table")
 
         for i in range(builder.joint_dof_count):
             builder.joint_target_ke[i] = 0.0
@@ -143,80 +198,94 @@ class Example:
         self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # Contacts stay enabled (the default) so the gripper's own collision
-        # geometry actually presses against, and is resisted by, the table.
-        # nconmax raised above its default: the two fingers' meshes generate
-        # more simultaneous contact points against a flat plane than the
-        # default budgets for.
-        self.solver = newton.solvers.SolverMuJoCo(self.model, nconmax=200)
+        # Contacts stay enabled (the default) so each tool's own collision
+        # geometry actually presses against, and is resisted by, its table.
+        # nconmax/njmax raised above their defaults: the Franka fingers'
+        # meshes generate more simultaneous contact points against a flat
+        # plane than the default budgets for, and two robots' worth of
+        # contacts/constraints need more headroom than one.
+        self.solver = newton.solvers.SolverMuJoCo(self.model, nconmax=400, njmax=400)
 
         # SensorContact + Contacts is Newton's contact-force readback API (see
-        # example_sensor_contact.py) -- reads back the actual contact force the
-        # table exerts on the gripper fingers, fed into the controller as
-        # wrench feedback and shown in the GUI alongside the commanded force.
-        self.force_sensor = SensorContact(self.model, sensing_bodies=finger_bodies)
+        # example_sensor_contact.py) -- reads back the actual contact force
+        # each tool exerts on its table, fed into the controller as wrench
+        # feedback and shown in the GUI alongside the commanded force. One
+        # sensor covers both robots; total_force's rows are ordered to match
+        # sensing_bodies below (the two Franka fingers, then the UR10 tool).
+        self.force_sensor = SensorContact(self.model, sensing_bodies=[*finger_bodies, ur10_tool_body])
         self.contacts = Contacts(
             self.solver.get_max_contact_count(),
             0,
             requested_attributes=self.model.get_requested_contact_attributes(),
         )
 
-        # Home tool pose, read off directly from FK at the ready
-        # configuration -- the tool site's transform is identity, so it
-        # equals fr3_hand_tcp's own world pose there. The desired
-        # orientation, relative to the (tilted) operational frame, is
-        # computed so it composes back to exactly this same world
-        # orientation -- zero initial orientation error, matching the zero
-        # initial position error below, rather than commanding a sudden
-        # 45-degree reorientation snap at startup.
-        home_pose = self.state_0.body_q.numpy()[tool_body].astype(np.float32)
-        self._home_pose = home_pose
-        home_orientation_world = wp.quat(*home_pose[3:7].tolist())
-        desired_orientation_operational = wp.quat_inverse(TABLE_ROTATION) * home_orientation_world
-        self._home_pose[3:7] = np.array(desired_orientation_operational, dtype=np.float32)
-        # x/y sliders offset the target along the table's tangent plane,
-        # relative to the operational frame's own origin (the table's top
-        # surface). Initialized to the gripper's actual starting (x, y) in
-        # that same frame -- zero initial error, like the flat-table
-        # version -- rather than to the origin, which would otherwise be a
-        # sudden, large initial position command. z is left at 0 since that
-        # axis is wrench-, not motion-, controlled.
-        home_pos_operational = self._table_rotation_np.T @ (home_pose[:3] - self._table_position_np)
-        self._home_pos_operational = home_pos_operational
-        self.desired_x = float(home_pos_operational[0])
-        self.desired_y = float(home_pos_operational[1])
-        self.desired_force = 0.0
-        self._measured_force_normal = 0.0
+        # The tool site's world pose, not the raw body's -- the two only
+        # coincide when the site's own body-local transform is identity
+        # (true for Franka's, not for UR10's, whose site is offset from
+        # ee_link out to the pressing tool's tip).
+        franka_body_pose_world = wp.transform(*self.state_0.body_q.numpy()[franka_tool_body].tolist())
+        franka_home_pose_world = np.array(franka_body_pose_world * franka_tool_site_transform, dtype=np.float32)
+        ur10_body_pose_world = wp.transform(*self.state_0.body_q.numpy()[ur10_tool_body].tolist())
+        ur10_home_pose_world = np.array(ur10_body_pose_world * ur10_tool_site_transform, dtype=np.float32)
+        self.rigs = [
+            self._build_rig("Franka", np.array(FRANKA_BASE_POSITION, dtype=np.float32), franka_home_pose_world),
+            self._build_rig(
+                "UR10",
+                np.array(UR10_BASE_POSITION, dtype=np.float32),
+                ur10_home_pose_world,
+                UR10_TABLE_OFFSET,
+                UR10_TABLE_ROTATION,
+            ),
+        ]
 
         # The operational frame's local Z (below) is the press axis (index
         # 2); the other five task axes are motion-controlled. The linear and
         # angular selection frames (below) are both left at identity
         # relative to the operational frame, so "axis 2" here is literally
-        # the table's normal -- independent of the tool's own orientation.
+        # each table's normal -- independent of the tool's own orientation.
+        # Same selection pattern for both robots, since both tables use the
+        # same convention.
         motion_selection = wp.spatial_vector(1.0, 1.0, 0.0, 1.0, 1.0, 1.0)
         wrench_selection = wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
 
         # ---- Operational-space controller -------------------------------------
+        # One controller call handles both robots; joints lists robot 0's
+        # (Franka's) controlled joints first, then robot 1's (UR10's),
+        # matching operational_frame_pose_world's per-robot ordering below.
         # The controller reads its FK and dynamics terms from the same model
         # the solver simulates.
         self.controller = ControllerOperationalSpace(
             self.model,
-            joints=arm_joints,
+            joints=franka_joints + ur10_joints,
             tool="tool_site",
-            motion_stiffness=MOTION_KP,
-            motion_damping=MOTION_KD,
+            motion_stiffness=wp.array(
+                [
+                    wp.spatial_vector(*([FRANKA_MOTION_KP] * 6)),
+                    wp.spatial_vector(*([UR10_MOTION_KP] * 6)),
+                ],
+                dtype=wp.spatial_vector,
+                device=self.device,
+            ),
+            motion_damping=wp.array(
+                [
+                    wp.spatial_vector(*([FRANKA_MOTION_KD] * 6)),
+                    wp.spatial_vector(*([UR10_MOTION_KD] * 6)),
+                ],
+                dtype=wp.spatial_vector,
+                device=self.device,
+            ),
             # Commands/gains, and the linear/angular selection frames below,
-            # are all interpreted relative to this frame -- the table's top
-            # surface, oriented with Z normal to the (tilted) table.
-            operational_frame_pose_world=operational_frame_transform,
+            # are all interpreted relative to each robot's own frame -- its
+            # table's top surface, oriented with Z normal to the (tilted)
+            # table.
+            operational_frame_pose_world=wp.array(
+                [rig.operational_frame_transform for rig in self.rigs], dtype=wp.transform, device=self.device
+            ),
             use_wrench_feedforward=True,
             use_wrench_feedback=True,
             wrench_stiffness=WRENCH_KP,
             motion_selection_axes=motion_selection,
             wrench_selection_axes=wrench_selection,
-            use_null_space_control=True,
-            null_space_stiffness=NULL_KP,
-            null_space_damping=NULL_KD,
         )
 
         self._input = self.controller.input()
@@ -234,9 +303,7 @@ class Example:
         # Constant across every step: bind once, before capture. desired_twist
         # is always zero -- sliders move quasi-statically, so no feedforward
         # velocity is needed.
-        self._input.desired_twist_operational.assign(np.zeros((1, 6), dtype=np.float32))
-        self._input.joint_q_des_null.assign(np.array(READY_POSE, dtype=np.float32))
-        self._input.joint_qd_des_null.assign(np.zeros(ARM_DOFS, dtype=np.float32))
+        self._input.desired_twist_operational.assign(np.zeros((2, 6), dtype=np.float32))
 
         self._graph = None
         if self.controller.is_graphable() and self.device.is_cuda:
@@ -244,27 +311,80 @@ class Example:
                 self._gpu_step()
             self._graph = capture.graph
 
-        # Side view: robot at the origin, table centered at x=0.5 -- looking
-        # along -Y at their midpoint shows the robot and the tilted table's
-        # profile together, instead of the default view from behind the table.
+        # Pulled back and to the side so both robots and tables (Franka at
+        # y=0, UR10 at y=1.8) are in view together.
         if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(0.25, -1.8, 0.7), pitch=0.0, yaw=90.0)
+            self.viewer.set_camera(pos=wp.vec3(-0.75, 0.9, 1.4), pitch=-20.0, yaw=15.0)
             if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.25, 0.0, 0.3))
+                self.viewer.camera.look_at(wp.vec3(0.4, 0.9, 0.4))
 
         self.viewer.set_model(self.model)
 
+    def _build_rig(
+        self, label, base_position_np, home_pose_world, table_offset=TABLE_OFFSET, table_rotation=TABLE_ROTATION
+    ):
+        """Per-robot table geometry, gizmo, and home-pose/slider state -- identical setup for each robot."""
+        table_position_np = base_position_np + np.array(table_offset, dtype=np.float32)
+        table_rotation_np = np.array(wp.quat_to_matrix(table_rotation), dtype=np.float32).reshape(3, 3)
+        table_normal_world = table_rotation_np @ np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        operational_position_np = table_position_np + table_normal_world * (TABLE_HEIGHT / 2.0)
+
+        # Desired orientation, relative to the (possibly tilted) operational
+        # frame, is computed so it composes back to exactly the tool's
+        # actual starting world orientation -- zero initial orientation
+        # error, matching the zero initial position error below, rather
+        # than commanding a sudden reorientation snap at startup.
+        home_pose = home_pose_world.copy()
+        home_orientation_world = wp.quat(*home_pose[3:7].tolist())
+        desired_orientation_operational = wp.quat_inverse(table_rotation) * home_orientation_world
+        home_pose[3:7] = np.array(desired_orientation_operational, dtype=np.float32)
+
+        # x/y sliders offset the target along the table's tangent plane,
+        # relative to the operational frame's own origin. Initialized to the
+        # tool's actual starting (x, y) in that same frame -- zero initial
+        # error -- rather than to the origin, which would otherwise be a
+        # sudden, large initial position command. z is left at 0 since that
+        # axis is wrench-, not motion-, controlled.
+        home_pos_operational = table_rotation_np.T @ (home_pose_world[:3] - operational_position_np)
+
+        axis_length = TABLE_HALF_EXTENT + 0.1
+        axis_tips = operational_position_np + axis_length * table_rotation_np.T
+        gizmo_starts = wp.array([operational_position_np] * 3, dtype=wp.vec3, device=self.device)
+        gizmo_ends = wp.array(axis_tips, dtype=wp.vec3, device=self.device)
+        gizmo_colors = wp.array(
+            [wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=self.device
+        )
+
+        return _RobotRig(
+            label=label,
+            operational_position_np=operational_position_np,
+            operational_frame_transform=wp.transform(wp.vec3(*operational_position_np.tolist()), table_rotation),
+            table_rotation_np=table_rotation_np,
+            table_normal_world=table_normal_world,
+            home_pose=home_pose,
+            home_pos_operational=home_pos_operational,
+            desired_x=float(home_pos_operational[0]),
+            desired_y=float(home_pos_operational[1]),
+            desired_force=0.0,
+            measured_force_normal=0.0,
+            gizmo_starts=gizmo_starts,
+            gizmo_ends=gizmo_ends,
+            gizmo_colors=gizmo_colors,
+        )
+
     @staticmethod
-    def _add_franka(builder, urdf_path):
-        """Load one Franka at the origin, set its ready pose, and add its tool site.
+    def _add_franka(builder, urdf_path, base_position):
+        """Load one Franka at base_position, set its ready pose, and add its tool site.
 
         Returns:
-            Tuple of (arm joint indices, fr3_hand_tcp body index, [leftfinger, rightfinger] body indices).
+            Tuple of (arm joint indices, arm coordinate indices, fr3_hand_tcp
+            body index, tool site's body-local transform,
+            [leftfinger, rightfinger] body indices).
         """
         joint_count_before = builder.joint_count
         coord_count_before = builder.joint_coord_count
         body_count_before = builder.body_count
-        builder.add_urdf(urdf_path, floating=False)
+        builder.add_urdf(urdf_path, xform=wp.transform(base_position, wp.quat_identity()), floating=False)
 
         # fr3_joint1..7 are the first 7 non-fixed joints after the (fixed,
         # 0-coordinate) base/mount joints this URDF starts with; the finger
@@ -272,18 +392,74 @@ class Example:
         # coordinate indices are not, since a fixed joint contributes no
         # coordinates. Indices are relative to this call since add_urdf
         # appends them.
-        arm_joints = [joint_count_before + 2 + i for i in range(ARM_DOFS)]
-        arm_coords = range(coord_count_before, coord_count_before + ARM_DOFS)
-        for coord, angle in zip(arm_coords, READY_POSE, strict=True):
+        arm_joints = [joint_count_before + 2 + i for i in range(FRANKA_ARM_DOFS)]
+        arm_coords = list(range(coord_count_before, coord_count_before + FRANKA_ARM_DOFS))
+        for coord, angle in zip(arm_coords, FRANKA_READY_POSE, strict=True):
             builder.joint_q[coord] = angle
 
         # Bodies 11, 12, 13 (0-based) this URDF adds are fr3_hand_tcp (the
         # fixed frame between the fingers), fr3_leftfinger, fr3_rightfinger.
         tool_body = body_count_before + 11
         finger_bodies = [body_count_before + 12, body_count_before + 13]
-        builder.add_site(tool_body, label="tool_site")
+        tool_site_transform = wp.transform_identity()
+        builder.add_site(tool_body, xform=tool_site_transform, label="tool_site")
 
-        return arm_joints, tool_body, finger_bodies
+        return arm_joints, arm_coords, tool_body, tool_site_transform, finger_bodies
+
+    @staticmethod
+    def _add_ur10(builder, asset_file, base_position):
+        """Load one UR10 at base_position, set a ready pose, and add a pressing-tool site at its wrist.
+
+        Returns:
+            Tuple of (arm joint indices, arm coordinate indices, tool body
+            index, tool site's body-local transform).
+        """
+        joint_count_before = builder.joint_count
+        coord_count_before = builder.joint_coord_count
+        body_count_before = builder.body_count
+        builder.add_usd(
+            asset_file,
+            xform=wp.transform(base_position, wp.quat_identity()),
+            floating=False,
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            hide_collision_shapes=True,
+        )
+
+        # shoulder_pan..wrist_3 are the 6 non-fixed joints after the (fixed,
+        # 0-coordinate) base mount joint this asset starts with; the fixed
+        # ee_joint follows. Indices are relative to this call since add_usd
+        # appends them.
+        arm_joints = [joint_count_before + 1 + i for i in range(UR10_ARM_DOFS)]
+        arm_coords = list(range(coord_count_before, coord_count_before + UR10_ARM_DOFS))
+        for coord, angle in zip(arm_coords, UR10_READY_POSE, strict=True):
+            builder.joint_q[coord] = angle
+
+        # Body 7 (0-based) this asset adds is ee_link, the fixed wrist-flange
+        # frame -- give it a small cylinder as the pressing tool, and put the
+        # tool site at the cylinder's tip (the point that actually presses).
+        # ee_link's own local axes aren't necessarily aligned with the
+        # cylinder's press direction, so the site's transform (unlike
+        # Franka's identity one) is a real, non-identity offset -- callers
+        # need it to resolve the site's actual world pose, not ee_link's own.
+        # The wrist's actual outward direction (away from wrist_3_link, where
+        # ee_link's own fixed joint offset points) is ee_link's local +X, not
+        # +Z -- verified from the asset's own ee_joint transform. A cylinder
+        # shape extends along its own local Z by default, so its xform below
+        # both rotates that Z onto ee_link's local +X (a +90 degree turn
+        # about Y) and offsets it out along that same +X.
+        tool_body = body_count_before + 7
+        tool_direction_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)
+        builder.add_shape_cylinder(
+            tool_body,
+            xform=wp.transform(wp.vec3(TOOL_CYLINDER_HALF_HEIGHT, 0.0, 0.0), tool_direction_rotation),
+            radius=TOOL_CYLINDER_RADIUS,
+            half_height=TOOL_CYLINDER_HALF_HEIGHT,
+        )
+        tool_site_transform = wp.transform(wp.vec3(2.0 * TOOL_CYLINDER_HALF_HEIGHT, 0.0, 0.0), wp.quat_identity())
+        builder.add_site(tool_body, xform=tool_site_transform, label="tool_site")
+
+        return arm_joints, arm_coords, tool_body, tool_site_transform
 
     def _gpu_step(self):
         """Pure GPU work: controller step + physics substeps. Safe to graph-capture."""
@@ -300,32 +476,42 @@ class Example:
         # this frame's controller.step() runs; SensorContact.update() isn't
         # graph-capturable, so it has to happen here in Python, first.
         self.force_sensor.update(self.state_0, self.contacts)
-        total_force_world = self.force_sensor.total_force.numpy().sum(axis=0)
-        self._measured_force_normal = float(self._table_normal_world @ total_force_world)
-        # SensorContact reports the reaction force the table exerts on the
-        # gripper (Newton's third law), the opposite sign of desired_wrench_world
-        # (force the gripper exerts on the table) -- negate to match.
-        measured_wrench_world = np.concatenate([-total_force_world, np.zeros(3, dtype=np.float32)])
-        self._input.measured_wrench_world.assign(measured_wrench_world[None, :].astype(np.float32))
+        total_force_world = self.force_sensor.total_force.numpy()
+        per_robot_force_world = np.stack([total_force_world[:2].sum(axis=0), total_force_world[2]])
 
-        # Sliders drive the target directly -- read in gui(), applied here.
-        # Cannot be graph-captured (assign() is, but the desired values
-        # themselves come from Python-side UI state read after capture).
-        # Position: (x, y) along the table's tangent plane, relative to the
-        # operational frame; z left at 0 (wrench-, not motion-, controlled).
-        # Orientation left at home_pose's: composed with the tilted operational
-        # frame, this keeps the gripper perpendicular to the table.
-        desired_pose = self._home_pose.copy()[None, :]
-        desired_pose[0, 0] = self.desired_x
-        desired_pose[0, 1] = self.desired_y
-        desired_pose[0, 2] = 0.0
+        measured_wrench_world = np.zeros((2, 6), dtype=np.float32)
+        desired_pose = np.zeros((2, 7), dtype=np.float32)
+        desired_wrench_world = np.zeros((2, 6), dtype=np.float32)
+        for i, rig in enumerate(self.rigs):
+            rig.measured_force_normal = float(rig.table_normal_world @ per_robot_force_world[i])
+            # SensorContact reports the reaction force the table exerts on
+            # the tool (Newton's third law), the opposite sign of
+            # desired_wrench_world (force the tool exerts on the table) --
+            # negate to match.
+            measured_wrench_world[i, :3] = -per_robot_force_world[i]
+
+            # Sliders drive the target directly -- read in gui(), applied
+            # here. Cannot be graph-captured (assign() is, but the desired
+            # values themselves come from Python-side UI state read after
+            # capture). Position: (x, y) along the table's tangent plane,
+            # relative to the operational frame; z left at 0 (wrench-, not
+            # motion-, controlled). Orientation left at home_pose's:
+            # composed with the tilted operational frame, this keeps the
+            # tool perpendicular to the table.
+            desired_pose[i] = rig.home_pose
+            desired_pose[i, 0] = rig.desired_x
+            desired_pose[i, 1] = rig.desired_y
+            desired_pose[i, 2] = 0.0
+
+            # desired_wrench_world is genuinely world-frame, so "press into
+            # the table" means force along the negative table normal in
+            # world, not negative world Z (only the same thing before the
+            # table was tilted).
+            desired_wrench_world[i, :3] = -rig.desired_force * rig.table_normal_world
+
+        self._input.measured_wrench_world.assign(measured_wrench_world)
         self._input.desired_tool_pose_operational.assign(desired_pose)
-        # desired_wrench_world is genuinely world-frame, so "press into the
-        # table" means force along the negative table normal in world, not
-        # negative world Z (only the same thing before the table was tilted).
-        press_force_world = -self.desired_force * self._table_normal_world
-        desired_wrench_world = np.concatenate([press_force_world, np.zeros(3, dtype=np.float32)])
-        self._input.desired_wrench_world.assign(desired_wrench_world[None, :].astype(np.float32))
+        self._input.desired_wrench_world.assign(desired_wrench_world)
 
         if self._graph:
             wp.capture_launch(self._graph)
@@ -335,52 +521,68 @@ class Example:
         self.sim_time += self.frame_dt
 
     def gui(self, ui):
-        _, self.desired_x = ui.slider_float(
-            "Desired x [m]",
-            self.desired_x,
-            self._home_pos_operational[0] - XY_SLIDER_RANGE,
-            self._home_pos_operational[0] + XY_SLIDER_RANGE,
-        )
-        _, self.desired_y = ui.slider_float(
-            "Desired y [m]",
-            self.desired_y,
-            self._home_pos_operational[1] - XY_SLIDER_RANGE,
-            self._home_pos_operational[1] + XY_SLIDER_RANGE,
-        )
-        _, self.desired_force = ui.slider_float("Desired press force [N]", self.desired_force, 0.0, FORCE_SLIDER_MAX)
+        actual_pose_world = self.controller._tool_pose_world.numpy()
+        for i, rig in enumerate(self.rigs):
+            _, rig.desired_x = ui.slider_float(
+                f"{rig.label} desired x [m]",
+                rig.desired_x,
+                rig.home_pos_operational[0] - XY_SLIDER_RANGE,
+                rig.home_pos_operational[0] + XY_SLIDER_RANGE,
+            )
+            _, rig.desired_y = ui.slider_float(
+                f"{rig.label} desired y [m]",
+                rig.desired_y,
+                rig.home_pos_operational[1] - XY_SLIDER_RANGE,
+                rig.home_pos_operational[1] + XY_SLIDER_RANGE,
+            )
+            _, rig.desired_force = ui.slider_float(
+                f"{rig.label} desired press force [N]", rig.desired_force, 0.0, FORCE_SLIDER_MAX
+            )
 
-        # Actual tool position, relative to the operational frame -- same
-        # frame the x/y sliders above are expressed in.
-        actual_pose_world = self.controller._tool_pose_world.numpy()[0]
-        actual_pos_operational = self._table_rotation_np.T @ (actual_pose_world[:3] - self._table_position_np)
+            # Actual tool position, relative to the operational frame -- same
+            # frame the x/y sliders above are expressed in.
+            actual_pos_operational = rig.table_rotation_np.T @ (actual_pose_world[i, :3] - rig.operational_position_np)
 
-        ui.text(f"actual x:   {actual_pos_operational[0]:.3f}   (desired {self.desired_x:.3f})")
-        ui.text(f"actual y:   {actual_pos_operational[1]:.3f}   (desired {self.desired_y:.3f})")
-        ui.text(f"measured press force: {self._measured_force_normal:.1f} N   (desired {self.desired_force:.1f} N)")
+            ui.text(f"{rig.label} actual x:   {actual_pos_operational[0]:.3f}   (desired {rig.desired_x:.3f})")
+            ui.text(f"{rig.label} actual y:   {actual_pos_operational[1]:.3f}   (desired {rig.desired_y:.3f})")
+            ui.text(
+                f"{rig.label} measured press force: {rig.measured_force_normal:.1f} N   "
+                f"(desired {rig.desired_force:.1f} N)"
+            )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        # The operational frame itself -- a fixed RGB axis triad, not tied
-        # to any body, so you can see where the controller's (x, y) target
-        # and press axis actually point on the tilted table.
-        self.viewer.log_lines(
-            "/operational_frame",
-            self._operational_frame_gizmo_starts,
-            self._operational_frame_gizmo_ends,
-            self._operational_frame_gizmo_colors,
-        )
+        # Each operational frame itself -- a fixed RGB axis triad, not tied
+        # to any body, so you can see where each controller's (x, y) target
+        # and press axis actually point on its tilted table.
+        for i, rig in enumerate(self.rigs):
+            self.viewer.log_lines(f"/operational_frame_{i}", rig.gizmo_starts, rig.gizmo_ends, rig.gizmo_colors)
         self.viewer.end_frame()
 
     def test_final(self):
-        """Verify the robot settled into a stable, finite configuration."""
+        """Verify both robots settled into a stable, finite configuration."""
         joint_q = self.state_0.joint_q.numpy()
+        joint_qd = self.state_0.joint_qd.numpy()
         assert np.all(np.isfinite(joint_q)), f"joint_q has NaN/Inf: {joint_q}"
+        assert np.all(np.isfinite(joint_qd)), f"joint_qd has NaN/Inf: {joint_qd}"
 
-        ready_q = np.array(READY_POSE, dtype=np.float32)
-        assert np.all(np.abs(joint_q[:ARM_DOFS] - ready_q) < 1.5), (
-            f"arm joints drifted far from the null-space posture target: {joint_q[:ARM_DOFS]}"
+        # The Franka's null-space posture task pulls it back to exactly
+        # READY_POSE, so proximity to it is a meaningful check.
+        franka_q = joint_q[self._franka_coords]
+        franka_ready_q = np.array(FRANKA_READY_POSE, dtype=np.float32)
+        assert np.all(np.abs(franka_q - franka_ready_q) < 1.5), (
+            f"Franka arm joints drifted far from its starting configuration: {franka_q}"
         )
+
+        # The UR10 has no redundant DOF and hence no null-space task -- it
+        # may settle at a different, equally valid joint configuration for
+        # the same task-space target, so what's checked instead is
+        # boundedness -- nowhere close to the six-to-eight-order-of-magnitude
+        # joint velocities an actual divergence produces -- rather than full
+        # convergence.
+        ur10_qd = joint_qd[self._ur10_coords]
+        assert np.all(np.abs(ur10_qd) < 50.0), f"UR10 arm joints diverged: {ur10_qd}"
 
 
 if __name__ == "__main__":
