@@ -4473,6 +4473,49 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         injected_contact_count = int(solver.mjw_data.nacon.numpy()[0])
         self.assertEqual(injected_contact_count, generated_contact_count)
 
+    def test_newton_contact_capacity_preserves_delayed_joint_limits(self):
+        """Preserve default capacity for non-contact constraints activated after initialization."""
+        joint_count = 10
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        inertia = wp.mat33(np.eye(3) * 0.1)
+        for joint_index in range(joint_count):
+            body = builder.add_link(
+                mass=1.0,
+                com=wp.vec3(0.0, 0.0, 0.0),
+                inertia=inertia,
+                label=f"limited_body_{joint_index}",
+            )
+            joint = builder.add_joint_revolute(
+                parent=-1,
+                child=body,
+                limit_lower=-1.0,
+                limit_upper=1.0,
+                label=f"limited_joint_{joint_index}",
+            )
+            builder.add_articulation([joint])
+        model = builder.finalize()
+
+        collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=1)
+        contacts = collision_pipeline.contacts()
+        try:
+            baseline_solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        self.assertGreaterEqual(solver.mjw_data.njmax, baseline_solver.mjw_data.njmax)
+
+        state_0 = model.state()
+        state_1 = model.state()
+        state_0.joint_q.assign(np.full(model.joint_coord_count, 2.0, dtype=np.float32))
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, model.control(), contacts, 1.0 / 240.0)
+
+        constraints_per_world = solver.mjw_data.nefc.numpy()
+        self.assertEqual(int(constraints_per_world[0]), joint_count)
+        self.assertLessEqual(int(np.max(constraints_per_world)), solver.mjw_data.njmax)
+
     def test_newton_contact_constraints_cover_uneven_worlds(self):
         """Size per-world constraints for contacts concentrated in one world."""
         sphere_count = 30
@@ -4517,6 +4560,28 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         np.testing.assert_array_equal(contacts_per_world, [sphere_count, 0])
         self.assertEqual(int(constraints_per_world[0]), sphere_count * 4)
         self.assertLessEqual(int(np.max(constraints_per_world)), solver.mjw_data.njmax)
+
+    def test_newton_contact_constraints_scale_with_busiest_world(self):
+        """Bound per-world constraint capacity by the busiest cloned world."""
+        world_count = 64
+        world = newton.ModelBuilder()
+        body = world.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.45), wp.quat_identity()))
+        world.add_shape_sphere(body=body, radius=0.5)
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.replicate(world, world_count)
+        model = builder.finalize()
+        newton.CollisionPipeline(model)
+
+        try:
+            baseline_solver = SolverMuJoCo(model, separate_worlds=True, use_mujoco_contacts=True)
+            solver = SolverMuJoCo(model, separate_worlds=True, use_mujoco_contacts=False)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        self.assertGreaterEqual(solver.mjw_data.naconmax, model.rigid_contact_max)
+        self.assertEqual(solver.mjw_data.njmax, baseline_solver.mjw_data.njmax)
 
     def test_sphere_rolls_without_slip_with_newton_contacts(self):
         radius = 0.1

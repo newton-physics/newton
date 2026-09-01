@@ -32,7 +32,7 @@ from ...sim import (
     StateFlags,
 )
 from ...sim.articulation import eval_articulation_fk, eval_fk
-from ...sim.collide import _estimate_rigid_contact_max
+from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
@@ -7684,6 +7684,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             elif not self._use_mujoco_contacts:
                 # The initialization forward intentionally produces no contacts
                 # in this mode, so size MJWarp from Newton's collision budget.
+                from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
+
                 newton_contact_max = model.rigid_contact_max or _estimate_rigid_contact_max(model)
                 default_nconmax = (newton_contact_max + nworld - 1) // nworld
                 if nconmax is None:
@@ -7702,10 +7704,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     constraint_rows_per_contact = max(1, 2 * (max_contact_dim - 1))
 
                 # MJWarp stores contacts in one heterogeneous buffer, so every
-                # contact can belong to one world even though nconmax is passed
-                # as a per-world allocation. Constraint rows are strictly
-                # per-world and must cover that concentrated global capacity.
-                default_njmax = self.mj_data.nefc + nconmax * nworld * constraint_rows_per_contact
+                # contact can belong to any compatible world even though
+                # nconmax is passed as a per-world allocation. Constraint rows
+                # are strictly per-world, so size them from the busiest-world
+                # topology rather than duplicating the global capacity.
+                per_world_contact_max = _estimate_rigid_contact_max_per_world(model, nconmax * nworld)
+                default_njmax = max(
+                    estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
+                    self.mj_data.nefc + per_world_contact_max * constraint_rows_per_contact,
+                )
                 if njmax is None:
                     njmax = default_njmax
                 elif njmax >= 0:
