@@ -772,11 +772,22 @@ class ControllerOperationalSpace(ControllerBase):
         # the inner controller below, so writing one would go unnoticed.
         # getattr because a caller may leave the field unset rather than None.
         for name, enabled, switch in (
+            ("operational_frame_pose_world", self._operational_frame_is_live, "a live operational_frame_pose_world"),
             ("motion_stiffness", self._motion_stiffness_is_live, "a live motion_stiffness"),
             ("motion_damping", self._motion_damping_is_live, "a live motion_damping"),
             ("desired_wrench_world", self._use_wrench, "use_wrench_feedforward or use_wrench_feedback"),
             ("measured_wrench_world", self._use_wrench_feedback, "use_wrench_feedback"),
             ("wrench_stiffness", self._wrench_stiffness_is_live, "a live wrench_stiffness"),
+            (
+                "linear_selection_frame_operational",
+                self._linear_selection_frame_is_live,
+                "a live linear_selection_frame_operational",
+            ),
+            (
+                "angular_selection_frame_operational",
+                self._angular_selection_frame_is_live,
+                "a live angular_selection_frame_operational",
+            ),
             ("joint_q_des_null", self._use_null_space, "use_null_space_control"),
             ("joint_qd_des_null", self._use_null_space, "use_null_space_control"),
             ("null_space_stiffness", self._null_stiffness_is_live, "a live null_space_stiffness"),
