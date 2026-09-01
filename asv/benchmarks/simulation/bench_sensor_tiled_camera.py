@@ -30,6 +30,7 @@ wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
 import math
+import os
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -300,17 +301,25 @@ class _TiledCameraSceneRig:
         )
 
 
+def _pr_gate_skips_output(color: bool, depth: bool, selected_modes: tuple[tuple[bool, bool], ...]) -> bool:
+    return bool(os.environ.get("NEWTON_ASV_PR_GATE")) and (color, depth) not in selected_modes
+
+
 class _SceneBenchmark:
     """Shared ASV harness; subclasses pick a scene from :data:`SCENES` and their params."""
 
     param_names = ["resolution", "world_count", "iterations"]
     scene: str
     render_order = RENDER_ORDER
+    pr_gate_output_modes: tuple[tuple[bool, bool], ...] | None = None
 
     def setup(self, resolution: int, world_count: int, iterations: int):
         self.rig = _TiledCameraSceneRig(SCENES[self.scene], world_count, resolution, self.render_order)
-        # Compile and warm the render kernels for every output combination measured below.
-        for color, depth in ((True, True), (True, False), (False, True)):
+        output_modes = ((True, True), (True, False), (False, True))
+        if os.environ.get("NEWTON_ASV_PR_GATE") and self.pr_gate_output_modes is not None:
+            output_modes = self.pr_gate_output_modes
+        # Compile and warm each output combination selected by this ASV run.
+        for color, depth in output_modes:
             self.rig.render(color=color, depth=depth)
         wp.synchronize()
 
@@ -340,13 +349,33 @@ class TiledCameraQuadruped(_SceneBenchmark):
 
 class FastSensorTiledCamera(_SceneBenchmark):
     scene = "franka_cabinet"
+    if os.environ.get("NEWTON_ASV_PR_GATE"):
+        repeat = 1
+        rounds = 2
+    pr_gate_output_modes = ((True, True), (False, True))
     params = ([64], [4096], [50])
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or _pr_gate_skips_output(True, False, pr_gate_output_modes))
+    def time_render_color_only(self, resolution: int, world_count: int, iterations: int):
+        super().time_render_color_only(resolution, world_count, iterations)
 
 
 class FastSensorTiledCameraPixel(_SceneBenchmark):
     scene = "franka_cabinet"
+    if os.environ.get("NEWTON_ASV_PR_GATE"):
+        repeat = 1
+        rounds = 2
     render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
+    pr_gate_output_modes = ((True, True),)
     params = ([64], [4096], [50])
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or _pr_gate_skips_output(True, False, pr_gate_output_modes))
+    def time_render_color_only(self, resolution: int, world_count: int, iterations: int):
+        super().time_render_color_only(resolution, world_count, iterations)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or _pr_gate_skips_output(False, True, pr_gate_output_modes))
+    def time_render_depth_only(self, resolution: int, world_count: int, iterations: int):
+        super().time_render_depth_only(resolution, world_count, iterations)
 
 
 class TiledCameraShapes256(_SceneBenchmark):

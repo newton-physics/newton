@@ -22,7 +22,7 @@ from .core.conversions import (
     convert_model_materials,
     validate_model_structural_updates,
 )
-from .core.joints import JOINT_QMAX, JOINT_QMIN, JointActuationType
+from .core.joints import JOINT_QMAX, JOINT_QMIN, DofActuationPath, JointActuationType
 from .core.model import ModelKamino
 from .core.state import StateKamino
 from .geometry.contacts import (
@@ -44,6 +44,7 @@ __all__ = [
     "CollisionDetector",
     "ContactsKamino",
     "ControlKamino",
+    "DofActuationPath",
     "JointActuationType",
     "ModelKamino",
     "SolverKaminoImpl",

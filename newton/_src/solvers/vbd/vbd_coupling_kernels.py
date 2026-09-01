@@ -13,7 +13,7 @@ from .particle_vbd_kernels import (
     evaluate_edge_edge_contact_2_vertices,
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
-from .rigid_vbd_kernels import _eval_body_particle_contact, _eval_soft_ef_contact
+from .rigid_vbd_kernels import _NUM_CONTACT_THREADS_PER_BODY, _eval_body_particle_contact, _eval_soft_ef_contact
 from .tri_mesh_collision import TriMeshCollisionInfo
 
 wp.set_module_options({"enable_backward": False})
@@ -150,58 +150,84 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     body_particle_contact_normal: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     shape_body: wp.array[wp.int32],
+    body_particle_contact_buffer_pre_alloc: int,
+    body_particle_contact_counts: wp.array[wp.int32],
+    body_particle_contact_indices: wp.array[wp.int32],
     out_body_f: wp.array[wp.spatial_vector],
 ):
-    contact_idx = wp.tid()
-    if contact_idx >= body_particle_contact_count[0]:
-        return
+    """Sum the body-side soft-contact reaction the destination solve applied to each proxy body.
 
-    shape_idx = body_particle_contact_shape[contact_idx]
-    if shape_idx < 0 or shape_idx >= shape_body.shape[0]:
-        return
+    Walks the per-body adjacency list, and truncates it at the same per-body capacity as
+    ``accumulate_body_particle_contacts_per_body``. A body carrying more soft contacts than the
+    list holds is pushed by only the records the list kept, so harvesting the whole contact
+    stream would hand the source solver a reaction the destination never applied -- momentum the
+    coupled pair would then disagree about, growing with the size of the overflow.
+    """
+    tid = wp.tid()
+    body_idx = tid // _NUM_CONTACT_THREADS_PER_BODY
+    thread_id_within_body = tid % _NUM_CONTACT_THREADS_PER_BODY
 
-    body_idx = shape_body[shape_idx]
-    if body_idx < 0 or body_idx >= body_local_to_proxy_global.shape[0]:
+    if body_idx >= body_local_to_proxy_global.shape[0]:
         return
 
     proxy_global = body_local_to_proxy_global[body_idx]
     if proxy_global < 0 or proxy_global >= out_body_f.shape[0]:
         return
 
-    corners = soft_contact_indices[contact_idx]
-    if corners[0] < 0 or corners[0] >= particle_q.shape[0]:
+    num_contacts = body_particle_contact_counts[body_idx]
+    if num_contacts > body_particle_contact_buffer_pre_alloc:
+        num_contacts = body_particle_contact_buffer_pre_alloc
+    if num_contacts == 0:
         return
 
-    bary = soft_contact_barycentric[contact_idx]
-
-    force_on_particle, _hess, cp_world = _eval_soft_ef_contact(
-        contact_idx,
-        corners,
-        bary,
-        particle_q,
-        particle_q_prev,
-        particle_radius,
-        body_particle_contact_penalty_k[contact_idx],
-        body_particle_contact_material_kd[contact_idx],
-        body_particle_contact_material_mu[contact_idx],
-        friction_epsilon,
-        shape_body,
-        body_q,
-        body_q_prev,
-        body_qd,
-        body_com,
-        body_particle_contact_shape,
-        body_particle_contact_body_pos,
-        body_particle_contact_body_vel,
-        body_particle_contact_normal,
-        shape_margin,
-        dt,
-    )
-
-    force_on_body = -force_on_particle
+    max_contacts = body_particle_contact_count[0]  # single total soft-contact count
     com_world = wp.transform_point(body_q[body_idx], body_com[body_idx])
-    torque_on_body = wp.cross(cp_world - com_world, force_on_body)
-    wp.atomic_add(out_body_f, proxy_global, wp.spatial_vector(force_on_body, torque_on_body))
+
+    force_acc = wp.vec3(0.0)
+    torque_acc = wp.vec3(0.0)
+
+    i = thread_id_within_body
+    while i < num_contacts:
+        contact_idx = body_particle_contact_indices[body_idx * body_particle_contact_buffer_pre_alloc + i]
+        i += _NUM_CONTACT_THREADS_PER_BODY
+        if contact_idx >= max_contacts:
+            continue
+
+        corners = soft_contact_indices[contact_idx]
+        if corners[0] < 0 or corners[0] >= particle_q.shape[0]:
+            continue
+
+        bary = soft_contact_barycentric[contact_idx]
+
+        force_on_particle, _hess, cp_world = _eval_soft_ef_contact(
+            contact_idx,
+            corners,
+            bary,
+            particle_q,
+            particle_q_prev,
+            particle_radius,
+            body_particle_contact_penalty_k[contact_idx],
+            body_particle_contact_material_kd[contact_idx],
+            body_particle_contact_material_mu[contact_idx],
+            friction_epsilon,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            body_particle_contact_shape,
+            body_particle_contact_body_pos,
+            body_particle_contact_body_vel,
+            body_particle_contact_normal,
+            shape_margin,
+            dt,
+        )
+
+        force_on_body = -force_on_particle
+        force_acc += force_on_body
+        torque_acc += wp.cross(cp_world - com_world, force_on_body)
+
+    wp.atomic_add(out_body_f, proxy_global, wp.spatial_vector(force_acc, torque_acc))
 
 
 @wp.func

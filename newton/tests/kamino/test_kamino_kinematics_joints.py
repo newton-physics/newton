@@ -256,7 +256,7 @@ class TestKinematicsJoints(unittest.TestCase):
             # Set actuation type
             for joint in builder.all_joints:
                 if joint.act_type != JointActuationType.PASSIVE:
-                    joint.act_type = act_type
+                    joint.dof_act_types = [act_type] * joint.num_dofs
 
             # Create the model and state
             model = builder.finalize(device=self.default_device)
@@ -386,7 +386,7 @@ class TestKinematicsJoints(unittest.TestCase):
         )
         for joint in builder.all_joints:
             if joint.act_type == JointActuationType.POSITION_VELOCITY:
-                joint.act_type = JointActuationType.POSITION_VELOCITY_FORCE
+                joint.dof_act_types = [JointActuationType.POSITION_VELOCITY_FORCE] * joint.num_dofs
 
         # Create the model and data
         model = builder.finalize(device=self.default_device)

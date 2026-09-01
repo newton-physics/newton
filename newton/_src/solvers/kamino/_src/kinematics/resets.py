@@ -341,6 +341,7 @@ def _reset_joints_state_from_bodies_state(
     joint_dynamic_cts_offset: wp.array[wp.int32],
     joint_kinematic_cts_offset: wp.array[wp.int32],
     joint_friction_cts_offset: wp.array[wp.int32],
+    joint_effort_cts_offset: wp.array[wp.int32],
     joint_bid_B: wp.array[wp.int32],
     joint_bid_F: wp.array[wp.int32],
     joint_B_r_Bj: wp.array[wp.vec3f],
@@ -358,6 +359,7 @@ def _reset_joints_state_from_bodies_state(
     joint_lambda_dyn: wp.array[wp.float32],
     joint_lambda_kin: wp.array[wp.float32],
     joint_lambda_f: wp.array[wp.float32],
+    joint_lambda_tau_j: wp.array[wp.float32],
 ):
     # Get thread id as joint id
     jid = wp.tid()
@@ -378,6 +380,8 @@ def _reset_joints_state_from_bodies_state(
     num_kinematic_cts = joint_kinematic_cts_offset[jid + 1] - kinematic_cts_offset
     friction_cts_offset = joint_friction_cts_offset[jid]
     num_friction_cts = joint_friction_cts_offset[jid + 1] - friction_cts_offset
+    effort_cts_offset = joint_effort_cts_offset[jid]
+    num_effort_cts = joint_effort_cts_offset[jid + 1] - effort_cts_offset
     bid_B = joint_bid_B[jid]
     bid_F = joint_bid_F[jid]
     r_B = joint_B_r_Bj[jid]
@@ -411,6 +415,8 @@ def _reset_joints_state_from_bodies_state(
         joint_lambda_kin[kinematic_cts_offset + i] = 0.0
     for i in range(num_friction_cts):
         joint_lambda_f[friction_cts_offset + i] = 0.0
+    for i in range(num_effort_cts):
+        joint_lambda_tau_j[effort_cts_offset + i] = 0.0
 
 
 @wp.kernel
@@ -825,6 +831,7 @@ def reset_joints_state_from_bodies_state(
             model.joints.dynamic_cts_offset,
             model.joints.kinematic_cts_offset,
             model.joints.friction_cts_offset,
+            model.joints.effort_cts_offset,
             model.joints.bid_B,
             model.joints.bid_F,
             model.joints.B_r_Bj,
@@ -841,6 +848,7 @@ def reset_joints_state_from_bodies_state(
             state.lambda_dyn_j,
             state.lambda_kin_j,
             state.lambda_f_j,
+            state.lambda_tau_j,
         ],
         device=model.device,
     )
