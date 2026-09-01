@@ -23,8 +23,8 @@
 # Three sliders (x, y, press force) let you steer the commanded task
 # directly; a SensorContact on the two gripper fingers reads back the
 # actual contact force the table exerts on the tool, and the GUI panel
-# prints commanded vs. measured/actual for all three so tracking can be
-# confirmed directly, not just assumed from the control law.
+# prints commanded vs. measured for all three so tracking can be confirmed
+# directly, not just assumed from the control law.
 #
 # Command: python -m newton.examples controller_operational_space_hybrid_force_motion
 ###########################################################################
