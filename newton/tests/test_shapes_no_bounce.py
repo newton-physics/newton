@@ -229,6 +229,64 @@ def test_shapes_never_exceed_initial_z(test, device):
         )
 
 
+def test_stacked_dynamic_boxes_no_bounce(test, device):
+    """
+    Reproduces issue #1137: two *dynamic* boxes in contact must not bounce at
+    restitution=0.
+
+    The existing test above only drops shapes onto a *static* ground (body=-1), so it
+    never exercises body-vs-body restitution — which is where apply_rigid_restitution
+    injects energy (see #1289). Here a dynamic box is dropped onto another dynamic box.
+    """
+    builder = newton.ModelBuilder(up_axis="Z")
+    builder.add_ground_plane()
+
+    cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, restitution=0.0)
+
+    # Lower box resting on the ground (center 0.05, half-height 0.05 -> top at 0.10).
+    lower = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.05), q=wp.quat_identity()))
+    builder.add_shape_box(lower, hx=0.1, hy=0.1, hz=0.05, cfg=cfg)
+
+    # Upper box dropped from 0.25 onto the lower box (analytic rest center ~0.15).
+    upper = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.25), q=wp.quat_identity()))
+    builder.add_shape_box(upper, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(
+        model, iterations=2, rigid_contact_relaxation=0.8, angular_damping=0.0
+    )
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    fps = 100
+    sim_substeps = 10
+    sim_dt = 1.0 / fps / sim_substeps
+
+    rest_z = 0.15  # analytic resting center of the upper box
+    slack = 0.03  # numeric tolerance
+    settled = False
+
+    for step in range(200):
+        for _ in range(sim_substeps):
+            contacts = model.collide(state=state_0, rigid_contact_margin=0.01)
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, contacts, sim_dt)
+            state_0, state_1 = state_1, state_0
+
+        upper_z = float(state_0.body_q.numpy()[upper][2])
+        # Only start asserting once the upper box has actually come down to (near) rest.
+        if not settled and upper_z <= rest_z + slack:
+            settled = True
+        if settled:
+            test.assertLessEqual(
+                upper_z,
+                rest_z + slack,
+                f"Step {step + 1}: upper box rebounded to z={upper_z:.4f} at restitution=0 (issue #1137)",
+            )
+
+
 class TestShapesNoBounce(unittest.TestCase):
     pass
 
@@ -237,6 +295,13 @@ add_function_test(
     TestShapesNoBounce,
     "test_shapes_never_exceed_initial_z",
     test_shapes_never_exceed_initial_z,
+    devices=get_selected_cuda_test_devices(),
+)
+
+add_function_test(
+    TestShapesNoBounce,
+    "test_stacked_dynamic_boxes_no_bounce",
+    test_stacked_dynamic_boxes_no_bounce,
     devices=get_selected_cuda_test_devices(),
 )
 
