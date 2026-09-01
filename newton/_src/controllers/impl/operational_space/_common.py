@@ -332,19 +332,12 @@ def _pose_twist_to_frame_kernel(
     pose_in_frame: wp.array[wp.transform],  # (robot_count,) pose_world, relative to the target frame
     twist_in_frame: wp.array[wp.spatial_vector],  # (robot_count,) twist_world, components expressed in the target frame
 ):
-    """Express a world pose/twist relative to an arbitrary frame instead of world.
-
-    Bringing the tool's own state into the operational frame here -- rather
-    than composing the desired command out into world frame and rotating
-    the resulting error back for every downstream term that needs it -- means
-    the error and PD law run entirely in the operational frame with no
-    rotation of their own.
-    """
+    """Express a world pose/twist relative to an arbitrary frame instead of world."""
     robot_idx = wp.tid()
-    frame_pose = frame_pose_world[robot_idx]
-    pose_in_frame[robot_idx] = wp.transform_inverse(frame_pose) * pose_world[robot_idx]
+    coordinate_change_frame_from_world = wp.transform_inverse(frame_pose_world[robot_idx])
+    pose_in_frame[robot_idx] = coordinate_change_frame_from_world * pose_world[robot_idx]
 
-    quat_frame_from_world = wp.quat_inverse(wp.transform_get_rotation(frame_pose))
+    quat_frame_from_world = wp.transform_get_rotation(coordinate_change_frame_from_world)
     twist_in_frame[robot_idx] = _rotate_spatial_vector(quat_frame_from_world, twist_world[robot_idx])
 
 
@@ -466,14 +459,7 @@ def _task_space_pd_kernel(
     kp = stiffness[robot_idx]
     kd = damping[robot_idx]
 
-    desired_task_acceleration_operational[robot_idx] = wp.spatial_vector(
-        kp[0] * pose_error[0] + kd[0] * twist_error[0],
-        kp[1] * pose_error[1] + kd[1] * twist_error[1],
-        kp[2] * pose_error[2] + kd[2] * twist_error[2],
-        kp[3] * pose_error[3] + kd[3] * twist_error[3],
-        kp[4] * pose_error[4] + kd[4] * twist_error[4],
-        kp[5] * pose_error[5] + kd[5] * twist_error[5],
-    )
+    desired_task_acceleration_operational[robot_idx] = wp.cw_mul(kp, pose_error) + wp.cw_mul(kd, twist_error)
 
 
 @wp.kernel
@@ -742,12 +728,12 @@ def _mask_dual_frame_kernel(
     quat_sf = quat_operational_from_sf[robot_idx]
     quat_stau = quat_operational_from_stau[robot_idx]
 
-    linear_sf = wp.quat_rotate_inv(quat_sf, wp.vec3(vector[0], vector[1], vector[2]))
-    masked_linear_sf = wp.vec3(axes[0] * linear_sf[0], axes[1] * linear_sf[1], axes[2] * linear_sf[2])
+    linear_sf = wp.quat_rotate_inv(quat_sf, wp.spatial_top(vector))
+    masked_linear_sf = wp.cw_mul(wp.spatial_top(axes), linear_sf)
     masked_linear = wp.quat_rotate(quat_sf, masked_linear_sf)
 
-    angular_stau = wp.quat_rotate_inv(quat_stau, wp.vec3(vector[3], vector[4], vector[5]))
-    masked_angular_stau = wp.vec3(axes[3] * angular_stau[0], axes[4] * angular_stau[1], axes[5] * angular_stau[2])
+    angular_stau = wp.quat_rotate_inv(quat_stau, wp.spatial_bottom(vector))
+    masked_angular_stau = wp.cw_mul(wp.spatial_bottom(axes), angular_stau)
     masked_angular = wp.quat_rotate(quat_stau, masked_angular_stau)
 
     masked_vector_operational[robot_idx] = wp.spatial_vector(masked_linear, masked_angular)
@@ -812,12 +798,5 @@ def _wrench_feedback_kernel(
     wrench_error_operational = desired_operational - measured_operational
     kp = stiffness[robot_idx]
 
-    feedback_operational = wp.spatial_vector(
-        kp[0] * wrench_error_operational[0],
-        kp[1] * wrench_error_operational[1],
-        kp[2] * wrench_error_operational[2],
-        kp[3] * wrench_error_operational[3],
-        kp[4] * wrench_error_operational[4],
-        kp[5] * wrench_error_operational[5],
-    )
+    feedback_operational = wp.cw_mul(kp, wrench_error_operational)
     wrench_command_operational[robot_idx] = wrench_command_operational[robot_idx] + feedback_operational
