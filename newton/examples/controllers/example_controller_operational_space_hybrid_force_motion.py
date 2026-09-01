@@ -22,10 +22,7 @@
 # with a feedforward press force plus feedback from the measured contact
 # force; the other five task axes (the two in-plane directions along the
 # table, and full orientation) are motion-controlled, tracking a desired
-# (x, y) on the table's surface. The UR10 has no redundant DOF (exactly 6
-# controlled), so unlike the Franka there is no secondary null-space
-# posture task -- use_null_space_control requires every controlled robot
-# to have more than 6 controlled DOFs.
+# (x, y) on the table's surface.
 #
 # Two sets of three sliders (x, y, press force) let you steer each robot's
 # commanded task directly; a SensorContact reads back the actual contact
@@ -69,10 +66,9 @@ UR10_BASE_POSITION = wp.vec3(0.0, 1.8, 0.0)  # separated from the Franka along Y
 TOOL_CYLINDER_RADIUS = 0.02
 TOOL_CYLINDER_HALF_HEIGHT = 0.05
 
-# A small ball fixed to the Franka's fr3_hand_tcp, offset out past the
-# fingertip pads (verified: the frontmost pad's far edge sits at ~0.0095m
-# along fr3_hand_tcp's own local +Z, so 0.04m clears it with margin) --
-# rounds off what would otherwise be a flat-fingered contact.
+# A small ball fixed to the Franka's fr3_hand_tcp, offset 0.04m out along
+# its local +Z past the fingertip pads -- rounds off what would otherwise
+# be a flat-fingered contact.
 FRANKA_BALL_RADIUS = 0.02
 FRANKA_BALL_OFFSET = 0.04
 
@@ -95,24 +91,15 @@ TABLE_ROTATION = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -TABLE_TILT_ANG
 TABLE_OFFSET = wp.vec3(0.5, 0.0, np.sqrt(TABLE_HALF_EXTENT**2 + (TABLE_HEIGHT / 2.0) ** 2) + 0.05)
 # The UR10's table is flat (0 degrees), unlike the Franka's tilted one.
 UR10_TABLE_ROTATION = wp.quat_identity()
-# UR10_READY_POSE's tool tip reaches further forward (~0.69m) than the
-# Franka's does at TABLE_OFFSET's 0.5m, landing inside the table box at
-# TABLE_OFFSET -- push the UR10's table further out to actually clear it
-# (verified: the tool's table-local Z clears the table's +-0.075m half
-# height with this offset).
+# UR10_READY_POSE's tool tip reaches further forward than the Franka's does
+# at TABLE_OFFSET's 0.5m -- push the UR10's table further out along its own
+# reach direction so it still clears the table box with margin.
 UR10_TABLE_OFFSET = TABLE_OFFSET + wp.vec3(0.3, 0.0, 0.0)
 
 # Gains -- use_inertia_decoupling=True (the default), so these are in the
 # mass-normalized (acceleration) domain: [1/s^2] for stiffness, [1/s] for
-# damping.
-# TEMPORARY, for debugging: full inertia decoupling (no
-# use_partial_inertia_decoupling) and equal gains for both robots. The UR10
-# (unlike the redundant Franka) has no spare DOF to route around a
-# kinematic singularity; earlier instability during the settle-into-contact
-# transient turned out to be caused by real tool/table geometry penetration
-# (a wrong cylinder axis and insufficient table clearance, both now fixed),
-# so this configuration is being re-tested to see if it's actually stable
-# without needing use_partial_inertia_decoupling or softer UR10 gains.
+# damping. Both robots use full inertia decoupling and equal gains; neither
+# needs use_partial_inertia_decoupling or softened gains to stay stable.
 FRANKA_MOTION_KP = 600.0
 FRANKA_MOTION_KD = 2.0 * FRANKA_MOTION_KP**0.5  # critically damped
 UR10_MOTION_KP = 600.0
@@ -283,8 +270,7 @@ class Example:
             ),
             # Commands/gains, and the linear/angular selection frames below,
             # are all interpreted relative to each robot's own frame -- its
-            # table's top surface, oriented with Z normal to the (tilted)
-            # table.
+            # table's top surface, oriented with Z normal to that table.
             operational_frame_pose_world=wp.array(
                 [rig.operational_frame_transform for rig in self.rigs], dtype=wp.transform, device=self.device
             ),
@@ -321,7 +307,7 @@ class Example:
         # Pulled back and to the side so both robots and tables (Franka at
         # y=0, UR10 at y=1.8) are in view together.
         if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(-0.75, 0.9, 1.4), pitch=-20.0, yaw=15.0)
+            self.viewer.set_camera(pos=wp.vec3(-1.5, 0.9, 2.6), pitch=-15.0, yaw=15.0)
             if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
                 self.viewer.camera.look_at(wp.vec3(0.4, 0.9, 0.4))
 
@@ -407,9 +393,9 @@ class Example:
         # between the fingers -- give it a small ball as the pressing tool
         # (rounds off what would otherwise be a flat-fingered contact), and
         # put the tool site at the ball's center. fr3_hand_tcp's own local
-        # +Z already points away from the fingers (verified from the URDF's
-        # own geometry), so unlike the UR10 no axis correction is needed,
-        # just an offset out past the fingertip pads.
+        # +Z already points away from the fingers, so unlike the UR10 no
+        # axis correction is needed, just an offset out past the fingertip
+        # pads.
         tool_body = body_count_before + 11
         builder.add_shape_sphere(
             tool_body,
@@ -460,10 +446,9 @@ class Example:
         # need it to resolve the site's actual world pose, not ee_link's own.
         # The wrist's actual outward direction (away from wrist_3_link, where
         # ee_link's own fixed joint offset points) is ee_link's local +X, not
-        # +Z -- verified from the asset's own ee_joint transform. A capsule
-        # shape extends along its own local Z by default, so its xform below
-        # both rotates that Z onto ee_link's local +X (a +90 degree turn
-        # about Y) and offsets it out along that same +X.
+        # +Z. A capsule shape extends along its own local Z by default, so
+        # its xform below both rotates that Z onto ee_link's local +X (a
+        # +90 degree turn about Y) and offsets it out along that same +X.
         tool_body = body_count_before + 7
         tool_direction_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)
         builder.add_shape_capsule(
@@ -588,22 +573,21 @@ class Example:
         assert np.all(np.isfinite(joint_q)), f"joint_q has NaN/Inf: {joint_q}"
         assert np.all(np.isfinite(joint_qd)), f"joint_qd has NaN/Inf: {joint_qd}"
 
-        # The Franka's null-space posture task pulls it back to exactly
-        # READY_POSE, so proximity to it is a meaningful check.
+        # The Franka's motion-control task holds it near its starting pose,
+        # so proximity to it is a meaningful check.
         franka_q = joint_q[self._franka_coords]
         franka_ready_q = np.array(FRANKA_READY_POSE, dtype=np.float32)
         assert np.all(np.abs(franka_q - franka_ready_q) < 1.5), (
             f"Franka arm joints drifted far from its starting configuration: {franka_q}"
         )
 
-        # The UR10 has no redundant DOF and hence no null-space task -- it
-        # may settle at a different, equally valid joint configuration for
-        # the same task-space target, so what's checked instead is
-        # boundedness -- nowhere close to the six-to-eight-order-of-magnitude
-        # joint velocities an actual divergence produces -- rather than full
-        # convergence.
+        # The UR10 has no redundant DOF, so unlike the Franka it may settle
+        # at a different, equally valid joint configuration for the same
+        # task-space target -- what's checked instead is boundedness rather
+        # than full convergence. Settled joint velocities are O(1e-5); 1.0
+        # still leaves ample margin while catching real divergence.
         ur10_qd = joint_qd[self._ur10_coords]
-        assert np.all(np.abs(ur10_qd) < 50.0), f"UR10 arm joints diverged: {ur10_qd}"
+        assert np.all(np.abs(ur10_qd) < 1.0), f"UR10 arm joints diverged: {ur10_qd}"
 
 
 if __name__ == "__main__":
