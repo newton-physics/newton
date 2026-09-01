@@ -473,8 +473,8 @@ def _apply_spatial_matrix_kernel(
     of ``F = m*a``. Skipping this step entirely (using the acceleration
     directly as the force) is the task-space-impedance alternative, which
     ignores the tool's effective inertia. (Frame-local axis selection uses
-    :func:`_mask_frame_local_kernel` instead, which never builds a 6x6
-    matrix at all.)
+    :func:`_apply_generalized_task_specification_matrix_kernel` instead,
+    which never builds a 6x6 matrix at all.)
 
     ``matrix`` is stored as a plain ``(robot_count, 6, 6)`` float array — not
     a ``wp.spatial_matrix`` array — because Lambda comes from
