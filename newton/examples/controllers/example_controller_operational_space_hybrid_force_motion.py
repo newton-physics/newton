@@ -210,8 +210,6 @@ class Example:
             use_wrench_feedforward=True,
             motion_selection_axes=motion_selection,
             wrench_selection_axes=wrench_selection,
-            linear_selection_frame_operational=wp.quat(0.0, 0.0, 0.0, 1.0),
-            angular_selection_frame_operational=wp.quat(0.0, 0.0, 0.0, 1.0),
             use_null_space_control=True,
             null_space_stiffness=NULL_KP,
             null_space_damping=NULL_KD,
