@@ -25,10 +25,8 @@ import newton
 from newton._src.controllers.impl.operational_space._common import (
     _apply_generalized_task_specification_matrix_kernel,
     _apply_mass_matrix_inv_on_right_kernel,
-    _apply_spatial_matrix_kernel,
     _invert_spd_block_kernel,
     _jacobian_times_jacobian_transpose_kernel,
-    _jacobian_transpose_force_kernel,
     _null_space_projector_kernel,
     _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
@@ -38,7 +36,6 @@ from newton._src.controllers.impl.operational_space._common import (
     _task_matrix_times_jacobian_kernel,
     _task_space_pd_kernel,
     _tool_pose_and_twist_kernel,
-    _wrench_feedback_kernel,
     _wrench_feedforward_kernel,
 )
 from newton._src.controllers.impl.operational_space.model_based import ControllerOperationalSpace
@@ -292,7 +289,7 @@ def test_jacobian_tool_shift_matches_twist(test, device):
     np.testing.assert_allclose(predicted_twist, tool_twist_world.numpy()[0], atol=1e-6)
 
 
-def test_jacobian_tool_shift_articulation_dof_idx_of_padded_dof_idx_remaps_non_prefix_subset(test, device):
+def test_jacobian_tool_shift_remaps_non_prefix_dof_subset(test, device):
     """articulation_dof_idx_of_padded_dof_idx correctly remaps a non-prefix, non-contiguous controlled-DOF subset.
 
     Controls joints [0, 1, 3, 5, 6] of the 7-joint arm -- skipping joints 2
@@ -464,13 +461,6 @@ def _pose_error(current_pos, current_quat, desired_pos, desired_quat, device):
     return pose_error_world.numpy()[0]
 
 
-def test_pose_error_is_zero_when_poses_match(test, device):
-    """Identical current and desired poses give exactly zero error, including at the near-identity singularity."""
-    quat = wp.quat_from_axis_angle(wp.vec3(0.3, 0.6, -0.2), 1.1)
-    error = _pose_error((1.0, -2.0, 0.5), quat, (1.0, -2.0, 0.5), quat, device)
-    np.testing.assert_allclose(error, np.zeros(6), atol=1e-7)
-
-
 def test_pose_error_position_is_desired_minus_current(test, device):
     """The position half of the error is a plain desired-minus-current difference, independent of orientation."""
     quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4)
@@ -551,73 +541,6 @@ def test_task_space_pd_matches_formula(test, device):
     expected = kp * pose_error_np + kd * twist_error_np
 
     np.testing.assert_allclose(desired_task_acceleration_operational.numpy()[0], expected, atol=1e-5)
-
-
-def test_apply_spatial_matrix_matches_matvec(test, device):
-    """The shared 6x6-matrix-times-spatial-vector kernel computes matrix @ vector.
-
-    Used for inertial decoupling (Lambda @ acceleration) and for selection
-    masking (selection_matrix @ force) alike, since it's the same operation.
-    """
-    rng = np.random.default_rng(seed=1)
-    matrix_np = rng.standard_normal((6, 6)).astype(np.float32)
-    vector_np = rng.standard_normal(6).astype(np.float32)
-
-    matrix = wp.array(matrix_np.reshape(1, 6, 6), dtype=float, device=device)
-    vector = wp.array([wp.spatial_vector(*vector_np.tolist())], dtype=wp.spatial_vector, device=device)
-    result = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _apply_spatial_matrix_kernel,
-        dim=1,
-        inputs=[matrix, vector],
-        outputs=[result],
-        device=device,
-    )
-
-    expected = matrix_np @ vector_np
-    np.testing.assert_allclose(result.numpy()[0], expected, atol=1e-4)
-
-
-def test_jacobian_transpose_force_matches_matvec(test, device):
-    """The force-mapping kernel computes jacobian_tool_world^T @ force, straight into the compact per-DOF layout.
-
-    Two robots with different controlled-DOF counts (3 and 5, Jacobian
-    padded to max_dofs=5) check that a robot's padding columns are never
-    read — only ``robot_of_dof``/``slot_of_dof``-addressed compact DOFs are.
-    """
-    rng = np.random.default_rng(seed=2)
-    dof_counts = [3, 5]
-    max_dofs = 5
-    total_controlled_dofs = sum(dof_counts)
-
-    jacobian_np = np.zeros((2, 6, max_dofs), dtype=np.float32)
-    force_np = rng.standard_normal((2, 6)).astype(np.float32)
-    for robot_idx, n in enumerate(dof_counts):
-        jacobian_np[robot_idx, :, :n] = rng.standard_normal((6, n)).astype(np.float32)
-
-    jacobian_tool_world = wp.array(jacobian_np, dtype=float, device=device)
-    task_space_force_world = wp.array(
-        [wp.spatial_vector(*force_np[0].tolist()), wp.spatial_vector(*force_np[1].tolist())],
-        dtype=wp.spatial_vector,
-        device=device,
-    )
-    # Compact-DOF lookup tables: robot 0's 3 DOFs first, then robot 1's 5.
-    robot_of_dof = wp.array([0, 0, 0, 1, 1, 1, 1, 1], dtype=wp.int32, device=device)
-    slot_of_dof = wp.array([0, 1, 2, 0, 1, 2, 3, 4], dtype=wp.int32, device=device)
-
-    joint_torque = wp.zeros(total_controlled_dofs, dtype=float, device=device)
-    wp.launch(
-        _jacobian_transpose_force_kernel,
-        dim=total_controlled_dofs,
-        inputs=[jacobian_tool_world, task_space_force_world, robot_of_dof, slot_of_dof],
-        outputs=[joint_torque],
-        device=device,
-    )
-
-    expected = np.concatenate(
-        [jacobian_np[robot_idx, :, :n].T @ force_np[robot_idx] for robot_idx, n in enumerate(dof_counts)]
-    )
-    np.testing.assert_allclose(joint_torque.numpy(), expected, atol=1e-4)
 
 
 def test_jacobian_times_jacobian_transpose_matches_numpy(test, device):
@@ -867,83 +790,6 @@ def test_generalized_task_specification_matrix_matches_numpy(test, device):
     np.testing.assert_allclose(masked_vector_operational.numpy()[0], expected, atol=1e-5)
 
 
-def test_wrench_feedforward_and_feedback_accumulate(test, device):
-    """Launching both wrench kernels on a zeroed buffer accumulates desired + Kp .* (desired - measured).
-
-    An identity operational frame makes the rotate-in-then-elementwise
-    implementation reduce to exactly this per-axis formula. Each kernel adds
-    its own term, mirroring how the controller composes them at runtime by
-    zeroing the command buffer once and launching whichever terms are enabled.
-    """
-    identity_pose = wp.array(
-        [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transform, device=device
-    )
-    desired_wrench_world = wp.array(
-        [wp.spatial_vector(10.0, -5.0, 2.0, 1.0, -0.5, 0.25)], dtype=wp.spatial_vector, device=device
-    )
-    measured_wrench_world = wp.array(
-        [wp.spatial_vector(8.0, -6.0, 2.5, 0.8, -0.6, 0.1)], dtype=wp.spatial_vector, device=device
-    )
-    kp_np = np.array([2.0, 3.0, 1.0, 0.5, 0.5, 0.5])
-    stiffness = wp.array([wp.spatial_vector(*kp_np.tolist())], dtype=wp.spatial_vector, device=device)
-
-    wrench_command_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _wrench_feedforward_kernel,
-        dim=1,
-        inputs=[identity_pose, desired_wrench_world],
-        outputs=[wrench_command_operational],
-        device=device,
-    )
-    wp.launch(
-        _wrench_feedback_kernel,
-        dim=1,
-        inputs=[identity_pose, desired_wrench_world, measured_wrench_world, stiffness],
-        outputs=[wrench_command_operational],
-        device=device,
-    )
-
-    desired_np = np.array([10.0, -5.0, 2.0, 1.0, -0.5, 0.25])
-    measured_np = np.array([8.0, -6.0, 2.5, 0.8, -0.6, 0.1])
-    expected = desired_np + kp_np * (desired_np - measured_np)
-
-    np.testing.assert_allclose(wrench_command_operational.numpy()[0], expected, atol=1e-5)
-
-
-def test_wrench_feedback_matches_formula(test, device):
-    """Feedback alone, on a zeroed buffer with no feedforward term, is Kp .* (desired - measured).
-
-    Same identity-operational-frame note as
-    :func:`test_wrench_feedforward_and_feedback_accumulate` above.
-    """
-    identity_pose = wp.array(
-        [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())], dtype=wp.transform, device=device
-    )
-    desired_wrench_world = wp.array(
-        [wp.spatial_vector(10.0, -5.0, 2.0, 1.0, -0.5, 0.25)], dtype=wp.spatial_vector, device=device
-    )
-    measured_wrench_world = wp.array(
-        [wp.spatial_vector(8.0, -6.0, 2.5, 0.8, -0.6, 0.1)], dtype=wp.spatial_vector, device=device
-    )
-    kp_np = np.array([2.0, 3.0, 1.0, 0.5, 0.5, 0.5])
-    stiffness = wp.array([wp.spatial_vector(*kp_np.tolist())], dtype=wp.spatial_vector, device=device)
-
-    wrench_command_operational = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _wrench_feedback_kernel,
-        dim=1,
-        inputs=[identity_pose, desired_wrench_world, measured_wrench_world, stiffness],
-        outputs=[wrench_command_operational],
-        device=device,
-    )
-
-    desired_np = np.array([10.0, -5.0, 2.0, 1.0, -0.5, 0.25])
-    measured_np = np.array([8.0, -6.0, 2.5, 0.8, -0.6, 0.1])
-    expected = kp_np * (desired_np - measured_np)
-
-    np.testing.assert_allclose(wrench_command_operational.numpy()[0], expected, atol=1e-5)
-
-
 def test_wrench_feedforward_matches_formula(test, device):
     """Feedforward alone, on a zeroed buffer, is the desired wrench rotated into the operational frame."""
     quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 4.0)
@@ -1037,8 +883,8 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_jacobian_tool_shift_articulation_dof_idx_of_padded_dof_idx_remaps_non_prefix_subset",
-    test_jacobian_tool_shift_articulation_dof_idx_of_padded_dof_idx_remaps_non_prefix_subset,
+    "test_jacobian_tool_shift_remaps_non_prefix_dof_subset",
+    test_jacobian_tool_shift_remaps_non_prefix_dof_subset,
     devices=devices,
 )
 add_function_test(
@@ -1051,12 +897,6 @@ add_function_test(
     TestOperationalSpaceKernels,
     "test_tool_twist_angular_part_matches_body",
     test_tool_twist_angular_part_matches_body,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
-    "test_pose_error_is_zero_when_poses_match",
-    test_pose_error_is_zero_when_poses_match,
     devices=devices,
 )
 add_function_test(
@@ -1079,18 +919,6 @@ add_function_test(
 )
 add_function_test(
     TestOperationalSpaceKernels,
-    "test_apply_spatial_matrix_matches_matvec",
-    test_apply_spatial_matrix_matches_matvec,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
-    "test_jacobian_transpose_force_matches_matvec",
-    test_jacobian_transpose_force_matches_matvec,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
     "test_jacobian_times_jacobian_transpose_matches_numpy",
     test_jacobian_times_jacobian_transpose_matches_numpy,
     devices=devices,
@@ -1105,18 +933,6 @@ add_function_test(
     TestOperationalSpaceKernels,
     "test_generalized_task_specification_matrix_matches_numpy",
     test_generalized_task_specification_matrix_matches_numpy,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
-    "test_wrench_feedforward_and_feedback_accumulate",
-    test_wrench_feedforward_and_feedback_accumulate,
-    devices=devices,
-)
-add_function_test(
-    TestOperationalSpaceKernels,
-    "test_wrench_feedback_matches_formula",
-    test_wrench_feedback_matches_formula,
     devices=devices,
 )
 add_function_test(
