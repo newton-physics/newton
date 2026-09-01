@@ -9,7 +9,14 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorCamera, SensorTiledCamera
+from newton.tests.unittest_utils import ignore_sensor_tiled_camera_deprecation
+
+
+def setUpModule():
+    # SensorTiledCamera is deprecated; these tests exercise it intentionally.
+    ignore_sensor_tiled_camera_deprecation()
+
 
 try:
     from pxr import Gf, Usd, UsdGeom
@@ -422,6 +429,42 @@ class TestSensorCameraRays(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, "Expected a valid UsdGeom.Camera prim"):
             utils.compute_camera_rays_usd_pinhole(1, 1, Usd.Prim())
+
+    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    def test_sensor_camera_usd_pinhole_rays_match_aperture_form(self):
+        """Verify SensorCamera.compute_camera_rays_usd_pinhole reads USD intrinsics and matches the aperture form."""
+        width, height = 5, 3
+        _stage, camera = _make_camera()
+        camera.GetProjectionAttr().Set(UsdGeom.Tokens.perspective)
+        camera.GetFocalLengthAttr().Set(1.5)
+        camera.GetHorizontalApertureAttr().Set(2.0)
+        camera.GetVerticalApertureAttr().Set(1.0)
+        camera.GetHorizontalApertureOffsetAttr().Set(0.1)
+        camera.GetVerticalApertureOffsetAttr().Set(0.2)
+        expected = SensorCamera.compute_camera_rays_pinhole(
+            width,
+            height,
+            focal_length=1.5,
+            horizontal_aperture=2.0,
+            vertical_aperture=1.0,
+            horizontal_aperture_offset=0.1,
+            vertical_aperture_offset=0.2,
+            device="cpu",
+        ).numpy()
+
+        got_prim = SensorCamera.compute_camera_rays_usd_pinhole(width, height, camera.GetPrim(), device="cpu")
+        got_camera = SensorCamera.compute_camera_rays_usd_pinhole(width, height, camera, device="cpu")
+
+        self.assertEqual(got_prim.shape, (height, width, 2))
+        self.assertEqual(got_prim.dtype, wp.vec3f)
+        np.testing.assert_allclose(got_prim.numpy(), expected, atol=1e-6)
+        np.testing.assert_allclose(got_camera.numpy(), expected, atol=1e-6)
+
+    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    def test_sensor_camera_usd_pinhole_rejects_invalid_prim(self):
+        """Verify SensorCamera.compute_camera_rays_usd_pinhole rejects a non-camera prim."""
+        with self.assertRaisesRegex(TypeError, "Expected a valid UsdGeom.Camera prim"):
+            SensorCamera.compute_camera_rays_usd_pinhole(1, 1, Usd.Prim(), device="cpu")
 
     def test_opencv_fisheye_distortion_solves_theta(self):
         utils = _make_utils()

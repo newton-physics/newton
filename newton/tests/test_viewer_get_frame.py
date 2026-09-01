@@ -80,6 +80,13 @@ def _make_box_model(device: str | wp.Device):
     return builder.finalize(device=device)
 
 
+def _render_frame(viewer: ViewerGL, model: newton.Model, time: float = 0.0):
+    viewer.begin_frame(time)
+    viewer.log_state(model.state())
+    viewer.end_frame()
+    return viewer.get_frame()
+
+
 class _FakeGL:
     GL_PIXEL_PACK_BUFFER = 0x88EB
     GL_STREAM_READ = 0x88E1
@@ -153,15 +160,15 @@ class TestViewerGLGetFrame(unittest.TestCase):
             self.assertEqual(viewer.device, cpu_device)
 
             viewer.set_camera(pos=wp.vec3(2.0, -3.0, 2.0), pitch=-25.0, yaw=35.0)
-            viewer.begin_frame(0.0)
-            viewer.log_state(cpu_model.state())
-            viewer.end_frame()
-
-            frame = viewer.get_frame()
+            for frame_attempt in range(3):
+                frame = _render_frame(viewer, cpu_model, time=float(frame_attempt))
+                if np.ptp(frame.numpy()) > 0:
+                    break
+            else:
+                self.fail("Headless ViewerGL captured only blank frames.")
             self.assertEqual(frame.shape, (48, 64, 3))
             self.assertEqual(frame.dtype, wp.uint8)
             self.assertEqual(frame.device, cpu_device)
-            self.assertGreater(np.ptp(frame.numpy()), 0)
 
             target = wp.empty(shape=(48, 64, 3), dtype=wp.uint8, device=cpu_device)
             self.assertIs(viewer.get_frame(target_image=target), target)

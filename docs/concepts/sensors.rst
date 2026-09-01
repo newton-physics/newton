@@ -24,7 +24,7 @@ Most Newton sensors follow a common pattern:
 
    ``SensorContact`` additionally requires a call to ``solver.update_contacts()`` before ``sensor.update()``.
 
-   ``SensorTiledCamera`` writes results to output arrays passed into ``update()`` rather than storing them as sensor
+   ``SensorCamera`` writes results to output arrays passed into ``update()`` rather than storing them as sensor
    attributes.
 
 .. testcode::
@@ -115,44 +115,56 @@ attributes, and usage examples.
   optional per-counterpart force matrices, and force-weighted contact positions.
 * :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
-* :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
+* :class:`~newton.sensors.SensorCamera` -- raytraced color, HDR color, depth, forward-depth, normal, albedo, and
+  shape-index rendering; one view per camera transform, mapped to worlds via a per-view selector.
+* :class:`~newton.sensors.SensorTiledCamera` -- deprecated; superseded by :class:`~newton.sensors.SensorCamera`.
 
 Camera Rays from USD and Calibration Data
 -----------------------------------------
 
-``SensorTiledCamera`` can build standard USD pinhole camera rays directly. For lens models without standard USD
-attributes, read the attributes you use in your pipeline and pass the numeric values into the matching helper:
+:class:`~newton.sensors.SensorCamera` renders one view per world-space camera transform passed to
+:meth:`~newton.sensors.SensorCamera.update`. The caller owns the camera-space rays and the per-view transforms.
+The ray bundle for a standard USD pinhole camera can be built directly with
+:meth:`~newton.sensors.SensorCamera.compute_camera_rays_usd_pinhole`; the world-space pose is composed by the caller
+(for example from the USD camera's world transform). For lens models without standard USD attributes, read the
+attributes you use in your pipeline and pass the numeric values into the matching helper:
 
 .. code-block:: python
 
+   import warp as wp
    from pxr import Usd
 
-   from newton.sensors import SensorTiledCamera
+   from newton.sensors import SensorCamera
 
    stage = Usd.Stage.Open("scene.usda")
    usd_camera = stage.GetPrimAtPath("/World/Camera")
 
-   sensor = SensorTiledCamera(model)
-   camera_rays = sensor.utils.compute_camera_rays_usd_pinhole(640, 480, usd_camera)
-   camera_transforms = sensor.utils.compute_camera_transforms_usd(usd_camera)
+   camera = SensorCamera(model)
+   camera.create_default_light()
 
-   color = sensor.utils.create_color_image_output(640, 480)
-   sensor.update(
-       state,
-       camera_transforms,
-       camera_rays,
-       color_image=color,
-   )
+   # Camera-space rays for one 640x480 pinhole camera, on the model device.
+   camera_rays = SensorCamera.compute_camera_rays_usd_pinhole(640, 480, usd_camera, device=model.device)
+
+   # One world-space camera pose per view; the caller supplies these.
+   camera_transforms = wp.array([camera_pose], dtype=wp.transformf, device=model.device)
+   view_count = camera_transforms.shape[0]
+
+   color = camera.create_color_image_output(view_count, 640, 480)
+
+   # Synchronize render-only state (deformable meshes) before each frame that
+   # changed geometry, then render.
+   camera.sync_transforms(state)
+   camera.update(state, camera_transforms, camera_rays, color_image=color)
 
 For OpenCV-calibrated pinhole cameras, call
 :meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_pinhole_opencv` with the calibrated intrinsics and
 radial, tangential, and optional thin-prism coefficients.
 
 For fisheye cameras, extract the calibration values from your chosen USD attributes and call one of
-:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_opencv`,
-:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_ftheta`, or
-:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_kannala_brandt`. Each fisheye helper builds
-rays for one camera; pass ``out_rays`` and ``camera_index`` to fill a shared ray buffer.
+:meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_opencv`,
+:meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_ftheta`, or
+:meth:`~newton.sensors.SensorCamera.compute_camera_rays_fisheye_kannala_brandt`. Each helper builds a single-camera
+``(height, width, 2)`` ray bundle.
 
 Extended Attributes
 -------------------
@@ -188,4 +200,4 @@ See Also
 * :doc:`extended_attributes` -- optional ``State``/``Contacts`` arrays required by some sensors
 * ``newton.examples.sensors.example_sensor_contact`` -- SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` -- SensorIMU example
-* ``newton.examples.sensors.example_sensor_tiled_camera`` -- SensorTiledCamera example
+* ``newton.examples.sensors.example_sensor_camera`` -- SensorCamera example (run with ``python -m newton.examples sensor_camera``)

@@ -1,0 +1,170 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+import enum
+from dataclasses import dataclass
+
+import warp as wp
+
+from ...utils.color import ColorSpace
+
+
+class LightType(enum.IntEnum):
+    """Light types supported by the Warp raytracer."""
+
+    SPOTLIGHT = 0
+    """Spotlight."""
+
+    DIRECTIONAL = 1
+    """Directional Light."""
+
+
+class RenderOrder(enum.IntEnum):
+    """Render Order"""
+
+    PIXEL_PRIORITY = 0
+    """Render the same pixel of every view before continuing to the next one"""
+    VIEW_PRIORITY = 1
+    """Render all pixels of a whole view before continuing to the next one"""
+    TILED = 2
+    """Render pixels in tiles, defined by tile_width x tile_height"""
+
+
+class WorldRenderFlag(enum.IntEnum):
+    """Negative disable sentinels for the per-view ``world_indices`` array.
+
+    Each entry of ``world_indices`` is either a non-negative world index to
+    render for that view, or one of these negative sentinels to skip the view.
+    """
+
+    DISABLE_PRESERVE = -1
+    """Skip rendering and leave output pixels unchanged."""
+
+    DISABLE_CLEAR = -2
+    """Skip rendering and write clear values to output pixels."""
+
+
+class GaussianRenderMode(enum.IntEnum):
+    """Gaussian Render Mode"""
+
+    FAST = 0
+    """Fast Render Mode"""
+
+    QUALITY = 1
+    """Quality Render Mode, collect hits until minimum transmittance is reached"""
+
+
+class TextureProjectionMode(enum.IntEnum):
+    """Projection mode for texture-mapped shapes without authored UVs."""
+
+    CUBIC = 0
+    """Project from the dominant local axis and sample once."""
+
+    TRIPLANAR = 1
+    """Blend samples from all three local axes using normal-based weights."""
+
+
+@dataclass(unsafe_hash=True)
+class RenderConfig:
+    """Raytrace render settings shared across all worlds."""
+
+    enable_global_world: bool = True
+    """Include shapes that belong to no specific world."""
+
+    enable_textures: bool = False
+    """Enable texture-mapped rendering for shapes."""
+
+    texture_projection_mode: int = TextureProjectionMode.CUBIC
+    """Projection mode for texture-mapped shapes without UVs."""
+
+    enable_shadows: bool = False
+    """Enable shadow rays for directional lights."""
+
+    enable_ambient_lighting: bool = True
+    """Enable ambient lighting for the scene."""
+
+    enable_particles: bool = True
+    """Enable standalone particle rendering.
+
+    Particles referenced by rendered triangle or tetrahedral deformable topology
+    are rendered by the triangle mesh path and are not emitted as particle
+    spheres.
+    """
+
+    enable_backface_culling: bool = True
+    """Cull back-facing triangles."""
+
+    enable_fast_math: bool = True
+    """Compile render kernels with CUDA fast math."""
+
+    output_color_space: ColorSpace = ColorSpace.SRGB
+    """Color space for packed color and albedo outputs.
+
+    Use ``ColorSpace.SRGB`` for display-encoded bytes or
+    ``ColorSpace.LINEAR`` for linear RGB bytes.
+    """
+
+    render_order: int = RenderOrder.PIXEL_PRIORITY
+    """Render traversal order (see :class:`RenderOrder`)."""
+
+    tile_width: int = 16
+    """Tile width [px] for ``RenderOrder.TILED`` traversal."""
+
+    tile_height: int = 8
+    """Tile height [px] for ``RenderOrder.TILED`` traversal."""
+
+    max_distance: float = 1000.0
+    """Maximum ray distance [m]."""
+
+    gaussians_mode: int = GaussianRenderMode.FAST
+    """Gaussian splatting render mode (see :class:`GaussianRenderMode`)."""
+
+    gaussians_min_transmittance: float = 0.49
+    """Minimum transmittance before early-out during Gaussian rendering."""
+
+    gaussians_max_num_hits: int = 20
+    """Maximum Gaussian hits accumulated per ray."""
+
+
+@dataclass(unsafe_hash=True)
+class ClearData:
+    """Default values written to output images before rendering."""
+
+    clear_color: int = 0
+    """Packed RGBA value written to the color output."""
+    clear_depth: float = 0.0
+    """Depth value written to the depth and forward-depth outputs [m]."""
+    clear_shape_index: int = 0xFFFFFFFF
+    """Shape-index sentinel written to the shape-index output."""
+    clear_normal: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """Normal vector written to the normal output."""
+    clear_albedo: int = 0
+    """Packed RGBA value written to the albedo output."""
+
+
+@wp.struct
+class MeshData:
+    """Per-mesh auxiliary vertex data for texture mapping and smooth shading.
+
+    Attributes:
+        uvs: Per-vertex UV coordinates, shape ``[vertex_count, 2]``, dtype ``vec2f``.
+        normals: Per-vertex normals for smooth shading, shape ``[vertex_count, 3]``, dtype ``vec3f``.
+    """
+
+    uvs: wp.array[wp.vec2f]
+    normals: wp.array[wp.vec3f]
+
+
+@wp.struct
+class TextureData:
+    """Texture image data for surface shading during raytracing.
+
+    Uses a hardware-accelerated ``wp.Texture2D`` with bilinear filtering.
+
+    Attributes:
+        texture: 2D Texture as ``wp.Texture2D``.
+        repeat: UV tiling factors along U and V axes.
+    """
+
+    texture: wp.Texture2D
+    repeat: wp.vec2f
