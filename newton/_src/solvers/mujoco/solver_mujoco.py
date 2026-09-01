@@ -1696,9 +1696,29 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # These are used for general/motor actuators parsed from MJCF
         # All actuator attributes share the "mujoco:actuator" custom frequency.
         # Note: actuator_trnid[0] stores the target index, actuator_trntype determines its meaning (joint/tendon/site)
-        def parse_actuator_enum(value: Any, mapping: dict[str, int]) -> int:
-            """Parse actuator enum values, defaulting to 0 for unknown strings."""
-            return int(SolverMuJoCo._parse_named_int(value, mapping, fallback_on_unknown=0))
+        def parse_actuator_enum(
+            value: Any, mapping: dict[str, int], attribute: str, context: dict[str, Any] | None
+        ) -> int:
+            """Parse actuator enum values, warning and defaulting to 0 for unrecognized names."""
+            try:
+                # Without a fallback, _parse_named_int resolves names, MuJoCo enum reprs and bare
+                # ordinals, and raises for anything else, which is the case worth warning about.
+                return int(SolverMuJoCo._parse_named_int(value, mapping))
+            except ValueError:
+                pass
+            context = context or {}
+            prim = context.get("prim")
+            # Every frame above this parser is Newton-internal, so no stacklevel points at the
+            # offending prim or element and the message has to name it.
+            source = f"prim '{prim.GetPath()}'" if prim is not None else f"actuator '{context.get('actuator_name')}'"
+            fallback = next(name for name, ordinal in mapping.items() if ordinal == 0)
+            warnings.warn(
+                f"Unsupported MuJoCo actuator {attribute} {value!r} on {source}; "
+                f"falling back to {fallback!r}. Supported values are {sorted(mapping)}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return 0
 
         actuator_transmission_types = {
             "joint": int(SolverMuJoCo.TrnType.JOINT),
@@ -1729,17 +1749,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "user": _ActuatorBiasType.USER,
         }
 
-        def parse_trntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_transmission_types)
+        def parse_trntype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_transmission_types, "trntype", context)
 
-        def parse_dyntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_dynamics_types)
+        def parse_dyntype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_dynamics_types, "dyntype", context)
 
-        def parse_gaintype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_gain_types)
+        def parse_gaintype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_gain_types, "gaintype", context)
 
-        def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_bias_types)
+        def parse_biastype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_bias_types, "biastype", context)
 
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""

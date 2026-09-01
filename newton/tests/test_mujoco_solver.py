@@ -24,6 +24,11 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from newton._src.solvers.mujoco.enums import (
+    _ActuatorBiasType,
+    _ActuatorDynamicsType,
+    _ActuatorGainType,
+)
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.kernels import convert_solref
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
@@ -12830,6 +12835,64 @@ class TestMuJoCoLinesearchBlockDim(unittest.TestCase):
             state_0, state_1 = state_1, state_0
         # Launch failures surface asynchronously, so force them to be raised here.
         wp.synchronize()
+
+
+class TestActuatorTypes(unittest.TestCase):
+    """Actuator type enums and their MJCF round trip."""
+
+    MJCF = """<mujoco>
+        <worldbody>
+            <body>
+                <joint name="j" type="hinge" axis="0 0 1"/>
+                <geom type="box" size=".1 .1 .1"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <general name="a" joint="j" dyntype="{dyntype}" gaintype="{gaintype}" biastype="{biastype}" {extra}/>
+        </actuator>
+    </mujoco>"""
+
+    def _mjcf(self, dyntype="none", gaintype="fixed", biastype="none", extra=""):
+        return self.MJCF.format(dyntype=dyntype, gaintype=gaintype, biastype=biastype, extra=extra)
+
+    def test_enums_match_mujoco(self):
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for enum, mj_enum, prefix in (
+            (_ActuatorBiasType, mujoco.mjtBias, "mjBIAS_"),
+            (_ActuatorDynamicsType, mujoco.mjtDyn, "mjDYN_"),
+            (_ActuatorGainType, mujoco.mjtGain, "mjGAIN_"),
+        ):
+            for member in enum:
+                with self.subTest(enum=enum.__name__, member=member.name):
+                    self.assertEqual(int(member), int(mj_enum.__members__[prefix + member.name.replace("_", "")]))
+
+    def test_types_match_native(self):
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for dyntype, gaintype, biastype, extra in (
+            ("none", "fixed", "none", ""),
+            ("none", "fixed", "affine", ""),
+            ("integrator", "fixed", "none", ""),
+            ("filter", "fixed", "none", ""),
+            ("filterexact", "fixed", "none", ""),
+            ("none", "affine", "affine", ""),
+            ("user", "user", "user", 'actearly="true"'),
+        ):
+            with self.subTest(dyntype=dyntype, gaintype=gaintype, biastype=biastype):
+                mjcf = self._mjcf(dyntype=dyntype, gaintype=gaintype, biastype=biastype, extra=extra)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                mj_model = SolverMuJoCo(builder.finalize()).mj_model
+                native = mujoco.MjModel.from_xml_string(mjcf)
+                assert_np_equal(mj_model.actuator_dyntype, native.actuator_dyntype)
+                assert_np_equal(mj_model.actuator_gaintype, native.actuator_gaintype)
+                assert_np_equal(mj_model.actuator_biastype, native.actuator_biastype)
+
+    def test_unsupported_type_warns(self):
+        for gaintype in ("dcmotor", "so3", "pid", "bogus"):
+            with self.subTest(gaintype=gaintype):
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(RuntimeWarning, gaintype):
+                    builder.add_mjcf(self._mjcf(gaintype=gaintype))
 
 
 if __name__ == "__main__":
