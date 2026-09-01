@@ -33,9 +33,10 @@ def _create_example(num_frames, world_count):
     else:
         example = Example(newton.viewer.ViewerNull(num_frames=num_frames), world_count)
 
-    # Preserve the historical throughput workload while examples opt in to
-    # the future restitution default.
+    # The example captures its graph during construction, so recapture after
+    # restoring the historical no-restitution workload.
     example.solver.enable_restitution = False
+    example.capture()
     return example
 
 

@@ -10,31 +10,33 @@ from ...sim import Contacts, Control, Model, ModelFlags, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
-from . import kernels
+from . import kernels, restitution_kernels
 from .kernels import (
-    RESTITUTION_MANIFOLD_MAX_CONTACTS,
     accumulate_weighted_contact_impulse,
     apply_body_delta_velocities,
     apply_body_deltas,
     apply_joint_forces,
     apply_particle_deltas,
     apply_particle_shape_restitution,
-    apply_restitution_deltas,
     bending_constraint,
-    build_restitution_manifolds,
     convert_contact_impulse_to_force,
     convert_joint_impulse_to_parent_f,
     copy_kinematic_body_state_kernel,
-    mark_restitution_contacts,
-    select_manifold_contacts,
     solve_body_contact_positions,
     solve_body_joints,
-    solve_manifold_restitution,
     solve_particle_particle_contacts,
     solve_particle_shape_contacts,
     # solve_simple_body_joints,
     solve_springs,
     solve_tetrahedra,
+)
+from .restitution_kernels import (
+    RESTITUTION_MANIFOLD_MAX_CONTACTS,
+    apply_restitution_deltas,
+    build_restitution_manifolds,
+    mark_restitution_contacts,
+    select_manifold_contacts,
+    solve_manifold_restitution,
 )
 
 
@@ -160,13 +162,12 @@ class SolverXPBD(SolverBase, CouplingInterface):
         """
         super().__init__(model=model)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
-        self._set_module_options(
-            {
-                "deterministic": effective_deterministic,
-                "deterministic_max_records": 0,
-            },
-            module=kernels,
-        )
+        module_options = {
+            "deterministic": effective_deterministic,
+            "deterministic_max_records": 0,
+        }
+        self._set_module_options(module_options, module=kernels)
+        self._restitution_module_options = module_options
 
         self.iterations = iterations
 
@@ -225,6 +226,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
                 changed.
         """
+        if self.enable_restitution and restitution_kernels not in self._module_options:
+            self._set_module_options(self._restitution_module_options, module=restitution_kernels)
         self._apply_module_options()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
@@ -384,6 +387,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 is skipped; particle-particle contacts and model constraints are still solved.
             dt: Time step size [s].
         """
+        if self.enable_restitution and restitution_kernels not in self._module_options:
+            self._set_module_options(self._restitution_module_options, module=restitution_kernels)
         self._apply_module_options()
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
@@ -941,7 +946,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                     )
 
                     # Reduce each manifold chain to its bounded best-K subset
-                    # (deterministic; see kernels.select_manifold_contacts).
+                    # (deterministic; see restitution_kernels.select_manifold_contacts).
                     wp.launch(
                         kernel=select_manifold_contacts,
                         dim=contacts.rigid_contact_max,
