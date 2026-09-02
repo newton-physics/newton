@@ -115,6 +115,10 @@ The canonical list is :attr:`State.EXTENDED_ATTRIBUTES <newton.State.EXTENDED_AT
    * - ``State.mujoco.qfrc_actuator``
      - Actuator forces in generalized (joint DOF) coordinates, namespaced under ``state.mujoco.qfrc_actuator``.
        Only populated by :class:`~newton.solvers.SolverMuJoCo`.
+   * - ``State.mujoco.qfrc_bias``
+     - MuJoCo generalized bias forces [N or N·m, depending on joint type],
+       shape [joint_dof_count]. GRU actuators request this array automatically;
+       callers populate it from MuJoCo ``qfrc_bias`` before evaluation.
 
 
 Notes

@@ -2732,6 +2732,7 @@ class ModelBuilder:
 
         # --- Resolve drive kwargs and separate shared from per-DOF ---
         resolved_drive = drive_class.resolve_arguments(kwargs)
+        self.request_state_attributes(*getattr(drive_class, "_REQUIRED_STATE_ATTRIBUTES", ()))
         unrecognized = set(kwargs) - set(resolved_drive)
         if unrecognized:
             warnings.warn(

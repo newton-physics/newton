@@ -14,7 +14,7 @@ from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
-from .drives import DriveBase, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
+from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .utils import load_metadata
 
 _DEPRECATED_UNSET = object()
@@ -197,6 +197,7 @@ class _SchemaEntry:
 
 
 _NEURAL_DRIVE_TYPES: dict[str, type[DriveBase]] = {
+    "gru": DriveNeuralGRU,
     "mlp": DriveNeuralMLP,
     "lstm": DriveNeuralLSTM,
 }
@@ -206,7 +207,8 @@ def _resolve_neural_drive(kwargs: dict[str, Any]) -> type[DriveBase]:
     """Validate neural-control kwargs and return the concrete drive class.
 
     Inspects the checkpoint's ``model_type`` metadata to choose between
-    :class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM`.
+    :class:`DriveNeuralGRU`, :class:`DriveNeuralMLP`, or
+    :class:`DriveNeuralLSTM`.
 
     Raises:
         ValueError: If ``model_path`` is empty or the checkpoint's
