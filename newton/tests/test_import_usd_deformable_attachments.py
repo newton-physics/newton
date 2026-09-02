@@ -348,6 +348,84 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         model = builder.finalize()
         newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
 
+    def test_physics_attachment_joins_robot_articulation_for_vbd(self):
+        """Import a cable attached to a floating- or fixed-base robot articulation."""
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        for fixed_base in (False, True):
+            with self.subTest(fixed_base=fixed_base):
+                stage = _deformable_stage()
+                robot = UsdGeom.Xform.Define(stage, "/World/Robot")
+                UsdPhysics.ArticulationRootAPI.Apply(robot.GetPrim())
+
+                base = UsdGeom.Cube.Define(stage, "/World/Robot/Base")
+                base.CreateSizeAttr(0.2)
+                UsdGeom.Xformable(base).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+                UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+                UsdPhysics.CollisionAPI.Apply(base.GetPrim())
+
+                wrist = UsdGeom.Cube.Define(stage, "/World/Robot/Wrist")
+                wrist.CreateSizeAttr(0.2)
+                UsdGeom.Xformable(wrist).AddTranslateOp().Set(Gf.Vec3d(0.2, 0.0, 1.0))
+                UsdPhysics.RigidBodyAPI.Apply(wrist.GetPrim())
+                UsdPhysics.CollisionAPI.Apply(wrist.GetPrim())
+
+                shoulder = UsdPhysics.RevoluteJoint.Define(stage, "/World/Robot/Shoulder")
+                shoulder.CreateBody0Rel().SetTargets([base.GetPath()])
+                shoulder.CreateBody1Rel().SetTargets([wrist.GetPath()])
+                shoulder.CreateLocalPos0Attr().Set(Gf.Vec3f(0.1, 0.0, 0.0))
+                shoulder.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.1, 0.0, 0.0))
+                shoulder.CreateAxisAttr().Set(UsdGeom.Tokens.z)
+
+                if fixed_base:
+                    root_joint = UsdPhysics.FixedJoint.Define(stage, "/World/Robot/RootJoint")
+                    root_joint.CreateBody1Rel().SetTargets([base.GetPath()])
+                    root_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+
+                cable_points = [(0.3, 0.0, 1.0), (0.4, 0.0, 1.0), (0.5, 0.0, 1.0), (0.6, 0.0, 1.0)]
+                _add_cable_curve(stage, "/World/Cable", cable_points)
+                _add_physics_attachment(
+                    stage,
+                    "/World/Robot/CableAttachment",
+                    src0="/World/Cable",
+                    src1="/World/Robot/Wrist",
+                    type0="point",
+                    indices0=[0],
+                    coords1=[(0.1, 0.0, 0.0)],
+                )
+
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, return_deformable_results=True)
+
+                base_body = result["path_body_map"]["/World/Robot/Base"]
+                wrist_body = result["path_body_map"]["/World/Robot/Wrist"]
+                base_joints = [joint for joint, child in enumerate(builder.joint_child) if child == base_body]
+                shoulder_joint = result["path_joint_map"]["/World/Robot/Shoulder"]
+                cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
+                attachment_joint = result["path_attachment_map"]["/World/Robot/CableAttachment"][0]
+                articulation = builder._find_articulation_for_body(wrist_body)
+
+                self.assertEqual(len(base_joints), 1)
+                self.assertEqual(
+                    builder.joint_type[base_joints[0]],
+                    newton.JointType.FIXED if fixed_base else newton.JointType.FREE,
+                )
+                self.assertEqual(builder.joint_parent[attachment_joint], wrist_body)
+                self.assertEqual(builder.joint_child[attachment_joint], cable_bodies[0])
+                self.assertIsNotNone(articulation)
+                self.assertTrue(
+                    all(
+                        builder.joint_articulation[joint] == articulation
+                        for joint in (base_joints[0], shoulder_joint, attachment_joint, *cable_joints)
+                    )
+                )
+                self.assertEqual(builder.articulation_count, 1)
+                self.assertTrue(builder.validate_joint_ordering())
+
+                builder.color()
+                model = builder.finalize()
+                newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
+
     def test_free_cable_articulation_has_free_root_joint(self):
         """A free cable has one free root joint to the world."""
         stage = _deformable_stage()

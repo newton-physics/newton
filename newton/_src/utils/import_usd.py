@@ -4576,10 +4576,8 @@ def parse_usd(
             qd_start = builder.joint_qd_start[joint_id]
             builder.joint_qd[qd_start : qd_start + 6] = [*linear_velocity, *angular_velocity]
 
-    # Build deformables (cables/cloth/volume) after rigid bodies, their collider-mass computation,
-    # and the floating-body base-joint pass above. The importer wraps each cable into its own
-    # articulation, so building deformables last keeps those articulations after any
-    # importer-created ones (e.g. kinematic anchors), preserving ascending articulation order.
+    # Build deformables after rigid bodies, collider-mass computation, and the floating-body
+    # base-joint pass so physical attachment targets and their root joints already exist.
     # Volume deformables (TetMesh -> soft body). PhysicsVolumeDeformableSimAPI (or a
     # PhysicsDeformableBodyAPI) opts into the mass precedence; a bare TetMesh stays legacy.
     # Mass precedence (proposal): per-point physics:masses > body mass > body density
