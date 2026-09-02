@@ -22,6 +22,8 @@ subclass of :class:`ControllerBase`.
    :nosignatures:
 
    ControllerBase
+   ControllerDiffIK
+   ControllerDiffIKModelFree
    ControllerJointImpedance
    ControllerJointImpedanceModelFree
    ControllerOperationalSpace

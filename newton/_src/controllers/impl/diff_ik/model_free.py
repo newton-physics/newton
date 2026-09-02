@@ -68,6 +68,7 @@ from ._common import (
     _posture_bias_kernel,
     _qd_from_y_kernel,
     _smallest_eigenvalue_spd6_kernel,
+    _truncated_pinv_matrix_kernel,
 )
 
 
@@ -145,6 +146,12 @@ class ControllerDiffIKModelFree(ControllerBase):
             toward ``adaptive_damping_max``. Required (and must be
             positive) when ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be
             ``None`` otherwise.
+        truncated_svd_threshold: Per-direction singular-value threshold —
+            a task-space direction with singular value above this is
+            inverted exactly, one at or below it is dropped from the solve
+            entirely. Required (and must be positive) when
+            ``ik_method=IkMethod.TRUNCATED_SVD``; must be ``None``
+            otherwise.
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
             through the null-space projector.
         joint_limit_avoidance_gain: Joint-centering gain, applied once a DOF
@@ -235,6 +242,7 @@ class ControllerDiffIKModelFree(ControllerBase):
         adaptive_damping_min: float | None = None,
         adaptive_damping_max: float | None = None,
         adaptive_damping_threshold: float | None = None,
+        truncated_svd_threshold: float | None = None,
         use_joint_limit_avoidance: bool = False,
         joint_limit_avoidance_gain: float = 0.0,
         joint_limit_avoidance_margin: float = 0.0,
@@ -333,6 +341,14 @@ class ControllerDiffIKModelFree(ControllerBase):
                 "adaptive_damping_min/adaptive_damping_max/adaptive_damping_threshold were given but "
                 f"ik_method={ik_method} != IkMethod.ADAPTIVE_DAMPING."
             )
+
+        if ik_method == IkMethod.TRUNCATED_SVD:
+            if truncated_svd_threshold is None:
+                raise ValueError("ik_method=IkMethod.TRUNCATED_SVD requires truncated_svd_threshold.")
+            if truncated_svd_threshold <= 0.0:
+                raise ValueError(f"truncated_svd_threshold must be positive, got {truncated_svd_threshold}.")
+        elif truncated_svd_threshold is not None:
+            raise ValueError(f"truncated_svd_threshold was given but ik_method={ik_method} != IkMethod.TRUNCATED_SVD.")
 
         use_null_space = bool(use_joint_limit_avoidance) or bool(use_null_space_posture_control)
 
@@ -446,6 +462,10 @@ class ControllerDiffIKModelFree(ControllerBase):
         self._adaptive_damping_threshold_baked = (
             self._bake(adaptive_damping_threshold, controlled_robot_count) if self._use_adaptive_damping else None
         )
+        self._use_truncated_svd = ik_method == IkMethod.TRUNCATED_SVD
+        self._truncated_svd_threshold_baked = (
+            self._bake(truncated_svd_threshold, controlled_robot_count) if self._use_truncated_svd else None
+        )
         self._null_space_stiffness_baked = (
             self._bake(null_space_stiffness, total_controlled_dofs) if self._use_null_space_posture_control else None
         )
@@ -518,8 +538,11 @@ class ControllerDiffIKModelFree(ControllerBase):
         self._cholesky_scratch = wp.zeros(
             (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
-        if self._use_adaptive_damping:
+        if self._use_adaptive_damping or self._use_truncated_svd:
+            # Both methods need JJᵀ undamped, to read its own eigenvalues
+            # rather than a Tikhonov-shifted version of them.
             self._zero_damping_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
+        if self._use_adaptive_damping:
             self._smallest_eigenvalue_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
             self._adaptive_damping_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
         self._y_buf = wp.zeros(
@@ -812,6 +835,29 @@ class ControllerDiffIKModelFree(ControllerBase):
             # q̇ = bandwidth · Jᵀe: no matrix to invert, so the pose error
             # itself stands in for y in the shared finishing kernel.
             y = self._pose_error_buf
+        elif self._use_truncated_svd:
+            wp.launch(
+                _build_jjt_plus_damping_kernel,
+                dim=(controlled_robot_count, 6, 6),
+                inputs=[self._jacobian_buf, self._controlled_dofs_per_robot, self._zero_damping_buf],
+                outputs=[self._jjt_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _truncated_pinv_matrix_kernel,
+                dim=controlled_robot_count,
+                inputs=[self._jjt_buf, self._truncated_svd_threshold_baked],
+                outputs=[self._jjt_inv_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _apply_spatial_matrix_kernel,
+                dim=controlled_robot_count,
+                inputs=[self._jjt_inv_buf, self._pose_error_buf],
+                outputs=[self._y_buf],
+                device=self._device,
+            )
+            y = self._y_buf
         else:
             if self._use_adaptive_damping:
                 wp.launch(

@@ -37,6 +37,7 @@ from newton._src.controllers.impl.diff_ik._common import (
     _posture_bias_kernel,
     _qd_from_y_kernel,
     _smallest_eigenvalue_spd6_kernel,
+    _truncated_pinv_matrix_kernel,
 )
 from newton._src.controllers.impl.diff_ik.model_based import ControllerDiffIK
 from newton._src.controllers.impl.diff_ik.model_free import ControllerDiffIKModelFree
@@ -655,6 +656,48 @@ def test_adaptive_damping_matches_formula(test: unittest.TestCase, device):
     test.assertAlmostEqual(float(damping.numpy()[0]), 2.0, places=5)
 
 
+def test_truncated_pinv_matrix_matches_numpy(test: unittest.TestCase, device):
+    rng = np.random.default_rng(13)
+    j = rng.normal(size=(6, 4)).astype(np.float32)
+    jjt_np = (j @ j.T).astype(np.float32)
+    threshold = 0.05
+
+    matrix = wp.array3d(jjt_np[None], dtype=wp.float32, device=device)
+    threshold_arr = wp.array([threshold], dtype=wp.float32, device=device)
+    pinv_matrix = wp.zeros((1, 6, 6), dtype=wp.float32, device=device)
+    wp.launch(
+        _truncated_pinv_matrix_kernel, dim=1, inputs=[matrix, threshold_arr], outputs=[pinv_matrix], device=device
+    )
+
+    eigenvalues, eigenvectors = np.linalg.eigh(jjt_np.astype(np.float64))
+    sigma = np.sqrt(np.maximum(eigenvalues, 0.0))
+    g = np.where(sigma > threshold, 1.0 / np.maximum(sigma, 1e-30), 0.0)
+    expected = (eigenvectors * g) @ eigenvectors.T
+    np.testing.assert_allclose(pinv_matrix.numpy()[0], expected, atol=1e-3)
+
+
+def test_truncated_pinv_matrix_drops_singular_directions(test: unittest.TestCase, device):
+    """A rank-3 JJᵀ (from a 3-DOF robot) has 3 exact-zero eigenvalues: those directions contribute nothing."""
+    rng = np.random.default_rng(17)
+    j = np.zeros((6, 3), dtype=np.float32)
+    j[:, :3] = rng.normal(size=(6, 3))
+    jjt_np = (j @ j.T).astype(np.float32)
+
+    matrix = wp.array3d(jjt_np[None], dtype=wp.float32, device=device)
+    # Above the QR eigensolver's own float32 noise floor for a structurally
+    # zero eigenvalue (~1e-6, i.e. sigma ~1e-3) but well below the smallest
+    # genuine singular value, so exactly the 3 structural directions drop.
+    threshold_arr = wp.array([1.0e-2], dtype=wp.float32, device=device)
+    pinv_matrix = wp.zeros((1, 6, 6), dtype=wp.float32, device=device)
+    wp.launch(
+        _truncated_pinv_matrix_kernel, dim=1, inputs=[matrix, threshold_arr], outputs=[pinv_matrix], device=device
+    )
+    # rank(pinv_matrix) == rank(jjt) == 3, not 6: the dropped directions
+    # leave the matrix singular rather than merely small in those directions.
+    rank = np.linalg.matrix_rank(pinv_matrix.numpy()[0].astype(np.float64), tol=1e-3)
+    test.assertEqual(rank, 3)
+
+
 class TestDiffIkKernels(unittest.TestCase):
     pass
 
@@ -759,6 +802,18 @@ add_function_test(
 )
 add_function_test(
     TestDiffIkKernels, "test_adaptive_damping_matches_formula", test_adaptive_damping_matches_formula, devices=devices
+)
+add_function_test(
+    TestDiffIkKernels,
+    "test_truncated_pinv_matrix_matches_numpy",
+    test_truncated_pinv_matrix_matches_numpy,
+    devices=devices,
+)
+add_function_test(
+    TestDiffIkKernels,
+    "test_truncated_pinv_matrix_drops_singular_directions",
+    test_truncated_pinv_matrix_drops_singular_directions,
+    devices=devices,
 )
 
 
@@ -1077,6 +1132,103 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
                 adaptive_damping_min=0.1,
                 adaptive_damping_max=1.0,
                 adaptive_damping_threshold=0.5,
+                device=device,
+            )
+
+    def test_truncated_svd_matches_pinv_when_well_conditioned(self):
+        """J = I_6x6 (all sigma = 1) with threshold below 1: every direction is fully trusted, qd = error exactly."""
+        device = wp.get_device()
+        pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device),
+            bandwidth=1.0,
+            damping=None,
+            ik_method=IkMethod.TRUNCATED_SVD,
+            truncated_svd_threshold=0.5,
+            device=device,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*pos_err.tolist()), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        expected = np.concatenate([pos_err, np.zeros(3, dtype=np.float32)])
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-5)
+
+    def test_truncated_svd_matches_spectral_filter_for_rank_deficient_robot(self):
+        """A 5-DOF robot's JJᵀ has one exact-zero eigenvalue: dropped, unlike PSEUDO_INVERSE which forbids dof<6."""
+        device = wp.get_device()
+        rng = np.random.default_rng(23)
+        n = 5
+        # Above the QR eigensolver's own float32 noise floor for the one
+        # structurally zero eigenvalue (~1e-6, i.e. sigma ~1e-3), but well
+        # below every genuine singular value of a random 6x5 Jacobian.
+        threshold = 1.0e-2
+        jacobian_np = rng.normal(size=(1, 6, n)).astype(np.float32)
+        pos_err = rng.normal(size=3).astype(np.float32)
+
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([n], device),
+            bandwidth=1.0,
+            damping=None,
+            ik_method=IkMethod.TRUNCATED_SVD,
+            truncated_svd_threshold=threshold,
+            device=device,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(n, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*pos_err.tolist()), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        j64 = jacobian_np[0].astype(np.float64)
+        error_np = np.concatenate([pos_err, np.zeros(3, dtype=np.float32)]).astype(np.float64)
+        eigenvalues, eigenvectors = np.linalg.eigh(j64 @ j64.T)
+        sigma = np.sqrt(np.maximum(eigenvalues, 0.0))
+        g = np.where(sigma > threshold, 1.0 / np.maximum(sigma, 1e-30), 0.0)
+        w = (eigenvectors * g) @ eigenvectors.T @ error_np
+        expected = j64.T @ w
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-3)
+
+    def test_truncated_svd_requires_threshold(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=None,
+                ik_method=IkMethod.TRUNCATED_SVD,
+                device=device,
+            )
+
+    def test_truncated_svd_rejects_explicit_damping(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                ik_method=IkMethod.TRUNCATED_SVD,
+                truncated_svd_threshold=0.01,
+                device=device,
+            )
+
+    def test_truncated_svd_threshold_rejected_for_other_methods(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                truncated_svd_threshold=0.01,
                 device=device,
             )
 
@@ -1892,6 +2044,10 @@ class TestControllerDiffIK(unittest.TestCase):
         inputs.desired_tool_pose_world = wp.array([tip_world], dtype=wp.transform, device=device)
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
         np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(2), atol=1e-4)
+        # The public tool_pose_world property exposes the same pose the
+        # controller resolved and used internally, not just a side effect
+        # inferred from zero qd_target above.
+        np.testing.assert_allclose(ctrl.tool_pose_world.numpy()[0], np.array(tip_world), atol=1e-5)
 
     def test_two_link_arm_converges_to_target(self):
         device = wp.get_device()

@@ -112,6 +112,12 @@ class ControllerDiffIK(ControllerBase):
             toward ``adaptive_damping_max``. Required (and must be
             positive) when ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be
             ``None`` otherwise.
+        truncated_svd_threshold: Per-direction singular-value threshold —
+            a task-space direction with singular value above this is
+            inverted exactly, one at or below it is dropped from the solve
+            entirely. Required (and must be positive) when
+            ``ik_method=IkMethod.TRUNCATED_SVD``; must be ``None``
+            otherwise.
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
             through the null-space projector.
         joint_limit_avoidance_gain: Joint-centering gain, applied once a DOF
@@ -198,6 +204,7 @@ class ControllerDiffIK(ControllerBase):
         adaptive_damping_min: float | None = None,
         adaptive_damping_max: float | None = None,
         adaptive_damping_threshold: float | None = None,
+        truncated_svd_threshold: float | None = None,
         use_joint_limit_avoidance: bool = False,
         joint_limit_avoidance_gain: float = 0.0,
         joint_limit_avoidance_margin: float = 0.0,
@@ -447,6 +454,7 @@ class ControllerDiffIK(ControllerBase):
             adaptive_damping_min=adaptive_damping_min,
             adaptive_damping_max=adaptive_damping_max,
             adaptive_damping_threshold=adaptive_damping_threshold,
+            truncated_svd_threshold=truncated_svd_threshold,
             use_joint_limit_avoidance=use_joint_limit_avoidance,
             joint_limit_avoidance_gain=joint_limit_avoidance_gain,
             joint_limit_avoidance_margin=joint_limit_avoidance_margin,
@@ -527,6 +535,11 @@ class ControllerDiffIK(ControllerBase):
     def tool_body(self) -> wp.array[wp.int32]:
         """Body index of each controlled robot's tool site, shape [controlled_robot_count]."""
         return self._tool_body
+
+    @property
+    def tool_pose_world(self) -> wp.array[wp.transform]:
+        """World pose of each controlled robot's tool site as of the latest ``step()``, shape [controlled_robot_count]."""
+        return self._tool_pose_world
 
     @property
     def device(self):

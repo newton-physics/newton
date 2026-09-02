@@ -74,6 +74,11 @@ class IkMethod(enum.Enum):
     singularity-robust damping), instead of a fixed ``damping``. Requires ``damping=None`` and
     ``adaptive_damping_min``/``adaptive_damping_max``/``adaptive_damping_threshold``."""
 
+    TRUNCATED_SVD = "truncated_svd"
+    """Per-direction pseudo-inverse from ``JJᵀ``'s full eigendecomposition: a task-space direction with singular
+    value above ``truncated_svd_threshold`` is inverted exactly (``1/sigma``), one below it is dropped entirely
+    (``0``) rather than damped. Requires ``damping=None`` and ``truncated_svd_threshold``."""
+
 
 # ---------------------------------------------------------------------------
 # Tool pose resolution: the model-based controller resolves each robot's tool
@@ -226,6 +231,42 @@ def _adaptive_damping_kernel(
     lam_max = damping_max[robot_idx]
     lam_sq = lam_min * lam_min + (1.0 - ratio * ratio) * (lam_max * lam_max - lam_min * lam_min)
     damping[robot_idx] = wp.sqrt(lam_sq)
+
+
+@wp.kernel
+def _truncated_pinv_matrix_kernel(
+    matrix: wp.array3d[float],  # (robot_count, 6, 6) undamped JJᵀ
+    singular_value_threshold: wp.array[wp.float32],  # (robot_count,) sigma below which a direction is dropped
+    # outputs
+    pinv_matrix: wp.array3d[float],  # (robot_count, 6, 6) = U diag(g(sigma_i)) Uᵀ, g(s) = 1/s if s > threshold else 0
+):
+    """Truncated-SVD pseudo-inverse of ``JJᵀ``, filtered per singular value rather than damped as a whole.
+
+    Each of the (at most 6) task-space directions is either inverted
+    exactly (``1/sigma``) or dropped entirely (``0``), depending on
+    whether its own singular value clears ``singular_value_threshold`` —
+    unlike ``_build_jjt_plus_damping_kernel``'s Tikhonov damping, which
+    shifts every direction by the same ``λ²`` and never truncates any of
+    them, this has no smooth transition between the two regimes.
+    """
+    robot_idx = wp.tid()
+
+    local_matrix = wp.spatial_matrix()
+    for row in range(6):
+        for col in range(6):
+            local_matrix[row, col] = matrix[robot_idx, row, col]
+
+    eigenvalues, eigenvectors_by_row = symmetric_eigenvalues_qr(local_matrix, _EIGENVALUE_QR_TOL)
+    threshold = singular_value_threshold[robot_idx]
+
+    for row in range(6):
+        for col in range(6):
+            total = float(0.0)
+            for i in range(6):
+                sigma = wp.sqrt(wp.max(eigenvalues[i], 0.0))
+                if sigma > threshold:
+                    total += eigenvectors_by_row[i, row] * eigenvectors_by_row[i, col] / sigma
+            pinv_matrix[robot_idx, row, col] = total
 
 
 # ---------------------------------------------------------------------------
