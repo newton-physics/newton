@@ -29,11 +29,14 @@ from newton._src.controllers.impl._common import (
     _pose_error_kernel,
 )
 from newton._src.controllers.impl.diff_ik._common import (
+    IkMethod,
+    _adaptive_damping_kernel,
     _build_jjt_plus_damping_kernel,
     _integrate_position_kernel,
     _joint_limit_avoidance_bias_kernel,
     _posture_bias_kernel,
     _qd_from_y_kernel,
+    _smallest_eigenvalue_spd6_kernel,
 )
 from newton._src.controllers.impl.diff_ik.model_based import ControllerDiffIK
 from newton._src.controllers.impl.diff_ik.model_free import ControllerDiffIKModelFree
@@ -615,6 +618,43 @@ def test_integrate_position_euler_step(test: unittest.TestCase, device):
     np.testing.assert_allclose(joint_q_target.numpy(), [0.1, 0.8, -0.95], atol=1e-6)
 
 
+def test_smallest_eigenvalue_spd6_matches_numpy(test: unittest.TestCase, device):
+    rng = np.random.default_rng(11)
+    j1 = rng.normal(size=(6, 6)).astype(np.float32)
+    j2 = np.zeros((6, 4), dtype=np.float32)
+    j2[:, :4] = rng.normal(size=(6, 4))  # rank <= 4: JJᵀ has (at least) two zero eigenvalues
+    jjt_np = np.stack([j1 @ j1.T, j2 @ j2.T]).astype(np.float32)
+
+    matrix = wp.array3d(jjt_np, dtype=wp.float32, device=device)
+    smallest_eigenvalue = wp.zeros(2, dtype=wp.float32, device=device)
+    wp.launch(_smallest_eigenvalue_spd6_kernel, dim=2, inputs=[matrix], outputs=[smallest_eigenvalue], device=device)
+    expected = np.array([np.linalg.eigvalsh(jjt_np[i].astype(np.float64)).min() for i in range(2)])
+    np.testing.assert_allclose(smallest_eigenvalue.numpy(), np.maximum(expected, 0.0), atol=1e-3)
+
+
+def test_adaptive_damping_matches_formula(test: unittest.TestCase, device):
+    smallest_eigenvalue = wp.array([0.0, 0.25, 100.0], dtype=wp.float32, device=device)  # sigma_min = 0, 0.5, 10
+    damping_min = wp.array([0.1, 0.1, 0.1], dtype=wp.float32, device=device)
+    damping_max = wp.array([2.0, 2.0, 2.0], dtype=wp.float32, device=device)
+    threshold = wp.array([1.0, 1.0, 1.0], dtype=wp.float32, device=device)
+    damping = wp.zeros(3, dtype=wp.float32, device=device)
+    wp.launch(
+        _adaptive_damping_kernel,
+        dim=3,
+        inputs=[smallest_eigenvalue, damping_min, damping_max, threshold],
+        outputs=[damping],
+        device=device,
+    )
+    sigma_min = np.array([0.0, 0.5, 10.0])
+    ratio = np.minimum(sigma_min / 1.0, 1.0)
+    expected_sq = 0.1**2 + (1.0 - ratio**2) * (2.0**2 - 0.1**2)
+    np.testing.assert_allclose(damping.numpy(), np.sqrt(expected_sq), atol=1e-5)
+    # At the threshold and beyond, damping is exactly damping_min.
+    test.assertAlmostEqual(float(damping.numpy()[2]), 0.1, places=5)
+    # At full singularity, damping is exactly damping_max.
+    test.assertAlmostEqual(float(damping.numpy()[0]), 2.0, places=5)
+
+
 class TestDiffIkKernels(unittest.TestCase):
     pass
 
@@ -710,6 +750,15 @@ add_function_test(
 )
 add_function_test(
     TestDiffIkKernels, "test_integrate_position_euler_step", test_integrate_position_euler_step, devices=devices
+)
+add_function_test(
+    TestDiffIkKernels,
+    "test_smallest_eigenvalue_spd6_matches_numpy",
+    test_smallest_eigenvalue_spd6_matches_numpy,
+    devices=devices,
+)
+add_function_test(
+    TestDiffIkKernels, "test_adaptive_damping_matches_formula", test_adaptive_damping_matches_formula, devices=devices
 )
 
 
@@ -847,6 +896,189 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
         expected = bandwidth_val * err_y / (2.0 + lam**2)
         self.assertAlmostEqual(float(outputs.joint_qd_target.numpy()[0]), expected, places=5)
+
+    def test_transpose_method_matches_formula(self):
+        """ik_method=TRANSPOSE: qd_target = bandwidth · Jᵀe exactly, no matrix inversion."""
+        device = wp.get_device()
+        err_y = 0.1
+        bandwidth_val = 2.0
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([1], device),
+            bandwidth=bandwidth_val,
+            damping=None,
+            ik_method=IkMethod.TRANSPOSE,
+            device=device,
+        )
+        jacobian_np = np.zeros((1, 6, 1), dtype=np.float32)
+        jacobian_np[0, 1, 0] = 1.0
+        jacobian_np[0, 5, 0] = 1.0
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(1, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(0.0, err_y, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        expected = bandwidth_val * err_y  # Jᵀe = 1.0 * err_y + 1.0 * 0 (no z-rotation error)
+        self.assertAlmostEqual(float(outputs.joint_qd_target.numpy()[0]), expected, places=5)
+
+    def test_transpose_method_rejects_explicit_damping(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                ik_method=IkMethod.TRANSPOSE,
+                device=device,
+            )
+
+    def test_pseudo_inverse_method_matches_zero_damping_dls(self):
+        """ik_method=PSEUDO_INVERSE matches ik_method=DAMPED_LEAST_SQUARES with damping=0 exactly."""
+        device = wp.get_device()
+        pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device),
+            bandwidth=1.0,
+            damping=None,
+            ik_method=IkMethod.PSEUDO_INVERSE,
+            device=device,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*pos_err.tolist()), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        np.testing.assert_allclose(
+            outputs.joint_qd_target.numpy(), np.concatenate([pos_err, np.zeros(3, dtype=np.float32)]), atol=1e-5
+        )
+
+    def test_pseudo_inverse_requires_six_dofs(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([3], device),
+                bandwidth=1.0,
+                damping=None,
+                ik_method=IkMethod.PSEUDO_INVERSE,
+                device=device,
+            )
+
+    def test_pseudo_inverse_rejects_explicit_damping(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                ik_method=IkMethod.PSEUDO_INVERSE,
+                device=device,
+            )
+
+    def test_adaptive_damping_uses_lambda_min_far_from_singularity(self):
+        """J = I_6x6 (sigma_min = 1) with threshold below 1: adaptive damping settles at λ_min exactly."""
+        device = wp.get_device()
+        pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
+        lam_min = 0.3
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device),
+            bandwidth=1.0,
+            damping=None,
+            ik_method=IkMethod.ADAPTIVE_DAMPING,
+            adaptive_damping_min=lam_min,
+            adaptive_damping_max=1.0,
+            adaptive_damping_threshold=0.5,
+            device=device,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(*pos_err.tolist()), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        expected = np.concatenate([pos_err, np.zeros(3, dtype=np.float32)]) / (1.0 + lam_min**2)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-5)
+
+    def test_adaptive_damping_uses_lambda_max_for_structurally_rank_deficient_robot(self):
+        """A 1-DOF robot's JJᵀ always has sigma_min = 0 (rank <= 1 < 6), so adaptive damping settles at λ_max."""
+        device = wp.get_device()
+        err_y = 0.1
+        bandwidth_val = 2.0
+        lam_max = 0.5
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([1], device),
+            bandwidth=bandwidth_val,
+            damping=None,
+            ik_method=IkMethod.ADAPTIVE_DAMPING,
+            adaptive_damping_min=0.0,
+            adaptive_damping_max=lam_max,
+            adaptive_damping_threshold=1.0,
+            device=device,
+        )
+        jacobian_np = np.zeros((1, 6, 1), dtype=np.float32)
+        jacobian_np[0, 1, 0] = 1.0
+        jacobian_np[0, 5, 0] = 1.0
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(1, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(0.0, err_y, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        expected = bandwidth_val * err_y / (2.0 + lam_max**2)
+        self.assertAlmostEqual(float(outputs.joint_qd_target.numpy()[0]), expected, places=5)
+
+    def test_adaptive_damping_requires_all_three_params(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=None,
+                ik_method=IkMethod.ADAPTIVE_DAMPING,
+                adaptive_damping_min=0.1,
+                adaptive_damping_max=1.0,
+                # adaptive_damping_threshold omitted
+                device=device,
+            )
+
+    def test_adaptive_damping_rejects_explicit_damping(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                ik_method=IkMethod.ADAPTIVE_DAMPING,
+                adaptive_damping_min=0.1,
+                adaptive_damping_max=1.0,
+                adaptive_damping_threshold=0.5,
+                device=device,
+            )
+
+    def test_adaptive_damping_params_rejected_for_other_methods(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                adaptive_damping_min=0.1,
+                adaptive_damping_max=1.0,
+                adaptive_damping_threshold=0.5,
+                device=device,
+            )
 
     def test_multiple_robots_independent(self):
         """Each robot's qd_target depends only on its own Jacobian and pose error."""
@@ -1615,6 +1847,21 @@ class TestControllerDiffIK(unittest.TestCase):
         inputs.joint_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=device)
         inputs.joint_qd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
         # Home pose: two unit links along +x -> tip at (2, 0, 0).
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(2.0, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(2), atol=1e-5)
+
+    def test_ik_method_forwarded_to_inner_controller(self):
+        """ik_method=TRANSPOSE is forwarded to the inner ControllerDiffIKModelFree, not silently dropped."""
+        device = wp.get_device()
+        model = _build_two_link_arm_with_tool_site(device)
+        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=None, ik_method=IkMethod.TRANSPOSE)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=device)
+        inputs.joint_qd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
         inputs.desired_tool_pose_world = wp.array(
             [wp.transform(p=wp.vec3(2.0, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
         )

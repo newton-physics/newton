@@ -60,11 +60,14 @@ from .._common import (
     _task_matrix_times_jacobian_kernel,
 )
 from ._common import (
+    IkMethod,
+    _adaptive_damping_kernel,
     _build_jjt_plus_damping_kernel,
     _integrate_position_kernel,
     _joint_limit_avoidance_bias_kernel,
     _posture_bias_kernel,
     _qd_from_y_kernel,
+    _smallest_eigenvalue_spd6_kernel,
 )
 
 
@@ -119,8 +122,29 @@ class ControllerDiffIKModelFree(ControllerBase):
             the task-space normal-equations matrix. Pass a scalar to apply
             the same damping to every robot, an array of shape
             [controlled_robot_count] to set them individually, or ``None``
-            to read ``inputs.damping`` each step. ``λ = 0`` reduces the
-            solve to the ordinary Moore-Penrose pseudo-inverse.
+            to read ``inputs.damping`` each step. Only meaningful when
+            ``ik_method=IkMethod.DAMPED_LEAST_SQUARES`` (the default); must
+            be ``None`` for every other :class:`IkMethod`, which has no λ to
+            set.
+        ik_method: Inverse-Jacobian solve method, an :class:`IkMethod`.
+            Defaults to ``IkMethod.DAMPED_LEAST_SQUARES``.
+        adaptive_damping_min: λ used when the smallest singular value of the
+            task Jacobian is at or above ``adaptive_damping_threshold``.
+            Required (and must be non-negative) when
+            ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be ``None``
+            otherwise.
+        adaptive_damping_max: λ used at a full singularity (smallest
+            singular value zero), ramping down to ``adaptive_damping_min``
+            as the smallest singular value rises to
+            ``adaptive_damping_threshold``. Required (and must exceed
+            ``adaptive_damping_min``) when
+            ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be ``None``
+            otherwise.
+        adaptive_damping_threshold: Smallest-singular-value threshold below
+            which damping starts ramping from ``adaptive_damping_min``
+            toward ``adaptive_damping_max``. Required (and must be
+            positive) when ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be
+            ``None`` otherwise.
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
             through the null-space projector.
         joint_limit_avoidance_gain: Joint-centering gain, applied once a DOF
@@ -164,6 +188,8 @@ class ControllerDiffIKModelFree(ControllerBase):
         requires_grad: Whether internal buffers need gradient support.
     """
 
+    IkMethod = IkMethod
+
     class Inputs:
         """Input struct returned by :meth:`~ControllerDiffIKModelFree.input`.
 
@@ -205,6 +231,10 @@ class ControllerDiffIKModelFree(ControllerBase):
         controlled_dofs_per_robot: wp.array[wp.int32],
         bandwidth: wp.array[wp.float32] | float | None,
         damping: wp.array[wp.float32] | float | None,
+        ik_method: IkMethod = IkMethod.DAMPED_LEAST_SQUARES,
+        adaptive_damping_min: float | None = None,
+        adaptive_damping_max: float | None = None,
+        adaptive_damping_threshold: float | None = None,
         use_joint_limit_avoidance: bool = False,
         joint_limit_avoidance_gain: float = 0.0,
         joint_limit_avoidance_margin: float = 0.0,
@@ -248,19 +278,60 @@ class ControllerDiffIKModelFree(ControllerBase):
         max_controlled_dofs = int(controlled_dofs_per_robot_np.max())
         total_controlled_dofs = int(controlled_dofs_per_robot_np.sum())
 
-        for name, array, size in (
-            ("bandwidth", bandwidth, total_controlled_dofs),
-            ("damping", damping, controlled_robot_count),
-        ):
-            if isinstance(array, (int, float)) and not isinstance(array, bool):
-                continue  # broadcast at bake time, not a wp.array to validate
+        if not (isinstance(bandwidth, (int, float)) and not isinstance(bandwidth, bool)):
             _validate_array(
-                array=array,
-                name=name,
+                array=bandwidth,
+                name="bandwidth",
                 dtype=wp.float32,
-                shape=(size,),
+                shape=(total_controlled_dofs,),
                 device=self._device,
                 required=False,
+            )
+
+        if ik_method == IkMethod.DAMPED_LEAST_SQUARES:
+            if not (isinstance(damping, (int, float)) and not isinstance(damping, bool)):
+                _validate_array(
+                    array=damping,
+                    name="damping",
+                    dtype=wp.float32,
+                    shape=(controlled_robot_count,),
+                    device=self._device,
+                    required=False,
+                )
+        elif damping is not None:
+            raise ValueError(f"damping was given but ik_method={ik_method} does not use it (pass damping=None).")
+        elif ik_method == IkMethod.PSEUDO_INVERSE:
+            bad_robots = np.flatnonzero(controlled_dofs_per_robot_np < 6)
+            if bad_robots.size > 0:
+                raise ValueError(
+                    "ik_method=IkMethod.PSEUDO_INVERSE requires every robot to have at least 6 controlled "
+                    f"DOFs, since JJᵀ is otherwise rank-deficient at λ = 0; robot(s) {bad_robots.tolist()} "
+                    f"have controlled_dofs_per_robot < 6."
+                )
+
+        if ik_method == IkMethod.ADAPTIVE_DAMPING:
+            if adaptive_damping_min is None or adaptive_damping_max is None or adaptive_damping_threshold is None:
+                raise ValueError(
+                    "ik_method=IkMethod.ADAPTIVE_DAMPING requires adaptive_damping_min, adaptive_damping_max, "
+                    "and adaptive_damping_threshold."
+                )
+            if adaptive_damping_min < 0.0:
+                raise ValueError(f"adaptive_damping_min must be non-negative, got {adaptive_damping_min}.")
+            if adaptive_damping_max <= adaptive_damping_min:
+                raise ValueError(
+                    "adaptive_damping_max must be greater than adaptive_damping_min, got "
+                    f"adaptive_damping_max={adaptive_damping_max}, adaptive_damping_min={adaptive_damping_min}."
+                )
+            if adaptive_damping_threshold <= 0.0:
+                raise ValueError(f"adaptive_damping_threshold must be positive, got {adaptive_damping_threshold}.")
+        elif (
+            adaptive_damping_min is not None
+            or adaptive_damping_max is not None
+            or adaptive_damping_threshold is not None
+        ):
+            raise ValueError(
+                "adaptive_damping_min/adaptive_damping_max/adaptive_damping_threshold were given but "
+                f"ik_method={ik_method} != IkMethod.ADAPTIVE_DAMPING."
             )
 
         use_null_space = bool(use_joint_limit_avoidance) or bool(use_null_space_posture_control)
@@ -325,6 +396,7 @@ class ControllerDiffIKModelFree(ControllerBase):
             )
         # ------------------------------------------------------------------
 
+        self._ik_method = ik_method
         self._use_joint_limit_avoidance = bool(use_joint_limit_avoidance)
         self._use_null_space_posture_control = bool(use_null_space_posture_control)
         self._use_null_space = use_null_space
@@ -356,7 +428,24 @@ class ControllerDiffIKModelFree(ControllerBase):
         )
 
         self._bandwidth_baked = self._bake(bandwidth, total_controlled_dofs)
-        self._damping_baked = self._bake(damping, controlled_robot_count)
+        # PSEUDO_INVERSE/TRANSPOSE never read damping (validated above to be
+        # None), so a dummy zero bake keeps them out of the live-port path
+        # without a separate "does this method use damping" branch below.
+        self._damping_baked = (
+            self._bake(damping, controlled_robot_count)
+            if ik_method == IkMethod.DAMPED_LEAST_SQUARES
+            else self._bake(0.0, controlled_robot_count)
+        )
+        self._use_adaptive_damping = ik_method == IkMethod.ADAPTIVE_DAMPING
+        self._adaptive_damping_min_baked = (
+            self._bake(adaptive_damping_min, controlled_robot_count) if self._use_adaptive_damping else None
+        )
+        self._adaptive_damping_max_baked = (
+            self._bake(adaptive_damping_max, controlled_robot_count) if self._use_adaptive_damping else None
+        )
+        self._adaptive_damping_threshold_baked = (
+            self._bake(adaptive_damping_threshold, controlled_robot_count) if self._use_adaptive_damping else None
+        )
         self._null_space_stiffness_baked = (
             self._bake(null_space_stiffness, total_controlled_dofs) if self._use_null_space_posture_control else None
         )
@@ -429,6 +518,10 @@ class ControllerDiffIKModelFree(ControllerBase):
         self._cholesky_scratch = wp.zeros(
             (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
+        if self._use_adaptive_damping:
+            self._zero_damping_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
+            self._smallest_eigenvalue_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
+            self._adaptive_damping_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
         self._y_buf = wp.zeros(
             controlled_robot_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
         )
@@ -715,31 +808,65 @@ class ControllerDiffIKModelFree(ControllerBase):
             outputs=[self._pose_error_buf],
             device=self._device,
         )
-        wp.launch(
-            _build_jjt_plus_damping_kernel,
-            dim=(controlled_robot_count, 6, 6),
-            inputs=[self._jacobian_buf, self._controlled_dofs_per_robot, damping],
-            outputs=[self._jjt_buf],
-            device=self._device,
-        )
-        wp.launch(
-            _invert_spd_block_kernel,
-            dim=controlled_robot_count,
-            inputs=[self._jjt_buf, self._block_dim_6, self._cholesky_scratch],
-            outputs=[self._jjt_inv_buf],
-            device=self._device,
-        )
-        wp.launch(
-            _apply_spatial_matrix_kernel,
-            dim=controlled_robot_count,
-            inputs=[self._jjt_inv_buf, self._pose_error_buf],
-            outputs=[self._y_buf],
-            device=self._device,
-        )
+        if self._ik_method == IkMethod.TRANSPOSE:
+            # q̇ = bandwidth · Jᵀe: no matrix to invert, so the pose error
+            # itself stands in for y in the shared finishing kernel.
+            y = self._pose_error_buf
+        else:
+            if self._use_adaptive_damping:
+                wp.launch(
+                    _build_jjt_plus_damping_kernel,
+                    dim=(controlled_robot_count, 6, 6),
+                    inputs=[self._jacobian_buf, self._controlled_dofs_per_robot, self._zero_damping_buf],
+                    outputs=[self._jjt_buf],
+                    device=self._device,
+                )
+                wp.launch(
+                    _smallest_eigenvalue_spd6_kernel,
+                    dim=controlled_robot_count,
+                    inputs=[self._jjt_buf],
+                    outputs=[self._smallest_eigenvalue_buf],
+                    device=self._device,
+                )
+                wp.launch(
+                    _adaptive_damping_kernel,
+                    dim=controlled_robot_count,
+                    inputs=[
+                        self._smallest_eigenvalue_buf,
+                        self._adaptive_damping_min_baked,
+                        self._adaptive_damping_max_baked,
+                        self._adaptive_damping_threshold_baked,
+                    ],
+                    outputs=[self._adaptive_damping_buf],
+                    device=self._device,
+                )
+                damping = self._adaptive_damping_buf
+            wp.launch(
+                _build_jjt_plus_damping_kernel,
+                dim=(controlled_robot_count, 6, 6),
+                inputs=[self._jacobian_buf, self._controlled_dofs_per_robot, damping],
+                outputs=[self._jjt_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _invert_spd_block_kernel,
+                dim=controlled_robot_count,
+                inputs=[self._jjt_buf, self._block_dim_6, self._cholesky_scratch],
+                outputs=[self._jjt_inv_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _apply_spatial_matrix_kernel,
+                dim=controlled_robot_count,
+                inputs=[self._jjt_inv_buf, self._pose_error_buf],
+                outputs=[self._y_buf],
+                device=self._device,
+            )
+            y = self._y_buf
         wp.launch(
             _qd_from_y_kernel,
             dim=total_controlled_dofs,
-            inputs=[self._jacobian_buf, self._y_buf, bandwidth, self._robot_of_dof, self._slot_of_dof],
+            inputs=[self._jacobian_buf, y, bandwidth, self._robot_of_dof, self._slot_of_dof],
             outputs=[self._qd_buf],
             device=self._device,
         )

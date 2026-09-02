@@ -27,7 +27,7 @@ from ...controller import ControllerBase
 from ...joint_selection import select_joints
 from ...utils import _validate_array
 from .._common import _read_port, _shift_jacobian_to_tool_kernel
-from ._common import _tool_pose_kernel
+from ._common import IkMethod, _tool_pose_kernel
 from .model_free import ControllerDiffIKModelFree
 
 
@@ -89,8 +89,29 @@ class ControllerDiffIK(ControllerBase):
             the task-space normal-equations matrix. Pass a scalar to apply
             the same damping to every robot, an array of shape
             [controlled_robot_count] to set them individually, or ``None``
-            to read ``inputs.damping`` each step. ``λ = 0`` reduces the
-            solve to the ordinary Moore-Penrose pseudo-inverse.
+            to read ``inputs.damping`` each step. Only meaningful when
+            ``ik_method=IkMethod.DAMPED_LEAST_SQUARES`` (the default); must
+            be ``None`` for every other :class:`IkMethod`, which has no λ to
+            set.
+        ik_method: Inverse-Jacobian solve method, an :class:`IkMethod`.
+            Defaults to ``IkMethod.DAMPED_LEAST_SQUARES``.
+        adaptive_damping_min: λ used when the smallest singular value of the
+            task Jacobian is at or above ``adaptive_damping_threshold``.
+            Required (and must be non-negative) when
+            ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be ``None``
+            otherwise.
+        adaptive_damping_max: λ used at a full singularity (smallest
+            singular value zero), ramping down to ``adaptive_damping_min``
+            as the smallest singular value rises to
+            ``adaptive_damping_threshold``. Required (and must exceed
+            ``adaptive_damping_min``) when
+            ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be ``None``
+            otherwise.
+        adaptive_damping_threshold: Smallest-singular-value threshold below
+            which damping starts ramping from ``adaptive_damping_min``
+            toward ``adaptive_damping_max``. Required (and must be
+            positive) when ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be
+            ``None`` otherwise.
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
             through the null-space projector.
         joint_limit_avoidance_gain: Joint-centering gain, applied once a DOF
@@ -126,6 +147,8 @@ class ControllerDiffIK(ControllerBase):
             step (the default, and the only valid value when both are
             disabled).
     """
+
+    IkMethod = IkMethod
 
     class Inputs:
         """Input struct returned by :meth:`~ControllerDiffIK.input`.
@@ -171,6 +194,10 @@ class ControllerDiffIK(ControllerBase):
         tool_sites: list[int | str | re.Pattern[str]] | str | re.Pattern[str],
         bandwidth: wp.array[wp.float32] | float | None,
         damping: wp.array[wp.float32] | float | None,
+        ik_method: IkMethod = IkMethod.DAMPED_LEAST_SQUARES,
+        adaptive_damping_min: float | None = None,
+        adaptive_damping_max: float | None = None,
+        adaptive_damping_threshold: float | None = None,
         use_joint_limit_avoidance: bool = False,
         joint_limit_avoidance_gain: float = 0.0,
         joint_limit_avoidance_margin: float = 0.0,
@@ -189,7 +216,7 @@ class ControllerDiffIK(ControllerBase):
         self._device = model.device
         self._requires_grad = model.requires_grad
         self._bandwidth_is_live = bandwidth is None
-        self._damping_is_live = damping is None
+        self._damping_is_live = ik_method == IkMethod.DAMPED_LEAST_SQUARES and damping is None
         self._use_joint_limit_avoidance = bool(use_joint_limit_avoidance)
         self._use_null_space_posture_control = bool(use_null_space_posture_control)
         self._use_null_space = self._use_joint_limit_avoidance or self._use_null_space_posture_control
@@ -416,6 +443,10 @@ class ControllerDiffIK(ControllerBase):
             controlled_dofs_per_robot=controlled_dofs_per_robot,
             bandwidth=bandwidth,
             damping=damping,
+            ik_method=ik_method,
+            adaptive_damping_min=adaptive_damping_min,
+            adaptive_damping_max=adaptive_damping_max,
+            adaptive_damping_threshold=adaptive_damping_threshold,
             use_joint_limit_avoidance=use_joint_limit_avoidance,
             joint_limit_avoidance_gain=joint_limit_avoidance_gain,
             joint_limit_avoidance_margin=joint_limit_avoidance_margin,

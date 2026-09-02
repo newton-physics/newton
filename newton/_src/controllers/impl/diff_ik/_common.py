@@ -15,12 +15,15 @@ count left unused (see ``dof_count``).
 The inverse-Jacobian solve is isolated to its own group of kernels
 (``_build_jjt_plus_damping_kernel``, plus the shared
 ``_invert_spd_block_kernel``/``_apply_spatial_matrix_kernel`` in
-``controllers/impl/_common.py``, and ``_qd_from_y_kernel``) so that a future
-solver — plain transpose, zero-damping pseudo-inverse, or
-singularity-adaptive damping — can be added as its own kernel group without
-touching pose-error, null-space, or integration code. Only damped least
-squares (Levenberg-Marquardt-style Tikhonov regularization) is implemented
-so far, ``q̇ = bandwidth · Jᵀ(JJᵀ + λ²I)⁻¹e``.
+``controllers/impl/_common.py``, and ``_qd_from_y_kernel``) so that a
+solver can be selected per instance via :class:`IkMethod` without touching
+pose-error, null-space, or integration code. Damped least squares
+(Levenberg-Marquardt-style Tikhonov regularization) is the default,
+``q̇ = bandwidth · Jᵀ(JJᵀ + λ²I)⁻¹e``; the zero-damping pseudo-inverse and
+the plain transpose method reuse the same kernel group (with ``λ = 0``) or
+skip it entirely (transpose feeds the pose error straight into
+``_qd_from_y_kernel`` in place of ``y``) — see :class:`IkMethod` and
+``ControllerDiffIKModelFree.step``.
 
 This single fixed ``6x6`` form is exact for a robot with any number of
 controlled DOFs, not just ``n_joints ≥ 6``: the push-through identity
@@ -28,18 +31,49 @@ controlled DOFs, not just ``n_joints ≥ 6``: the push-through identity
 ``λ > 0``, so there is no separate "overdetermined" ``n_joints x n_joints``
 code path to get wrong for a heterogeneous fleet mixing DOF counts — every
 robot solves the same fixed ``6x6`` system regardless of its own DOF count.
-This only breaks down at exactly ``λ = 0`` (the zero-damping pseudo-inverse,
-not implemented yet): ``JJᵀ`` is then rank-deficient whenever
-``dof_count < 6``, and while the Cholesky pivot floor in
-``_invert_spd_block_kernel`` keeps that from producing NaN, it does not
-produce a meaningful pseudo-inverse in that regime — a caller wanting an
-undamped solve will need a per-robot DOF-count check when that solver is
-added.
+This only breaks down at exactly ``λ = 0`` (``IkMethod.PSEUDO_INVERSE``):
+``JJᵀ`` is then rank-deficient whenever ``dof_count < 6``, and while the
+Cholesky pivot floor in ``_invert_spd_block_kernel`` keeps that from
+producing NaN, it does not produce a meaningful pseudo-inverse in that
+regime, so ``IkMethod.PSEUDO_INVERSE`` requires every robot to have at
+least 6 controlled DOFs.
 """
 
 from __future__ import annotations
 
+import enum
+
 import warp as wp
+from warp.fem.linalg import symmetric_eigenvalues_qr
+
+# Tolerance passed to symmetric_eigenvalues_qr: the QR algorithm iterates
+# until the off-diagonal terms of the tridiagonalized matrix fall below this,
+# relative to the diagonal terms.
+_EIGENVALUE_QR_TOL = wp.constant(wp.float32(1.0e-6))
+
+
+class IkMethod(enum.Enum):
+    """Inverse-Jacobian solve method for :class:`ControllerDiffIKModelFree`/:class:`ControllerDiffIK`.
+
+    Also reachable as ``ControllerDiffIKModelFree.IkMethod``/
+    ``ControllerDiffIK.IkMethod``.
+    """
+
+    DAMPED_LEAST_SQUARES = "damped_least_squares"
+    """``q̇ = bandwidth · Jᵀ(JJᵀ + λ²I)⁻¹e``. The default; uses ``damping``."""
+
+    PSEUDO_INVERSE = "pseudo_inverse"
+    """Zero-damping Moore-Penrose pseudo-inverse (``λ = 0`` in the same solve). Requires every robot to have at
+    least 6 controlled DOFs, and ``damping=None`` (there is no λ to set)."""
+
+    TRANSPOSE = "transpose"
+    """``q̇ = bandwidth · Jᵀe``, no matrix inversion. Requires ``damping=None`` (there is no λ to set)."""
+
+    ADAPTIVE_DAMPING = "adaptive_damping"
+    """Damped least squares with λ computed each step from ``JJᵀ``'s smallest eigenvalue (Maciejewski-Klein
+    singularity-robust damping), instead of a fixed ``damping``. Requires ``damping=None`` and
+    ``adaptive_damping_min``/``adaptive_damping_max``/``adaptive_damping_threshold``."""
+
 
 # ---------------------------------------------------------------------------
 # Tool pose resolution: the model-based controller resolves each robot's tool
@@ -129,6 +163,69 @@ def _qd_from_y_kernel(
         jacobian_column[row] = jacobian_tool_world[robot, row, slot]
 
     joint_qd_target[dof] = bandwidth[dof] * wp.dot(jacobian_column, y[robot])
+
+
+# ---------------------------------------------------------------------------
+# Adaptive damping (IkMethod.ADAPTIVE_DAMPING): λ is computed each step from
+# the smallest eigenvalue of the (undamped) JJᵀ, instead of being a fixed
+# input, so damping stays near ``adaptive_damping_min`` away from a
+# singularity and ramps up toward ``adaptive_damping_max`` only as the robot
+# approaches one. Feeds into the same _build_jjt_plus_damping_kernel used by
+# every other method.
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _smallest_eigenvalue_spd6_kernel(
+    matrix: wp.array3d[float],  # (robot_count, 6, 6) symmetric matrix, e.g. undamped JJᵀ
+    # outputs
+    smallest_eigenvalue: wp.array[wp.float32],  # (robot_count,) smallest eigenvalue, clamped to >= 0
+):
+    """Smallest eigenvalue of a batch of symmetric 6x6 matrices, via QR-algorithm eigendecomposition.
+
+    For ``matrix = JJᵀ``, this is ``sigma_min²``, the square of the Jacobian's
+    smallest singular value — zero exactly at a kinematic singularity.
+    Clamped to non-negative since a symmetric positive-semidefinite matrix's
+    eigenvalues are never negative in exact arithmetic, but float32
+    cancellation in the QR iteration can land a fully degenerate one just
+    below zero.
+    """
+    robot_idx = wp.tid()
+
+    local_matrix = wp.spatial_matrix()
+    for row in range(6):
+        for col in range(6):
+            local_matrix[row, col] = matrix[robot_idx, row, col]
+
+    eigenvalues, _ = symmetric_eigenvalues_qr(local_matrix, _EIGENVALUE_QR_TOL)
+    smallest = eigenvalues[0]
+    for i in range(1, 6):
+        smallest = wp.min(smallest, eigenvalues[i])
+    smallest_eigenvalue[robot_idx] = wp.max(smallest, 0.0)
+
+
+@wp.kernel
+def _adaptive_damping_kernel(
+    smallest_eigenvalue: wp.array[wp.float32],  # (robot_count,) sigma_min² of the undamped JJᵀ
+    damping_min: wp.array[wp.float32],  # (robot_count,) λ far from any singularity
+    damping_max: wp.array[wp.float32],  # (robot_count,) λ at a full singularity (sigma_min = 0)
+    singular_value_threshold: wp.array[wp.float32],  # (robot_count,) sigma_min below which damping starts ramping up
+    # outputs
+    damping: wp.array[wp.float32],  # (robot_count,) λ to pass into _build_jjt_plus_damping_kernel
+):
+    """Maciejewski-Klein singularity-robust damping, ``λ²(sigma_min)``.
+
+    ``λ² = λ_min² + (1 - (sigma_min/ε)²) · (λ_max² - λ_min²)``, clamped so
+    ``sigma_min ≥ ε`` (comfortably non-singular) gives exactly ``λ_min`` and
+    ``sigma_min = 0`` (fully singular) gives exactly ``λ_max``.
+    """
+    robot_idx = wp.tid()
+    sigma_min = wp.sqrt(smallest_eigenvalue[robot_idx])
+    ratio = wp.min(sigma_min / singular_value_threshold[robot_idx], 1.0)
+    lam_min = damping_min[robot_idx]
+    lam_max = damping_max[robot_idx]
+    lam_sq = lam_min * lam_min + (1.0 - ratio * ratio) * (lam_max * lam_max - lam_min * lam_min)
+    damping[robot_idx] = wp.sqrt(lam_sq)
 
 
 # ---------------------------------------------------------------------------
