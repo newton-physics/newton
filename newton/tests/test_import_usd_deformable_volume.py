@@ -19,6 +19,7 @@ import warp as wp
 import newton
 from newton.tests._usd_deformable_test_utils import (
     _apply_deformable_body_api,
+    _author_deformable_element_array,
     _bind_deformable_material,
     _deformable_stage,
     group_labels,
@@ -99,11 +100,14 @@ class TestUSDDeformableVolume(unittest.TestCase):
         return builder, result
 
     def test_volume_mass_precedence(self):
-        """Per-prim mass sources resolve in precedence order: physics:masses on the simulation
-        geometry beats a body-mass override; a body-mass override rescales the density-derived
-        distribution proportionally, preserving the volume weighting (proposal:
-        m_p = sum_{e in tau(p)} V_e / T); and PhysicsDeformableBodyAPI.density beats the bound
-        material's density."""
+        """Verify proposal precedence for per-prim volume mass sources.
+
+        Give physics:masses on the simulation geometry precedence over a body-mass
+        override. Rescale the density-derived distribution proportionally for a body-mass
+        override, preserving volume weighting (m_e = m_tot V_e / V_tot, followed by
+        m_p = sum_{e in tau(p)} m_e / T), and give PhysicsDeformableBodyAPI.density
+        precedence over bound-material density.
+        """
         from pxr import Sdf
 
         body_mass = 10.0
@@ -126,7 +130,8 @@ class TestUSDDeformableVolume(unittest.TestCase):
         _apply_deformable_body_api(ovr_tet.GetPrim(), density=500.0)
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        with self.assertWarnsRegex(DeprecationWarning, "masses:elementType"):
+            builder.add_usd(stage)
 
         def masses(path):
             p0, p1 = group_range(builder, "soft", path, "particle")
@@ -155,6 +160,58 @@ class TestUSDDeformableVolume(unittest.TestCase):
         total_ovr = sum(masses("/World/SoftDensity"))
         self.assertGreater(total_mat, 0.0)
         self.assertAlmostEqual(total_ovr / total_mat, 5.0, places=4)
+
+    def test_volume_constant_mass_array_distributes_total(self):
+        """Distribute a constant simulation-geometry mass over the volume elements."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([12.0])
+        tet.GetPrim().CreateAttribute("physics:masses:elementType", Sdf.ValueTypeNames.Token).Set("constant")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual([builder.particle_mass[i] for i in range(4)], [3.0, 3.0, 3.0, 3.0])
+
+    def test_volume_element_mass_types_convert_to_particles(self):
+        """Convert tetrahedron and point mass arrays through element mass distribution."""
+        from pxr import Sdf
+
+        cases = (
+            ("tetrahedron", _author_two_tet_wedge, [8.0, 2.0], [2.5, 2.5, 2.5, 2.0, 0.5]),
+            ("point", lambda stage, path: _author_unit_tet(stage, path, sim_api=True), [1.0, 2.0, 3.0, 4.0], [2.5] * 4),
+        )
+        for element_type, author, authored, expected in cases:
+            with self.subTest(element_type=element_type):
+                stage = _deformable_stage()
+                tet = author(stage, "/World/Soft")
+                tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(authored)
+                tet.GetPrim().CreateAttribute("physics:masses:elementType", Sdf.ValueTypeNames.Token).Set(element_type)
+
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage)
+
+                np.testing.assert_allclose(builder.particle_mass, expected, atol=1.0e-6)
+
+    def test_volume_point_masses_ignore_unreferenced_points(self):
+        """Import masses on referenced TetMesh points while ignoring orphan-point values."""
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        points = list(tet.GetPointsAttr().Get())
+        tet.GetPointsAttr().Set([*points, (2.0, 2.0, 2.0)])
+        _author_deformable_element_array(tet.GetPrim(), "masses", [2.0] * 5, "point")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "unreferenced point"):
+            builder.add_usd(stage)
+
+        p0, p1 = group_range(builder, "soft", "/World/Soft", "particle")
+        masses = builder.particle_mass[p0:p1]
+        self.assertEqual(len(masses), 5)
+        self.assertAlmostEqual(sum(masses), 8.0)
+        self.assertEqual(masses[-1], 0.0)
 
     def test_body_hierarchy_selects_single_sim_mesh(self):
         """A PhysicsDeformableBodyAPI ancestor governs exactly one simulation mesh: its
@@ -294,6 +351,168 @@ class TestUSDDeformableVolume(unittest.TestCase):
                 k_mu, k_lambda, _k_damp = builder.tet_materials[0]
                 self.assertAlmostEqual(k_mu, expected_mu, places=1)
                 self.assertAlmostEqual(k_lambda, expected_lambda, places=1)
+
+    def test_volume_material_uses_proposal_elasticity_fallbacks(self):
+        """Resolve missing volume elasticity fields independently from proposal defaults."""
+        cases = (
+            ("both_default", {}, 384615.3846153846, 576923.0769230769),
+            ("authored_negative_poissons", {"poissonsRatio": -0.25}, 666666.6666666666, -222222.22222222222),
+        )
+        for name, material_attrs, expected_mu, expected_lambda in cases:
+            with self.subTest(name=name):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", **material_attrs)
+                builder = newton.ModelBuilder()
+                builder.default_tet_k_mu = 13.0
+                builder.default_tet_k_lambda = 17.0
+                builder.add_usd(stage)
+
+                k_mu, k_lambda, _k_damp = builder.tet_materials[0]
+                self.assertAlmostEqual(k_mu, expected_mu, delta=1.0)
+                self.assertAlmostEqual(k_lambda, expected_lambda, delta=1.0)
+
+    def test_volume_material_rejects_value_outside_usd_float_range(self):
+        """Reject a raw material scalar that cannot use the proposal's USD float type."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        material = _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat")
+        material.GetPrim().CreateAttribute("physics:youngsModulus", Sdf.ValueTypeNames.Double).Set(1.0e39)
+
+        with self.assertWarnsRegex(UserWarning, "youngsModulus.*outside the finite USD float range"):
+            tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+        self.assertAlmostEqual(tetmesh.k_mu[0], 384615.3846153846, delta=1.0)
+        self.assertAlmostEqual(tetmesh.k_lambda[0], 576923.0769230769, delta=1.0)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "youngsModulus.*outside the finite USD float range"):
+            builder.add_usd(stage)
+
+        k_mu, k_lambda, _k_damp = builder.tet_materials[0]
+        self.assertAlmostEqual(k_mu, 384615.3846153846, delta=1.0)
+        self.assertAlmostEqual(k_lambda, 576923.0769230769, delta=1.0)
+
+    def test_get_tetmesh_rejects_non_numeric_material_scalars(self):
+        """Warn and use proposal fallbacks for non-numeric material scalars."""
+        from pxr import Sdf, UsdShade
+
+        expected_mu = 384615.3846153846
+        expected_lambda = 576923.0769230769
+        for attr_name in ("youngsModulus", "poissonsRatio", "density"):
+            with self.subTest(attribute=attr_name):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                material = UsdShade.Material.Define(stage, "/World/Mat")
+                material.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableMaterialAPI")
+                material.GetPrim().CreateAttribute(f"physics:{attr_name}", Sdf.ValueTypeNames.Token).Set("bad")
+                UsdShade.MaterialBindingAPI.Apply(tet.GetPrim()).Bind(material, materialPurpose="physics")
+
+                with self.assertWarnsRegex(UserWarning, rf"/World/Mat.*physics:{attr_name}.*numeric"):
+                    tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+                self.assertAlmostEqual(tetmesh.k_mu[0], expected_mu, delta=1.0)
+                self.assertAlmostEqual(tetmesh.k_lambda[0], expected_lambda, delta=1.0)
+                self.assertIsNone(tetmesh.density)
+
+    def test_unbound_volume_material_uses_builder_elasticity_defaults(self):
+        """Preserve builder elasticity defaults when no volume material is bound."""
+        stage = _deformable_stage()
+        _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        builder = newton.ModelBuilder()
+        builder.default_tet_k_mu = 13.0
+        builder.default_tet_k_lambda = 17.0
+
+        builder.add_usd(stage)
+
+        k_mu, k_lambda, _k_damp = builder.tet_materials[0]
+        self.assertEqual(k_mu, 13.0)
+        self.assertEqual(k_lambda, 17.0)
+
+    def test_get_tetmesh_clamps_legacy_high_poissons_ratio(self):
+        """Preserve Newton's legacy high-ratio behavior while warning about the proposal range."""
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        _bind_deformable_material(
+            stage,
+            tet.GetPrim(),
+            "/World/Mat",
+            youngsModulus=300000.0,
+            poissonsRatio=0.6,
+        )
+
+        with self.assertWarnsRegex(UserWarning, "outside the proposal range.*0.499.*compatibility"):
+            tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+        expected_mu = 300000.0 / (2.0 * (1.0 + 0.499))
+        expected_lambda = 300000.0 * 0.499 / ((1.0 + 0.499) * (1.0 - 2.0 * 0.499))
+        self.assertAlmostEqual(tetmesh.k_mu[0], expected_mu, delta=1.0)
+        self.assertAlmostEqual(tetmesh.k_lambda[0], expected_lambda, delta=1.0)
+
+    def test_get_tetmesh_rejects_invalid_poissons_ratio_boundaries(self):
+        """Use the proposal fallback for values outside Newton's compatibility interval."""
+        for value in (-1.0, 1.0, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                _bind_deformable_material(
+                    stage,
+                    tet.GetPrim(),
+                    "/World/Mat",
+                    youngsModulus=300000.0,
+                    poissonsRatio=value,
+                )
+
+                with self.assertWarnsRegex(UserWarning, "invalid physics:poissonsRatio"):
+                    tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+                self.assertAlmostEqual(tetmesh.k_mu[0], 115384.61538461538, delta=1.0)
+                self.assertAlmostEqual(tetmesh.k_lambda[0], 173076.92307692306, delta=1.0)
+
+    def test_get_tetmesh_uses_current_volume_elasticity_fallbacks(self):
+        """Resolve missing current volume elasticity fields from proposal defaults."""
+        from pxr import UsdGeom
+
+        cases = (
+            ("both_default", {}, None, 384615.3846153846, 576923.0769230769),
+            ("youngs_default", {"poissonsRatio": -0.25}, None, 666666.6666666666, -222222.22222222222),
+            ("centimeter_stage", {}, 0.01, 3846.153846153846, 5769.230769230769),
+        )
+        for name, material_attrs, meters_per_unit, expected_mu, expected_lambda in cases:
+            with self.subTest(name=name):
+                stage = _deformable_stage()
+                if meters_per_unit is not None:
+                    UsdGeom.SetStageMetersPerUnit(stage, meters_per_unit)
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", **material_attrs)
+
+                tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+                self.assertAlmostEqual(tetmesh.k_mu[0], expected_mu, delta=1.0)
+                self.assertAlmostEqual(tetmesh.k_lambda[0], expected_lambda, delta=1.0)
+
+    def test_volume_incompressible_poissons_ratio_warns_once(self):
+        """Approximate an incompressible volume material once with finite Lamé parameters."""
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        _bind_deformable_material(
+            stage,
+            tet.GetPrim(),
+            "/World/Mat",
+            youngsModulus=300000.0,
+            poissonsRatio=0.5,
+        )
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        incompressible = [w for w in caught if "incompressible" in str(w.message)]
+
+        self.assertEqual(len(incompressible), 1)
+        k_mu, k_lambda, _k_damp = builder.tet_materials[0]
+        self.assertTrue(math.isfinite(k_mu) and math.isfinite(k_lambda))
 
     def test_malformed_tetmesh_warns_and_spares_the_stage(self):
         """A TetMesh whose indices exceed its point count warns and is skipped; the rest of
@@ -556,10 +775,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertEqual(builder.shape_count, 0)
 
     def test_volume_material_density_validation(self):
-        """Negative and non-finite material densities warn and are ignored (the proposal's
-        range is (0, inf)); zero is the schema's "ignored" fallback and falls through
-        silently. Either way the import continues on the builder default and no imported or
-        finalized mass is negative or non-finite."""
+        """Reject invalid densities and continue with finite proposal fallback masses."""
         for density in (-10.0, float("nan"), float("inf"), float("-inf"), 0.0):
             with self.subTest(density=density):
                 stage = _deformable_stage()
@@ -570,14 +786,14 @@ class TestUSDDeformableVolume(unittest.TestCase):
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always")
                     result = builder.add_usd(stage, return_deformable_results=True)
-                invalid_warnings = [w for w in caught if "invalid volume material density" in str(w.message)]
+                invalid_warnings = [w for w in caught if "invalid physics:density" in str(w.message)]
                 if density == 0.0:
                     self.assertEqual(invalid_warnings, [], "zero is the schema fallback, not an invalid value")
                 else:
                     self.assertEqual(len(invalid_warnings), 1)
                     self.assertIn("/World/Mat", str(invalid_warnings[0].message))
-                # Fell back to the builder default; the reported density is the value actually used.
-                self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 123.5)
+                # Proposal-marked deformables do not inherit Newton's legacy builder default.
+                self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 1000.0)
                 for i in range(4):
                     m = builder.particle_mass[i]
                     self.assertTrue(math.isfinite(m) and m > 0.0, f"particle mass {m}")

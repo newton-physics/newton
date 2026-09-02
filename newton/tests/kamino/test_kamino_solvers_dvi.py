@@ -2432,7 +2432,7 @@ class TestDVISolver(unittest.TestCase):
         self.assertTrue(np.any(opening))
         self.assertLess(float(np.max(np.abs(contact_reaction[opening]))), 1e-3)
         self.assertLess(float(abs(state_0.body_qd.numpy()[0, 2])), 2.0)
-        self.assertEqual(int(solver._solver_kamino.solver_fd.data.status.numpy()[0]["converged"]), 1)
+        self.assertEqual(int(solver.status.numpy()[0]["converged"]), 1)
 
     def test_03h_dvi_canonical_contact_solution_metrics(self):
         for builder_fn, max_world_contacts in (

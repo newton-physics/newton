@@ -561,6 +561,80 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         solver.step(state_in, state_out, None, None, dt=1.0 / 60.0)
 
 
+class TestSolverKaminoStatus(unittest.TestCase):
+    def setUp(self):
+        """Configure the default Warp device for status tests."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def _make_three_world_model(self) -> newton.Model:
+        """Build a three-world model for status contract checks."""
+        source_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverKamino.register_custom_attributes(source_builder)
+        basics.build_sphere_on_plane(builder=source_builder, z_offset=0.5)
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverKamino.register_custom_attributes(builder)
+        builder.replicate(source_builder, world_count=3)
+        return builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+    def _step_and_assert_status_contract(
+        self,
+        solver: newton.solvers.SolverKamino,
+        model: newton.Model,
+    ) -> None:
+        """Advance one step and verify the public terminal-status contract."""
+        solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT)
+        status = solver.status
+        common_fields = ("converged", "iterations", "r_p", "r_d", "r_c")
+
+        self.assertIsInstance(status, wp.array)
+        self.assertIs(status, solver._solver_kamino.solver_fd.data.status)
+        self.assertEqual(status.shape, (3,))
+        self.assertEqual(status.device, self.default_device)
+        self.assertTrue(set(common_fields).issubset(status.dtype.vars))
+
+        status_host = status.numpy()
+        for field in common_fields:
+            self.assertEqual(status_host[field].shape, (3,))
+        self.assertTrue(np.all((status_host["converged"] == 0) | (status_host["converged"] == 1)))
+        self.assertTrue(np.all(status_host["iterations"] > 0))
+        for field in ("r_p", "r_d", "r_c"):
+            self.assertTrue(np.all(np.isfinite(status_host[field])))
+            self.assertTrue(np.all(status_host[field] >= 0.0))
+
+    def test_padmm_status_is_always_available(self):
+        """Verify PADMM terminal status is available regardless of detailed collection."""
+        model = self._make_three_world_model()
+
+        for collect_solver_info in (False, True):
+            with self.subTest(collect_solver_info=collect_solver_info):
+                solver = newton.solvers.SolverKamino(
+                    model,
+                    config=newton.solvers.SolverKamino.Config(
+                        dynamics_solver="padmm",
+                        collect_solver_info=collect_solver_info,
+                    ),
+                )
+                self._step_and_assert_status_contract(solver, model)
+
+    def test_dvi_status_is_always_available(self):
+        """Verify DVI terminal status is available regardless of detailed collection."""
+        model = self._make_three_world_model()
+
+        for collect_solver_info in (False, True):
+            with self.subTest(collect_solver_info=collect_solver_info):
+                solver = newton.solvers.SolverKamino(
+                    model,
+                    config=newton.solvers.SolverKamino.Config(
+                        dynamics_solver="dvi",
+                        collect_solver_info=collect_solver_info,
+                    ),
+                )
+                self._step_and_assert_status_contract(solver, model)
+
+
 class TestSolverKaminoImpl(unittest.TestCase):
     def setUp(self):
         if not test_context.setup_done:

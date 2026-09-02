@@ -3,17 +3,27 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import warp as wp
 
-from .clamping.base import Clamping
-from .controllers.base import Controller
+from .clamping.base import ClampingBase
 from .delay import Delay
+from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, ResponseOracle, _EffortModeImplicit
+
+_DEPRECATED_UNSET = object()
+_CONTROLLER_KEYWORD_DEPRECATION_MSG = (
+    "Actuator(controller=...) is deprecated in Newton 1.6; use Actuator(drive=...) instead."
+)
+_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG = "Actuator.controller is deprecated in Newton 1.6; use Actuator.drive instead."
+_CONTROLLER_STATE_DEPRECATION_MSG = (
+    "Actuator.State.controller_state is deprecated in Newton 1.6; use drive_state instead."
+)
 
 
 @wp.kernel
@@ -33,11 +43,11 @@ def _scatter_add_kernel(
 
 
 class Actuator:
-    """Composed actuator: delay → controller → clamping.
+    """Composed actuator: delay → drive → clamping.
 
     An actuator reads from simulation state/control arrays, optionally
-    delays command inputs, computes effort via a controller, applies
-    clamping (effort limits, saturation, etc.), and **accumulates** the
+    delays command inputs, computes effort via a drive, applies clamping
+    (effort limits, saturation, etc.), and **accumulates** the
     result into the output array (scatter-add).  The caller must zero the
     output array before stepping actuators.
 
@@ -45,7 +55,7 @@ class Actuator:
 
         actuator = Actuator(
             indices=indices,
-            controller=ControllerPD(kp=kp, kd=kd),
+            drive=DrivePD(kp=kp, kd=kd),
             delay=Delay(delay_steps=wp.array([5, 5], dtype=wp.int32), max_delay=5),
             clamping=[ClampingMaxEffort(max_effort=max_effort)],
         )
@@ -61,14 +71,52 @@ class Actuator:
     class State:
         """Composed state for an :class:`Actuator`.
 
-        Holds the delay state (if a delay is present) and the controller
+        Holds the delay state (if a delay is present) and the drive
         state. Clamping objects are stateless.
         """
 
         delay_state: Delay.State | None = None
         """Delay buffer state, or ``None`` if no delay is used."""
-        controller_state: Controller.State | None = None
-        """Controller-specific state, or ``None`` if stateless."""
+        drive_state: DriveBase.State | None = None
+        """Drive-specific state, or ``None`` if stateless."""
+
+        def __init__(
+            self,
+            delay_state: Delay.State | None = None,
+            drive_state: DriveBase.State | object | None = _DEPRECATED_UNSET,
+            *,
+            controller_state: DriveBase.State | object | None = _DEPRECATED_UNSET,
+        ) -> None:
+            """Initialize composed actuator state.
+
+            Args:
+                delay_state: Delay buffer state, or ``None`` if no delay is used.
+                drive_state: Drive-specific state, or ``None`` if stateless.
+                controller_state: Deprecated in Newton 1.6; use ``drive_state``.
+            """
+            if controller_state is not _DEPRECATED_UNSET:
+                if drive_state is not _DEPRECATED_UNSET:
+                    raise TypeError("Specify only one of 'drive_state' and deprecated 'controller_state'.")
+                warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+                drive_state = controller_state
+
+            self.delay_state = delay_state
+            self.drive_state = None if drive_state is _DEPRECATED_UNSET else drive_state
+
+        @property
+        def controller_state(self) -> DriveBase.State | None:
+            """Deprecated alias for :attr:`drive_state`.
+
+            .. deprecated:: 1.6
+                Use :attr:`drive_state` instead.
+            """
+            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            return self.drive_state
+
+        @controller_state.setter
+        def controller_state(self, value: DriveBase.State | None) -> None:
+            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            self.drive_state = value
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             """Reset composed state.
@@ -79,15 +127,15 @@ class Actuator:
             """
             if self.delay_state is not None:
                 self.delay_state.reset(mask)
-            if self.controller_state is not None:
-                self.controller_state.reset(mask)
+            if self.drive_state is not None:
+                self.drive_state.reset(mask)
 
     def __init__(
         self,
         indices: wp.array[wp.uint32],
-        controller: Controller,
+        drive: DriveBase | None = None,
         delay: Delay | None = None,
-        clamping: list[Clamping] | None = None,
+        clamping: list[ClampingBase] | None = None,
         pos_indices: wp.array[wp.uint32] | None = None,
         target_pos_indices: wp.array[wp.uint32] | None = None,
         effort_indices: wp.array[wp.uint32] | None = None,
@@ -99,15 +147,17 @@ class Actuator:
         control_output_attr: str = "joint_f",
         control_computed_output_attr: str | None = None,
         requires_grad: bool = False,
+        *,
+        controller: DriveBase | object | None = _DEPRECATED_UNSET,
     ):
         """Initialize actuator.
 
         Args:
             indices: DOF indices into velocity-shaped arrays (velocities,
                 velocity targets, feedforward, effort output). Shape ``(N,)``.
-            controller: Controller that computes raw effort.
+            drive: Drive that computes raw effort.
             delay: Optional Delay instance for input delay.
-            clamping: List of Clamping objects (post-controller effort bounds).
+            clamping: List of Clamping objects (post-drive effort bounds).
             pos_indices: Indices into coordinate-shaped arrays (positions =
                 ``state.joint_q``). Defaults to *indices*. Differs from
                 *indices* when position and velocity arrays have different
@@ -133,7 +183,16 @@ class Actuator:
                 effort. None to skip writing computed effort.
             requires_grad: Allocate intermediate arrays with gradient support
                 for differentiable simulation.
+            controller: Deprecated in Newton 1.6; use ``drive`` instead.
         """
+        if controller is not _DEPRECATED_UNSET:
+            if drive is not None:
+                raise TypeError("Specify only one of 'drive' and deprecated 'controller'.")
+            warnings.warn(_CONTROLLER_KEYWORD_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            drive = controller
+        if drive is None:
+            raise TypeError("Actuator() missing required argument: 'drive'")
+
         self.indices = indices
         self.pos_indices = pos_indices if pos_indices is not None else indices
         if target_pos_indices is not None:
@@ -153,7 +212,7 @@ class Actuator:
             raise ValueError(
                 f"effort_indices shape {self.effort_indices.shape} must match indices shape {indices.shape}"
             )
-        self.controller = controller
+        self.drive = drive
         self.delay = delay
         self.clamping = clamping or []
         self.num_actuators = len(indices)
@@ -179,13 +238,28 @@ class Actuator:
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
 
-        controller.finalize(self.device, self.num_actuators)
+        drive.finalize(self.device, self.num_actuators)
         if delay is not None:
             delay.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
 
-        self._effort_mode = _EffortModeExplicit(controller, self.clamping, self.device)
+        self._effort_mode = _EffortModeExplicit(drive, self.clamping, self.device)
+
+    @property
+    def controller(self) -> DriveBase:
+        """Deprecated alias for :attr:`drive`.
+
+        .. deprecated:: 1.6
+            Use :attr:`drive` instead.
+        """
+        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self.drive
+
+    @controller.setter
+    def controller(self, value: DriveBase) -> None:
+        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self.drive = value
 
     # To achieve public API Actuator.ImplicitOptions.
     # Defining ImplicitOptions inside Actuator would create a circular import issue.
@@ -215,11 +289,11 @@ class Actuator:
         if self.requires_grad:
             raise NotImplementedError(
                 "Implicit actuation is not differentiable: the Newton solve has no adjoint, "
-                "and the neural controllers open their own wp.Tape, which cannot nest inside "
+                "and the neural drives open their own wp.Tape, which cannot nest inside "
                 "an outer tape. Build the Actuator with requires_grad=False."
             )
         self._effort_mode = _EffortModeImplicit(
-            self.controller,
+            self.drive,
             self.clamping,
             response,
             options,
@@ -230,11 +304,11 @@ class Actuator:
 
     def set_effort_mode_explicit(self) -> None:
         """Switch effort computation back to the default explicit mode."""
-        self._effort_mode = _EffortModeExplicit(self.controller, self.clamping, self.device)
+        self._effort_mode = _EffortModeExplicit(self.drive, self.clamping, self.device)
 
     def is_stateful(self) -> bool:
-        """Return True if delay or controller maintains internal state."""
-        return self.delay is not None or self.controller.is_stateful()
+        """Return True if the delay or drive maintains internal state."""
+        return self.delay is not None or self.drive.is_stateful()
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
@@ -246,9 +320,7 @@ class Actuator:
             return None
         return Actuator.State(
             delay_state=(self.delay.state(self.num_actuators, self.device) if self.delay is not None else None),
-            controller_state=(
-                self.controller.state(self.num_actuators, self.device) if self.controller.is_stateful() else None
-            ),
+            drive_state=(self.drive.state(self.num_actuators, self.device) if self.drive.is_stateful() else None),
         )
 
     def step(
@@ -267,12 +339,12 @@ class Actuator:
         2. **Effort** — raw effort into ``_computed_forces`` (explicit control
            law, or the implicit end-of-step solve).
         3. **Clamping** — bounded effort into ``_applied_forces``. Explicit
-           clamps after the control law; implicit enforces them inside the
+           clamps after the drive law; implicit enforces them inside the
            solve.
         4. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
-        5. **State updates** — controller state update, then delay
+        5. **State updates** — drive state update, then delay
            buffer write (push current targets into ``next_state``).
 
         Args:
@@ -316,7 +388,7 @@ class Actuator:
             target_vel_indices = self._sequential_indices
 
         # --- 2+3. Effort mode: compute raw effort and clamp ---
-        ctrl_state = current_act_state.controller_state if current_act_state else None
+        drive_state = current_act_state.drive_state if current_act_state else None
         output_forces = self._effort_mode.compute_force(
             sim_state,
             positions,
@@ -330,7 +402,7 @@ class Actuator:
             target_vel_indices,
             self._computed_forces,
             self._applied_forces,
-            ctrl_state,
+            drive_state,
             dt,
         )
 
@@ -351,10 +423,10 @@ class Actuator:
         )
 
         # --- 5. State updates (write to next_state) ---
-        if self.controller.is_stateful():
-            self.controller.update_state(
-                current_act_state.controller_state,
-                next_act_state.controller_state,
+        if self.drive.is_stateful():
+            self.drive.update_state(
+                current_act_state.drive_state,
+                next_act_state.drive_state,
             )
         if self.delay is not None:
             self.delay.update_state(

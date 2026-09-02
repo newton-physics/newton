@@ -76,25 +76,27 @@ class Example:
         self.model.soft_contact_kd = contact_kd
         self.model.soft_contact_mu = contact_mu
 
+        # The solver owns the collision pipeline: it runs rigid and particle-shape
+        # detection itself at every step and writes soft self-contact results into
+        # its own contacts buffer (solver.contacts).
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            broad_phase="nxn",
+            soft_contact_gap=0.1,
+        )
+
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.iterations,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.2,
-            particle_self_contact_margin=0.35,
-        )
-
-        # Use collision pipeline for particle-shape contacts
-        self.collision_pipeline = newton.CollisionPipeline(
-            self.model,
-            broad_phase="nxn",
-            soft_contact_margin=0.1,
+            particle_self_contact_margin=0.2,
+            particle_self_contact_gap=0.15,
+            collision_pipeline=self.collision_pipeline,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -112,8 +114,8 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            # detection runs inside step(): the solver owns the pipeline
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0

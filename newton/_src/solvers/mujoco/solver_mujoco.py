@@ -31,7 +31,7 @@ from ...sim import (
     State,
     StateFlags,
 )
-from ...sim.articulation import eval_articulation_fk, eval_fk
+from ...sim.articulation import eval_fk
 from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
@@ -615,7 +615,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         raise ValueError(f"Expected enable or disable, got {value!r}.")
 
     @staticmethod
-    def _parse_named_int(value: str | int, mapping: dict[str, int], fallback_on_unknown: int | None = None) -> int:
+    def _parse_named_int(value: str | int, mapping: dict[str, int]) -> int:
         """Parse string-valued enums to int, otherwise return int(value)."""
         if isinstance(value, int | np.integer):
             return int(value)
@@ -629,8 +629,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         enum_suffix = last_component.rsplit("_", maxsplit=1)[-1]
         if enum_suffix in mapping:
             return mapping[enum_suffix]
-        if fallback_on_unknown is not None:
-            return fallback_on_unknown
         return int(lower_value)
 
     @staticmethod
@@ -1698,9 +1696,32 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # These are used for general/motor actuators parsed from MJCF
         # All actuator attributes share the "mujoco:actuator" custom frequency.
         # Note: actuator_trnid[0] stores the target index, actuator_trntype determines its meaning (joint/tendon/site)
-        def parse_actuator_enum(value: Any, mapping: dict[str, int]) -> int:
-            """Parse actuator enum values, defaulting to 0 for unknown strings."""
-            return int(SolverMuJoCo._parse_named_int(value, mapping, fallback_on_unknown=0))
+        def parse_actuator_enum(
+            value: Any, mapping: dict[str, int], attribute: str, context: dict[str, Any] | None
+        ) -> int:
+            """Parse actuator enum values, warning and defaulting to 0 for unrecognized names or ordinals."""
+            try:
+                # _parse_named_int resolves names, MuJoCo enum reprs and bare ordinals, and raises
+                # for anything else. Bare ordinals also need checking against mapping.values(),
+                # since _parse_named_int accepts any numeric value or string.
+                ordinal = int(SolverMuJoCo._parse_named_int(value, mapping))
+                if ordinal in mapping.values():
+                    return ordinal
+            except ValueError:
+                pass
+            context = context or {}
+            prim = context.get("prim")
+            # Every frame above this parser is Newton-internal, so no stacklevel points at the
+            # offending prim or element and the message has to name it.
+            source = f"prim '{prim.GetPath()}'" if prim is not None else f"actuator '{context.get('actuator_name')}'"
+            fallback = next(name for name, ordinal in mapping.items() if ordinal == 0)
+            warnings.warn(
+                f"Unsupported MuJoCo actuator {attribute} {value!r} on {source}; "
+                f"falling back to {fallback!r}. Supported values are {sorted(mapping)}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return 0
 
         actuator_transmission_types = {
             "joint": int(SolverMuJoCo.TrnType.JOINT),
@@ -1731,17 +1752,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "user": _ActuatorBiasType.USER,
         }
 
-        def parse_trntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_transmission_types)
+        def parse_trntype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_transmission_types, "trntype", context)
 
-        def parse_dyntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_dynamics_types)
+        def parse_dyntype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_dynamics_types, "dyntype", context)
 
-        def parse_gaintype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_gain_types)
+        def parse_gaintype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_gain_types, "gaintype", context)
 
-        def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, actuator_bias_types)
+        def parse_biastype(s: str, context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, actuator_bias_types, "biastype", context)
 
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
@@ -3675,6 +3696,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         *,
         separate_worlds: bool | None = None,
         njmax: int | None = None,
+        njmax_nnz: int | None = None,
         nconmax: int | None = None,
         iterations: int | None = None,
         ls_iterations: int | None = None,
@@ -3718,6 +3740,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             model: The model to be simulated.
             separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax: Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be non-negative and large enough for the initial sparse Jacobian. If None, derived from the model's constraint counts and njmax.
             nconmax: Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
@@ -3771,6 +3794,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError(
                 "enable_sleeping=True requires use_mujoco_contacts=True so contacts can wake sleeping bodies."
             )
+        if njmax_nnz is not None:
+            if isinstance(njmax_nnz, bool) or not isinstance(njmax_nnz, int | np.integer):
+                raise TypeError(f"njmax_nnz must be an integer or None, got {type(njmax_nnz).__name__}.")
+            if njmax_nnz < 0:
+                raise ValueError(f"njmax_nnz must be non-negative, got {njmax_nnz}.")
+            njmax_nnz = int(njmax_nnz)
         if nvmax is not None:
             if isinstance(nvmax, bool) or not isinstance(nvmax, (int, np.integer)):
                 raise TypeError(f"nvmax must be an integer or None, got {type(nvmax).__name__}.")
@@ -4063,6 +4092,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 disable_contacts=disable_contacts,
                 separate_worlds=separate_worlds,
                 njmax=njmax,
+                njmax_nnz=njmax_nnz,
                 nconmax=nconmax,
                 nvmax=nvmax,
                 iterations=iterations,
@@ -4613,6 +4643,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 model.body_flags,
                 self.mjw_model.geom_bodyid,
                 self.mjw_model.body_weldid,
+                self.mjw_model.body_dofnum,
                 self.mjw_model.body_invweight0,
                 self.mjw_model.geom_condim,
                 self.mjw_model.geom_priority,
@@ -5520,6 +5551,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         sdf_iterations: int | None = None,
         sdf_initpoints: int | None = None,
         njmax: int | None = None,  # number of constraints per world
+        njmax_nnz: int | None = None,
         nconmax: int | None = None,
         nvmax: int | None = None,
         solver: int | str | None = None,
@@ -5562,6 +5594,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             iterations: Maximum solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Maximum line search iterations. If None, uses model custom attribute or MuJoCo's default (50).
             njmax: Maximum number of constraints per world.
+            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world.
             nconmax: Maximum number of contacts.
             nvmax: Maximum number of active degrees of freedom per world.
             solver: Constraint solver type ("cg" or "newton"). If None, uses model custom attribute or Newton's default ("newton").
@@ -7852,6 +7885,46 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
                 njmax = self.mj_data.nefc
 
+            from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
+
+            if njmax_nnz is not None and is_mujoco_warp_sparse(self.mj_model):
+                initial_required_nnz = self._get_initial_jacobian_nnz()
+                minimum_njmax_nnz = max(1, initial_required_nnz)
+                if njmax_nnz < minimum_njmax_nnz:
+                    raise ValueError(
+                        f"njmax_nnz={njmax_nnz} is too small: sparse Jacobian storage requires capacity "
+                        f"of at least {minimum_njmax_nnz}; the initial Jacobian contains "
+                        f"{initial_required_nnz} nonzeros."
+                    )
+            elif njmax_nnz is None:
+                from mujoco_warp._src.io import _default_nconmax as estimate_mujoco_warp_nconmax
+                from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
+                from mujoco_warp._src.io import _default_njmax_nnz as estimate_mujoco_warp_njmax_nnz
+
+                if is_mujoco_warp_sparse(self.mj_model):
+                    resolved_nconmax = (
+                        nconmax if nconmax is not None else estimate_mujoco_warp_nconmax(self.mj_model, self.mj_data)
+                    )
+                    resolved_njmax = (
+                        njmax if njmax is not None else estimate_mujoco_warp_njmax(self.mj_model, self.mj_data)
+                    )
+                    joint_limit_nnz = 0
+                    for limited, joint_type in zip(self.mj_model.jnt_limited, self.mj_model.jnt_type, strict=True):
+                        if not limited:
+                            continue
+                        joint_type_value = int(joint_type)
+                        if joint_type_value == mujoco.mjtJoint.mjJNT_BALL:
+                            joint_limit_nnz += 3
+                        elif joint_type_value in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
+                            joint_limit_nnz += 1
+
+                    # work around buffer under-sizing until the fix is released (mjwarp #1630)
+                    njmax_nnz = min(
+                        estimate_mujoco_warp_njmax_nnz(self.mj_model, resolved_nconmax, resolved_njmax)
+                        + joint_limit_nnz,
+                        resolved_njmax * self.mj_model.nv,
+                    )
+
             if nvmax is not None:
                 if nvmax > self.mj_model.nv:
                     raise ValueError(f"nvmax must not exceed the model's {self.mj_model.nv} degrees of freedom.")
@@ -7871,6 +7944,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 nworld=nworld,
                 nconmax=nconmax,
                 njmax=njmax,
+                njmax_nnz=njmax_nnz,
                 nvmax=nvmax,
             )
             self.nvmax = self.mjw_data.nvmax
@@ -7945,6 +8019,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 with open(target_filename, "w") as f:
                     f.write(spec.to_xml())
                     print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
+
+    def _get_initial_jacobian_nnz(self) -> int:
+        """Return the nonzero count of the initial MuJoCo constraint Jacobian."""
+        mujoco, _ = self.import_mujoco()
+        if mujoco.mj_isSparse(self.mj_model):
+            return int(np.sum(self.mj_data.efc_J_rownnz[: self.mj_data.nefc], dtype=np.int64))
+
+        initial_jacobian = self.mj_data.efc_J.reshape((-1, self.mj_model.nv))[: self.mj_data.nefc]
+        return int(np.count_nonzero(initial_jacobian))
 
     def _expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
@@ -8491,9 +8574,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _compute_body_poses_at_qref(model: Model, ref_q: wp.array) -> wp.array:
         """Compute body transforms at the reference joint configuration.
 
-        Runs :func:`newton.eval_articulation_fk` with the given ``ref_q``
-        and zero velocities to obtain world-space body transforms at the
-        reference pose.
+        Runs :func:`newton.eval_fk` with the given ``ref_q`` and zero
+        velocities to obtain world-space body transforms at the reference
+        pose.
 
         Args:
             model: The Newton :class:`Model`.
@@ -8508,34 +8591,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ref_body_q = wp.zeros(model.body_count, dtype=wp.transform, device=model.device)
         ref_body_qd = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=model.device)
 
-        wp.launch(
-            kernel=eval_articulation_fk,
-            dim=model.articulation_count,
-            inputs=[
-                model.articulation_start,
-                model.articulation_end,
-                model.articulation_count,
-                None,
-                None,
-                model.joint_articulation,
-                ref_q,
-                ref_qd,
-                model.joint_q_start,
-                model.joint_qd_start,
-                model.joint_type,
-                model.joint_parent,
-                model.joint_child,
-                model.joint_X_p,
-                model.joint_X_c,
-                model.joint_axis,
-                model.joint_dof_dim,
-                model.body_com,
-                model.body_flags,
-                int(BodyFlags.ALL),
-            ],
-            outputs=[ref_body_q, ref_body_qd],
-            device=model.device,
-        )
+        ref_state = State()
+        ref_state.body_q = ref_body_q
+        ref_state.body_qd = ref_body_qd
+        eval_fk(model, ref_q, ref_qd, ref_state)
         return ref_body_q
 
     @staticmethod
