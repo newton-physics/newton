@@ -6,8 +6,10 @@ caller-supplied dynamics terms.
 
 Every port is compact: one entry per controlled DOF, robot 0's DOFs first, then
 robot 1's. The controller owns no index tables — a caller who needs to read from
-or write to a simulation-sized array binds an indexed view
-(``sim_array[selection.qd_start]``) instead.
+or write to a simulation-sized array binds an indexed view instead, e.g.
+``sim_array[ctrl.qd_start]`` using a paired model-based controller's own
+``q_start``/``qd_start`` properties (see
+:attr:`ControllerJointImpedance.qd_start`).
 
 The difference from :class:`ControllerJointImpedance` is that this controller
 requires the caller to supply dynamics terms (mass matrix, gravity force, Coriolis
@@ -53,10 +55,12 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     ``controlled_dofs_per_robot``. A port may be bound either to a plain compact
     array or to an indexed view of a simulation-sized array, which is how a
     caller expresses a gather or scatter without the controller owning an index
-    table::
+    table — for example, using a paired model-based controller's own
+    ``q_start``/``qd_start`` properties (see
+    :attr:`ControllerJointImpedance.qd_start`)::
 
-        inputs.joint_q = state.joint_q[selection.q_start]  # gather
-        outputs.joint_f = control.joint_f[selection.qd_start]  # scatter
+        inputs.joint_q = state.joint_q[ctrl.q_start]  # gather
+        outputs.joint_f = control.joint_f[ctrl.qd_start]  # scatter
 
     Views are live and graph-capturable: bind them once, and each step (or graph
     replay) reads through to the current contents of the underlying array.

@@ -11,7 +11,9 @@ regardless of a robot's own DOF count — a robot whose ``axis_weight`` zeroes
 some of the 6 canonical axes (position x/y/z, orientation x/y/z) uses only
 the active ones (see ``axis_weight``). The controller owns no index tables —
 a caller who needs to read from or write to a simulation-sized array binds
-an indexed view (``sim_array[selection.qd_start]``) instead.
+an indexed view instead, e.g. ``sim_array[ctrl.qd_start]`` using a paired
+model-based controller's own ``q_start``/``qd_start`` properties (see
+:attr:`ControllerDifferentialIK.qd_start`).
 
 Differential-kinematics law (shown here for damped least squares; see
 ``IkMethod`` for the other four solvers — pseudo-inverse, transpose,
@@ -22,10 +24,14 @@ adaptive damping, and truncated SVD):
     q_target = joint_q + q̇_target · dt
 
 where ``J`` is the tool-point Jacobian, ``λ`` the damping, and ``e`` the 6D
-pose error (position, then axis-angle orientation).
+pose error (position, then axis-angle orientation), shown unweighted; see
+``axis_weight`` for the ``diag(w)``-weighted form actually solved, including
+how a zero-weighted axis is excluded from the task rather than driven to
+zero.
 
-A redundant robot (more controlled DOFs than the 6D task needs) may also
-project a secondary joint-space objective — joint-limit avoidance and/or a
+A redundant robot (more controlled DOFs than its own task dimension needs —
+6, unless ``axis_weight`` zeroes some axes) may also project a secondary
+joint-space objective — joint-limit avoidance and/or a
 posture target — through a damped kinematic (Moore-Penrose) null-space
 projector ``N = I - Jᵀ(JJᵀ + λ_null²I)⁻¹J``, so it (approximately) never
 disturbs the primary task:
@@ -97,10 +103,12 @@ class ControllerDifferentialIKModelFree(ControllerBase):
     robot's own :attr:`axis_weight`. A port may be
     bound either to a plain array or to an indexed view of a
     simulation-sized array, which is how a caller expresses a gather or
-    scatter without the controller owning an index table::
+    scatter without the controller owning an index table — for example,
+    using a paired model-based controller's own ``q_start``/``qd_start``
+    properties (see :attr:`ControllerDifferentialIK.q_start`)::
 
-        inputs.joint_q = state.joint_q[selection.q_start]  # gather
-        outputs.joint_q_target = control.joint_target_q[selection.q_start]  # scatter
+        inputs.joint_q = state.joint_q[ctrl.q_start]  # gather
+        outputs.joint_q_target = control.joint_target_q[ctrl.q_start]  # scatter
 
     Views are live and graph-capturable: bind them once, and each step (or
     graph replay) reads through to the current contents of the underlying

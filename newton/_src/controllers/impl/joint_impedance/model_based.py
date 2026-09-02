@@ -229,8 +229,8 @@ class ControllerJointImpedance(ControllerBase):
                 )
 
         # A repeated DOF would give two controlled slots the same simulation DOF,
-        # so a scatter through ``control.joint_f[selection.qd_start]`` would have
-        # them overwrite each other. Checking joint_selection.qd_start alone
+        # so a scatter through ``control.joint_f[joint_selection.qd_start]`` would
+        # have them overwrite each other. Checking joint_selection.qd_start alone
         # covers both arrays, since the pairing check below forces the two to
         # agree.
         if np.unique(qd_idx_np).size != qd_idx_np.size:
