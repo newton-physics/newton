@@ -5,53 +5,14 @@
 
 A controlled robot's task-space quantity is a fixed-size ``wp.spatial_vector``
 or a fixed ``6x6`` block, always, regardless of how each of the 6 canonical
-axes (position x/y/z, orientation x/y/z) is weighted — pose error is computed
-directly in world frame for all 6, then only the axes with a nonzero
-``axis_weight`` (a per-robot, per-canonical-axis non-negative weight; see
-``active_axis_of_slot``/``task_dim`` below) are gathered into a compact,
-contiguous ``task_dim``-wide representation before the solve, and the result
-is scattered back where a downstream kernel needs canonical-axis indexing. An
-axis weighted exactly ``0`` is excluded from the solve structurally (its
-error and Jacobian rows are never read at all, not merely multiplied by
-``0``) — this matters both numerically at ``λ = 0`` and for gradient
-correctness under ``requires_grad``, since a value that is never read
-contributes an exactly-zero gradient, where "coefficient times an
-exactly-zero input" would not. A *nonzero* weight, by contrast, does act as a
-genuine soft multiplier once its axis has been gathered — see
-``_build_jjt_plus_damping_kernel``/``_qd_from_y_kernel``. Which axes are
-active need not be a prefix of the canonical order — any combination is a
-per-robot gather/scatter table computed once at construction, not a runtime
-reordering the caller has to arrange. The Jacobian is laid out as
-``(robot_count, 6, max_dofs)``, each column a per-DOF twist about the tool
-point, expressed in world-frame coordinates, with columns beyond a robot's
-own controlled-DOF count left unused (see ``dof_count``).
+axes is weighted — see the section comment above ``_gather_task_error_kernel``
+for how per-axis weighting (``axis_weight``) is applied and why a zero-weighted
+axis is excluded structurally rather than multiplied by zero.
 
-The inverse-Jacobian solve is isolated to its own group of kernels
-(``_build_jjt_plus_damping_kernel``, plus the shared
-``_invert_spd_block_kernel``/``_apply_spatial_matrix_kernel`` in
-``controllers/impl/_common.py``, and ``_qd_from_y_kernel``) so that a
-solver can be selected per instance via :class:`IkMethod` without touching
-pose-error, null-space, or integration code. Damped least squares
-(Levenberg-Marquardt-style Tikhonov regularization) is the default,
-``q̇ = bandwidth · Jᵀ(JJᵀ + λ²I)⁻¹e``; the zero-damping pseudo-inverse and
-the plain transpose method reuse the same kernel group (with ``λ = 0``) or
-skip it entirely (transpose feeds the pose error straight into
-``_qd_from_y_kernel`` in place of ``y``) — see :class:`IkMethod` and
-``ControllerDifferentialIKModelFree.step``.
-
-This single fixed ``6x6`` form is exact for a robot with any number of
-controlled DOFs, not just ``n_joints ≥ 6``: the push-through identity
-``Jᵀ(JJᵀ + λ²I)⁻¹ == (JᵀJ + λ²I)⁻¹Jᵀ`` holds for any shape of ``J`` whenever
-``λ > 0``, so there is no separate "overdetermined" ``n_joints x n_joints``
-code path to get wrong for a heterogeneous fleet mixing DOF counts — every
-robot solves the same fixed ``6x6`` system regardless of its own DOF count.
-This only breaks down at exactly ``λ = 0`` (``IkMethod.PSEUDO_INVERSE``):
-``JJᵀ`` is then rank-deficient whenever ``dof_count`` is below the robot's
-own task dimension, and while the Cholesky pivot floor in
-``_invert_spd_block_kernel`` keeps that from producing NaN, it does not
-produce a meaningful pseudo-inverse in that regime, so
-``IkMethod.PSEUDO_INVERSE`` requires every robot to have at least as many
-controlled DOFs as its own task dimension.
+The inverse-Jacobian solve is isolated to its own group of kernels (see the
+section comment above ``_build_jjt_plus_damping_kernel``) so that a solver
+can be selected per instance via :class:`IkMethod` without touching
+pose-error, null-space, or integration code.
 """
 
 from __future__ import annotations
@@ -172,6 +133,18 @@ def _gather_task_error_kernel(
 # solution. Built in three steps — normal-equations matrix, invert-and-apply,
 # finish — so a future solver only has to replace this group, not the error
 # or integration kernels around it.
+#
+# This single fixed 6x6 form is exact for a robot with any number of
+# controlled DOFs, not just n_joints >= 6: the push-through identity
+# Jᵀ(JJᵀ + λ²I)⁻¹ == (JᵀJ + λ²I)⁻¹Jᵀ holds for any shape of J whenever
+# λ > 0, so there is no separate "overdetermined" n_joints x n_joints code
+# path to get wrong for a heterogeneous fleet mixing DOF counts. This only
+# breaks down at exactly λ = 0 (IkMethod.PSEUDO_INVERSE): JJᵀ is then
+# rank-deficient whenever dof_count is below the robot's own task dimension,
+# and while the Cholesky pivot floor in _invert_spd_block_kernel keeps that
+# from producing NaN, it does not produce a meaningful pseudo-inverse in
+# that regime, so IkMethod.PSEUDO_INVERSE requires every robot to have at
+# least as many controlled DOFs as its own task dimension.
 # ---------------------------------------------------------------------------
 
 
@@ -192,22 +165,12 @@ def _build_jjt_plus_damping_kernel(
 ):
     """Build the damped-least-squares normal-equations matrix, ``J_w J_wᵀ + λ²I`` (``J_w = diag(w) @ J``), in compact slot space.
 
-    Confined to the top-left ``task_dim x task_dim`` corner (not the full
-    6x6): every row/column beyond it is skipped entirely, leaving whatever
-    was already in ``jjt_plus_damping`` there (this kernel's own buffers
-    stay zero there forever, since nothing else writes outside the same
-    corner either — see ``ControllerDifferentialIKModelFree``'s module docstring).
-    Row/column ``slot`` of the real corner is gathered from
-    ``jacobian_tool_world``'s canonical axis ``active_axis_of_slot[slot]``,
-    weighted by that axis's own ``axis_weight`` — not row ``slot``
-    unweighted — this is what lets the active axes be any combination of
-    the 6 canonical ones, each with its own soft trust, not just a leading
-    prefix of equally-trusted ones. ``λ² > 0`` keeps the real corner
-    positive definite (and so invertible) even when ``J_w J_wᵀ`` alone is
-    singular or rank-deficient, e.g. at a kinematic singularity or when a
-    robot controls fewer than ``task_dim`` DOFs; ``λ`` itself is not
-    weighted, since it regularizes the solve rather than expressing task
-    trust.
+    Only writes the top-left ``task_dim x task_dim`` corner. Row/col
+    ``slot`` comes from Jacobian axis ``active_axis_of_slot[slot]``,
+    weighted by that axis's own ``axis_weight`` — so active axes can be any
+    combination of the 6 canonical ones, not just a leading prefix. ``λ²``
+    (unweighted) is added on the diagonal to keep the corner invertible even
+    where ``J_w J_wᵀ`` alone is singular or rank-deficient.
     """
     robot_idx, row, col = wp.tid()
     if row >= task_dim[robot_idx] or col >= task_dim[robot_idx]:
@@ -243,16 +206,10 @@ def _qd_from_y_kernel(
 ):
     """Finish the damped-least-squares solve, ``q̇_target = bandwidth · J_wᵀy`` (``J_w = diag(w) @ J``), into the compact per-DOF layout.
 
-    Row ``slot`` of ``J_wᵀ`` (in the same compact slot space as ``y``) is
-    gathered from column ``slot_of_dof[dof]``, canonical axis
-    ``active_axis_of_slot[slot]``, of robot ``robot_of_dof[dof]``'s
-    Jacobian, weighted by that axis's own ``axis_weight`` — loading it back
-    into a ``wp.spatial_vector`` here lets this kernel use Warp's built-in
-    dot product instead of a hand-rolled sum. ``y``'s slots beyond
-    ``task_dim`` are exactly zero (see
-    ``_gather_task_error_kernel``/``_build_jjt_plus_damping_kernel``), so
-    gathering a real, weighted Jacobian value into an unused slot here is
-    harmless — it always multiplies against that zero.
+    Row ``slot`` of ``J_wᵀ`` is gathered from Jacobian axis
+    ``active_axis_of_slot[slot]``, weighted by that axis's ``axis_weight``.
+    ``y``'s slots beyond ``task_dim`` are always zero, so gathering a real,
+    weighted value into an unused slot here is harmless.
     """
     dof = wp.tid()
     robot = robot_of_dof[dof]
@@ -285,17 +242,12 @@ def _smallest_eigenvalue_spd6_kernel(
 ):
     """Smallest eigenvalue among a symmetric 6x6 matrix's ``task_dim`` real ones, skipping padding.
 
-    For ``matrix = JJᵀ``, this is ``sigma_min²``, the square of the
-    Jacobian's smallest singular value — zero exactly at a kinematic
-    singularity. When ``task_dim < 6``, ``matrix`` is only real in its
-    top-left ``task_dim x task_dim`` corner (see
-    ``_build_jjt_plus_damping_kernel``); the rest is exactly zero, which
-    eigendecomposes to ``6 - task_dim`` guaranteed-zero eigenvalues never
-    larger than a real one (eigenvalues of a positive-semidefinite matrix
-    are never negative), so sorting them out from the smallest end and
-    taking the next one recovers the smallest real eigenvalue exactly.
-    Clamped to non-negative since float32 cancellation in the QR iteration
-    can land a fully degenerate real eigenvalue just below zero.
+    For ``matrix = JJᵀ``, this is ``sigma_min²`` — zero exactly at a
+    kinematic singularity. The ``6 - task_dim`` padding entries outside the
+    real top-left corner are exactly zero, and a PSD matrix's eigenvalues
+    are never negative, so sorting those out from the smallest end recovers
+    the true smallest eigenvalue. Clamped to non-negative since float32
+    error can land a fully degenerate eigenvalue just below zero.
     """
     robot_idx = wp.tid()
 
@@ -389,34 +341,23 @@ def _truncated_pinv_matrix_kernel(
 # ---------------------------------------------------------------------------
 # Null-space secondary objectives.
 #
-# The null-space projector itself, and the damped pseudo-inverse-transpose
-# ``(JJᵀ + λ_null²I)⁻¹ @ J`` it is built from, use kernels shared with other
-# controller families (``_invert_spd_block_kernel``,
-# ``_task_matrix_times_jacobian_kernel``, ``_null_space_projector_kernel`` in
-# ``controllers/impl/_common.py``), not dedicated kernels here — see
-# :class:`ControllerDifferentialIKModelFree`. ``λ_null`` is its own damping,
-# independent of the primary task's DLS damping: it makes ``JJᵀ + λ_null²I``
-# SPD for any Jacobian, including one that is not full row rank (e.g. a
-# redundant low-DOF arm whose task is itself lower-dimensional than 6, such
-# as a 4R planar arm controlling a 2D or 3D in-plane task). The tradeoff is
-# the same kind the primary DLS solve already accepts: the resulting
-# projector satisfies ``J @ N = λ_null²(JJᵀ + λ_null²I)⁻¹J`` — a residual of
-# order ``λ_null²``, not a new class of imprecision.
+# The null-space projector and its damped pseudo-inverse-transpose
+# ``(JJᵀ + λ_null²I)⁻¹ @ J`` reuse kernels shared with other controller
+# families (``_invert_spd_block_kernel``, ``_task_matrix_times_jacobian_kernel``,
+# ``_null_space_projector_kernel`` in ``controllers/impl/_common.py``), not
+# dedicated kernels here. ``λ_null`` is independent of the primary task's DLS
+# damping; it keeps ``JJᵀ + λ_null²I`` SPD even for a rank-deficient Jacobian
+# (e.g. a redundant low-DOF arm with a lower-than-6D task), at the cost of a
+# ``J @ N`` residual of order ``λ_null²`` instead of exactly zero.
 #
-# The shared kernels above expect ``jacobian_tool_world``/``jacobian_pinv_
-# transpose`` in canonical axis order — they have no notion of axis_weight at
-# all. ``_gather_jacobian_by_axis_kernel``/``_scatter_pinv_transpose_by_axis_
-# kernel`` below convert to and from that shared kernels' expected layout,
-# so those shared kernels themselves need no changes to support axis_weight: a
-# gathered (compact slot space) Jacobian goes in to
-# ``_task_matrix_times_jacobian_kernel``, and its output is scattered back
-# to canonical axis order before ``_null_space_projector_kernel`` (which
-# reads ``jacobian_tool_world`` directly, in canonical order) sees it.
+# Those shared kernels expect the Jacobian in canonical axis order and know
+# nothing about ``axis_weight``, so ``_gather_jacobian_by_axis_kernel``/
+# ``_scatter_pinv_transpose_by_axis_kernel`` below convert to and from
+# compact slot order around them.
 #
-# The kernels below produce a joint-space bias vector, projected through
-# that projector so it never disturbs the primary task. Joint-limit
-# avoidance and posture control both produce this kind of bias and may be
-# combined (added together) before projecting.
+# The kernels below produce a joint-space bias, projected through that
+# projector so it never disturbs the primary task; joint-limit avoidance and
+# posture control may be combined (added) before projecting.
 # ---------------------------------------------------------------------------
 
 

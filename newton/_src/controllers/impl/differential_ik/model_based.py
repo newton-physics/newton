@@ -34,10 +34,11 @@ from .model_free import ControllerDifferentialIKModelFree
 class ControllerDifferentialIK(ControllerBase):
     """Differential-kinematics (Jacobian-based) controller with internally computed kinematics.
 
-    Implements the damped-least-squares differential-kinematics control law.
-    This model-based variant computes the tool pose and tool-point Jacobian
-    itself: it evaluates forward kinematics and :func:`newton.eval_jacobian`
-    from ``model`` on every :meth:`step`, so the caller supplies only joint
+    Implements a differential-kinematics control law, selectable per instance
+    via :class:`IkMethod` (damped least squares by default). This model-based
+    variant computes the tool pose and tool-point Jacobian itself: it
+    evaluates forward kinematics and :func:`newton.eval_jacobian` from
+    ``model`` on every :meth:`step`, so the caller supplies only joint
     positions/velocities plus the desired tool pose.
 
     ``model`` is borrowed, not owned — it is never written to, and changes to
@@ -88,12 +89,15 @@ class ControllerDifferentialIK(ControllerBase):
             value. An axis weighted exactly ``0`` is different in kind, not
             just degree: it is excluded from the solve structurally (its
             error and Jacobian rows never enter it at all), not merely
-            driven toward zero by a very small weight. Any combination of
-            active axes is allowed, not just a leading prefix. Pass a
-            single ``wp.spatial_vector`` to apply the same weights to every
-            robot, or an array of shape [controlled_robot_count] to set
-            them per robot. ``None`` (the default) means every axis is
-            weighted ``1`` for every robot — full, equally-trusted 6D pose.
+            driven toward zero by a very small weight — this also shrinks
+            the task's own dimension, so a robot with fewer than 6
+            controlled DOFs can still be redundant if enough axes are
+            zeroed. Any combination of active axes is allowed, not just a
+            leading prefix. Pass a single ``wp.spatial_vector`` to apply the
+            same weights to every robot, or an array of shape
+            [controlled_robot_count] to set them per robot. ``None`` (the
+            default) means every axis is weighted ``1`` for every robot —
+            full, equally-trusted 6D pose.
         bandwidth: Output velocity scale gain, applied per controlled DOF
             after the Jacobian solve. Pass a scalar to apply the same gain
             to every controlled DOF, an array of shape
@@ -133,25 +137,28 @@ class ControllerDifferentialIK(ControllerBase):
             ``ik_method=IkMethod.TRUNCATED_SVD``; must be ``None``
             otherwise.
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
-            through the null-space projector.
+            through the null-space projector. Requires
+            ``joint_limit_avoidance_gain``, ``joint_limit_avoidance_margin``,
+            ``joint_pos_lower``, and ``joint_pos_upper``.
         joint_limit_avoidance_gain: Joint-centering gain, applied once a DOF
             comes within ``joint_limit_avoidance_margin`` of either limit.
             Required (and must be positive) when
             ``use_joint_limit_avoidance=True``.
         joint_limit_avoidance_margin: Distance from either limit at which
-            the avoidance bias starts ramping in, same units as
+            the avoidance bias starts ramping in [m or rad], same units as
             ``joint_pos_lower``/``joint_pos_upper``. Required (and must be
             positive) when ``use_joint_limit_avoidance=True``.
-        joint_pos_lower: Lower joint position limit per controlled DOF,
-            shape [total_controlled_dofs]. Required when
+        joint_pos_lower: Lower joint position limit per controlled DOF
+            [m or rad], shape [total_controlled_dofs]. Required when
             ``use_joint_limit_avoidance=True``; baked at construction, not a
             live port.
-        joint_pos_upper: Upper joint position limit per controlled DOF,
-            shape [total_controlled_dofs]. Required when
+        joint_pos_upper: Upper joint position limit per controlled DOF
+            [m or rad], shape [total_controlled_dofs]. Required when
             ``use_joint_limit_avoidance=True``; baked at construction, not a
             live port.
         use_null_space_posture_control: Project a proportional pull toward
-            ``inputs.q_des_null`` through the null-space projector.
+            ``inputs.q_des_null`` through the null-space projector. Enables
+            ``null_space_stiffness``.
         null_space_stiffness: Posture-control proportional gain, applied per
             controlled DOF. Pass a scalar to apply the same gain to every
             controlled DOF, an array of shape [total_controlled_dofs] to set
@@ -166,11 +173,13 @@ class ControllerDifferentialIK(ControllerBase):
             or leave it ``None`` to read ``inputs.null_space_damping`` each
             step (the default, and the only valid value when both are
             disabled). Unlike the primary ``damping``, ``λ_null = 0`` is
-            only safe when every robot has at least 6 controlled DOFs —
-            otherwise the projector's own ``JJᵀ`` is rank-deficient. When
-            baked, this is checked at construction and raises; a live value
-            is the caller's responsibility, since checking it every step
-            would cost a host sync and break :meth:`is_graphable`.
+            only safe when every robot has at least as many controlled DOFs
+            as its own task dimension (the number of nonzero ``axis_weight``
+            entries) — otherwise the projector's own ``JJᵀ`` is
+            rank-deficient. When baked, this is checked at construction and
+            raises; a live value is the caller's responsibility, since
+            checking it every step would cost a host sync and break
+            :meth:`is_graphable`.
     """
 
     class Inputs:
@@ -188,13 +197,13 @@ class ControllerDifferentialIK(ControllerBase):
         joint_qd: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Current joint velocities [m/s or rad/s], shape [model.joint_dof_count]."""
         desired_tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
-        """Desired tool pose, world frame, shape [controlled_robot_count]."""
+        """Desired tool pose [m, unitless quaternion], world frame, shape [controlled_robot_count]."""
         bandwidth: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Output velocity scale gain, shape [total_controlled_dofs]. ``None`` when baked at construction."""
         damping: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Damped-least-squares regularization λ, shape [controlled_robot_count]. ``None`` when baked at construction."""
         q_des_null: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
-        """Null-space posture target, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_posture_control=True``."""
+        """Null-space posture target [m or rad], shape [total_controlled_dofs]. ``None`` unless ``use_null_space_posture_control=True``."""
         null_space_stiffness: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Posture-control proportional gain, shape [total_controlled_dofs]. ``None`` when disabled, or when baked at construction."""
         null_space_damping: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
@@ -579,12 +588,12 @@ class ControllerDifferentialIK(ControllerBase):
 
     @property
     def tool_transform_body(self) -> wp.array[wp.transform]:
-        """Tool site's transform relative to its body, shape [controlled_robot_count]."""
+        """Tool site's transform [m, unitless quaternion] relative to its body, shape [controlled_robot_count]."""
         return self._tool_transform_body
 
     @property
     def tool_pose_world(self) -> wp.array[wp.transform]:
-        """World pose of each controlled robot's tool site as of the latest ``step()``, shape [controlled_robot_count]."""
+        """World pose [m, unitless quaternion] of each controlled robot's tool site as of the latest ``step()``, shape [controlled_robot_count]."""
         return self._tool_pose_world
 
     @property
