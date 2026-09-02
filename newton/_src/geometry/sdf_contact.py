@@ -17,7 +17,7 @@ from ..geometry.types import GeoType
 from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield, sample_sdf_heightfield
 from .contact_reduction_global import (
     GlobalContactReducerData,
-    export_and_reduce_contact_centered_two_spatial_depths,
+    _export_and_reduce_contact_centered_two_spatial_depths,
     export_and_reduce_predictive_contact,
 )
 from .flags import MeshSignMethod
@@ -1071,9 +1071,16 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     use_precomputed_edge_data: bool = False,
     use_texture_sdf_only: bool = False,
     use_identity_sdf_scale: bool = False,
+    deterministic_reduction: bool = False,
 ):
     if use_identity_sdf_scale and not use_texture_sdf_only:
         raise ValueError("identity SDF scale specialization requires texture-only SDFs")
+    # The reducer mode is tested inside fully unrolled directional loops. Keep
+    # one bounded specialization for reduced mesh-SDF kernels so those checks
+    # and their inactive packing path fold away; non-reduced kernels share the
+    # default variant because they never call the reducer.
+    deterministic_reduction = bool(reduce_contacts and deterministic_reduction)
+    reducer_deterministic = 1 if deterministic_reduction else 0
     do_edge_sdf_collision = _create_sdf_contact_funcs(
         enable_heightfields, use_texture_sdf_only, texture_sample_sdf_hw, _texture_sample_sdf_hw_pair
     )
@@ -1091,7 +1098,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     # different floating-point results, breaking bit-exact reproducibility.
     _module = (
         f"sdf_contact_{writer_func.__name__}_{enable_heightfields}_{reduce_contacts}_"
-        f"{speculative}_{use_precomputed_edge_data}_{use_texture_sdf_only}_{use_identity_sdf_scale}"
+        f"{speculative}_{use_precomputed_edge_data}_{use_texture_sdf_only}_{use_identity_sdf_scale}_"
+        f"{deterministic_reduction}"
     )
 
     @wp.kernel(enable_backward=False, module=_module)
@@ -1138,19 +1146,20 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         # Strided loop over pairs
         for pair_idx in range(block_id, pair_count, total_num_blocks):
             pair_encoded = shape_pairs_mesh_mesh[pair_idx]
+            shape_a = pair_encoded[0]
+            shape_b = pair_encoded[1]
             if wp.static(enable_heightfields):
-                has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
-                pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
+                has_hfield = (shape_a & SHAPE_PAIR_HFIELD_BIT) != 0
+                shape_a = shape_a & SHAPE_PAIR_INDEX_MASK
             else:
                 has_hfield = False
-                pair = pair_encoded
 
-            gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
-            base_gap_sum = shape_base_gap[pair[0]] + shape_base_gap[pair[1]]
+            gap_sum = shape_gap[shape_a] + shape_gap[shape_b]
+            base_gap_sum = shape_base_gap[shape_a] + shape_base_gap[shape_b]
 
             for mode in range(2):
-                tri_shape = pair[mode]
-                sdf_shape = pair[1 - mode]
+                tri_shape = shape_a if mode == 0 else shape_b
+                sdf_shape = shape_b if mode == 0 else shape_a
 
                 if wp.static(enable_heightfields):
                     tri_is_hfield = has_hfield and mode == 0
@@ -1489,8 +1498,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         direction_world = wp.vec3(0.0, 1.0, 0.0)
 
                                 contact_normal = -direction_world if mode == 0 else direction_world
-                                triangle_mesh_margin = shape_data[pair[0]][3]
-                                sdf_mesh_margin = shape_data[pair[1]][3]
+                                triangle_mesh_margin = shape_data[shape_a][3]
+                                sdf_mesh_margin = shape_data[shape_b][3]
 
                                 contact_data = ContactData()
                                 contact_data.contact_point_center = point_world
@@ -1500,8 +1509,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 contact_data.radius_eff_b = 0.0
                                 contact_data.margin_a = triangle_mesh_margin
                                 contact_data.margin_b = sdf_mesh_margin
-                                contact_data.shape_a = pair[0]
-                                contact_data.shape_b = pair[1]
+                                contact_data.shape_a = shape_a
+                                contact_data.shape_b = shape_b
                                 if wp.static(speculative):
                                     contact_data.gap_sum = base_gap_sum
                                 else:
@@ -1530,7 +1539,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     # but contacts are written directly to global buffer + hashtable.
     # =========================================================================
 
-    @wp.kernel(enable_backward=False, launch_bounds=(256, 2), module=_module)
+    # The tiled launch provides exactly ``total_num_blocks`` blocks and the
+    # kernel strides those blocks over all active combinations itself.
+    @wp.kernel(enable_backward=False, launch_bounds=(256, 2), grid_stride=False, module=_module)
     def mesh_sdf_collision_global_reduce_kernel(
         shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
@@ -1595,19 +1606,20 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             block_in_pair = combo_idx - pair_block_start
             blocks_for_pair = block_offsets[pair_idx + 1] - pair_block_start
             pair_encoded = shape_pairs_mesh_mesh[pair_idx]
+            shape_a = pair_encoded[0]
+            shape_b = pair_encoded[1]
             if wp.static(enable_heightfields):
-                has_hfield = (pair_encoded[0] & SHAPE_PAIR_HFIELD_BIT) != 0
-                pair = wp.vec2i(pair_encoded[0] & SHAPE_PAIR_INDEX_MASK, pair_encoded[1])
+                has_hfield = (shape_a & SHAPE_PAIR_HFIELD_BIT) != 0
+                shape_a = shape_a & SHAPE_PAIR_INDEX_MASK
             else:
                 has_hfield = False
-                pair = pair_encoded
 
-            gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
-            base_gap_sum = shape_base_gap[pair[0]] + shape_base_gap[pair[1]]
+            gap_sum = shape_gap[shape_a] + shape_gap[shape_b]
+            base_gap_sum = shape_base_gap[shape_a] + shape_base_gap[shape_b]
 
             for mode in range(2):
-                tri_shape = pair[mode]
-                sdf_shape = pair[1 - mode]
+                tri_shape = shape_a if mode == 0 else shape_b
+                sdf_shape = shape_b if mode == 0 else shape_a
 
                 if wp.static(enable_heightfields):
                     tri_is_hfield = has_hfield and mode == 0
@@ -1647,8 +1659,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 mesh_scale_tri = wp.vec3(scale_data_tri[0], scale_data_tri[1], scale_data_tri[2])
                 mesh_scale_sdf = wp.vec3(scale_data_sdf[0], scale_data_sdf[1], scale_data_sdf[2])
 
-                X_tri_ws = shape_transform[tri_shape]
-                X_sdf_ws = shape_transform[sdf_shape]
+                # Keep the search transforms distinct from the accepted-contact
+                # export transforms below so they do not stay live across the
+                # edge search and increase register spills.
+                X_tri_ws_search = shape_transform[tri_shape]
+                X_sdf_ws_search = shape_transform[sdf_shape]
 
                 texture_sdf = TextureSDFData()
                 if sdf_is_hfield:
@@ -1663,7 +1678,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         if not use_bvh_for_sdf and texture_sdf.scale_baked:
                             sdf_scale = wp.vec3(1.0, 1.0, 1.0)
 
-                X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws), X_tri_ws)
+                X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws_search), X_tri_ws_search)
 
                 triangle_mesh_margin = scale_data_tri[3]
                 sdf_mesh_margin = scale_data_sdf[3]
@@ -1912,6 +1927,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         dist_unscaled, direction_unscaled, sdf_scale, inv_sdf_scale, min_sdf_scale
                                     )
                                     point = wp.cw_mul(point_unscaled, sdf_scale)
+                                X_tri_ws = shape_transform[tri_shape]
+                                X_sdf_ws = shape_transform[sdf_shape]
                                 point_world = wp.transform_point(X_sdf_ws, point)
 
                                 direction_world = wp.transform_vector(X_sdf_ws, direction)
@@ -1946,9 +1963,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     # Keep velocity-expanded search candidates out of the regular
                                     # normal bins so the predictive pair manifold remains bounded.
                                     outer_spatial_depth = margin_sum + base_gap_sum
-                                contact_id = export_and_reduce_contact_centered_two_spatial_depths(
-                                    pair[0],
-                                    pair[1],
+                                contact_id = _export_and_reduce_contact_centered_two_spatial_depths(
+                                    shape_a,
+                                    shape_b,
                                     point_world,
                                     contact_normal,
                                     dist,
@@ -1961,12 +1978,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     aabb_upper_tri,
                                     voxel_res_tri,
                                     reducer_data,
+                                    wp.static(reducer_deterministic),
                                 )
                                 if wp.static(speculative):
                                     if dist >= inner_spatial_depth:
                                         export_and_reduce_predictive_contact(
-                                            pair[0],
-                                            pair[1],
+                                            shape_a,
+                                            shape_b,
                                             point_world,
                                             contact_normal,
                                             dist,

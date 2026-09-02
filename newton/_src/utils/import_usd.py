@@ -589,6 +589,10 @@ def parse_usd(
     default_joint_damping = builder.default_joint_cfg.damping
     default_joint_limit_ke = builder.default_joint_cfg.limit_ke
     default_joint_limit_kd = builder.default_joint_cfg.limit_kd
+    canonical_joint_cfg = ModelBuilder.JointDofConfig()
+    default_joint_limit_gains_configured = (
+        default_joint_limit_ke != canonical_joint_cfg.limit_ke or default_joint_limit_kd != canonical_joint_cfg.limit_kd
+    )
     default_joint_armature = builder.default_joint_cfg.armature
     default_joint_velocity_limit = builder.default_joint_cfg.velocity_limit
 
@@ -721,6 +725,7 @@ def parse_usd(
         resolver.validate_custom_attributes(builder)
     mjc_resolver = next((resolver for resolver in schema_resolvers if resolver.name == "mjc"), None)
     solreflimit_mode_key = "mujoco:solreflimit_mode"
+    solreflimit_gain_baseline_key = "mujoco:solreflimit_gain_baseline"
 
     # mapping from prim path to body index in ModelBuilder
     path_body_map: dict[str, int] = {}
@@ -909,57 +914,51 @@ def parse_usd(
     def _should_write_solreflimit_mode() -> bool:
         return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
 
+    def _should_write_solreflimit_gain_baseline() -> bool:
+        return mjc_resolver is not None and solreflimit_gain_baseline_key in builder.custom_attributes
+
     # Keep source tracking local until schema applicability and provenance are modeled globally (#3307).
-    def _get_mjc_joint_limit_default(prim: Usd.Prim, key: str) -> float | None:
-        if mjc_resolver is None or not _has_api_schema(prim, "MjcJointAPI"):
+    def _mjc_joint_limit_source(prim: Usd.Prim) -> Literal["mjc_authored", "mjc_default"] | None:
+        if mjc_resolver is None:
             return None
-        spec = mjc_resolver.mapping.get(PrimType.JOINT, {}).get(key)
-        if spec is None or spec.default is None:
-            return None
-        if spec.usd_value_transformer is not None:
-            return spec.usd_value_transformer(spec.default)
-        return spec.default
+        solreflimit_attr = prim.GetAttribute("mjc:solreflimit")
+        if solreflimit_attr is not None and solreflimit_attr.HasAuthoredValue():
+            return "mjc_authored"
+        if _has_api_schema(prim, "MjcJointAPI"):
+            return "mjc_default"
+        return None
 
     def _resolve_joint_limit_gain(
         prim: Usd.Prim, key: str, builder_default: float
-    ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
+    ) -> tuple[float, Literal["force", "builder_default"]]:
         """Resolve a limit gain and report the semantics of its source."""
         for resolver in R.resolvers:
+            if resolver.name == "mjc":
+                continue
+
             spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
             if spec is None:
                 continue
-
-            if resolver.name == "mjc":
-                raw_value = usd.get_attribute(prim, spec.name)
-                if raw_value is None:
-                    continue
-                R._collect_on_first_use(resolver, prim)
-                authored_value = (
-                    spec.usd_value_transformer(raw_value) if spec.usd_value_transformer is not None else raw_value
-                )
-                if authored_value is not None:
-                    return authored_value, "mjc_authored"
-                mjc_default = _get_mjc_joint_limit_default(prim, key)
-                if mjc_default is not None:
-                    return mjc_default, "mjc_authored"
-                return builder_default, "mjc_authored"
 
             authored_value = resolver.get_value(prim, PrimType.JOINT, key)
             if authored_value is not None:
                 R._collect_on_first_use(resolver, prim)
                 return authored_value, "force"
 
-        if mjc_resolver is not None:
-            mjc_default = _get_mjc_joint_limit_default(prim, key)
-            if mjc_default is not None:
-                return mjc_default, "mjc_default"
-        return builder_default, "force"
+        return builder_default, "builder_default"
 
-    def _joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
+    def _joint_limit_solref_mode(prim: Usd.Prim, ke_source: str, kd_source: str) -> int:
         """Choose MuJoCo limit-solref semantics from the resolved gain sources."""
-        if ke_source == kd_source == "mjc_authored":
+        mjc_source = _mjc_joint_limit_source(prim)
+        if mjc_source is not None and mjc_resolver is not None:
+            R._collect_on_first_use(mjc_resolver, prim)
+        if mjc_source == "mjc_authored":
             return SOLREF_MODE_RAW
-        if ke_source == kd_source == "mjc_default":
+        if (
+            mjc_source == "mjc_default"
+            and ke_source == kd_source == "builder_default"
+            and not default_joint_limit_gains_configured
+        ):
             return SOLREF_MODE_MJCF_DEFAULT
         return SOLREF_MODE_FORCE_SPACE
 
@@ -1068,7 +1067,7 @@ def parse_usd(
         elif material_props.get("color") is not None:
             mesh.color = material_props["color"]
 
-        for key in ("roughness", "metallic", "texture_transform"):
+        for key in ("opacity", "roughness", "metallic", "texture_transform"):
             value = material_props.get(key)
             if value is not None:
                 setattr(mesh, key, value)
@@ -1468,6 +1467,9 @@ def parse_usd(
         visual_shape_cfg_for_prim.is_visible = is_site or _is_viewport_drawn(prim)
         material_props = _get_material_props_cached(prim)
         shape_color = material_props.get("color")
+        shape_visual_kwargs = {}
+        if material_props.get("opacity") is not None:
+            shape_visual_kwargs["opacity"] = material_props["opacity"]
         # A textured mesh resolves no scalar color on purpose, so the texture is not tinted;
         # the mesh path gives it white. Geometry that never receives the texture still wants
         # the neutral, otherwise it falls through to a palette color.
@@ -1489,6 +1491,7 @@ def parse_usd(
                     color=shape_color,
                     as_site=is_site,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "sphere":
                 if not _is_uniform_scale(scale):
@@ -1502,6 +1505,7 @@ def parse_usd(
                     color=shape_color,
                     as_site=is_site,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "plane":
                 axis = usd.get_gprim_axis(prim)
@@ -1516,6 +1520,7 @@ def parse_usd(
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "capsule":
                 axis = usd.get_gprim_axis(prim)
@@ -1533,6 +1538,7 @@ def parse_usd(
                     color=shape_color,
                     as_site=is_site,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "cylinder":
                 axis = usd.get_gprim_axis(prim)
@@ -1550,6 +1556,7 @@ def parse_usd(
                     color=shape_color,
                     as_site=is_site,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "cone":
                 axis = usd.get_gprim_axis(prim)
@@ -1567,6 +1574,7 @@ def parse_usd(
                     color=shape_color,
                     as_site=is_site,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "mesh":
                 subset_meshes = _get_visual_material_subset_meshes(prim)
@@ -1600,6 +1608,7 @@ def parse_usd(
                         cfg=visual_shape_cfg_for_prim,
                         color=shape_color,
                         label=path_name,
+                        **shape_visual_kwargs,
                     )
             elif type_name == "particlefield3dgaussiansplat":
                 gaussian = usd.get_gaussian(prim)
@@ -1611,6 +1620,7 @@ def parse_usd(
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             if shape_id >= 0:
                 path_shape_map[path_name] = shape_id
@@ -1852,7 +1862,7 @@ def parse_usd(
             actuator_mode=actuator_mode,
             initial_position=initial_position,
             initial_velocity=initial_velocity,
-            limit_solref_mode=_joint_limit_solref_mode(limit_ke_source, limit_kd_source),
+            limit_solref_mode=_joint_limit_solref_mode(jp_prim, limit_ke_source, limit_kd_source),
         )
 
     def parse_joint(
@@ -1898,6 +1908,8 @@ def parse_usd(
             dof = resolve_dof_params(joint_prim, joint_desc, is_revolute)
             if _should_write_solreflimit_mode():
                 joint_custom_attrs[solreflimit_mode_key] = dof.limit_solref_mode
+            if _should_write_solreflimit_gain_baseline():
+                joint_custom_attrs[solreflimit_gain_baseline_key] = wp.vec2(dof.limit_ke, dof.limit_kd)
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = dof.limit_lower
             joint_params["limit_upper"] = dof.limit_upper
@@ -2075,7 +2087,7 @@ def parse_usd(
                             actuator_mode=actuator_mode,
                         )
                     )
-                    linear_solref_modes.append(_joint_limit_solref_mode(limit_ke_source, limit_kd_source))
+                    linear_solref_modes.append(_joint_limit_solref_mode(joint_prim, limit_ke_source, limit_kd_source))
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(trans_name)
                 elif free_axis and dof in _rot_axes:
@@ -2141,13 +2153,17 @@ def parse_usd(
                             actuator_mode=actuator_mode,
                         )
                     )
-                    angular_solref_modes.append(_joint_limit_solref_mode(limit_ke_source, limit_kd_source))
+                    angular_solref_modes.append(_joint_limit_solref_mode(joint_prim, limit_ke_source, limit_kd_source))
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(rot_name)
                     num_dofs += 1
 
             if _should_write_solreflimit_mode():
                 joint_custom_attrs[solreflimit_mode_key] = linear_solref_modes + angular_solref_modes
+            if _should_write_solreflimit_gain_baseline():
+                joint_custom_attrs[solreflimit_gain_baseline_key] = [
+                    wp.vec2(axis.limit_ke, axis.limit_kd) for axis in [*linear_axes, *angular_axes]
+                ]
 
             joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
         elif key == UsdPhysics.ObjectType.DistanceJoint:
@@ -2372,6 +2388,8 @@ def parse_usd(
             sibling_dof_attrs = usd.get_custom_attribute_values(jp_prim, dof_freq_attrs, context={"builder": builder})
             if _should_write_solreflimit_mode():
                 sibling_dof_attrs[solreflimit_mode_key] = dof.limit_solref_mode
+            if _should_write_solreflimit_gain_baseline():
+                sibling_dof_attrs[solreflimit_gain_baseline_key] = wp.vec2(dof.limit_ke, dof.limit_kd)
 
             if is_revolute:
                 angular_axes.append(ax)
@@ -3977,6 +3995,11 @@ def parse_usd(
                     "custom_attributes": shape_custom_attrs,
                     "color": shape_color,
                 }
+                if collider_is_visible:
+                    if material_props.get("color") is not None and material_props.get("texture") is None:
+                        shape_params["color"] = material_props["color"]
+                    if material_props.get("opacity") is not None:
+                        shape_params["opacity"] = material_props["opacity"]
                 # print(path, shape_params)
                 if key == UsdPhysics.ObjectType.CubeShape:
                     hx, hy, hz = shape_spec.halfExtents

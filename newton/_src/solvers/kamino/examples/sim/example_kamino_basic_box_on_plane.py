@@ -110,10 +110,6 @@ class Example:
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
 
-        # Warm-start the simulation
-        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        self.solver.reset(self.state_0)
-
         # Reset the simulation state to a valid initial configuration above the ground
         self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
         q_b = wp.quat_identity(dtype=wp.float32)
