@@ -83,7 +83,7 @@ PLANAR_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 JOINT_TARGET_KE = 3000.0
 JOINT_TARGET_KD = 100.0
 
-BANDWIDTH = 20.0
+BANDWIDTH = 5.0
 # Empirically tuned against this example's continuous velocity-based control
 # loop (see IkMethod.ADAPTIVE_DAMPING).
 ADAPTIVE_DAMPING_MIN = 0.02
@@ -202,8 +202,6 @@ class Example:
             wp.transform(*body_q_np[ur10_tool_body].tolist()) * ur10_tool_site_transform,
             wp.transform(*body_q_np[planar_tool_body].tolist()) * planar_tool_site_transform,
         ]
-        # Only the planar arm's gizmo is axis-restricted -- Franka's and
-        # UR10's keep the default full 6-DOF widget (None = every axis).
         self.gizmo_axes = [
             {"translate": None, "rotate": None},
             {"translate": None, "rotate": None},

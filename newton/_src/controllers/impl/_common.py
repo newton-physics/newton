@@ -157,9 +157,9 @@ def _shift_jacobian_to_tool_kernel(
 
 @wp.kernel
 def _null_space_projector_kernel(
-    jacobian_tool_world: wp.array3d[
+    jacobian_tool: wp.array3d[
         float
-    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, in world coords
+    ],  # (robot_count, 6, max_dofs) columns are per-DOF twists about the tool point, in the caller's task frame
     jacobian_pinv_transpose: wp.array3d[
         float
     ],  # (robot_count, 6, max_dofs) either pseudo-inverse-transpose variant; zero beyond dof_count
@@ -170,6 +170,11 @@ def _null_space_projector_kernel(
     ],  # (robot_count, max_dofs, max_dofs) = I - J^T @ jacobian_pinv_transpose; untouched beyond dof_count
 ):
     """The null-space projector, ``N = I - J^T @ jacobian_pinv_transpose``.
+
+    Frame-agnostic: ``jacobian_tool`` and ``jacobian_pinv_transpose`` just
+    need to be expressed in the same frame as each other, whatever that is
+    (e.g. world for differential IK, the operational frame for hybrid
+    force/motion control).
 
     A joint torque built as ``N @ M @ a``, for any joint acceleration ``a``
     and the joint-space mass matrix ``M``, produces zero task-space
@@ -193,7 +198,7 @@ def _null_space_projector_kernel(
 
     total = float(0.0)
     for k in range(6):
-        total += jacobian_tool_world[robot_idx, k, row] * jacobian_pinv_transpose[robot_idx, k, col]
+        total += jacobian_tool[robot_idx, k, row] * jacobian_pinv_transpose[robot_idx, k, col]
     null_space_projector[robot_idx, row, col] = identity_entry - total
 
 
@@ -291,20 +296,26 @@ def _apply_spatial_matrix_kernel(
 @wp.kernel
 def _task_matrix_times_jacobian_kernel(
     task_matrix: wp.array3d[float],  # (robot_count, 6, 6) symmetric task-space matrix, e.g. a 6x6 inverse
-    jacobian_tool_world: wp.array3d[
+    jacobian_tool: wp.array3d[
         float
-    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, in world coords
+    ],  # (robot_count, 6, max_dofs) columns are per-DOF twists about the tool point, in the caller's task frame
     dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
     # outputs
-    result: wp.array3d[float],  # (robot_count, 6, max_dofs) = task_matrix @ jacobian_tool_world; zero beyond dof_count
+    result: wp.array3d[float],  # (robot_count, 6, max_dofs) = task_matrix @ jacobian_tool; zero beyond dof_count
 ):
-    """Multiply a 6x6 task-space matrix by a tool-point Jacobian, ``result = task_matrix @ jacobian_tool_world``."""
+    """Multiply a 6x6 task-space matrix by a tool-point Jacobian, ``result = task_matrix @ jacobian_tool``.
+
+    Frame-agnostic: ``task_matrix`` and ``jacobian_tool`` just need to be
+    expressed in the same frame as each other, whatever that is (e.g. world
+    for differential IK, the operational frame for hybrid force/motion
+    control).
+    """
     robot_idx, row, col = wp.tid()
     if col >= dof_count[robot_idx]:
         return
     total = float(0.0)
     for task_axis in range(6):
-        total += task_matrix[robot_idx, row, task_axis] * jacobian_tool_world[robot_idx, task_axis, col]
+        total += task_matrix[robot_idx, row, task_axis] * jacobian_tool[robot_idx, task_axis, col]
     result[robot_idx, row, col] = total
 
 
