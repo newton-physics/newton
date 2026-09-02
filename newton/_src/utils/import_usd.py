@@ -61,7 +61,7 @@ from .import_usd_deformable_attachments import (
     _deformable_import_element_collision_filters,
     _deformable_remap_collapsed,
 )
-from .import_usd_deformable_cable import _deformable_import_cable, _deformable_import_cable_graphs
+from .import_usd_deformable_cable import _deformable_import_cable, _deformable_prepare_cable_topology
 from .import_usd_deformable_cloth import _deformable_import_cloth
 from .import_usd_deformable_utils import (
     _LOADABLE_VISUAL_TYPE_NAMES_LOWER,
@@ -4615,17 +4615,21 @@ def parse_usd(
             prims=_deformable_prims,
         )
 
-        # Curve-to-curve junctions weld into rod graphs before the per-curve cable pass, which skips
-        # the consumed curves; the attachment pass below skips the consumed junctions. Each pass runs
-        # only when its bucket has candidates; welding additionally needs attachments to weld with.
-        consumed_cable_curve_paths: set[str] = set()
-        consumed_junction_attachment_paths: set[str] = set()
+        cables_in_shared_graphs: set[str] = set()
+        attachments_in_shared_graphs: set[str] = set()
+        cable_articulation_roots = {}
         if _deformable_prims.cables and _deformable_prims.attachments:
-            consumed_cable_curve_paths, consumed_junction_attachment_paths = _deformable_import_cable_graphs(
-                _deformable_ctx
-            )
+            (
+                cables_in_shared_graphs,
+                attachments_in_shared_graphs,
+                cable_articulation_roots,
+            ) = _deformable_prepare_cable_topology(_deformable_ctx)
         if _deformable_prims.cables:
-            _deformable_import_cable(_deformable_ctx, consumed_cable_curve_paths)
+            _deformable_import_cable(
+                _deformable_ctx,
+                cables_in_shared_graphs,
+                cable_articulation_roots,
+            )
         if _deformable_prims.cloth:
             _deformable_import_cloth(_deformable_ctx)
         if _deformable_prims.tetmeshes:
@@ -4636,7 +4640,7 @@ def parse_usd(
         # are rigid capsule bodies. Surface/volume attachments require a separate
         # deformable-site constraint model, so those are preserved as attrs and warned.
         if _deformable_prims.attachments:
-            _deformable_import_attachments(_deformable_ctx, consumed_junction_attachment_paths)
+            _deformable_import_attachments(_deformable_ctx, attachments_in_shared_graphs)
 
         # AOUSD PhysicsElementCollisionFilter prims: suppress collision between authored element
         # groups (cable segments / collider shapes); runs after the cables and colliders exist.

@@ -18,86 +18,18 @@ from typing import Any
 
 import warp as wp
 
-from ..sim import JointType
 from .import_usd_deformable_utils import (
     _attachment_vec3_list,
     _attachment_vec3_tuples,
-    _builder_body_xform,
     _cable_attachment_anchors,
     _DeformableImportContext,
     _is_ignored_path,
     _mark_attachment_unsupported,
+    _resolve_attachment_target,
 )
 
 
-def _merge_attachment_articulations(
-    builder, attachment_joints: list[int], cable_body: int, path: str, cable_path: str
-) -> bool:
-    """Merge a tree-compatible cable attachment into its endpoint articulations.
-
-    Rigid-body import wraps its joints before the attachment post-pass runs, while a cable whose
-    point-0 attachment can be its root defers wrapping. Fold the contiguous, tree-compatible case
-    into one articulation so rigid solvers see the cable and its physical target as one system.
-    """
-    cable_articulation = builder._find_articulation_for_body(cable_body)
-    if cable_articulation is not None:
-        return False
-
-    connected_bodies = {cable_body}
-    connected_rod_joints: set[int] = set()
-    changed = True
-    while changed:
-        changed = False
-        for joint, joint_type in enumerate(builder.joint_type):
-            if joint_type != JointType.ROD or joint in connected_rod_joints:
-                continue
-            parent = builder.joint_parent[joint]
-            child = builder.joint_child[joint]
-            if parent in connected_bodies or child in connected_bodies:
-                connected_rod_joints.add(joint)
-                connected_bodies.update((parent, child))
-                changed = True
-    ordered_joints = sorted((*connected_rod_joints, *attachment_joints))
-    if ordered_joints != list(range(ordered_joints[0], ordered_joints[-1] + 1)):
-        return False
-
-    child_to_parent: dict[int, int] = {}
-    for joint in ordered_joints:
-        child = builder.joint_child[joint]
-        parent = builder.joint_parent[joint]
-        if child in child_to_parent and child_to_parent[child] != parent:
-            return False
-        child_to_parent[child] = parent
-
-    joint_worlds = {builder.joint_world[joint] for joint in ordered_joints}
-    if len(joint_worlds) != 1:
-        warnings.warn(
-            f"{path}: physical attachment spans more than one world; leaving it outside the cable articulation.",
-            stacklevel=2,
-        )
-        return False
-
-    parent_body = next((builder.joint_parent[joint] for joint in attachment_joints), -1)
-    try:
-        builder._finalize_imported_articulation(
-            ordered_joints,
-            parent_body=parent_body,
-            articulation_label=f"{cable_path}_articulation",
-        )
-    except ValueError as error:
-        warnings.warn(
-            f"{path}: physical attachment cannot join the cable articulation: {error}",
-            stacklevel=2,
-        )
-        return False
-
-    articulation = builder._find_articulation_for_body(cable_body)
-    if articulation is not None:
-        builder.articulation_label[articulation] = f"{cable_path}_articulation"
-    return True
-
-
-def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junction_attachment_paths: set[str]) -> None:
+def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in_shared_graphs: set[str]) -> None:
     """Lower supported AOUSD ``PhysicsAttachment`` prims onto the imported cables.
 
     Cable ``point`` / ``segment`` sites with ``type1 = "xform"`` become hard ball joints to the
@@ -106,16 +38,11 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
     non-xform target, ...) are warned and preserved in ``path_attachment_attrs``.
     """
     builder = ctx.builder
-    stage = ctx.stage
     root_prim = ctx.root_prim
     ignore_paths = ctx.ignore_paths
-    incoming_world_xform = ctx.incoming_world_xform
     verbose = ctx.verbose
     deformable_read = ctx.deformable_read
-    get_prim_world_mat = ctx.get_prim_world_mat
-    get_rigid_body_ancestor_path = ctx.get_rigid_body_ancestor_path
     get_first_target = ctx.get_first_target
-    path_body_map = ctx.path_body_map
     path_cable_segments = ctx.path_cable_segments
     path_cable_point_anchors = ctx.path_cable_point_anchors
     path_cloth_map = ctx.path_cloth_map
@@ -123,39 +50,14 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
     path_attachment_map = ctx.path_attachment_map
     path_attachment_attrs = ctx.path_attachment_attrs
 
-    def _attachment_world_point_from_xform(target_path: str, local_point: wp.vec3) -> tuple[int, wp.vec3] | None:
-        if target_path in ("", "/"):
-            # A world target's coords are authored in stage space, so they ride the same
-            # import/up-axis transform applied to the cable geometry (otherwise the anchor
-            # stays in original USD coordinates and yanks a translated cable off-position).
-            return -1, wp.transform_point(incoming_world_xform, local_point)
-
-        target_prim = stage.GetPrimAtPath(target_path)
-        if not target_prim or not target_prim.IsValid():
-            return None
-
-        target_mat = get_prim_world_mat(target_prim, None, incoming_world_xform)
-        # Apply the full affine (incl. non-uniform scale, shear, reflection) to the local anchor.
-        world_point = wp.transform_point(target_mat, local_point)
-
-        body_path = get_rigid_body_ancestor_path(target_prim)
-        if body_path is None:
-            return -1, world_point
-
-        body_idx = path_body_map.get(body_path, -1)
-        if body_idx < 0:
-            return None
-        local_body_point = wp.transform_point(wp.transform_inverse(_builder_body_xform(builder, body_idx)), world_point)
-        return body_idx, local_body_point
-
     if not (root_prim and root_prim.IsValid()):
         return
     for prim in ctx.prims.attachments:
         path = str(prim.GetPath())
         if _is_ignored_path(path, ignore_paths):
             continue
-        if path in consumed_junction_attachment_paths:
-            continue  # already consumed as rod-graph topology (curve-to-curve junction)
+        if path in attachments_in_shared_graphs:
+            continue
 
         src0 = get_first_target(prim, "physics:src0")
         src1 = get_first_target(prim, "physics:src1")
@@ -186,6 +88,10 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
             "damping": damping,
         }
         path_attachment_attrs[path] = attrs
+
+        if path in path_attachment_map:
+            attrs["joint_indices"] = list(path_attachment_map[path])
+            continue
 
         if not enabled:
             continue
@@ -274,7 +180,6 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
             continue
 
         joints: list[int] = []
-        first_cable_body: int | None = None
         for site_idx, src_index in enumerate(indices0):
             coord0 = coords0[site_idx] if type0 == "segment" else None
             cable_anchors = _cable_attachment_anchors(
@@ -287,7 +192,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
                     f"PhysicsAttachment type0='{type0}' could not be resolved on cable '{src0}'.",
                 )
                 break
-            target_info = _attachment_world_point_from_xform(src1, coords1[site_idx])
+            target_info = _resolve_attachment_target(ctx, src1, coords1[site_idx])
             if target_info is None:
                 warnings.warn(
                     f"{path}: physics:src1 target '{src1}' could not be resolved as an xform; "
@@ -297,8 +202,6 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
                 continue
             parent_body, parent_local = target_info
             for anchor_idx, (child_body, child_local) in enumerate(cable_anchors):
-                if first_cable_body is None:
-                    first_cable_body = child_body
                 label = f"{path}_site{site_idx}"
                 if len(cable_anchors) > 1:
                     label = f"{label}_anchor{anchor_idx}"
@@ -315,8 +218,6 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
         if joints:
             path_attachment_map[path] = joints
             attrs["joint_indices"] = list(joints)
-            if first_cable_body is not None:
-                _merge_attachment_articulations(builder, joints, first_cable_body, path, src0)
             if verbose:
                 print(f"Added PhysicsAttachment {path} with {len(joints)} joint(s).")
 

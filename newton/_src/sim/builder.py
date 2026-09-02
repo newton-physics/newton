@@ -8346,9 +8346,9 @@ class ModelBuilder:
                 creates an open chain. Note: rods require at least 2 segments.
             label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
                 retain the historical ``{label}_cable_{n}`` form for compatibility.
-            wrap_in_articulation: If True, the created joints are automatically wrapped into a single
-                floating-base articulation whose first joint is a free joint to the world. Defaults to
-                True to ensure valid simulation models.
+            wrap_in_articulation: If True, places the created rod joints and a free joint to the
+                world in one floating-base articulation. Defaults to True to ensure valid simulation
+                models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
                 capsule shapes. If None, the rod uses the default rod color.
             body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
@@ -8365,8 +8365,8 @@ class ModelBuilder:
             ``joint_indices`` contains the rod joints, but not the automatically-created free root joint.
 
         Articulations:
-            By default (``wrap_in_articulation=True``), the created joints and a free root joint are
-            wrapped into a single floating-base articulation, which avoids orphan joints during
+            By default (``wrap_in_articulation=True``), one floating-base articulation contains the
+            created rod joints and a free root joint. This avoids orphan joints during
             :meth:`finalize <ModelBuilder.finalize>`.
             If ``wrap_in_articulation=False``, this method will return the created joint indices but will
             not wrap them; callers must place them into one or more articulations (via :meth:`add_articulation`)
@@ -8436,8 +8436,8 @@ class ModelBuilder:
         # Note: positions has N+1 elements for N segments.
         edges = [(i, i + 1) for i in range(num_segments)]
 
-        # Delegate to add_rod_graph to create bodies, internal joints, and (when requested) a free-rooted
-        # articulation. A closed loop is added afterward so its closing joint remains outside the tree.
+        # add_rod_graph creates the bodies, internal joints, and optional floating-base articulation.
+        # A closed loop is added afterward so its closing joint remains outside the articulation tree.
         link_bodies, link_joints = self.add_rod_graph(
             node_positions=positions_wp,
             edges=edges,
@@ -8544,7 +8544,7 @@ class ModelBuilder:
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
           ``node_positions[v]`` (local +Z points toward ``v``).
         - Rod joints are created between edge-bodies that share a node, using a spanning-tree
-          traversal so that each body has a single parent when wrapped into an articulation.
+          traversal so that each body has a single parent in an articulation.
 
         Notes:
 
@@ -8553,7 +8553,7 @@ class ModelBuilder:
           articulation-safe (tree/forest), avoiding cycles at junctions.
         - Cycles in the edge adjacency graph are *not* explicitly closed with extra joints when
           ``wrap_in_articulation=True`` (cycles would violate articulation tree constraints). If
-          you need closed loops, build them explicitly without articulation wrapping.
+          you need closed loops, build them explicitly without placing the joints in an articulation.
         - If ``wrap_in_articulation=False``, joints are created directly at each node to connect
           all incident edges. This can preserve rings/loops, but does not produce an articulation
           tree (edges may effectively have multiple "parents" in the joint graph).
@@ -8580,8 +8580,8 @@ class ModelBuilder:
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, and articulations. Generated
                 joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
-            wrap_in_articulation: If True, wraps the generated joint forest into one articulation
-                per connected component, with a free joint from the world to the component root.
+            wrap_in_articulation: If True, places each connected component's generated joints and a
+                free joint to the world in one articulation.
             quaternions: Optional per-edge orientations in world space. If provided, must have
                 ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
                 the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
@@ -8607,6 +8607,55 @@ class ModelBuilder:
 
         Raises:
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
+        """
+        return self._add_rod_graph(
+            node_positions=node_positions,
+            edges=edges,
+            radius=radius,
+            cfg=cfg,
+            stretch_stiffness=stretch_stiffness,
+            stretch_damping=stretch_damping,
+            shear_stiffness=shear_stiffness,
+            shear_damping=shear_damping,
+            bend_stiffness=bend_stiffness,
+            bend_damping=bend_damping,
+            twist_stiffness=twist_stiffness,
+            twist_damping=twist_damping,
+            label=label,
+            wrap_in_articulation=wrap_in_articulation,
+            quaternions=quaternions,
+            junction_collision_filter=junction_collision_filter,
+            color=color,
+            body_frame_origin=body_frame_origin,
+        )
+
+    def _add_rod_graph(
+        self,
+        node_positions: list[Vec3],
+        edges: list[tuple[int, int]],
+        *,
+        radius: float = 0.1,
+        cfg: ShapeConfig | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
+        label: str | None = None,
+        wrap_in_articulation: bool = True,
+        quaternions: list[Quat] | None = None,
+        junction_collision_filter: bool = True,
+        color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] | None = None,
+        articulation_root_joint_factory: Callable[[int, Transform], int] | None = None,
+    ) -> tuple[list[int], list[int]]:
+        """Build a rod graph with an optional importer-defined articulation root joint.
+
+        The callback runs after the root body exists and before the rod joints are created. Public
+        callers use :meth:`add_rod_graph`, which creates a free joint to the world instead.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -8814,12 +8863,18 @@ class ModelBuilder:
                 # BFS over edges
                 queue: deque[int] = deque([start_edge])
                 visited[start_edge] = True
-                root_label = None
-                if label:
-                    root_label = (
-                        f"{label}_free_joint_{component_index}" if component_index > 0 else f"{label}_free_joint"
+                if articulation_root_joint_factory is None:
+                    root_label = None
+                    if label:
+                        root_label = (
+                            f"{label}_free_joint_{component_index}" if component_index > 0 else f"{label}_free_joint"
+                        )
+                    root_joint = self.add_joint_free(child=edge_bodies[start_edge], label=root_label)
+                else:
+                    root_joint = articulation_root_joint_factory(
+                        edge_bodies[start_edge],
+                        _edge_anchor_xform(start_edge, edge_u[start_edge]),
                     )
-                root_joint = self.add_joint_free(child=edge_bodies[start_edge], label=root_label)
                 component_joints: list[int] = [root_joint]
                 component_edges: list[int] = []
 
@@ -8895,7 +8950,14 @@ class ModelBuilder:
                     )
                 else:
                     art_label = None
-                self.add_articulation(component_joints, label=art_label)
+                if articulation_root_joint_factory is None:
+                    self.add_articulation(component_joints, label=art_label)
+                else:
+                    self._finalize_imported_articulation(
+                        component_joints,
+                        parent_body=self.joint_parent[root_joint],
+                        articulation_label=art_label,
+                    )
 
                 component_index += 1
 

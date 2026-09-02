@@ -3514,8 +3514,8 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     _assert_bodies_above_ground(test, qf, rod_bodies, context="y-junction", margin=0.25 * cable_width)
 
 
-def _wrapped_rod_has_free_root_joint_impl(test: unittest.TestCase, _device):
-    """Give every automatically wrapped rod component one free joint to the world."""
+def _rod_articulation_has_free_root_joint_impl(test: unittest.TestCase, _device):
+    """A rod articulation has one free joint to the world."""
     builder = newton.ModelBuilder()
     rod_bodies, rod_joints = builder.add_rod(
         positions=[
@@ -6678,8 +6678,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_wrapped_rod_has_free_root_joint",
-    _wrapped_rod_has_free_root_joint_impl,
+    "test_rod_articulation_has_free_root_joint",
+    _rod_articulation_has_free_root_joint_impl,
     devices=None,
 )
 add_function_test(

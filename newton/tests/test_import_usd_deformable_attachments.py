@@ -267,21 +267,11 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         np.testing.assert_allclose(np.array(child_anchor_world), [0.1, 0.0, 1.0], atol=1e-6)
 
     def test_physics_attachment_to_kinematic_body_finalizes(self):
-        """A cable attached to a jointless kinematic body must finalize().
-
-        The importer gives a jointless kinematic/floating rigid body its own base-joint
-        articulation, then wraps the cable in its own. Both passes must emit joints in
-        increasing order so articulation_start stays monotonic; otherwise finalize() rejects
-        it. Regression for the StaticMeshAttach case where the attachment targets a kinematic
-        anchor that carries no USD joint.
-        """
+        """A cable and its jointless kinematic anchor share an articulation."""
         from pxr import UsdGeom, UsdPhysics
 
         stage = _deformable_stage()
-        # Kinematic anchor with a collider (so it gets a computed mass > 0) but no USD joint:
-        # the importer gives it a base-joint articulation, which must be created before the
-        # cable's own articulation so articulation_start stays monotonic. A massless anchor
-        # would be skipped by the floating-body pass and would not reproduce the conflict.
+        # The collider gives the anchor positive mass, so rigid import creates its base joint.
         anchor = UsdGeom.Cube.Define(stage, "/World/Anchor")
         anchor.CreateSizeAttr(0.1)
         rigid_api = UsdPhysics.RigidBodyAPI.Apply(anchor.GetPrim())
@@ -301,15 +291,14 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, return_deformable_results=True)
-        self.assertIn("/World/Cable_articulation", builder.articulation_label)
+        self.assertEqual(builder.articulation_label, ["/World/Anchor"])
         self.assertIn("/World/AttachKinematic", result["path_attachment_map"])
 
-        # The regression: a non-monotonic articulation_start raised here before the fix.
         model = builder.finalize()
         self.assertGreater(model.body_count, 0)
 
-    def test_physics_attachment_wraps_rigid_target_with_cable_for_vbd(self):
-        """Wrap a rigid attachment target, attachment joint, and cable for VBD."""
+    def test_physics_attachment_joins_plug_and_cable_articulation_for_vbd(self):
+        """Import a physically attached plug and cable as one articulation."""
         from pxr import UsdGeom, UsdPhysics
 
         stage = _deformable_stage()
@@ -353,13 +342,14 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         ]
         self.assertEqual(root_joints, plug_joints)
         self.assertEqual(builder.joint_type[root_joints[0]], newton.JointType.FREE)
+        self.assertTrue(builder.validate_joint_ordering())
 
         builder.color()
         model = builder.finalize()
         newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
 
     def test_free_cable_articulation_has_free_root_joint(self):
-        """Connect a wrapped free-floating cable articulation to the world with a free joint."""
+        """A free cable has one free root joint to the world."""
         stage = _deformable_stage()
         points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         _add_cable_curve(stage, "/World/Cable", points)
