@@ -822,8 +822,7 @@ def test_truncated_pinv_matrix_matches_numpy(test: unittest.TestCase, device):
 
     eigenvalues, eigenvectors = np.linalg.eigh(jjt_np.astype(np.float64))
     sigma = np.sqrt(np.maximum(eigenvalues, 0.0))
-    # g(sigma) = 1/sigma^2 (i.e. 1/eigenvalue): the kernel inverts JJᵀ itself,
-    # not sqrt(JJᵀ), so this must match np.linalg.pinv(JJᵀ), not a 1/sigma law.
+    # g(sigma) = 1/sigma^2 = 1/eigenvalue: the kernel inverts JJᵀ itself.
     g = np.where(sigma > threshold, 1.0 / np.maximum(eigenvalues, 1e-30), 0.0)
     expected = (eigenvectors * g) @ eigenvectors.T
     np.testing.assert_allclose(pinv_matrix.numpy()[0], expected, atol=1e-3)
@@ -1529,7 +1528,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             )
 
     def test_truncated_svd_matches_pinv_when_well_conditioned(self):
-        """A generic, well-conditioned 6x6 J (not I, so 1/sigma vs 1/sigma^2 actually differ): qd = J^+ @ e exactly."""
+        """A generic, well-conditioned 6x6 J: every direction clears the threshold, so qd = J^+ @ e exactly."""
         device = wp.get_device()
         rng = np.random.default_rng(29)
         jacobian_np = rng.normal(size=(1, 6, 6)).astype(np.float32)
@@ -1591,8 +1590,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         error_np = np.concatenate([pos_err, np.zeros(3, dtype=np.float32)]).astype(np.float64)
         eigenvalues, eigenvectors = np.linalg.eigh(j64 @ j64.T)
         sigma = np.sqrt(np.maximum(eigenvalues, 0.0))
-        # g(sigma) = 1/sigma^2 (i.e. 1/eigenvalue): JJᵀ itself is being
-        # inverted, not sqrt(JJᵀ).
+        # g(sigma) = 1/sigma^2 = 1/eigenvalue: JJᵀ itself is being inverted.
         g = np.where(sigma > threshold, 1.0 / np.maximum(eigenvalues, 1e-30), 0.0)
         w = (eigenvectors * g) @ eigenvectors.T @ error_np
         expected = j64.T @ w

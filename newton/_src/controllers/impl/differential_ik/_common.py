@@ -93,7 +93,7 @@ class IkMethod(enum.Enum):
 
     TRUNCATED_SVD = "truncated_svd"
     """Per-direction pseudo-inverse from ``JJᵀ``'s full eigendecomposition: a task-space direction with singular
-    value above ``truncated_svd_threshold`` is inverted exactly (``1/sigma``), one below it is dropped entirely
+    value above ``truncated_svd_threshold`` is inverted exactly (``1/sigma²``), one below it is dropped entirely
     (``0``) rather than damped. Requires ``damping=None`` and ``truncated_svd_threshold``."""
 
 
@@ -279,7 +279,7 @@ def _qd_from_y_kernel(
 @wp.kernel
 def _smallest_eigenvalue_spd6_kernel(
     matrix: wp.array3d[float],  # (robot_count, 6, 6) symmetric matrix, e.g. undamped JJᵀ
-    task_dim: wp.array[wp.int32],  # (robot_count,) real task dimension, 3 (position) or 6 (pose)
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes, 1-6
     # outputs
     smallest_eigenvalue: wp.array[wp.float32],  # (robot_count,) smallest real eigenvalue, clamped to >= 0
 ):
@@ -355,11 +355,11 @@ def _truncated_pinv_matrix_kernel(
 ):
     """Truncated-SVD pseudo-inverse of ``JJᵀ``, filtered per singular value rather than damped as a whole.
 
-    ``matrix`` holds the eigenvalues of ``JJᵀ`` (i.e. ``sigma_i²``, the
-    squared singular values of ``J``), so inverting it exactly takes
-    ``1/sigma_i²`` per direction, not ``1/sigma_i``. Each of the (at most 6)
-    task-space directions is either inverted exactly or dropped entirely
-    (``0``), depending on whether its own singular value clears
+    ``matrix`` is ``JJᵀ`` itself; its eigenvalues are ``sigma_i²``, the
+    squared singular values of ``J``, so inverting it exactly takes
+    ``1/sigma_i²`` per direction. Each of the (at most 6) task-space
+    directions is either inverted exactly or dropped entirely (``0``),
+    depending on whether its own singular value clears
     ``singular_value_threshold`` — unlike ``_build_jjt_plus_damping_kernel``'s
     Tikhonov damping, which shifts every direction by the same ``λ²`` and
     never truncates any of them, this has no smooth transition between the
