@@ -350,16 +350,19 @@ def _truncated_pinv_matrix_kernel(
     matrix: wp.array3d[float],  # (robot_count, 6, 6) undamped JJᵀ
     singular_value_threshold: wp.array[wp.float32],  # (robot_count,) sigma below which a direction is dropped
     # outputs
-    pinv_matrix: wp.array3d[float],  # (robot_count, 6, 6) = U diag(g(sigma_i)) Uᵀ, g(s) = 1/s if s > threshold else 0
+    pinv_matrix: wp.array3d[float],  # (robot_count, 6, 6) = U diag(g(sigma_i)) Uᵀ, g(s) = 1/s^2 if s > threshold else 0
 ):
     """Truncated-SVD pseudo-inverse of ``JJᵀ``, filtered per singular value rather than damped as a whole.
 
-    Each of the (at most 6) task-space directions is either inverted
-    exactly (``1/sigma``) or dropped entirely (``0``), depending on
-    whether its own singular value clears ``singular_value_threshold`` —
-    unlike ``_build_jjt_plus_damping_kernel``'s Tikhonov damping, which
-    shifts every direction by the same ``λ²`` and never truncates any of
-    them, this has no smooth transition between the two regimes.
+    ``matrix`` holds the eigenvalues of ``JJᵀ`` (i.e. ``sigma_i²``, the
+    squared singular values of ``J``), so inverting it exactly takes
+    ``1/sigma_i²`` per direction, not ``1/sigma_i``. Each of the (at most 6)
+    task-space directions is either inverted exactly or dropped entirely
+    (``0``), depending on whether its own singular value clears
+    ``singular_value_threshold`` — unlike ``_build_jjt_plus_damping_kernel``'s
+    Tikhonov damping, which shifts every direction by the same ``λ²`` and
+    never truncates any of them, this has no smooth transition between the
+    two regimes.
     """
     robot_idx = wp.tid()
 
@@ -375,9 +378,10 @@ def _truncated_pinv_matrix_kernel(
         for col in range(6):
             total = float(0.0)
             for i in range(6):
-                sigma = wp.sqrt(wp.max(eigenvalues[i], 0.0))
+                eigenvalue = wp.max(eigenvalues[i], 0.0)
+                sigma = wp.sqrt(eigenvalue)
                 if sigma > threshold:
-                    total += eigenvectors_by_row[i, row] * eigenvectors_by_row[i, col] / sigma
+                    total += eigenvectors_by_row[i, row] * eigenvectors_by_row[i, col] / eigenvalue
             pinv_matrix[robot_idx, row, col] = total
 
 

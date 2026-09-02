@@ -13,8 +13,9 @@ the active ones (see ``axis_weight``). The controller owns no index tables —
 a caller who needs to read from or write to a simulation-sized array binds
 an indexed view (``sim_array[selection.qd_start]``) instead.
 
-Differential-kinematics law (damped least squares, the only solver
-implemented so far):
+Differential-kinematics law (shown here for damped least squares; see
+``IkMethod`` for the other four solvers — pseudo-inverse, transpose,
+adaptive damping, and truncated SVD):
 
     e = pose_error(tool_pose_world, desired_tool_pose_world)
     q̇_target = bandwidth · Jᵀ(JJᵀ + λ²I)⁻¹e

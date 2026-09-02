@@ -811,7 +811,7 @@ def test_truncated_pinv_matrix_matches_numpy(test: unittest.TestCase, device):
     rng = np.random.default_rng(13)
     j = rng.normal(size=(6, 4)).astype(np.float32)
     jjt_np = (j @ j.T).astype(np.float32)
-    threshold = 0.05
+    threshold = 0.05  # well below every singular value of a random 6x4 J, so nothing is truncated here
 
     matrix = wp.array3d(jjt_np[None], dtype=wp.float32, device=device)
     threshold_arr = wp.array([threshold], dtype=wp.float32, device=device)
@@ -822,7 +822,9 @@ def test_truncated_pinv_matrix_matches_numpy(test: unittest.TestCase, device):
 
     eigenvalues, eigenvectors = np.linalg.eigh(jjt_np.astype(np.float64))
     sigma = np.sqrt(np.maximum(eigenvalues, 0.0))
-    g = np.where(sigma > threshold, 1.0 / np.maximum(sigma, 1e-30), 0.0)
+    # g(sigma) = 1/sigma^2 (i.e. 1/eigenvalue): the kernel inverts JJᵀ itself,
+    # not sqrt(JJᵀ), so this must match np.linalg.pinv(JJᵀ), not a 1/sigma law.
+    g = np.where(sigma > threshold, 1.0 / np.maximum(eigenvalues, 1e-30), 0.0)
     expected = (eigenvectors * g) @ eigenvectors.T
     np.testing.assert_allclose(pinv_matrix.numpy()[0], expected, atol=1e-3)
 
@@ -1527,15 +1529,17 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
             )
 
     def test_truncated_svd_matches_pinv_when_well_conditioned(self):
-        """J = I_6x6 (all sigma = 1) with threshold below 1: every direction is fully trusted, qd = error exactly."""
+        """A generic, well-conditioned 6x6 J (not I, so 1/sigma vs 1/sigma^2 actually differ): qd = J^+ @ e exactly."""
         device = wp.get_device()
+        rng = np.random.default_rng(29)
+        jacobian_np = rng.normal(size=(1, 6, 6)).astype(np.float32)
         pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
         ctrl = ControllerDiffIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device),
             bandwidth=1.0,
             damping=None,
             ik_method=IkMethod.TRUNCATED_SVD,
-            truncated_svd_threshold=0.5,
+            truncated_svd_threshold=1.0e-2,  # well below every singular value of a random 6x6 J
             device=device,
         )
         inputs = ctrl.input()
@@ -1545,10 +1549,13 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         inputs.desired_tool_pose_world = wp.array(
             [wp.transform(p=wp.vec3(*pos_err.tolist()), q=wp.quat_identity())], dtype=wp.transform, device=device
         )
-        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
-        expected = np.concatenate([pos_err, np.zeros(3, dtype=np.float32)])
-        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-5)
+
+        j64 = jacobian_np[0].astype(np.float64)
+        error_np = np.concatenate([pos_err, np.zeros(3, dtype=np.float32)]).astype(np.float64)
+        expected = np.linalg.pinv(j64) @ error_np
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-3)
 
     def test_truncated_svd_matches_spectral_filter_for_rank_deficient_robot(self):
         """A 5-DOF robot's JJᵀ has one exact-zero eigenvalue: dropped, unlike PSEUDO_INVERSE which forbids dof<6."""
@@ -1584,10 +1591,17 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         error_np = np.concatenate([pos_err, np.zeros(3, dtype=np.float32)]).astype(np.float64)
         eigenvalues, eigenvectors = np.linalg.eigh(j64 @ j64.T)
         sigma = np.sqrt(np.maximum(eigenvalues, 0.0))
-        g = np.where(sigma > threshold, 1.0 / np.maximum(sigma, 1e-30), 0.0)
+        # g(sigma) = 1/sigma^2 (i.e. 1/eigenvalue): JJᵀ itself is being
+        # inverted, not sqrt(JJᵀ).
+        g = np.where(sigma > threshold, 1.0 / np.maximum(eigenvalues, 1e-30), 0.0)
         w = (eigenvectors * g) @ eigenvectors.T @ error_np
         expected = j64.T @ w
         np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-3)
+        # Independent check: J is rank 5 (padded to 6x5), so its own
+        # np.linalg.pinv already drops exactly the null direction, matching
+        # the kernel's truncation without re-deriving its formula.
+        expected_via_pinv = np.linalg.pinv(j64) @ error_np
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected_via_pinv, atol=1e-3)
 
     def test_truncated_svd_requires_threshold(self):
         device = wp.get_device()

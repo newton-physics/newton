@@ -9,10 +9,10 @@ then robot 1's — for `outputs.joint_f`, the controller's only per-DOF port.
 Every other port is per-robot: exactly one entry per robot, since the task
 itself is always 6-dimensional regardless of how many DOFs a robot has.
 
-This increment implements motion control (a task-space spring-damper term,
-with optional inertial decoupling through the operational-space mass matrix
-Lambda), contact-wrench control combined through per-axis, dual-frame
-selection matrices, gravity compensation, and null-space posture control.
+Implements motion control (a task-space spring-damper term, with optional
+inertial decoupling through the operational-space mass matrix Lambda),
+contact-wrench control combined through per-axis, dual-frame selection
+matrices, gravity compensation, and null-space posture control.
 
 Every task-space quantity here — the Jacobian, Lambda, the PD/wrench terms,
 the selection masks — is computed and combined entirely in the operational
