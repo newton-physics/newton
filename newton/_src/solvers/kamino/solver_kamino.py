@@ -288,8 +288,10 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         collect_solver_info: bool = False
         """
-        Enables/disables collection of solver convergence and performance info at each simulation step.\n
-        Enabling this option as it will significantly increase the runtime of the solver.\n
+        Enables additional collection of solver convergence and performance information.\n
+        Per-world terminal status remains available through :attr:`SolverKamino.status`
+        when this option is disabled. Enabling detailed collection adds runtime and memory
+        overhead.\n
         Defaults to `False`.
         """
 
@@ -844,6 +846,39 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
         self._control_kamino.finalize(self._model_kamino)
+
+    @property
+    def status(self) -> wp.array[Any]:
+        """Per-world terminal solver status on the simulation device.
+
+        The active backend defines the array's Warp struct type. Both PADMM and
+        DVI provide ``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c``
+        fields. Backend-specific fields may also be present.
+
+        Residuals are absolute maxima, not relative or dimensionless values.
+        For PADMM, ``x`` and ``y`` are the current preconditioned impulse
+        iterates, ``x_prev`` and ``y_prev`` are their previous values, ``P`` is
+        the diagonal dual preconditioner, and ``eta`` and ``rho`` are the
+        proximal and penalty parameters. PADMM reports
+        ``r_p = ||P (x - y)||_inf`` [N·s or N·m·s],
+        ``r_d = ||P^-1 (eta (x - x_prev) + rho (y - y_prev))||_inf``
+        [m/s or rad/s], and the maximum inequality impulse-velocity inner
+        product ``r_c`` [J]. The ``P`` factors convert the first two residuals
+        back from solver scaling to physical constraint units.
+
+        DVI uses physical impulse ``lambda`` and augmented constraint velocity
+        ``v`` without normalization. Its ``r_p`` [N·s or N·m·s] is the maximum
+        infinity-norm distance of unilateral impulses from their limit or
+        Coulomb cone; ``r_d`` [m/s or rad/s] is the maximum of the analogous
+        velocity distance from the dual cone and the bilateral velocity
+        violation; and ``r_c = max |lambda_k dot v_k|`` [J] is the maximum
+        inequality complementarity violation.
+
+        The returned array aliases the solver's device-resident storage; reading
+        it does not synchronize or copy data to the host. Terminal status is
+        available regardless of :attr:`Config.collect_solver_info`.
+        """
+        return self._solver_kamino.solver_status
 
     @override
     def reset(
