@@ -8,7 +8,12 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.geometry.contact_data import ContactData, make_contact_sort_key
+from newton._src.geometry.contact_data import (
+    ContactData,
+    contact_sort_shape_index_bits,
+    make_contact_sort_key,
+    make_contact_sort_key_with_bits,
+)
 from newton._src.geometry.contact_reduction import float_flip
 from newton._src.geometry.contact_reduction_global import (
     CLEAR_ACTIVE_ENTRY_PARALLEL_THRESHOLD,
@@ -1301,15 +1306,38 @@ class TestMakeContactSortKey(unittest.TestCase):
     pass
 
 
+def test_sort_key_shape_index_bits(test, device):
+    """Use only the shape-index bits required by the model."""
+    del device
+    for shape_count, expected in ((0, 1), (2, 1), (3, 2), (256, 8), (32768, 15), (1 << 20, 20), (1 << 21, 20)):
+        test.assertEqual(contact_sort_shape_index_bits(shape_count), expected)
+
+
 @wp.kernel(enable_backward=False)
 def _sort_key_kernel(
     shape_a: wp.array[int],
     shape_b: wp.array[int],
     sub_key: wp.array[int],
     keys_out: wp.array[wp.int64],
+    shape_index_bits: int,
 ):
     tid = wp.tid()
-    keys_out[tid] = make_contact_sort_key(shape_a[tid], shape_b[tid], sub_key[tid])
+    keys_out[tid] = make_contact_sort_key(shape_a[tid], shape_b[tid], sub_key[tid], shape_index_bits)
+
+
+@wp.kernel(enable_backward=False)
+def _compact_sort_key_kernel(
+    shape_a: wp.array[int],
+    shape_b: wp.array[int],
+    sub_key: wp.array[int],
+    keys_out: wp.array[wp.int64],
+    shape_index_bits: int,
+    sub_key_bits: int,
+):
+    tid = wp.tid()
+    keys_out[tid] = make_contact_sort_key_with_bits(
+        shape_a[tid], shape_b[tid], sub_key[tid], shape_index_bits, sub_key_bits
+    )
 
 
 def test_sort_key_bit_layout(test, device):
@@ -1320,15 +1348,16 @@ def test_sort_key_bit_layout(test, device):
     sb = wp.array([0, 0, 1, 0, 0], dtype=int, device=device)
     sk = wp.array([0, 1, 0, 0, 1], dtype=int, device=device)
     keys = wp.zeros(5, dtype=wp.int64, device=device)
-    wp.launch(_sort_key_kernel, dim=5, inputs=[sa, sb, sk, keys], device=device)
+    for shape_index_bits in (1, 4, 15, 20):
+        wp.launch(_sort_key_kernel, dim=5, inputs=[sa, sb, sk, keys, shape_index_bits], device=device)
 
-    keys_np = keys.numpy()
-    for i in range(len(keys_np) - 1):
-        test.assertLess(
-            keys_np[i],
-            keys_np[i + 1],
-            f"Key[{i}]={keys_np[i]} should be < Key[{i + 1}]={keys_np[i + 1]}",
-        )
+        keys_np = keys.numpy()
+        for i in range(len(keys_np) - 1):
+            test.assertLess(
+                keys_np[i],
+                keys_np[i + 1],
+                f"Key[{i}]={keys_np[i]} should be < Key[{i + 1}]={keys_np[i + 1]}",
+            )
 
 
 def test_sort_key_overflow_masking(test, device):
@@ -1339,11 +1368,23 @@ def test_sort_key_overflow_masking(test, device):
     sb = wp.array([0, 0], dtype=int, device=device)
     sk = wp.array([0, 0], dtype=int, device=device)
     keys = wp.zeros(2, dtype=wp.int64, device=device)
-    wp.launch(_sort_key_kernel, dim=2, inputs=[sa, sb, sk, keys], device=device)
+    wp.launch(_sort_key_kernel, dim=2, inputs=[sa, sb, sk, keys, 20], device=device)
 
     keys_np = keys.numpy()
     # After masking to 20 bits, large_a & 0xFFFFF == 5, so both keys should be equal
     test.assertEqual(keys_np[0], keys_np[1], "Overflow bits should be masked away")
+
+
+def test_compact_sort_key_bit_layout(test, device):
+    """Verify that the 3-bit convex layout preserves lexicographic ordering."""
+    sa = wp.array([0, 0, 0, 1, 1], dtype=int, device=device)
+    sb = wp.array([0, 0, 1, 0, 0], dtype=int, device=device)
+    sk = wp.array([0, 4, 0, 0, 4], dtype=int, device=device)
+    keys = wp.zeros(5, dtype=wp.int64, device=device)
+    wp.launch(_compact_sort_key_kernel, dim=5, inputs=[sa, sb, sk, keys, 4, 3], device=device)
+
+    keys_np = keys.numpy()
+    test.assertTrue(np.all(keys_np[:-1] < keys_np[1:]))
 
 
 # =============================================================================
@@ -1629,7 +1670,19 @@ add_function_test(
 )
 
 # make_contact_sort_key tests
+add_function_test(
+    TestMakeContactSortKey,
+    "test_sort_key_shape_index_bits",
+    test_sort_key_shape_index_bits,
+    devices=devices,
+)
 add_function_test(TestMakeContactSortKey, "test_sort_key_bit_layout", test_sort_key_bit_layout, devices=devices)
+add_function_test(
+    TestMakeContactSortKey,
+    "test_compact_sort_key_bit_layout",
+    test_compact_sort_key_bit_layout,
+    devices=devices,
+)
 add_function_test(
     TestMakeContactSortKey, "test_sort_key_overflow_masking", test_sort_key_overflow_masking, devices=devices
 )

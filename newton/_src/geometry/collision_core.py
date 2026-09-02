@@ -280,6 +280,7 @@ def create_compute_gjk_mpr_contacts(
     post_process_contact: Any = post_process_axial_on_discrete_contact,
     support_func: Any = None,
     use_precomputed_center: bool = False,
+    penetration_refiner: Any = None,
 ):
     """
     Factory function to create a compute_gjk_mpr_contacts function with a specific writer function.
@@ -289,6 +290,7 @@ def create_compute_gjk_mpr_contacts(
         post_process_contact: Function to post-process contact data
         support_func: Support mapping function (defaults to support_map)
         use_precomputed_center: Whether the geometry data supplies a cached center.
+        penetration_refiner: Optional physical-proxy result refinement function.
 
     Returns:
         A compute_gjk_mpr_contacts function with the writer function baked in
@@ -309,6 +311,7 @@ def create_compute_gjk_mpr_contacts(
         shape_b: int,
         margin_a: float,
         margin_b: float,
+        data_provider: Any,
         writer_data: Any,
         sort_sub_key: int = 0,
     ):
@@ -327,11 +330,12 @@ def create_compute_gjk_mpr_contacts(
             shape_b: Index of shape B
             margin_a: Per-shape margin offset for shape A (signed distance padding)
             margin_b: Per-shape margin offset for shape B (signed distance padding)
+            data_provider: Support-map data provider passed to the configured
+                support function. Accelerated providers carry cooked convex
+                directional seeds and vertex adjacency.
             writer_data: Data structure for contact writer
             sort_sub_key: Sub-key for deterministic contact sorting (e.g. triangle/edge index)
         """
-        data_provider = SupportMapDataProvider()
-
         radius_eff_a = float(0.0)
         radius_eff_b = float(0.0)
 
@@ -364,7 +368,11 @@ def create_compute_gjk_mpr_contacts(
         if wp.static(ENABLE_MULTI_CONTACT):
             wp.static(
                 create_solve_convex_multi_contact(
-                    support_func, writer_func, post_process_contact, use_precomputed_center
+                    support_func,
+                    writer_func,
+                    post_process_contact,
+                    use_precomputed_center,
+                    penetration_refiner,
                 )
             )(
                 shape_a_data,
@@ -385,7 +393,11 @@ def create_compute_gjk_mpr_contacts(
         else:
             wp.static(
                 create_solve_convex_single_contact(
-                    support_func, writer_func, post_process_contact, use_precomputed_center
+                    support_func,
+                    writer_func,
+                    post_process_contact,
+                    use_precomputed_center,
+                    penetration_refiner,
                 )
             )(
                 shape_a_data,
@@ -408,7 +420,7 @@ def compute_tight_aabb_from_support(
     shape_data: GenericShapeData,
     orientation: wp.quat,
     center_pos: wp.vec3,
-    data_provider: SupportMapDataProvider,
+    data_provider: Any,
 ) -> tuple[wp.vec3, wp.vec3]:
     """
     Compute tight AABB for a shape using support function.
@@ -673,6 +685,7 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
         shape_b: int,
         margin_a: float,
         margin_b: float,
+        data_provider: Any,
         writer_data: Any,
     ):
         """
@@ -694,6 +707,9 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
             shape_b: Index of shape B
             margin_a: Per-shape margin offset for shape A (signed distance padding)
             margin_b: Per-shape margin offset for shape B (signed distance padding)
+            data_provider: Support-map data provider passed to the configured
+                support function. Accelerated providers carry cooked convex
+                directional seeds and vertex adjacency.
             writer_data: Data structure for contact writer
         """
         if writer_data.contact_count[0] >= writer_data.contact_max:
@@ -738,6 +754,7 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
             shape_b,
             margin_a,
             margin_b,
+            data_provider,
             writer_data,
         )
 

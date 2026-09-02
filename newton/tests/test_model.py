@@ -216,6 +216,23 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
 
 
 class TestModelMesh(unittest.TestCase):
+    class _FakeDecompositionMesh:
+        """Store mesh data passed to a fake decomposition backend."""
+
+        def __init__(self, vertices, faces):
+            self.vertices = vertices
+            self.faces = faces
+
+    @classmethod
+    def _make_fake_decomposition_backend(cls, method, decompose):
+        """Create a stub module and import name for a decomposition backend."""
+        if method == "coacd":
+            return "coacd", SimpleNamespace(Mesh=cls._FakeDecompositionMesh, run_coacd=decompose)
+        return "trimesh", SimpleNamespace(
+            Trimesh=cls._FakeDecompositionMesh,
+            decomposition=SimpleNamespace(convex_decomposition=decompose),
+        )
+
     def test_mesh_rejects_invalid_triangle_indices(self):
         """Reject malformed and out-of-range mesh triangle indices."""
         vertices = np.array(
@@ -812,44 +829,32 @@ class TestModelMesh(unittest.TestCase):
             np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
         )
 
-    def test_mesh_adjacency_public_deprecated(self):
+    def test_mesh_adjacency_public(self):
+        """Assert public construction is warning-free and eagerly builds the vectorized edge tables."""
         tris = [[0, 1, 2], [0, 2, 3]]
-        # Construction from triangle indices is supported (no warning) and eager.
-        adj = newton.utils.MeshAdjacency(tris)
+        # The supported ctor path must not warn (the deprecated aliases that warned here are gone).
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            adj = newton.utils.MeshAdjacency(tris)
         self.assertEqual(adj.edge_indices.shape, (5, 4))
         self.assertEqual(adj.edge_tri_indices.shape, (5, 2))
         self.assertEqual(adj.tri_edge_indices.shape, (2, 3))
-        # The legacy .edges dict stays available but is deprecated.
-        with self.assertWarns(DeprecationWarning):
-            edges = adj.edges
-        self.assertEqual(len(edges), 5)
-        shared = edges[(0, 2)]
-        self.assertEqual({shared.f0, shared.f1}, {0, 1})
+        # The shared edge (0, 2) maps to both triangles in edge_tri_indices.
+        (shared,) = np.flatnonzero(
+            (np.minimum(adj.edge_indices[:, 2], adj.edge_indices[:, 3]) == 0)
+            & (np.maximum(adj.edge_indices[:, 2], adj.edge_indices[:, 3]) == 2)
+        )
+        self.assertEqual(set(adj.edge_tri_indices[shared].tolist()), {0, 1})
 
-    def test_mesh_adjacency_indices_deprecated_alias(self):
-        tris = [[0, 1, 2], [0, 2, 3]]
-        # `indices` is a deprecated alias for `tri_indices` and builds the same tables.
-        with self.assertWarns(DeprecationWarning):
-            adj = newton.utils.MeshAdjacency(indices=tris)
-        np.testing.assert_array_equal(adj.edge_indices, newton.utils.MeshAdjacency(tri_indices=tris).edge_indices)
-        # Passing both names with conflicting values is rejected.
-        with self.assertRaises(ValueError):
-            newton.utils.MeshAdjacency(tri_indices=tris, indices=[[0, 1, 2]])
-
-    def test_mesh_adjacency_add_edge_deprecated(self):
-        adj = newton.utils.MeshAdjacency()
-        # add_edge is a deprecated incremental shim; it updates edge_indices / edge_tri_indices.
-        with self.assertWarns(DeprecationWarning):
-            adj.add_edge(0, 1, 2, 0)
-        self.assertEqual(adj.edge_indices.shape, (1, 4))
-        self.assertEqual(adj.edge_tri_indices.shape, (1, 2))
-        with self.assertWarns(DeprecationWarning):
-            adj.add_edge(1, 0, 3, 1)  # second adjacent triangle (endpoints reversed)
-        np.testing.assert_array_equal(adj.edge_indices[0], [2, 3, 0, 1])
-        np.testing.assert_array_equal(adj.edge_tri_indices[0], [0, 1])
-        with self.assertWarns(DeprecationWarning):
-            edges = adj.edges
-        self.assertEqual({edges[(0, 1)].f0, edges[(0, 1)].f1}, {0, 1})
+    def test_mesh_adjacency_legacy_api_removed(self):
+        # The dict-based API deprecated in 1.4 is gone: the `edges` accessor, its
+        # `Edge` record class, the `add_edge` shim, and the ctor `indices` alias.
+        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
+        self.assertFalse(hasattr(adj, "edges"))
+        self.assertFalse(hasattr(adj, "add_edge"))
+        self.assertFalse(hasattr(newton.utils.MeshAdjacency, "Edge"))
+        with self.assertRaises(TypeError):
+            newton.utils.MeshAdjacency(indices=[[0, 1, 2]])
 
     def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
         # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
@@ -1010,6 +1015,115 @@ class TestModelMesh(unittest.TestCase):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.5)
         # the documented threshold migration must keep working without coacd installed
         self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
+
+    def test_mesh_approximation_empty_convex_decomposition_raises(self):
+        """Raise when a convex decomposition backend returns no parts."""
+
+        mesh = newton.Mesh.create_box(
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        for method in ("coacd", "vhacd"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+                module_name, fake_backend = self._make_fake_decomposition_backend(method, lambda _mesh, **_kwargs: [])
+                with (
+                    patch_sys_module(module_name, fake_backend),
+                    self.assertRaisesRegex(RuntimeError, rf"Remeshing with method '{method}' failed"),
+                ):
+                    builder.approximate_meshes(method=method, shape_indices=[shape], raise_on_failure=True)
+
+                self.assertEqual(builder.shape_type[shape], newton.GeoType.MESH)
+
+    def test_mesh_approximation_empty_convex_decomposition_falls_back_per_shape(self):
+        """Fall back only empty-result shapes while preserving successful decompositions."""
+
+        empty_mesh = newton.Mesh.create_box(
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        successful_mesh = newton.Mesh.create_box(
+            2.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        for method in ("coacd", "vhacd"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                empty_shape = builder.add_shape_mesh(body=-1, mesh=empty_mesh)
+                successful_shape = builder.add_shape_mesh(body=-1, mesh=successful_mesh)
+                fallback_meshes = []
+
+                def fake_decompose(backend_mesh, _method=method, **_kwargs):
+                    vertices = np.asarray(backend_mesh.vertices)
+                    if np.isclose(np.ptp(vertices[:, 0]), 2.0):
+                        return []
+                    faces = np.asarray(backend_mesh.faces)
+                    if _method == "coacd":
+                        return [(vertices.copy(), faces.copy())]
+                    return [{"vertices": vertices.copy(), "faces": faces.copy()}]
+
+                def fake_convex_hull(mesh, _fallback_meshes=fallback_meshes, **_kwargs):
+                    _fallback_meshes.append(mesh)
+                    return mesh.copy()
+
+                module_name, fake_backend = self._make_fake_decomposition_backend(method, fake_decompose)
+                with (
+                    patch_sys_module(module_name, fake_backend),
+                    mock.patch("newton._src.sim.builder.remesh_mesh", side_effect=fake_convex_hull),
+                    self.assertWarnsRegex(
+                        UserWarning,
+                        rf"Remeshing with method '{method}' failed for shape {empty_shape}.*Falling back to convex_hull",
+                    ),
+                ):
+                    remeshed = builder.approximate_meshes(
+                        method=method,
+                        shape_indices=[empty_shape, successful_shape],
+                    )
+
+                self.assertEqual(remeshed, {empty_shape, successful_shape})
+                self.assertEqual(builder.shape_type[empty_shape], newton.GeoType.CONVEX_MESH)
+                self.assertEqual(builder.shape_type[successful_shape], newton.GeoType.CONVEX_MESH)
+                self.assertEqual(fallback_meshes, [empty_mesh])
+
+    def test_mesh_approximation_empty_convex_decomposition_reaches_bounding_box_fallback(self):
+        """Reach the bounding-box fallback when an empty decomposition is followed by a hull failure."""
+
+        mesh = newton.Mesh.create_box(
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        for method in ("coacd", "vhacd"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+                module_name, fake_backend = self._make_fake_decomposition_backend(method, lambda _mesh, **_kwargs: [])
+                with (
+                    patch_sys_module(module_name, fake_backend),
+                    mock.patch("newton._src.sim.builder.remesh_mesh", side_effect=RuntimeError("qhull failed")),
+                    warnings.catch_warnings(record=True) as caught,
+                ):
+                    warnings.simplefilter("always")
+                    remeshed = builder.approximate_meshes(method=method, shape_indices=[shape])
+
+                self.assertEqual(len(caught), 2)
+                self.assertRegex(str(caught[0].message), "the backend returned no convex parts")
+                self.assertRegex(str(caught[1].message), "Falling back to bounding_box")
+                self.assertEqual(remeshed, {shape})
+                self.assertEqual(builder.shape_type[shape], newton.GeoType.BOX)
+                self.assertIsNone(builder.shape_source[shape])
 
     def test_mesh_approximation_ignores_non_mesh_shapes(self):
         builder = ModelBuilder()
@@ -2319,6 +2433,65 @@ class TestModelJoints(unittest.TestCase):
             self.assertEqual(layout_warnings[0].lineno, warning_line)
         finally:
             newton.use_coord_layout_targets = previous_flag
+
+    def test_legacy_target_layout_shapes_and_values(self):
+        """Verify legacy DOF target layout behavior."""
+        lin_targets = (1.5, -2.5, 3.5)
+        ang_targets = (0.1, 0.2, -0.3)
+
+        def _axes(targets):
+            return [
+                ModelBuilder.JointDofConfig(axis=axis, target_pos=target)
+                for axis, target in zip((newton.Axis.X, newton.Axis.Y, newton.Axis.Z), targets, strict=True)
+            ]
+
+        previous_flag = newton.use_coord_layout_targets
+        newton.use_coord_layout_targets = False
+        try:
+            builder = ModelBuilder()
+            b_free = builder.add_link(mass=1.0)
+            j_free = builder.add_joint(
+                newton.JointType.FREE,
+                parent=-1,
+                child=b_free,
+                linear_axes=_axes(lin_targets),
+                angular_axes=_axes(ang_targets),
+            )
+            b_ball = builder.add_link(mass=1.0)
+            j_ball = builder.add_joint(
+                newton.JointType.BALL,
+                parent=b_free,
+                child=b_ball,
+                angular_axes=_axes(ang_targets),
+            )
+            b_rev = builder.add_link(mass=1.0)
+            j_rev = builder.add_joint_revolute(parent=b_ball, child=b_rev, axis=newton.Axis.Z, target_pos=0.7)
+            builder.add_articulation([j_free, j_ball, j_rev])
+            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
+                model = builder.finalize()
+        finally:
+            newton.use_coord_layout_targets = previous_flag
+
+        self.assertEqual(model.joint_coord_count, 7 + 4 + 1)
+        self.assertEqual(model.joint_dof_count, 6 + 3 + 1)
+        self.assertEqual(model.joint_target_q.shape[0], model.joint_dof_count)
+        self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
+
+        control = model.control()
+        self.assertEqual(control.joint_target_q.shape[0], model.joint_dof_count)
+        self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
+
+        np.testing.assert_array_equal(model.joint_target_q_start.numpy(), model.joint_qd_start.numpy())
+
+        # The quat-w padding slot is dropped: angular targets stay raw per-axis angles.
+        target_q = model.joint_target_q.numpy()
+        qd_starts = model.joint_qd_start.numpy()
+        f = int(qd_starts[j_free])
+        np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
+        np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
+        b = int(qd_starts[j_ball])
+        np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
+        self.assertAlmostEqual(float(target_q[int(qd_starts[j_rev])]), 0.7, places=6)
 
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow

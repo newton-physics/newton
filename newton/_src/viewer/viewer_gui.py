@@ -189,7 +189,7 @@ class ViewerGui:
             desired[:] = 0.0
 
         tau = max(1.0e-4, float(self._cam_damp_tau))
-        self._cam_vel += (desired - self._cam_vel) * (dt / tau)
+        self._cam_vel += (desired - self._cam_vel) * min(1.0, dt / tau)
 
         pos = camera.pos
         camera.pos = type(pos)(

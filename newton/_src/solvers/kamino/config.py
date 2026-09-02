@@ -485,7 +485,7 @@ class PADMMSolverConfig:
 
     compl_tolerance: float = 1e-6
     """
-    The target tolerance on the total complementarity residual `r_compl`.\n
+    The target tolerance on the complementarity residual `r_compl`.\n
     Must be greater than zero. Defaults to `1e-6`.
     """
 
@@ -871,6 +871,7 @@ class DVISolverConfig:
         "geom_pair_net_force",
         "key_and_position_with_net_force_backup",
         "key_and_position_with_tangential_net_force",
+        "key_and_position_with_net_force_backup_and_tangential_net_force",
     ] = "key_and_position_with_tangential_net_force"
     """
     The contact warmstart method used when `warmstart_mode` is `containers`.
@@ -946,6 +947,7 @@ class DVISolverConfig:
             "geom_pair_net_force",
             "key_and_position_with_net_force_backup",
             "key_and_position_with_tangential_net_force",
+            "key_and_position_with_net_force_backup_and_tangential_net_force",
         }
         if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
             raise ValueError(

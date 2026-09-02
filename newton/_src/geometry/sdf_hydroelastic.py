@@ -30,7 +30,8 @@ See Also:
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, replace
+from copy import copy
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -83,6 +84,9 @@ MAX_MC_FACES_PER_VOXEL = 5
 
 # Keep the texture-heavy count kernel small enough for multiple resident blocks.
 HYDRO_COUNT_BLOCK_DIM = 128
+# The generation kernel carries more per-thread marching-cubes state; using one
+# CUDA warp per block avoids the occupancy loss of the default launch size.
+HYDRO_GENERATE_BLOCK_DIM = 32
 
 
 @wp.func_native("""
@@ -103,24 +107,37 @@ def _hydro_rsqrt_approx(value: float) -> float:
 # 0 for the normal/voxel reduction source. Face fingerprints are shifted left
 # by one during export, so they must stay below bit 21.
 _MAX_FACE_FINGERPRINT = 0x200000
+_MAX_DETERMINISTIC_ISO_VOXELS = _MAX_FACE_FINGERPRINT // MAX_MC_FACES_PER_VOXEL
+
+# Empirical per-level bounds relative to the narrow-band subgrids of the SDF
+# traversed by each pair. Hydroelastic traversal must inspect the full dense
+# grid for deep contacts, but surviving refinement work follows a surface and
+# scales with the sparse narrow band rather than the grid volume.
+_ISO_REFINEMENT_MULTIPLIERS = (8, 32, 128, 256)
+
+# Marching cubes commonly emits more than one face from an iso voxel. The
+# theoretical maximum is five, but two provides useful headroom for ordinary
+# contact surfaces without making all face-storage allocations five times the
+# already conservative voxel capacity.
+_FACE_CONTACTS_PER_ISO_VOXEL = 2
 
 
-def _validate_deterministic_fingerprint_range(max_num_iso_voxels: int) -> None:
-    """Warn when face fingerprints can no longer be distinguished.
+class _MarginContactAreaUnset:
+    """Mark an omitted deprecated margin contact area."""
 
-    Fingerprints and sort sub-keys are masked to a fixed width; once
-    ``max_num_iso_voxels * MAX_MC_FACES_PER_VOXEL`` reaches the anchor bit, two
-    different faces can alias and contact ordering stops being reproducible.
-    """
-    if max_num_iso_voxels * MAX_MC_FACES_PER_VOXEL >= _MAX_FACE_FINGERPRINT:
-        warnings.warn(
-            f"Deterministic hydroelastic contacts need "
-            f"max_num_iso_voxels * {MAX_MC_FACES_PER_VOXEL} < {_MAX_FACE_FINGERPRINT}, but "
-            f"max_num_iso_voxels={max_num_iso_voxels}. Face fingerprints will alias and "
-            "contact ordering may vary between runs. Lower "
-            "HydroelasticSDF.Config.buffer_fraction or reduce the SDF resolution.",
-            stacklevel=3,
-        )
+    def __repr__(self) -> str:
+        return "_DEPRECATED_MARGIN_CONTACT_AREA_UNSET"
+
+
+_DEPRECATED_MARGIN_CONTACT_AREA_UNSET: Any = _MarginContactAreaUnset()
+
+
+@wp.func
+def classify_hydroelastic_contact(pair_separation: wp.float32, gap_sum: wp.float32) -> wp.int32:
+    """Classify pair separation as penetrating (-1), speculative (0), or outside (1)."""
+    if pair_separation < 0.0:
+        return wp.int32(-1)
+    return wp.int32(pair_separation > gap_sum)
 
 
 @wp.func
@@ -136,6 +153,7 @@ def _map_shape_texture_sdf_data(
         out_shape_sdf_data[shape_idx].sdf_box_upper = wp.vec3(0.0, 0.0, 0.0)
         out_shape_sdf_data[shape_idx].voxel_size = wp.vec3(0.0, 0.0, 0.0)
         out_shape_sdf_data[shape_idx].voxel_radius = 0.0
+        out_shape_sdf_data[shape_idx].num_subgrids = 0
         out_shape_sdf_data[shape_idx].scale_baked = False
     else:
         out_shape_sdf_data[shape_idx] = sdf_data[sdf_idx]
@@ -262,39 +280,36 @@ def mc_calc_face_texture(
     flat_edge_verts_table: wp.array[wp.vec2ub],
     tri_range_start: wp.int32,
     corner_vals: vec8f,
-    corner_sdf_vals: vec8f,
+    corner_adjusted_sdf: vec8f,
+    corner_other_adjusted_sdf: vec8f,
     sdf_a: TextureSDFData,
     x_id: wp.int32,
     y_id: wp.int32,
     z_id: wp.int32,
     edge_clamp_min: wp.float32,
     edge_clamp_max: wp.float32,
-) -> tuple[float, wp.vec3, wp.vec3, float, wp.mat33f]:
+) -> tuple[float, float, wp.vec3, wp.vec3, float, float, wp.mat33f]:
     """Extract a triangle face from a marching cubes voxel using texture SDF.
 
     Vertex positions are returned in the SDF's local coordinate space.
-
-    A tiny thickness (1e-4 x voxel_radius) biases the signed-distance depth
-    just enough to classify touching-surface vertices as penetrating.  The
-    resulting phantom force is negligible (< 0.1 % of typical contact forces)
-    but prevents zero-area contacts at exactly-touching surfaces.
 
     ``edge_clamp_min`` / ``edge_clamp_max`` clamp the edge-interpolation
     parameter ``t`` to ``[edge_clamp_min, edge_clamp_max]``.  Pass
     ``(0.0, 1.0)`` to disable.  See
     :attr:`HydroelasticSDF.Config.mc_edge_clamp_min`.
     """
-    thickness = sdf_a.voxel_radius * 1.0e-4
-
     face_verts = wp.mat33f()
-    vert_depths = wp.vec3f()
+    vert_adjusted_sdf = wp.vec3f()
+    vert_pair_separation = wp.vec3f()
     num_inside = wp.int32(0)
     for vi in range(3):
         edge_verts = wp.vec2i(flat_edge_verts_table[tri_range_start + vi])
         v_idx_from = edge_verts[0]
         v_idx_to = edge_verts[1]
-        corner_from = _extract_mc_corner_pair(corner_vals, corner_sdf_vals, v_idx_from)
-        corner_to = _extract_mc_corner_pair(corner_vals, corner_sdf_vals, v_idx_to)
+        corner_from = _extract_mc_corner_pair(corner_vals, corner_adjusted_sdf, v_idx_from)
+        corner_to = _extract_mc_corner_pair(corner_vals, corner_adjusted_sdf, v_idx_to)
+        corner_sdfs_from = _extract_mc_corner_pair(corner_adjusted_sdf, corner_other_adjusted_sdf, v_idx_from)
+        corner_sdfs_to = _extract_mc_corner_pair(corner_adjusted_sdf, corner_other_adjusted_sdf, v_idx_to)
         val_0 = corner_from[0]
         val_1 = corner_to[0]
 
@@ -314,28 +329,33 @@ def mc_calc_face_texture(
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         local_pos = sdf_a.sdf_box_lower + wp.cw_mul(vol_idx, sdf_a.voxel_size)
         face_verts[vi] = local_pos
-        # Interpolate SDF depth from cached corner values (avoids texture lookup)
-        sdf_from = corner_from[1]
-        sdf_to = corner_to[1]
-        depth = sdf_from + t * (sdf_to - sdf_from) - thickness
-        vert_depths[vi] = depth
-        if depth < 0.0:
+        adjusted_sdf_from = corner_sdfs_from[0]
+        adjusted_sdf_to = corner_sdfs_to[0]
+        other_adjusted_sdf_from = corner_sdfs_from[1]
+        other_adjusted_sdf_to = corner_sdfs_to[1]
+        adjusted_sdf = adjusted_sdf_from + t * (adjusted_sdf_to - adjusted_sdf_from)
+        other_adjusted_sdf = other_adjusted_sdf_from + t * (other_adjusted_sdf_to - other_adjusted_sdf_from)
+        pair_separation = adjusted_sdf + other_adjusted_sdf
+        vert_adjusted_sdf[vi] = adjusted_sdf
+        vert_pair_separation[vi] = pair_separation
+        if pair_separation < 0.0:
             num_inside += 1
 
     n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
     n_sq = wp.dot(n, n)
     if n_sq < MC_DEGENERATE_N_SQ_EPS:
         # Degenerate triangle — return zero area with a valid (non-NaN) normal.
-        area = 0.0
+        geometric_area = 0.0
         normal = wp.vec3(0.0, 0.0, 1.0)
     else:
         inv_n_len = _hydro_rsqrt_approx(n_sq)
         normal = n * inv_n_len
-        area = (n_sq * inv_n_len) * 0.5
+        geometric_area = (n_sq * inv_n_len) * 0.5
     center = (face_verts[0] + face_verts[1] + face_verts[2]) / 3.0
-    pen_depth = (vert_depths[0] + vert_depths[1] + vert_depths[2]) / 3.0
-    area *= get_triangle_fraction(vert_depths, num_inside)
-    return area, normal, center, pen_depth, face_verts
+    adjusted_sdf = (vert_adjusted_sdf[0] + vert_adjusted_sdf[1] + vert_adjusted_sdf[2]) / 3.0
+    pair_separation = (vert_pair_separation[0] + vert_pair_separation[1] + vert_pair_separation[2]) / 3.0
+    force_area = geometric_area * get_triangle_fraction(vert_pair_separation, num_inside)
+    return force_area, geometric_area, normal, center, adjusted_sdf, pair_separation, face_verts
 
 
 class HydroelasticSDF:
@@ -362,8 +382,11 @@ class HydroelasticSDF:
 
     Args:
         num_shape_pairs: Maximum number of hydroelastic shape pairs to process.
-        total_num_tiles: Total number of SDF blocks across all hydroelastic shapes.
-        max_num_blocks_per_shape: Maximum block count for any single shape.
+        total_num_tiles: Total number of dense SDF blocks traversed across all
+            hydroelastic shape pairs. Each pair traverses only its finer SDF,
+            so this is the sum over pairs of that grid's block count.
+        total_num_active_tiles: Total number of narrow-band SDF blocks across
+            the same traversal grids, used to size refinement buffers.
         shape_material_kh: Hydroelastic stiffness coefficient for each shape.
         n_shapes: Total number of shapes in the simulation.
         config: Configuration options controlling buffer sizes, contact reduction,
@@ -401,19 +424,24 @@ class HydroelasticSDF:
         writes a smaller contact set to the buffer before the normal reduce pass.
         Only active when ``reduce_contacts`` is True."""
         buffer_fraction: float = 1.0
-        """Fraction of worst-case hydroelastic buffer allocations. Range: (0, 1].
+        """Fraction applied to default hydroelastic buffer estimates. Range: (0, 1].
 
         This scales pre-allocated broadphase, iso-refinement, and face-contact
-        buffers before applying stage multipliers. Lower values reduce memory
-        usage and may cause overflows in dense scenes. Overflows are bounds-safe
-        and emit warnings; increase this value when warnings appear.
+        buffers from their default estimated capacities before applying stage
+        multipliers. Lower values reduce memory usage and may cause overflows in
+        dense scenes. Overflows are bounds-safe and emit warnings; increase this
+        value when warnings appear. In deterministic mode, the final iso-voxel
+        capacity has a hard fingerprint-safe limit that buffer fractions and
+        multipliers cannot raise. If that limit overflows, reduce the SDF
+        resolution or disable deterministic mode.
         """
         buffer_mult_broad: int = 1
         """Multiplier for the preallocated broadphase buffer that stores overlapping
         block pairs. Increase only if a broadphase overflow warning is issued."""
         buffer_mult_iso: int = 1
         """Multiplier for preallocated iso-surface extraction buffers used during
-        hierarchical octree refinement (subblocks and voxels). Increase only if an iso buffer overflow warning is issued."""
+        hierarchical octree refinement (subblocks and voxels). Increase only if an iso buffer overflow warning is issued.
+        The final voxel buffer remains subject to the deterministic fingerprint-safe limit."""
         buffer_mult_contact: int = 1
         """Multiplier for the preallocated face contact buffer that stores contact
         positions, normals, depths, and areas. Increase only if a face contact overflow warning is issued."""
@@ -440,8 +468,14 @@ class HydroelasticSDF:
         friction moment per normal bin is preserved between reduced and
         unreduced contacts. Automatically enables ``anchor_contact``.
         Only active when reduce_contacts is True."""
-        margin_contact_area: float = 1e-2
-        """Contact area used for non-penetrating contacts at the margin."""
+        margin_contact_area: float = _DEPRECATED_MARGIN_CONTACT_AREA_UNSET
+        """Deprecated speculative-contact area [m^2] retained for compatibility.
+
+        .. deprecated:: 1.6
+
+            This setting still controls speculative-contact activation
+            stiffness during the deprecation period.
+        """
         pressure_func: Any = None
         """Optional Warp function defining ``pressure = f(signed_depth, shape_idx, data)``.
 
@@ -496,6 +530,14 @@ class HydroelasticSDF:
         bias measurably damps the contact response."""
 
         def __post_init__(self):
+            if self.margin_contact_area is _DEPRECATED_MARGIN_CONTACT_AREA_UNSET:
+                self.margin_contact_area = 1.0e-2
+            else:
+                warnings.warn(
+                    "HydroelasticSDF.Config.margin_contact_area is deprecated; remove this setting.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
             # NaN fails both bounds (NaN comparisons return False) and lands here too.
             if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
                 raise ValueError(
@@ -519,7 +561,7 @@ class HydroelasticSDF:
         contact_surface_point: wp.array[wp.vec3f]
         """World-space positions of contact surface triangle vertices (3 per face)."""
         contact_surface_depth: wp.array[wp.float32]
-        """Penetration depth at each face centroid."""
+        """Margin-relative pair separation [m] at each face centroid."""
         contact_surface_shape_pair: wp.array[wp.vec2i]
         """Shape pair indices (shape_a, shape_b) for each face."""
         face_contact_count: wp.array[wp.int32]
@@ -531,7 +573,7 @@ class HydroelasticSDF:
         self,
         num_shape_pairs: int,
         total_num_tiles: int,
-        max_num_blocks_per_shape: int,
+        total_num_active_tiles: int,
         shape_material_kh: wp.array[wp.float32],
         n_shapes: int,
         config: HydroelasticSDF.Config | None = None,
@@ -548,7 +590,10 @@ class HydroelasticSDF:
             # Deterministic mode is the supported way to ask for reproducibility,
             # so this is silent; the cost is documented on ``pre_prune_contacts``
             # and in the deterministic-collisions section of the collision docs.
-            config = replace(config, pre_prune_contacts=False)
+            # Avoid reconstructing the dataclass: doing so would make an omitted
+            # deprecated field look explicitly supplied and emit a spurious warning.
+            config = copy(config)
+            config.pre_prune_contacts = False
 
         self.config = config
         self.deterministic = deterministic
@@ -562,7 +607,7 @@ class HydroelasticSDF:
         self.n_shapes = n_shapes
         self.max_num_shape_pairs = num_shape_pairs
         self.total_num_tiles = total_num_tiles
-        self.max_num_blocks_per_shape = max_num_blocks_per_shape
+        self.total_num_active_tiles = total_num_active_tiles
 
         frac = float(self.config.buffer_fraction)
         if frac <= 0.0 or frac > 1.0:
@@ -571,14 +616,19 @@ class HydroelasticSDF:
         if contact_frac <= 0.0 or contact_frac > 1.0:
             raise ValueError(f"HydroelasticSDF.Config.contact_buffer_fraction must be in (0, 1], got {contact_frac}")
 
-        mult = max(int(self.config.buffer_mult_iso * self.total_num_tiles * frac), 64)
         self.max_num_blocks_broad = max(
-            int(self.max_num_shape_pairs * self.max_num_blocks_per_shape * self.config.buffer_mult_broad * frac),
+            int(self.total_num_tiles * self.config.buffer_mult_broad * frac),
             64,
         )
         # Output buffer sizes for each octree level (subblocks 8x8x8 -> 4x4x4 -> 2x2x2 -> voxels)
-        # The voxel-level multiplier (48x) is sized for texture-backed SDFs.
-        self.iso_max_dims = (int(2 * mult), int(2 * mult), int(16 * mult), int(48 * mult))
+        refinement_base = self.config.buffer_mult_iso * self.total_num_active_tiles * frac
+        iso_max_dims = [max(int(mult * refinement_base), 64) for mult in _ISO_REFINEMENT_MULTIPLIERS]
+        if deterministic:
+            # A face fingerprint is ``voxel_id * MAX_MC_FACES_PER_VOXEL + face_id``.
+            # Bound the final refinement buffer so every generated face remains
+            # below the anchor bit reserved by deterministic contact sort keys.
+            iso_max_dims[3] = min(iso_max_dims[3], _MAX_DETERMINISTIC_ISO_VOXELS)
+        self.iso_max_dims = tuple(iso_max_dims)
         self.max_num_iso_voxels = self.iso_max_dims[3]
         # Input buffer sizes for each octree level
         self.input_sizes = (self.max_num_blocks_broad, *self.iso_max_dims[:3])
@@ -611,22 +661,17 @@ class HydroelasticSDF:
             # Face contacts written directly to GlobalContactReducer (no intermediate buffers)
             # When pre-pruning is active, far fewer contacts reach the buffer so we
             # scale down by contact_buffer_fraction to save memory.
-            face_contact_budget = config.buffer_mult_contact * self.max_num_iso_voxels
+            face_contact_budget = config.buffer_mult_contact * _FACE_CONTACTS_PER_ISO_VOXEL * self.max_num_iso_voxels
             if config.reduce_contacts and config.pre_prune_contacts:
                 face_contact_budget = face_contact_budget * config.contact_buffer_fraction
             self.max_num_face_contacts = max(int(face_contact_budget), 64)
-            self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
             if deterministic:
-                _validate_deterministic_fingerprint_range(self.max_num_iso_voxels)
-                max_det_contacts = 1 << int(CONTACT_ID_BITS)
-                if self.max_num_face_contacts > max_det_contacts:
-                    raise ValueError(
-                        f"Deterministic hydroelastic contact packing supports at most {max_det_contacts} "
-                        f"buffered face contacts ({int(CONTACT_ID_BITS)}-bit contact_id), but "
-                        f"HydroelasticSDF allocated {self.max_num_face_contacts}. Lower "
-                        "HydroelasticSDF.Config.buffer_mult_contact or buffer_fraction, or disable "
-                        "deterministic mode."
-                    )
+                max_det_contacts = (1 << int(CONTACT_ID_BITS)) - 1
+                # Contact IDs cannot represent a larger deterministic buffer.
+                # Bound the conservative estimate; runtime overflow reporting
+                # still catches a scene that genuinely reaches this limit.
+                self.max_num_face_contacts = min(self.max_num_face_contacts, max_det_contacts)
+            self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
 
             if self.config.output_contact_surface:
                 # stores the point and depth of the contact surface vertex
@@ -679,6 +724,7 @@ class HydroelasticSDF:
             self.generate_contacts_kernel = get_generate_contacts_kernel(
                 output_vertices=self.config.output_contact_surface,
                 pre_prune=self.config.reduce_contacts and self.config.pre_prune_contacts,
+                reduce_contacts=self.config.reduce_contacts,
                 deterministic_reduction=self.deterministic and self.config.reduce_contacts,
                 pressure_func=self.pressure_func,
                 mc_edge_clamp_min=self.config.mc_edge_clamp_min,
@@ -700,8 +746,6 @@ class HydroelasticSDF:
                     device=device,
                     writer_func=writer_func,
                     config=reduction_config,
-                    pressure_func=self.pressure_func,
-                    pressure_data=self.pressure_data,
                     deterministic=self.deterministic,
                 )
                 self.decode_contacts_kernel = None
@@ -715,14 +759,12 @@ class HydroelasticSDF:
                         margin_contact_area=self.config.margin_contact_area,
                         hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                     ),
-                    pressure_func=self.pressure_func,
-                    pressure_data=self.pressure_data,
                     deterministic=self.deterministic,
+                    enable_reduction=False,
                 )
                 self.decode_contacts_kernel = get_decode_contacts_kernel(
                     self.config.margin_contact_area,
                     writer_func,
-                    self.pressure_func,
                 )
 
         self._host_warning_poll_interval = 120
@@ -816,30 +858,27 @@ class HydroelasticSDF:
                         "Build a scale-baked SDF for hydroelastic use."
                     )
 
-        # Count total subgrids and max-per-shape for hydroelastic shapes.
-        # Every shape contributes (cw-1) * (ch-1) * (cd-1) blocks to the
-        # broadphase — the broadphase visits every subgrid because the
-        # contact iso-surface can sit anywhere inside the SDF box.
+        # Count the grids that the broadphase actually traverses. Each pair
+        # walks only its finer SDF and samples the other SDF at those points.
         total_num_tiles = 0
-        max_num_blocks_per_shape = 0
-        for idx in hydroelastic_indices:
-            sdf_idx = int(shape_sdf_index[idx])
-            if sdf_idx < 0:
-                raise ValueError(f"Hydroelastic shape {idx} requires SDF data but has no attached/generated SDF.")
-            if sdf_idx >= len(coarse_textures) or coarse_textures[sdf_idx] is None:
-                raise ValueError(
-                    f"Hydroelastic shape {idx} requires texture SDF data but its attached/generated SDF has none. "
-                    "Build the SDF with mesh.build_sdf() before using hydroelastic contacts."
-                )
+        total_num_active_tiles = 0
+        hydroelastic_pairs = shape_pairs[is_hydroelastic[shape_pairs[:, 0]] & is_hydroelastic[shape_pairs[:, 1]]]
+        for shape_a, shape_b in hydroelastic_pairs:
+            sdf_idx_a = int(shape_sdf_index[shape_a])
+            sdf_idx_b = int(shape_sdf_index[shape_b])
+            # Match broadphase_collision_pairs_count(): equal-resolution pairs
+            # retain shape B as the traversal grid.
+            sdf_idx = sdf_idx_b
+            if texture_sdf_data[sdf_idx_b]["voxel_radius"] > texture_sdf_data[sdf_idx_a]["voxel_radius"]:
+                sdf_idx = sdf_idx_a
             tex = coarse_textures[sdf_idx]
-            num_blocks = (tex.width - 1) * (tex.height - 1) * (tex.depth - 1)
-            total_num_tiles += num_blocks
-            max_num_blocks_per_shape = max(max_num_blocks_per_shape, num_blocks)
+            total_num_tiles += (tex.width - 1) * (tex.height - 1) * (tex.depth - 1)
+            total_num_active_tiles += int(texture_sdf_data[sdf_idx]["num_subgrids"])
 
         return cls(
             num_shape_pairs=num_hydroelastic_pairs,
             total_num_tiles=total_num_tiles,
-            max_num_blocks_per_shape=max_num_blocks_per_shape,
+            total_num_active_tiles=total_num_active_tiles,
             shape_material_kh=model.shape_material_kh,
             n_shapes=model.shape_count,
             config=config,
@@ -870,6 +909,7 @@ class HydroelasticSDF:
         self,
         texture_sdf_data: wp.array[TextureSDFData],
         shape_sdf_index: wp.array[wp.int32],
+        shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
         shape_gap: wp.array[wp.float32],
         shape_collision_aabb_lower: wp.array[wp.vec3],
@@ -888,6 +928,8 @@ class HydroelasticSDF:
         Args:
             texture_sdf_data: Compact texture SDF table.
             shape_sdf_index: Per-shape SDF index into texture_sdf_data.
+            shape_data: Per-shape ``(scale_x, scale_y, scale_z, margin)`` values;
+                scale is dimensionless and margin is [m].
             shape_transform: World transforms for each shape.
             shape_gap: Per-shape contact gap (detection threshold) for each shape.
             shape_collision_aabb_lower: Per-shape collision AABB lower bounds.
@@ -926,9 +968,9 @@ class HydroelasticSDF:
             shape_pairs_sdf_sdf_count,
         )
 
-        self._find_iso_voxels(shape_sdf_data, shape_transform, shape_transform_inverse, shape_gap)
+        self._find_iso_voxels(shape_sdf_data, shape_data, shape_transform, shape_transform_inverse, shape_gap)
 
-        self._generate_contacts(shape_sdf_data, shape_transform, shape_transform_inverse, shape_gap)
+        self._generate_contacts(shape_sdf_data, shape_data, shape_transform, shape_transform_inverse, shape_gap)
 
         if self.config.reduce_contacts:
             self._reduce_decode_contacts(
@@ -1038,6 +1080,7 @@ class HydroelasticSDF:
     def _find_iso_voxels(
         self,
         shape_sdf_data: wp.array[TextureSDFData],
+        shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
         shape_transform_inverse: wp.array[wp.transform],
         shape_gap: wp.array[wp.float32],
@@ -1062,6 +1105,7 @@ class HydroelasticSDF:
                     count_grid_size,
                     self.iso_buffer_counts[i],
                     shape_sdf_data,
+                    shape_data,
                     shape_transform,
                     shape_transform_inverse,
                     self.pressure_data,
@@ -1078,6 +1122,7 @@ class HydroelasticSDF:
                     count_grid_size,
                     self.iso_buffer_counts[i],
                     shape_sdf_data,
+                    shape_data,
                     shape_transform,
                     shape_transform_inverse,
                     self.pressure_data,
@@ -1131,6 +1176,7 @@ class HydroelasticSDF:
     def _generate_contacts(
         self,
         shape_sdf_data: wp.array[TextureSDFData],
+        shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
         shape_transform_inverse: wp.array[wp.transform],
         shape_gap: wp.array[wp.float32],
@@ -1162,6 +1208,7 @@ class HydroelasticSDF:
                 self.grid_size,
                 self.iso_voxel_count,
                 shape_sdf_data,
+                shape_data,
                 shape_transform,
                 shape_transform_inverse,
                 self.pressure_data,
@@ -1181,6 +1228,7 @@ class HydroelasticSDF:
                 self.iso_vertex_depth,
                 self.iso_vertex_shape_pair,
             ],
+            block_dim=HYDRO_GENERATE_BLOCK_DIM,
             device=self.device,
             record_tape=False,
         )
@@ -1210,7 +1258,7 @@ class HydroelasticSDF:
                 self.contact_reduction.reducer.shape_pairs,
                 self.contact_reduction.reducer.contact_fingerprints,
                 self.contact_reduction.reducer.contact_area,
-                self.pressure_data,
+                self.contact_reduction.reducer.contact_pressure,
                 self.max_num_face_contacts,
             ],
             outputs=[writer_data],
@@ -1421,6 +1469,7 @@ def create_count_iso_voxels_block_kernel(pressure_func: Any, integer_center: boo
         grid_size: int,
         in_buffer_collide_count: wp.array[int],
         shape_sdf_data: wp.array[TextureSDFData],
+        shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
         shape_transform_inverse: wp.array[wp.transform],
         pressure_data: Any,
@@ -1452,6 +1501,9 @@ def create_count_iso_voxels_block_kernel(pressure_func: Any, integer_center: boo
 
             gap_a = shape_gap[shape_a]
             gap_b = shape_gap[shape_b]
+            gap_sum = gap_a + gap_b
+            margin_a = shape_data[shape_a][3]
+            margin_b = shape_data[shape_b][3]
 
             voxel_radius = sdf_data_b.voxel_radius
             r = float(subblock_size) * voxel_radius
@@ -1484,7 +1536,9 @@ def create_count_iso_voxels_block_kernel(pressure_func: Any, integer_center: boo
                             vb = wp.static(sample_sdf)(sdf_data_b, local_pos_b)
                         va = wp.static(sample_sdf)(sdf_data_a, point_a)
                         is_valid = not (wp.isnan(vb) or wp.isnan(va))
-                        if not is_valid or va > r + gap_a or vb > r + gap_b:
+                        effective_va = va - margin_a
+                        effective_vb = vb - margin_b
+                        if not is_valid or effective_va + effective_vb > 2.0 * r + gap_sum:
                             continue
 
                         # Bound p_a, p_b across the subblock using monotonicity of
@@ -1497,10 +1551,10 @@ def create_count_iso_voxels_block_kernel(pressure_func: Any, integer_center: boo
                         # subblock. Evaluated for every subblock (not only the
                         # both-penetrating case) so the prune stays consistent with
                         # the iso-surface definition used in marching cubes.
-                        pa_lo = pressure_func(va + r, shape_a, pressure_data)
-                        pa_hi = pressure_func(va - r, shape_a, pressure_data)
-                        pb_lo = pressure_func(vb + r, shape_b, pressure_data)
-                        pb_hi = pressure_func(vb - r, shape_b, pressure_data)
+                        pa_lo = pressure_func(effective_va + r, shape_a, pressure_data)
+                        pa_hi = pressure_func(effective_va - r, shape_a, pressure_data)
+                        pb_lo = pressure_func(effective_vb + r, shape_b, pressure_data)
+                        pb_hi = pressure_func(effective_vb - r, shape_b, pressure_data)
                         skip = pa_hi < pb_lo or pb_hi < pa_lo
 
                         if skip:
@@ -1533,6 +1587,7 @@ def create_count_iso_voxel_children_kernel(pressure_func: Any, integer_center: b
         grid_size: int,
         in_buffer_collide_count: wp.array[int],
         shape_sdf_data: wp.array[TextureSDFData],
+        shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
         shape_transform_inverse: wp.array[wp.transform],
         pressure_data: Any,
@@ -1567,6 +1622,9 @@ def create_count_iso_voxel_children_kernel(pressure_func: Any, integer_center: b
                 X_ws_b = shape_transform[shape_b]
                 gap_a = shape_gap[shape_a]
                 gap_b = shape_gap[shape_b]
+                gap_sum = gap_a + gap_b
+                margin_a = shape_data[shape_a][3]
+                margin_b = shape_data[shape_b][3]
                 voxel_radius = sdf_data_b.voxel_radius
                 r = float(subblock_size) * voxel_radius
                 bc = unpack_hydro_voxel_coords(record)
@@ -1586,11 +1644,13 @@ def create_count_iso_voxel_children_kernel(pressure_func: Any, integer_center: b
                     vb = wp.static(sample_sdf)(sdf_data_b, local_pos_b)
                 va = wp.static(sample_sdf)(sdf_data_a, point_a)
                 is_valid = not (wp.isnan(vb) or wp.isnan(va))
-                if is_valid and va <= r + gap_a and vb <= r + gap_b:
-                    pa_lo = pressure_func(va + r, shape_a, pressure_data)
-                    pa_hi = pressure_func(va - r, shape_a, pressure_data)
-                    pb_lo = pressure_func(vb + r, shape_b, pressure_data)
-                    pb_hi = pressure_func(vb - r, shape_b, pressure_data)
+                effective_va = va - margin_a
+                effective_vb = vb - margin_b
+                if is_valid and effective_va + effective_vb <= 2.0 * r + gap_sum:
+                    pa_lo = pressure_func(effective_va + r, shape_a, pressure_data)
+                    pa_hi = pressure_func(effective_va - r, shape_a, pressure_data)
+                    pb_lo = pressure_func(effective_vb + r, shape_b, pressure_data)
+                    pb_hi = pressure_func(effective_vb - r, shape_b, pressure_data)
                     keep = not (pa_hi < pb_lo or pb_hi < pa_lo)
 
             wp.tile_scatter_masked(child_kept, lane, wp.int32(keep), True)
@@ -1666,6 +1726,8 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
         X_sw_other: wp.transform,
         shape_self: wp.int32,
         shape_other: wp.int32,
+        margin_self: wp.float32,
+        margin_other: wp.float32,
         pressure_data: Any,
         gap_sum: wp.float32,
     ):
@@ -1673,7 +1735,8 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
         cube_idx = wp.uint8(0)
         any_verts_inside_gap = False
         corner_vals = vec8f()
-        corner_sdf_vals = vec8f()
+        corner_sdf_self = vec8f()
+        corner_sdf_other = vec8f()
 
         X_a_to_b = wp.transform_multiply(X_sw_other, X_ws)
         # Reuse the affine base and axis steps instead of rotating all eight corners.
@@ -1702,7 +1765,10 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
 
             is_valid = not (wp.isnan(valA) or wp.isnan(valB))
             if not is_valid:
-                return wp.uint8(0), corner_vals, corner_sdf_vals, False, False
+                return wp.uint8(0), corner_vals, corner_sdf_self, corner_sdf_other, False, False
+
+            effective_sdf_self = valA - margin_self
+            effective_sdf_other = valB - margin_other
 
             # Iso-pressure surface: the contact patch is the locus where
             # ``p_self == p_other``. Evaluate ``pressure_func`` at every
@@ -1713,20 +1779,21 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
             # corners. ``pressure_func`` is required to be defined and
             # monotone non-increasing in ``signed_depth`` over its full
             # range, not just for ``signed_depth < 0``.
-            p_self = pressure_func(valA, shape_self, pressure_data)
-            p_other = pressure_func(valB, shape_other, pressure_data)
+            p_self = pressure_func(effective_sdf_self, shape_self, pressure_data)
+            p_other = pressure_func(effective_sdf_other, shape_other, pressure_data)
             v_diff = p_other - p_self
 
             corner_vals[i] = v_diff
-            corner_sdf_vals[i] = valA
+            corner_sdf_self[i] = effective_sdf_self
+            corner_sdf_other[i] = effective_sdf_other
 
             if v_diff < 0.0:
                 cube_idx |= wp.uint8(1) << wp.uint8(i)
 
-            if valA <= gap_sum:
+            if effective_sdf_self + effective_sdf_other <= gap_sum:
                 any_verts_inside_gap = True
 
-        return cube_idx, corner_vals, corner_sdf_vals, any_verts_inside_gap, True
+        return cube_idx, corner_vals, corner_sdf_self, corner_sdf_other, any_verts_inside_gap, True
 
     return mc_iterate_voxel_vertices
 
@@ -1737,28 +1804,23 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any, paired_samples: bo
 
 
 def get_decode_contacts_kernel(
-    margin_contact_area: float = 1e-4,
+    margin_contact_area: float,
     writer_func: Any = None,
-    pressure_func: Any = None,
 ):
     """Create a kernel that decodes hydroelastic contacts without reduction.
 
     This kernel is used when reduce_contacts=False. It exports all generated
-    contacts directly to the writer without any spatial reduction. Per-contact
-    pressure is computed on demand from the user's ``pressure_func``; depth
-    and shape index are read from the contact buffer.
+    contacts directly to the writer without any spatial reduction. Pressure is
+    read from the contact buffer after being evaluated once during generation.
 
     Args:
-        margin_contact_area: Contact area used for non-penetrating contacts at the margin.
+        margin_contact_area: Deprecated compatibility area [m^2] for speculative
+            contact activation stiffness.
         writer_func: Warp function for writing decoded contacts.
-        pressure_func: Warp function defining the user pressure law. Required.
 
     Returns:
         A warp kernel that can be launched to decode all contacts.
     """
-
-    if pressure_func is None:
-        raise ValueError("get_decode_contacts_kernel requires a non-None pressure_func.")
 
     @wp.kernel(enable_backward=False)
     def decode_contacts_kernel(
@@ -1772,7 +1834,7 @@ def get_decode_contacts_kernel(
         shape_pairs: wp.array[wp.vec2i],
         contact_fingerprints: wp.array[wp.int32],
         contact_area: wp.array[wp.float32],
-        pressure_data: Any,
+        contact_pressure: wp.array[wp.float32],
         max_num_face_contacts: int,
         # outputs
         writer_data: Any,
@@ -1825,35 +1887,27 @@ def get_decode_contacts_kernel(
             gap_sum = gap_a + gap_b
 
             area = contact_area[contact_id]
+            face_pressure = contact_pressure[contact_id]
 
-            # Hydroelastic force per face: F = area * pressure_func(depth)
-            # (Elandt et al. 2019). The solver applies
-            # ``F = c_stiffness * (-contact_distance) = c_stiffness * 2*|depth|``
-            # because Newton stores ``contact_distance = 2*depth``, so the
-            # secant stiffness must absorb that factor of 2:
-            #     c_stiffness = area * p_face / (2 * |depth|)
+            # Hydroelastic force per face: F = area * pressure (Elandt et al.
+            # 2019). The stored distance is the margin-relative pair
+            # separation, so:
+            #     c_stiffness = area * pressure / |pair_separation|
             # gives F_solver = area * p_face exactly, for any pressure law and
-            # any (kh_a, kh_b) pair. Pressure is recomputed from buffer state
-            # (``depth`` and ``shape_b``) rather than cached.
-            #
-            # Margin (non-penetrating) contacts are a constraint regularization
-            # rather than a physical force: pressure_func is only required to be
-            # monotone in this regime. Keep the linear-law slope from
-            # ``shape_material_kh`` so margin behavior stays well-defined.
+            # any (kh_a, kh_b) pair. Pressure is evaluated during generation
+            # and cached separately from pair separation.
             if depth < 0.0:
-                p_face = wp.static(pressure_func)(depth, shape_b, pressure_data)
-                c_stiffness = area * p_face / (2.0 * wp.max(-depth, EPS_SMALL))
+                c_stiffness = area * face_pressure / wp.max(-depth, EPS_SMALL)
             else:
                 k_a = shape_material_kh[shape_a]
                 k_b = shape_material_kh[shape_b]
                 c_stiffness = wp.static(margin_contact_area) * get_effective_stiffness(k_a, k_b)
 
             # Create ContactData for the writer function
-            # contact_distance = 2 * depth (depth is negative for penetrating)
             contact_data = ContactData()
             contact_data.contact_point_center = pos_world
             contact_data.contact_normal_a_to_b = normal_world
-            contact_data.contact_distance = 2.0 * depth
+            contact_data.contact_distance = depth
             contact_data.radius_eff_a = 0.0
             contact_data.radius_eff_b = 0.0
             contact_data.margin_a = 0.0
@@ -1880,6 +1934,7 @@ def get_decode_contacts_kernel(
 def get_generate_contacts_kernel(
     output_vertices: bool,
     pre_prune: bool = False,
+    reduce_contacts: bool = True,
     deterministic_reduction: bool = False,
     pressure_func: Any = None,
     mc_edge_clamp_min: float = 0.02,
@@ -1906,6 +1961,7 @@ def get_generate_contacts_kernel(
     Args:
         output_vertices: Whether to output contact surface vertices for visualization.
         pre_prune: Whether to perform local-first face compaction.
+        reduce_contacts: Whether generated contacts are reduced before export.
         deterministic_reduction: Whether aggregate accumulation is deferred
             to the deterministic reduction phase, which sums in fixed point so
             the result does not depend on contact ordering.
@@ -1932,6 +1988,7 @@ def get_generate_contacts_kernel(
         grid_size: int,
         iso_voxel_count: wp.array[wp.int32],
         shape_sdf_data: wp.array[TextureSDFData],
+        shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
         shape_transform_inverse: wp.array[wp.transform],
         pressure_data: Any,
@@ -1972,13 +2029,17 @@ def get_generate_contacts_kernel(
             gap_a = shape_gap[shape_a]
             gap_b = shape_gap[shape_b]
             gap_sum = gap_a + gap_b
+            margin_a = shape_data[shape_a][3]
+            margin_b = shape_data[shape_b][3]
 
             x_id = wp.int32(iso_coords.x)
             y_id = wp.int32(iso_coords.y)
             z_id = wp.int32(iso_coords.z)
 
             # Compute cube state (marching cubes lookup)
-            cube_idx, corner_vals, corner_sdf_vals, any_verts_inside, all_verts_valid = wp.static(mc_iterate)(
+            cube_idx, corner_vals, corner_sdf_self, corner_sdf_other, any_verts_inside, all_verts_valid = wp.static(
+                mc_iterate
+            )(
                 x_id,
                 y_id,
                 z_id,
@@ -1988,6 +2049,8 @@ def get_generate_contacts_kernel(
                 transform_inverse_a,
                 shape_b,
                 shape_a,
+                margin_b,
+                margin_a,
                 pressure_data,
                 gap_sum,
             )
@@ -2015,6 +2078,8 @@ def get_generate_contacts_kernel(
             best_pen0_score = float(-MAXVAL)
             best_pen0_depth = float(0.0)
             best_pen0_area = float(0.0)
+            best_pen0_pressure = float(0.0)
+            best_pen0_fingerprint = int(0)
             best_pen0_normal = wp.vec2(0.0, 0.0)
             best_pen0_center = wp.vec3(0.0, 0.0, 0.0)
             best_pen0_v0 = wp.vec3(0.0, 0.0, 0.0)
@@ -2025,6 +2090,8 @@ def get_generate_contacts_kernel(
             best_pen1_score = float(-MAXVAL)
             best_pen1_depth = float(0.0)
             best_pen1_area = float(0.0)
+            best_pen1_pressure = float(0.0)
+            best_pen1_fingerprint = int(0)
             best_pen1_normal = wp.vec2(0.0, 0.0)
             best_pen1_center = wp.vec3(0.0, 0.0, 0.0)
             best_pen1_v0 = wp.vec3(0.0, 0.0, 0.0)
@@ -2034,57 +2101,75 @@ def get_generate_contacts_kernel(
             best_nonpen_valid = int(0)
             best_nonpen_depth = float(MAXVAL)
             best_nonpen_area = float(0.0)
+            best_nonpen_fingerprint = int(0)
             best_nonpen_normal = wp.vec2(0.0, 0.0)
             best_nonpen_center = wp.vec3(0.0, 0.0, 0.0)
             best_nonpen_v0 = wp.vec3(0.0, 0.0, 0.0)
             best_nonpen_v1 = wp.vec3(0.0, 0.0, 0.0)
             best_nonpen_v2 = wp.vec3(0.0, 0.0, 0.0)
             for fi in range(num_faces):
-                area, normal, face_center, pen_depth, face_verts = mc_calc_face_texture(
-                    flat_edge_verts_table,
-                    tri_range_start + 3 * fi,
-                    corner_vals,
-                    corner_sdf_vals,
-                    sdf_data_b,
-                    x_id,
-                    y_id,
-                    z_id,
-                    wp.static(edge_clamp_min),
-                    wp.static(edge_clamp_max),
+                face_fingerprint = tid * MAX_MC_FACES_PER_VOXEL + fi
+                force_area, geometric_area, normal, face_center, adjusted_sdf_shape_b, pair_separation, face_verts = (
+                    mc_calc_face_texture(
+                        flat_edge_verts_table,
+                        tri_range_start + 3 * fi,
+                        corner_vals,
+                        corner_sdf_self,
+                        corner_sdf_other,
+                        sdf_data_b,
+                        x_id,
+                        y_id,
+                        z_id,
+                        wp.static(edge_clamp_min),
+                        wp.static(edge_clamp_max),
+                    )
                 )
-                if area <= 0.0:
+                if geometric_area <= 0.0:
                     continue
-                # Pressure at the face. ``pen_depth`` is the SDF-B depth at the
-                # face centroid; on the iso-pressure surface ``p_a == p_b`` so
-                # evaluating either side at its own depth gives the same value.
-                # Force accumulation below uses ``area * face_pressure`` instead
-                # of ``area * |pen_depth|``, removing the implicit linear-law
-                # assumption from the aggregate / anchor / moment computations.
-                face_pressure = wp.static(pressure_func)(pen_depth, shape_b, pressure_data)
+                if classify_hydroelastic_contact(pair_separation, gap_sum) > 0:
+                    continue
+                face_pressure = float(0.0)
+                if pair_separation < 0.0:
+                    # On the iso-pressure surface ``p_a == p_b``, so evaluating
+                    # either side at its own margin-adjusted depth is equivalent.
+                    # Speculative contacts use material stiffness and do not need
+                    # pressure, avoiding an otherwise unused callback evaluation.
+                    face_pressure = wp.max(
+                        wp.static(pressure_func)(adjusted_sdf_shape_b, shape_b, pressure_data),
+                        0.0,
+                    )
                 # Accumulate stats per normal bin
-                if pen_depth < 0.0 and wp.static(not deterministic_reduction):
+                if pair_separation < 0.0 and wp.static(reduce_contacts and not deterministic_reduction):
                     bin_id = get_slot(normal)
                     key = make_contact_key(shape_a, shape_b, bin_id)
                     entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
                     if entry_idx >= 0:
-                        force_weight = area * face_pressure
+                        force_weight = force_area * face_pressure
                         wp.atomic_add(reducer_data.agg_force, entry_idx, force_weight * normal)
                         wp.atomic_add(reducer_data.weighted_pos_sum, entry_idx, force_weight * face_center)
                         wp.atomic_add(reducer_data.weight_sum, entry_idx, force_weight)
                         # Pressure-law-agnostic geometric depth-volume used for the
                         # direction-reliability gate during reduction/export.
-                        wp.atomic_add(reducer_data.agg_depth_volume, entry_idx, (area * (-pen_depth)) * normal)
+                        wp.atomic_add(
+                            reducer_data.agg_depth_volume,
+                            entry_idx,
+                            (force_area * (-pair_separation)) * normal,
+                        )
                     else:
                         wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
 
                 if wp.static(not pre_prune):
+                    stored_area = geometric_area
+                    if pair_separation < 0.0:
+                        stored_area = force_area
                     contact_id = export_hydroelastic_contact_to_buffer(
                         shape_a,
                         shape_b,
                         face_center,
                         normal,
-                        pen_depth,
-                        area,
+                        pair_separation,
+                        stored_area,
+                        face_pressure,
                         tid * MAX_MC_FACES_PER_VOXEL + fi,
                         reducer_data,
                     )
@@ -2092,7 +2177,7 @@ def get_generate_contacts_kernel(
                         buffer_idx = contact_id - 1
                         for vi in range(3):
                             iso_vertex_point[3 * buffer_idx + vi] = wp.transform_point(X_ws_b, face_verts[vi])
-                        iso_vertex_depth[buffer_idx] = pen_depth
+                        iso_vertex_depth[buffer_idx] = pair_separation
                         iso_vertex_shape_pair[buffer_idx] = pair
                     continue
 
@@ -2100,14 +2185,16 @@ def get_generate_contacts_kernel(
                 # magnitude (area * pressure). Under a non-linear pressure law
                 # this is no longer the same as area * |depth|, and ranking by
                 # force keeps the contacts that contribute most to agg_force.
-                if pen_depth < 0.0:
-                    score = area * face_pressure
+                if pair_separation < 0.0:
+                    score = force_area * face_pressure
                     if best_pen0_valid == 0 or score > best_pen0_score:
                         # Shift slot0 -> slot1
                         best_pen1_valid = best_pen0_valid
                         best_pen1_score = best_pen0_score
                         best_pen1_depth = best_pen0_depth
                         best_pen1_area = best_pen0_area
+                        best_pen1_pressure = best_pen0_pressure
+                        best_pen1_fingerprint = best_pen0_fingerprint
                         best_pen1_normal = best_pen0_normal
                         best_pen1_center = best_pen0_center
                         best_pen1_v0 = best_pen0_v0
@@ -2116,8 +2203,10 @@ def get_generate_contacts_kernel(
 
                         best_pen0_valid = int(1)
                         best_pen0_score = score
-                        best_pen0_depth = pen_depth
-                        best_pen0_area = area
+                        best_pen0_depth = pair_separation
+                        best_pen0_area = force_area
+                        best_pen0_pressure = face_pressure
+                        best_pen0_fingerprint = face_fingerprint
                         best_pen0_normal = encode_oct(normal)
                         best_pen0_center = face_center
                         best_pen0_v0 = face_verts[0]
@@ -2127,8 +2216,10 @@ def get_generate_contacts_kernel(
                         if best_pen1_valid == 0 or score > best_pen1_score:
                             best_pen1_valid = int(1)
                             best_pen1_score = score
-                            best_pen1_depth = pen_depth
-                            best_pen1_area = area
+                            best_pen1_depth = pair_separation
+                            best_pen1_area = force_area
+                            best_pen1_pressure = face_pressure
+                            best_pen1_fingerprint = face_fingerprint
                             best_pen1_normal = encode_oct(normal)
                             best_pen1_center = face_center
                             best_pen1_v0 = face_verts[0]
@@ -2136,10 +2227,11 @@ def get_generate_contacts_kernel(
                             best_pen1_v2 = face_verts[2]
                 else:
                     # Defer non-penetrating contact and keep only the closest one.
-                    if pen_depth < best_nonpen_depth:
+                    if pair_separation < best_nonpen_depth:
                         best_nonpen_valid = int(1)
-                        best_nonpen_depth = pen_depth
-                        best_nonpen_area = area
+                        best_nonpen_depth = pair_separation
+                        best_nonpen_area = geometric_area
+                        best_nonpen_fingerprint = face_fingerprint
                         best_nonpen_normal = encode_oct(normal)
                         best_nonpen_center = face_center
                         best_nonpen_v0 = face_verts[0]
@@ -2170,6 +2262,8 @@ def get_generate_contacts_kernel(
                             reducer_data.normal[contact_id] = best_pen0_normal
                             reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
                             reducer_data.contact_area[contact_id] = best_pen0_area
+                            reducer_data.contact_pressure[contact_id] = best_pen0_pressure
+                            reducer_data.contact_fingerprints[contact_id] = best_pen0_fingerprint
                             if wp.static(output_vertices):
                                 iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_pen0_v0)
                                 iso_vertex_point[3 * out_idx + 1] = wp.transform_point(X_ws_b, best_pen0_v1)
@@ -2187,6 +2281,8 @@ def get_generate_contacts_kernel(
                                 reducer_data.normal[contact_id] = best_pen1_normal
                                 reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
                                 reducer_data.contact_area[contact_id] = best_pen1_area
+                                reducer_data.contact_pressure[contact_id] = best_pen1_pressure
+                                reducer_data.contact_fingerprints[contact_id] = best_pen1_fingerprint
                                 if wp.static(output_vertices):
                                     iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_pen1_v0)
                                     iso_vertex_point[3 * out_idx + 1] = wp.transform_point(X_ws_b, best_pen1_v1)
@@ -2203,6 +2299,8 @@ def get_generate_contacts_kernel(
                             reducer_data.normal[contact_id] = best_nonpen_normal
                             reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
                             reducer_data.contact_area[contact_id] = best_nonpen_area
+                            reducer_data.contact_pressure[contact_id] = 0.0
+                            reducer_data.contact_fingerprints[contact_id] = best_nonpen_fingerprint
                             if wp.static(output_vertices):
                                 iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_nonpen_v0)
                                 iso_vertex_point[3 * out_idx + 1] = wp.transform_point(X_ws_b, best_nonpen_v1)
