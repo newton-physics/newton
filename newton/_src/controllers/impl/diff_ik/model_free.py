@@ -921,7 +921,10 @@ class ControllerDiffIKModelFree(ControllerBase):
             ),
         ):
             if not live and getattr(inputs, name, None) is not None:
-                raise ValueError(f"inputs.{name} is set, but the controller was built without {switch}.")
+                raise ValueError(
+                    f"inputs.{name} is set, but the controller was built without {switch}, so the value "
+                    f"would be ignored."
+                )
 
         for port, name, buf, shape, dtype in bindings:
             _validate_array(array=port, name=name, dtype=dtype, shape=shape, device=self._device, allow_indexed=True)

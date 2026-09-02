@@ -76,9 +76,9 @@ class ControllerDiffIK(ControllerBase):
             articulation; any other joint is left uncontrolled instead of
             rejected. A joint named explicitly is not filtered this way and
             still raises ``ValueError`` if it is not 1-coordinate/1-DOF.
-        tool_sites: Site index(es) or label pattern(s) selecting each
-            controlled robot's controlled point, as a list or as a single
-            pattern. Required — there is no default tool site. Raises if a
+        tool_sites: Site indices or label patterns selecting each controlled
+            robot's controlled point, as a list or as a single pattern.
+            Required — there is no default tool site. Raises if a
             controlled robot matches zero or more than one site.
         axis_weight: Non-negative per-axis weight for each of the 6
             canonical task axes (position x, y, z, then orientation x, y,
@@ -165,7 +165,12 @@ class ControllerDiffIK(ControllerBase):
             or an array of shape [controlled_robot_count] to bake a value,
             or leave it ``None`` to read ``inputs.null_space_damping`` each
             step (the default, and the only valid value when both are
-            disabled).
+            disabled). Unlike the primary ``damping``, ``λ_null = 0`` is
+            only safe when every robot has at least 6 controlled DOFs —
+            otherwise the projector's own ``JJᵀ`` is rank-deficient. When
+            baked, this is checked at construction and raises; a live value
+            is the caller's responsibility, since checking it every step
+            would cost a host sync and break :meth:`is_graphable`.
     """
 
     IkMethod = IkMethod
@@ -553,6 +558,11 @@ class ControllerDiffIK(ControllerBase):
         return self._tool_body
 
     @property
+    def tool_transform_body(self) -> wp.array[wp.transform]:
+        """Tool site's transform relative to its body, shape [controlled_robot_count]."""
+        return self._tool_transform_body
+
+    @property
     def tool_pose_world(self) -> wp.array[wp.transform]:
         """World pose of each controlled robot's tool site as of the latest ``step()``, shape [controlled_robot_count]."""
         return self._tool_pose_world
@@ -655,7 +665,10 @@ class ControllerDiffIK(ControllerBase):
             ("null_space_damping", self._null_damping_is_live, "a live null_space_damping"),
         ):
             if not live and getattr(inputs, name, None) is not None:
-                raise ValueError(f"inputs.{name} is set, but the controller was built without {switch}.")
+                raise ValueError(
+                    f"inputs.{name} is set, but the controller was built without {switch}, so the value "
+                    f"would be ignored."
+                )
 
         # Whole-model reads: an uncontrolled joint still moves its own body,
         # and hence the tool pose/Jacobian of every controlled joint
