@@ -31,8 +31,7 @@
 #
 # Uses IkMethod.ADAPTIVE_DAMPING: damping ramps up automatically as any arm
 # nears a kinematic singularity or the edge of its reach, instead of a
-# single fixed damping value -- this stays smooth (no chatter) right up to
-# the boundary, unlike a plain fixed-damping or truncated-SVD solve.
+# single fixed damping value.
 #
 # Command: python -m newton.examples controller_differential_ik
 ###########################################################################
@@ -67,16 +66,14 @@ UR10_BASE_POSITION = wp.vec3(0.0, 1.8, 0.0)  # separated from the Franka along Y
 # axes (X, Y, yaw) axis_weight keeps active for it below. Mounted above the
 # ground plane so the horizontal arm has room to swing without intersecting it.
 PLANAR_LINK_LENGTH = 0.25
-PLANAR_READY_POSE = [0.4, 1.6, -1.4, 1.0]  # folded to ~79% of max reach, room to drag in any direction
-PLANAR_ARM_DOFS = len(PLANAR_READY_POSE)  # 4; redundant against its own 3D (X, Y, yaw) task
+PLANAR_READY_POSE = [0.4, 1.6, -1.4, 1.0]
+PLANAR_ARM_DOFS = len(PLANAR_READY_POSE)
 PLANAR_BASE_POSITION = wp.vec3(0.0, 3.6, 0.5)  # separated from the UR10 along Y
 
 TOOL_SITE_SCALE = (0.02, 0.02, 0.02)
 
 # Franka and UR10 task the full 6D pose; the planar arm only X, Y, and yaw --
-# its Z position, roll, and pitch are structurally excluded from the solve
-# (see ControllerDifferentialIK's axis_weight), not merely driven toward zero, which
-# is what actually makes it redundant (4 controlled DOFs against a 3D task).
+# its Z position, roll, and pitch are structurally excluded from the solve.
 FULL_POSE_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
 PLANAR_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
@@ -88,19 +85,13 @@ JOINT_TARGET_KD = 100.0
 
 BANDWIDTH = 20.0
 # Empirically tuned against this example's continuous velocity-based control
-# loop (see IkMethod.ADAPTIVE_DAMPING): min/max away from vs. at a full
-# singularity, threshold set well clear of the arms' reachable workspace so
-# damping is already ramped up before either arm gets there, instead of
-# still transitioning exactly at the boundary (which chatters).
+# loop (see IkMethod.ADAPTIVE_DAMPING).
 ADAPTIVE_DAMPING_MIN = 0.02
 ADAPTIVE_DAMPING_MAX = 0.5
 ADAPTIVE_DAMPING_THRESHOLD = 0.2
 
 # Null-space posture control: pulls every controlled DOF toward its own
-# ready-pose entry, projected through the null-space projector (built from
-# each robot's own active task axes) so it never disturbs that robot's
-# primary task -- only the Franka's 7th DOF and the planar arm's 4th DOF
-# have any null space to move in; it's a no-op for the (non-redundant) UR10.
+# ready-pose entry, projected through the null-space projector.
 NULL_SPACE_STIFFNESS = 2.0
 NULL_SPACE_DAMPING = 0.05
 
@@ -219,8 +210,7 @@ class Example:
             {"translate": [Axis.X, Axis.Y], "rotate": [Axis.Z]},
         ]
 
-        # Pulled back and to the side so all three robots (Franka at y=0,
-        # UR10 at y=1.8, planar arm at y=3.6) are in view together.
+        # Set such that Franka at y=0, UR10 at y=1.8, planar arm at y=3.6 are in view together.
         if hasattr(self.viewer, "set_camera"):
             self.viewer.set_camera(pos=wp.vec3(3.2, -1.8, 2.4), pitch=-20.0, yaw=15.0)
             if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
