@@ -8501,9 +8501,9 @@ class ModelBuilder:
 
     def _add_rod_chain(
         self,
-        positions: Sequence[Vec3] | np.ndarray,
+        positions: list[Vec3],
         *,
-        quaternions: Sequence[Quat] | np.ndarray | None,
+        quaternions: list[Quat] | None,
         radius: float | None,
         cfg: ShapeConfig | None,
         stretch_stiffness: float | None,
@@ -8681,9 +8681,9 @@ class ModelBuilder:
     @overload
     def add_rod(
         self,
-        positions: Sequence[Vec3] | np.ndarray,
+        positions: list[Vec3],
         *,
-        quaternions: Sequence[Quat] | np.ndarray | None = None,
+        quaternions: list[Quat] | None = None,
         radius: float | None = None,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
@@ -8705,9 +8705,9 @@ class ModelBuilder:
 
     def add_rod(
         self,
-        positions: Sequence[Vec3] | np.ndarray | None = None,
+        positions: list[Vec3] | None = None,
         *,
-        quaternions: Sequence[Quat] | np.ndarray | None = None,
+        quaternions: list[Quat] | None = None,
         radius: float | None = None,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
@@ -8775,8 +8775,9 @@ class ModelBuilder:
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             closed: For the ``positions`` form, whether to connect the last
-                segment back to the first. Valid only with ``positions``; must
-                be None with ``rod``, which owns this topology choice.
+                segment back to the first. Repeat the first position at the end
+                to include the closing segment. When using ``rod``, pass
+                ``closed=True`` to the :class:`newton.Rod` constructor instead.
             label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
                 retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: Whether Newton automatically creates

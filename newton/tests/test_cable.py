@@ -5376,6 +5376,12 @@ def _rod_copy_and_closed_topology_preserve_contract(test, device):
     test.assertEqual(copied.youngs_modulus, rod.youngs_modulus)
     test.assertEqual(copied.poissons_ratio, rod.poissons_ratio)
 
+    edited = newton.Rod([wp.vec3(0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(2.0, 0.0, 0.0)])
+    edited.edges[0] = (0, 2)
+    edited_copy = edited.copy()
+    np.testing.assert_array_equal(edited_copy.edges, edited.edges)
+    test.assertFalse(np.shares_memory(edited_copy.edges, edited.edges))
+
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     bodies, joints = builder.add_rod(rod=copied, body_frame_origin="com")
     test.assertEqual((len(bodies), len(joints)), (3, 3))

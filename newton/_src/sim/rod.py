@@ -418,14 +418,6 @@ class Rod:
         vectors = self.points[self.edges[:, 1]] - self.points[self.edges[:, 0]]
         return np.linalg.norm(vectors, axis=1)
 
-    @property
-    def _is_ordered_chain(self) -> bool:
-        return self._is_ordered_chain_topology(self.point_count, self.edges)
-
-    @property
-    def _uses_chain_assembly(self) -> bool:
-        return self.segment_count >= 2 and self._is_ordered_chain
-
     def _resolve_section_rigidities(self) -> tuple[float, float, float, float] | None:
         """Resolve effective section rigidities EA, kGA, EI, and GJ."""
         material = self._resolve_elastic_material()
@@ -571,11 +563,11 @@ class Rod:
 
     def copy(self) -> Rod:
         """Return an independent copy of this rod."""
+        points, edges, quaternions = self._normalize_and_validate_geometry()
         copied = Rod(
-            self.points,
-            edges=None if self._edges_are_implicit or self.closed else self.edges,
-            quaternions=self.quaternions,
-            closed=self.closed,
+            points,
+            edges=edges,
+            quaternions=quaternions,
             radius=self.radius,
             youngs_modulus=self.youngs_modulus,
             poissons_ratio=self.poissons_ratio,
@@ -585,5 +577,6 @@ class Rod:
             bend_rigidity=self.bend_rigidity,
             twist_rigidity=self.twist_rigidity,
         )
+        copied.closed = self.closed
         copied._edges_are_implicit = self._edges_are_implicit
         return copied

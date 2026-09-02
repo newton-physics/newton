@@ -12,10 +12,7 @@ from typing import NamedTuple, overload
 
 import warp as wp
 
-from ..sim.rod import (
-    _compute_parallel_transport_quaternions,
-    _generate_straight_points,
-)
+from ..sim.rod import _compute_parallel_transport_quaternions
 
 
 class CableStiffness(NamedTuple):
@@ -39,7 +36,7 @@ def _legacy_straight_points(
     length: float,
     num_segments: int,
 ) -> list[wp.vec3]:
-    """Preserve the released point helper's zero-length behavior."""
+    """Preserve the released straight-point generation contract."""
     if num_segments < 1:
         raise ValueError("num_segments must be >= 1")
     length_m = float(length)
@@ -50,9 +47,9 @@ def _legacy_straight_points(
     direction_length = float(wp.length(direction))
     if not math.isfinite(direction_length) or direction_length <= 0.0:
         raise ValueError("direction must be finite and non-zero")
-    if length_m == 0.0:
-        return [start for _ in range(num_segments + 1)]
-    return _generate_straight_points(start, direction, length_m, num_segments)
+    direction_unit = direction / direction_length
+    spacing = length_m / num_segments
+    return [start + direction_unit * (spacing * i) for i in range(num_segments + 1)]
 
 
 @overload
