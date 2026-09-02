@@ -226,13 +226,14 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         gravity = solver._model_kamino.gravity
 
         # (Newton model attribute, Kamino container, Kamino attribute) for each direct alias.
+        # ``body_inv_mass`` and ``body_inv_inertia`` are intentionally excluded:
+        # Kamino owns masked copies so it can zero KINEMATIC/PROXY rows without
+        # mutating the underlying Newton model.
         aliased_properties = [
             ("gravity", gravity, "vector"),
             ("body_mass", bodies, "m_i"),
-            ("body_inv_mass", bodies, "inv_m_i"),
             ("body_com", bodies, "i_r_com_i"),
             ("body_inertia", bodies, "i_I_i"),
-            ("body_inv_inertia", bodies, "inv_i_I_i"),
             ("body_qd", bodies, "u_i_0"),
             ("joint_q", joints, "q_j_0"),
             ("joint_qd", joints, "dq_j_0"),
@@ -376,22 +377,105 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         np.testing.assert_allclose(state.body_q.numpy(), model.body_q.numpy(), atol=1e-6)
 
     def test_making_body_massless_raises(self):
-        """Reject changing an initially massive body's inverse mass to zero."""
+        """Reject changing an initially massive body's inverse mass to zero.
+
+        Zeroing both inverse mass and inertia crosses Kamino's immovability
+        boundary at runtime, which would silently corrupt the baked masking
+        and joint-culling layouts. The unified structural check surfaces this
+        via :attr:`StructuralUpdateViolation.IMMOVABILITY_FLIP`.
+        """
         model = _build_revolute()
         solver = SolverKamino(model)
         model.body_inv_mass.assign([0.0])
-
-        with self.assertRaisesRegex(RuntimeError, "massless.*recreate SolverKamino"):
-            solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
-
-    def test_making_inverse_inertia_fully_zero_raises(self):
-        """Reject changing an initially nonzero inverse inertia matrix to zero."""
-        model = _build_revolute()
-        solver = SolverKamino(model)
         model.body_inv_inertia.assign([wp.mat33f(0.0)])
 
-        with self.assertRaisesRegex(RuntimeError, "massless.*recreate SolverKamino"):
+        with self.assertRaisesRegex(RuntimeError, "immovability.*recreate SolverKamino"):
             solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+    def test_restoring_mass_on_massless_body_raises(self):
+        """Reject giving a built-massless body finite inertia at runtime.
+
+        The reverse of :meth:`test_making_body_massless_raises`: a body Kamino
+        baked as immovable via zero inertia cannot recover finite inertia at
+        runtime without recreating the solver, because its constraint rows
+        and masked ``inv_m_i`` / ``inv_i_I_i`` entries were culled or zeroed
+        at construction. Use a single body attached to world by a fixed joint
+        so SolverKamino accepts the massless build (which it otherwise rejects
+        for movable neighbors).
+        """
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        builder.begin_world()
+        bid = builder.add_link(label="massless_root", mass=0.0, inertia=wp.mat33f(0.0))
+        jid = builder.add_joint_fixed(parent=-1, child=bid)
+        builder.add_articulation([jid])
+        builder.end_world()
+        model = builder.finalize()
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=False))
+
+        inv_mass = model.body_inv_mass.numpy().copy()
+        inv_inertia = model.body_inv_inertia.numpy().copy()
+        inv_mass[bid] = 1.0
+        inv_inertia[bid] = np.eye(3, dtype=np.float32)
+        model.body_inv_mass.assign(inv_mass)
+        model.body_inv_inertia.assign(inv_inertia)
+
+        with self.assertRaisesRegex(RuntimeError, "immovability.*recreate SolverKamino"):
+            solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+    def test_setting_kinematic_flag_raises(self):
+        """Reject toggling KINEMATIC on a body that was dynamic at build."""
+        model = _build_revolute()
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=False))
+        flags = model.body_flags.numpy().copy()
+        flags[0] = int(newton.BodyFlags.KINEMATIC)
+        model.body_flags.assign(flags)
+
+        with self.assertRaisesRegex(RuntimeError, "immovability.*recreate SolverKamino"):
+            solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+    def test_clearing_kinematic_flag_raises(self):
+        """Reject clearing KINEMATIC on a body that was immovable at build.
+
+        Root bodies are the only ones ``ModelBuilder`` lets us build as
+        KINEMATIC directly, so use a single-body world attached to the world
+        via a fixed joint.
+        """
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        builder.begin_world()
+        bid = builder.add_link(
+            label="kinematic_root",
+            mass=1.0,
+            inertia=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            is_kinematic=True,
+        )
+        jid = builder.add_joint_fixed(parent=-1, child=bid)
+        builder.add_articulation([jid])
+        builder.end_world()
+        model = builder.finalize()
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=False))
+
+        flags = model.body_flags.numpy().copy()
+        flags[bid] &= ~int(newton.BodyFlags.KINEMATIC)
+        model.body_flags.assign(flags)
+
+        with self.assertRaisesRegex(RuntimeError, "immovability.*recreate SolverKamino"):
+            solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+    def test_massless_body_inertial_edit_allowed_below_threshold(self):
+        """Non-topology-changing inertial edits are allowed and refresh Kamino's masked copies."""
+        model = _build_revolute()
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=False))
+        new_inv_mass = np.array([0.5], dtype=np.float32)
+        new_inv_inertia = np.array([np.diag([2.0, 3.0, 4.0])], dtype=np.float32)
+        model.body_inv_mass.assign(new_inv_mass)
+        model.body_inv_inertia.assign(new_inv_inertia)
+
+        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+        np.testing.assert_allclose(solver._model_kamino.bodies.inv_m_i.numpy(), new_inv_mass)
+        np.testing.assert_allclose(solver._model_kamino.bodies.inv_i_I_i.numpy(), new_inv_inertia)
 
     def test_material_value_update_propagates(self):
         """Two shapes sharing one material can update it together and keep sharing it."""

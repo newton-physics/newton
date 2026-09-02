@@ -1461,8 +1461,8 @@ Soft contacts are generated automatically when particles are present. They use a
 
 .. testcode:: soft-contacts
 
-    # Set soft contact margin
-    pipeline = CollisionPipeline(model, soft_contact_margin=0.01)
+    # Set the soft-contact detection gap (slack added to the particle radius)
+    pipeline = CollisionPipeline(model, soft_contact_gap=0.01)
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
 
@@ -1481,7 +1481,8 @@ do not control collision detection performed inside a solver. For example,
 :class:`~solvers.SolverMuJoCo` generates contacts internally when
 ``use_mujoco_contacts=True`` (see :ref:`mujoco-collision-pipeline`), while
 :class:`~solvers.SolverVBD` handles particle self-contact internally according
-to ``particle_collision_detection_interval``.
+to the self-contact slot of ``collision_frequency`` /
+``collision_frequency_type``.
 
 Start by calling ``collide`` every substep when debugging contact behavior.
 This keeps contacts current as bodies move. Once the behavior is acceptable,

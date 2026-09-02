@@ -396,6 +396,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
         self.assertEqual(config.padmm.warmstart_scale, 0.9)
 
     def test_01_make_explicit(self):
+        """Construct an explicit solver configuration with requested overrides."""
         config = SolverKaminoImpl.Config(
             dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type="CR"),
             padmm=kamino_config.PADMMSolverConfig(warmstart_mode="internal", warmstart_scale=0.5),
