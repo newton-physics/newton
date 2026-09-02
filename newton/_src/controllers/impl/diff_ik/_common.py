@@ -43,11 +43,103 @@ import numpy as np
 import warp as wp
 
 from ....core.types import Devicelike
+from ....math import velocity_at_point
 
 # Cholesky pivots are clamped above this, scaled by the pivot's own
 # magnitude, so float32 cancellation noise on a near-singular matrix can't
 # drive a pivot negative (which would make the square root below NaN).
 _FLOAT32_EPS = wp.constant(wp.float32(np.finfo(np.float32).eps))
+
+
+# ---------------------------------------------------------------------------
+# Tool resolution: the model-based controller resolves each robot's tool
+# point from a Newton *site* (a body-fixed offset, ``tool_body`` +
+# ``coordinate_change_body_from_tool``), one per robot. These kernels shift
+# :func:`~newton.eval_jacobian`'s COM-referenced, world-frame output to the
+# tool point, still in world-frame coordinates. Unlike a task that also needs
+# the tool's current *twist* (e.g. a velocity-damping term), differential
+# kinematics only needs its pose, so there is no twist-shifting kernel here.
+#
+# A transform that is actively being *composed* with another is named
+# ``coordinate_change_TARGET_from_SOURCE``: given a point's coordinates in
+# the SOURCE frame, it produces that same point's coordinates in the TARGET
+# frame. Warp's ``*`` composes transforms as ``(A * B)(p) = A(B(p))`` (right
+# operand applied first), so this naming makes a chain cancel visibly, left
+# to right: ``coordinate_change_world_from_body *
+# coordinate_change_body_from_tool == tool_pose_world``.
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _tool_pose_kernel(
+    body_q: wp.array[wp.transform],  # (body_count,) coordinate_change_world_from_body per body
+    tool_body: wp.array[wp.int32],  # (robot_count,) -> body index of each robot's tool site
+    coordinate_change_body_from_tool: wp.array[wp.transform],  # (robot_count,) tool site's body-local transform
+    # outputs
+    tool_pose_world: wp.array[wp.transform],  # (robot_count,) world pose of the tool frame
+):
+    robot_idx = wp.tid()
+    tool_body_idx = tool_body[robot_idx]
+    tool_pose_world[robot_idx] = body_q[tool_body_idx] * coordinate_change_body_from_tool[robot_idx]
+
+
+@wp.kernel
+def _shift_jacobian_to_tool_kernel(
+    jacobian_com_world: wp.array3d[
+        float
+    ],  # (articulation_count, max_links*6, max_dofs) columns are twists about each link's COM point, in world coords
+    body_q: wp.array[wp.transform],  # (body_count,) coordinate_change_world_from_body per body
+    body_com_body: wp.array[wp.vec3],  # (body_count,) COM position, in the body's own local frame
+    tool_body: wp.array[wp.int32],  # (robot_count,) -> body index of each robot's tool site
+    coordinate_change_body_from_tool: wp.array[wp.transform],  # (robot_count,) tool site's body-local transform
+    robot_articulation: wp.array[wp.int32],  # (robot_count,) -> articulation index into jacobian_com_world
+    robot_link_idx: wp.array[wp.int32],  # (robot_count,) -> row-block index of the tool's link, within its articulation
+    articulation_dof_idx_of_padded_dof_idx: wp.array2d[
+        wp.int32
+    ],  # (robot_count, max_dofs) padded_dof_idx -> articulation_dof_idx, jacobian_com_world's own column numbering
+    controlled_dofs_per_robot: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    jacobian_tool_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, in world coords
+):
+    """Shift a COM-referenced Jacobian to the tool point, one output column at a time.
+
+    A controlled robot's DOFs are not necessarily the first columns of its
+    own articulation's Jacobian -- ``joints`` may select a non-prefix subset,
+    or skip an uncontrolled joint interspersed among controlled ones -- so
+    ``articulation_dof_idx_of_padded_dof_idx`` remaps each padded output
+    column (``padded_dof_idx``) to the actual column ``jacobian_com_world``
+    stores it at (``articulation_dof_idx``).
+    """
+    robot_idx, padded_dof_idx = wp.tid()
+    if padded_dof_idx >= controlled_dofs_per_robot[robot_idx]:
+        return
+    articulation_idx = robot_articulation[robot_idx]
+    link_row_start = robot_link_idx[robot_idx] * 6
+    articulation_dof_idx = articulation_dof_idx_of_padded_dof_idx[robot_idx, padded_dof_idx]
+
+    tool_body_idx = tool_body[robot_idx]
+    coordinate_change_world_from_body = body_q[tool_body_idx]
+    tool_pose_world = coordinate_change_world_from_body * coordinate_change_body_from_tool[robot_idx]
+    tool_point_world = wp.transform_get_translation(tool_pose_world)
+    body_com_world = wp.transform_point(coordinate_change_world_from_body, body_com_body[tool_body_idx])
+    com_to_tool_offset_world = tool_point_world - body_com_world
+
+    jacobian_column_com_world = wp.spatial_vector(
+        jacobian_com_world[articulation_idx, link_row_start + 0, articulation_dof_idx],
+        jacobian_com_world[articulation_idx, link_row_start + 1, articulation_dof_idx],
+        jacobian_com_world[articulation_idx, link_row_start + 2, articulation_dof_idx],
+        jacobian_com_world[articulation_idx, link_row_start + 3, articulation_dof_idx],
+        jacobian_com_world[articulation_idx, link_row_start + 4, articulation_dof_idx],
+        jacobian_com_world[articulation_idx, link_row_start + 5, articulation_dof_idx],
+    )
+    jacobian_column_tool_world = wp.spatial_vector(
+        velocity_at_point(jacobian_column_com_world, com_to_tool_offset_world),
+        wp.spatial_bottom(jacobian_column_com_world),
+    )
+    for row in range(6):
+        jacobian_tool_world[robot_idx, row, padded_dof_idx] = jacobian_column_tool_world[row]
 
 
 # ---------------------------------------------------------------------------
@@ -153,42 +245,42 @@ def _build_jjt_plus_damping_kernel(
     jjt_plus_damping[robot_idx, row, col] = total
 
 
-@wp.kernel
-def _cholesky_solve6_kernel(
-    spd_matrix: wp.array3d[float],  # (robot_count, 6, 6) symmetric positive-definite, e.g. JJᵀ + λ²I
-    rhs: wp.array[wp.spatial_vector],  # (robot_count,) right-hand side, e.g. pose_error
-    # scratch, preallocated by the caller (not valid on entry; written and then read within this kernel)
-    cholesky_factor: wp.array3d[float],  # (robot_count, 6, 6) lower-triangular L such that spd_matrix = L Lᵀ
-    # outputs
-    y: wp.array[wp.spatial_vector],  # (robot_count,) solves spd_matrix @ y = rhs
-):
-    """Solve a batch of fixed 6x6 SPD systems for a single right-hand side, via Cholesky factorization.
+@wp.func
+def _cholesky_factor6(matrix: wp.array3d[float], robot_idx: int, cholesky_factor: wp.array3d[float]):
+    """In-place lower-triangular Cholesky factorization of one batch entry of a fixed 6x6 SPD matrix.
 
-    Forward-substitutes ``L y' = rhs``, then back-substitutes ``Lᵀ y = y'``.
-    Solving directly for one right-hand side, rather than forming the full
-    inverse, is cheaper here since DLS only ever needs ``(JJᵀ + λ²I)⁻¹e``
-    applied to the single vector ``e``, never the matrix itself.
+    Writes into ``cholesky_factor[robot_idx]`` such that ``matrix[robot_idx]
+    == cholesky_factor[robot_idx] @ cholesky_factor[robot_idx]ᵀ``. Shared by
+    every kernel that needs to solve or pseudo-invert a 6x6 SPD system, so
+    the factorization itself is written once.
     """
-    robot_idx = wp.tid()
-
     for col in range(6):
-        diagonal_term = spd_matrix[robot_idx, col, col]
+        diagonal_term = matrix[robot_idx, col, col]
         for prior_col in range(col):
             diagonal_term -= cholesky_factor[robot_idx, col, prior_col] * cholesky_factor[robot_idx, col, prior_col]
-        diagonal_term = wp.max(diagonal_term, _FLOAT32_EPS * wp.max(wp.abs(spd_matrix[robot_idx, col, col]), 1.0))
+        diagonal_term = wp.max(diagonal_term, _FLOAT32_EPS * wp.max(wp.abs(matrix[robot_idx, col, col]), 1.0))
         diagonal_value = wp.sqrt(diagonal_term)
         cholesky_factor[robot_idx, col, col] = diagonal_value
         for row in range(col + 1, 6):
-            off_diagonal_term = spd_matrix[robot_idx, row, col]
+            off_diagonal_term = matrix[robot_idx, row, col]
             for prior_col in range(col):
                 off_diagonal_term -= (
                     cholesky_factor[robot_idx, row, prior_col] * cholesky_factor[robot_idx, col, prior_col]
                 )
             cholesky_factor[robot_idx, row, col] = off_diagonal_term / diagonal_value
 
+
+@wp.func
+def _cholesky_solve6(cholesky_factor: wp.array3d[float], robot_idx: int, rhs: wp.spatial_vector) -> wp.spatial_vector:
+    """Forward/back-substitute a single 6-vector right-hand side against an already-factorized Cholesky factor.
+
+    Forward-substitutes ``L y' = rhs``, then back-substitutes ``Lᵀ y = y'``.
+    Requires :func:`_cholesky_factor6` to have already written
+    ``cholesky_factor[robot_idx]``.
+    """
     forward_solution = wp.spatial_vector()
     for row in range(6):
-        right_hand_side = rhs[robot_idx][row]
+        right_hand_side = rhs[row]
         for prior_row in range(row):
             right_hand_side -= cholesky_factor[robot_idx, row, prior_row] * forward_solution[prior_row]
         forward_solution[row] = right_hand_side / cholesky_factor[robot_idx, row, row]
@@ -200,8 +292,27 @@ def _cholesky_solve6_kernel(
         for later_row in range(row + 1, 6):
             right_hand_side -= cholesky_factor[robot_idx, later_row, row] * solution[later_row]
         solution[row] = right_hand_side / cholesky_factor[robot_idx, row, row]
+    return solution
 
-    y[robot_idx] = solution
+
+@wp.kernel
+def _cholesky_solve6_kernel(
+    spd_matrix: wp.array3d[float],  # (robot_count, 6, 6) symmetric positive-definite, e.g. JJᵀ + λ²I
+    rhs: wp.array[wp.spatial_vector],  # (robot_count,) right-hand side, e.g. pose_error
+    # scratch, preallocated by the caller (not valid on entry; written and then read within this kernel)
+    cholesky_factor: wp.array3d[float],  # (robot_count, 6, 6) lower-triangular L such that spd_matrix = L Lᵀ
+    # outputs
+    y: wp.array[wp.spatial_vector],  # (robot_count,) solves spd_matrix @ y = rhs
+):
+    """Solve a batch of fixed 6x6 SPD systems for a single right-hand side, via Cholesky factorization.
+
+    Solving directly for one right-hand side, rather than forming the full
+    inverse, is cheaper here since DLS only ever needs ``(JJᵀ + λ²I)⁻¹e``
+    applied to the single vector ``e``, never the matrix itself.
+    """
+    robot_idx = wp.tid()
+    _cholesky_factor6(spd_matrix, robot_idx, cholesky_factor)
+    y[robot_idx] = _cholesky_solve6(cholesky_factor, robot_idx, rhs[robot_idx])
 
 
 @wp.kernel
@@ -232,6 +343,169 @@ def _qd_from_y_kernel(
         jacobian_column[row] = jacobian_tool_world[robot, row, slot]
 
     joint_qd_target[dof] = bandwidth[dof] * wp.dot(jacobian_column, y[robot])
+
+
+# ---------------------------------------------------------------------------
+# Null-space projector: N = I - Jᵀ @ (JJᵀ + λ_null²I)⁻¹J, a *damped* kinematic
+# (Moore-Penrose) projector. ``λ_null`` is its own damping, independent of the primary task's DLS damping.
+#
+# Damping (λ_null > 0) makes JJᵀ + λ_null²I SPD for any Jacobian, including
+# one that is not full row rank -- e.g. a redundant low-DOF arm whose task is
+# itself lower-dimensional than 6 (a 4R planar arm controlling only a 2D or
+# 3D in-plane task has exactly this shape: 4 controlled DOFs, a structurally
+# rank-deficient 6x6 JJᵀ, yet still genuinely redundant). This is the same
+# Tikhonov-regularization argument as the primary DLS solve, applied to the
+# projector instead: J @ N is no longer exactly zero, but
+# ``J @ N = λ_null²(JJᵀ + λ_null²I)⁻¹J``, a residual of order ``λ_null²`` --
+# the same order of primary-task tracking error the DLS solve itself already
+# accepts near a singularity, not a new class of imprecision.
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _jacobian_pinv_transpose_kernel(
+    jjt_plus_damping: wp.array3d[float],  # (robot_count, 6, 6) symmetric positive-definite, J @ Jᵀ + λ_null²I
+    jacobian_tool_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, world coords
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # scratch, preallocated by the caller (not valid on entry; written and then read within this kernel)
+    cholesky_factor: wp.array3d[float],  # (robot_count, 6, 6) lower-triangular L such that jjt_plus_damping = L Lᵀ
+    # outputs
+    jacobian_pinv_transpose: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) = (JJᵀ + λ_null²I)⁻¹ @ J; zero beyond dof_count
+):
+    """The damped pseudo-inverse-transpose, ``(JJᵀ + λ_null²I)⁻¹ @ J``, solved column by column.
+
+    Reduces to the exact Moore-Penrose ``(J⁺)ᵀ`` as ``λ_null → 0`` for a
+    full-row-rank ``J``. Factorizes ``jjt_plus_damping`` once per robot, then
+    solves ``jjt_plus_damping @ x = J[:, dof]`` for each controlled DOF's
+    column — the batch of solutions is exactly ``(JJᵀ + λ_null²I)⁻¹ @ J``,
+    without ever forming the inverse matrix on its own.
+    """
+    robot_idx = wp.tid()
+    _cholesky_factor6(jjt_plus_damping, robot_idx, cholesky_factor)
+    for dof in range(dof_count[robot_idx]):
+        column = wp.spatial_vector()
+        for row in range(6):
+            column[row] = jacobian_tool_world[robot_idx, row, dof]
+        solution = _cholesky_solve6(cholesky_factor, robot_idx, column)
+        for row in range(6):
+            jacobian_pinv_transpose[robot_idx, row, dof] = solution[row]
+
+
+@wp.kernel
+def _null_space_projector_kernel(
+    jacobian_tool_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, world coords
+    jacobian_pinv_transpose: wp.array3d[float],  # (robot_count, 6, max_dofs) = (JJᵀ)⁻¹ @ J; zero beyond dof_count
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    null_space_projector: wp.array3d[
+        float
+    ],  # (robot_count, max_dofs, max_dofs) = I - Jᵀ @ jacobian_pinv_transpose; untouched beyond dof_count
+):
+    """The null-space projector, ``N = I - Jᵀ @ (JJᵀ)⁻¹J``."""
+    robot_idx, row, col = wp.tid()
+    robot_dof_count = dof_count[robot_idx]
+    if row >= robot_dof_count or col >= robot_dof_count:
+        return
+
+    identity_entry = float(0.0)
+    if row == col:
+        identity_entry = 1.0
+
+    total = float(0.0)
+    for k in range(6):
+        total += jacobian_tool_world[robot_idx, k, row] * jacobian_pinv_transpose[robot_idx, k, col]
+    null_space_projector[robot_idx, row, col] = identity_entry - total
+
+
+@wp.kernel
+def _block_matrix_vector_multiply_kernel(
+    block_matrix: wp.array3d[float],  # (controlled_robot_count, max_controlled_dofs, max_controlled_dofs)
+    vec: wp.array[wp.float32],  # (total_controlled_dofs,)
+    robot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> owning robot
+    slot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> row within that robot's block
+    dof_offsets: wp.array[wp.int32],  # (controlled_robot_count,) -> first flat DOF of each robot
+    controlled_dofs_per_robot: wp.array[wp.int32],  # (controlled_robot_count,)
+    # outputs
+    out: wp.array[wp.float32],  # (total_controlled_dofs,) = block_matrix @ vec
+):
+    """Multiply a compact per-DOF vector by a padded per-robot square matrix, ``out = block_matrix @ vec``."""
+    dof = wp.tid()
+    robot = robot_of_dof[dof]
+    row = slot_of_dof[dof]
+    row_base = dof_offsets[robot]
+    acc = float(0.0)
+    for col in range(controlled_dofs_per_robot[robot]):
+        acc = acc + block_matrix[robot, row, col] * vec[row_base + col]
+    out[dof] = acc
+
+
+@wp.kernel
+def _add_term_kernel(
+    term: wp.array[wp.float32],  # (total_controlled_dofs,)
+    # outputs
+    accumulator: wp.array[wp.float32],  # (total_controlled_dofs,) += term
+):
+    dof = wp.tid()
+    accumulator[dof] = accumulator[dof] + term[dof]
+
+
+# ---------------------------------------------------------------------------
+# Null-space secondary objectives: a joint-space bias vector, projected
+# through the null-space projector above so it never disturbs the primary
+# task. Joint-limit avoidance and posture control both produce this kind of
+# bias and may be combined (added together) before projecting.
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _joint_limit_avoidance_bias_kernel(
+    joint_q: wp.array[wp.float32],  # (total_controlled_dofs,)
+    joint_pos_lower: wp.array[wp.float32],  # (total_controlled_dofs,)
+    joint_pos_upper: wp.array[wp.float32],  # (total_controlled_dofs,)
+    gain: wp.float32,  # joint-centering gain
+    margin: wp.float32,  # activation ramps 0 -> 1 as the distance to the nearer limit shrinks from margin to 0
+    # outputs
+    dq_center: wp.array[wp.float32],  # (total_controlled_dofs,) = -gain * activation * (q - q_mid)
+):
+    """Joint-limit-avoidance bias: pulls a DOF toward its range midpoint as it nears either limit.
+
+    ``activation`` is 0 while more than ``margin`` away from both limits,
+    ramps linearly to 1 at either limit, and stays 1 beyond it — a DOF
+    already past its limit gets the full correction, not none.
+    """
+    dof = wp.tid()
+    q = joint_q[dof]
+    lower = joint_pos_lower[dof]
+    upper = joint_pos_upper[dof]
+    q_mid = 0.5 * (lower + upper)
+
+    dist_to_limit = wp.min(q - lower, upper - q)
+    activation = float(0.0)
+    if dist_to_limit <= 0.0:
+        activation = 1.0
+    elif dist_to_limit < margin:
+        activation = 1.0 - dist_to_limit / margin
+
+    dq_center[dof] = -gain * activation * (q - q_mid)
+
+
+@wp.kernel
+def _posture_bias_kernel(
+    joint_q: wp.array[wp.float32],  # (total_controlled_dofs,)
+    joint_q_des_null: wp.array[wp.float32],  # (total_controlled_dofs,)
+    stiffness: wp.array[wp.float32],  # (total_controlled_dofs,)
+    # outputs
+    dq_center: wp.array[wp.float32],  # (total_controlled_dofs,) = stiffness * (joint_q_des_null - joint_q)
+):
+    """Null-space posture bias, a proportional-only joint-space pull toward ``joint_q_des_null``."""
+    dof = wp.tid()
+    dq_center[dof] = stiffness[dof] * (joint_q_des_null[dof] - joint_q[dof])
 
 
 # ---------------------------------------------------------------------------

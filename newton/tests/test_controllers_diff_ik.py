@@ -20,13 +20,21 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.controllers.impl.diff_ik._common import (
+    _add_term_kernel,
+    _block_matrix_vector_multiply_kernel,
     _build_jjt_plus_damping_kernel,
     _cholesky_solve6_kernel,
     _integrate_position_kernel,
+    _jacobian_pinv_transpose_kernel,
+    _joint_limit_avoidance_bias_kernel,
+    _null_space_projector_kernel,
     _pose_error_kernel,
+    _posture_bias_kernel,
     _qd_from_y_kernel,
 )
+from newton._src.controllers.impl.diff_ik.model_based import ControllerDiffIK
 from newton._src.controllers.impl.diff_ik.model_free import ControllerDiffIKModelFree
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -505,6 +513,201 @@ def test_dls_one_dof_revolute_arm_matches_analytical_solution(test: unittest.Tes
 
 
 # ---------------------------------------------------------------------------
+# Null-space projector: _jacobian_pinv_transpose_kernel + _null_space_projector_kernel
+# ---------------------------------------------------------------------------
+
+
+def test_jacobian_pinv_transpose_matches_numpy_pinv(test: unittest.TestCase, device):
+    rng = np.random.default_rng(8)
+    max_dofs = 7
+    n_joints = 7
+    jacobian_np = rng.normal(size=(1, 6, max_dofs)).astype(np.float32)
+
+    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
+    dof_count = wp.array([n_joints], dtype=wp.int32, device=device)
+    zero_damping = wp.zeros(1, dtype=wp.float32, device=device)
+    jjt = wp.zeros((1, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _build_jjt_plus_damping_kernel,
+        dim=(1, 6, 6),
+        inputs=[jacobian, dof_count, zero_damping],
+        outputs=[jjt],
+        device=device,
+    )
+
+    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
+    jacobian_pinv_transpose = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
+    wp.launch(
+        _jacobian_pinv_transpose_kernel,
+        dim=1,
+        inputs=[jjt, jacobian, dof_count, cholesky_factor],
+        outputs=[jacobian_pinv_transpose],
+        device=device,
+    )
+
+    j64 = jacobian_np[0].astype(np.float64)
+    expected = np.linalg.pinv(j64).T  # (JJᵀ)⁻¹ @ J == (J⁺)ᵀ for full-row-rank J
+    np.testing.assert_allclose(jacobian_pinv_transpose.numpy()[0], expected, atol=1e-3)
+
+
+def test_null_space_projector_zeroes_task_response(test: unittest.TestCase, device):
+    """J @ N must be exactly zero: a null-space velocity never disturbs the primary task."""
+    rng = np.random.default_rng(9)
+    max_dofs = 7
+    n_joints = 7
+    jacobian_np = rng.normal(size=(1, 6, max_dofs)).astype(np.float32)
+
+    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
+    dof_count = wp.array([n_joints], dtype=wp.int32, device=device)
+    zero_damping = wp.zeros(1, dtype=wp.float32, device=device)
+    jjt = wp.zeros((1, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _build_jjt_plus_damping_kernel,
+        dim=(1, 6, 6),
+        inputs=[jacobian, dof_count, zero_damping],
+        outputs=[jjt],
+        device=device,
+    )
+    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
+    jacobian_pinv_transpose = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
+    wp.launch(
+        _jacobian_pinv_transpose_kernel,
+        dim=1,
+        inputs=[jjt, jacobian, dof_count, cholesky_factor],
+        outputs=[jacobian_pinv_transpose],
+        device=device,
+    )
+    projector = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
+    wp.launch(
+        _null_space_projector_kernel,
+        dim=(1, max_dofs, max_dofs),
+        inputs=[jacobian, jacobian_pinv_transpose, dof_count],
+        outputs=[projector],
+        device=device,
+    )
+
+    j64 = jacobian_np[0].astype(np.float64)
+    n64 = projector.numpy()[0].astype(np.float64)
+    np.testing.assert_allclose(j64 @ n64, np.zeros((6, n_joints)), atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# _block_matrix_vector_multiply_kernel, _add_term_kernel
+# ---------------------------------------------------------------------------
+
+
+def test_block_matrix_vector_multiply_matches_formula(test: unittest.TestCase, device):
+    rng = np.random.default_rng(10)
+    dof_counts = [2, 3]
+    max_dofs = 3
+    block_matrix_np = np.zeros((2, max_dofs, max_dofs), dtype=np.float32)
+    for robot_idx, n in enumerate(dof_counts):
+        block_matrix_np[robot_idx, :n, :n] = rng.normal(size=(n, n))
+    vec_np = rng.normal(size=sum(dof_counts)).astype(np.float32)
+
+    block_matrix = wp.array3d(block_matrix_np, dtype=wp.float32, device=device)
+    vec = wp.array(vec_np, dtype=wp.float32, device=device)
+    robot_of_dof = wp.array(np.repeat(np.arange(2, dtype=np.int32), dof_counts), dtype=wp.int32, device=device)
+    slot_of_dof = wp.array(
+        np.concatenate([np.arange(n, dtype=np.int32) for n in dof_counts]), dtype=wp.int32, device=device
+    )
+    offsets_np = np.zeros(2, dtype=np.int32)
+    offsets_np[1] = dof_counts[0]
+    dof_offsets = wp.array(offsets_np, dtype=wp.int32, device=device)
+    controlled_dofs_per_robot = wp.array(dof_counts, dtype=wp.int32, device=device)
+    out = wp.zeros(sum(dof_counts), dtype=wp.float32, device=device)
+    wp.launch(
+        _block_matrix_vector_multiply_kernel,
+        dim=sum(dof_counts),
+        inputs=[block_matrix, vec, robot_of_dof, slot_of_dof, dof_offsets, controlled_dofs_per_robot],
+        outputs=[out],
+        device=device,
+    )
+
+    expected = np.concatenate(
+        [
+            block_matrix_np[0, : dof_counts[0], : dof_counts[0]] @ vec_np[: dof_counts[0]],
+            block_matrix_np[1, : dof_counts[1], : dof_counts[1]] @ vec_np[dof_counts[0] :],
+        ]
+    )
+    np.testing.assert_allclose(out.numpy(), expected, atol=1e-4)
+
+
+def test_add_term_accumulates(test: unittest.TestCase, device):
+    accumulator = wp.array([1.0, 2.0, 3.0], dtype=wp.float32, device=device)
+    term = wp.array([0.5, -1.0, 2.0], dtype=wp.float32, device=device)
+    wp.launch(_add_term_kernel, dim=3, inputs=[term], outputs=[accumulator], device=device)
+    np.testing.assert_allclose(accumulator.numpy(), [1.5, 1.0, 5.0], atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# _joint_limit_avoidance_bias_kernel, _posture_bias_kernel
+# ---------------------------------------------------------------------------
+
+
+def test_joint_limit_avoidance_zero_far_from_limits(test: unittest.TestCase, device):
+    joint_q = wp.array([0.0], dtype=wp.float32, device=device)
+    lower = wp.array([-1.0], dtype=wp.float32, device=device)
+    upper = wp.array([1.0], dtype=wp.float32, device=device)
+    dq_center = wp.zeros(1, dtype=wp.float32, device=device)
+    wp.launch(
+        _joint_limit_avoidance_bias_kernel,
+        dim=1,
+        inputs=[joint_q, lower, upper, 5.0, 0.2],
+        outputs=[dq_center],
+        device=device,
+    )
+    np.testing.assert_allclose(dq_center.numpy(), [0.0], atol=1e-6)
+
+
+def test_joint_limit_avoidance_full_correction_at_limit(test: unittest.TestCase, device):
+    """At (or past) a limit, activation saturates to 1: bias = -gain * (q - q_mid)."""
+    joint_q = wp.array([1.0], dtype=wp.float32, device=device)  # exactly at the upper limit
+    lower = wp.array([-1.0], dtype=wp.float32, device=device)
+    upper = wp.array([1.0], dtype=wp.float32, device=device)
+    gain = 5.0
+    dq_center = wp.zeros(1, dtype=wp.float32, device=device)
+    wp.launch(
+        _joint_limit_avoidance_bias_kernel,
+        dim=1,
+        inputs=[joint_q, lower, upper, gain, 0.2],
+        outputs=[dq_center],
+        device=device,
+    )
+    # q_mid = 0, so bias = -gain * (1.0 - 0.0) = -gain, pulling back toward the midpoint.
+    np.testing.assert_allclose(dq_center.numpy(), [-gain], atol=1e-6)
+
+
+def test_joint_limit_avoidance_ramps_linearly_in_margin(test: unittest.TestCase, device):
+    """Halfway into the margin, activation must be exactly 0.5."""
+    margin = 0.2
+    joint_q = wp.array([1.0 - margin / 2.0], dtype=wp.float32, device=device)  # margin/2 from the upper limit
+    lower = wp.array([-1.0], dtype=wp.float32, device=device)
+    upper = wp.array([1.0], dtype=wp.float32, device=device)
+    gain = 4.0
+    dq_center = wp.zeros(1, dtype=wp.float32, device=device)
+    wp.launch(
+        _joint_limit_avoidance_bias_kernel,
+        dim=1,
+        inputs=[joint_q, lower, upper, gain, margin],
+        outputs=[dq_center],
+        device=device,
+    )
+    q = 1.0 - margin / 2.0
+    expected = -gain * 0.5 * (q - 0.0)
+    np.testing.assert_allclose(dq_center.numpy(), [expected], atol=1e-6)
+
+
+def test_posture_bias_matches_formula(test: unittest.TestCase, device):
+    joint_q = wp.array([0.0, 1.0], dtype=wp.float32, device=device)
+    q_des_null = wp.array([0.5, 0.5], dtype=wp.float32, device=device)
+    stiffness = wp.array([2.0, 3.0], dtype=wp.float32, device=device)
+    dq_center = wp.zeros(2, dtype=wp.float32, device=device)
+    wp.launch(_posture_bias_kernel, dim=2, inputs=[joint_q, q_des_null, stiffness], outputs=[dq_center], device=device)
+    np.testing.assert_allclose(dq_center.numpy(), [1.0, -1.5], atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
 # _integrate_position_kernel
 # ---------------------------------------------------------------------------
 
@@ -601,6 +804,46 @@ add_function_test(
     "test_dls_one_dof_revolute_arm_matches_analytical_solution",
     test_dls_one_dof_revolute_arm_matches_analytical_solution,
     devices=devices,
+)
+add_function_test(
+    TestDiffIkKernels,
+    "test_jacobian_pinv_transpose_matches_numpy_pinv",
+    test_jacobian_pinv_transpose_matches_numpy_pinv,
+    devices=devices,
+)
+add_function_test(
+    TestDiffIkKernels,
+    "test_null_space_projector_zeroes_task_response",
+    test_null_space_projector_zeroes_task_response,
+    devices=devices,
+)
+add_function_test(
+    TestDiffIkKernels,
+    "test_block_matrix_vector_multiply_matches_formula",
+    test_block_matrix_vector_multiply_matches_formula,
+    devices=devices,
+)
+add_function_test(TestDiffIkKernels, "test_add_term_accumulates", test_add_term_accumulates, devices=devices)
+add_function_test(
+    TestDiffIkKernels,
+    "test_joint_limit_avoidance_zero_far_from_limits",
+    test_joint_limit_avoidance_zero_far_from_limits,
+    devices=devices,
+)
+add_function_test(
+    TestDiffIkKernels,
+    "test_joint_limit_avoidance_full_correction_at_limit",
+    test_joint_limit_avoidance_full_correction_at_limit,
+    devices=devices,
+)
+add_function_test(
+    TestDiffIkKernels,
+    "test_joint_limit_avoidance_ramps_linearly_in_margin",
+    test_joint_limit_avoidance_ramps_linearly_in_margin,
+    devices=devices,
+)
+add_function_test(
+    TestDiffIkKernels, "test_posture_bias_matches_formula", test_posture_bias_matches_formula, devices=devices
 )
 add_function_test(
     TestDiffIkKernels, "test_integrate_position_euler_step", test_integrate_position_euler_step, devices=devices
@@ -1075,6 +1318,630 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         # a shape mismatch instead of succeeding.
         self.assertEqual(ctrl.total_controlled_dofs, 6)
         np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(6), atol=1e-6)
+
+    def test_null_space_control_allowed_with_fewer_than_six_dofs_when_damped(self):
+        """A redundant low-DOF arm (e.g. a planar 4R arm) may enable null-space control as long
+        as null_space_damping > 0 regularizes the otherwise rank-deficient JJᵀ."""
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([4], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=1.0,
+            joint_limit_avoidance_margin=0.1,
+            joint_pos_lower=wp.full(4, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(4, 1.0, dtype=wp.float32, device=device),
+            null_space_damping=0.5,
+            device=device,
+        )
+        # A planar task: only the x, y, and yaw rows of the Jacobian are
+        # nonzero, so JJᵀ is structurally rank-deficient (rank <= 3) without
+        # damping — undamped, this would produce a physically meaningless
+        # (or NaN) projector; the whole point of null_space_damping.
+        rng = np.random.default_rng(15)
+        jacobian_np = np.zeros((1, 6, 4), dtype=np.float32)
+        jacobian_np[0, [0, 1, 5], :] = rng.normal(size=(3, 4))
+        pose = _identity_transform(1, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.array([0.99, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        qd = outputs.joint_qd_target.numpy()
+        self.assertTrue(np.all(np.isfinite(qd)))
+        self.assertLess(float(qd[0]), 0.0)  # still pulls DOF 0 away from its limit
+
+    def test_null_space_damping_rejected_without_null_space_enabled(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                null_space_damping=0.1,
+                device=device,
+            )
+
+    def test_baked_zero_null_space_damping_rejected_for_underactuated_robot(self):
+        """A baked null_space_damping <= 0 for a robot with fewer than 6 DOFs raises at construction."""
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([4], device),
+                bandwidth=1.0,
+                damping=0.1,
+                use_joint_limit_avoidance=True,
+                joint_limit_avoidance_gain=1.0,
+                joint_limit_avoidance_margin=0.1,
+                joint_pos_lower=wp.full(4, -1.0, dtype=wp.float32, device=device),
+                joint_pos_upper=wp.full(4, 1.0, dtype=wp.float32, device=device),
+                null_space_damping=0.0,
+                device=device,
+            )
+
+    def test_baked_zero_null_space_damping_allowed_for_six_dof_robot(self):
+        """A baked null_space_damping of exactly 0 is fine when every robot has >= 6 controlled DOFs."""
+        device = wp.get_device()
+        ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=1.0,
+            joint_limit_avoidance_margin=0.1,
+            joint_pos_lower=wp.full(6, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(6, 1.0, dtype=wp.float32, device=device),
+            null_space_damping=0.0,
+            device=device,
+        )
+
+    def test_live_null_space_damping_port_matches_baked(self):
+        """A live null_space_damping input must produce the same result as the equivalent baked value."""
+        device = wp.get_device()
+        rng = np.random.default_rng(16)
+        jacobian_np = rng.normal(size=(1, 6, 7)).astype(np.float32)
+        pose = _identity_transform(1, device)
+
+        baked_ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([7], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=1.0,
+            joint_limit_avoidance_margin=0.1,
+            joint_pos_lower=wp.full(7, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(7, 1.0, dtype=wp.float32, device=device),
+            null_space_damping=0.3,
+            device=device,
+        )
+        baked_inputs = baked_ctrl.input()
+        baked_outputs = baked_ctrl.output()
+        baked_inputs.joint_q = wp.array([0.99, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        baked_inputs.tool_pose_world = pose
+        baked_inputs.desired_tool_pose_world = pose
+        baked_inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        baked_ctrl.step(inputs=baked_inputs, outputs=baked_outputs, dt=0.01)
+
+        live_ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([7], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=1.0,
+            joint_limit_avoidance_margin=0.1,
+            joint_pos_lower=wp.full(7, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(7, 1.0, dtype=wp.float32, device=device),
+            null_space_damping=None,
+            device=device,
+        )
+        live_inputs = live_ctrl.input()
+        live_outputs = live_ctrl.output()
+        live_inputs.joint_q = wp.array([0.99, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        live_inputs.tool_pose_world = pose
+        live_inputs.desired_tool_pose_world = pose
+        live_inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        live_inputs.null_space_damping = wp.full(1, 0.3, dtype=wp.float32, device=device)
+        live_ctrl.step(inputs=live_inputs, outputs=live_outputs, dt=0.01)
+
+        np.testing.assert_allclose(
+            live_outputs.joint_qd_target.numpy(), baked_outputs.joint_qd_target.numpy(), atol=1e-5
+        )
+
+    def test_joint_limit_avoidance_requires_positive_gain(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                use_joint_limit_avoidance=True,
+                joint_limit_avoidance_gain=0.0,
+                joint_limit_avoidance_margin=0.1,
+                joint_pos_lower=wp.full(6, -1.0, dtype=wp.float32, device=device),
+                joint_pos_upper=wp.full(6, 1.0, dtype=wp.float32, device=device),
+                device=device,
+            )
+
+    def test_joint_limit_avoidance_requires_limits(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                use_joint_limit_avoidance=True,
+                joint_limit_avoidance_gain=1.0,
+                joint_limit_avoidance_margin=0.1,
+                device=device,
+            )
+
+    def test_joint_pos_limits_rejected_without_avoidance_enabled(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                joint_pos_lower=wp.full(6, -1.0, dtype=wp.float32, device=device),
+                joint_pos_upper=wp.full(6, 1.0, dtype=wp.float32, device=device),
+                device=device,
+            )
+
+    def test_null_space_stiffness_rejected_without_posture_enabled(self):
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerDiffIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([6], device),
+                bandwidth=1.0,
+                damping=0.1,
+                null_space_stiffness=1.0,
+                device=device,
+            )
+
+    def test_null_space_velocity_does_not_disturb_primary_task(self):
+        """With zero primary-task error, the entire qd output must satisfy J @ qd == 0."""
+        device = wp.get_device()
+        rng = np.random.default_rng(11)
+        jacobian_np = rng.normal(size=(1, 6, 7)).astype(np.float32)
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([7], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=2.0,
+            joint_limit_avoidance_margin=0.3,
+            joint_pos_lower=wp.full(7, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(7, 1.0, dtype=wp.float32, device=device),
+            use_null_space_posture_control=True,
+            null_space_stiffness=1.0,
+            device=device,
+        )
+        pose = _identity_transform(1, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.array([0.99, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        inputs.q_des_null = wp.array([0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+        np.testing.assert_allclose(jacobian_np[0].astype(np.float64) @ qd.astype(np.float64), np.zeros(6), atol=1e-3)
+
+    def test_joint_limit_avoidance_pulls_away_from_limit(self):
+        device = wp.get_device()
+        rng = np.random.default_rng(12)
+        jacobian_np = rng.normal(size=(1, 6, 7)).astype(np.float32)
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([7], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=2.0,
+            joint_limit_avoidance_margin=0.3,
+            joint_pos_lower=wp.full(7, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(7, 1.0, dtype=wp.float32, device=device),
+            device=device,
+        )
+        pose = _identity_transform(1, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        # DOF 0 is nearly at its upper limit; every other DOF is centered.
+        inputs.joint_q = wp.array([0.99, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        self.assertLess(float(outputs.joint_qd_target.numpy()[0]), 0.0)
+
+    def test_null_space_posture_pulls_toward_target(self):
+        device = wp.get_device()
+        rng = np.random.default_rng(13)
+        jacobian_np = rng.normal(size=(1, 6, 7)).astype(np.float32)
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([7], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_null_space_posture_control=True,
+            null_space_stiffness=1.0,
+            device=device,
+        )
+        pose = _identity_transform(1, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(7, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        inputs.q_des_null = wp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        self.assertGreater(float(outputs.joint_qd_target.numpy()[0]), 0.0)
+
+    def test_disabled_q_des_null_written_raises(self):
+        device = wp.get_device()
+        ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = _identity_transform(1, device)
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        inputs.q_des_null = wp.zeros(6, dtype=wp.float32, device=device)
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+    def test_live_null_space_stiffness_port_matches_baked(self):
+        """A live null_space_stiffness input must produce the same result as the equivalent baked value."""
+        device = wp.get_device()
+        rng = np.random.default_rng(14)
+        jacobian_np = rng.normal(size=(1, 6, 7)).astype(np.float32)
+        pose = _identity_transform(1, device)
+        q_des_null = wp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+        jacobian = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+
+        baked_ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([7], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_null_space_posture_control=True,
+            null_space_stiffness=5.0,
+            device=device,
+        )
+        baked_inputs = baked_ctrl.input()
+        baked_outputs = baked_ctrl.output()
+        baked_inputs.joint_q = wp.zeros(7, dtype=wp.float32, device=device)
+        baked_inputs.tool_pose_world = pose
+        baked_inputs.desired_tool_pose_world = pose
+        baked_inputs.jacobian_tool_world = jacobian
+        baked_inputs.q_des_null = q_des_null
+        baked_ctrl.step(inputs=baked_inputs, outputs=baked_outputs, dt=0.01)
+
+        live_ctrl = ControllerDiffIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([7], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_null_space_posture_control=True,
+            null_space_stiffness=None,
+            device=device,
+        )
+        live_inputs = live_ctrl.input()
+        live_outputs = live_ctrl.output()
+        live_inputs.joint_q = wp.zeros(7, dtype=wp.float32, device=device)
+        live_inputs.tool_pose_world = pose
+        live_inputs.desired_tool_pose_world = pose
+        live_inputs.jacobian_tool_world = jacobian
+        live_inputs.q_des_null = q_des_null
+        live_inputs.null_space_stiffness = wp.full(7, 5.0, dtype=wp.float32, device=device)
+        live_ctrl.step(inputs=live_inputs, outputs=live_outputs, dt=0.01)
+
+        np.testing.assert_allclose(
+            live_outputs.joint_qd_target.numpy(), baked_outputs.joint_qd_target.numpy(), atol=1e-5
+        )
+
+
+# ---------------------------------------------------------------------------
+# ControllerDiffIK
+# ---------------------------------------------------------------------------
+
+
+def _build_two_link_arm_with_tool_site(device):
+    builder = newton.ModelBuilder()
+    link0 = builder.add_link()
+    link1 = builder.add_link()
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=link0,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    j1 = builder.add_joint_revolute(
+        parent=link0,
+        child=link1,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0)),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([j0, j1], label="arm")
+    builder.add_site(link1, label="tip", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+    return builder.finalize(device=device)
+
+
+def _build_two_robot_arms_with_tool_sites(device):
+    """Robot 0: 1-DOF arm ("tool0"). Robot 1: 2-DOF arm ("tool1")."""
+    builder = newton.ModelBuilder()
+    l0 = builder.add_link()
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=l0,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([j0], label="robot0")
+    builder.add_site(l0, label="tool0", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+
+    l1a = builder.add_link()
+    l1b = builder.add_link()
+    j1a = builder.add_joint_revolute(
+        parent=-1,
+        child=l1a,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform(p=wp.vec3(3.0, 0.0, 0.0)),
+        child_xform=wp.transform_identity(),
+    )
+    j1b = builder.add_joint_revolute(
+        parent=l1a,
+        child=l1b,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0)),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([j1a, j1b], label="robot1")
+    builder.add_site(l1b, label="tool1", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+    return builder.finalize(device=device)
+
+
+def _build_seven_dof_chain_with_tool_site(device):
+    """A redundant 7-revolute-joint chain (task is 6D, so 1 DOF of null-space freedom)."""
+    builder = newton.ModelBuilder()
+    parent = -1
+    parent_xform = wp.transform_identity()
+    links = []
+    axes = [
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(0.0, 1.0, 0.0),
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(0.0, 1.0, 0.0),
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(0.0, 1.0, 0.0),
+        wp.vec3(0.0, 0.0, 1.0),
+    ]
+    joints = []
+    for axis in axes:
+        link = builder.add_link()
+        j = builder.add_joint_revolute(
+            parent=parent,
+            child=link,
+            axis=axis,
+            parent_xform=parent_xform,
+            child_xform=wp.transform_identity(),
+        )
+        joints.append(j)
+        links.append(link)
+        parent = link
+        parent_xform = wp.transform(p=wp.vec3(0.0, 0.0, 0.2))
+    builder.add_articulation(joints, label="arm")
+    builder.add_site(links[-1], label="tip", xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.2), q=wp.quat_identity()))
+    return builder.finalize(device=device)
+
+
+class TestControllerDiffIK(unittest.TestCase):
+    def test_zero_error_gives_zero_velocity(self):
+        device = wp.get_device()
+        model = _build_two_link_arm_with_tool_site(device)
+        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=device)
+        inputs.joint_qd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
+        # Home pose: two unit links along +x -> tip at (2, 0, 0).
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(2.0, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(2), atol=1e-5)
+
+    def test_step_resolves_tool_pose_matching_forward_kinematics(self):
+        device = wp.get_device()
+        model = _build_two_link_arm_with_tool_site(device)
+        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        joint_q = np.array([0.3, -0.4], dtype=np.float32)
+        inputs.joint_q = wp.array(joint_q, dtype=wp.float32, device=device)
+        inputs.joint_qd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
+        # Feed the current tool pose back as the target: zero pose error means
+        # the controller's own FK-resolved tool pose must equal the
+        # independently-computed one, else qd would be nonzero.
+        state = model.state()
+        newton.eval_fk(
+            model,
+            wp.array(joint_q, dtype=wp.float32, device=device),
+            wp.zeros(2, dtype=wp.float32, device=device),
+            state,
+        )
+        tip_pose = state.body_q.numpy()[1]
+        tip_world = wp.transform(*tip_pose) * wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity())
+        inputs.desired_tool_pose_world = wp.array([tip_world], dtype=wp.transform, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(2), atol=1e-4)
+
+    def test_two_link_arm_converges_to_target(self):
+        device = wp.get_device()
+        model = _build_two_link_arm_with_tool_site(device)
+        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=0.05)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        target = wp.array(
+            [wp.transform(p=wp.vec3(1.2, 0.8, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        q = np.zeros(2, dtype=np.float32)
+        dt = 0.05
+        for _ in range(200):
+            inputs.joint_q = wp.array(q, dtype=wp.float32, device=device)
+            inputs.joint_qd = wp.zeros(2, dtype=wp.float32, device=device)
+            inputs.desired_tool_pose_world = target
+            ctrl.step(inputs=inputs, outputs=outputs, dt=dt)
+            q = outputs.joint_q_target.numpy().copy()
+
+        state = model.state()
+        newton.eval_fk(
+            model, wp.array(q, dtype=wp.float32, device=device), wp.zeros(2, dtype=wp.float32, device=device), state
+        )
+        tip_pos = wp.transform_point(wp.transform(*state.body_q.numpy()[1]), wp.vec3(1.0, 0.0, 0.0))
+        # DLS damping (λ=0.05) leaves a small steady-state tracking bias by
+        # design, not just a numerical-convergence tolerance.
+        np.testing.assert_allclose(np.array(tip_pos), [1.2, 0.8, 0.0], atol=0.1)
+
+    def test_heterogeneous_fleet_selection(self):
+        device = wp.get_device()
+        model = _build_two_robot_arms_with_tool_sites(device)
+        ctrl = ControllerDiffIK(model, tool_sites=["tool0", "tool1"], bandwidth=1.0, damping=0.1)
+        self.assertEqual(ctrl.controlled_robot_count, 2)
+        self.assertEqual(ctrl.total_controlled_dofs, 3)
+        self.assertEqual(ctrl.max_controlled_dofs, 2)
+
+    def test_subset_of_articulations(self):
+        device = wp.get_device()
+        model = _build_two_robot_arms_with_tool_sites(device)
+        ctrl = ControllerDiffIK(model, articulations="robot0", tool_sites="tool0", bandwidth=1.0, damping=0.1)
+        self.assertEqual(ctrl.controlled_robot_count, 1)
+        self.assertEqual(ctrl.total_controlled_dofs, 1)
+
+    def test_tool_pattern_matching_multiple_sites_on_one_robot_raises(self):
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0], label="arm")
+        builder.add_site(link0, label="tool_a", xform=wp.transform_identity())
+        builder.add_site(link0, label="tool_b", xform=wp.transform_identity())
+        model = builder.finalize(device=device)
+        with self.assertRaises(ValueError):
+            ControllerDiffIK(model, tool_sites=["tool_a", "tool_b"], bandwidth=1.0, damping=0.1)
+
+    def test_tool_site_missing_raises(self):
+        device = wp.get_device()
+        model = _build_two_link_arm_with_tool_site(device)
+        with self.assertRaises(ValueError):
+            ControllerDiffIK(model, tool_sites="nonexistent", bandwidth=1.0, damping=0.1)
+
+    def test_is_graphable(self):
+        device = wp.get_device()
+        model = _build_two_link_arm_with_tool_site(device)
+        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
+        self.assertTrue(ctrl.is_graphable())
+
+    def test_live_bandwidth_and_damping_forwarded(self):
+        device = wp.get_device()
+        model = _build_two_link_arm_with_tool_site(device)
+        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=None, damping=None)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=device)
+        inputs.joint_qd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(1.9, 0.2, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.bandwidth = wp.full(2, 3.0, dtype=wp.float32, device=device)
+        inputs.damping = wp.full(1, 0.2, dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        self.assertTrue(np.all(np.isfinite(outputs.joint_qd_target.numpy())))
+
+    def test_disabled_bandwidth_port_written_raises(self):
+        device = wp.get_device()
+        model = _build_two_link_arm_with_tool_site(device)
+        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=device)
+        inputs.joint_qd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=device)
+        inputs.desired_tool_pose_world = wp.array(
+            [wp.transform(p=wp.vec3(2.0, 0.0, 0.0), q=wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        inputs.bandwidth = wp.full(2, 1.0, dtype=wp.float32, device=device)
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+    def test_null_space_velocity_does_not_disturb_primary_task_for_redundant_chain(self):
+        """With zero primary-task error, the entire qd output must satisfy J @ qd == 0."""
+        device = wp.get_device()
+        model = _build_seven_dof_chain_with_tool_site(device)
+        ctrl = ControllerDiffIK(
+            model,
+            tool_sites="tip",
+            bandwidth=1.0,
+            damping=0.1,
+            use_null_space_posture_control=True,
+            null_space_stiffness=1.0,
+            null_space_damping=0.1,
+        )
+        joint_q = np.full(7, 0.3, dtype=np.float32)
+        state = model.state()
+        newton.eval_fk(
+            model,
+            wp.array(joint_q, dtype=wp.float32, device=device),
+            wp.zeros(7, dtype=wp.float32, device=device),
+            state,
+        )
+        tip_pose = state.body_q.numpy()[6]
+        tip_world = wp.transform(*tip_pose) * wp.transform(p=wp.vec3(0.0, 0.0, 0.2), q=wp.quat_identity())
+
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.array(joint_q, dtype=wp.float32, device=device)
+        inputs.joint_qd = wp.zeros(7, dtype=wp.float32, device=device)
+        inputs.desired_tool_pose_world = wp.array([tip_world], dtype=wp.transform, device=device)
+        inputs.q_des_null = wp.array(np.full(7, 0.5, dtype=np.float32), dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
+        qd = outputs.joint_qd_target.numpy()
+        self.assertTrue(np.any(np.abs(qd) > 1e-4))  # the null-space term did something
+
+        # Verify J @ qd == 0 via a finite-difference tip-position Jacobian,
+        # computed independently of the controller (no internal state read).
+        def _tip_position(q_np):
+            s = model.state()
+            newton.eval_fk(
+                model, wp.array(q_np, dtype=wp.float32, device=device), wp.zeros(7, dtype=wp.float32, device=device), s
+            )
+            pose = wp.transform(*s.body_q.numpy()[6])
+            return np.array(wp.transform_point(pose, wp.vec3(0.0, 0.0, 0.2)))
+
+        eps = 1e-4
+        jacobian_pos = np.zeros((3, 7), dtype=np.float64)
+        for i in range(7):
+            q_plus = joint_q.copy()
+            q_plus[i] += eps
+            q_minus = joint_q.copy()
+            q_minus[i] -= eps
+            jacobian_pos[:, i] = (_tip_position(q_plus) - _tip_position(q_minus)) / (2 * eps)
+
+        position_velocity = jacobian_pos @ qd.astype(np.float64)
+        np.testing.assert_allclose(position_velocity, np.zeros(3), atol=1e-2)
 
 
 if __name__ == "__main__":

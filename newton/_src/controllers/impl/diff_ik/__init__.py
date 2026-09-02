@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+from .model_based import ControllerDiffIK
 from .model_free import ControllerDiffIKModelFree
 
 __all__ = [
+    "ControllerDiffIK",
     "ControllerDiffIKModelFree",
 ]

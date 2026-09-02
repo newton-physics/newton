@@ -20,6 +20,23 @@ implemented so far):
 
 where ``J`` is the tool-point Jacobian, ``λ`` the damping, and ``e`` the 6D
 pose error (position, then axis-angle orientation).
+
+A redundant robot (more controlled DOFs than the 6D task needs) may also
+project a secondary joint-space objective — joint-limit avoidance and/or a
+posture target — through a damped kinematic (Moore-Penrose) null-space
+projector ``N = I - Jᵀ(JJᵀ + λ_null²I)⁻¹J``, so it (approximately) never
+disturbs the primary task:
+
+    q̇_target += N @ dq_center
+
+where ``dq_center`` is the sum of whichever secondary-objective biases are
+enabled. ``λ_null`` (``null_space_damping``) is independent of the primary
+task's DLS damping, and — like that damping — makes the projector
+well-defined for any Jacobian, including a structurally rank-deficient one
+(e.g. a redundant low-DOF arm, such as a 4R planar arm, whose task is itself
+lower-dimensional than 6D). The tradeoff is the same kind the primary solve
+already accepts: ``J @ N`` is no longer exactly zero, but a residual of
+order ``λ_null²``.
 """
 
 from __future__ import annotations
@@ -32,10 +49,16 @@ import warp as wp
 from ...controller import ControllerBase
 from ...utils import _validate_array
 from ._common import (
+    _add_term_kernel,
+    _block_matrix_vector_multiply_kernel,
     _build_jjt_plus_damping_kernel,
     _cholesky_solve6_kernel,
     _integrate_position_kernel,
+    _jacobian_pinv_transpose_kernel,
+    _joint_limit_avoidance_bias_kernel,
+    _null_space_projector_kernel,
     _pose_error_kernel,
+    _posture_bias_kernel,
     _qd_from_y_kernel,
     _read_port,
     _scatter_port_kernel,
@@ -95,6 +118,45 @@ class ControllerDiffIKModelFree(ControllerBase):
             [controlled_robot_count] to set them individually, or ``None``
             to read ``inputs.damping`` each step. ``λ = 0`` reduces the
             solve to the ordinary Moore-Penrose pseudo-inverse.
+        use_joint_limit_avoidance: Project a joint-limit-avoidance bias
+            through the null-space projector.
+        joint_limit_avoidance_gain: Joint-centering gain, applied once a DOF
+            comes within ``joint_limit_avoidance_margin`` of either limit.
+            Required (and must be positive) when
+            ``use_joint_limit_avoidance=True``.
+        joint_limit_avoidance_margin: Distance from either limit at which
+            the avoidance bias starts ramping in, same units as
+            ``joint_pos_lower``/``joint_pos_upper``. Required (and must be
+            positive) when ``use_joint_limit_avoidance=True``.
+        joint_pos_lower: Lower joint position limit per controlled DOF,
+            shape [total_controlled_dofs]. Required when
+            ``use_joint_limit_avoidance=True``; baked at construction, not a
+            live port.
+        joint_pos_upper: Upper joint position limit per controlled DOF,
+            shape [total_controlled_dofs]. Required when
+            ``use_joint_limit_avoidance=True``; baked at construction, not a
+            live port.
+        use_null_space_posture_control: Project a proportional pull toward
+            ``inputs.q_des_null`` through the null-space projector.
+        null_space_stiffness: Posture-control proportional gain, applied per
+            controlled DOF. Pass a scalar to apply the same gain to every
+            controlled DOF, an array of shape [total_controlled_dofs] to set
+            them individually, or ``None`` to read
+            ``inputs.null_space_stiffness`` each step. Must be ``None`` when
+            ``use_null_space_posture_control=False``.
+        null_space_damping: Damping λ_null for the null-space projector's own
+            ``(JJᵀ + λ_null²I)⁻¹``, independent of the primary task's
+            ``damping``. Only meaningful when ``use_joint_limit_avoidance``
+            or ``use_null_space_posture_control`` is enabled — pass a scalar
+            or an array of shape [controlled_robot_count] to bake a value,
+            or leave it ``None`` to read ``inputs.null_space_damping`` each
+            step (the default, and the only valid value when both are
+            disabled). Unlike the primary ``damping``, ``λ_null = 0`` is
+            only safe when every robot has at least 6 controlled DOFs —
+            otherwise the projector's own ``JJᵀ`` is rank-deficient. When
+            baked, this is checked at construction and raises; a live value
+            is the caller's responsibility, since checking it every step
+            would cost a host sync and break :meth:`is_graphable`.
         device: Warp device.
         requires_grad: Whether internal buffers need gradient support.
     """
@@ -119,6 +181,12 @@ class ControllerDiffIKModelFree(ControllerBase):
         """Output velocity scale gain, shape [total_controlled_dofs]. ``None`` when baked at construction."""
         damping: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
         """Damped-least-squares regularization λ, shape [controlled_robot_count]. ``None`` when baked at construction."""
+        q_des_null: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Null-space posture target, shape [total_controlled_dofs]. ``None`` unless ``use_null_space_posture_control=True``."""
+        null_space_stiffness: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Posture-control proportional gain, shape [total_controlled_dofs]. ``None`` when disabled, or when baked at construction."""
+        null_space_damping: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
+        """Null-space projector damping λ_null, shape [controlled_robot_count]. ``None`` when both secondary objectives are disabled, or when baked at construction."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerDiffIKModelFree.output`."""
@@ -134,6 +202,14 @@ class ControllerDiffIKModelFree(ControllerBase):
         controlled_dofs_per_robot: wp.array[wp.int32],
         bandwidth: wp.array[wp.float32] | float | None,
         damping: wp.array[wp.float32] | float | None,
+        use_joint_limit_avoidance: bool = False,
+        joint_limit_avoidance_gain: float = 0.0,
+        joint_limit_avoidance_margin: float = 0.0,
+        joint_pos_lower: wp.array[wp.float32] | None = None,
+        joint_pos_upper: wp.array[wp.float32] | None = None,
+        use_null_space_posture_control: bool = False,
+        null_space_stiffness: wp.array[wp.float32] | float | None = None,
+        null_space_damping: wp.array[wp.float32] | float | None = None,
         device: Any = None,
         requires_grad: bool = False,
     ):
@@ -183,8 +259,72 @@ class ControllerDiffIKModelFree(ControllerBase):
                 device=self._device,
                 required=False,
             )
+
+        use_null_space = bool(use_joint_limit_avoidance) or bool(use_null_space_posture_control)
+
+        if use_joint_limit_avoidance:
+            if joint_limit_avoidance_gain <= 0.0:
+                raise ValueError(
+                    "joint_limit_avoidance_gain must be positive when use_joint_limit_avoidance=True, got "
+                    f"{joint_limit_avoidance_gain}."
+                )
+            if joint_limit_avoidance_margin <= 0.0:
+                raise ValueError(
+                    "joint_limit_avoidance_margin must be positive when use_joint_limit_avoidance=True, got "
+                    f"{joint_limit_avoidance_margin}."
+                )
+            _validate_array(
+                array=joint_pos_lower,
+                name="joint_pos_lower",
+                dtype=wp.float32,
+                shape=(total_controlled_dofs,),
+                device=self._device,
+            )
+            _validate_array(
+                array=joint_pos_upper,
+                name="joint_pos_upper",
+                dtype=wp.float32,
+                shape=(total_controlled_dofs,),
+                device=self._device,
+            )
+            if np.any(joint_pos_lower.numpy() >= joint_pos_upper.numpy()):
+                raise ValueError("joint_pos_lower must be strictly less than joint_pos_upper for every DOF.")
+        elif joint_pos_lower is not None or joint_pos_upper is not None:
+            raise ValueError("joint_pos_lower/joint_pos_upper were given but use_joint_limit_avoidance=False.")
+
+        if use_null_space_posture_control:
+            if not (isinstance(null_space_stiffness, (int, float)) and not isinstance(null_space_stiffness, bool)):
+                _validate_array(
+                    array=null_space_stiffness,
+                    name="null_space_stiffness",
+                    dtype=wp.float32,
+                    shape=(total_controlled_dofs,),
+                    device=self._device,
+                    required=False,
+                )
+        elif null_space_stiffness is not None:
+            raise ValueError("null_space_stiffness was given but use_null_space_posture_control=False.")
+
+        if use_null_space:
+            if not (isinstance(null_space_damping, (int, float)) and not isinstance(null_space_damping, bool)):
+                _validate_array(
+                    array=null_space_damping,
+                    name="null_space_damping",
+                    dtype=wp.float32,
+                    shape=(controlled_robot_count,),
+                    device=self._device,
+                    required=False,
+                )
+        elif null_space_damping is not None:
+            raise ValueError(
+                "null_space_damping was given but neither use_joint_limit_avoidance nor "
+                "use_null_space_posture_control is enabled."
+            )
         # ------------------------------------------------------------------
 
+        self._use_joint_limit_avoidance = bool(use_joint_limit_avoidance)
+        self._use_null_space_posture_control = bool(use_null_space_posture_control)
+        self._use_null_space = use_null_space
         self._controlled_robot_count = controlled_robot_count
         self._max_controlled_dofs = max_controlled_dofs
         self._total_controlled_dofs = total_controlled_dofs
@@ -214,6 +354,38 @@ class ControllerDiffIKModelFree(ControllerBase):
 
         self._bandwidth_baked = self._bake(bandwidth, total_controlled_dofs)
         self._damping_baked = self._bake(damping, controlled_robot_count)
+        self._null_space_stiffness_baked = (
+            self._bake(null_space_stiffness, total_controlled_dofs) if self._use_null_space_posture_control else None
+        )
+        self._null_space_damping_baked = (
+            self._bake(null_space_damping, controlled_robot_count) if use_null_space else None
+        )
+        if self._null_space_damping_baked is not None:
+            # Only checkable when baked: a live value isn't known until step(),
+            # and reading it back to check would cost a host sync every step,
+            # breaking is_graphable(). JJᵀ + λ_null²I is only guaranteed SPD
+            # for a robot with fewer than 6 controlled DOFs when λ_null > 0.
+            null_space_damping_np = self._null_space_damping_baked.numpy()
+            bad_robots = np.flatnonzero((controlled_dofs_per_robot_np < 6) & (null_space_damping_np <= 0.0))
+            if bad_robots.size > 0:
+                raise ValueError(
+                    "null_space_damping must be positive for a robot with fewer than 6 controlled DOFs, since "
+                    "the null-space projector's JJᵀ is then rank-deficient without damping; robot(s) "
+                    f"{bad_robots.tolist()} have controlled_dofs_per_robot < 6 with null_space_damping <= 0."
+                )
+
+        self._joint_limit_avoidance_gain = float(joint_limit_avoidance_gain)
+        self._joint_limit_avoidance_margin = float(joint_limit_avoidance_margin)
+        self._joint_pos_lower: wp.array[wp.float32] | None = (
+            wp.array(joint_pos_lower.numpy(), dtype=wp.float32, device=self._device)
+            if self._use_joint_limit_avoidance
+            else None
+        )
+        self._joint_pos_upper: wp.array[wp.float32] | None = (
+            wp.array(joint_pos_upper.numpy(), dtype=wp.float32, device=self._device)
+            if self._use_joint_limit_avoidance
+            else None
+        )
 
         self._q_buf = wp.zeros(
             total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
@@ -260,6 +432,54 @@ class ControllerDiffIKModelFree(ControllerBase):
             total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
         self._dt_buf = wp.zeros(1, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+
+        if use_null_space:
+            offsets_np = np.zeros(controlled_robot_count, dtype=np.int32)
+            offsets_np[1:] = np.cumsum(controlled_dofs_per_robot_np[:-1])
+            self._dof_offsets = wp.array(offsets_np, dtype=wp.int32, device=self._device)
+            self._null_space_damping_buf: wp.array[wp.float32] | None = (
+                wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+                if self._null_space_damping_baked is None
+                else None
+            )
+            self._jjt_null_space_buf = wp.zeros(
+                (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
+            self._jacobian_pinv_transpose_buf = wp.zeros(
+                (controlled_robot_count, 6, max_controlled_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
+            )
+            self._null_space_projector_buf = wp.zeros(
+                (controlled_robot_count, max_controlled_dofs, max_controlled_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
+            )
+            self._dq_center_buf = wp.zeros(
+                total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
+            self._dq_scratch_buf = wp.zeros(
+                total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
+            self._qd_null_buf = wp.zeros(
+                total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
+        else:
+            self._dof_offsets = None
+            self._null_space_damping_buf = None
+
+        self._q_des_null_buf: wp.array[wp.float32] | None = (
+            wp.zeros(total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+            if self._use_null_space_posture_control
+            else None
+        )
+        self._null_space_stiffness_buf: wp.array[wp.float32] | None = (
+            wp.zeros(total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+            if self._use_null_space_posture_control and self._null_space_stiffness_baked is None
+            else None
+        )
 
     def _bake(self, value: wp.array[wp.float32] | float | None, size: int) -> wp.array[wp.float32] | None:
         """Broadcast a scalar, or copy a gain array, into a fresh buffer of the given size.
@@ -333,6 +553,21 @@ class ControllerDiffIKModelFree(ControllerBase):
             if self._damping_baked is None
             else None
         )
+        inputs.q_des_null = (
+            wp.zeros(total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space_posture_control
+            else None
+        )
+        inputs.null_space_stiffness = (
+            wp.zeros(total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space_posture_control and self._null_space_stiffness_baked is None
+            else None
+        )
+        inputs.null_space_damping = (
+            wp.zeros(controlled_robot_count, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if self._use_null_space and self._null_space_damping_baked is None
+            else None
+        )
         return inputs
 
     def output(self) -> Outputs:
@@ -402,6 +637,30 @@ class ControllerDiffIKModelFree(ControllerBase):
             bindings.append(
                 (inputs.damping, "inputs.damping", self._damping_buf, (controlled_robot_count,), wp.float32)
             )
+        if self._use_null_space_posture_control:
+            bindings.append(
+                (inputs.q_des_null, "inputs.q_des_null", self._q_des_null_buf, (total_controlled_dofs,), wp.float32)
+            )
+            if self._null_space_stiffness_baked is None:
+                bindings.append(
+                    (
+                        inputs.null_space_stiffness,
+                        "inputs.null_space_stiffness",
+                        self._null_space_stiffness_buf,
+                        (total_controlled_dofs,),
+                        wp.float32,
+                    )
+                )
+        if self._use_null_space and self._null_space_damping_baked is None:
+            bindings.append(
+                (
+                    inputs.null_space_damping,
+                    "inputs.null_space_damping",
+                    self._null_space_damping_buf,
+                    (controlled_robot_count,),
+                    wp.float32,
+                )
+            )
 
         # The outputs share the ports' contract, so they are validated in the
         # same pass; a None destination marks a port as written rather than read.
@@ -410,15 +669,26 @@ class ControllerDiffIKModelFree(ControllerBase):
         )
         bindings.append((outputs.joint_q_target, "outputs.joint_q_target", None, (total_controlled_dofs,), wp.float32))
 
-        # A port belonging to a baked gain is never read, so writing one
-        # would go unnoticed. getattr because a caller may leave the field
-        # unset rather than None.
+        # A port belonging to a disabled feature or a baked gain is never
+        # read, so writing one would go unnoticed. getattr because a caller
+        # may leave the field unset rather than None.
         for name, live, switch in (
             ("bandwidth", self._bandwidth_baked is None, "a live bandwidth"),
             ("damping", self._damping_baked is None, "a live damping"),
+            ("q_des_null", self._use_null_space_posture_control, "use_null_space_posture_control"),
+            (
+                "null_space_stiffness",
+                self._use_null_space_posture_control and self._null_space_stiffness_baked is None,
+                "a live null_space_stiffness",
+            ),
+            (
+                "null_space_damping",
+                self._use_null_space and self._null_space_damping_baked is None,
+                "a live null_space_damping",
+            ),
         ):
             if not live and getattr(inputs, name, None) is not None:
-                raise ValueError(f"inputs.{name} is set, but the controller was built with a baked {switch}.")
+                raise ValueError(f"inputs.{name} is set, but the controller was built without {switch}.")
 
         for port, name, buf, shape, dtype in bindings:
             _validate_array(array=port, name=name, dtype=dtype, shape=shape, device=self._device, allow_indexed=True)
@@ -456,6 +726,101 @@ class ControllerDiffIKModelFree(ControllerBase):
             outputs=[self._qd_buf],
             device=self._device,
         )
+
+        if self._use_null_space:
+            null_space_damping = (
+                self._null_space_damping_baked
+                if self._null_space_damping_baked is not None
+                else self._null_space_damping_buf
+            )
+            wp.launch(
+                _build_jjt_plus_damping_kernel,
+                dim=(controlled_robot_count, 6, 6),
+                inputs=[self._jacobian_buf, self._controlled_dofs_per_robot, null_space_damping],
+                outputs=[self._jjt_null_space_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _jacobian_pinv_transpose_kernel,
+                dim=controlled_robot_count,
+                inputs=[
+                    self._jjt_null_space_buf,
+                    self._jacobian_buf,
+                    self._controlled_dofs_per_robot,
+                    self._cholesky_scratch,
+                ],
+                outputs=[self._jacobian_pinv_transpose_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _null_space_projector_kernel,
+                dim=(controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
+                inputs=[self._jacobian_buf, self._jacobian_pinv_transpose_buf, self._controlled_dofs_per_robot],
+                outputs=[self._null_space_projector_buf],
+                device=self._device,
+            )
+
+            dq_center_written = False
+            if self._use_joint_limit_avoidance:
+                wp.launch(
+                    _joint_limit_avoidance_bias_kernel,
+                    dim=total_controlled_dofs,
+                    inputs=[
+                        self._q_buf,
+                        self._joint_pos_lower,
+                        self._joint_pos_upper,
+                        self._joint_limit_avoidance_gain,
+                        self._joint_limit_avoidance_margin,
+                    ],
+                    outputs=[self._dq_center_buf],
+                    device=self._device,
+                )
+                dq_center_written = True
+
+            if self._use_null_space_posture_control:
+                null_space_stiffness = (
+                    self._null_space_stiffness_baked
+                    if self._null_space_stiffness_baked is not None
+                    else self._null_space_stiffness_buf
+                )
+                destination = self._dq_scratch_buf if dq_center_written else self._dq_center_buf
+                wp.launch(
+                    _posture_bias_kernel,
+                    dim=total_controlled_dofs,
+                    inputs=[self._q_buf, self._q_des_null_buf, null_space_stiffness],
+                    outputs=[destination],
+                    device=self._device,
+                )
+                if dq_center_written:
+                    wp.launch(
+                        _add_term_kernel,
+                        dim=total_controlled_dofs,
+                        inputs=[self._dq_scratch_buf],
+                        outputs=[self._dq_center_buf],
+                        device=self._device,
+                    )
+
+            wp.launch(
+                _block_matrix_vector_multiply_kernel,
+                dim=total_controlled_dofs,
+                inputs=[
+                    self._null_space_projector_buf,
+                    self._dq_center_buf,
+                    self._robot_of_dof,
+                    self._slot_of_dof,
+                    self._dof_offsets,
+                    self._controlled_dofs_per_robot,
+                ],
+                outputs=[self._qd_null_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _add_term_kernel,
+                dim=total_controlled_dofs,
+                inputs=[self._qd_null_buf],
+                outputs=[self._qd_buf],
+                device=self._device,
+            )
 
         if isinstance(dt, wp.array):
             _validate_array(array=dt, name="dt", dtype=wp.float32, shape=(1,), device=self._device)
