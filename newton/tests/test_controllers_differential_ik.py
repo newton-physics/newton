@@ -1417,6 +1417,40 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
         np.testing.assert_allclose(outputs.joint_qd_target.numpy()[:3], pos_err, atol=1e-4)
 
+    def test_zero_weighted_axis_jacobian_row_has_exactly_zero_gradient(self):
+        """A zero-weighted axis's Jacobian row must contribute exactly zero gradient, not just a tiny one.
+
+        Regression test for the design decision documented in
+        ``axis_weight``'s own docstring (gather/scatter by index, not
+        multiply-by-zero): a value that is never read contributes an
+        exactly-zero gradient, where "coefficient times an exactly-zero
+        input" would not.
+        """
+        device = wp.get_device()
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device),
+            axis_weight=_POSITION_ONLY_AXIS_WEIGHT,  # orientation axes (rows 3-5) weighted 0
+            bandwidth=1.0,
+            damping=0.1,
+            device=device,
+            requires_grad=True,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q.assign(np.zeros(6, dtype=np.float32))
+        inputs.tool_pose_world.assign([wp.transform_identity()])
+        inputs.desired_tool_pose_world.assign([wp.transform(p=wp.vec3(0.1, 0.05, -0.03), q=wp.quat_identity())])
+        inputs.jacobian_tool_world.assign(np.eye(6, dtype=np.float32)[None, :, :])
+
+        tape = wp.Tape()
+        with tape:
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        tape.backward(grads={outputs.joint_qd_target: wp.ones(6, dtype=wp.float32, device=device)})
+
+        jacobian_grad = inputs.jacobian_tool_world.grad.numpy()
+        np.testing.assert_array_equal(jacobian_grad[0, 3:, :], np.zeros((3, 6), dtype=np.float32))
+        self.assertGreater(np.abs(jacobian_grad[0, :3, :]).max(), 1e-6)
+
     def test_pseudo_inverse_rejects_explicit_damping(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
@@ -2204,6 +2238,53 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
         qd = outputs.joint_qd_target.numpy()
         np.testing.assert_allclose(jacobian_np[0].astype(np.float64) @ qd.astype(np.float64), np.zeros(6), atol=1e-3)
+
+    def test_null_space_velocity_does_not_disturb_primary_task_with_zeroed_axis_weight(self):
+        """With zero primary-task error, qd must satisfy J_active @ qd == 0 even when axis_weight excludes 3 of 6 axes.
+
+        Combines two mechanisms that had never been tested together: a
+        redundant robot resolved via a reduced task_dim (``axis_weight``),
+        and null-space posture control's own gather/scatter path, which
+        exists specifically to keep the null-space projector consistent
+        with a non-full ``task_dim``.
+        """
+        device = wp.get_device()
+        rng = np.random.default_rng(21)
+        # A planar-style task: only X, Y, and yaw (rows 0, 1, 5) are active;
+        # Z, roll, pitch (rows 2, 3, 4) are structurally excluded.
+        jacobian_np = np.zeros((1, 6, 4), dtype=np.float32)
+        jacobian_np[0, [0, 1, 5], :] = rng.normal(size=(3, 4))
+        axis_weight = wp.spatial_vector(1.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([4], device),
+            axis_weight=axis_weight,
+            bandwidth=1.0,
+            damping=0.1,
+            use_null_space_posture_control=True,
+            null_space_stiffness=1.0,
+            # 0 is exact here (not just "safe"): dof_count=4 >= task_dim=3,
+            # so the active-axis JJᵀ is generically full rank without
+            # regularization, unlike the under-actuated case that requires
+            # null_space_damping > 0.
+            null_space_damping=0.0,
+            device=device,
+        )
+        pose = _identity_transform(1, device)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.array([0.1, -0.2, 0.3, -0.1], dtype=wp.float32, device=device)
+        inputs.tool_pose_world = pose
+        inputs.desired_tool_pose_world = pose  # zero primary-task error
+        inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+        # Pulls hard toward a posture far from the current one.
+        inputs.q_des_null = wp.array([0.9, 0.9, 0.9, 0.9], dtype=wp.float32, device=device)
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+
+        j_active = jacobian_np[0, [0, 1, 5], :]
+        np.testing.assert_allclose(j_active.astype(np.float64) @ qd.astype(np.float64), np.zeros(3), atol=1e-3)
+        # The null-space pull actually did something (the redundant DOFs were used).
+        self.assertGreater(np.abs(qd).max(), 1e-3)
 
     def test_joint_limit_avoidance_pulls_away_from_limit(self):
         device = wp.get_device()
