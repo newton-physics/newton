@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""ControllerDiffIK — differential-kinematics control with Newton
+"""ControllerDifferentialIK — differential-kinematics control with Newton
 model-internal kinematics.
 
 Calls :func:`newton.eval_fk` and :func:`newton.eval_jacobian` on the
 supplied model each step, resolves each robot's tool-point pose and Jacobian
 from a Newton *site*, then delegates the control law to an inner
-:class:`ControllerDiffIKModelFree` instance.
+:class:`ControllerDifferentialIKModelFree` instance.
 """
 
 from __future__ import annotations
@@ -28,10 +28,10 @@ from ...joint_selection import select_joints
 from ...utils import _validate_array
 from .._common import _read_port, _shift_jacobian_to_tool_kernel
 from ._common import IkMethod, _tool_pose_kernel
-from .model_free import ControllerDiffIKModelFree
+from .model_free import ControllerDifferentialIKModelFree
 
 
-class ControllerDiffIK(ControllerBase):
+class ControllerDifferentialIK(ControllerBase):
     """Differential-kinematics (Jacobian-based) controller with internally computed kinematics.
 
     Implements the damped-least-squares differential-kinematics control law.
@@ -60,7 +60,7 @@ class ControllerDiffIK(ControllerBase):
     fleets — robots may have different controlled-DOF counts, and a robot may
     be left uncontrolled entirely by omitting it from ``articulations``.
 
-    See also :class:`ControllerDiffIKModelFree`, which takes the tool pose
+    See also :class:`ControllerDifferentialIKModelFree`, which takes the tool pose
     and Jacobian as inputs instead of computing them from a
     :class:`~newton.Model`.
 
@@ -176,7 +176,7 @@ class ControllerDiffIK(ControllerBase):
     IkMethod = IkMethod
 
     class Inputs:
-        """Input struct returned by :meth:`~ControllerDiffIK.input`.
+        """Input struct returned by :meth:`~ControllerDifferentialIK.input`.
 
         ``joint_q``/``joint_qd`` cover the whole model, since forward
         kinematics depends on uncontrolled joints too; every other field is
@@ -203,7 +203,7 @@ class ControllerDiffIK(ControllerBase):
         """Null-space projector damping λ_null, shape [controlled_robot_count]. ``None`` when both secondary objectives are disabled, or when baked at construction."""
 
     class Outputs:
-        """Output struct returned by :meth:`~ControllerDiffIK.output`."""
+        """Output struct returned by :meth:`~ControllerDifferentialIK.output`."""
 
         joint_qd_target: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Target joint velocity [m/s or rad/s], shape [total_controlled_dofs]."""
@@ -334,7 +334,7 @@ class ControllerDiffIK(ControllerBase):
         )
         if unsupported:
             raise ValueError(
-                f"ControllerDiffIK only supports controlling joints that span a single coordinate and a "
+                f"ControllerDifferentialIK only supports controlling joints that span a single coordinate and a "
                 f"single DOF; joint_selection addresses unsupported joints: {unsupported}"
             )
 
@@ -466,7 +466,7 @@ class ControllerDiffIK(ControllerBase):
             controlled_robot_count, dtype=wp.transform, device=self._device, requires_grad=self._requires_grad
         )
 
-        self._model_free = ControllerDiffIKModelFree(
+        self._model_free = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=controlled_dofs_per_robot,
             axis_weight=axis_weight,
             bandwidth=bandwidth,
@@ -491,7 +491,7 @@ class ControllerDiffIK(ControllerBase):
         # Pre-wired fields forwarded to the inner controller each step: live
         # indexed views of the whole-model/tool buffers above, so the inner
         # controller reads current contents with no index table of its own.
-        self._mf_input = ControllerDiffIKModelFree.Inputs()
+        self._mf_input = ControllerDifferentialIKModelFree.Inputs()
         self._mf_input.tool_pose_world = self._tool_pose_world
         self._mf_input.jacobian_tool_world = self._jacobian_tool_world
         self._mf_input.joint_q = self._model_state.joint_q[self._q_idx]
@@ -585,7 +585,7 @@ class ControllerDiffIK(ControllerBase):
         total_controlled_dofs = self._total_controlled_dofs
         controlled_robot_count = self._controlled_robot_count
 
-        inputs = ControllerDiffIK.Inputs()
+        inputs = ControllerDifferentialIK.Inputs()
         inputs.joint_q = wp.zeros(self._coord_count, dtype=wp.float32, device=device, requires_grad=requires_grad)
         inputs.joint_qd = wp.zeros(self._dof_count, dtype=wp.float32, device=device, requires_grad=requires_grad)
         inputs.desired_tool_pose_world = wp.zeros(
@@ -621,7 +621,7 @@ class ControllerDiffIK(ControllerBase):
     def output(self) -> Outputs:
         """Return a pre-allocated :class:`Outputs` with compact velocity/position arrays."""
         mf_outputs = self._model_free.output()
-        outputs = ControllerDiffIK.Outputs()
+        outputs = ControllerDifferentialIK.Outputs()
         outputs.joint_qd_target = mf_outputs.joint_qd_target
         outputs.joint_q_target = mf_outputs.joint_q_target
         return outputs
@@ -637,7 +637,7 @@ class ControllerDiffIK(ControllerBase):
 
         Computes forward kinematics and the tool-point Jacobian from
         ``model``, then delegates the control law to the inner
-        :class:`ControllerDiffIKModelFree`.
+        :class:`ControllerDifferentialIKModelFree`.
 
         Args:
             inputs: Populated :class:`Inputs` struct.

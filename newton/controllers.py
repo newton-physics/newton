@@ -12,8 +12,8 @@ subclass of :class:`ControllerBase`.
 
 from ._src.controllers import (
     ControllerBase,
-    ControllerDiffIK,
-    ControllerDiffIKModelFree,
+    ControllerDifferentialIK,
+    ControllerDifferentialIKModelFree,
     ControllerJointImpedance,
     ControllerJointImpedanceModelFree,
     ControllerOperationalSpace,
@@ -22,8 +22,8 @@ from ._src.controllers import (
 
 __all__ = [
     "ControllerBase",
-    "ControllerDiffIK",
-    "ControllerDiffIKModelFree",
+    "ControllerDifferentialIK",
+    "ControllerDifferentialIKModelFree",
     "ControllerJointImpedance",
     "ControllerJointImpedanceModelFree",
     "ControllerOperationalSpace",

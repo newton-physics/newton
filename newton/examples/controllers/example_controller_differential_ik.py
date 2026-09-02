@@ -4,14 +4,14 @@
 ###########################################################################
 # Example Controllers — Differential IK
 #
-# Demonstrates ControllerDiffIK on three real, heterogeneous robots at once
+# Demonstrates ControllerDifferentialIK on three real, heterogeneous robots at once
 # -- a 7-DOF Franka Panda arm (redundant against the 6D task), a 6-DOF UR10
 # arm (not redundant), and a 4-DOF planar arm restricted to a 3D task
 # (X, Y, yaw) via axis_weight, so it too is redundant -- each independently
 # tracking its own draggable gizmo target. One controller call handles all
 # three, each robot resolved through its own tool site and Jacobian.
 #
-# ControllerDiffIK outputs one-step-ahead joint position/velocity targets,
+# ControllerDifferentialIK outputs one-step-ahead joint position/velocity targets,
 # not torques, so every controlled arm DOF is left in MuJoCo's
 # POSITION_VELOCITY actuator mode: the controller runs once per frame, and
 # MuJoCo's own implicit PD tracks that fixed target across every physics
@@ -34,7 +34,7 @@
 # single fixed damping value -- this stays smooth (no chatter) right up to
 # the boundary, unlike a plain fixed-damping or truncated-SVD solve.
 #
-# Command: python -m newton.examples controller_diff_ik
+# Command: python -m newton.examples controller_differential_ik
 ###########################################################################
 
 import numpy as np
@@ -45,9 +45,9 @@ import newton.examples
 import newton.solvers
 import newton.utils
 from newton import Axis, JointTargetMode
-from newton.controllers import ControllerDiffIK
+from newton.controllers import ControllerDifferentialIK
 
-IkMethod = ControllerDiffIK.IkMethod
+IkMethod = ControllerDifferentialIK.IkMethod
 
 # ---------------------------------------------------------------------------
 # Robot configuration
@@ -77,7 +77,7 @@ TOOL_SITE_SCALE = (0.02, 0.02, 0.02)
 
 # Franka and UR10 task the full 6D pose; the planar arm only X, Y, and yaw --
 # its Z position, roll, and pitch are structurally excluded from the solve
-# (see ControllerDiffIK's axis_weight), not merely driven toward zero, which
+# (see ControllerDifferentialIK's axis_weight), not merely driven toward zero, which
 # is what actually makes it redundant (4 controlled DOFs against a 3D task).
 FULL_POSE_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
 PLANAR_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 0.0, 0.0, 0.0, 1.0)
@@ -169,7 +169,7 @@ class Example:
         # 0's (Franka's) controlled joints first, then robot 1's (UR10's),
         # then robot 2's (the planar arm's), matching axis_weight's and
         # desired_tool_pose_world's per-robot ordering below.
-        self.controller = ControllerDiffIK(
+        self.controller = ControllerDifferentialIK(
             self.model,
             joints=franka_joints + ur10_joints + planar_joints,
             tool_sites="tool_site",

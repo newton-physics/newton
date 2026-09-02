@@ -1365,7 +1365,7 @@ add_example_test(
 )
 add_example_test(
     TestControllersExamples,
-    name="controllers.example_controller_diff_ik",
+    name="controllers.example_controller_differential_ik",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 100},
     use_viewer=True,

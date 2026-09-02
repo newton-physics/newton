@@ -37,7 +37,7 @@ pose-error, null-space, or integration code. Damped least squares
 the plain transpose method reuse the same kernel group (with ``λ = 0``) or
 skip it entirely (transpose feeds the pose error straight into
 ``_qd_from_y_kernel`` in place of ``y``) — see :class:`IkMethod` and
-``ControllerDiffIKModelFree.step``.
+``ControllerDifferentialIKModelFree.step``.
 
 This single fixed ``6x6`` form is exact for a robot with any number of
 controlled DOFs, not just ``n_joints ≥ 6``: the push-through identity
@@ -68,10 +68,10 @@ _EIGENVALUE_QR_TOL = wp.constant(wp.float32(1.0e-6))
 
 
 class IkMethod(enum.Enum):
-    """Inverse-Jacobian solve method for :class:`ControllerDiffIKModelFree`/:class:`ControllerDiffIK`.
+    """Inverse-Jacobian solve method for :class:`ControllerDifferentialIKModelFree`/:class:`ControllerDifferentialIK`.
 
-    Also reachable as ``ControllerDiffIKModelFree.IkMethod``/
-    ``ControllerDiffIK.IkMethod``.
+    Also reachable as ``ControllerDifferentialIKModelFree.IkMethod``/
+    ``ControllerDifferentialIK.IkMethod``.
     """
 
     DAMPED_LEAST_SQUARES = "damped_least_squares"
@@ -195,7 +195,7 @@ def _build_jjt_plus_damping_kernel(
     6x6): every row/column beyond it is skipped entirely, leaving whatever
     was already in ``jjt_plus_damping`` there (this kernel's own buffers
     stay zero there forever, since nothing else writes outside the same
-    corner either — see ``ControllerDiffIKModelFree``'s module docstring).
+    corner either — see ``ControllerDifferentialIKModelFree``'s module docstring).
     Row/column ``slot`` of the real corner is gathered from
     ``jacobian_tool_world``'s canonical axis ``active_axis_of_slot[slot]``,
     weighted by that axis's own ``axis_weight`` — not row ``slot``
@@ -393,7 +393,7 @@ def _truncated_pinv_matrix_kernel(
 # controller families (``_invert_spd_block_kernel``,
 # ``_task_matrix_times_jacobian_kernel``, ``_null_space_projector_kernel`` in
 # ``controllers/impl/_common.py``), not dedicated kernels here — see
-# :class:`ControllerDiffIKModelFree`. ``λ_null`` is its own damping,
+# :class:`ControllerDifferentialIKModelFree`. ``λ_null`` is its own damping,
 # independent of the primary task's DLS damping: it makes ``JJᵀ + λ_null²I``
 # SPD for any Jacobian, including one that is not full row rank (e.g. a
 # redundant low-DOF arm whose task is itself lower-dimensional than 6, such

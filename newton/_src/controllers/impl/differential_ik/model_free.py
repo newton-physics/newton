@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""ControllerDiffIKModelFree — differential-kinematics control with a
+"""ControllerDifferentialIKModelFree — differential-kinematics control with a
 caller-supplied Jacobian and tool pose.
 
 Every 1-D per-DOF port is compact: one entry per controlled DOF, robot 0's
@@ -80,7 +80,7 @@ from ._common import (
 _CANONICAL_TASK_AXIS_COUNT = 6
 
 
-class ControllerDiffIKModelFree(ControllerBase):
+class ControllerDifferentialIKModelFree(ControllerBase):
     """Differential-kinematics (Jacobian-based) controller with a caller-supplied Jacobian.
 
     Implements a damped-least-squares differential-kinematics control law.
@@ -221,7 +221,7 @@ class ControllerDiffIKModelFree(ControllerBase):
     IkMethod = IkMethod
 
     class Inputs:
-        """Input struct returned by :meth:`~ControllerDiffIKModelFree.input`.
+        """Input struct returned by :meth:`~ControllerDifferentialIKModelFree.input`.
 
         Every compact 1-D field has shape [total_controlled_dofs]; every
         per-robot field has shape [controlled_robot_count]. Optional fields
@@ -248,7 +248,7 @@ class ControllerDiffIKModelFree(ControllerBase):
         """Null-space projector damping λ_null, shape [controlled_robot_count]. ``None`` when both secondary objectives are disabled, or when baked at construction."""
 
     class Outputs:
-        """Output struct returned by :meth:`~ControllerDiffIKModelFree.output`."""
+        """Output struct returned by :meth:`~ControllerDifferentialIKModelFree.output`."""
 
         joint_qd_target: wp.array[wp.float32] | wp.indexedarray[wp.float32]
         """Target joint velocity [m/s or rad/s], shape [total_controlled_dofs]."""
@@ -762,7 +762,7 @@ class ControllerDiffIKModelFree(ControllerBase):
         total_controlled_dofs = self._total_controlled_dofs
         controlled_robot_count = self._controlled_robot_count
 
-        inputs = ControllerDiffIKModelFree.Inputs()
+        inputs = ControllerDifferentialIKModelFree.Inputs()
         inputs.joint_q = wp.zeros(total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad)
         inputs.tool_pose_world = wp.zeros(
             controlled_robot_count, dtype=wp.transform, device=device, requires_grad=requires_grad
@@ -808,7 +808,7 @@ class ControllerDiffIKModelFree(ControllerBase):
         device = self._device
         requires_grad = self._requires_grad
         total_controlled_dofs = self._total_controlled_dofs
-        outputs = ControllerDiffIKModelFree.Outputs()
+        outputs = ControllerDifferentialIKModelFree.Outputs()
         outputs.joint_qd_target = wp.zeros(
             total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad
         )

@@ -4,10 +4,10 @@
 """Tests for the differential-kinematics controllers.
 
 Kernel-level tests (:class:`TestDiffIkKernels`) exercise each Warp kernel in
-``newton._src.controllers.impl.diff_ik._common`` directly against a
+``newton._src.controllers.impl.differential_ik._common`` directly against a
 hand-derived numpy reference, with no :class:`Controller` involved.
-Controller-class-level tests (:class:`TestControllerDiffIKModelFree`)
-exercise :class:`~newton.controllers.ControllerDiffIKModelFree` — the
+Controller-class-level tests (:class:`TestControllerDifferentialIKModelFree`)
+exercise :class:`~newton.controllers.ControllerDifferentialIKModelFree` — the
 construction/validation/port-plumbing layer built on top of those kernels.
 ``model_based.py`` tests are added alongside it in a later chunk.
 """
@@ -28,7 +28,7 @@ from newton._src.controllers.impl._common import (
     _invert_spd_block_kernel,
     _pose_error_kernel,
 )
-from newton._src.controllers.impl.diff_ik._common import (
+from newton._src.controllers.impl.differential_ik._common import (
     IkMethod,
     _adaptive_damping_kernel,
     _build_jjt_plus_damping_kernel,
@@ -42,8 +42,8 @@ from newton._src.controllers.impl.diff_ik._common import (
     _smallest_eigenvalue_spd6_kernel,
     _truncated_pinv_matrix_kernel,
 )
-from newton._src.controllers.impl.diff_ik.model_based import ControllerDiffIK
-from newton._src.controllers.impl.diff_ik.model_free import ControllerDiffIKModelFree
+from newton._src.controllers.impl.differential_ik.model_based import ControllerDifferentialIK
+from newton._src.controllers.impl.differential_ik.model_free import ControllerDifferentialIKModelFree
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
@@ -1001,7 +1001,7 @@ add_function_test(
 
 
 # ---------------------------------------------------------------------------
-# ControllerDiffIKModelFree
+# ControllerDifferentialIKModelFree
 # ---------------------------------------------------------------------------
 
 
@@ -1035,11 +1035,11 @@ def _identity_transform(robot_count, device):
     )
 
 
-class TestControllerDiffIKModelFree(unittest.TestCase):
+class TestControllerDifferentialIKModelFree(unittest.TestCase):
     def test_zero_error_gives_zero_velocity(self):
         """When current tool pose equals the target pose exactly, qd_target must be zero."""
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
         )
         pose = _identity_transform(1, device)
@@ -1057,7 +1057,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         device = wp.get_device()
         joint_q = [0.2, -0.3, 0.1, 0.0, 0.4, -0.1]
         dt = 0.02
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.5, device=device
         )
         inputs = ctrl.input()
@@ -1076,7 +1076,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         """J = I_6x6, λ=0: qd_target equals the raw pose error exactly."""
         device = wp.get_device()
         pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
         )
         inputs = ctrl.input()
@@ -1096,7 +1096,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         """30 deg rotation about x with J=I_6x6, λ=0: qd_target[3] equals the rotation angle exactly."""
         device = wp.get_device()
         angle = math.pi / 6
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
         )
         inputs = ctrl.input()
@@ -1125,7 +1125,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         err_y = 0.1
         lam = 0.5
         bandwidth_val = 2.0
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([1], device), bandwidth=bandwidth_val, damping=lam, device=device
         )
         jacobian_np = np.zeros((1, 6, 1), dtype=np.float32)
@@ -1148,7 +1148,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         device = wp.get_device()
         err_y = 0.1
         bandwidth_val = 2.0
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([1], device),
             bandwidth=bandwidth_val,
             damping=None,
@@ -1173,7 +1173,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_transpose_method_rejects_explicit_damping(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -1185,7 +1185,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         """ik_method=PSEUDO_INVERSE matches ik_method=DAMPED_LEAST_SQUARES with damping=0 exactly."""
         device = wp.get_device()
         pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device),
             bandwidth=1.0,
             damping=None,
@@ -1208,7 +1208,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_pseudo_inverse_requires_six_dofs(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([3], device),
                 bandwidth=1.0,
                 damping=None,
@@ -1220,7 +1220,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         """DLS, J = I_6x6, orientation axes weighted 0: a large orientation error contributes nothing to qd_target."""
         device = wp.get_device()
         pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device),
             axis_weight=_POSITION_ONLY_AXIS_WEIGHT,
             bandwidth=1.0,
@@ -1244,7 +1244,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         """TRANSPOSE, J = I_6x6, orientation axes weighted 0: same guarantee, with no matrix inversion involved."""
         device = wp.get_device()
         pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device),
             axis_weight=_POSITION_ONLY_AXIS_WEIGHT,
             bandwidth=1.0,
@@ -1268,7 +1268,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_axis_weight_zeroed_orientation_allows_pseudo_inverse_with_three_dof_robot(self):
         """A 3-DOF robot fails IkMethod.PSEUDO_INVERSE at full 6D pose, but is allowed once orientation is dropped."""
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([3], device),
             axis_weight=_POSITION_ONLY_AXIS_WEIGHT,
             bandwidth=1.0,
@@ -1281,7 +1281,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_axis_weight_per_robot_shape_mismatch_raises(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6, 6], device),
                 axis_weight=_axis_weight_arr([_POSITION_ONLY_AXIS_WEIGHT], device),
                 bandwidth=1.0,
@@ -1292,7 +1292,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_axis_weight_per_robot_list(self):
         """A heterogeneous fleet may mix a position-only robot and a full-pose robot."""
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6, 6], device),
             axis_weight=_axis_weight_arr([_POSITION_ONLY_AXIS_WEIGHT, [1.0] * 6], device),
             bandwidth=1.0,
@@ -1331,7 +1331,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         device = wp.get_device()
         pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
         lam_min = 0.02
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([3], device),
             axis_weight=_POSITION_ONLY_AXIS_WEIGHT,
             bandwidth=1.0,
@@ -1369,7 +1369,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         pos_err = np.array([0.1, 0.2, -0.05], dtype=np.float32)
         lam = 1.0
         weights = [1.0, 0.5, 1.0, 1.0, 1.0, 1.0]
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device),
             axis_weight=wp.spatial_vector(*weights),
             bandwidth=1.0,
@@ -1400,7 +1400,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         device = wp.get_device()
         pos_err = np.array([0.1, 0.2, -0.05], dtype=np.float32)
         weights = [1.0, 0.5, 2.0, 1.0, 1.0, 1.0]
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device),
             axis_weight=wp.spatial_vector(*weights),
             bandwidth=1.0,
@@ -1421,7 +1421,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_pseudo_inverse_rejects_explicit_damping(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -1434,7 +1434,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         device = wp.get_device()
         pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
         lam_min = 0.3
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device),
             bandwidth=1.0,
             damping=None,
@@ -1462,7 +1462,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         err_y = 0.1
         bandwidth_val = 2.0
         lam_max = 0.5
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([1], device),
             bandwidth=bandwidth_val,
             damping=None,
@@ -1490,7 +1490,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_adaptive_damping_requires_all_three_params(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=None,
@@ -1504,7 +1504,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_adaptive_damping_rejects_explicit_damping(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -1518,7 +1518,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_adaptive_damping_params_rejected_for_other_methods(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -1534,7 +1534,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         rng = np.random.default_rng(29)
         jacobian_np = rng.normal(size=(1, 6, 6)).astype(np.float32)
         pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device),
             bandwidth=1.0,
             damping=None,
@@ -1569,7 +1569,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         jacobian_np = rng.normal(size=(1, 6, n)).astype(np.float32)
         pos_err = rng.normal(size=3).astype(np.float32)
 
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([n], device),
             bandwidth=1.0,
             damping=None,
@@ -1606,7 +1606,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_truncated_svd_requires_threshold(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=None,
@@ -1617,7 +1617,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_truncated_svd_rejects_explicit_damping(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -1629,7 +1629,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_truncated_svd_threshold_rejected_for_other_methods(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -1640,7 +1640,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_multiple_robots_independent(self):
         """Each robot's qd_target depends only on its own Jacobian and pose error."""
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6, 6], device), bandwidth=1.0, damping=0.0, device=device
         )
         inputs = ctrl.input()
@@ -1668,7 +1668,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         dof_counts = [3, 7]
         max_dofs = 7
         lam = 0.2
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr(dof_counts, device), bandwidth=1.0, damping=lam, device=device
         )
 
@@ -1707,7 +1707,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_live_bandwidth_port(self):
         device = wp.get_device()
         pos_err = np.array([0.1, 0.0, 0.0], dtype=np.float32)
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=None, damping=0.0, device=device
         )
         inputs = ctrl.input()
@@ -1726,7 +1726,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         device = wp.get_device()
         err_y = 0.1
         lam = 0.5
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([1], device), bandwidth=1.0, damping=None, device=device
         )
         jacobian_np = np.zeros((1, 6, 1), dtype=np.float32)
@@ -1748,7 +1748,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_dt_as_wp_array(self):
         device = wp.get_device()
         dt_scalar = 0.02
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.5, device=device
         )
         pose = _identity_transform(1, device)
@@ -1779,14 +1779,14 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
 
     def test_is_graphable(self):
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.5, device=device
         )
         self.assertTrue(ctrl.is_graphable())
 
     def test_inputs_bandwidth_and_damping_none_when_baked(self):
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.5, device=device
         )
         inputs = ctrl.input()
@@ -1795,7 +1795,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
 
     def test_inputs_bandwidth_and_damping_allocated_when_live(self):
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=None, damping=None, device=device
         )
         inputs = ctrl.input()
@@ -1807,7 +1807,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_indexed_view_input_gathers(self):
         """A tool-pose input bound to an indexed view is read correctly."""
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
         )
         sim_poses = wp.array(
@@ -1839,7 +1839,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         per dtype from the same generic body, so neither test covers both.
         """
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([1], device), bandwidth=1.0, damping=0.5, device=device
         )
         sim_q = wp.array([9.0, 0.3], dtype=wp.float32, device=device)
@@ -1868,7 +1868,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         Jacobian port is bound to a view — otherwise silently uncovered.
         """
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([1], device), bandwidth=1.0, damping=0.0, device=device
         )
         sim_jacobian = wp.array3d(
@@ -1895,7 +1895,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_indexed_view_output_scatters(self):
         """An output bound to an indexed view is written correctly."""
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
         )
         inputs = ctrl.input()
@@ -1915,7 +1915,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
 
     def test_disabled_bandwidth_port_written_raises(self):
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
         )
         inputs = ctrl.input()
@@ -1930,7 +1930,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
 
     def test_wrong_shape_jacobian_raises(self):
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
         )
         inputs = ctrl.input()
@@ -1945,7 +1945,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_zero_dof_robot_raises(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6, 0], device), bandwidth=1.0, damping=0.0, device=device
             )
 
@@ -1953,7 +1953,9 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         """A later mutation of the caller's own array must not affect the controller."""
         device = wp.get_device()
         dofs = _dofs_arr([6], device)
-        ctrl = ControllerDiffIKModelFree(controlled_dofs_per_robot=dofs, bandwidth=1.0, damping=0.0, device=device)
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=dofs, bandwidth=1.0, damping=0.0, device=device
+        )
         dofs.assign(np.array([1], dtype=np.int32))
 
         pose = _identity_transform(1, device)
@@ -1975,7 +1977,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         """A redundant low-DOF arm (e.g. a planar 4R arm) may enable null-space control as long
         as null_space_damping > 0 regularizes the otherwise rank-deficient JJᵀ."""
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([4], device),
             bandwidth=1.0,
             damping=0.1,
@@ -2010,7 +2012,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_null_space_damping_rejected_without_null_space_enabled(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -2022,7 +2024,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         """A baked null_space_damping <= 0 for a robot with fewer than 6 DOFs raises at construction."""
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([4], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -2038,7 +2040,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_baked_zero_null_space_damping_allowed_for_six_dof_robot(self):
         """A baked null_space_damping of exactly 0 is fine when every robot has >= 6 controlled DOFs."""
         device = wp.get_device()
-        ControllerDiffIKModelFree(
+        ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device),
             bandwidth=1.0,
             damping=0.1,
@@ -2058,7 +2060,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         jacobian_np = rng.normal(size=(1, 6, 7)).astype(np.float32)
         pose = _identity_transform(1, device)
 
-        baked_ctrl = ControllerDiffIKModelFree(
+        baked_ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([7], device),
             bandwidth=1.0,
             damping=0.1,
@@ -2078,7 +2080,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         baked_inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
         baked_ctrl.step(inputs=baked_inputs, outputs=baked_outputs, dt=0.01)
 
-        live_ctrl = ControllerDiffIKModelFree(
+        live_ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([7], device),
             bandwidth=1.0,
             damping=0.1,
@@ -2106,7 +2108,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_joint_limit_avoidance_requires_positive_gain(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -2121,7 +2123,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_joint_limit_avoidance_requires_limits(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -2134,7 +2136,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_joint_pos_limits_rejected_without_avoidance_enabled(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -2146,7 +2148,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
     def test_null_space_stiffness_rejected_without_posture_enabled(self):
         device = wp.get_device()
         with self.assertRaises(ValueError):
-            ControllerDiffIKModelFree(
+            ControllerDifferentialIKModelFree(
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
@@ -2159,7 +2161,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         device = wp.get_device()
         rng = np.random.default_rng(11)
         jacobian_np = rng.normal(size=(1, 6, 7)).astype(np.float32)
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([7], device),
             bandwidth=1.0,
             damping=0.1,
@@ -2188,7 +2190,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         device = wp.get_device()
         rng = np.random.default_rng(12)
         jacobian_np = rng.normal(size=(1, 6, 7)).astype(np.float32)
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([7], device),
             bandwidth=1.0,
             damping=0.1,
@@ -2214,7 +2216,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         device = wp.get_device()
         rng = np.random.default_rng(13)
         jacobian_np = rng.normal(size=(1, 6, 7)).astype(np.float32)
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([7], device),
             bandwidth=1.0,
             damping=0.1,
@@ -2235,7 +2237,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
 
     def test_disabled_q_des_null_written_raises(self):
         device = wp.get_device()
-        ctrl = ControllerDiffIKModelFree(
+        ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
         )
         inputs = ctrl.input()
@@ -2257,7 +2259,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         q_des_null = wp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
         jacobian = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
 
-        baked_ctrl = ControllerDiffIKModelFree(
+        baked_ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([7], device),
             bandwidth=1.0,
             damping=0.1,
@@ -2274,7 +2276,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
         baked_inputs.q_des_null = q_des_null
         baked_ctrl.step(inputs=baked_inputs, outputs=baked_outputs, dt=0.01)
 
-        live_ctrl = ControllerDiffIKModelFree(
+        live_ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([7], device),
             bandwidth=1.0,
             damping=0.1,
@@ -2298,7 +2300,7 @@ class TestControllerDiffIKModelFree(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# ControllerDiffIK
+# ControllerDifferentialIK
 # ---------------------------------------------------------------------------
 
 
@@ -2394,11 +2396,11 @@ def _build_seven_dof_chain_with_tool_site(device):
     return builder.finalize(device=device)
 
 
-class TestControllerDiffIK(unittest.TestCase):
+class TestControllerDifferentialIK(unittest.TestCase):
     def test_zero_error_gives_zero_velocity(self):
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
-        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
+        ctrl = ControllerDifferentialIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
         inputs = ctrl.input()
         outputs = ctrl.output()
         inputs.joint_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=device)
@@ -2411,10 +2413,12 @@ class TestControllerDiffIK(unittest.TestCase):
         np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(2), atol=1e-5)
 
     def test_ik_method_forwarded_to_inner_controller(self):
-        """ik_method=TRANSPOSE is forwarded to the inner ControllerDiffIKModelFree, not silently dropped."""
+        """ik_method=TRANSPOSE is forwarded to the inner ControllerDifferentialIKModelFree, not silently dropped."""
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
-        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=None, ik_method=IkMethod.TRANSPOSE)
+        ctrl = ControllerDifferentialIK(
+            model, tool_sites="tip", bandwidth=1.0, damping=None, ik_method=IkMethod.TRANSPOSE
+        )
         inputs = ctrl.input()
         outputs = ctrl.output()
         inputs.joint_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=device)
@@ -2428,7 +2432,7 @@ class TestControllerDiffIK(unittest.TestCase):
     def test_step_resolves_tool_pose_matching_forward_kinematics(self):
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
-        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
+        ctrl = ControllerDifferentialIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
         inputs = ctrl.input()
         outputs = ctrl.output()
         joint_q = np.array([0.3, -0.4], dtype=np.float32)
@@ -2457,7 +2461,7 @@ class TestControllerDiffIK(unittest.TestCase):
     def test_two_link_arm_converges_to_target(self):
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
-        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=0.05)
+        ctrl = ControllerDifferentialIK(model, tool_sites="tip", bandwidth=1.0, damping=0.05)
         inputs = ctrl.input()
         outputs = ctrl.output()
         target = wp.array(
@@ -2484,7 +2488,7 @@ class TestControllerDiffIK(unittest.TestCase):
     def test_heterogeneous_fleet_selection(self):
         device = wp.get_device()
         model = _build_two_robot_arms_with_tool_sites(device)
-        ctrl = ControllerDiffIK(model, tool_sites=["tool0", "tool1"], bandwidth=1.0, damping=0.1)
+        ctrl = ControllerDifferentialIK(model, tool_sites=["tool0", "tool1"], bandwidth=1.0, damping=0.1)
         self.assertEqual(ctrl.controlled_robot_count, 2)
         self.assertEqual(ctrl.total_controlled_dofs, 3)
         self.assertEqual(ctrl.max_controlled_dofs, 2)
@@ -2492,7 +2496,7 @@ class TestControllerDiffIK(unittest.TestCase):
     def test_subset_of_articulations(self):
         device = wp.get_device()
         model = _build_two_robot_arms_with_tool_sites(device)
-        ctrl = ControllerDiffIK(model, articulations="robot0", tool_sites="tool0", bandwidth=1.0, damping=0.1)
+        ctrl = ControllerDifferentialIK(model, articulations="robot0", tool_sites="tool0", bandwidth=1.0, damping=0.1)
         self.assertEqual(ctrl.controlled_robot_count, 1)
         self.assertEqual(ctrl.total_controlled_dofs, 1)
 
@@ -2512,24 +2516,24 @@ class TestControllerDiffIK(unittest.TestCase):
         builder.add_site(link0, label="tool_b", xform=wp.transform_identity())
         model = builder.finalize(device=device)
         with self.assertRaises(ValueError):
-            ControllerDiffIK(model, tool_sites=["tool_a", "tool_b"], bandwidth=1.0, damping=0.1)
+            ControllerDifferentialIK(model, tool_sites=["tool_a", "tool_b"], bandwidth=1.0, damping=0.1)
 
     def test_tool_site_missing_raises(self):
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
         with self.assertRaises(ValueError):
-            ControllerDiffIK(model, tool_sites="nonexistent", bandwidth=1.0, damping=0.1)
+            ControllerDifferentialIK(model, tool_sites="nonexistent", bandwidth=1.0, damping=0.1)
 
     def test_is_graphable(self):
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
-        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
+        ctrl = ControllerDifferentialIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
         self.assertTrue(ctrl.is_graphable())
 
     def test_live_bandwidth_and_damping_forwarded(self):
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
-        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=None, damping=None)
+        ctrl = ControllerDifferentialIK(model, tool_sites="tip", bandwidth=None, damping=None)
         inputs = ctrl.input()
         outputs = ctrl.output()
         inputs.joint_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=device)
@@ -2545,7 +2549,7 @@ class TestControllerDiffIK(unittest.TestCase):
     def test_disabled_bandwidth_port_written_raises(self):
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
-        ctrl = ControllerDiffIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
+        ctrl = ControllerDifferentialIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
         inputs = ctrl.input()
         outputs = ctrl.output()
         inputs.joint_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=device)
@@ -2561,7 +2565,7 @@ class TestControllerDiffIK(unittest.TestCase):
         """With zero primary-task error, the entire qd output must satisfy J @ qd == 0."""
         device = wp.get_device()
         model = _build_seven_dof_chain_with_tool_site(device)
-        ctrl = ControllerDiffIK(
+        ctrl = ControllerDifferentialIK(
             model,
             tool_sites="tip",
             bandwidth=1.0,

@@ -3,8 +3,8 @@
 
 from .controller import ControllerBase
 from .impl import (
-    ControllerDiffIK,
-    ControllerDiffIKModelFree,
+    ControllerDifferentialIK,
+    ControllerDifferentialIKModelFree,
     ControllerJointImpedance,
     ControllerJointImpedanceModelFree,
     ControllerOperationalSpace,
@@ -13,8 +13,8 @@ from .impl import (
 
 __all__ = [
     "ControllerBase",
-    "ControllerDiffIK",
-    "ControllerDiffIKModelFree",
+    "ControllerDifferentialIK",
+    "ControllerDifferentialIKModelFree",
     "ControllerJointImpedance",
     "ControllerJointImpedanceModelFree",
     "ControllerOperationalSpace",
