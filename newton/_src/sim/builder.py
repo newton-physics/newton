@@ -8890,14 +8890,17 @@ class ModelBuilder:
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
 
-        def _edge_anchor_xform(e_idx: int, node_idx: int) -> wp.transform:
+        def _edge_anchor_xform(e_idx: int, node_idx: int, reverse_tangent: bool = False) -> wp.transform:
             if node_idx == edge_u[e_idx]:
                 z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
             elif node_idx == edge_v[e_idx]:
                 z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
-            return wp.transform(wp.vec3(0.0, 0.0, float(z)), wp.quat_identity())
+            rotation = (
+                wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi) if reverse_tangent else wp.quat_identity()
+            )
+            return wp.transform(wp.vec3(0.0, 0.0, float(z)), rotation)
 
         joint_counter = 0
         jointed_body_pairs: set[tuple[int, int]] = set()
@@ -8999,7 +9002,11 @@ class ModelBuilder:
                     )
                     root_joint = articulation_root_joint_factory(
                         edge_bodies[start_edge],
-                        _edge_anchor_xform(start_edge, root_node),
+                        _edge_anchor_xform(
+                            start_edge,
+                            root_node,
+                            reverse_tangent=root_node == edge_v[start_edge],
+                        ),
                     )
                 component_joints: list[int] = [root_joint]
                 component_edges: list[int] = []
@@ -9019,8 +9026,16 @@ class ModelBuilder:
                                 raise RuntimeError("add_rod_graph: internal error (self-connection)")
 
                             # Anchors at the shared node on each edge body
-                            parent_xform = _edge_anchor_xform(parent_edge, shared_node)
-                            child_xform = _edge_anchor_xform(child_edge, shared_node)
+                            parent_xform = _edge_anchor_xform(
+                                parent_edge,
+                                shared_node,
+                                reverse_tangent=shared_node == edge_u[parent_edge],
+                            )
+                            child_xform = _edge_anchor_xform(
+                                child_edge,
+                                shared_node,
+                                reverse_tangent=shared_node == edge_v[child_edge],
+                            )
 
                             joint_counter += 1
                             joint_label = f"{label}_cable_{joint_counter}" if label else None

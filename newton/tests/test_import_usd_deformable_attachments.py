@@ -403,7 +403,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, return_deformable_results=True)
+        result = builder.add_usd(stage, return_deformable_results=True, enable_self_collisions=False)
 
         plug_body = result["path_body_map"]["/World/Plug"]
         support_body = result["path_body_map"]["/World/Support"]
@@ -430,6 +430,27 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         self.assertEqual(
             [builder.joint_child[joint] for joint in cable_joints],
             list(reversed(cable_bodies[:-1])),
+        )
+        cable_shapes = [builder.body_shapes[body][0] for body in cable_bodies]
+        plug_shape = builder.body_shapes[plug_body][0]
+        filtered_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
+        self.assertIn(tuple(sorted((plug_shape, cable_shapes[0]))), filtered_pairs)
+        self.assertIn(tuple(sorted((cable_shapes[0], cable_shapes[-1]))), filtered_pairs)
+
+        first_cable_joint = cable_joints[0]
+        parent_anchor_q = wp.mul(
+            wp.transform_get_rotation(builder.body_q[builder.joint_parent[first_cable_joint]]),
+            wp.transform_get_rotation(builder.joint_X_p[first_cable_joint]),
+        )
+        child_anchor_q = wp.mul(
+            wp.transform_get_rotation(builder.body_q[builder.joint_child[first_cable_joint]]),
+            wp.transform_get_rotation(builder.joint_X_c[first_cable_joint]),
+        )
+        np.testing.assert_allclose(
+            wp.quat_rotate(parent_anchor_q, wp.vec3(0.0, 0.0, 1.0)), [-1.0, 0.0, 0.0], atol=1.0e-6
+        )
+        np.testing.assert_allclose(
+            wp.quat_rotate(child_anchor_q, wp.vec3(0.0, 0.0, 1.0)), [-1.0, 0.0, 0.0], atol=1.0e-6
         )
         self.assertLess(plug_root_joint, attachment_joint)
         self.assertLess(attachment_joint, cable_joints[0])

@@ -2704,8 +2704,6 @@ def parse_usd(
     # (to avoid repeated regex evaluations)
     ignored_body_paths = set()
     material_specs = {}
-    # maps from articulation_id to list of body_ids
-    articulation_bodies = {}
 
     # TODO: uniform interface for iterating
     def data_for_key(physics_utils_results, key):
@@ -3413,7 +3411,6 @@ def parse_usd(
                 )
                 import_attached_cables(body_labels)
 
-            articulation_bodies[articulation_id] = art_bodies
             articulation_has_self_collision[articulation_id] = bool(
                 R.get_value(
                     articulation_prim,
@@ -4348,14 +4345,6 @@ def parse_usd(
             if other_shape_id != shape_id:
                 builder.add_shape_collision_filter_pair(shape_id, other_shape_id)
 
-    # apply collision filters from articulations that have self collisions disabled
-    for art_id, bodies in articulation_bodies.items():
-        if not articulation_has_self_collision[art_id]:
-            for body1, body2 in itertools.combinations(bodies, 2):
-                for shape1 in builder.body_shapes[body1]:
-                    for shape2 in builder.body_shapes[body2]:
-                        builder.add_shape_collision_filter_pair(shape1, shape2)
-
     def _zero_mass_information():
         """Create a reusable zero-contribution collider mass payload for callback fallback."""
         mass_info = UsdPhysics.RigidBodyAPI.MassInformation()
@@ -4777,6 +4766,22 @@ def parse_usd(
             _filter_prim = stage.GetPrimAtPath(_filter_path)
             if _filter_prim and _filter_prim.IsValid():
                 _collect_filtered_pairs(_filter_prim)
+
+    # Disable contacts between bodies in articulations whose self-collision setting is off.
+    # Use final joint ranges so bodies connected after an articulation was created are included.
+    for articulation in range(builder.articulation_count):
+        if articulation_has_self_collision.get(articulation, enable_self_collisions):
+            continue
+        bodies: set[int] = set()
+        for joint in range(builder.articulation_start[articulation], builder.articulation_end[articulation]):
+            parent = builder.joint_parent[joint]
+            if parent >= 0:
+                bodies.add(parent)
+            bodies.add(builder.joint_child[joint])
+        for body1, body2 in itertools.combinations(sorted(bodies), 2):
+            for shape1 in builder.body_shapes[body1]:
+                for shape2 in builder.body_shapes[body2]:
+                    builder.add_shape_collision_filter_pair(shape1, shape2)
 
     def _resolve_collision_shape_ids(path: str) -> tuple[list[int], str | None]:
         """Resolve a filtered-pair endpoint to Newton shape indices, or an unsupported reason.
@@ -5370,7 +5375,6 @@ def parse_usd(
         "collapse_results": collapse_results,
         "schema_attrs": R.schema_attrs,
         # "articulation_roots": articulation_roots,
-        # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
         "particle_scene_path": str(particle_scene_prim.GetPath()) if particle_scene_prim is not None else None,
