@@ -65,6 +65,9 @@ class ContactWriterDataKamino:
     geom_gap: wp.array[wp.float32]  # Detection gap for each geometry [m]
     geom_margin: wp.array[wp.float32]  # Shape margin for each geometry [m]
 
+    # Body immovability flags for two-immovable-endpoint culling
+    body_is_immovable: wp.array[wp.int32]
+
     # Material properties (indexed by material pair)
     material_restitution: wp.array[wp.float32]
     material_static_friction: wp.array[wp.float32]
@@ -147,6 +150,16 @@ def _write_contact_unified_kamino(
     if wid_a < 0:
         wid = wid_b
     world_max_contacts = writer_data.world_max_contacts[wid]
+
+    # Skip contacts between two bodies Kamino treats as immovable: the Delassus
+    # row would be structurally singular and never affect motion. The bid < 0
+    # (world) case is kept so the other endpoint is exercised against an
+    # infinite-mass anchor.
+    bid_a_cull = writer_data.geom_bid[contact_data.shape_a]
+    bid_b_cull = writer_data.geom_bid[contact_data.shape_b]
+    if bid_a_cull >= 0 and bid_b_cull >= 0:
+        if writer_data.body_is_immovable[bid_a_cull] != 0 and writer_data.body_is_immovable[bid_b_cull] != 0:
+            return
 
     reservation = reserve_contact_capacity(
         writer_data.model_max_contacts,
@@ -729,6 +742,7 @@ class CollisionPipelineUnifiedKamino:
         writer_data.geom_mid = self._model.geoms.material
         writer_data.geom_gap = self._model.geoms.gap
         writer_data.geom_margin = self._model.geoms.margin
+        writer_data.body_is_immovable = self._model.bodies.is_immovable
         writer_data.material_restitution = self._model.materials.restitution
         writer_data.material_static_friction = self._model.materials.static_friction
         writer_data.material_dynamic_friction = self._model.materials.dynamic_friction

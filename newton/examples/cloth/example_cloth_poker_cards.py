@@ -39,7 +39,6 @@ CARD_COLOR_PALETTE = (
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
 

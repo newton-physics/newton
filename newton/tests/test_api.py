@@ -141,64 +141,53 @@ class TestApi(unittest.TestCase):
         doc_method = "\n".join(line.strip() for line in (TetMesh.create_from_usd.__doc__ or "").splitlines()).strip()
         assert doc_func == doc_method, "Docstring mismatch between get_tetmesh and TetMesh.create_from_usd"
 
-    def test_shape_helpers_reject_keyword_only_args_positionally(self):
-        """Reject optional shape-helper arguments passed positionally."""
+    def test_keyword_only_arguments_reject_positional_use(self):
+        """Reject positional use of mature keyword-only API options."""
         import warp as wp  # noqa: PLC0415
 
-        from newton import ModelBuilder  # noqa: PLC0415
-
-        builder = ModelBuilder()
-
-        with self.assertRaisesRegex(TypeError, "positional"):
-            builder.add_shape_box(-1, wp.transform(), 0.1, 0.2, 0.3)
-
-    def test_keyword_only_deprecation_shim_rebinds_builder_args(self):
-        """Keep legacy builder arguments working during deprecation."""
-        import warp as wp  # noqa: PLC0415
-
-        from newton import ModelBuilder  # noqa: PLC0415
-
-        builder = ModelBuilder()
-
-        with self.assertWarnsRegex(DeprecationWarning, "Passing 'xform' positionally"):
-            body = builder.add_body(wp.transform())
-
-        self.assertEqual(body, 0)
-
-    def test_keyword_only_deprecation_shim_rejects_duplicate_keyword(self):
-        """Reject duplicate values passed through the deprecation shim."""
-        import warp as wp  # noqa: PLC0415
-
-        from newton import ModelBuilder  # noqa: PLC0415
-
-        with self.assertRaisesRegex(TypeError, "multiple values for argument 'xform'"):
-            ModelBuilder().add_body(wp.transform(), xform=wp.transform())
-
-    def test_keyword_only_deprecation_shim_rebinds_config_constructors(self):
-        import newton  # noqa: PLC0415
-
-        with self.assertWarnsRegex(DeprecationWarning, "Passing 'density', 'ke' positionally"):
-            shape_cfg = newton.ModelBuilder.ShapeConfig(12.0, 34.0)
-        self.assertEqual(shape_cfg.density, 12.0)
-        self.assertEqual(shape_cfg.ke, 34.0)
-
-        with self.assertWarnsRegex(DeprecationWarning, "Passing 'axis' positionally"):
-            dof_cfg = newton.ModelBuilder.JointDofConfig(newton.Axis.Y)
-        self.assertAlmostEqual(dof_cfg.axis[1], 1.0)
-
-    def test_keyword_only_deprecation_shim_rebinds_solver_options(self):
         import newton  # noqa: PLC0415
 
         builder = newton.ModelBuilder()
         model = builder.finalize()
 
-        with self.assertWarnsRegex(DeprecationWarning, "Passing 'angular_damping' positionally"):
-            solver = newton.solvers.SolverSemiImplicit(model, 0.123)
+        calls = (
+            lambda: builder.add_shape_box(-1, wp.transform(), 0.1, 0.2, 0.3),
+            lambda: builder.add_body(wp.transform()),
+            lambda: newton.ModelBuilder.ShapeConfig(12.0, 34.0),
+            lambda: newton.ModelBuilder.JointDofConfig(newton.Axis.Y),
+            lambda: newton.solvers.SolverSemiImplicit(model, 0.123),
+        )
 
-        self.assertEqual(solver.angular_damping, 0.123)
+        for call in calls:
+            with self.subTest(call=call), self.assertRaises(TypeError):
+                call()
 
-    def test_keyword_only_deprecation_shim_preserves_signature(self):
-        """Preserve keyword-only kinds in decorated signatures."""
+    def test_deprecate_nonkeyword_arguments_rebinds_options(self):
+        """Rebind positional options while a deprecation window is active."""
+        from newton._src.utils.deprecation import deprecate_nonkeyword_arguments  # noqa: PLC0415
+
+        @deprecate_nonkeyword_arguments
+        def func(value, *, option=None):
+            return value, option
+
+        with self.assertWarnsRegex(DeprecationWarning, "Passing 'option' positionally"):
+            result = func(1, 2)
+
+        self.assertEqual(result, (1, 2))
+
+    def test_deprecate_nonkeyword_arguments_rejects_duplicate_keyword(self):
+        """Reject options supplied both positionally and by keyword."""
+        from newton._src.utils.deprecation import deprecate_nonkeyword_arguments  # noqa: PLC0415
+
+        @deprecate_nonkeyword_arguments
+        def func(value, *, option=None):
+            return value, option
+
+        with self.assertRaisesRegex(TypeError, "multiple values for argument 'option'"):
+            func(1, 2, option=3)
+
+    def test_keyword_only_api_signatures(self):
+        """Expose mature optional API arguments as keyword-only."""
         import newton  # noqa: PLC0415
 
         body_sig = inspect.signature(newton.ModelBuilder.add_body)

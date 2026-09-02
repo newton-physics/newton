@@ -2446,6 +2446,65 @@ class TestModelJoints(unittest.TestCase):
         finally:
             newton.use_coord_layout_targets = previous_flag
 
+    def test_legacy_target_layout_shapes_and_values(self):
+        """Verify legacy DOF target layout behavior."""
+        lin_targets = (1.5, -2.5, 3.5)
+        ang_targets = (0.1, 0.2, -0.3)
+
+        def _axes(targets):
+            return [
+                ModelBuilder.JointDofConfig(axis=axis, target_pos=target)
+                for axis, target in zip((newton.Axis.X, newton.Axis.Y, newton.Axis.Z), targets, strict=True)
+            ]
+
+        previous_flag = newton.use_coord_layout_targets
+        newton.use_coord_layout_targets = False
+        try:
+            builder = ModelBuilder()
+            b_free = builder.add_link(mass=1.0)
+            j_free = builder.add_joint(
+                newton.JointType.FREE,
+                parent=-1,
+                child=b_free,
+                linear_axes=_axes(lin_targets),
+                angular_axes=_axes(ang_targets),
+            )
+            b_ball = builder.add_link(mass=1.0)
+            j_ball = builder.add_joint(
+                newton.JointType.BALL,
+                parent=b_free,
+                child=b_ball,
+                angular_axes=_axes(ang_targets),
+            )
+            b_rev = builder.add_link(mass=1.0)
+            j_rev = builder.add_joint_revolute(parent=b_ball, child=b_rev, axis=newton.Axis.Z, target_pos=0.7)
+            builder.add_articulation([j_free, j_ball, j_rev])
+            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
+                model = builder.finalize()
+        finally:
+            newton.use_coord_layout_targets = previous_flag
+
+        self.assertEqual(model.joint_coord_count, 7 + 4 + 1)
+        self.assertEqual(model.joint_dof_count, 6 + 3 + 1)
+        self.assertEqual(model.joint_target_q.shape[0], model.joint_dof_count)
+        self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
+
+        control = model.control()
+        self.assertEqual(control.joint_target_q.shape[0], model.joint_dof_count)
+        self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
+
+        np.testing.assert_array_equal(model.joint_target_q_start.numpy(), model.joint_qd_start.numpy())
+
+        # The quat-w padding slot is dropped: angular targets stay raw per-axis angles.
+        target_q = model.joint_target_q.numpy()
+        qd_starts = model.joint_qd_start.numpy()
+        f = int(qd_starts[j_free])
+        np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
+        np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
+        b = int(qd_starts[j_ball])
+        np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
+        self.assertAlmostEqual(float(target_q[int(qd_starts[j_rev])]), 0.7, places=6)
+
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are
