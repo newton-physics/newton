@@ -469,11 +469,11 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
         """
 
         tool_pose_world: wp.array[wp.transform] | wp.indexedarray[wp.transform]
-        """Current world pose of the tool frame, shape [controlled_robot_count]."""
+        """Current world pose of the tool frame [m, unitless quaternion], shape [controlled_robot_count]."""
         tool_twist_world: wp.array[wp.spatial_vector] | wp.indexedarray[wp.spatial_vector]
         """Current tool twist (linear, angular) in world coordinates [m/s, rad/s], shape [controlled_robot_count]."""
         jacobian_tool_world: wp.array3d[wp.float32] | wp.indexedarray(dtype=wp.float32, ndim=3)
-        """Tool-point Jacobian in world coordinates, shape [controlled_robot_count, 6, max_controlled_dofs]."""
+        """Tool-point Jacobian in world coordinates, shape [controlled_robot_count, 6, max_controlled_dofs]. Rows 0-2 map a controlled DOF's velocity to the tool point's linear velocity [1 or m], rows 3-5 to its angular velocity [1/m or 1], depending on whether that DOF is revolute or prismatic."""
         mass_matrix: wp.array3d[wp.float32] | wp.indexedarray(dtype=wp.float32, ndim=3) | None
         """Joint-space mass matrix over the controlled DOFs, shape [controlled_robot_count, max_controlled_dofs, max_controlled_dofs]; a robot with fewer than ``max_controlled_dofs`` DOFs leaves the trailing rows and columns unread. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
         gravity_force: wp.array[wp.float32] | wp.indexedarray[wp.float32] | None
