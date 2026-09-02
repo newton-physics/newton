@@ -182,6 +182,26 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertEqual(len(duplicate_mesh.vertices), len(duplicate_mesh.indices))
         self.assertEqual(len(np.unique(duplicate_mesh.vertices, axis=0)), 10)
 
+    def test_nightly_collision_benchmarks_cover_distinct_pipeline_paths(self):
+        """Keep broad-phase and complex-contact coverage in separate nightly results."""
+        self.assertEqual(
+            tuple(bench_contacts.BroadPhaseCollision.params[0]),
+            (("sap", 10_000), ("nxn", 1_000), ("explicit", 10_000)),
+        )
+        self.assertFalse(bench_contacts.BroadPhaseCollision.__name__.startswith("Fast"))
+        self.assertFalse(bench_contacts.ComplexContactCollision.__name__.startswith("Fast"))
+        self.assertEqual(tuple(bench_contacts.ComplexContactCollision.params[0]), ("mesh_convex", "mesh_sdf"))
+
+        benchmark_names = (
+            "simulation.bench_contacts.BroadPhaseCollision.time_collide",
+            "simulation.bench_contacts.ComplexContactCollision.time_collide",
+        )
+        inventory = {entry["name"] for entry in self._discover_benchmarks(pr_gate=False)}
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for benchmark_name in benchmark_names:
+            self.assertIn(benchmark_name, inventory)
+            self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
+
     def test_fast_kitchen_g1_validates_kitchen_body_count(self):
         """Validate the configured kitchen body count at runtime."""
         benchmark = bench_mujoco.FastKitchenG1()

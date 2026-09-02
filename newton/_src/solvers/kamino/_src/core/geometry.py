@@ -89,13 +89,23 @@ class GeometryDescriptor(Descriptor):
 
     group: int = 1
     """
-    The collision group assigned to the collision geometry.
+    The collision group assigned to the collision geometry. Together with this
+    geometry's `collides` value, this determines whether the geometry collides
+    with another geometry with a given `group` and `collides`:
+
+    ``can_collide = ((geom1.group & geom2.collides) != 0) and ((geom2.group & geom1.collides) != 0)``
+
     Defaults to the default group with value `1`.
     """
 
     collides: int = 1
     """
-    The collision groups with which the collision geometry can collide.
+    The collision groups with which the collision geometry can collide. Together
+    with this geometry's `group` value, this determines whether the geometry
+    collides with another geometry with a given `group` and `collides`:
+
+    ``can_collide = ((geom1.group & geom2.collides) != 0) and ((geom2.group & geom1.collides) != 0)``
+
     Defaults to enabling collisions with the default group with value `1`.
     """
 
@@ -310,7 +320,15 @@ class GeometriesModel:
 
     group: wp.array[wp.int32] | None = None
     """
-    Collision group assigned to each collision geometry.
+    Collision group assigned to each collision geometry. These groups are based
+    on Newton's collision group semantics, not the group/collides semantics used
+    by `ModelBuilderKamino`.
+
+    Group `0` will not collide with anything. Any positive group N will collide
+    with the same group as well as any negative group. Any negative group -M
+    will collide with all groups except -M. See docs/concepts/collisions.rst
+    for details.
+
     Shape of ``(num_geoms,)``.
     """
 

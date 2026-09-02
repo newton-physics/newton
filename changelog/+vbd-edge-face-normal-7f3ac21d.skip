@@ -1,0 +1,1 @@
+Test-only: assert the VBD edge/face push along the contact normal instead of +y.

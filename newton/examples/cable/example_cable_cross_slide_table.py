@@ -44,6 +44,7 @@ JOINT_LIMIT_TOLERANCE = 0.003
 START_RAMP_DURATION = 1.2
 MOUSE_PICK_STIFFNESS = 0.01
 MOUSE_PICK_DAMPING = 0.001
+PULLEY_OPACITY = 0.55
 CONTACT_KE = 1.0e6
 
 
@@ -221,6 +222,7 @@ def add_pulley(
             half_height=half_height,
             cfg=cfg,
             color=shape_color,
+            opacity=PULLEY_OPACITY,
             label=f"{label}_{suffix}" if label else None,
         )
 
@@ -405,7 +407,6 @@ def add_visual_bar(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         # Store viewer and configure simulation cadence.
         self.viewer = viewer
 
