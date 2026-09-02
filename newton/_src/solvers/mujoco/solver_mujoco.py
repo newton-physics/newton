@@ -1699,11 +1699,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         def parse_actuator_enum(
             value: Any, mapping: dict[str, int], attribute: str, context: dict[str, Any] | None
         ) -> int:
-            """Parse actuator enum values, warning and defaulting to 0 for unrecognized names."""
+            """Parse actuator enum values, warning and defaulting to 0 for unrecognized names or ordinals."""
             try:
                 # Without a fallback, _parse_named_int resolves names, MuJoCo enum reprs and bare
-                # ordinals, and raises for anything else, which is the case worth warning about.
-                return int(SolverMuJoCo._parse_named_int(value, mapping))
+                # ordinals, and raises for anything else. Bare ordinals also need checking against
+                # mapping.values(), since _parse_named_int accepts any numeric value or string.
+                ordinal = int(SolverMuJoCo._parse_named_int(value, mapping))
+                if ordinal in mapping.values():
+                    return ordinal
             except ValueError:
                 pass
             context = context or {}
