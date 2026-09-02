@@ -6149,6 +6149,7 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     with test.assertRaisesRegex(ValueError, "requires isotropic ROD shear and bend"):
         newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
 
+
 def _assert_rod_dof_property_refresh(
     test,
     device,
