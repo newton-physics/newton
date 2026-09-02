@@ -50,22 +50,6 @@ class DriveBase:
             """
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
-    _control_input_attribute_keys: ClassVar[tuple[str, ...]] = ()
-
-    def _required_control_attributes(self) -> tuple[str, ...]:
-        """Return JOINT_DOF float32 custom Control attributes required by this drive."""
-        return self._control_input_attribute_keys
-
-    def _bind_control_inputs(self, control: Any) -> None:
-        """Bind required colon-addressed attributes from the current Control object."""
-        self._bound_control_inputs = {}
-        bound_inputs = {}
-        for key in self._required_control_attributes():
-            value = control
-            for component in key.split(":"):
-                value = getattr(value, component)
-            bound_inputs[key] = value
-        self._bound_control_inputs = bound_inputs
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:

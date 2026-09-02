@@ -394,7 +394,23 @@ class DriveNeuralGRU(DriveBase):
         self._gru_layers: list[Any] = []
         self._head: Any = None
         self._activation: Any = None
+        self._bound_control_inputs: dict[str, wp.array[float]] = {}
         self._next_hidden: list[wp.array2d[float]] | None = None
+
+    def _required_control_attributes(self) -> tuple[str, ...]:
+        """Return the optional custom Control input selected by metadata."""
+        return self._control_input_attribute_keys
+
+    def _bind_control_inputs(self, control: Any) -> None:
+        """Bind the optional bias input from the current Control object."""
+        self._bound_control_inputs = {}
+        bound_inputs = {}
+        for key in self._required_control_attributes():
+            value = control
+            for component in key.split(":"):
+                value = getattr(value, component)
+            bound_inputs[key] = value
+        self._bound_control_inputs = bound_inputs
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         """Create the Warp-NN layers and inference buffers.
@@ -504,7 +520,7 @@ class DriveNeuralGRU(DriveBase):
         device: wp.Device | None = None,
     ) -> None:
         """Evaluate one GRU sample and write physical effort."""
-        control_inputs = getattr(self, "_bound_control_inputs", {})
+        control_inputs = self._bound_control_inputs
         self._bound_control_inputs = {}
         bias_force = control_inputs.get(_DYNAMIC_BIAS_CONTROL_ATTRIBUTE)
         self._next_hidden = None
