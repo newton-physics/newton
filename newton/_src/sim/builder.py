@@ -8650,12 +8650,15 @@ class ModelBuilder:
         junction_collision_filter: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
+        articulation_root_node: int | None = None,
         articulation_root_joint_factory: Callable[[int, Transform], int] | None = None,
     ) -> tuple[list[int], list[int]]:
         """Build a rod graph with an optional importer-defined articulation root joint.
 
         The callback runs after the root body exists and before the rod joints are created. Public
-        callers use :meth:`add_rod_graph`, which creates a free joint to the world instead.
+        callers use :meth:`add_rod_graph`, which creates a free joint to the world instead. An
+        importer may select the graph node where traversal starts so the resulting joints follow
+        parent-before-child order from an attached endpoint.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -8682,6 +8685,13 @@ class ModelBuilder:
 
         num_nodes = len(node_positions)
         num_edges = len(edges)
+        if articulation_root_node is not None:
+            if articulation_root_joint_factory is None:
+                raise ValueError("add_rod_graph: articulation_root_node requires an articulation root joint factory")
+            if articulation_root_node < 0 or articulation_root_node >= num_nodes:
+                raise ValueError(
+                    f"add_rod_graph: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
+                )
         if quaternions is not None and len(quaternions) != num_edges:
             raise ValueError(
                 f"add_rod_graph: quaternions must have {num_edges} elements for {num_edges} edges, "
@@ -8856,7 +8866,17 @@ class ModelBuilder:
             visited = [False] * num_edges
             component_index = 0
 
-            for start_edge in range(num_edges):
+            start_edges = list(range(num_edges))
+            if articulation_root_node is not None:
+                root_edges = node_incidence[articulation_root_node]
+                if not root_edges:
+                    raise ValueError(
+                        f"add_rod_graph: articulation_root_node {articulation_root_node} has no incident edge"
+                    )
+                start_edges.remove(root_edges[0])
+                start_edges.insert(0, root_edges[0])
+
+            for start_edge in start_edges:
                 if visited[start_edge]:
                     continue
 
@@ -8871,9 +8891,14 @@ class ModelBuilder:
                         )
                     root_joint = self.add_joint_free(child=edge_bodies[start_edge], label=root_label)
                 else:
+                    root_node = (
+                        articulation_root_node
+                        if component_index == 0 and articulation_root_node is not None
+                        else edge_u[start_edge]
+                    )
                     root_joint = articulation_root_joint_factory(
                         edge_bodies[start_edge],
-                        _edge_anchor_xform(start_edge, edge_u[start_edge]),
+                        _edge_anchor_xform(start_edge, root_node),
                     )
                 component_joints: list[int] = [root_joint]
                 component_edges: list[int] = []

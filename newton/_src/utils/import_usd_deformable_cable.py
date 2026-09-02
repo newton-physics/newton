@@ -74,6 +74,7 @@ _LEGACY_CURVE_MATERIAL_ATTRS = (
 @dataclass(frozen=True, slots=True)
 class _CableArticulationRoot:
     attachment_path: str
+    cable_point: int
     parent_body: int
     parent_anchor: wp.vec3
 
@@ -95,6 +96,34 @@ def _add_cable_articulation_root_joint(
     )
     joint_indices.append(joint)
     return joint
+
+
+def _read_cable_attachment_endpoint(prim, deformable_read, point_count: int, closed: bool) -> int | None:
+    """Return the attached endpoint when a hard attachment can root an open cable articulation."""
+    if closed:
+        return None
+    if str(deformable_read(prim, "type0") or "") != "point":
+        return None
+    if str(deformable_read(prim, "type1") or "") != "xform":
+        return None
+    point_indices = [int(index) for index in (deformable_read(prim, "indices0") or [])]
+    if len(point_indices) != 1 or point_indices[0] not in (0, point_count - 1):
+        return None
+    if deformable_read(prim, "indices1"):
+        return None
+    if len(_attachment_vec3_list(deformable_read(prim, "coords1"))) > 1:
+        return None
+
+    enabled = deformable_read(prim, "attachmentEnabled")
+    if enabled is not None and not bool(enabled):
+        return None
+    stiffness = deformable_read(prim, "stiffness")
+    if stiffness is not None and float(stiffness) != math.inf:
+        return None
+    damping = deformable_read(prim, "damping")
+    if damping is not None and (not math.isfinite(float(damping)) or float(damping) < 0.0):
+        return None
+    return point_indices[0]
 
 
 # Thickness attributes in resolution order: the current revision first, then the deprecated name.
@@ -393,34 +422,15 @@ def _read_cable_articulation_root(
 ) -> _CableArticulationRoot | None:
     """Return an attachment that can connect the cable articulation to its parent.
 
-    The supported case is a hard attachment from the cable's first endpoint to the world or a
+    The supported case is a hard attachment from a cable endpoint to the world or a
     transform. If the transform belongs to a rigid body, that body must be in the most recently
     added articulation because articulation joints occupy contiguous ranges.
     """
     deformable_read = ctx.deformable_read
-    if cable.closed:
-        return None
-    if str(deformable_read(prim, "type0") or "") != "point":
-        return None
-    if str(deformable_read(prim, "type1") or "") != "xform":
-        return None
-    if [int(index) for index in (deformable_read(prim, "indices0") or [])] != [0]:
-        return None
-    if deformable_read(prim, "indices1"):
+    cable_point = _read_cable_attachment_endpoint(prim, deformable_read, len(cable.positions), cable.closed)
+    if cable_point is None:
         return None
     target_points = _attachment_vec3_list(deformable_read(prim, "coords1"))
-    if len(target_points) > 1:
-        return None
-
-    enabled = deformable_read(prim, "attachmentEnabled")
-    if enabled is not None and not bool(enabled):
-        return None
-    stiffness = deformable_read(prim, "stiffness")
-    if stiffness is not None and float(stiffness) != math.inf:
-        return None
-    damping = deformable_read(prim, "damping")
-    if damping is not None and (not math.isfinite(float(damping)) or float(damping) < 0.0):
-        return None
 
     target_point = target_points[0] if target_points else wp.vec3(0.0, 0.0, 0.0)
     target = _resolve_attachment_target(ctx, target_path, target_point)
@@ -429,7 +439,7 @@ def _read_cable_articulation_root(
     parent_body, parent_anchor = target
     if parent_body >= 0 and parent_body not in bodies_in_latest_articulation:
         return None
-    return _CableArticulationRoot(str(prim.GetPath()), parent_body, parent_anchor)
+    return _CableArticulationRoot(str(prim.GetPath()), cable_point, parent_body, parent_anchor)
 
 
 def _deformable_prepare_cable_topology(
@@ -438,7 +448,7 @@ def _deformable_prepare_cable_topology(
     """Prepare cable connectivity that must be known before creating cable joints.
 
     Hard attachments between coincident cable points become shared nodes in one rod graph. For an
-    open cable with one hard attachment at its first endpoint, that attachment connects the cable
+    open cable with one hard attachment at an endpoint, that attachment connects the cable
     articulation to the world or a rigid body. Other attachments remain separate constraints.
 
     Returns the cable paths built as shared rod graphs, the attachment paths represented by those
@@ -859,7 +869,7 @@ def _deformable_import_cable(
     """Import single-curve cable deformables (linear ``GeomBasisCurves`` -> rod via ``add_rod``).
 
     Curves already built as a rod graph are skipped. Each remaining cable is placed in an
-    articulation. A physical attachment at the first endpoint provides the root joint when
+    articulation. A physical attachment at either endpoint provides the root joint when
     possible; otherwise the cable receives a free joint to the world.
     """
     from pxr import UsdGeom
@@ -882,7 +892,11 @@ def _deformable_import_cable(
 
     if not (root_prim and root_prim.IsValid()):
         return
-    for prim in ctx.prims.cables:
+    cable_prims = sorted(
+        ctx.prims.cables,
+        key=lambda prim: str(prim.GetPath()) not in cable_articulation_roots,
+    )
+    for prim in cable_prims:
         path = str(prim.GetPath())
         if path in cables_in_shared_graphs:
             continue  # already built as part of a welded rod graph
@@ -1069,6 +1083,7 @@ def _deformable_import_cable(
                     label=label,
                     wrap_in_articulation=True,
                     body_frame_origin="com",
+                    articulation_root_node=articulation_root.cable_point,
                     articulation_root_joint_factory=partial(
                         _add_cable_articulation_root_joint,
                         builder,

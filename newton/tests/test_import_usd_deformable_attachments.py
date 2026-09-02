@@ -348,6 +348,62 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         model = builder.finalize()
         newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
 
+    def test_physics_attachment_joins_earlier_articulation_from_last_endpoint(self):
+        """Join a cable's last endpoint to a rigid articulation imported before unrelated bodies."""
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = _deformable_stage()
+        for name in ("Plug", "Support", "Table"):
+            rigid = UsdGeom.Cube.Define(stage, f"/World/{name}")
+            rigid.CreateSizeAttr(0.1)
+            UsdPhysics.RigidBodyAPI.Apply(rigid.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(rigid.GetPrim())
+
+        points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        _add_cable_curve(stage, "/World/Cable", points)
+        _add_physics_attachment(
+            stage,
+            "/World/PlugAttachment",
+            src0="/World/Cable",
+            src1="/World/Plug",
+            type0="point",
+            indices0=[len(points) - 1],
+            coords1=[points[-1]],
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+
+        plug_body = result["path_body_map"]["/World/Plug"]
+        support_body = result["path_body_map"]["/World/Support"]
+        table_body = result["path_body_map"]["/World/Table"]
+        plug_root_joint = next(joint for joint, child in enumerate(builder.joint_child) if child == plug_body)
+        plug_articulation = builder._find_articulation_for_body(plug_body)
+        cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
+        attachment_joint = result["path_attachment_map"]["/World/PlugAttachment"][0]
+
+        self.assertIsNotNone(plug_articulation)
+        self.assertNotEqual(builder._find_articulation_for_body(support_body), plug_articulation)
+        self.assertNotEqual(builder._find_articulation_for_body(table_body), plug_articulation)
+        self.assertEqual(builder.joint_articulation[attachment_joint], plug_articulation)
+        self.assertTrue(all(builder.joint_articulation[joint] == plug_articulation for joint in cable_joints))
+        self.assertEqual(builder.joint_child[attachment_joint], cable_bodies[-1])
+        self.assertEqual(
+            [builder.joint_parent[joint] for joint in cable_joints],
+            list(reversed(cable_bodies[1:])),
+        )
+        self.assertEqual(
+            [builder.joint_child[joint] for joint in cable_joints],
+            list(reversed(cable_bodies[:-1])),
+        )
+        self.assertLess(plug_root_joint, attachment_joint)
+        self.assertLess(attachment_joint, cable_joints[0])
+        self.assertTrue(builder.validate_joint_ordering())
+
+        builder.color()
+        model = builder.finalize()
+        newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
+
     def test_physics_attachment_joins_robot_articulation_for_vbd(self):
         """Import a cable attached to a floating- or fixed-base robot articulation."""
         from pxr import Gf, UsdGeom, UsdPhysics
@@ -382,6 +438,11 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     root_joint.CreateBody1Rel().SetTargets([base.GetPath()])
                     root_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
 
+                unrelated = UsdGeom.Cube.Define(stage, "/World/Unrelated")
+                unrelated.CreateSizeAttr(0.1)
+                UsdPhysics.RigidBodyAPI.Apply(unrelated.GetPrim())
+                UsdPhysics.CollisionAPI.Apply(unrelated.GetPrim())
+
                 cable_points = [(0.3, 0.0, 1.0), (0.4, 0.0, 1.0), (0.5, 0.0, 1.0), (0.6, 0.0, 1.0)]
                 _add_cable_curve(stage, "/World/Cable", cable_points)
                 _add_physics_attachment(
@@ -390,7 +451,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     src0="/World/Cable",
                     src1="/World/Robot/Wrist",
                     type0="point",
-                    indices0=[0],
+                    indices0=[len(cable_points) - 1],
                     coords1=[(0.1, 0.0, 0.0)],
                 )
 
@@ -399,6 +460,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
                 base_body = result["path_body_map"]["/World/Robot/Base"]
                 wrist_body = result["path_body_map"]["/World/Robot/Wrist"]
+                unrelated_body = result["path_body_map"]["/World/Unrelated"]
                 base_joints = [joint for joint, child in enumerate(builder.joint_child) if child == base_body]
                 shoulder_joint = result["path_joint_map"]["/World/Robot/Shoulder"]
                 cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
@@ -411,15 +473,19 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     newton.JointType.FIXED if fixed_base else newton.JointType.FREE,
                 )
                 self.assertEqual(builder.joint_parent[attachment_joint], wrist_body)
-                self.assertEqual(builder.joint_child[attachment_joint], cable_bodies[0])
+                self.assertEqual(builder.joint_child[attachment_joint], cable_bodies[-1])
                 self.assertIsNotNone(articulation)
+                self.assertNotEqual(builder._find_articulation_for_body(unrelated_body), articulation)
                 self.assertTrue(
                     all(
                         builder.joint_articulation[joint] == articulation
                         for joint in (base_joints[0], shoulder_joint, attachment_joint, *cable_joints)
                     )
                 )
-                self.assertEqual(builder.articulation_count, 1)
+                self.assertLess(base_joints[0], shoulder_joint)
+                self.assertLess(shoulder_joint, attachment_joint)
+                self.assertLess(attachment_joint, cable_joints[0])
+                self.assertEqual(builder.articulation_count, 2)
                 self.assertTrue(builder.validate_joint_ordering())
 
                 builder.color()

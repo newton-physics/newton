@@ -61,7 +61,11 @@ from .import_usd_deformable_attachments import (
     _deformable_import_element_collision_filters,
     _deformable_remap_collapsed,
 )
-from .import_usd_deformable_cable import _deformable_import_cable, _deformable_prepare_cable_topology
+from .import_usd_deformable_cable import (
+    _deformable_import_cable,
+    _deformable_prepare_cable_topology,
+    _read_cable_attachment_endpoint,
+)
 from .import_usd_deformable_cloth import _deformable_import_cloth
 from .import_usd_deformable_utils import (
     _LOADABLE_VISUAL_TYPE_NAMES_LOWER,
@@ -2824,6 +2828,45 @@ def parse_usd(
     # This allows us to parse orphan joints (joints not included in any articulation)
     # even when articulations are present in the USD.
     processed_joints: set[str] = set()
+
+    cable_attachment_target_body_paths: set[str] = set()
+    if _deformable_prims.cables and _deformable_prims.attachments:
+        cable_topology: dict[str, tuple[int, bool]] = {}
+        for cable_prim in _deformable_prims.cables:
+            curves = UsdGeom.BasisCurves(cable_prim)
+            vertex_counts = curves.GetCurveVertexCountsAttr().Get() or []
+            if len(vertex_counts) != 1:
+                continue
+            cable_topology[str(cable_prim.GetPath())] = (
+                int(vertex_counts[0]),
+                curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic,
+            )
+
+        attachments_by_cable: dict[str, list[Usd.Prim]] = {}
+        for attachment_prim in _deformable_prims.attachments:
+            cable_path = _get_first_target(attachment_prim, "physics:src0")
+            if cable_path in cable_topology:
+                attachments_by_cable.setdefault(cable_path, []).append(attachment_prim)
+
+        for cable_path, attachment_prims in attachments_by_cable.items():
+            if len(attachment_prims) != 1:
+                continue
+            attachment_prim = attachment_prims[0]
+            point_count, closed = cable_topology[cable_path]
+            if _read_cable_attachment_endpoint(attachment_prim, deformable_read, point_count, closed) is None:
+                continue
+            target_path = _get_first_target(attachment_prim, "physics:src1")
+            target_prim = stage.GetPrimAtPath(target_path)
+            if not target_prim or not target_prim.IsValid():
+                continue
+            current_prim = target_prim
+            while current_prim and current_prim.IsValid():
+                current_path = str(current_prim.GetPath())
+                if current_path in body_specs:
+                    cable_attachment_target_body_paths.add(current_path)
+                    break
+                current_prim = current_prim.GetParent()
+
     authored_articulation_root_paths = [
         str(prim.GetPath())
         for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies())
@@ -2837,10 +2880,20 @@ def parse_usd(
     if UsdPhysics.ObjectType.Articulation in ret_dict:
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
 
+        articulation_entries = list(zip(paths, articulation_descs, strict=False))
+        target_articulations = [
+            index
+            for index, (_path, desc) in enumerate(articulation_entries)
+            if cable_attachment_target_body_paths.intersection(str(body) for body in desc.articulatedBodies)
+        ]
+        if len(target_articulations) == 1:
+            target_articulation = articulation_entries.pop(target_articulations[0])
+            articulation_entries.append(target_articulation)
+
         articulation_id = builder.articulation_count
         parent_prim = None
         body_data = {}
-        for path, desc in zip(paths, articulation_descs, strict=False):
+        for path, desc in articulation_entries:
             if warn_invalid_desc(path, desc):
                 continue
             articulation_path = str(path)
@@ -4492,11 +4545,26 @@ def parse_usd(
     else:
         bodies_to_articulate = new_bodies
 
-    if bodies_to_articulate:
+    cable_attachment_target_bodies = [
+        path_body_map[path] for path in cable_attachment_target_body_paths if path in path_body_map
+    ]
+    if len(cable_attachment_target_bodies) == 1:
+        cable_attachment_target_body = cable_attachment_target_bodies[0]
+        bodies_before_cables = (
+            [cable_attachment_target_body] if cable_attachment_target_body in bodies_to_articulate else []
+        )
+        bodies_after_cables = [body_id for body_id in bodies_to_articulate if body_id != cable_attachment_target_body]
+    else:
+        bodies_before_cables = bodies_to_articulate
+        bodies_after_cables = []
+
+    def add_base_articulations(body_ids: list[int]) -> None:
+        if not body_ids:
+            return
         if parent_body != -1:
             # When parent_body is specified, manually add joints to floating bodies with correct parent
             joint_children = set(builder.joint_child)
-            for body_id in bodies_to_articulate:
+            for body_id in body_ids:
                 if body_id in joint_children:
                     continue  # Already has a joint
                 if builder.body_mass[body_id] <= 0:
@@ -4519,7 +4587,7 @@ def parse_usd(
                 )
         else:
             joint_children = set(builder.joint_child)
-            for body_id in bodies_to_articulate:
+            for body_id in body_ids:
                 if body_id in joint_children:
                     continue
                 if builder.body_mass[body_id] <= 0:
@@ -4543,6 +4611,10 @@ def parse_usd(
                     )
                 else:
                     builder.add_articulation([joint_id], label=body_path)
+
+    # Articulation joints occupy a contiguous range. Create the attached body's base joint
+    # immediately before the cable joints, then add unrelated base joints after the cable.
+    add_base_articulations(bodies_before_cables)
 
     def initialize_free_joint_velocities() -> None:
         imported_bodies = set(path_body_map.values())
@@ -4576,8 +4648,8 @@ def parse_usd(
             qd_start = builder.joint_qd_start[joint_id]
             builder.joint_qd[qd_start : qd_start + 6] = [*linear_velocity, *angular_velocity]
 
-    # Build deformables after rigid bodies, collider-mass computation, and the floating-body
-    # base-joint pass so physical attachment targets and their root joints already exist.
+    # Build deformables after rigid bodies and collider-mass computation so physical attachment
+    # targets already exist.
     # Volume deformables (TetMesh -> soft body). PhysicsVolumeDeformableSimAPI (or a
     # PhysicsDeformableBodyAPI) opts into the mass precedence; a bare TetMesh stays legacy.
     # Mass precedence (proposal): per-point physics:masses > body mass > body density
@@ -4655,6 +4727,8 @@ def parse_usd(
             _filter_prim = stage.GetPrimAtPath(_filter_path)
             if _filter_prim and _filter_prim.IsValid():
                 _collect_filtered_pairs(_filter_prim)
+
+    add_base_articulations(bodies_after_cables)
 
     def _resolve_collision_shape_ids(path: str) -> tuple[list[int], str | None]:
         """Resolve a filtered-pair endpoint to Newton shape indices, or an unsupported reason.
