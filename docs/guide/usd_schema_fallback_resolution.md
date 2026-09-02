@@ -62,6 +62,8 @@ The implementation has three roles:
 
 Registered fallbacks come from the composed prim definition in `Usd.SchemaRegistry`. Newton does not copy vendor fallback catalogs into Python.
 
+The `newton[importers]` extra requires `newton-usd-schemas>=0.5.0`; the repository lock currently tests version 0.5.0. PhysX and MuJoCo schema plugins are optional. Their resolvers still read authored vendor attributes when a plugin is missing, but only a registered plugin can provide authoritative schema fallbacks. The schema packages, rather than Newton, own plugin registration and fallback metadata.
+
 Registration and fallback presence are distinct:
 
 | Schema state | Result |

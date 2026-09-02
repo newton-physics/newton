@@ -638,6 +638,13 @@ When multiple physics solvers define conflicting attributes for the same propert
 
 Resolution distinguishes authored values, registered schema fallbacks, importer defaults, resolver compatibility defaults, and explicit importer overrides. Registered fallbacks come from the composed prim definition in ``Usd.SchemaRegistry``; compatibility defaults are approximations retained for unregistered schemas and older custom resolvers.
 
+Schema Packages
+^^^^^^^^^^^^^^^
+
+The ``newton[importers]`` extra requires ``newton-usd-schemas>=0.5.0`` to register Newton's schemas; Newton's locked test environment currently uses version 0.5.0. PhysX and MuJoCo schema plugins are optional. Their resolvers can read authored vendor attributes without those plugins, but registered vendor fallbacks are available only when the corresponding plugin is installed and registered with USD. Without it, importer defaults remain ahead of the resolver's compatibility defaults.
+
+Schema packages own their plugin registration and fallback metadata. Newton reads that metadata from ``Usd.SchemaRegistry`` and does not maintain copied PhysX or MuJoCo fallback catalogs.
+
 .. list-table:: Property value sources
    :header-rows: 1
    :widths: 25 75
@@ -691,8 +698,6 @@ Migration Audit
 The legacy hierarchy is deprecated. Newton emits at most one :exc:`DeprecationWarning` per import when it can prove that registered-schema precedence changes an interpreted property or source-dependent meaning. Audit failures alone do not warn.
 
 Pass ``True`` to adopt registered-schema precedence. To preserve the current result, author through a higher-priority schema, reorder ``schema_resolvers``, or use an explicit importer override where supported.
-
-Newton does not copy PhysX or MuJoCo fallback catalogs when their plugins are unavailable. Their resolver defaults remain lower-priority compatibility values until the codeless schema plugins are registered.
 
 Custom Resolver Compatibility
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
