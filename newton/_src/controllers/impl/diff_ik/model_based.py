@@ -80,6 +80,20 @@ class ControllerDiffIK(ControllerBase):
             controlled robot's controlled point, as a list or as a single
             pattern. Required — there is no default tool site. Raises if a
             controlled robot matches zero or more than one site.
+        axis_weight: Non-negative per-axis weight for each of the 6
+            canonical task axes (position x, y, z, then orientation x, y,
+            z), ``diag(w)`` applied to both the Jacobian and the pose error
+            for that axis before the solve (``J_w = diag(w) @ J``,
+            ``e_w = diag(w) @ e``) — a genuine soft weight for any nonzero
+            value. An axis weighted exactly ``0`` is different in kind, not
+            just degree: it is excluded from the solve structurally (its
+            error and Jacobian rows never enter it at all), not merely
+            driven toward zero by a very small weight. Any combination of
+            active axes is allowed, not just a leading prefix. Pass a
+            single ``wp.spatial_vector`` to apply the same weights to every
+            robot, or an array of shape [controlled_robot_count] to set
+            them per robot. ``None`` (the default) means every axis is
+            weighted ``1`` for every robot — full, equally-trusted 6D pose.
         bandwidth: Output velocity scale gain, applied per controlled DOF
             after the Jacobian solve. Pass a scalar to apply the same gain
             to every controlled DOF, an array of shape
@@ -198,6 +212,7 @@ class ControllerDiffIK(ControllerBase):
         articulations: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
         joints: list[int | str | re.Pattern[str]] | str | re.Pattern[str] | None = None,
         tool_sites: list[int | str | re.Pattern[str]] | str | re.Pattern[str],
+        axis_weight: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         bandwidth: wp.array[wp.float32] | float | None,
         damping: wp.array[wp.float32] | float | None,
         ik_method: IkMethod = IkMethod.DAMPED_LEAST_SQUARES,
@@ -448,6 +463,7 @@ class ControllerDiffIK(ControllerBase):
 
         self._model_free = ControllerDiffIKModelFree(
             controlled_dofs_per_robot=controlled_dofs_per_robot,
+            axis_weight=axis_weight,
             bandwidth=bandwidth,
             damping=damping,
             ik_method=ik_method,

@@ -6,8 +6,10 @@ caller-supplied Jacobian and tool pose.
 
 Every 1-D per-DOF port is compact: one entry per controlled DOF, robot 0's
 DOFs first, then robot 1's. Every per-robot port (tool pose, Jacobian,
-damping) has one entry per robot, since the task is always a full 6D pose
-regardless of a robot's own DOF count. The controller owns no index tables —
+damping) has one entry per robot, since the task-space storage is always 6D
+regardless of a robot's own DOF count — a robot whose ``axis_weight`` zeroes
+some of the 6 canonical axes (position x/y/z, orientation x/y/z) uses only
+the active ones (see ``axis_weight``). The controller owns no index tables —
 a caller who needs to read from or write to a simulation-sized array binds
 an indexed view (``sim_array[selection.qd_start]``) instead.
 
@@ -63,13 +65,18 @@ from ._common import (
     IkMethod,
     _adaptive_damping_kernel,
     _build_jjt_plus_damping_kernel,
+    _gather_jacobian_by_axis_kernel,
+    _gather_task_error_kernel,
     _integrate_position_kernel,
     _joint_limit_avoidance_bias_kernel,
     _posture_bias_kernel,
     _qd_from_y_kernel,
+    _scatter_pinv_transpose_by_axis_kernel,
     _smallest_eigenvalue_spd6_kernel,
     _truncated_pinv_matrix_kernel,
 )
+
+_CANONICAL_TASK_AXIS_COUNT = 6
 
 
 class ControllerDiffIKModelFree(ControllerBase):
@@ -84,7 +91,8 @@ class ControllerDiffIKModelFree(ControllerBase):
     Every per-DOF port is **compact**: a 1-D array with one entry per
     controlled DOF, ordered robot 0's DOFs first, then robot 1's, matching
     ``controlled_dofs_per_robot``. Every per-robot port has one entry per
-    robot, since the task space is always a full 6D pose. A port may be
+    robot, since the task-space storage is always 6D regardless of a
+    robot's own :attr:`axis_weight`. A port may be
     bound either to a plain array or to an indexed view of a
     simulation-sized array, which is how a caller expresses a gather or
     scatter without the controller owning an index table::
@@ -114,6 +122,20 @@ class ControllerDiffIKModelFree(ControllerBase):
             :attr:`total_controlled_dofs` (the length of every compact
             port), and its maximum sets :attr:`max_controlled_dofs` (the
             padded width of the Jacobian). Every entry must be positive.
+        axis_weight: Non-negative per-axis weight for each of the 6
+            canonical task axes (position x, y, z, then orientation x, y,
+            z), ``diag(w)`` applied to both the Jacobian and the pose error
+            for that axis before the solve (``J_w = diag(w) @ J``,
+            ``e_w = diag(w) @ e``) — a genuine soft weight for any nonzero
+            value. An axis weighted exactly ``0`` is different in kind, not
+            just degree: it is excluded from the solve structurally (its
+            error and Jacobian rows never enter it at all), not merely
+            driven toward zero by a very small weight. Any combination of
+            active axes is allowed, not just a leading prefix. Pass a
+            single ``wp.spatial_vector`` to apply the same weights to every
+            robot, or an array of shape [controlled_robot_count] to set
+            them per robot. ``None`` (the default) means every axis is
+            weighted ``1`` for every robot — full, equally-trusted 6D pose.
         bandwidth: Output velocity scale gain, applied per controlled DOF
             after the Jacobian solve. Pass a scalar to apply the same gain
             to every controlled DOF, an array of shape
@@ -236,6 +258,7 @@ class ControllerDiffIKModelFree(ControllerBase):
         self,
         *,
         controlled_dofs_per_robot: wp.array[wp.int32],
+        axis_weight: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         bandwidth: wp.array[wp.float32] | float | None,
         damping: wp.array[wp.float32] | float | None,
         ik_method: IkMethod = IkMethod.DAMPED_LEAST_SQUARES,
@@ -286,6 +309,52 @@ class ControllerDiffIKModelFree(ControllerBase):
         max_controlled_dofs = int(controlled_dofs_per_robot_np.max())
         total_controlled_dofs = int(controlled_dofs_per_robot_np.sum())
 
+        if axis_weight is None:
+            axis_weight_resolved = wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+        else:
+            axis_weight_resolved = axis_weight
+        if isinstance(axis_weight_resolved, wp.spatial_vector):
+            axis_weight_np = np.tile(np.array(axis_weight_resolved, dtype=np.float32), (controlled_robot_count, 1))
+        elif isinstance(axis_weight_resolved, wp.array):
+            _validate_array(
+                array=axis_weight_resolved,
+                name="axis_weight",
+                dtype=wp.spatial_vector,
+                shape=(controlled_robot_count,),
+                device=self._device,
+            )
+            axis_weight_np = axis_weight_resolved.numpy()
+        else:
+            raise TypeError(
+                "axis_weight must be a wp.spatial_vector or a wp.array[wp.spatial_vector] of shape "
+                f"(controlled_robot_count,), got {type(axis_weight_resolved).__name__}."
+            )
+        if np.any(axis_weight_np < 0.0):
+            raise ValueError(f"axis_weight must be non-negative, got {axis_weight_np.tolist()}.")
+
+        # Only zero vs. nonzero matters for which axes enter the solve at
+        # all: an axis is either in it (its error and Jacobian rows gathered
+        # and weighted, see _build_jjt_plus_damping_kernel) or structurally
+        # excluded from it. A nonzero weight's magnitude still matters once
+        # its axis has been gathered -- it is a genuine soft weight there.
+        axis_active_np = axis_weight_np > 0.0
+        task_dim_np = axis_active_np.sum(axis=1).astype(np.int32)
+        if task_dim_np.min() < 1:
+            bad_robots = np.flatnonzero(task_dim_np < 1)
+            raise ValueError(
+                f"axis_weight is all-zero for robot(s) {bad_robots.tolist()}; every robot needs at least one "
+                "nonzero-weighted task axis."
+            )
+
+        # Compact-slot -> canonical-axis lookup, one row per robot: slot k of
+        # the k'th active entry in axis_weight_np[robot], in canonical
+        # order; entries at or beyond that robot's own task_dim are never
+        # read.
+        active_axis_of_slot_np = np.zeros((controlled_robot_count, _CANONICAL_TASK_AXIS_COUNT), dtype=np.int32)
+        for robot in range(controlled_robot_count):
+            active = np.flatnonzero(axis_active_np[robot])
+            active_axis_of_slot_np[robot, : active.size] = active
+
         if not (isinstance(bandwidth, (int, float)) and not isinstance(bandwidth, bool)):
             _validate_array(
                 array=bandwidth,
@@ -309,12 +378,12 @@ class ControllerDiffIKModelFree(ControllerBase):
         elif damping is not None:
             raise ValueError(f"damping was given but ik_method={ik_method} does not use it (pass damping=None).")
         elif ik_method == IkMethod.PSEUDO_INVERSE:
-            bad_robots = np.flatnonzero(controlled_dofs_per_robot_np < 6)
+            bad_robots = np.flatnonzero(controlled_dofs_per_robot_np < task_dim_np)
             if bad_robots.size > 0:
                 raise ValueError(
-                    "ik_method=IkMethod.PSEUDO_INVERSE requires every robot to have at least 6 controlled "
-                    f"DOFs, since JJᵀ is otherwise rank-deficient at λ = 0; robot(s) {bad_robots.tolist()} "
-                    f"have controlled_dofs_per_robot < 6."
+                    "ik_method=IkMethod.PSEUDO_INVERSE requires every robot to have at least as many controlled "
+                    f"DOFs as its own task dimension, since JJᵀ is otherwise rank-deficient at λ = 0; robot(s) "
+                    f"{bad_robots.tolist()} have controlled_dofs_per_robot < their own axis_weight's active count."
                 )
 
         if ik_method == IkMethod.ADAPTIVE_DAMPING:
@@ -421,6 +490,15 @@ class ControllerDiffIKModelFree(ControllerBase):
         self._total_controlled_dofs = total_controlled_dofs
         self._requires_grad = requires_grad
 
+        # Per-robot task dimension and compact-slot -> canonical-axis table,
+        # derived from axis_weight above. Copied, not stored, for the same
+        # reason controlled_dofs_per_robot is.
+        self._task_dim = wp.array(task_dim_np, dtype=wp.int32, device=self._device)
+        self._active_axis_of_slot = wp.array2d(active_axis_of_slot_np, dtype=wp.int32, device=self._device)
+        self._axis_weight = wp.array(
+            [wp.spatial_vector(*row) for row in axis_weight_np], dtype=wp.spatial_vector, device=self._device
+        )
+
         # Copied, not stored: the kernels use this as a loop bound while the
         # tables below are derived from the same host snapshot, so a later
         # edit to the caller's array would send a launch past the end of a
@@ -476,14 +554,16 @@ class ControllerDiffIKModelFree(ControllerBase):
             # Only checkable when baked: a live value isn't known until step(),
             # and reading it back to check would cost a host sync every step,
             # breaking is_graphable(). JJᵀ + λ_null²I is only guaranteed SPD
-            # for a robot with fewer than 6 controlled DOFs when λ_null > 0.
+            # for a robot with fewer controlled DOFs than its own task
+            # dimension when λ_null > 0.
             null_space_damping_np = self._null_space_damping_baked.numpy()
-            bad_robots = np.flatnonzero((controlled_dofs_per_robot_np < 6) & (null_space_damping_np <= 0.0))
+            bad_robots = np.flatnonzero((controlled_dofs_per_robot_np < task_dim_np) & (null_space_damping_np <= 0.0))
             if bad_robots.size > 0:
                 raise ValueError(
-                    "null_space_damping must be positive for a robot with fewer than 6 controlled DOFs, since "
-                    "the null-space projector's JJᵀ is then rank-deficient without damping; robot(s) "
-                    f"{bad_robots.tolist()} have controlled_dofs_per_robot < 6 with null_space_damping <= 0."
+                    "null_space_damping must be positive for a robot with fewer controlled DOFs than its own "
+                    "task dimension, since the null-space projector's JJᵀ is then rank-deficient without "
+                    f"damping; robot(s) {bad_robots.tolist()} have controlled_dofs_per_robot below their own "
+                    "axis_weight's active count with null_space_damping <= 0."
                 )
 
         self._joint_limit_avoidance_gain = float(joint_limit_avoidance_gain)
@@ -528,7 +608,9 @@ class ControllerDiffIKModelFree(ControllerBase):
         self._pose_error_buf = wp.zeros(
             controlled_robot_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
         )
-        self._block_dim_6 = wp.full(controlled_robot_count, 6, dtype=wp.int32, device=self._device)
+        self._pose_error_active_buf = wp.zeros(
+            controlled_robot_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
+        )
         self._jjt_buf = wp.zeros(
             (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
@@ -560,6 +642,18 @@ class ControllerDiffIKModelFree(ControllerBase):
             offsets_np = np.zeros(controlled_robot_count, dtype=np.int32)
             offsets_np[1:] = np.cumsum(controlled_dofs_per_robot_np[:-1])
             self._dof_offsets = wp.array(offsets_np, dtype=wp.int32, device=self._device)
+            # The null-space projector's own regularization stays
+            # unweighted -- it only needs to avoid disturbing whichever
+            # axes are active, not replicate the primary solve's soft
+            # per-axis trust, and _null_space_projector_kernel (shared with
+            # other controller families) multiplies its result against the
+            # raw, unweighted jacobian_tool_world directly.
+            self._null_space_axis_weight = wp.full(
+                controlled_robot_count,
+                wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+                dtype=wp.spatial_vector,
+                device=self._device,
+            )
             self._null_space_damping_buf: wp.array[wp.float32] | None = (
                 wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
                 if self._null_space_damping_baked is None
@@ -570,6 +664,18 @@ class ControllerDiffIKModelFree(ControllerBase):
             )
             self._jjt_null_space_inv_buf = wp.zeros(
                 (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
+            self._jacobian_active_buf = wp.zeros(
+                (controlled_robot_count, 6, max_controlled_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
+            )
+            self._jacobian_pinv_transpose_slot_buf = wp.zeros(
+                (controlled_robot_count, 6, max_controlled_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
             )
             self._jacobian_pinv_transpose_buf = wp.zeros(
                 (controlled_robot_count, 6, max_controlled_dofs),
@@ -831,15 +937,30 @@ class ControllerDiffIKModelFree(ControllerBase):
             outputs=[self._pose_error_buf],
             device=self._device,
         )
+        wp.launch(
+            _gather_task_error_kernel,
+            dim=controlled_robot_count,
+            inputs=[self._pose_error_buf, self._task_dim, self._active_axis_of_slot, self._axis_weight],
+            outputs=[self._pose_error_active_buf],
+            device=self._device,
+        )
         if self._ik_method == IkMethod.TRANSPOSE:
-            # q̇ = bandwidth · Jᵀe: no matrix to invert, so the pose error
-            # itself stands in for y in the shared finishing kernel.
-            y = self._pose_error_buf
+            # q̇ = bandwidth · Jᵀe: no matrix to invert, so the (compact,
+            # active-axes-only) pose error itself stands in for y in the
+            # shared finishing kernel.
+            y = self._pose_error_active_buf
         elif self._use_truncated_svd:
             wp.launch(
                 _build_jjt_plus_damping_kernel,
                 dim=(controlled_robot_count, 6, 6),
-                inputs=[self._jacobian_buf, self._controlled_dofs_per_robot, self._zero_damping_buf],
+                inputs=[
+                    self._jacobian_buf,
+                    self._controlled_dofs_per_robot,
+                    self._zero_damping_buf,
+                    self._task_dim,
+                    self._active_axis_of_slot,
+                    self._axis_weight,
+                ],
                 outputs=[self._jjt_buf],
                 device=self._device,
             )
@@ -853,7 +974,7 @@ class ControllerDiffIKModelFree(ControllerBase):
             wp.launch(
                 _apply_spatial_matrix_kernel,
                 dim=controlled_robot_count,
-                inputs=[self._jjt_inv_buf, self._pose_error_buf],
+                inputs=[self._jjt_inv_buf, self._pose_error_active_buf],
                 outputs=[self._y_buf],
                 device=self._device,
             )
@@ -863,14 +984,21 @@ class ControllerDiffIKModelFree(ControllerBase):
                 wp.launch(
                     _build_jjt_plus_damping_kernel,
                     dim=(controlled_robot_count, 6, 6),
-                    inputs=[self._jacobian_buf, self._controlled_dofs_per_robot, self._zero_damping_buf],
+                    inputs=[
+                        self._jacobian_buf,
+                        self._controlled_dofs_per_robot,
+                        self._zero_damping_buf,
+                        self._task_dim,
+                        self._active_axis_of_slot,
+                        self._axis_weight,
+                    ],
                     outputs=[self._jjt_buf],
                     device=self._device,
                 )
                 wp.launch(
                     _smallest_eigenvalue_spd6_kernel,
                     dim=controlled_robot_count,
-                    inputs=[self._jjt_buf],
+                    inputs=[self._jjt_buf, self._task_dim],
                     outputs=[self._smallest_eigenvalue_buf],
                     device=self._device,
                 )
@@ -890,21 +1018,28 @@ class ControllerDiffIKModelFree(ControllerBase):
             wp.launch(
                 _build_jjt_plus_damping_kernel,
                 dim=(controlled_robot_count, 6, 6),
-                inputs=[self._jacobian_buf, self._controlled_dofs_per_robot, damping],
+                inputs=[
+                    self._jacobian_buf,
+                    self._controlled_dofs_per_robot,
+                    damping,
+                    self._task_dim,
+                    self._active_axis_of_slot,
+                    self._axis_weight,
+                ],
                 outputs=[self._jjt_buf],
                 device=self._device,
             )
             wp.launch(
                 _invert_spd_block_kernel,
                 dim=controlled_robot_count,
-                inputs=[self._jjt_buf, self._block_dim_6, self._cholesky_scratch],
+                inputs=[self._jjt_buf, self._task_dim, self._cholesky_scratch],
                 outputs=[self._jjt_inv_buf],
                 device=self._device,
             )
             wp.launch(
                 _apply_spatial_matrix_kernel,
                 dim=controlled_robot_count,
-                inputs=[self._jjt_inv_buf, self._pose_error_buf],
+                inputs=[self._jjt_inv_buf, self._pose_error_active_buf],
                 outputs=[self._y_buf],
                 device=self._device,
             )
@@ -912,7 +1047,15 @@ class ControllerDiffIKModelFree(ControllerBase):
         wp.launch(
             _qd_from_y_kernel,
             dim=total_controlled_dofs,
-            inputs=[self._jacobian_buf, y, bandwidth, self._robot_of_dof, self._slot_of_dof],
+            inputs=[
+                self._jacobian_buf,
+                y,
+                bandwidth,
+                self._robot_of_dof,
+                self._slot_of_dof,
+                self._active_axis_of_slot,
+                self._axis_weight,
+            ],
             outputs=[self._qd_buf],
             device=self._device,
         )
@@ -926,21 +1069,54 @@ class ControllerDiffIKModelFree(ControllerBase):
             wp.launch(
                 _build_jjt_plus_damping_kernel,
                 dim=(controlled_robot_count, 6, 6),
-                inputs=[self._jacobian_buf, self._controlled_dofs_per_robot, null_space_damping],
+                inputs=[
+                    self._jacobian_buf,
+                    self._controlled_dofs_per_robot,
+                    null_space_damping,
+                    self._task_dim,
+                    self._active_axis_of_slot,
+                    self._null_space_axis_weight,
+                ],
                 outputs=[self._jjt_null_space_buf],
                 device=self._device,
             )
             wp.launch(
                 _invert_spd_block_kernel,
                 dim=controlled_robot_count,
-                inputs=[self._jjt_null_space_buf, self._block_dim_6, self._cholesky_scratch],
+                inputs=[self._jjt_null_space_buf, self._task_dim, self._cholesky_scratch],
                 outputs=[self._jjt_null_space_inv_buf],
+                device=self._device,
+            )
+            # The two shared kernels below (also used by other controller
+            # families) know nothing about axis_weight -- gather the Jacobian
+            # into compact slot order before feeding them, then scatter
+            # their compact-slot-order result back to canonical axis order
+            # afterward, so _null_space_projector_kernel (which reads
+            # jacobian_tool_world directly, in canonical order) sees a
+            # consistent pair of inputs.
+            wp.launch(
+                _gather_jacobian_by_axis_kernel,
+                dim=(controlled_robot_count, 6, self._max_controlled_dofs),
+                inputs=[self._jacobian_buf, self._active_axis_of_slot, self._task_dim],
+                outputs=[self._jacobian_active_buf],
                 device=self._device,
             )
             wp.launch(
                 _task_matrix_times_jacobian_kernel,
                 dim=(controlled_robot_count, 6, self._max_controlled_dofs),
-                inputs=[self._jjt_null_space_inv_buf, self._jacobian_buf, self._controlled_dofs_per_robot],
+                inputs=[self._jjt_null_space_inv_buf, self._jacobian_active_buf, self._controlled_dofs_per_robot],
+                outputs=[self._jacobian_pinv_transpose_slot_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _scatter_pinv_transpose_by_axis_kernel,
+                dim=(controlled_robot_count, 6, self._max_controlled_dofs),
+                inputs=[
+                    self._jacobian_pinv_transpose_slot_buf,
+                    self._active_axis_of_slot,
+                    self._task_dim,
+                    self._controlled_dofs_per_robot,
+                ],
                 outputs=[self._jacobian_pinv_transpose_buf],
                 device=self._device,
             )

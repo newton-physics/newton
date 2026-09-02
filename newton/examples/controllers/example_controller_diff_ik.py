@@ -4,11 +4,12 @@
 ###########################################################################
 # Example Controllers — Differential IK
 #
-# Demonstrates ControllerDiffIK on two real, heterogeneous robots at once --
-# a 7-DOF Franka Panda arm (redundant against the 6D task) and a 6-DOF UR10
-# arm (not redundant) -- each independently tracking its own draggable
-# 6-DOF gizmo target. One controller call handles both, each robot resolved
-# through its own tool site and Jacobian.
+# Demonstrates ControllerDiffIK on three real, heterogeneous robots at once
+# -- a 7-DOF Franka Panda arm (redundant against the 6D task), a 6-DOF UR10
+# arm (not redundant), and a 4-DOF planar arm restricted to a 3D task
+# (X, Y, yaw) via axis_weight, so it too is redundant -- each independently
+# tracking its own draggable gizmo target. One controller call handles all
+# three, each robot resolved through its own tool site and Jacobian.
 #
 # ControllerDiffIK outputs one-step-ahead joint position/velocity targets,
 # not torques, so every controlled arm DOF is left in MuJoCo's
@@ -17,13 +18,19 @@
 # substep. The Franka's fingers are left untouched, held at their initial
 # target by the same PD.
 #
-# The Franka's 7th DOF is redundant against the 6D task; null-space posture
-# control continuously pulls it back toward its ready pose, so it doesn't
-# drift toward a bad internal configuration with nothing to anchor it. The
-# UR10 has no redundant DOF, so the same posture control is a no-op for it.
+# The Franka's 7th DOF and the planar arm's 4th DOF are both redundant
+# against their own (6D and 3D) tasks; null-space posture control
+# continuously pulls each toward its own ready pose, so neither drifts
+# toward a bad internal configuration with nothing to anchor it. The UR10
+# has no redundant DOF, so the same posture control is a no-op for it.
 #
-# Uses IkMethod.ADAPTIVE_DAMPING: damping ramps up automatically as either
-# arm nears a kinematic singularity or the edge of its reach, instead of a
+# The planar arm's gizmo is restricted to X/Y translation and yaw rotation
+# -- the same 3 axes axis_weight keeps active for it -- via log_gizmo's own
+# translate/rotate axis selection, so the widget itself can't suggest a
+# motion the controller would ignore.
+#
+# Uses IkMethod.ADAPTIVE_DAMPING: damping ramps up automatically as any arm
+# nears a kinematic singularity or the edge of its reach, instead of a
 # single fixed damping value -- this stays smooth (no chatter) right up to
 # the boundary, unlike a plain fixed-damping or truncated-SVD solve.
 #
@@ -37,7 +44,7 @@ import newton
 import newton.examples
 import newton.solvers
 import newton.utils
-from newton import JointTargetMode
+from newton import Axis, JointTargetMode
 from newton.controllers import ControllerDiffIK
 
 IkMethod = ControllerDiffIK.IkMethod
@@ -57,7 +64,23 @@ UR10_READY_POSE = [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
 UR10_ARM_DOFS = len(UR10_READY_POSE)  # 6; no redundant DOF, unlike the Franka
 UR10_BASE_POSITION = wp.vec3(0.0, 1.8, 0.0)  # separated from the Franka along Y
 
+# A 4R planar arm: every joint rotates about world Z, so the tool stays at a
+# fixed height and every reachable pose has zero roll/pitch -- exactly the 3
+# axes (X, Y, yaw) axis_weight keeps active for it below. Mounted above the
+# ground plane so the horizontal arm has room to swing without intersecting it.
+PLANAR_LINK_LENGTH = 0.25
+PLANAR_READY_POSE = [0.4, 1.6, -1.4, 1.0]  # folded to ~79% of max reach, room to drag in any direction
+PLANAR_ARM_DOFS = len(PLANAR_READY_POSE)  # 4; redundant against its own 3D (X, Y, yaw) task
+PLANAR_BASE_POSITION = wp.vec3(0.0, 3.6, 0.5)  # separated from the UR10 along Y
+
 TOOL_SITE_SCALE = (0.02, 0.02, 0.02)
+
+# Franka and UR10 task the full 6D pose; the planar arm only X, Y, and yaw --
+# its Z position, roll, and pitch are structurally excluded from the solve
+# (see ControllerDiffIK's axis_weight), not merely driven toward zero, which
+# is what actually makes it redundant (4 controlled DOFs against a 3D task).
+FULL_POSE_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+PLANAR_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
 # Every controlled arm DOF tracks joint_target_q/qd via MuJoCo's own
 # implicit PD, driven once per frame by the controller's one-step-ahead
@@ -76,9 +99,10 @@ ADAPTIVE_DAMPING_MAX = 0.5
 ADAPTIVE_DAMPING_THRESHOLD = 0.2
 
 # Null-space posture control: pulls every controlled DOF toward its own
-# ready-pose entry, projected through the null-space projector so it never
-# disturbs the primary 6D task -- only the Franka's redundant 7th DOF has
-# any null space to move in.
+# ready-pose entry, projected through the null-space projector (built from
+# each robot's own active task axes) so it never disturbs that robot's
+# primary task -- only the Franka's 7th DOF and the planar arm's 4th DOF
+# have any null space to move in; it's a no-op for the (non-redundant) UR10.
 NULL_SPACE_STIFFNESS = 2.0
 NULL_SPACE_DAMPING = 0.05
 
@@ -113,8 +137,12 @@ class Example:
         ur10_joints, ur10_tool_body, ur10_tool_site_transform = self._add_ur10(
             builder, ur10_asset_file, UR10_BASE_POSITION
         )
+        planar_joints, planar_tool_body, planar_tool_site_transform = self._add_planar_arm(
+            builder, PLANAR_BASE_POSITION
+        )
         self._franka_joints = franka_joints
         self._ur10_joints = ur10_joints
+        self._planar_joints = planar_joints
 
         builder.add_ground_plane()
 
@@ -137,13 +165,19 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
 
         # ---- Differential-kinematics controller -------------------------------
-        # One controller call handles both robots; joints lists robot 0's
-        # (Franka's) controlled joints first, then robot 1's (UR10's),
-        # matching desired_tool_pose_world's per-robot ordering below.
+        # One controller call handles all three robots; joints lists robot
+        # 0's (Franka's) controlled joints first, then robot 1's (UR10's),
+        # then robot 2's (the planar arm's), matching axis_weight's and
+        # desired_tool_pose_world's per-robot ordering below.
         self.controller = ControllerDiffIK(
             self.model,
-            joints=franka_joints + ur10_joints,
+            joints=franka_joints + ur10_joints + planar_joints,
             tool_sites="tool_site",
+            axis_weight=wp.array(
+                [FULL_POSE_AXIS_WEIGHT, FULL_POSE_AXIS_WEIGHT, PLANAR_AXIS_WEIGHT],
+                dtype=wp.spatial_vector,
+                device=self.device,
+            ),
             bandwidth=BANDWIDTH,
             damping=None,
             ik_method=IkMethod.ADAPTIVE_DAMPING,
@@ -160,7 +194,9 @@ class Example:
         # Constant across every step -- the posture target is always each
         # robot's own ready pose, so this is assigned once rather than
         # reassigned in step().
-        self._input.q_des_null.assign(np.array(FRANKA_READY_POSE + UR10_READY_POSE, dtype=np.float32))
+        self._input.q_des_null.assign(
+            np.array(FRANKA_READY_POSE + UR10_READY_POSE + PLANAR_READY_POSE, dtype=np.float32)
+        )
         # The controller's outputs are compact (one entry per controlled
         # DOF); indexed views scatter them straight into the sim control
         # buffers, in each buffer's own layout (q_start: coordinate space,
@@ -175,14 +211,22 @@ class Example:
         self.gizmo_tfs = [
             wp.transform(*body_q_np[franka_tool_body].tolist()) * franka_tool_site_transform,
             wp.transform(*body_q_np[ur10_tool_body].tolist()) * ur10_tool_site_transform,
+            wp.transform(*body_q_np[planar_tool_body].tolist()) * planar_tool_site_transform,
+        ]
+        # Only the planar arm's gizmo is axis-restricted -- Franka's and
+        # UR10's keep the default full 6-DOF widget (None = every axis).
+        self.gizmo_axes = [
+            {"translate": None, "rotate": None},
+            {"translate": None, "rotate": None},
+            {"translate": [Axis.X, Axis.Y], "rotate": [Axis.Z]},
         ]
 
-        # Pulled back and to the side so both robots (Franka at y=0, UR10 at
-        # y=1.8) are in view together.
+        # Pulled back and to the side so all three robots (Franka at y=0,
+        # UR10 at y=1.8, planar arm at y=3.6) are in view together.
         if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(-2.1, 0.9, 1.8), pitch=-15.0, yaw=15.0)
+            self.viewer.set_camera(pos=wp.vec3(3.2, -1.8, 2.4), pitch=-20.0, yaw=15.0)
             if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.4, 0.9, 0.4))
+                self.viewer.camera.look_at(wp.vec3(0.4, 1.8, 0.4))
 
         self.viewer.set_model(self.model)
 
@@ -257,13 +301,65 @@ class Example:
 
         return arm_joints, tool_body, tool_site_transform
 
+    @staticmethod
+    def _add_planar_arm(builder, base_position):
+        """Build a 4R planar arm at base_position and add a tool site at its tip.
+
+        Every joint rotates about world Z; successive links chain along
+        local +X. Returns:
+            Tuple of (arm joint indices, last link's body index, tool
+            site's body-local transform).
+        """
+        coord_count_before = builder.joint_coord_count
+
+        # A capsule extends along its own local Z axis by default; this
+        # rotation aligns that with the link's own local +X, the direction
+        # successive links chain along below.
+        capsule_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)
+
+        arm_joints = []
+        parent = -1
+        parent_xform = wp.transform(base_position, wp.quat_identity())
+        link = -1
+        for _ in range(PLANAR_ARM_DOFS):
+            link = builder.add_link()
+            joint = builder.add_joint_revolute(
+                parent=parent,
+                child=link,
+                axis=wp.vec3(0.0, 0.0, 1.0),
+                parent_xform=parent_xform,
+                child_xform=wp.transform_identity(),
+            )
+            builder.add_shape_capsule(
+                link,
+                xform=wp.transform(wp.vec3(PLANAR_LINK_LENGTH / 2.0, 0.0, 0.0), capsule_rotation),
+                radius=0.02,
+                half_height=PLANAR_LINK_LENGTH / 2.0,
+            )
+            arm_joints.append(joint)
+            parent = link
+            parent_xform = wp.transform(wp.vec3(PLANAR_LINK_LENGTH, 0.0, 0.0), wp.quat_identity())
+        builder.add_articulation(arm_joints, label="planar_arm")
+
+        arm_coords = list(range(coord_count_before, coord_count_before + PLANAR_ARM_DOFS))
+        for coord, angle in zip(arm_coords, PLANAR_READY_POSE, strict=True):
+            builder.joint_q[coord] = angle
+
+        # The tool site sits at the last link's tip, one more link length
+        # out along its own local +X.
+        tool_body = link
+        tool_site_transform = wp.transform(wp.vec3(PLANAR_LINK_LENGTH, 0.0, 0.0), wp.quat_identity())
+        builder.add_site(tool_body, xform=tool_site_transform, label="tool_site", visible=True, scale=TOOL_SITE_SCALE)
+
+        return arm_joints, tool_body, tool_site_transform
+
     def step(self):
         # Gizmo drag updates are Python-side, so this whole frame is outside
         # any CUDA graph. Rebind joint_q/joint_qd to whichever State buffer
         # the substep swap left at state_0 after the previous frame.
         self._input.joint_q = self.state_0.joint_q
         self._input.joint_qd = self.state_0.joint_qd
-        pose = np.zeros((2, 7), dtype=np.float32)
+        pose = np.zeros((len(self.gizmo_tfs), 7), dtype=np.float32)
         for i, tf in enumerate(self.gizmo_tfs):
             pose[i, :3] = wp.transform_get_translation(tf)
             pose[i, 3:] = wp.transform_get_rotation(tf)
@@ -291,11 +387,17 @@ class Example:
         # wherever the tool actually is.
         tool_pose_world = self.controller.tool_pose_world.numpy()
         for i, tf in enumerate(self.gizmo_tfs):
-            self.viewer.log_gizmo(f"target_{i}", tf, snap_to=wp.transform(*tool_pose_world[i].tolist()))
+            self.viewer.log_gizmo(
+                f"target_{i}",
+                tf,
+                translate=self.gizmo_axes[i]["translate"],
+                rotate=self.gizmo_axes[i]["rotate"],
+                snap_to=wp.transform(*tool_pose_world[i].tolist()),
+            )
         self.viewer.end_frame()
 
     def test_final(self):
-        """Gizmos aren't dragged in headless test mode, so both arms should stay near their ready pose."""
+        """Gizmos aren't dragged in headless test mode, so all three arms should stay near their ready pose."""
         joint_q = self.state_0.joint_q.numpy()
         joint_qd = self.state_0.joint_qd.numpy()
         assert np.all(np.isfinite(joint_q)), f"joint_q has NaN/Inf: {joint_q}"
@@ -311,6 +413,13 @@ class Example:
         ur10_q = joint_q[ur10_q_start : ur10_q_start + UR10_ARM_DOFS]
         ur10_ready_q = np.array(UR10_READY_POSE, dtype=np.float32)
         assert np.all(np.abs(ur10_q - ur10_ready_q) < 0.2), f"UR10 arm joints drifted from its ready pose: {ur10_q}"
+
+        planar_q_start = self.model.joint_q_start.numpy()[self._planar_joints[0]]
+        planar_q = joint_q[planar_q_start : planar_q_start + PLANAR_ARM_DOFS]
+        planar_ready_q = np.array(PLANAR_READY_POSE, dtype=np.float32)
+        assert np.all(np.abs(planar_q - planar_ready_q) < 0.2), (
+            f"Planar arm joints drifted from its ready pose: {planar_q}"
+        )
 
 
 if __name__ == "__main__":
