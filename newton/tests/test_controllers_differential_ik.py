@@ -73,6 +73,7 @@ def _solve6(jjt, error, device):
 
 
 def test_pose_error_zero_when_poses_match(test: unittest.TestCase, device):
+    """Identical current and desired poses give an exactly zero 6D pose error."""
     pose = wp.array(
         [wp.transform(p=wp.vec3(1.0, 2.0, 3.0), q=wp.quat_rpy(0.3, -0.2, 0.5))], dtype=wp.transform, device=device
     )
@@ -95,6 +96,7 @@ def test_pose_error_small_angle_is_finite(test: unittest.TestCase, device):
 
 
 def test_pose_error_multiple_robots_independent(test: unittest.TestCase, device):
+    """Each robot's pose error is computed independently, with no cross-talk between batch entries."""
     identity_quat = wp.quat_identity()
     current = wp.array(
         [
@@ -123,6 +125,7 @@ def test_pose_error_multiple_robots_independent(test: unittest.TestCase, device)
 
 
 def test_build_jjt_plus_damping_matches_formula(test: unittest.TestCase, device):
+    """A full task_dim=6 build matches the closed-form J @ Jᵀ + λ²I."""
     rng = np.random.default_rng(0)
     max_dofs = 4
     dof_count_val = 4
@@ -148,6 +151,7 @@ def test_build_jjt_plus_damping_matches_formula(test: unittest.TestCase, device)
 
 
 def test_build_jjt_plus_damping_task_dim_3_confines_to_top_left_block(test: unittest.TestCase, device):
+    """task_dim=3 writes only the top-left 3x3 block; every other row/column stays exactly zero."""
     rng = np.random.default_rng(1)
     jacobian_np = rng.normal(size=(1, 6, 4)).astype(np.float32)
     jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
@@ -172,6 +176,7 @@ def test_build_jjt_plus_damping_task_dim_3_confines_to_top_left_block(test: unit
 
 
 def test_gather_task_error_matches_active_axis_and_weight(test: unittest.TestCase, device):
+    """The gathered, compact task error equals the active axes of pose_error scaled by axis_weight."""
     pose_error = wp.array(
         [wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0), wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)],
         dtype=wp.spatial_vector,
@@ -266,6 +271,7 @@ def test_smallest_eigenvalue_spd6_task_dim_3_skips_padding_zeros(test: unittest.
 
 
 def test_qd_from_y_matches_formula(test: unittest.TestCase, device):
+    """The finishing kernel's output equals the closed form bandwidth * (Jᵀ @ y)."""
     rng = np.random.default_rng(2)
     max_dofs = 3
     jacobian_np = rng.normal(size=(1, 6, max_dofs)).astype(np.float32)
@@ -679,6 +685,7 @@ def test_dls_one_dof_revolute_arm_matches_analytical_solution(test: unittest.Tes
 
 
 def test_block_matrix_vector_multiply_matches_formula(test: unittest.TestCase, device):
+    """A per-robot block-diagonal matrix-vector multiply matches each robot's own dense matmul."""
     rng = np.random.default_rng(10)
     dof_counts = [2, 3]
     max_dofs = 3
@@ -716,6 +723,7 @@ def test_block_matrix_vector_multiply_matches_formula(test: unittest.TestCase, d
 
 
 def test_add_term_accumulates(test: unittest.TestCase, device):
+    """The kernel adds term into accumulator in place, elementwise."""
     accumulator = wp.array([1.0, 2.0, 3.0], dtype=wp.float32, device=device)
     term = wp.array([0.5, -1.0, 2.0], dtype=wp.float32, device=device)
     wp.launch(_add_term_kernel, dim=3, inputs=[term], outputs=[accumulator], device=device)
@@ -728,6 +736,7 @@ def test_add_term_accumulates(test: unittest.TestCase, device):
 
 
 def test_joint_limit_avoidance_zero_far_from_limits(test: unittest.TestCase, device):
+    """A joint at its range's midpoint, well outside the margin, gets exactly zero avoidance bias."""
     joint_q = wp.array([0.0], dtype=wp.float32, device=device)
     lower = wp.array([-1.0], dtype=wp.float32, device=device)
     upper = wp.array([1.0], dtype=wp.float32, device=device)
@@ -781,6 +790,7 @@ def test_joint_limit_avoidance_ramps_linearly_in_margin(test: unittest.TestCase,
 
 
 def test_posture_bias_matches_formula(test: unittest.TestCase, device):
+    """The posture bias equals the closed form stiffness * (q_des_null - q) per DOF."""
     joint_q = wp.array([0.0, 1.0], dtype=wp.float32, device=device)
     q_des_null = wp.array([0.5, 0.5], dtype=wp.float32, device=device)
     stiffness = wp.array([2.0, 3.0], dtype=wp.float32, device=device)
@@ -795,6 +805,7 @@ def test_posture_bias_matches_formula(test: unittest.TestCase, device):
 
 
 def test_integrate_position_euler_step(test: unittest.TestCase, device):
+    """joint_q_target equals joint_q + joint_qd_target * dt, the explicit-Euler integration step."""
     joint_q = wp.array([0.0, 1.0, -1.0], dtype=wp.float32, device=device)
     joint_qd_target = wp.array([1.0, -2.0, 0.5], dtype=wp.float32, device=device)
     dt = wp.array([0.1], dtype=wp.float32, device=device)
@@ -810,6 +821,7 @@ def test_integrate_position_euler_step(test: unittest.TestCase, device):
 
 
 def test_smallest_eigenvalue_spd6_matches_numpy(test: unittest.TestCase, device):
+    """The kernel's smallest eigenvalue matches numpy's, for a full-rank and a rank-deficient JJᵀ."""
     rng = np.random.default_rng(11)
     j1 = rng.normal(size=(6, 6)).astype(np.float32)
     j2 = np.zeros((6, 4), dtype=np.float32)
@@ -827,6 +839,7 @@ def test_smallest_eigenvalue_spd6_matches_numpy(test: unittest.TestCase, device)
 
 
 def test_adaptive_damping_matches_formula(test: unittest.TestCase, device):
+    """Adaptive damping matches the Maciejewski-Klein closed form, saturating at both ends of the ramp."""
     smallest_eigenvalue = wp.array([0.0, 0.25, 100.0], dtype=wp.float32, device=device)  # sigma_min = 0, 0.5, 10
     damping_min = wp.array([0.1, 0.1, 0.1], dtype=wp.float32, device=device)
     damping_max = wp.array([2.0, 2.0, 2.0], dtype=wp.float32, device=device)
@@ -850,6 +863,7 @@ def test_adaptive_damping_matches_formula(test: unittest.TestCase, device):
 
 
 def test_truncated_pinv_matrix_matches_numpy(test: unittest.TestCase, device):
+    """Below-threshold truncation never triggers here, so the kernel's output matches an exact pseudo-inverse."""
     rng = np.random.default_rng(13)
     j = rng.normal(size=(6, 4)).astype(np.float32)
     jjt_np = (j @ j.T).astype(np.float32)
