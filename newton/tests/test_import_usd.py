@@ -15308,7 +15308,7 @@ def Xform "World"
             )
         )
 
-        with mock.patch("newton._src.utils.import_usd.usd.get_tetmesh", return_value=source_tetmesh):
+        with mock.patch("newton._src.utils.import_usd.usd._get_tetmesh", return_value=source_tetmesh):
             builder.add_usd(stage)
 
         self.assertEqual(set(source_tetmesh.custom_attributes), {"temperature", "regionId"})

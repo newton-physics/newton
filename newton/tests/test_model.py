@@ -829,44 +829,32 @@ class TestModelMesh(unittest.TestCase):
             np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
         )
 
-    def test_mesh_adjacency_public_deprecated(self):
+    def test_mesh_adjacency_public(self):
+        """Assert public construction is warning-free and eagerly builds the vectorized edge tables."""
         tris = [[0, 1, 2], [0, 2, 3]]
-        # Construction from triangle indices is supported (no warning) and eager.
-        adj = newton.utils.MeshAdjacency(tris)
+        # The supported ctor path must not warn (the deprecated aliases that warned here are gone).
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            adj = newton.utils.MeshAdjacency(tris)
         self.assertEqual(adj.edge_indices.shape, (5, 4))
         self.assertEqual(adj.edge_tri_indices.shape, (5, 2))
         self.assertEqual(adj.tri_edge_indices.shape, (2, 3))
-        # The legacy .edges dict stays available but is deprecated.
-        with self.assertWarns(DeprecationWarning):
-            edges = adj.edges
-        self.assertEqual(len(edges), 5)
-        shared = edges[(0, 2)]
-        self.assertEqual({shared.f0, shared.f1}, {0, 1})
+        # The shared edge (0, 2) maps to both triangles in edge_tri_indices.
+        (shared,) = np.flatnonzero(
+            (np.minimum(adj.edge_indices[:, 2], adj.edge_indices[:, 3]) == 0)
+            & (np.maximum(adj.edge_indices[:, 2], adj.edge_indices[:, 3]) == 2)
+        )
+        self.assertEqual(set(adj.edge_tri_indices[shared].tolist()), {0, 1})
 
-    def test_mesh_adjacency_indices_deprecated_alias(self):
-        tris = [[0, 1, 2], [0, 2, 3]]
-        # `indices` is a deprecated alias for `tri_indices` and builds the same tables.
-        with self.assertWarns(DeprecationWarning):
-            adj = newton.utils.MeshAdjacency(indices=tris)
-        np.testing.assert_array_equal(adj.edge_indices, newton.utils.MeshAdjacency(tri_indices=tris).edge_indices)
-        # Passing both names with conflicting values is rejected.
-        with self.assertRaises(ValueError):
-            newton.utils.MeshAdjacency(tri_indices=tris, indices=[[0, 1, 2]])
-
-    def test_mesh_adjacency_add_edge_deprecated(self):
-        adj = newton.utils.MeshAdjacency()
-        # add_edge is a deprecated incremental shim; it updates edge_indices / edge_tri_indices.
-        with self.assertWarns(DeprecationWarning):
-            adj.add_edge(0, 1, 2, 0)
-        self.assertEqual(adj.edge_indices.shape, (1, 4))
-        self.assertEqual(adj.edge_tri_indices.shape, (1, 2))
-        with self.assertWarns(DeprecationWarning):
-            adj.add_edge(1, 0, 3, 1)  # second adjacent triangle (endpoints reversed)
-        np.testing.assert_array_equal(adj.edge_indices[0], [2, 3, 0, 1])
-        np.testing.assert_array_equal(adj.edge_tri_indices[0], [0, 1])
-        with self.assertWarns(DeprecationWarning):
-            edges = adj.edges
-        self.assertEqual({edges[(0, 1)].f0, edges[(0, 1)].f1}, {0, 1})
+    def test_mesh_adjacency_legacy_api_removed(self):
+        # The dict-based API deprecated in 1.4 is gone: the `edges` accessor, its
+        # `Edge` record class, the `add_edge` shim, and the ctor `indices` alias.
+        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
+        self.assertFalse(hasattr(adj, "edges"))
+        self.assertFalse(hasattr(adj, "add_edge"))
+        self.assertFalse(hasattr(newton.utils.MeshAdjacency, "Edge"))
+        with self.assertRaises(TypeError):
+            newton.utils.MeshAdjacency(indices=[[0, 1, 2]])
 
     def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
         # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
