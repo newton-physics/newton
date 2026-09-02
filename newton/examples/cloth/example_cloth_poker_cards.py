@@ -24,10 +24,21 @@ import warp as wp
 import newton
 import newton.examples
 
+CARD_COLOR_PALETTE = (
+    (68 / 255, 119 / 255, 170 / 255),
+    (102 / 255, 204 / 255, 238 / 255),
+    (34 / 255, 136 / 255, 51 / 255),
+    (204 / 255, 187 / 255, 68 / 255),
+    (238 / 255, 102 / 255, 119 / 255),
+    (170 / 255, 51 / 255, 119 / 255),
+    (238 / 255, 153 / 255, 51 / 255),
+    (0 / 255, 153 / 255, 136 / 255),
+)
+"""Paul Tol bright palette, matching the ModelBuilder shape palette."""
+
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
 
@@ -169,6 +180,7 @@ class Example:
                 edge_ke=edge_ke,
                 edge_kd=edge_kd,
                 particle_radius=particle_radius,
+                color=CARD_COLOR_PALETTE[i % len(CARD_COLOR_PALETTE)],
             )
 
         # Add ground plane

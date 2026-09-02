@@ -61,6 +61,17 @@ def _bind_deformable_material(stage, prim, mat_path, *, namespace="physics", **a
     return mat
 
 
+def _author_newton_curve_damping(material, **attrs):
+    """Apply the Newton curve-material API and author its damping attributes."""
+    from pxr import Sdf
+
+    prim = material.GetPrim()
+    prim.AddAppliedSchema("NewtonCurvesDeformableMaterialAPI")
+    for name, value in attrs.items():
+        prim.CreateAttribute(f"newton:{name}", Sdf.ValueTypeNames.Float).Set(value)
+    return material
+
+
 def _add_physics_attachment(
     stage,
     path,

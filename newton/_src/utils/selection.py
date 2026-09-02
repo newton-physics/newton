@@ -24,7 +24,6 @@ from ..sim import (
     eval_jacobian,
     eval_mass_matrix,
 )
-from .deprecation import deprecate_nonkeyword_arguments
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -563,7 +562,6 @@ class ArticulationView:
         verbose: If True, prints selection summary.
     """
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,

@@ -5,7 +5,6 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
-from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..joint_mimic import has_supported_joint_mimics, project_joint_mimics
 from ..solver import SolverBase
@@ -73,7 +72,6 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
 
     _MIMIC_ITERATIONS = 16
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,

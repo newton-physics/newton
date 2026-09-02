@@ -162,6 +162,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         # reflective or sheared transform is applied exactly. wp.transform_decompose drops the
         # reflection parity, which would mirror the soft body back to a non-reflected pose.
         world_vertices = np.array(_bake_world_points(tetmesh_for_builder.vertices, soft_mesh_mat), dtype=np.float32)
+        material_props = usd.resolve_material_properties_for_prim(prim)
         if is_volume_deformable:
             # Newton has no per-particle collision toggle, so authored no-collision
             # intent cannot be honored; the legacy bare-TetMesh path is unchanged.
@@ -177,6 +178,8 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             "vel": wp.vec3(0.0, 0.0, 0.0),
             "mesh": tetmesh_for_builder,
             "vertices": world_vertices,
+            "color": material_props.get("color"),
+            "opacity": material_props.get("opacity"),
             "label": path,
         }
         if _world_matrix_reflects(soft_mesh_mat):

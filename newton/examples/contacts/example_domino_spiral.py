@@ -65,7 +65,6 @@ def _domino_spiral_pose(index: int) -> tuple[wp.vec3, wp.quat]:
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.solver_name = str(getattr(args, "solver", "xpbd")).lower()
 

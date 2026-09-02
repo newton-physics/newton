@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from ...core.types import vec5
@@ -17,6 +18,19 @@ from .equality import (
     MjcEqualityTargetKind,
     _add_equality_constraint,
 )
+
+
+def solref_invalid_mask(solref: Sequence[float] | np.ndarray) -> np.ndarray:
+    """Return a mask selecting MuJoCo solref pairs with invalid zero or sign components.
+
+    MuJoCo's all-zero inherit-default sentinel is valid.
+    """
+    solref = np.asarray(solref)
+    timeconst = solref[..., 0]
+    dampratio = solref[..., 1]
+    both_zero = (timeconst == 0.0) & (dampratio == 0.0)
+    invalid = (timeconst == 0.0) | (dampratio == 0.0) | (np.sign(timeconst) != np.sign(dampratio))
+    return np.asarray(invalid & ~both_zero)
 
 
 def mjc_eq_solref(custom_attrs: dict[str, Any]) -> wp.vec2:

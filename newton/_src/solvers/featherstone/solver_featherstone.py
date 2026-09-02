@@ -7,7 +7,6 @@ import warp as wp
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.articulation import eval_mimic_joints
-from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..joint_mimic import (
     expand_mimic_accelerations,
@@ -140,7 +139,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     """
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
