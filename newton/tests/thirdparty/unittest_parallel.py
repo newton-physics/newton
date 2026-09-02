@@ -43,7 +43,8 @@ except ImportError:
 # The following variables are NVIDIA Modifications
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
-_STRICT_WARNING_TEST_MODULE = r"(?:.*\.)?test_.*$"
+_TEST_MODULE_PREFIX = r"(?:.*\.)?"
+_STRICT_WARNING_TEST_MODULE = rf"{_TEST_MODULE_PREFIX}test_.*$"
 
 # Keep each exception narrow so warning-cleanup PRs can remove debt without
 # leaving an entire test module permissive.
@@ -55,6 +56,7 @@ _KNOWN_WARNING_DEBT = (
         ),
         "category": UserWarning,
         "module": (
+            rf"{_TEST_MODULE_PREFIX}"
             r"(?:test_collision_cloth|test_collision_pipeline|test_controllers_joint_impedance|"
             r"test_controllers_joint_selection|test_coupled_solver|test_custom_attributes|test_ik|test_ik_lbfgs|"
             r"test_import_mjcf|test_jacobian_mass_matrix|test_kinematic_links|test_model|test_mujoco_solver|"
@@ -64,7 +66,7 @@ _KNOWN_WARNING_DEBT = (
     {
         "message": r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\..*",
         "category": UserWarning,
-        "module": r"test_import_usd$",
+        "module": rf"{_TEST_MODULE_PREFIX}test_import_usd$",
     },
     {
         "message": (
@@ -72,12 +74,12 @@ _KNOWN_WARNING_DEBT = (
             r"2\..*"
         ),
         "category": UserWarning,
-        "module": r"test_import_usd$",
+        "module": rf"{_TEST_MODULE_PREFIX}test_import_usd$",
     },
     {
         "message": r"invalid value encountered in cast",
         "category": RuntimeWarning,
-        "module": r"test_recorder$",
+        "module": rf"{_TEST_MODULE_PREFIX}test_recorder$",
     },
 )
 

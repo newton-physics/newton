@@ -49,17 +49,17 @@ class TestStrictWarnings(unittest.TestCase):
 
         self.assertEqual(len(caught), 1)
 
-    def test_recorder_cast_warning_debt_is_not_an_error(self):
-        """Keep the known recorder cast warning visible without failing."""
+    def test_nested_recorder_cast_warning_debt_is_not_an_error(self):
+        """Keep nested-module recorder warning debt visible without failing."""
         with warnings.catch_warnings(record=True) as caught:
             _enable_strict_warnings()
 
             warnings.warn_explicit(
                 "invalid value encountered in cast",
                 RuntimeWarning,
-                "test_recorder.py",
+                "kamino/test_recorder.py",
                 1,
-                module="test_recorder",
+                module="kamino.test_recorder",
             )
 
         self.assertEqual(len(caught), 1)
