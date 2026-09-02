@@ -212,7 +212,7 @@ class Example:
             return newton.solvers.SolverMuJoCo(
                 self.model,
                 iterations=5,
-                ls_iterations=5,
+                ls_iterations=10,
                 disable_contacts=True,
                 use_mujoco_cpu=wp.get_device().is_cpu,
             )
