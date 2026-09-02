@@ -117,6 +117,12 @@ class ControllerOperationalSpace(ControllerBase):
             term by Lambda, the operational-space mass matrix, computed
             each step from ``model``'s own mass matrix (via
             :func:`newton.eval_mass_matrix`) and the resolved tool Jacobian.
+            Note that if the ``joints``/``articulations`` selection omits a
+            DOF that is both free and dynamically coupled to the controlled
+            set, then there is not sufficient information to fully
+            dynamically decouple the system. No error is raised, as
+            omitting certain joints is often a useful approximation. It is
+            the user's responsibility to provide the needed information.
         use_partial_inertia_decoupling: Compute Lambda ignoring the coupling
             between translational and rotational inertia. Only meaningful
             when ``use_inertia_decoupling=True``.

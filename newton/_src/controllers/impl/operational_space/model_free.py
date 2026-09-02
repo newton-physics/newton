@@ -372,7 +372,13 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
             step for a time-varying frame. Defaults to identity (coincides
             with world frame).
         use_inertia_decoupling: Premultiply the task-space spring-damper term
-            by Lambda, the operational-space mass matrix.
+            by Lambda, the operational-space mass matrix. Note that if
+            ``inputs.mass_matrix`` omits a DOF that is both free and
+            dynamically coupled to the controlled set, then there is not
+            sufficient information to fully dynamically decouple the
+            system. No error is raised, as omitting certain joints is
+            often a useful approximation. It is the user's responsibility
+            to provide the needed information.
         use_partial_inertia_decoupling: Compute Lambda ignoring the coupling
             between translational and rotational inertia. Only meaningful
             when ``use_inertia_decoupling=True``.
