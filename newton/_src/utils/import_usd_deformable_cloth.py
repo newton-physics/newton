@@ -266,9 +266,23 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # leave a partial import (particles without their triangle). Contain it like other
         # malformed topology: warn and skip the prim before any builder mutation.
         vert_np = np.array([[v[0], v[1], v[2]] for v in cloth_vertices], dtype=np.float64)
+        nonfinite_points = int(np.count_nonzero(~np.isfinite(vert_np).all(axis=1)))
+        if nonfinite_points:
+            warnings.warn(
+                f"{path}: cloth mesh has {nonfinite_points} point(s) with non-finite coordinates; skipping.",
+                stacklevel=2,
+            )
+            continue
         edge1 = vert_np[tri_faces[:, 1]] - vert_np[tri_faces[:, 0]]
         edge2 = vert_np[tri_faces[:, 2]] - vert_np[tri_faces[:, 0]]
         tri_areas = 0.5 * np.linalg.norm(np.cross(edge1, edge2), axis=1)
+        nonfinite_areas = int(np.count_nonzero(~np.isfinite(tri_areas)))
+        if nonfinite_areas:
+            warnings.warn(
+                f"{path}: cloth mesh has {nonfinite_areas} triangle(s) with non-finite area; skipping.",
+                stacklevel=2,
+            )
+            continue
         degenerate = int(np.count_nonzero(tri_areas < 1.0e-12))
         if degenerate:
             warnings.warn(

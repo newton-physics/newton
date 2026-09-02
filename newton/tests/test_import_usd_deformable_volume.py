@@ -19,6 +19,7 @@ import warp as wp
 import newton
 from newton.tests._usd_deformable_test_utils import (
     _apply_deformable_body_api,
+    _author_deformable_element_array,
     _bind_deformable_material,
     _deformable_stage,
     group_labels,
@@ -193,6 +194,24 @@ class TestUSDDeformableVolume(unittest.TestCase):
                 builder.add_usd(stage)
 
                 np.testing.assert_allclose(builder.particle_mass, expected, atol=1.0e-6)
+
+    def test_volume_point_masses_ignore_unreferenced_points(self):
+        """Import masses on referenced TetMesh points while ignoring orphan-point values."""
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        points = list(tet.GetPointsAttr().Get())
+        tet.GetPointsAttr().Set([*points, (2.0, 2.0, 2.0)])
+        _author_deformable_element_array(tet.GetPrim(), "masses", [2.0] * 5, "point")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "unreferenced point"):
+            builder.add_usd(stage)
+
+        p0, p1 = group_range(builder, "soft", "/World/Soft", "particle")
+        masses = builder.particle_mass[p0:p1]
+        self.assertEqual(len(masses), 5)
+        self.assertAlmostEqual(sum(masses), 8.0)
+        self.assertEqual(masses[-1], 0.0)
 
     def test_body_hierarchy_selects_single_sim_mesh(self):
         """A PhysicsDeformableBodyAPI ancestor governs exactly one simulation mesh: its

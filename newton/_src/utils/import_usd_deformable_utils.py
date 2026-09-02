@@ -761,11 +761,14 @@ def _element_masses_from_points(
 ) -> list[float] | None:
     """Convert point masses to element masses using the proposal's volume-weighted relation."""
     point_volumes = [0.0] * len(point_masses)
+    referenced_points: set[int] = set()
     for indices, volume in zip(element_indices, element_volumes, strict=True):
         share = float(volume) / len(indices)
-        for point in indices:
-            point_volumes[int(point)] += share
-    if any(volume <= 0.0 or not math.isfinite(volume) for volume in point_volumes):
+        for raw_point_index in indices:
+            point_index = int(raw_point_index)
+            referenced_points.add(point_index)
+            point_volumes[point_index] += share
+    if any(point_volumes[point] <= 0.0 or not math.isfinite(point_volumes[point]) for point in referenced_points):
         return None
     return [
         float(volume)
@@ -834,6 +837,14 @@ def _resolve_simplex_point_masses(
                 for source, volume in zip(element_sources, element_volumes, strict=True)
             ]
     else:
+        referenced_points = {int(point) for indices in element_indices for point in indices}
+        unreferenced_count = point_count - len(referenced_points)
+        if unreferenced_count:
+            warnings.warn(
+                f"{prim.GetPath()}: physics:masses has {unreferenced_count} unreferenced point value(s); "
+                "ignoring those values because the points belong to no simulation element.",
+                stacklevel=2,
+            )
         element_masses = _element_masses_from_points(authored.values, element_indices, element_volumes)
         if element_masses is None:
             warnings.warn(
@@ -875,16 +886,9 @@ def _apply_particle_masses(
         element_sources,
     )
     if point_masses is not None:
-        if len(point_masses) != n:
-            warnings.warn(
-                f"{prim.GetPath()}: physics:masses length {len(point_masses)} != {n} simulation points; "
-                f"ignoring per-point masses.",
-                stacklevel=2,
-            )
-        else:
-            for i in range(n):
-                builder.particle_mass[p0 + i] = point_masses[i]
-            return authored
+        for i in range(n):
+            builder.particle_mass[p0 + i] = point_masses[i]
+        return authored
     body_mass, _ = usd._get_deformable_body_overrides(prim, read_attr)
     if body_mass is not None:
         current = float(sum(builder.particle_mass[p0:p1]))

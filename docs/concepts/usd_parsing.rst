@@ -211,9 +211,10 @@ The first release deliberately supports a narrow, predictable set of inputs:
   rejects the entire typed array and continues with the next source in the mass-precedence order.
   Constant and curve totals are distributed by element volume, point values are converted through
   the proposal's volume-weighted relation, and simplex element masses are lumped equally to Newton
-  particles. Point conversion preserves total mass but can redistribute it relative to Newton's
-  former direct point interpretation, which untyped arrays retain during the deprecation window
-  with a warning.
+  particles. Point conversion preserves the mass authored on points referenced by simulation
+  elements but ignores, with a warning, values on orphan points. It can redistribute the preserved
+  mass relative to Newton's former direct point interpretation, which untyped arrays retain during
+  the deprecation window with a warning.
 * Simulation points, topology, and normals are read at the USD default time. Newton builds the
   deformable at that pose. Missing cloth bend arrays use
   ``physics:restBendAnglesDefault = "flat"``; ``"restShape"`` retains the imported dihedral.

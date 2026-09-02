@@ -660,6 +660,26 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertEqual(builder.tri_count, 2)
         builder.finalize()
 
+    def test_nonfinite_cloth_vertex_warns_and_skips(self):
+        """Skip a cloth with a non-finite point without aborting sibling imports."""
+        stage = _deformable_stage()
+        bad = _add_cloth_mesh(stage, "/World/Bad")
+        bad.GetPointsAttr().Set([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, float("nan"))])
+        _add_cloth_mesh(stage, "/World/Good")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "/World/Bad.*non-finite"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+
+        self.assertNotIn("/World/Bad", result["path_cloth_map"])
+        self.assertNotIn("/World/Bad", result["path_cloth_attrs"])
+        self.assertIn("/World/Good", result["path_cloth_map"])
+        self.assertEqual(builder.particle_count, 4)
+        self.assertEqual(builder.tri_count, 2)
+        self.assertEqual(builder.edge_count, 5)
+        self.assertEqual(group_labels(builder, "cloth"), ["/World/Good"])
+        builder.finalize()
+
     def test_cloth_collision_limitation(self):
         """Newton cannot disable particle collision: a cloth without an enabled
         PhysicsCollisionAPI warns and imports colliding; an enabled one is silent."""
@@ -972,6 +992,24 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 for m in masses:
                     self.assertTrue(math.isfinite(m) and m > 0.0)
                 self.assertNotEqual(masses, bad)
+
+    def test_cloth_point_masses_ignore_unreferenced_points(self):
+        """Import masses on referenced cloth points while ignoring orphan-point values."""
+        stage = _deformable_stage()
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        points = list(cloth.GetPointsAttr().Get())
+        cloth.GetPointsAttr().Set([*points, (2.0, 2.0, 1.0)])
+        _author_deformable_element_array(cloth.GetPrim(), "masses", [2.0] * 5, "point")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "unreferenced point"):
+            builder.add_usd(stage)
+
+        p0, p1 = group_range(builder, "cloth", "/World/Cloth", "particle")
+        masses = builder.particle_mass[p0:p1]
+        self.assertEqual(len(masses), 5)
+        self.assertAlmostEqual(sum(masses), 8.0)
+        self.assertEqual(masses[-1], 0.0)
 
     def test_cloth_scale_bakes_and_reflection_flips_winding(self):
         """Verify full-affine scale baking and reflection-aware cloth winding.
