@@ -349,7 +349,10 @@ class TestSchemaResolver(unittest.TestCase):
 
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
-        legacy = SchemaResolverManager([SchemaResolverSentinel(), SchemaResolverBackup()])
+        legacy = SchemaResolverManager(
+            [SchemaResolverSentinel(), SchemaResolverBackup()],
+            audit_registered_schema_fallbacks=True,
+        )
 
         self.assertIsNone(legacy.get_value(joint, PrimType.JOINT, "armature"))
         message = legacy._fallback_migration_warning()
@@ -459,6 +462,13 @@ class TestSchemaResolver(unittest.TestCase):
         joint.AddAppliedSchema("NewtonJointAPI")
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 12.0)
         self.assertEqual(resolver._resolve_value(joint, PrimType.JOINT, "armature", default=12.0).value, 0.0)
+        self.assertIsNone(resolver._fallback_migration_warning())
+
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton()],
+            audit_registered_schema_fallbacks=True,
+        )
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 12.0)
         self.assertIn(
             "armature: importer default -> NewtonJointAPI (newton:armature; registered fallback)",
             resolver._fallback_migration_warning(),
@@ -471,10 +481,22 @@ class TestSchemaResolver(unittest.TestCase):
         armature.Set(7.0)
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 7.0)
 
+    def test_registered_precedence_rejects_migration_audit(self):
+        """Reject auditing when registered precedence already supplies the result."""
+        with self.assertRaisesRegex(ValueError, "audit_registered_schema_fallbacks"):
+            SchemaResolverManager(
+                [SchemaResolverNewton()],
+                use_registered_schema_fallbacks=True,
+                audit_registered_schema_fallbacks=True,
+            )
+
     def test_fallback_migration_warning_bounds_prim_paths(self):
         """Bound the prim paths listed for each fallback migration."""
         stage = Usd.Stage.CreateInMemory()
-        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton()],
+            audit_registered_schema_fallbacks=True,
+        )
         for index in range(5):
             joint = UsdPhysics.RevoluteJoint.Define(stage, f"/joint{index}").GetPrim()
             joint.AddAppliedSchema("NewtonJointAPI")
@@ -502,7 +524,10 @@ class TestSchemaResolver(unittest.TestCase):
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("NewtonJointAPI")
         joint.CreateAttribute("later:armature", Sdf.ValueTypeNames.Float).Set(3.0)
-        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverLater()])
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton(), SchemaResolverLater()],
+            audit_registered_schema_fallbacks=True,
+        )
 
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 3.0)
         message = resolver._fallback_migration_warning()
@@ -527,7 +552,7 @@ class TestSchemaResolver(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         alias = SchemaResolverDampingAlias()
-        resolver = SchemaResolverManager([alias])
+        resolver = SchemaResolverManager([alias], audit_registered_schema_fallbacks=True)
         resolver._record_resolution_transition(
             joint,
             PrimType.JOINT,
@@ -572,7 +597,10 @@ class TestSchemaResolver(unittest.TestCase):
 
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
-        resolver = SchemaResolverManager([SchemaResolverEarlier(), SchemaResolverLater()])
+        resolver = SchemaResolverManager(
+            [SchemaResolverEarlier(), SchemaResolverLater()],
+            audit_registered_schema_fallbacks=True,
+        )
 
         value, source = resolver.get_value_with_resolver(joint, PrimType.JOINT, "armature")
 
@@ -595,7 +623,10 @@ class TestSchemaResolver(unittest.TestCase):
         """Audit compatibility changes even when no owning schema applies."""
         stage = Usd.Stage.CreateInMemory()
         scene = UsdPhysics.Scene.Define(stage, "/scene").GetPrim()
-        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton()],
+            audit_registered_schema_fallbacks=True,
+        )
 
         self.assertEqual(resolver.get_value(scene, PrimType.SCENE, "max_solver_iterations"), -1)
         message = resolver._fallback_migration_warning()
@@ -622,7 +653,10 @@ class TestSchemaResolver(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("UnregisteredJointAPI")
-        resolver = SchemaResolverManager([SchemaResolverUnregistered()])
+        resolver = SchemaResolverManager(
+            [SchemaResolverUnregistered()],
+            audit_registered_schema_fallbacks=True,
+        )
 
         resolved = resolver._resolve_specialized_value(
             joint,
@@ -679,7 +713,10 @@ class TestSchemaResolver(unittest.TestCase):
         joint.CreateAttribute("compatibility:armature", Sdf.ValueTypeNames.Float).Set(-1.0)
         joint.CreateAttribute("authored:armature", Sdf.ValueTypeNames.Float).Set(3.0)
         compatibility = SchemaResolverCompatibility()
-        resolver = SchemaResolverManager([SchemaResolverUnrelated(), compatibility, SchemaResolverAuthored()])
+        resolver = SchemaResolverManager(
+            [SchemaResolverUnrelated(), compatibility, SchemaResolverAuthored()],
+            audit_registered_schema_fallbacks=True,
+        )
 
         resolved = resolver._resolve_specialized_value(
             joint,
@@ -709,7 +746,10 @@ class TestSchemaResolver(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("NewtonJointAPI")
-        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton()],
+            audit_registered_schema_fallbacks=True,
+        )
 
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=0.0), 0.0)
         self.assertIsNone(resolver._fallback_migration_warning())
@@ -719,7 +759,10 @@ class TestSchemaResolver(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("NewtonJointAPI")
-        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton()],
+            audit_registered_schema_fallbacks=True,
+        )
 
         value, source = resolver.get_value_with_resolver(joint, PrimType.JOINT, "armature", default=0.0)
 
@@ -755,7 +798,10 @@ class TestSchemaResolver(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("NewtonJointAPI")
-        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton()],
+            audit_registered_schema_fallbacks=True,
+        )
         interpreted_values = []
 
         def interpret(resolved):
@@ -819,6 +865,7 @@ class TestSchemaResolver(unittest.TestCase):
                 resolver = SchemaResolverManager(
                     [SchemaResolverLegacy(), newton_resolver],
                     use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                    audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                 )
 
                 value, source = resolver.get_value_with_resolver(joint, PrimType.JOINT, "armature")
@@ -900,7 +947,10 @@ class TestSchemaResolver(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("NewtonJointAPI")
-        resolver = SchemaResolverManager([SchemaResolverBroken()])
+        resolver = SchemaResolverManager(
+            [SchemaResolverBroken()],
+            audit_registered_schema_fallbacks=True,
+        )
 
         with self.assertRaisesRegex(TypeError, "invalid fallback"):
             resolver.get_value(joint, PrimType.JOINT, "armature")
@@ -1068,7 +1118,7 @@ class TestSchemaResolver(unittest.TestCase):
         builder = ModelBuilder()
         builder.default_shape_cfg.kh = 123.0
         with self.assertWarnsRegex(DeprecationWarning, "newton:hydroelasticStiffness"):
-            result = builder.add_usd(stage)
+            result = builder.add_usd(stage, audit_registered_schema_fallbacks=True)
 
         shape = result["path_shape_map"]["/cube"]
         self.assertEqual(builder.shape_material_kh[shape], 123.0)
@@ -1118,6 +1168,7 @@ class TestSchemaResolver(unittest.TestCase):
                 stage,
                 schema_resolvers=[SchemaResolverEarlySdf(), SchemaResolverLaterSdf()],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         shape = result["path_shape_map"]["/cube"]
@@ -1175,6 +1226,7 @@ class TestSchemaResolver(unittest.TestCase):
                 stage,
                 schema_resolvers=[SchemaResolverEarlyHydro(), SchemaResolverLaterHydro()],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         shape = result["path_shape_map"]["/body/mesh"]
@@ -1242,6 +1294,7 @@ class TestSchemaResolver(unittest.TestCase):
                     SchemaResolverStableSdf(),
                 ],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         messages = [str(item.message) for item in caught]
@@ -1261,6 +1314,7 @@ class TestSchemaResolver(unittest.TestCase):
                     SchemaResolverStableSdf(),
                 ],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         messages = [str(item.message) for item in caught]
@@ -1304,6 +1358,7 @@ class TestSchemaResolver(unittest.TestCase):
                     stage,
                     schema_resolvers=[SchemaResolverEarlyPadding(), SchemaResolverLaterPadding()],
                     use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                    audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                 )
 
             shape = result["path_shape_map"]["/cube"]
@@ -1384,6 +1439,7 @@ class TestSchemaResolver(unittest.TestCase):
                                 padding_resolver(),
                             ],
                             use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                            audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                         )
                     shape = result["path_shape_map"]["/cube"]
                     builders.append((builder, shape))
@@ -1451,6 +1507,7 @@ class TestSchemaResolver(unittest.TestCase):
                 stage,
                 schema_resolvers=[SchemaResolverEarlyMass(), SchemaResolverLaterMass()],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         shape = result["path_shape_map"]["/cube"]
@@ -1490,6 +1547,7 @@ class TestSchemaResolver(unittest.TestCase):
                 stage,
                 schema_resolvers=[SchemaResolverNewton(), SchemaResolverLaterMargin()],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         messages = [str(item.message) for item in caught]
@@ -1526,6 +1584,7 @@ class TestSchemaResolver(unittest.TestCase):
                 stage,
                 schema_resolvers=[SchemaResolverNewton(), SchemaResolverLaterMaterial()],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         messages = [str(item.message) for item in caught]
@@ -1592,6 +1651,7 @@ class TestSchemaResolver(unittest.TestCase):
                     SchemaResolverStableMaterial(),
                 ],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         shape = result["path_shape_map"]["/cube"]
@@ -1613,6 +1673,7 @@ class TestSchemaResolver(unittest.TestCase):
                     SchemaResolverStableMaterial(),
                 ],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         priority_shape = priority_result["path_shape_map"]["/cube"]
@@ -1634,6 +1695,7 @@ class TestSchemaResolver(unittest.TestCase):
                     SchemaResolverStableMaterial(),
                 ],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         owner_change_messages = [str(item.message) for item in caught]
@@ -1673,6 +1735,7 @@ class TestSchemaResolver(unittest.TestCase):
                 stage,
                 schema_resolvers=[SchemaResolverEarlyGravity(), SchemaResolverLaterGravity()],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         self.assertFalse(any("deprecated legacy USD property precedence" in str(item.message) for item in caught))
@@ -1723,6 +1786,7 @@ class TestSchemaResolver(unittest.TestCase):
                 stage,
                 schema_resolvers=[SchemaResolverEarlySelfCollision(), SchemaResolverLaterSelfCollision()],
                 use_registered_schema_fallbacks=False,
+                audit_registered_schema_fallbacks=True,
             )
 
         self.assertFalse(any("deprecated legacy USD property precedence" in str(item.message) for item in caught))
@@ -1785,6 +1849,7 @@ class TestSchemaResolver(unittest.TestCase):
                         stage,
                         schema_resolvers=[SchemaResolverEarlyLimit(), SchemaResolverLaterLimit()],
                         use_registered_schema_fallbacks=False,
+                        audit_registered_schema_fallbacks=True,
                     )
 
                 self.assertEqual(builder.joint_limit_ke, [9.0])
@@ -1873,7 +1938,10 @@ class TestSchemaResolver(unittest.TestCase):
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("UnregisteredJointAPI")
 
-        legacy = SchemaResolverManager([SchemaResolverUnregistered()])
+        legacy = SchemaResolverManager(
+            [SchemaResolverUnregistered()],
+            audit_registered_schema_fallbacks=True,
+        )
         self.assertEqual(
             legacy.get_value(
                 joint,
@@ -1933,6 +2001,7 @@ class TestSchemaResolver(unittest.TestCase):
         legacy = SchemaResolverManager(
             [SchemaResolverRegistered()],
             use_registered_schema_fallbacks=False,
+            audit_registered_schema_fallbacks=True,
         )
         self.assertEqual(legacy.get_value(prim, PrimType.BODY, "simulation_owner"), 9.0)
         self.assertIn("physics:simulationOwner", legacy._fallback_migration_warning())

@@ -196,6 +196,7 @@ class TestApi(unittest.TestCase):
                 "use_registered_schema_fallbacks",
             },
             "diagnostic_or_output": {
+                "audit_registered_schema_fallbacks",
                 "verbose",
                 "return_deformable_results",
             },

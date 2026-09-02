@@ -745,6 +745,7 @@ class SchemaResolverManager:
         resolvers: Sequence[SchemaResolver],
         *,
         use_registered_schema_fallbacks: bool = False,
+        audit_registered_schema_fallbacks: bool = False,
     ):
         """
         Initialize resolver manager with resolver instances in priority order.
@@ -755,9 +756,14 @@ class SchemaResolverManager:
                 applied schema's fallback before importer defaults. Only registered
                 schema definitions supply these fallbacks; unregistered resolver
                 defaults remain after importer defaults. Defaults to False.
+            audit_registered_schema_fallbacks: Compare legacy results with registered
+                schema fallback precedence. Defaults to False.
         """
+        if use_registered_schema_fallbacks and audit_registered_schema_fallbacks:
+            raise ValueError("audit_registered_schema_fallbacks requires use_registered_schema_fallbacks=False")
         self.resolvers = list(resolvers)
         self._use_registered_schema_fallbacks = use_registered_schema_fallbacks
+        self._audit_registered_schema_fallbacks = audit_registered_schema_fallbacks
         self._resolution = _SchemaResolutionPolicy(self.resolvers)
         self._registered_schema_fallbacks: dict[tuple[str, str], dict[str, Any] | None] = {}
         self._legacy_fallback_properties: dict[SchemaResolverManager._MigrationTransition, set[str]] = {}
@@ -927,6 +933,10 @@ class SchemaResolverManager:
     def _uses_composed_fallbacks(self) -> bool:
         return self._use_registered_schema_fallbacks
 
+    @property
+    def _audits_composed_fallbacks(self) -> bool:
+        return self._audit_registered_schema_fallbacks
+
     def _active_default(self, default: Any, legacy_default: Any) -> Any:
         if not self._uses_composed_fallbacks and legacy_default is not _SAME_AS_DEFAULT:
             return legacy_default
@@ -992,7 +1002,7 @@ class SchemaResolverManager:
                 resolved.compatibility_resolver,
                 resolved.mapping_key,
             )
-        if not self._uses_composed_fallbacks and audit_fallbacks:
+        if self._audits_composed_fallbacks and audit_fallbacks:
             self._record_legacy_fallback(
                 prim,
                 prim_type,
@@ -1026,16 +1036,17 @@ class SchemaResolverManager:
             resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
         else:
             resolved = resolve_legacy(tuple(self.resolvers), read_value)
-            self._record_legacy_fallback(
-                prim,
-                prim_type,
-                key,
-                default,
-                resolved,
-                audit_provenance=self._AuditProvenance.SOURCE,
-                result_interpreter=result_interpreter,
-                read_value=read_value,
-            )
+            if self._audits_composed_fallbacks:
+                self._record_legacy_fallback(
+                    prim,
+                    prim_type,
+                    key,
+                    default,
+                    resolved,
+                    audit_provenance=self._AuditProvenance.SOURCE,
+                    result_interpreter=result_interpreter,
+                    read_value=read_value,
+                )
 
         if resolved.resolver is not None:
             self._collect_on_first_use(resolved.resolver, prim)
@@ -1086,6 +1097,9 @@ class SchemaResolverManager:
             legacy = resolve_legacy(tuple(self.resolvers), read_value)
             if legacy.resolver is not None:
                 self._collect_on_first_use(legacy.resolver, prim)
+
+        if not self._audits_composed_fallbacks:
+            return self._PolicyValues(legacy, None, None)
 
         try:
             composed = self._resolve_value(
@@ -1230,7 +1244,7 @@ class SchemaResolverManager:
         read_value: Callable[[SchemaResolver, str], _ResolverValue] | None = None,
     ) -> None:
         """Record properties whose legacy and composed resolution diverge."""
-        if self._uses_composed_fallbacks:
+        if not self._audits_composed_fallbacks:
             return
 
         try:
@@ -1288,7 +1302,7 @@ class SchemaResolverManager:
         candidates: Sequence[SchemaResolverManager._PolicyChangeCandidate],
     ) -> None:
         """Audit inputs that contribute to an assembled property change."""
-        if self._uses_composed_fallbacks or self._values_equal(legacy_comparison, composed_comparison):
+        if not self._audits_composed_fallbacks or self._values_equal(legacy_comparison, composed_comparison):
             return
 
         for candidate in candidates:
@@ -1401,7 +1415,7 @@ class SchemaResolverManager:
 
     def _fallback_migration_warning(self) -> str | None:
         """Build one actionable warning for audited precedence changes."""
-        if self._uses_composed_fallbacks or not self._legacy_fallback_properties:
+        if not self._audits_composed_fallbacks or not self._legacy_fallback_properties:
             return None
 
         properties = self._format_fallback_locations(self._legacy_fallback_properties)

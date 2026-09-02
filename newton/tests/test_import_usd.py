@@ -2384,6 +2384,7 @@ def Xform "Articulation" (
                     stage,
                     schema_resolvers=[SchemaResolverCompatibility()],
                     use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                    audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                     load_visual_shapes=False,
                 )
             model = builder.finalize()
@@ -2435,7 +2436,11 @@ def Xform "Articulation" (
                 message=r".*schema fallbacks.*",
                 category=DeprecationWarning,
             )
-            builder.add_usd(stage, schema_resolvers=[resolver])
+            builder.add_usd(
+                stage,
+                schema_resolvers=[resolver],
+                audit_registered_schema_fallbacks=True,
+            )
 
         self.assertEqual(resolver.velocity_read_count, 1)
 
@@ -2479,6 +2484,7 @@ def Xform "Articulation" (
                             stage,
                             schema_resolvers=[SchemaResolverVelocityFallback()],
                             use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                            audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                             load_visual_shapes=False,
                         )
                     policy_values.append(builder.finalize().joint_velocity_limit.numpy().tolist())
@@ -2527,6 +2533,7 @@ def Xform "Articulation" (
                     stage,
                     schema_resolvers=[SchemaResolverDampingFallback()],
                     use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                    audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                     load_visual_shapes=False,
                 )
             self.assertEqual(builder.finalize().joint_damping.numpy().tolist(), [1000.0])
@@ -2549,7 +2556,13 @@ def Xform "Articulation" (
         joint.CreateLowerLimitAttr().Set(-45.0)
         joint.CreateUpperLimitAttr().Set(45.0)
 
-        for policy_args in ({}, {"use_registered_schema_fallbacks": False}):
+        for policy_args in (
+            {"audit_registered_schema_fallbacks": True},
+            {
+                "use_registered_schema_fallbacks": False,
+                "audit_registered_schema_fallbacks": True,
+            },
+        ):
             with self.subTest(policy_args=policy_args):
                 builder = newton.ModelBuilder()
                 builder.default_joint_cfg.armature = 0.7
@@ -2574,6 +2587,16 @@ def Xform "Articulation" (
                 self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), 123.0)
                 self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 7.0)
                 self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_registered_policy_rejects_migration_audit(self):
+        """Reject the migration audit when registered precedence is active."""
+        with self.assertRaisesRegex(ValueError, "audit_registered_schema_fallbacks"):
+            newton.ModelBuilder().add_usd(
+                None,
+                use_registered_schema_fallbacks=True,
+                audit_registered_schema_fallbacks=True,
+            )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_generic_limit_gains_mask_per_axis_policy_changes(self):
@@ -2616,6 +2639,7 @@ def Xform "Articulation" (
                             stage,
                             schema_resolvers=[usd.SchemaResolverNewton(), usd.SchemaResolverMjc()],
                             use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                            audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                         )
 
                     self.assertFalse(any("mjc:solreflimit" in str(item.message) for item in caught))
@@ -2667,7 +2691,10 @@ def Xform "Articulation" (
                 joint.CreateBody1Rel().SetTargets([body.GetPath()])
 
                 policy_gains = []
-                for policy_args in ({}, {"use_registered_schema_fallbacks": True}):
+                for policy_args in (
+                    {"audit_registered_schema_fallbacks": True},
+                    {"use_registered_schema_fallbacks": True},
+                ):
                     builder = newton.ModelBuilder()
                     joint.GetPrim().GetAttribute("newton:armature").Set(builder.default_joint_cfg.armature)
                     joint.GetPrim().GetAttribute("newton:damping").Set(builder.default_joint_cfg.damping)
@@ -5906,7 +5933,11 @@ def PhysicsRevoluteJoint "Joint2"
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         with self.assertWarnsRegex(DeprecationWarning, "mjc:gap"):
-            builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+            builder.add_usd(
+                stage,
+                schema_resolvers=[SchemaResolverMjc()],
+                audit_registered_schema_fallbacks=True,
+            )
         model = builder.finalize()
 
         shape_gap = model.shape_gap.numpy()
@@ -5971,6 +6002,7 @@ def PhysicsRevoluteJoint "Joint2"
             builder.add_usd(
                 stage,
                 schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+                audit_registered_schema_fallbacks=True,
                 legacy_margin_gap=True,
             )
         model = builder.finalize()
@@ -8854,6 +8886,7 @@ def Xform "Articulation" (
                     stage,
                     schema_resolvers=[usd.SchemaResolverNewton(), SchemaResolverLaterMaterial()],
                     use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                    audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                 )
             self.assertFalse(any("deprecated legacy USD property precedence" in str(item.message) for item in caught))
             self.assertEqual(builder.shape_count, 0)
@@ -8943,6 +8976,7 @@ def Xform "Articulation" (
                         usd.SchemaResolverNewton(),
                     ],
                     use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                    audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                 )
             shape = result["path_shape_map"]["/Body/Collider"]
             flags.append(builder.shape_flags[shape])
@@ -9000,6 +9034,7 @@ def Xform "Articulation" (
                         usd.SchemaResolverNewton(),
                     ],
                     use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                    audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                 )
             shape = result["path_shape_map"]["/Plane"]
             flags.append(builder.shape_flags[shape])
@@ -11150,6 +11185,7 @@ def Xform "Articulation" (
                             stage,
                             schema_resolvers=[usd.SchemaResolverMjc()],
                             use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                            audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                         )
 
                     shape = result["path_shape_map"]["/cube"]
@@ -11296,7 +11332,10 @@ def Xform "Articulation" (
         UsdShade.MaterialBindingAPI.Apply(collider.GetPrim()).Bind(material, "physics")
 
         policy_values = []
-        for policy_args in ({}, {"use_registered_schema_fallbacks": True}):
+        for policy_args in (
+            {"audit_registered_schema_fallbacks": True},
+            {"use_registered_schema_fallbacks": True},
+        ):
             builder = newton.ModelBuilder()
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -11375,6 +11414,7 @@ def Xform "Articulation" (
                         usd.SchemaResolverNewton(),
                     ],
                     use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                    audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                 )
             self.assertFalse(any("deprecated legacy USD property precedence" in str(item.message) for item in caught))
             model = builder.finalize()
@@ -12680,6 +12720,7 @@ def Xform "Articulation" (
                     stage,
                     schema_resolvers=[usd.SchemaResolverNewton(), SchemaResolverLaterTimestep()],
                     use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                    audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                 )
             self.assertFalse(any("deprecated legacy USD property precedence" in str(item.message) for item in caught))
             policy_values.append(result["physics_dt"])
@@ -12729,6 +12770,7 @@ def Xform "Articulation" (
                     result = newton.ModelBuilder().add_usd(
                         stage,
                         use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                        audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                     )
                 policy_values.append(result["max_solver_iterations"])
                 self.assertFalse(
@@ -12762,6 +12804,7 @@ def Xform "Articulation" (
                     stage,
                     schema_resolvers=[SchemaResolverCompatibility()],
                     use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+                    audit_registered_schema_fallbacks=not use_registered_schema_fallbacks,
                 )
             policy_values.append(result["max_solver_iterations"])
             migration_warnings = [item for item in caught if "compat:iterations" in str(item.message)]

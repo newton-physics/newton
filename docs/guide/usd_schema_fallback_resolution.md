@@ -27,12 +27,13 @@ These sources have different authority. The resolution policy makes that authori
 
 The {ref}`schema resolver guide <schema_resolvers>` is authoritative for user-visible behavior. The two policies are summarized here to explain the implementation:
 
-| Policy | Resolution order |
+| Mode | Resolution order |
 | --- | --- |
-| Legacy: omitted or `False` | Authored value → importer default → compatibility default → unresolved. |
-| Registered schema: `True` | Explicit override → each resolver's authored value or registered fallback → importer default → eligible compatibility default → unresolved. |
+| Legacy: both flags `False` | Authored value → importer default → compatibility default → unresolved. |
+| Legacy with audit: `audit_registered_schema_fallbacks=True` | Return the legacy result and compare it with registered-schema precedence. |
+| Registered schema: `use_registered_schema_fallbacks=True` | Explicit override → each resolver's authored value or registered fallback → importer default → eligible compatibility default → unresolved. |
 
-Legacy behavior is deprecated and audited against registered-schema precedence. One quirk is intentionally preserved: after selecting a compatibility default, a property transformer may turn it into `None`, but resolution does not continue to a later compatibility default.
+Legacy behavior is deprecated. Its optional audit compares it with registered-schema precedence. One quirk is intentionally preserved: after selecting a compatibility default, a property transformer may turn it into `None`, but resolution does not continue to a later compatibility default.
 
 Under registered-schema precedence, resolver priority applies to each resolver's complete candidate. An earlier resolver's registered fallback therefore wins over a later resolver's authored value.
 
@@ -98,13 +99,13 @@ Equal numbers are normally equivalent. Source provenance is compared only when t
 
 ## Migration diagnostics
 
-Legacy imports resolve the registered-schema result using cached reads and emit at most one aggregated `DeprecationWarning` per import. The warning is emitted only for a proven interpreted value or relevant source change; audit failures alone do not warn. It identifies the old and new suppliers, bounds the list of prim paths, and explains how to adopt or preserve the behavior.
+Set `audit_registered_schema_fallbacks=True` to make a legacy import resolve the registered-schema result using cached reads and emit at most one aggregated `DeprecationWarning`. The warning is emitted only for a proven interpreted value or relevant source change; audit failures alone do not warn. It identifies the old and new suppliers, bounds the list of prim paths, and explains how to adopt or preserve the behavior.
 
 An explicit importer override suppresses migration auditing for that property because the caller has already selected its future value.
 
 ## Performance
 
-The policy extraction adds no stage traversal and does not build a second model. Registered-schema mode evaluates only the selected policy. Legacy mode also evaluates the future result for migration diagnostics, but authored reads and composed schema definitions are cached for the import.
+The policy extraction adds no stage traversal and does not build a second model. Normal legacy and registered-schema imports evaluate only their selected policy. The optional migration audit evaluates both policies, but authored reads and composed schema definitions are cached for the import.
 
 Local before-and-after timings should cover a large authored-value stage and a fallback-heavy stage. This is an engineering check rather than a committed benchmark or public performance guarantee.
 

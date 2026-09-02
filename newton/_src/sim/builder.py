@@ -3791,6 +3791,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         use_registered_schema_fallbacks: bool = False,
+        audit_registered_schema_fallbacks: bool = False,
         force_position_velocity_actuation: bool = False,
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
@@ -3942,9 +3943,7 @@ class ModelBuilder:
             use_registered_schema_fallbacks: If True, resolve each ordered resolver's
                 authored value and registered schema fallback before advancing to the
                 next resolver, then use importer and unregistered compatibility defaults.
-                False retains deprecated legacy precedence and warns when future
-                precedence would change the interpreted property or its source-dependent
-                meaning.
+                False retains deprecated legacy precedence.
 
                 .. experimental::
 
@@ -3954,6 +3953,16 @@ class ModelBuilder:
                 .. deprecated:: 1.6
                     Passing False selects deprecated legacy fallback precedence. Pass
                     True to adopt registered schema fallback precedence.
+            audit_registered_schema_fallbacks: If True, retain legacy precedence while
+                comparing its interpreted results with registered-schema precedence and
+                emit one migration warning when they differ. The audit is disabled by
+                default because it evaluates both policies. It cannot be combined with
+                ``use_registered_schema_fallbacks=True``.
+
+                .. experimental::
+
+                    The ``audit_registered_schema_fallbacks`` argument may change without
+                    prior notice.
             force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
                 If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -4110,6 +4119,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
             use_registered_schema_fallbacks=use_registered_schema_fallbacks,
+            audit_registered_schema_fallbacks=audit_registered_schema_fallbacks,
             force_position_velocity_actuation=force_position_velocity_actuation,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,

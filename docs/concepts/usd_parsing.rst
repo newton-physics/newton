@@ -695,9 +695,11 @@ The deprecated legacy policy preserves one older behavior: after selecting a com
 Migration Audit
 ^^^^^^^^^^^^^^^
 
-The legacy hierarchy is deprecated. Newton emits at most one :exc:`DeprecationWarning` per import when it can prove that registered-schema precedence changes an interpreted property or source-dependent meaning. Audit failures alone do not warn.
+The legacy hierarchy is deprecated. Set ``audit_registered_schema_fallbacks=True`` to retain the legacy result while comparing it with registered-schema precedence. Newton then emits at most one :exc:`DeprecationWarning` per import when it can prove that an interpreted property or source-dependent meaning changes. Audit failures alone do not warn.
 
-Pass ``True`` to adopt registered-schema precedence. To preserve the current result, author through a higher-priority schema, reorder ``schema_resolvers``, or use an explicit importer override where supported.
+The audit is disabled by default because it evaluates both policies. It cannot be combined with ``use_registered_schema_fallbacks=True``, which already selects the registered-schema result.
+
+Pass ``use_registered_schema_fallbacks=True`` to adopt registered-schema precedence. To preserve the current result, author through a higher-priority schema, reorder ``schema_resolvers``, or use an explicit importer override where supported.
 
 Custom Resolver Compatibility
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
