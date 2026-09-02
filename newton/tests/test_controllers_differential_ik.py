@@ -1913,6 +1913,27 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         np.testing.assert_allclose(sim_qd.numpy()[:6], np.zeros(6), atol=1e-8)
         np.testing.assert_allclose(sim_qd.numpy()[6:9], [0.1, 0.0, 0.0], atol=1e-5)
 
+    def test_oversized_output_raises(self):
+        """An output bound to a larger-than-expected array raises.
+
+        wp.copy accepts a destination larger than the source and silently
+        writes only a prefix, so this specific direction (too large, not
+        too small) has to be caught explicitly.
+        """
+        device = wp.get_device()
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device), bandwidth=1.0, damping=0.0, device=device
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(6, dtype=wp.float32, device=device)
+        inputs.tool_pose_world = _identity_transform(1, device)
+        inputs.desired_tool_pose_world = _identity_transform(1, device)
+        inputs.jacobian_tool_world = _identity_jacobian(1, 6, device)
+        outputs.joint_qd_target = wp.zeros(8, dtype=wp.float32, device=device)  # controller has 6 controlled DOFs
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+
     def test_disabled_bandwidth_port_written_raises(self):
         device = wp.get_device()
         ctrl = ControllerDifferentialIKModelFree(

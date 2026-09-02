@@ -70,8 +70,9 @@ _EIGENVALUE_QR_TOL = wp.constant(wp.float32(1.0e-6))
 class IkMethod(enum.Enum):
     """Inverse-Jacobian solve method for :class:`ControllerDifferentialIKModelFree`/:class:`ControllerDifferentialIK`.
 
-    Also reachable as ``ControllerDifferentialIKModelFree.IkMethod``/
-    ``ControllerDifferentialIK.IkMethod``.
+    Import directly from ``newton.controllers``, the same way as any other
+    top-level enum (e.g. ``JointTargetMode``): ``from newton.controllers
+    import IkMethod``.
     """
 
     DAMPED_LEAST_SQUARES = "damped_least_squares"

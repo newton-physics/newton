@@ -173,8 +173,6 @@ class ControllerDifferentialIK(ControllerBase):
             would cost a host sync and break :meth:`is_graphable`.
     """
 
-    IkMethod = IkMethod
-
     class Inputs:
         """Input struct returned by :meth:`~ControllerDifferentialIK.input`.
 

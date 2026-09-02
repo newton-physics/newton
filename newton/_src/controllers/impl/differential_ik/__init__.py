@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+from ._common import IkMethod
 from .model_based import ControllerDifferentialIK
 from .model_free import ControllerDifferentialIKModelFree
 
 __all__ = [
     "ControllerDifferentialIK",
     "ControllerDifferentialIKModelFree",
+    "IkMethod",
 ]

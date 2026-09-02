@@ -218,8 +218,6 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         requires_grad: Whether internal buffers need gradient support.
     """
 
-    IkMethod = IkMethod
-
     class Inputs:
         """Input struct returned by :meth:`~ControllerDifferentialIKModelFree.input`.
 
