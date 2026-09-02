@@ -28,8 +28,8 @@ from ....utils.selection import get_name_from_label, match_labels
 from ...controller import ControllerBase
 from ...joint_selection import select_joints
 from ...utils import _validate_array
-from .._common import _gather_mass_matrix_blocks_kernel, _read_port
-from ._common import _shift_jacobian_to_tool_kernel, _tool_pose_and_twist_kernel
+from .._common import _gather_mass_matrix_blocks_kernel, _read_port, _shift_jacobian_to_tool_kernel
+from ._common import _tool_pose_and_twist_kernel
 from .model_free import _IDENTITY_QUAT, _IDENTITY_TRANSFORM, ControllerOperationalSpaceModelFree
 
 

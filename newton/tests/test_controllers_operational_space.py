@@ -22,16 +22,18 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.controllers.impl.operational_space._common import (
-    _apply_generalized_task_specification_matrix_kernel,
-    _apply_mass_matrix_inv_on_right_kernel,
+from newton._src.controllers.impl._common import (
     _invert_spd_block_kernel,
-    _jacobian_times_jacobian_transpose_kernel,
     _null_space_projector_kernel,
-    _operational_space_mass_matrix_inverse_kernel,
     _pose_error_kernel,
     _shift_jacobian_to_tool_kernel,
     _task_matrix_times_jacobian_kernel,
+)
+from newton._src.controllers.impl.operational_space._common import (
+    _apply_generalized_task_specification_matrix_kernel,
+    _apply_mass_matrix_inv_on_right_kernel,
+    _jacobian_times_jacobian_transpose_kernel,
+    _operational_space_mass_matrix_inverse_kernel,
     _tool_pose_and_twist_kernel,
 )
 from newton._src.controllers.impl.operational_space.model_based import ControllerOperationalSpace

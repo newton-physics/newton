@@ -21,16 +21,17 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.controllers.impl.diff_ik._common import (
+from newton._src.controllers.impl._common import (
     _add_term_kernel,
+    _apply_spatial_matrix_kernel,
     _block_matrix_vector_multiply_kernel,
-    _build_jjt_plus_damping_kernel,
-    _cholesky_solve6_kernel,
-    _integrate_position_kernel,
-    _jacobian_pinv_transpose_kernel,
-    _joint_limit_avoidance_bias_kernel,
-    _null_space_projector_kernel,
+    _invert_spd_block_kernel,
     _pose_error_kernel,
+)
+from newton._src.controllers.impl.diff_ik._common import (
+    _build_jjt_plus_damping_kernel,
+    _integrate_position_kernel,
+    _joint_limit_avoidance_bias_kernel,
     _posture_bias_kernel,
     _qd_from_y_kernel,
 )
@@ -39,6 +40,24 @@ from newton._src.controllers.impl.diff_ik.model_free import ControllerDiffIKMode
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
+
+
+def _solve6(jjt, error, device):
+    """Solve ``jjt @ y = error`` via ``_invert_spd_block_kernel`` + ``_apply_spatial_matrix_kernel``."""
+    robot_count = jjt.shape[0]
+    block_dim = wp.full(robot_count, 6, dtype=wp.int32, device=device)
+    cholesky_factor = wp.zeros((robot_count, 6, 6), dtype=float, device=device)
+    jjt_inv = wp.zeros((robot_count, 6, 6), dtype=float, device=device)
+    wp.launch(
+        _invert_spd_block_kernel,
+        dim=robot_count,
+        inputs=[jjt, block_dim, cholesky_factor],
+        outputs=[jjt_inv],
+        device=device,
+    )
+    y = wp.zeros(robot_count, dtype=wp.spatial_vector, device=device)
+    wp.launch(_apply_spatial_matrix_kernel, dim=robot_count, inputs=[jjt_inv, error], outputs=[y], device=device)
+    return y
 
 
 # ---------------------------------------------------------------------------
@@ -53,27 +72,6 @@ def test_pose_error_zero_when_poses_match(test: unittest.TestCase, device):
     error = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     wp.launch(_pose_error_kernel, dim=1, inputs=[pose, pose], outputs=[error], device=device)
     np.testing.assert_allclose(error.numpy(), np.zeros((1, 6)), atol=1e-6)
-
-
-def test_pose_error_position_only(test: unittest.TestCase, device):
-    identity_quat = wp.quat_identity()
-    current = wp.array([wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=identity_quat)], dtype=wp.transform, device=device)
-    desired = wp.array([wp.transform(p=wp.vec3(1.0, -2.0, 0.5), q=identity_quat)], dtype=wp.transform, device=device)
-    error = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_pose_error_kernel, dim=1, inputs=[current, desired], outputs=[error], device=device)
-    np.testing.assert_allclose(error.numpy()[0], [1.0, -2.0, 0.5, 0.0, 0.0, 0.0], atol=1e-6)
-
-
-def test_pose_error_orientation_matches_axis_angle(test: unittest.TestCase, device):
-    identity_quat = wp.quat_identity()
-    axis = np.array([0.0, 0.0, 1.0])
-    angle = 0.4
-    desired_quat = wp.quat_from_axis_angle(wp.vec3(*axis), angle)
-    current = wp.array([wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=identity_quat)], dtype=wp.transform, device=device)
-    desired = wp.array([wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=desired_quat)], dtype=wp.transform, device=device)
-    error = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_pose_error_kernel, dim=1, inputs=[current, desired], outputs=[error], device=device)
-    np.testing.assert_allclose(error.numpy()[0][3:], axis * angle, atol=1e-5)
 
 
 def test_pose_error_small_angle_is_finite(test: unittest.TestCase, device):
@@ -113,7 +111,7 @@ def test_pose_error_multiple_robots_independent(test: unittest.TestCase, device)
 
 
 # ---------------------------------------------------------------------------
-# DLS solve: _build_jjt_plus_damping_kernel + _cholesky_solve6_kernel + _qd_from_y_kernel
+# DLS solve: _build_jjt_plus_damping_kernel + _solve6 (_invert_spd_block_kernel + _apply_spatial_matrix_kernel) + _qd_from_y_kernel
 # ---------------------------------------------------------------------------
 
 
@@ -137,21 +135,6 @@ def test_build_jjt_plus_damping_matches_formula(test: unittest.TestCase, device)
     j = jacobian_np[0]
     expected = j @ j.T + 0.1**2 * np.eye(6)
     np.testing.assert_allclose(out.numpy()[0], expected, atol=1e-4)
-
-
-def test_cholesky_solve6_matches_numpy_solve(test: unittest.TestCase, device):
-    rng = np.random.default_rng(1)
-    a = rng.normal(size=(6, 6)).astype(np.float64)
-    spd = a @ a.T + 6 * np.eye(6)  # guaranteed SPD
-    rhs = rng.normal(size=6)
-    expected = np.linalg.solve(spd, rhs)
-
-    spd_matrix = wp.array3d(spd[None].astype(np.float32), dtype=float, device=device)
-    rhs_arr = wp.array([wp.spatial_vector(*rhs.astype(np.float32))], dtype=wp.spatial_vector, device=device)
-    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
-    y = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_cholesky_solve6_kernel, dim=1, inputs=[spd_matrix, rhs_arr, cholesky_factor], outputs=[y], device=device)
-    np.testing.assert_allclose(np.array(y.numpy()[0]), expected, atol=1e-3)
 
 
 def test_qd_from_y_matches_formula(test: unittest.TestCase, device):
@@ -206,9 +189,7 @@ def test_dls_matches_ridge_regression_for_underactuated_robot(test: unittest.Tes
         outputs=[jjt],
         device=device,
     )
-    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
-    y = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_cholesky_solve6_kernel, dim=1, inputs=[jjt, error, cholesky_factor], outputs=[y], device=device)
+    y = _solve6(jjt, error, device)
 
     bandwidth = wp.ones(n_joints, dtype=wp.float32, device=device)
     robot_of_dof = wp.array([0] * n_joints, dtype=wp.int32, device=device)
@@ -253,11 +234,7 @@ def test_dls_heterogeneous_dof_counts_independent(test: unittest.TestCase, devic
         outputs=[jjt],
         device=device,
     )
-    cholesky_factor = wp.zeros((robot_count, 6, 6), dtype=float, device=device)
-    y = wp.zeros(robot_count, dtype=wp.spatial_vector, device=device)
-    wp.launch(
-        _cholesky_solve6_kernel, dim=robot_count, inputs=[jjt, error, cholesky_factor], outputs=[y], device=device
-    )
+    y = _solve6(jjt, error, device)
 
     total_dofs = sum(dof_counts)
     bandwidth = wp.ones(total_dofs, dtype=wp.float32, device=device)
@@ -306,9 +283,7 @@ def test_dls_zero_damping_is_pseudo_inverse(test: unittest.TestCase, device):
         outputs=[jjt],
         device=device,
     )
-    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
-    y = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_cholesky_solve6_kernel, dim=1, inputs=[jjt, error, cholesky_factor], outputs=[y], device=device)
+    y = _solve6(jjt, error, device)
     bandwidth = wp.ones(max_dofs, dtype=wp.float32, device=device)
     robot_of_dof = wp.array([0] * max_dofs, dtype=wp.int32, device=device)
     slot_of_dof = wp.array(np.arange(max_dofs, dtype=np.int32), dtype=wp.int32, device=device)
@@ -358,9 +333,7 @@ def test_pinv_identity_jacobian_matches_error_exactly(test: unittest.TestCase, d
         outputs=[jjt],
         device=device,
     )
-    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
-    y = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_cholesky_solve6_kernel, dim=1, inputs=[jjt, error, cholesky_factor], outputs=[y], device=device)
+    y = _solve6(jjt, error, device)
     bandwidth = wp.ones(6, dtype=wp.float32, device=device)
     robot_of_dof = wp.array([0] * 6, dtype=wp.int32, device=device)
     slot_of_dof = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
@@ -395,9 +368,7 @@ def test_dls_pipeline_zero_when_poses_match(test: unittest.TestCase, device):
         outputs=[jjt],
         device=device,
     )
-    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
-    y = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_cholesky_solve6_kernel, dim=1, inputs=[jjt, error, cholesky_factor], outputs=[y], device=device)
+    y = _solve6(jjt, error, device)
     bandwidth = wp.ones(6, dtype=wp.float32, device=device)
     robot_of_dof = wp.array([0] * 6, dtype=wp.int32, device=device)
     slot_of_dof = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
@@ -440,9 +411,7 @@ def test_dls_rotation_error_axis_angle_magnitude(test: unittest.TestCase, device
         outputs=[jjt],
         device=device,
     )
-    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
-    y = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_cholesky_solve6_kernel, dim=1, inputs=[jjt, error, cholesky_factor], outputs=[y], device=device)
+    y = _solve6(jjt, error, device)
     bandwidth = wp.ones(6, dtype=wp.float32, device=device)
     robot_of_dof = wp.array([0] * 6, dtype=wp.int32, device=device)
     slot_of_dof = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
@@ -493,9 +462,7 @@ def test_dls_one_dof_revolute_arm_matches_analytical_solution(test: unittest.Tes
         outputs=[jjt],
         device=device,
     )
-    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
-    y = wp.zeros(1, dtype=wp.spatial_vector, device=device)
-    wp.launch(_cholesky_solve6_kernel, dim=1, inputs=[jjt, error, cholesky_factor], outputs=[y], device=device)
+    y = _solve6(jjt, error, device)
     bandwidth = wp.array([bandwidth_val], dtype=wp.float32, device=device)
     robot_of_dof = wp.array([0], dtype=wp.int32, device=device)
     slot_of_dof = wp.array([0], dtype=wp.int32, device=device)
@@ -510,85 +477,6 @@ def test_dls_one_dof_revolute_arm_matches_analytical_solution(test: unittest.Tes
 
     expected = bandwidth_val * err_y / (2.0 + lam**2)
     test.assertAlmostEqual(float(joint_qd_target.numpy()[0]), expected, places=5)
-
-
-# ---------------------------------------------------------------------------
-# Null-space projector: _jacobian_pinv_transpose_kernel + _null_space_projector_kernel
-# ---------------------------------------------------------------------------
-
-
-def test_jacobian_pinv_transpose_matches_numpy_pinv(test: unittest.TestCase, device):
-    rng = np.random.default_rng(8)
-    max_dofs = 7
-    n_joints = 7
-    jacobian_np = rng.normal(size=(1, 6, max_dofs)).astype(np.float32)
-
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array([n_joints], dtype=wp.int32, device=device)
-    zero_damping = wp.zeros(1, dtype=wp.float32, device=device)
-    jjt = wp.zeros((1, 6, 6), dtype=float, device=device)
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian, dof_count, zero_damping],
-        outputs=[jjt],
-        device=device,
-    )
-
-    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
-    jacobian_pinv_transpose = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
-    wp.launch(
-        _jacobian_pinv_transpose_kernel,
-        dim=1,
-        inputs=[jjt, jacobian, dof_count, cholesky_factor],
-        outputs=[jacobian_pinv_transpose],
-        device=device,
-    )
-
-    j64 = jacobian_np[0].astype(np.float64)
-    expected = np.linalg.pinv(j64).T  # (JJᵀ)⁻¹ @ J == (J⁺)ᵀ for full-row-rank J
-    np.testing.assert_allclose(jacobian_pinv_transpose.numpy()[0], expected, atol=1e-3)
-
-
-def test_null_space_projector_zeroes_task_response(test: unittest.TestCase, device):
-    """J @ N must be exactly zero: a null-space velocity never disturbs the primary task."""
-    rng = np.random.default_rng(9)
-    max_dofs = 7
-    n_joints = 7
-    jacobian_np = rng.normal(size=(1, 6, max_dofs)).astype(np.float32)
-
-    jacobian = wp.array3d(jacobian_np, dtype=float, device=device)
-    dof_count = wp.array([n_joints], dtype=wp.int32, device=device)
-    zero_damping = wp.zeros(1, dtype=wp.float32, device=device)
-    jjt = wp.zeros((1, 6, 6), dtype=float, device=device)
-    wp.launch(
-        _build_jjt_plus_damping_kernel,
-        dim=(1, 6, 6),
-        inputs=[jacobian, dof_count, zero_damping],
-        outputs=[jjt],
-        device=device,
-    )
-    cholesky_factor = wp.zeros((1, 6, 6), dtype=float, device=device)
-    jacobian_pinv_transpose = wp.zeros((1, 6, max_dofs), dtype=float, device=device)
-    wp.launch(
-        _jacobian_pinv_transpose_kernel,
-        dim=1,
-        inputs=[jjt, jacobian, dof_count, cholesky_factor],
-        outputs=[jacobian_pinv_transpose],
-        device=device,
-    )
-    projector = wp.zeros((1, max_dofs, max_dofs), dtype=float, device=device)
-    wp.launch(
-        _null_space_projector_kernel,
-        dim=(1, max_dofs, max_dofs),
-        inputs=[jacobian, jacobian_pinv_transpose, dof_count],
-        outputs=[projector],
-        device=device,
-    )
-
-    j64 = jacobian_np[0].astype(np.float64)
-    n64 = projector.numpy()[0].astype(np.float64)
-    np.testing.assert_allclose(j64 @ n64, np.zeros((6, n_joints)), atol=1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -734,13 +622,6 @@ class TestDiffIkKernels(unittest.TestCase):
 add_function_test(
     TestDiffIkKernels, "test_pose_error_zero_when_poses_match", test_pose_error_zero_when_poses_match, devices=devices
 )
-add_function_test(TestDiffIkKernels, "test_pose_error_position_only", test_pose_error_position_only, devices=devices)
-add_function_test(
-    TestDiffIkKernels,
-    "test_pose_error_orientation_matches_axis_angle",
-    test_pose_error_orientation_matches_axis_angle,
-    devices=devices,
-)
 add_function_test(
     TestDiffIkKernels, "test_pose_error_small_angle_is_finite", test_pose_error_small_angle_is_finite, devices=devices
 )
@@ -754,12 +635,6 @@ add_function_test(
     TestDiffIkKernels,
     "test_build_jjt_plus_damping_matches_formula",
     test_build_jjt_plus_damping_matches_formula,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_cholesky_solve6_matches_numpy_solve",
-    test_cholesky_solve6_matches_numpy_solve,
     devices=devices,
 )
 add_function_test(TestDiffIkKernels, "test_qd_from_y_matches_formula", test_qd_from_y_matches_formula, devices=devices)
@@ -803,18 +678,6 @@ add_function_test(
     TestDiffIkKernels,
     "test_dls_one_dof_revolute_arm_matches_analytical_solution",
     test_dls_one_dof_revolute_arm_matches_analytical_solution,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_jacobian_pinv_transpose_matches_numpy_pinv",
-    test_jacobian_pinv_transpose_matches_numpy_pinv,
-    devices=devices,
-)
-add_function_test(
-    TestDiffIkKernels,
-    "test_null_space_projector_zeroes_task_response",
-    test_null_space_projector_zeroes_task_response,
     devices=devices,
 )
 add_function_test(

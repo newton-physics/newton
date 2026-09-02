@@ -48,20 +48,23 @@ import warp as wp
 
 from ...controller import ControllerBase
 from ...utils import _validate_array
-from ._common import (
+from .._common import (
     _add_term_kernel,
+    _apply_spatial_matrix_kernel,
     _block_matrix_vector_multiply_kernel,
-    _build_jjt_plus_damping_kernel,
-    _cholesky_solve6_kernel,
-    _integrate_position_kernel,
-    _jacobian_pinv_transpose_kernel,
-    _joint_limit_avoidance_bias_kernel,
+    _invert_spd_block_kernel,
     _null_space_projector_kernel,
     _pose_error_kernel,
-    _posture_bias_kernel,
-    _qd_from_y_kernel,
     _read_port,
     _scatter_port_kernel,
+    _task_matrix_times_jacobian_kernel,
+)
+from ._common import (
+    _build_jjt_plus_damping_kernel,
+    _integrate_position_kernel,
+    _joint_limit_avoidance_bias_kernel,
+    _posture_bias_kernel,
+    _qd_from_y_kernel,
 )
 
 
@@ -416,7 +419,11 @@ class ControllerDiffIKModelFree(ControllerBase):
         self._pose_error_buf = wp.zeros(
             controlled_robot_count, dtype=wp.spatial_vector, device=self._device, requires_grad=requires_grad
         )
+        self._block_dim_6 = wp.full(controlled_robot_count, 6, dtype=wp.int32, device=self._device)
         self._jjt_buf = wp.zeros(
+            (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+        )
+        self._jjt_inv_buf = wp.zeros(
             (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
         self._cholesky_scratch = wp.zeros(
@@ -443,6 +450,9 @@ class ControllerDiffIKModelFree(ControllerBase):
                 else None
             )
             self._jjt_null_space_buf = wp.zeros(
+                (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
+            self._jjt_null_space_inv_buf = wp.zeros(
                 (controlled_robot_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
             )
             self._jacobian_pinv_transpose_buf = wp.zeros(
@@ -713,9 +723,16 @@ class ControllerDiffIKModelFree(ControllerBase):
             device=self._device,
         )
         wp.launch(
-            _cholesky_solve6_kernel,
+            _invert_spd_block_kernel,
             dim=controlled_robot_count,
-            inputs=[self._jjt_buf, self._pose_error_buf, self._cholesky_scratch],
+            inputs=[self._jjt_buf, self._block_dim_6, self._cholesky_scratch],
+            outputs=[self._jjt_inv_buf],
+            device=self._device,
+        )
+        wp.launch(
+            _apply_spatial_matrix_kernel,
+            dim=controlled_robot_count,
+            inputs=[self._jjt_inv_buf, self._pose_error_buf],
             outputs=[self._y_buf],
             device=self._device,
         )
@@ -741,14 +758,16 @@ class ControllerDiffIKModelFree(ControllerBase):
                 device=self._device,
             )
             wp.launch(
-                _jacobian_pinv_transpose_kernel,
+                _invert_spd_block_kernel,
                 dim=controlled_robot_count,
-                inputs=[
-                    self._jjt_null_space_buf,
-                    self._jacobian_buf,
-                    self._controlled_dofs_per_robot,
-                    self._cholesky_scratch,
-                ],
+                inputs=[self._jjt_null_space_buf, self._block_dim_6, self._cholesky_scratch],
+                outputs=[self._jjt_null_space_inv_buf],
+                device=self._device,
+            )
+            wp.launch(
+                _task_matrix_times_jacobian_kernel,
+                dim=(controlled_robot_count, 6, self._max_controlled_dofs),
+                inputs=[self._jjt_null_space_inv_buf, self._jacobian_buf, self._controlled_dofs_per_robot],
                 outputs=[self._jacobian_pinv_transpose_buf],
                 device=self._device,
             )

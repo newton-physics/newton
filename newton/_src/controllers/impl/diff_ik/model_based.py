@@ -26,7 +26,8 @@ from ....utils.selection import get_name_from_label, match_labels
 from ...controller import ControllerBase
 from ...joint_selection import select_joints
 from ...utils import _validate_array
-from ._common import _read_port, _shift_jacobian_to_tool_kernel, _tool_pose_kernel
+from .._common import _read_port, _shift_jacobian_to_tool_kernel
+from ._common import _tool_pose_kernel
 from .model_free import ControllerDiffIKModelFree
 
 
