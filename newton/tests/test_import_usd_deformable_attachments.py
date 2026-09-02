@@ -390,7 +390,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
             UsdPhysics.RigidBodyAPI.Apply(rigid.GetPrim())
             UsdPhysics.CollisionAPI.Apply(rigid.GetPrim())
 
-        points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        points = [(0.01 * index, 0.0, 1.0) for index in range(33)]
         _add_cable_curve(stage, "/World/Cable", points)
         _add_physics_attachment(
             stage,
@@ -414,8 +414,12 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         attachment_joint = result["path_attachment_map"]["/World/PlugAttachment"][0]
 
         self.assertIsNotNone(plug_articulation)
-        self.assertNotEqual(builder._find_articulation_for_body(support_body), plug_articulation)
-        self.assertNotEqual(builder._find_articulation_for_body(table_body), plug_articulation)
+        support_articulation = builder._find_articulation_for_body(support_body)
+        table_articulation = builder._find_articulation_for_body(table_body)
+        self.assertIsNotNone(support_articulation)
+        self.assertIsNotNone(table_articulation)
+        self.assertNotEqual(support_articulation, plug_articulation)
+        self.assertNotEqual(table_articulation, plug_articulation)
         self.assertEqual(builder.joint_articulation[attachment_joint], plug_articulation)
         self.assertTrue(all(builder.joint_articulation[joint] == plug_articulation for joint in cable_joints))
         self.assertEqual(builder.joint_child[attachment_joint], cable_bodies[-1])
@@ -434,6 +438,103 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         builder.color()
         model = builder.finalize()
         newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
+
+    def test_physics_attachments_join_multiple_rigid_articulations(self):
+        """Join each cable to its own rigid articulation."""
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        stage = _deformable_stage()
+        cable_points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        for index in range(2):
+            plug_path = f"/World/Plug{index}"
+            cable_path = f"/World/Cable{index}"
+            attachment_path = f"/World/Attachment{index}"
+
+            plug = UsdGeom.Cube.Define(stage, plug_path)
+            plug.CreateSizeAttr(0.1)
+            UsdGeom.Xformable(plug).AddTranslateOp().Set(Gf.Vec3d(0.0, float(index), 0.0))
+            UsdPhysics.RigidBodyAPI.Apply(plug.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
+            _add_cable_curve(stage, cable_path, [(x, y + index, z) for x, y, z in cable_points])
+            _add_physics_attachment(
+                stage,
+                attachment_path,
+                src0=cable_path,
+                src1=plug_path,
+                type0="point",
+                indices0=[len(cable_points) - 1],
+                coords1=[cable_points[-1]],
+            )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+
+        self.assertEqual(builder.articulation_count, 2)
+        for index in range(2):
+            plug_body = result["path_body_map"][f"/World/Plug{index}"]
+            cable_joints = result["path_cable_map"][f"/World/Cable{index}"][1]
+            attachment_joint = result["path_attachment_map"][f"/World/Attachment{index}"][0]
+            articulation = builder._find_articulation_for_body(plug_body)
+            self.assertIsNotNone(articulation)
+            self.assertEqual(builder.joint_articulation[attachment_joint], articulation)
+            self.assertTrue(all(builder.joint_articulation[joint] == articulation for joint in cable_joints))
+
+        self.assertTrue(builder.validate_joint_ordering())
+        builder.finalize()
+
+    def test_physics_attachment_with_unrelated_welded_cable_graph(self):
+        """Keep a rigid cable attachment valid when other cables form a welded graph."""
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = _deformable_stage()
+        plug = UsdGeom.Cube.Define(stage, "/World/Plug")
+        plug.CreateSizeAttr(0.1)
+        UsdPhysics.RigidBodyAPI.Apply(plug.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
+
+        attached_points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        _add_cable_curve(stage, "/World/AttachedCable", attached_points)
+        _add_physics_attachment(
+            stage,
+            "/World/PlugAttachment",
+            src0="/World/AttachedCable",
+            src1="/World/Plug",
+            type0="point",
+            indices0=[len(attached_points) - 1],
+            coords1=[attached_points[-1]],
+        )
+
+        _add_cable_curve(stage, "/World/WeldedA", [(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)])
+        _add_cable_curve(stage, "/World/WeldedB", [(0.2, 2.0, 1.0), (0.3, 2.0, 1.0), (0.4, 2.0, 1.0)])
+        _add_physics_attachment(
+            stage,
+            "/World/WeldedJunction",
+            src0="/World/WeldedA",
+            src1="/World/WeldedB",
+            type0="point",
+            type1="point",
+            indices0=[2],
+            indices1=[0],
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+
+        plug_body = result["path_body_map"]["/World/Plug"]
+        plug_articulation = builder._find_articulation_for_body(plug_body)
+        attached_joints = result["path_cable_map"]["/World/AttachedCable"][1]
+        attachment_joint = result["path_attachment_map"]["/World/PlugAttachment"][0]
+        self.assertIsNotNone(plug_articulation)
+        self.assertEqual(builder.articulation_count, 2)
+        self.assertNotIn("/World/WeldedJunction", result["path_attachment_map"])
+        self.assertEqual(
+            result["path_cable_attrs"]["/World/WeldedA"]["graph_component"],
+            result["path_cable_attrs"]["/World/WeldedB"]["graph_component"],
+        )
+        self.assertEqual(builder.joint_articulation[attachment_joint], plug_articulation)
+        self.assertTrue(all(builder.joint_articulation[joint] == plug_articulation for joint in attached_joints))
+        self.assertTrue(builder.validate_joint_ordering())
+        builder.finalize()
 
     def test_physics_attachment_joins_robot_articulation_for_vbd(self):
         """Import a cable attached to a floating- or fixed-base robot articulation."""

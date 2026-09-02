@@ -497,18 +497,19 @@ def _apply_local_rod_material_gains(
 def _read_cable_articulation_root(
     ctx: _DeformableImportContext,
     prim,
-    cable: _CurveDeformableRecord,
+    point_count: int,
+    closed: bool,
     target_path: str,
-    bodies_in_latest_articulation: set[int],
+    parent_articulation_bodies: set[int],
 ) -> _CableArticulationRoot | None:
     """Return an attachment that can connect the cable articulation to its parent.
 
     The supported case is a hard attachment from a cable endpoint to the world or a
-    transform. If the transform belongs to a rigid body, that body must be in the most recently
-    added articulation because articulation joints occupy contiguous ranges.
+    transform. A rigid-body target must belong to the articulation whose joints will immediately
+    precede the cable joints, because articulation joints occupy contiguous ranges.
     """
     deformable_read = ctx.deformable_read
-    cable_point = _read_cable_attachment_endpoint(prim, deformable_read, len(cable.positions), cable.closed)
+    cable_point = _read_cable_attachment_endpoint(prim, deformable_read, point_count, closed)
     if cable_point is None:
         return None
     target_points = _attachment_vec3_list(deformable_read(prim, "coords1"))
@@ -518,7 +519,7 @@ def _read_cable_articulation_root(
     if target is None:
         return None
     parent_body, parent_anchor = target
-    if parent_body >= 0 and parent_body not in bodies_in_latest_articulation:
+    if parent_body >= 0 and parent_body not in parent_articulation_bodies:
         return None
     return _CableArticulationRoot(str(prim.GetPath()), cable_point, parent_body, parent_anchor)
 
@@ -570,6 +571,8 @@ def _deformable_prepare_cable_topology(
     curve_recs: dict[str, _CurveDeformableRecord] = {}
     for prim in ctx.prims.cables:
         path = str(prim.GetPath())
+        if path in path_cable_map:
+            continue
         if _is_ignored_path(path, ignore_paths):
             continue
         # Disabled/kinematic curves must not be welded into a graph; the per-curve pass warns.
@@ -653,12 +656,15 @@ def _deformable_prepare_cable_topology(
             articulation_root = _read_cable_articulation_root(
                 ctx,
                 prim,
-                curve_recs[src0],
+                len(curve_recs[src0].positions),
+                curve_recs[src0].closed,
                 src1,
                 bodies_in_latest_articulation,
             )
             if articulation_root is not None:
                 articulation_root_candidates[src0] = articulation_root
+        if src1 in curve_recs and src1 != src0:
+            attachments_per_cable[src1] = attachments_per_cable.get(src1, 0) + 1
         if src0 not in curve_recs or src1 not in curve_recs or src0 == src1:
             continue
         if str(deformable_read(prim, "type0") or "") != "point" or str(deformable_read(prim, "type1") or "") != "point":
@@ -1035,12 +1041,14 @@ def _deformable_import_cable(
     ctx: _DeformableImportContext,
     cables_in_shared_graphs: set[str],
     cable_articulation_roots: dict[str, _CableArticulationRoot],
+    cable_prims: list | None = None,
 ) -> None:
     """Import single-curve cable deformables (linear ``GeomBasisCurves`` -> rod via ``add_rod``).
 
     Curves already built as a rod graph are skipped. Each remaining cable is placed in an
     articulation. A physical attachment at either endpoint provides the root joint when
-    possible; otherwise the cable receives a free joint to the world.
+    possible; otherwise the cable receives a free joint to the world. ``cable_prims`` limits
+    the pass when attached cables must be created directly after their rigid articulation.
     """
     from pxr import UsdGeom
 
@@ -1063,11 +1071,13 @@ def _deformable_import_cable(
     if not (root_prim and root_prim.IsValid()):
         return
     cable_prims = sorted(
-        ctx.prims.cables,
+        ctx.prims.cables if cable_prims is None else cable_prims,
         key=lambda prim: str(prim.GetPath()) not in cable_articulation_roots,
     )
     for prim in cable_prims:
         path = str(prim.GetPath())
+        if path in path_cable_map:
+            continue
         if path in cables_in_shared_graphs:
             continue  # already built as part of a welded rod graph
         if _is_ignored_path(path, ignore_paths):
