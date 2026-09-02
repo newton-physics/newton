@@ -70,7 +70,7 @@ Registration and fallback presence are distinct:
 | Registered property without fallback | The schema supplies no fallback for that property. |
 | Unregistered schema | A compatibility default may be considered after the importer default. |
 
-Public `SchemaResolver` subclasses declare static ownership with `schema_names`. A schema name owns every mapped key for a prim type, while a nested mapping declares ownership per key. `use_compatibility_defaults` controls whether unregistered or unowned mappings retain their compatibility defaults.
+Newton's built-in `SchemaResolver` subclasses declare ownership internally with `_schema_ownership`. A schema name owns every mapped key for a prim type, while a nested mapping declares ownership per key. `_use_compatibility_defaults` controls whether unregistered or unowned mappings retain their compatibility defaults. Custom resolvers without an internal ownership declaration keep their existing compatibility behavior.
 
 ### Usable candidates
 
@@ -110,7 +110,7 @@ Local before-and-after timings should cover a large authored-value stage and a f
 
 When adding a resolved property:
 
-1. Declare its mapping and schema ownership.
+1. Add its mapping and, for a built-in resolver, its internal schema ownership.
 2. Separate its importer default from any explicit override.
 3. Define property-specific unset and interpretation rules.
 4. Use ordinary resolution unless the consumer observes source semantics.

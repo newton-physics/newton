@@ -2400,7 +2400,7 @@ def Xform "Articulation" (
 
         class SchemaResolverCounting(usd.SchemaResolver):
             name = "counting"
-            schema_names: ClassVar = {usd.PrimType.JOINT: "NewtonJointAPI"}
+            _schema_ownership: ClassVar = {usd.PrimType.JOINT: "NewtonJointAPI"}
             mapping: ClassVar = {
                 usd.PrimType.JOINT: {
                     "velocity_limit": usd.SchemaResolver.SchemaAttribute("newton:velocityLimit", float("inf"))
@@ -2446,7 +2446,7 @@ def Xform "Articulation" (
 
         class SchemaResolverVelocityFallback(usd.SchemaResolver):
             name = "velocity_fallback"
-            schema_names: ClassVar = {usd.PrimType.JOINT: {"velocity_limit": "NewtonSceneAPI"}}
+            _schema_ownership: ClassVar = {usd.PrimType.JOINT: {"velocity_limit": "NewtonSceneAPI"}}
             mapping: ClassVar = {
                 usd.PrimType.JOINT: {"velocity_limit": usd.SchemaResolver.SchemaAttribute("newton:timeStepsPerSecond")}
             }
@@ -2503,7 +2503,7 @@ def Xform "Articulation" (
 
         class SchemaResolverDampingFallback(usd.SchemaResolver):
             name = "damping_fallback"
-            schema_names: ClassVar = {usd.PrimType.JOINT: {"damping": "NewtonSceneAPI"}}
+            _schema_ownership: ClassVar = {usd.PrimType.JOINT: {"damping": "NewtonSceneAPI"}}
             mapping: ClassVar = {
                 usd.PrimType.JOINT: {"damping": usd.SchemaResolver.SchemaAttribute("newton:timeStepsPerSecond")}
             }
@@ -4961,7 +4961,7 @@ def Xform "Articulation" (
         from pxr import Usd
 
         class SchemaResolverUnregisteredPhysx(usd.SchemaResolverPhysx):
-            schema_names: ClassVar = {
+            _schema_ownership: ClassVar = {
                 usd.PrimType.JOINT: {
                     "limit_linear_ke": "UnregisteredPhysxLimitAPI:linear",
                     "limit_linear_kd": "UnregisteredPhysxLimitAPI:linear",
@@ -5003,7 +5003,7 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
         from pxr import Usd
 
         class SchemaResolverUnregisteredPhysx(usd.SchemaResolverPhysx):
-            schema_names: ClassVar = {usd.PrimType.JOINT: {"velocity_limit": "UnregisteredPhysxJointAPI"}}
+            _schema_ownership: ClassVar = {usd.PrimType.JOINT: {"velocity_limit": "UnregisteredPhysxJointAPI"}}
 
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(
@@ -8903,7 +8903,7 @@ def Xform "Articulation" (
                     "hydroelastic_enabled": usd.SchemaResolver.SchemaAttribute("physics:collisionEnabled"),
                 }
             }
-            schema_names: ClassVar = {
+            _schema_ownership: ClassVar = {
                 usd.PrimType.SHAPE: {
                     "hydroelastic_enabled": "PhysicsCollisionAPI",
                 }
@@ -8966,7 +8966,7 @@ def Xform "Articulation" (
                     "hydroelastic_enabled": usd.SchemaResolver.SchemaAttribute("physics:collisionEnabled"),
                 }
             }
-            schema_names: ClassVar = {
+            _schema_ownership: ClassVar = {
                 usd.PrimType.SHAPE: {
                     "hydroelastic_enabled": "PhysicsCollisionAPI",
                 }
@@ -11327,7 +11327,7 @@ def Xform "Articulation" (
 
         class SchemaResolverShapeFallback(usd.SchemaResolver):
             name = "shape_fallback"
-            schema_names: ClassVar = {usd.PrimType.SHAPE: {"ke": "NewtonCollisionAPI"}}
+            _schema_ownership: ClassVar = {usd.PrimType.SHAPE: {"ke": "NewtonCollisionAPI"}}
             mapping: ClassVar = {
                 usd.PrimType.SHAPE: {
                     "ke": usd.SchemaResolver.SchemaAttribute("newton:contactMargin"),

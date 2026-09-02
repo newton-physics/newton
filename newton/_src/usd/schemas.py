@@ -132,8 +132,8 @@ class SchemaResolverNewton(SchemaResolver):
     """
 
     name: ClassVar[str] = "newton"
-    use_compatibility_defaults: ClassVar[bool] = False
-    schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+    _use_compatibility_defaults: ClassVar[bool] = False
+    _schema_ownership: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: "NewtonSceneAPI",
         PrimType.JOINT: dict.fromkeys(
             ("armature", "damping", "friction", "limit_ke", "limit_kd", "velocity_limit"),
@@ -439,7 +439,7 @@ class SchemaResolverPhysx(SchemaResolver):
     """
 
     name: ClassVar[str] = "physx"
-    schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+    _schema_ownership: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: {
             "max_solver_iterations": "PhysxSceneAPI",
             "time_steps_per_second": "PhysxSceneAPI",
@@ -633,7 +633,7 @@ class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
     name: ClassVar[str] = "mjc"
-    schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+    _schema_ownership: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: "MjcSceneAPI",
         PrimType.JOINT: "MjcJointAPI",
         PrimType.SHAPE: {

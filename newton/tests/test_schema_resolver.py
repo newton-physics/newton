@@ -117,11 +117,11 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(_registered_attribute_fallbacks(PrimDefinition()), {"withFallback": 0.0})
 
     def test_schema_ownership_configuration_is_validated(self):
-        """Reject malformed public schema ownership declarations."""
+        """Reject malformed internal schema ownership declarations."""
 
         class SchemaResolverUnknownKey(SchemaResolver):
             name = "unknown_key"
-            schema_names: ClassVar = {PrimType.JOINT: {"friction": "NewtonJointAPI"}}
+            _schema_ownership: ClassVar = {PrimType.JOINT: {"friction": "NewtonJointAPI"}}
             mapping: ClassVar = {
                 PrimType.JOINT: {
                     "armature": SchemaResolver.SchemaAttribute("newton:armature"),
@@ -130,27 +130,27 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverEmptyName(SchemaResolver):
             name = "empty_name"
-            schema_names: ClassVar = {PrimType.JOINT: ""}
+            _schema_ownership: ClassVar = {PrimType.JOINT: ""}
             mapping: ClassVar = {PrimType.JOINT: {}}
 
         class SchemaResolverInvalidDefaults(SchemaResolver):
             name = "invalid_defaults"
-            use_compatibility_defaults: ClassVar = "yes"
+            _use_compatibility_defaults: ClassVar = "yes"
             mapping: ClassVar = {}
 
         with self.assertRaisesRegex(ValueError, "unknown key 'joint:friction'"):
             SchemaResolverUnknownKey()
         with self.assertRaisesRegex(ValueError, "empty schema name"):
             SchemaResolverEmptyName()
-        with self.assertRaisesRegex(TypeError, "use_compatibility_defaults must be a bool"):
+        with self.assertRaisesRegex(TypeError, "_use_compatibility_defaults must be a bool"):
             SchemaResolverInvalidDefaults()
 
-    def test_public_schema_ownership_reads_typed_fallback(self):
-        """Read a typed schema fallback declared by a public custom resolver."""
+    def test_schema_ownership_reads_typed_fallback(self):
+        """Read a typed schema fallback declared by a resolver."""
 
         class SchemaResolverCube(SchemaResolver):
             name = "cube"
-            schema_names: ClassVar = {PrimType.SHAPE: {"kh": "Cube"}}
+            _schema_ownership: ClassVar = {PrimType.SHAPE: {"kh": "Cube"}}
             mapping: ClassVar = {
                 PrimType.SHAPE: {
                     "kh": SchemaResolver.SchemaAttribute("size"),
@@ -554,7 +554,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverEarlier(SchemaResolver):
             name = "earlier"
-            schema_names: ClassVar = {PrimType.JOINT: "EarlierJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "EarlierJointAPI"}
             mapping: ClassVar = {
                 PrimType.JOINT: {
                     "armature": SchemaResolver.SchemaAttribute("earlier:armature"),
@@ -563,7 +563,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverLater(SchemaResolver):
             name = "later"
-            schema_names: ClassVar = {PrimType.JOINT: "LaterJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "LaterJointAPI"}
             mapping: ClassVar = {
                 PrimType.JOINT: {
                     "armature": SchemaResolver.SchemaAttribute("later:armature", default=0.5),
@@ -612,7 +612,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverUnregistered(SchemaResolver):
             name = "unregistered"
-            schema_names: ClassVar = {PrimType.JOINT: "UnregisteredJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "UnregisteredJointAPI"}
             mapping: ClassVar = {
                 PrimType.JOINT: {
                     "armature": SchemaResolver.SchemaAttribute("unregistered:armature", 0.5),
@@ -644,7 +644,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverUnrelated(SchemaResolver):
             name = "unrelated"
-            schema_names: ClassVar = {PrimType.JOINT: "UnrelatedJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "UnrelatedJointAPI"}
             mapping: ClassVar = {
                 PrimType.JOINT: {
                     "armature": SchemaResolver.SchemaAttribute("unrelated:armature", 0.25),
@@ -653,7 +653,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverCompatibility(SchemaResolver):
             name = "compatibility"
-            schema_names: ClassVar = {PrimType.JOINT: "UnregisteredJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "UnregisteredJointAPI"}
             mapping: ClassVar = {
                 PrimType.JOINT: {
                     "armature": SchemaResolver.SchemaAttribute(
@@ -799,7 +799,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverLegacy(SchemaResolver):
             name = "legacy"
-            schema_names: ClassVar = {PrimType.JOINT: "NewtonJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "NewtonJointAPI"}
             mapping: ClassVar = {
                 PrimType.JOINT: {
                     "armature": SchemaResolver.SchemaAttribute(
@@ -886,7 +886,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverBroken(SchemaResolver):
             name = "broken"
-            schema_names: ClassVar = {PrimType.JOINT: "NewtonJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "NewtonJointAPI"}
             mapping: ClassVar = {
                 PrimType.JOINT: {
                     "armature": _reader_schema_attribute(
@@ -910,7 +910,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverSentinel(SchemaResolver):
             name = "sentinel"
-            schema_names: ClassVar = {PrimType.SHAPE: "NewtonCollisionAPI"}
+            _schema_ownership: ClassVar = {PrimType.SHAPE: "NewtonCollisionAPI"}
             mapping: ClassVar = {
                 PrimType.SHAPE: {
                     "gap": SchemaResolver.SchemaAttribute(
@@ -1084,7 +1084,7 @@ class TestSchemaResolver(unittest.TestCase):
                     "sdf_max_resolution": SchemaResolver.SchemaAttribute("newton:timeStepsPerSecond"),
                 }
             }
-            schema_names: ClassVar = {
+            _schema_ownership: ClassVar = {
                 PrimType.SHAPE: {
                     "sdf_target_voxel_size": "NewtonMaterialAPI",
                     "sdf_max_resolution": "NewtonSceneAPI",
@@ -1138,7 +1138,7 @@ class TestSchemaResolver(unittest.TestCase):
                     "sdf_target_voxel_size": SchemaResolver.SchemaAttribute("newton:torsionalFriction"),
                 }
             }
-            schema_names: ClassVar = {
+            _schema_ownership: ClassVar = {
                 PrimType.SHAPE: {
                     "hydroelastic_enabled": "PhysicsCollisionAPI",
                     "sdf_target_voxel_size": "NewtonMaterialAPI",
@@ -1193,7 +1193,7 @@ class TestSchemaResolver(unittest.TestCase):
                     "sdf_target_voxel_size": SchemaResolver.SchemaAttribute("newton:torsionalFriction"),
                 }
             }
-            schema_names: ClassVar = {
+            _schema_ownership: ClassVar = {
                 PrimType.SHAPE: {
                     "sdf_target_voxel_size": "NewtonMaterialAPI",
                 }
@@ -1277,7 +1277,7 @@ class TestSchemaResolver(unittest.TestCase):
                     "sdf_padding": SchemaResolver.SchemaAttribute("newton:sdfNarrowBandInner"),
                 }
             }
-            schema_names: ClassVar = {PrimType.SHAPE: {"sdf_padding": "NewtonSDFCollisionAPI"}}
+            _schema_ownership: ClassVar = {PrimType.SHAPE: {"sdf_padding": "NewtonSDFCollisionAPI"}}
 
         class SchemaResolverLaterPadding(SchemaResolver):
             name = "later_padding"
@@ -1325,7 +1325,7 @@ class TestSchemaResolver(unittest.TestCase):
                     "sdf_padding": SchemaResolver.SchemaAttribute("newton:sdfNarrowBandInner"),
                 }
             }
-            schema_names: ClassVar = {PrimType.SHAPE: {"sdf_padding": "NewtonSDFCollisionAPI"}}
+            _schema_ownership: ClassVar = {PrimType.SHAPE: {"sdf_padding": "NewtonSDFCollisionAPI"}}
 
         class SchemaResolverStableShape(SchemaResolver):
             name = "stable_shape"
@@ -1414,7 +1414,7 @@ class TestSchemaResolver(unittest.TestCase):
                     "shell_thickness": SchemaResolver.SchemaAttribute("newton:shellThickness"),
                 }
             }
-            schema_names: ClassVar = {
+            _schema_ownership: ClassVar = {
                 PrimType.SHAPE: {
                     "margin": "NewtonMaterialAPI",
                     "mass_model": "NewtonMassAPI",
@@ -1543,7 +1543,7 @@ class TestSchemaResolver(unittest.TestCase):
                     "kd": SchemaResolver.SchemaAttribute("newton:rollingFriction"),
                 }
             }
-            schema_names: ClassVar = {
+            _schema_ownership: ClassVar = {
                 PrimType.SHAPE: {
                     "ke": "NewtonMaterialAPI",
                     "kd": "NewtonMaterialAPI",
@@ -1651,7 +1651,7 @@ class TestSchemaResolver(unittest.TestCase):
                     "gravity_enabled": SchemaResolver.SchemaAttribute("newton:gravityEnabled"),
                 }
             }
-            schema_names: ClassVar = {PrimType.SCENE: {"gravity_enabled": "NewtonSceneAPI"}}
+            _schema_ownership: ClassVar = {PrimType.SCENE: {"gravity_enabled": "NewtonSceneAPI"}}
 
         class SchemaResolverLaterGravity(SchemaResolver):
             name = "later_gravity"
@@ -1687,7 +1687,7 @@ class TestSchemaResolver(unittest.TestCase):
                     "self_collision_enabled": SchemaResolver.SchemaAttribute("newton:torsionalFriction"),
                 }
             }
-            schema_names: ClassVar = {
+            _schema_ownership: ClassVar = {
                 PrimType.ARTICULATION: {
                     "self_collision_enabled": "NewtonMaterialAPI",
                 }
@@ -1738,7 +1738,7 @@ class TestSchemaResolver(unittest.TestCase):
                     "limit_kd": SchemaResolver.SchemaAttribute("newton:armature"),
                 }
             }
-            schema_names: ClassVar = {
+            _schema_ownership: ClassVar = {
                 PrimType.JOINT: {
                     "limit_ke": "NewtonJointAPI",
                     "limit_kd": "NewtonJointAPI",
@@ -1798,7 +1798,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverUnregisteredScene(SchemaResolver):
             name = "unregistered"
-            schema_names: ClassVar = {PrimType.SCENE: "UnregisteredSceneAPI"}
+            _schema_ownership: ClassVar = {PrimType.SCENE: "UnregisteredSceneAPI"}
             mapping: ClassVar = {
                 PrimType.SCENE: {"gravity_enabled": SchemaResolver.SchemaAttribute("unregistered:gravityEnabled")}
             }
@@ -1826,7 +1826,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverUnregistered(SchemaResolver):
             name = "unregistered"
-            schema_names: ClassVar = {PrimType.JOINT: "UnregisteredJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "UnregisteredJointAPI"}
             _schema_fallbacks: ClassVar = {
                 "UnregisteredJointAPI": {
                     "unregistered:armature": 9.0,
@@ -1862,7 +1862,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverUnregistered(SchemaResolver):
             name = "unregistered"
-            schema_names: ClassVar = {PrimType.JOINT: "UnregisteredJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "UnregisteredJointAPI"}
             mapping: ClassVar = {
                 PrimType.JOINT: {
                     "armature": SchemaResolver.SchemaAttribute("unregistered:armature", 0.5),
@@ -1912,7 +1912,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverRegistered(SchemaResolver):
             name = "registered"
-            schema_names: ClassVar = {PrimType.BODY: "PhysicsRigidBodyAPI"}
+            _schema_ownership: ClassVar = {PrimType.BODY: "PhysicsRigidBodyAPI"}
             mapping: ClassVar = {
                 PrimType.BODY: {
                     "simulation_owner": SchemaResolver.SchemaAttribute("physics:simulationOwner", 9.0),
@@ -1941,16 +1941,16 @@ class TestSchemaResolver(unittest.TestCase):
         """Retain vendor compatibility defaults when schema plugins are absent."""
 
         class SchemaResolverUnregisteredPhysx(SchemaResolverPhysx):
-            schema_names: ClassVar = {PrimType.JOINT: "UnregisteredPhysxJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "UnregisteredPhysxJointAPI"}
 
         class SchemaResolverUnregisteredMjc(SchemaResolverMjc):
-            schema_names: ClassVar = {PrimType.JOINT: "UnregisteredMjcJointAPI"}
+            _schema_ownership: ClassVar = {PrimType.JOINT: "UnregisteredMjcJointAPI"}
 
         stage = Usd.Stage.CreateInMemory()
         for resolver_type in (SchemaResolverUnregisteredPhysx, SchemaResolverUnregisteredMjc):
             with self.subTest(resolver=resolver_type.name):
                 joint = UsdPhysics.RevoluteJoint.Define(stage, f"/{resolver_type.name}_joint").GetPrim()
-                joint.AddAppliedSchema(resolver_type.schema_names[PrimType.JOINT])
+                joint.AddAppliedSchema(resolver_type._schema_ownership[PrimType.JOINT])
                 resolver = SchemaResolverManager(
                     [resolver_type()],
                     use_registered_schema_fallbacks=True,
