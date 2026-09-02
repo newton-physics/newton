@@ -1916,6 +1916,44 @@ class TestControllerOperationalSpace(unittest.TestCase):
                 use_gravity_compensation=False,
             )
 
+    def test_multi_dof_joint_named_explicitly_raises(self):
+        """A named joint spanning more than one coordinate/DOF raises, instead of silently truncating it.
+
+        A ball joint has 3 DOFs -- naming it explicitly in ``joints`` must
+        raise, not silently control only a subset of its DOFs (which would
+        leave the rest with no torque and, for a floating-base joint, no
+        gravity compensation either).
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+        b1 = builder.add_link(mass=1.0)
+        b2 = builder.add_link(mass=1.0)
+        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        j1 = builder.add_joint_ball(parent=-1, child=b1)
+        j2 = builder.add_joint_revolute(
+            parent=b1,
+            child=b2,
+            axis=newton.Axis.Z,
+            parent_xform=wp.transform(wp.vec3(0.3, 0.0, 0.0)),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j1, j2], label="arm")
+        builder.add_site(b2, xform=wp.transform_identity(), label="tool_site")
+        model = builder.finalize(device=device)
+
+        with self.assertRaises(ValueError):
+            ControllerOperationalSpace(
+                model,
+                joints=[j1, j2],
+                tool_sites="tool_site",
+                motion_stiffness=1.0,
+                motion_damping=1.0,
+                operational_frame_pose_world=_IDENTITY_TRANSFORM,
+                use_inertia_decoupling=False,
+                use_gravity_compensation=False,
+            )
+
     def test_model_without_sites_raises(self):
         """A model with no sites at all raises at construction, rather than resolving zero matches silently."""
         device = wp.get_device()

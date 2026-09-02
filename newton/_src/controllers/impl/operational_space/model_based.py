@@ -18,6 +18,7 @@ import re
 import numpy as np
 import warp as wp
 
+from newton import JointType
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from newton._src.sim.inverse_dynamics import eval_inverse_dynamics_passive
@@ -319,10 +320,11 @@ class ControllerOperationalSpace(ControllerBase):
         #   3. both index within the model's coordinate/DOF space
         #   4. qd_start has no duplicate DOF (a duplicate coordinate in
         #      q_start alone cannot occur without one, given every joint
-        #      here is 1-coordinate/1-DOF and step 5 below)
+        #      here is 1-coordinate/1-DOF and steps 5-6 below)
         #   5. q_start[i]/qd_start[i] name the same joint for every i
-        #   6. every joint belongs to a robot (articulation)
-        #   7. joints are grouped by robot, ascending
+        #   6. every joint spans exactly one coordinate and one DOF
+        #   7. every joint belongs to a robot (articulation)
+        #   8. joints are grouped by robot, ascending
         # ------------------------------------------------------------------
         if not isinstance(joint_q_idx, wp.array):
             raise TypeError(f"joint_selection.q_start must be a wp.array, got {type(joint_q_idx).__name__}.")
@@ -372,6 +374,25 @@ class ControllerOperationalSpace(ControllerBase):
                 f"coordinate {int(q_idx_np[mismatched])} belongs to joint {int(owning_joint[mismatched])} "
                 f"but DOF {int(qd_idx_np[mismatched])} belongs to joint {int(owning_joint_qd[mismatched])}. "
                 f"Did you swap the two arrays?"
+            )
+
+        # A joint is controllable when its Jacobian column is a single scalar
+        # DOF, i.e. it spans exactly one coordinate and one DOF. Derived from
+        # the model's own spans.
+        joint_type_np = model.joint_type.numpy()
+        coord_span = np.diff(model.joint_q_start.numpy())[owning_joint]
+        dof_span = np.diff(model.joint_qd_start.numpy())[owning_joint]
+        unsupported = sorted(
+            {
+                (int(j), JointType(joint_type_np[j]).name)
+                for j, coords, dofs in zip(owning_joint, coord_span, dof_span, strict=True)
+                if coords != 1 or dofs != 1
+            }
+        )
+        if unsupported:
+            raise ValueError(
+                f"ControllerOperationalSpace only supports controlling joints that span a single "
+                f"coordinate and a single DOF; joint_selection addresses unsupported joints: {unsupported}"
             )
 
         owning_robot = model.joint_articulation.numpy()[owning_joint]
