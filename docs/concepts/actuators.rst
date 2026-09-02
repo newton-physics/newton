@@ -159,14 +159,16 @@ reusable from a custom simulator or test harness:
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
 
 
+.. _stateful-actuators:
+
 Stateful Actuators
 ------------------
 
 Controllers that maintain internal state (e.g. :class:`ControllerPID` with an
 integral accumulator, or :class:`ControllerNeuralLSTM` with hidden/cell state) and
 actuators with a :class:`Delay` require explicit double-buffered state
-management.  Create two state objects with :meth:`Actuator.state` and pass them
-to every step:
+management.  Create two state objects with :meth:`Actuator.state` and swap them
+after each step:
 
 .. testcode:: actuator-usage
 
@@ -178,18 +180,52 @@ to every step:
    for step in range(3):
        control.joint_f.zero_()  # zero output before stepping actuators
        model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
+       state_0, state_1 = state_1, state_0
 
-:meth:`Actuator.step` writes the step's update into *state_1* and then publishes
-it back over *state_0* with a device copy, so the two objects hold the same
-advanced state when the step returns.  Both the exchange and the update are
-device operations, which is what makes a stateful actuator behave the same under
-CUDA graph capture as it does eagerly, whatever number of steps the captured
-region holds.
+That swap is a host-side rebinding of two Python names.  A CUDA graph records
+buffer addresses instead, so a captured region holding an **odd** number of
+actuator steps replays with its two state objects the wrong way round: the last
+step's update is discarded on every replay, and a region holding a single step
+never advances state at all.  An even-length region is unaffected, because its
+swaps cancel inside the graph.
 
-Earlier releases advanced state only through a host-side
-``state_0, state_1 = state_1, state_0`` swap after each step.  That swap is no
-longer needed; it remains correct if kept, since both objects now hold the same
-state.
+Either pattern below keeps an odd-length region correct.  Assign at the region
+boundary, in place of its final swap, to keep one graph at the cost of one state
+copy per replay:
+
+.. code-block:: python
+
+   steps = 3  # odd, so the region needs a boundary assign
+   with wp.ScopedCapture() as capture:
+       for i in range(steps):
+           control.joint_f.zero_()
+           model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
+           if steps % 2 == 1 and i == steps - 1:
+               state_0.assign(state_1)
+           else:
+               state_0, state_1 = state_1, state_0
+
+:meth:`Actuator.State.assign` mirrors :meth:`newton.State.assign`, which solves
+the same problem for an odd number of solver substeps.
+
+Or capture one graph per buffer orientation and alternate them.  This copies no
+state and needs at most two graphs, since the orientation returns to its start
+after two odd-length regions:
+
+.. code-block:: python
+
+   graphs = {}
+   for _ in range(replays):
+       key = id(state_0)  # one entry per buffer orientation
+       if key not in graphs:
+           with wp.ScopedCapture() as capture:
+               after = run_region(state_0, state_1)  # ordinary swapping inside
+           graphs[key] = (capture.graph, after)
+       graph, (state_0, state_1) = graphs[key]
+       wp.capture_launch(graph)
+
+The second pattern needs no Newton-side support, so it also works on releases
+without :meth:`Actuator.State.assign`.
 
 Stateless actuators (e.g. a plain PD controller without delay) do not require
 state objects — simply omit them:
@@ -348,10 +384,12 @@ backend: ONNX checkpoints are graphable, while Torch checkpoints are not due
 to framework interop overhead.  :meth:`Actuator.is_graphable` returns ``True``
 when all components can be captured in a CUDA graph.
 
-A graphable actuator is graphable for any number of steps in the captured
-region, including one.  Internal state — a :class:`Delay` buffer, a PID integral,
-LSTM hidden and cell state — is both advanced and exchanged on the device, so
-each replay carries it forward exactly as an eager loop of the same length does.
+:meth:`Actuator.is_graphable` describes the components, not the captured region.
+A stateful actuator also needs the region's state exchange to be graph-safe: see
+:ref:`stateful-actuators` for the two patterns that keep an odd-length region
+correct.  ``ControllerNeuralLSTM`` on a Torch checkpoint is a further exception —
+it keeps hidden and cell state in Torch tensors that the controller rebinds on
+the host, so that state never advances inside a graph at all.
 
 Available Components
 --------------------

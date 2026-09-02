@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -32,30 +32,43 @@ def _scatter_add_kernel(
         computed_output[idx] = computed_output[idx] + computed_forces[i]
 
 
-def _publish_state(current: Any, advanced: Any) -> None:
-    """Copy an advanced state object back over the state the next step reads.
+def _assign_component_state(dst: Any, src: Any, name: str) -> None:
+    """Copy one component state (delay or controller) from *src* into *dst*.
 
-    Warp arrays are copied with :func:`warp.copy`, so the exchange is a device
-    operation that a CUDA graph records and replays.  Fields that are not Warp
-    arrays — the Torch tensors :class:`ControllerNeuralLSTM.State` holds for a
-    Torch checkpoint — are rebound instead, which is how the controller itself
-    publishes them; that path is host-side and not graphable either way.
+    Walks both objects' ``__dict__`` rather than their dataclass fields, so a
+    state that allocates its arrays in ``__init__`` is covered too.  Warp
+    arrays are copied in place, which is what a captured region records.
+    Values that are not Warp arrays — the Torch tensors
+    :class:`ControllerNeuralLSTM.State` holds for a Torch checkpoint — are
+    rebound, matching how that controller publishes them; a Torch checkpoint is
+    not graphable either way.
 
     Args:
-        current: State the next step reads from.
-        advanced: State the step just wrote.
+        dst: Component state to copy into.
+        src: Component state to copy from.
+        name: Component name, used in error messages.
+
+    Raises:
+        ValueError: The two states do not hold the same values.
     """
-    for field in fields(advanced):
-        src = getattr(advanced, field.name)
-        if src is None:
+    if dst is None and src is None:
+        return
+    if dst is None or src is None:
+        raise ValueError(f"Cannot assign '{name}': one state has it allocated and the other does not.")
+    for attr in set(dst.__dict__) | set(src.__dict__):
+        val_dst = getattr(dst, attr, None)
+        val_src = getattr(src, attr, None)
+        if val_dst is None and val_src is None:
             continue
-        dst = getattr(current, field.name)
-        if isinstance(src, wp.array):
-            wp.copy(dst, src)
-        elif is_dataclass(src):
-            _publish_state(dst, src)
+        if val_dst is None or val_src is None:
+            raise ValueError(f"Cannot assign '{name}.{attr}': present in one state and missing in the other.")
+        array_dst = isinstance(val_dst, wp.array)
+        if array_dst != isinstance(val_src, wp.array):
+            raise ValueError(f"Cannot assign '{name}.{attr}': a Warp array in one state and not in the other.")
+        if array_dst:
+            val_dst.assign(val_src)
         else:
-            setattr(current, field.name, src)
+            setattr(dst, attr, val_src)
 
 
 class Actuator:
@@ -107,6 +120,33 @@ class Actuator:
                 self.delay_state.reset(mask)
             if self.controller_state is not None:
                 self.controller_state.reset(mask)
+
+        def assign(self, other: Actuator.State) -> None:
+            """Copy the state held by *other* into this one.
+
+            Mirrors :meth:`newton.State.assign`.  A CUDA graph records buffer
+            addresses, not the caller's Python names, so a captured region
+            holding an odd number of actuator steps leaves its two state
+            objects the wrong way round for the next replay.  Assigning at the
+            boundary, in place of that region's final swap, costs one copy per
+            replay and keeps a single graph correct::
+
+                for i in range(steps):
+                    control.joint_f.zero_()
+                    actuator.step(state, control, state_0, state_1, dt=0.01)
+                    if steps % 2 == 1 and i == steps - 1:
+                        state_0.assign(state_1)
+                    else:
+                        state_0, state_1 = state_1, state_0
+
+            Args:
+                other: State to copy from.
+
+            Raises:
+                ValueError: The two states do not hold the same components.
+            """
+            _assign_component_state(self.delay_state, other.delay_state, "delay_state")
+            _assign_component_state(self.controller_state, other.controller_state, "controller_state")
 
     def __init__(
         self,
@@ -300,14 +340,6 @@ class Actuator:
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
         5. **State updates** — controller state update, then delay
            buffer write (push current targets into ``next_state``).
-        6. **State publish** — copy the advanced state back over
-           ``current_act_state``, so both state objects hold it.
-
-        Step 6 makes the state exchange a device operation instead of a
-        host-side rebinding of the two state objects.  A captured region
-        therefore advances state on every replay, whatever number of steps it
-        holds; the ``state_0, state_1 = state_1, state_0`` swap of earlier
-        releases is no longer required and stays correct if kept.
 
         Args:
             sim_state: Simulation state with position/velocity arrays.
@@ -400,7 +432,3 @@ class Actuator:
                 current_act_state.delay_state,
                 next_act_state.delay_state,
             )
-
-        # --- 6. Publish the advanced state on-device ---
-        if self.is_stateful() and next_act_state is not current_act_state:
-            _publish_state(current_act_state, next_act_state)

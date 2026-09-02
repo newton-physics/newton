@@ -4090,6 +4090,32 @@ class TestDelayGraphCapture(unittest.TestCase):
             )
 
 
+class TestActuatorStateAssign(unittest.TestCase):
+    """Cover the :meth:`Actuator.State.assign` copy contract."""
+
+    def test_assign_copies_arrays_allocated_outside_dataclass_fields(self):
+        """Copy state a controller allocates in ``__init__`` rather than as a field."""
+
+        class _CustomState(Controller.State):
+            """Undecorated subclass: ``dataclasses.fields()`` is empty for it."""
+
+            def __init__(self, num_actuators: int, device: wp.Device):
+                self.extra = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+
+        device = wp.get_device()
+        current, advanced = _CustomState(1, device), _CustomState(1, device)
+        advanced.extra.fill_(1.0)
+
+        Actuator.State(controller_state=current).assign(Actuator.State(controller_state=advanced))
+        self.assertEqual(current.extra.numpy()[0], 1.0)
+
+    def test_assign_rejects_mismatched_components(self):
+        """Raise rather than silently skip when only one state holds a component."""
+        state = ControllerPID.State(integral=wp.zeros(1, dtype=wp.float32, device=wp.get_device()))
+        with self.assertRaisesRegex(ValueError, "controller_state"):
+            Actuator.State(controller_state=state).assign(Actuator.State())
+
+
 @unittest.skipUnless(
     wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
     "CUDA graph capture requires CUDA device with memory pools",
@@ -4099,9 +4125,9 @@ class TestControllerStateGraphCapture(unittest.TestCase):
 
     A PID with only ``ki`` set, held at a constant position error by a model no
     solver moves, accumulates exactly ``ki * error * dt`` per actuator step
-    however the loop is chunked.  While only the caller's host-side swap
-    advanced state, an odd captured count above one discarded the last step's
-    update and a single captured step never advanced at all.
+    however the loop is chunked.  A graph cannot re-point its state buffers
+    between replays, so an odd-length captured region needs either a boundary
+    :meth:`Actuator.State.assign` or a second graph of the opposite parity.
     """
 
     DT = 0.01
@@ -4109,13 +4135,15 @@ class TestControllerStateGraphCapture(unittest.TestCase):
     TARGET = 1.0
     STEPS = 12
 
-    def _integral_after_all_steps(self, implicit: bool, steps_per_graph: int | None) -> float:
-        """Run :attr:`STEPS` actuator steps, eagerly or as replays of a captured region.
+    def _integral_after_all_steps(self, implicit: bool, steps_per_graph: int | None, parity_graphs: bool) -> float:
+        """Run :attr:`STEPS` actuator steps and return the resulting PID integral.
 
         Args:
             implicit: Solve the control law implicitly instead of explicitly.
                 Both effort modes advance the integral through the same state.
             steps_per_graph: Steps per captured region, or ``None`` to run eagerly.
+            parity_graphs: Capture one graph per state-buffer orientation and
+                alternate them, instead of assigning at the region boundary.
         """
         device = wp.get_device()
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -4134,14 +4162,17 @@ class TestControllerStateGraphCapture(unittest.TestCase):
         control.joint_target_q.fill_(self.TARGET)  # joint_q stays 0, so the error is constant
         s0, s1 = actuator.state(), actuator.state()
 
-        def run(s0, s1, steps):
-            """The documented stateful loop, host-side swap included."""
-            for _ in range(steps):
+        def run(s0, s1, steps, boundary_assign=False):
+            """Step the actuator, swapping state as the documented loop does."""
+            for i in range(steps):
                 control.joint_f.zero_()
                 if oracle is not None:
                     oracle.refresh(state)
                 actuator.step(state, control, s0, s1, dt=self.DT)
-                s0, s1 = s1, s0
+                if boundary_assign and steps % 2 == 1 and i == steps - 1:
+                    s0.assign(s1)  # keeps a single odd-length graph correct
+                else:
+                    s0, s1 = s1, s0
             return s0, s1
 
         if steps_per_graph is None:
@@ -4151,24 +4182,35 @@ class TestControllerStateGraphCapture(unittest.TestCase):
             s0, s1 = run(s0, s1, 1)
             s0.controller_state.integral.zero_()
             s1.controller_state.integral.zero_()
-            with wp.ScopedCapture(device) as capture:
-                s0, s1 = run(s0, s1, steps_per_graph)
+            graphs = {}
             for _ in range(self.STEPS // steps_per_graph):
-                wp.capture_launch(capture.graph)
-        wp.synchronize_device(device)
+                # Keying on the current buffer builds one graph per orientation.
+                key = id(s0) if parity_graphs else None
+                if key not in graphs:
+                    with wp.ScopedCapture(device) as capture:
+                        after = run(s0, s1, steps_per_graph, boundary_assign=not parity_graphs)
+                    graphs[key] = (capture.graph, after)
+                graph, (s0, s1) = graphs[key]
+                wp.capture_launch(graph)
+            self.assertLessEqual(len(graphs), 2, msg="alternating parity needs at most two graphs")
         return float(s0.controller_state.integral.numpy()[0])
 
-    def _assert_integral_matches(self, implicit: bool) -> None:
+    def test_pid_integral_advances_per_replay_boundary_assign(self):
+        """Assign at an odd-length region's boundary and match the eager integral."""
         expected = self.KI * self.TARGET * self.DT * self.STEPS
-        for steps_per_graph in (None, 1, 2, 3):
+        for implicit in (False, True):
+            for steps_per_graph in (None, 1, 2, 3):
+                with self.subTest(implicit=implicit, steps_per_graph=steps_per_graph):
+                    got = self._integral_after_all_steps(implicit, steps_per_graph, parity_graphs=False)
+                    self.assertAlmostEqual(got, expected, places=6)
+
+    def test_pid_integral_advances_per_replay_parity_graphs(self):
+        """Alternate one graph per buffer orientation and match the eager integral."""
+        expected = self.KI * self.TARGET * self.DT * self.STEPS
+        for steps_per_graph in (1, 2, 3):
             with self.subTest(steps_per_graph=steps_per_graph):
-                self.assertAlmostEqual(self._integral_after_all_steps(implicit, steps_per_graph), expected, places=6)
-
-    def test_pid_integral_advances_per_replay_explicit(self):
-        self._assert_integral_matches(implicit=False)
-
-    def test_pid_integral_advances_per_replay_implicit(self):
-        self._assert_integral_matches(implicit=True)
+                got = self._integral_after_all_steps(False, steps_per_graph, parity_graphs=True)
+                self.assertAlmostEqual(got, expected, places=6)
 
 
 # ---------------------------------------------------------------------------
