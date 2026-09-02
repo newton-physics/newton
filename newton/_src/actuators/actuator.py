@@ -13,7 +13,6 @@ import warp as wp
 from .clamping.base import ClampingBase
 from .delay import Delay
 from .drives.base import DriveBase
-from .drives.drive_neural_gru import DriveNeuralGRU
 from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, ResponseOracle, _EffortModeImplicit
 
@@ -390,8 +389,9 @@ class Actuator:
 
         # --- 2+3. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
-        if isinstance(self.drive, DriveNeuralGRU) and self.drive._uses_bias_force:
-            self.drive._bound_bias_force = sim_state.mujoco.qfrc_bias
+        bind_control_inputs = getattr(self.drive, "_bind_control_inputs", None)
+        if bind_control_inputs is not None:
+            bind_control_inputs(sim_control)
         output_forces = self._effort_mode.compute_force(
             sim_state,
             positions,

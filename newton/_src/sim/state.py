@@ -76,7 +76,6 @@ class State:
         "body_qdd": ExtendedAttributeTemplate("BODY", wp.spatial_vector),
         "body_parent_f": ExtendedAttributeTemplate("BODY", wp.spatial_vector),
         "mujoco:qfrc_actuator": ExtendedAttributeTemplate("JOINT_DOF", wp.float32),
-        "mujoco:qfrc_bias": ExtendedAttributeTemplate("JOINT_DOF", wp.float32),
     }
     """Optional extended state attributes and their allocation metadata."""
 

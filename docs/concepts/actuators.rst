@@ -211,11 +211,10 @@ state objects — simply omit them:
 Neural-Network Checkpoints
 --------------------------
 
-Neural-network drives (:class:`DriveNeuralGRU`, :class:`DriveNeuralMLP`,
-:class:`DriveNeuralLSTM`) support two checkpoint backends. `ONNX
-<https://onnx.ai/>`__ (``.onnx``) is an open format for trained networks, which
-Warp-NN runs with its own Warp kernels. Torch checkpoints use the Torch backend
-and require PyTorch.
+Neural-network drives support `ONNX <https://onnx.ai/>`__ (``.onnx``), which
+Warp-NN runs with its own Warp kernels. :class:`DriveNeuralMLP` and
+:class:`DriveNeuralLSTM` additionally support Torch checkpoints through the
+Torch backend; :class:`DriveNeuralGRU` uses ONNX only.
 
 Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
 Checkpoint metadata (scales and network configuration) is stored as a JSON
@@ -247,8 +246,8 @@ The drive supports explicit, stateful actuator models.
 
 Each network invocation has the following contract:
 
-* input shape ``[1, N, F]`` with ``input_columns`` equal to ``position``,
-  ``position_error``, ``velocity``, optionally followed by ``dynamic_bias``;
+* input shape ``[1, N, F]``, with the ordered features selected by
+  ``input_columns``;
 * hidden-state shape ``[layer_count, N, hidden_size]``; and
 * one scalar output per actuator.
 
@@ -259,42 +258,50 @@ scale are read from the graph. GRU nodes use ``layout=0`` and
 ``linear_before_reset=1``; stacked layers share one hidden size. All weights
 must be embedded in the ONNX file.
 
-``position_error`` is ``target_position - position`` without angle wrapping.
-The checkpoint name ``dynamic_bias`` refers to MuJoCo's generalized bias force
-``qfrc_bias = c(q, v)``: the Coriolis, centrifugal, and gravitational forces
-for each joint DOF. It excludes passive, actuator, user-applied, and
-constraint forces. Checkpoint producers are responsible for using consistent
-semantics when collecting this feature. See the `MuJoCo equations of motion
-<https://mujoco.readthedocs.io/en/3.7.0/computation/index.html>`_.
+``input_columns`` is a non-empty, duplicate-free ordered selection from:
 
-A checkpoint may append ``dynamic_bias`` to ``input_columns``. When it does,
-the caller supplies the generalized bias force through
-``state.mujoco.qfrc_bias``, a one-dimensional ``wp.float32`` array on the
-actuator device with the same global DOF layout and length as
-``state.joint_qd``. Adding a GRU actuator through :class:`ModelBuilder` requests
-this optional State array automatically, including for USD-instantiated
-actuators. The drive gathers it with the actuator's velocity indices.
-When ``dynamic_bias`` is absent, the drive neither reads nor requires this
-State array. Newton does not compute its values; applications using this input
-must populate every active State before actuator evaluation.
+* ``position``;
+* ``position_error``, computed as ``target_position - position`` without angle
+  wrapping;
+* ``velocity``;
+* ``target_velocity``;
+* ``velocity_error``, computed as ``target_velocity - velocity``; and
+* ``dynamic_bias``.
 
-Target velocity and feedforward ``control.joint_act`` are not consumed. The
-generalized bias force conditions the network input and is not added to the
+The first five features use the standard State and Control arrays already
+passed to every drive. ``dynamic_bias`` is an optional, caller-supplied
+generalized bias-force input. When selected, :class:`ModelBuilder` registers a
+one-dimensional ``wp.float32`` Control array at
+``control.actuator.dynamic_bias``. It has the same global joint-DOF layout and
+length as ``state.joint_qd`` and is gathered with the actuator's velocity
+indices. This input is registered only for models whose GRU checkpoint selects
+it, including USD-instantiated actuators.
+
+Newton clears this Control array with :meth:`Control.clear` but does not compute
+its values. Applications must therefore clear Control first, then populate the
+current generalized bias force before each actuator evaluation. For models
+trained with MuJoCo data, this feature commonly corresponds to ``qfrc_bias =
+c(q, v)``: the Coriolis, centrifugal, and gravitational generalized forces.
+Other solvers may provide the equivalent quantity. Checkpoint producers and
+applications are responsible for using consistent physical semantics for this
+feature. Feedforward ``control.joint_act`` is not consumed, and
+``dynamic_bias`` conditions the network rather than being added to its
 predicted torque.
 
 .. code-block:: python
 
    control.clear(model)
    control.joint_target_q.assign(target_positions)
-   state.mujoco.qfrc_bias.assign(computed_generalized_bias_force)
+   control.actuator.dynamic_bias.assign(computed_generalized_bias_force)
    actuator.step(state, control, actuator_state_a, actuator_state_b, dt=sample_dt_s)
+   actuator_state_a, actuator_state_b = actuator_state_b, actuator_state_a
 
 Newton reads ``input_columns``, ``sample_dt_s``, and normalization statistics
 for the selected inputs and torque output. The runtime actuator timestep must
 match ``sample_dt_s``. A separate :class:`Delay` may be composed when additional
-runtime delay is desired. It delays the standard actuator targets and
-feedforward channel; ``state.mujoco.qfrc_bias`` remains a current-state network
-feature.
+runtime delay is desired. Target-derived features use its delayed target
+arrays; ``control.actuator.dynamic_bias`` remains a current, per-evaluation
+input.
 
 Input normalization is applied feature by feature as
 ``(value - mean) / std``. The network's scalar output is converted back to
@@ -312,11 +319,11 @@ Deferred capabilities are tracked here:
      - Status
    * - Raw target position as a network feature
      - Deferred; the drive derives and consumes position error.
-   * - Arbitrary metadata-selected State or Control features
-     - Deferred; the drive supports the three base features and optional ``dynamic_bias``.
+   * - Additional State or Control features
+     - Deferred; the drive supports the five built-in features listed above and optional ``dynamic_bias``.
    * - Automatic generalized-bias-force computation
-     - Deferred; Newton allocates ``state.mujoco.qfrc_bias``, but callers populate it.
-   * - Target velocity/error, additive feedforward effort, solver-PD, and previous torque
+     - Deferred; Newton allocates the optional Control input, but callers populate it.
+   * - Additive feedforward effort, solver-PD, and previous torque
      - Deferred.
    * - Residual torque and hybrid physics baselines
      - Deferred; the scalar output is interpreted as predicted torque.
