@@ -3740,7 +3740,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             model: The model to be simulated.
             separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax: Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
-            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If None, estimates it from the model.
+            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be positive and large enough for the initial Jacobian. If None, estimates it from the model.
             nconmax: Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
@@ -3795,7 +3795,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 "enable_sleeping=True requires use_mujoco_contacts=True so contacts can wake sleeping bodies."
             )
         if njmax_nnz is not None:
-            if isinstance(njmax_nnz, bool) or not isinstance(njmax_nnz, (int, np.integer)):
+            if isinstance(njmax_nnz, bool) or not isinstance(njmax_nnz, int | np.integer):
                 raise TypeError(f"njmax_nnz must be an integer or None, got {type(njmax_nnz).__name__}.")
             if njmax_nnz < 0:
                 raise ValueError(f"njmax_nnz must be non-negative, got {njmax_nnz}.")
@@ -7822,11 +7822,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
                 njmax = self.mj_data.nefc
 
-            if njmax_nnz is None:
+            from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
+
+            if njmax_nnz is not None and is_mujoco_warp_sparse(self.mj_model):
+                initial_required_nnz = self._get_initial_jacobian_nnz()
+                minimum_njmax_nnz = max(1, initial_required_nnz)
+                if njmax_nnz < minimum_njmax_nnz:
+                    raise ValueError(
+                        f"njmax_nnz={njmax_nnz} is too small: sparse Jacobian storage requires capacity "
+                        f"of at least {minimum_njmax_nnz}; the initial Jacobian contains "
+                        f"{initial_required_nnz} nonzeros."
+                    )
+            elif njmax_nnz is None:
                 from mujoco_warp._src.io import _default_nconmax as estimate_mujoco_warp_nconmax
                 from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
                 from mujoco_warp._src.io import _default_njmax_nnz as estimate_mujoco_warp_njmax_nnz
-                from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
 
                 if is_mujoco_warp_sparse(self.mj_model):
                     resolved_nconmax = (
@@ -7946,6 +7956,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 with open(target_filename, "w") as f:
                     f.write(spec.to_xml())
                     print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
+
+    def _get_initial_jacobian_nnz(self) -> int:
+        """Return the nonzero count of the initial MuJoCo constraint Jacobian."""
+        mujoco, _ = self.import_mujoco()
+        if mujoco.mj_isSparse(self.mj_model):
+            return int(np.sum(self.mj_data.efc_J_rownnz[: self.mj_data.nefc], dtype=np.int64))
+
+        initial_jacobian = self.mj_data.efc_J.reshape((-1, self.mj_model.nv))[: self.mj_data.nefc]
+        return int(np.count_nonzero(initial_jacobian))
 
     def _expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:

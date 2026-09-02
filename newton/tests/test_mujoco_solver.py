@@ -7499,6 +7499,85 @@ class TestMuJoCoOptions(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "njmax_nnz must be non-negative"):
             SolverMuJoCo(model, njmax_nnz=-1)
 
+    def test_njmax_nnz_rejects_zero_sparse_capacity(self):
+        """Reject zero sparse capacity whether or not a limit is initially active."""
+        for limit_lower, limit_upper, initial_required_nnz in ((-1.0, 1.0, 0), (1.0, 2.0, 1)):
+            with self.subTest(initial_required_nnz=initial_required_nnz):
+                builder = newton.ModelBuilder()
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                joint = builder.add_joint_revolute(
+                    parent=-1,
+                    child=body,
+                    limit_lower=limit_lower,
+                    limit_upper=limit_upper,
+                )
+                builder.add_articulation([joint])
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"njmax_nnz=0 is too small:.*initial Jacobian contains {initial_required_nnz} nonzeros",
+                ):
+                    SolverMuJoCo(
+                        builder.finalize(),
+                        disable_contacts=True,
+                        jacobian="sparse",
+                        njmax_nnz=0,
+                    )
+
+    def test_njmax_nnz_rejects_capacity_below_initial_nnz(self):
+        """Reject a positive sparse capacity below the initial Jacobian's requirement."""
+        builder = newton.ModelBuilder()
+        for _ in range(2):
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = builder.add_joint_revolute(parent=-1, child=body, limit_lower=1.0, limit_upper=2.0)
+            builder.add_articulation([joint])
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"njmax_nnz=1 is too small:.*capacity of at least 2; the initial Jacobian contains 2 nonzeros",
+        ):
+            SolverMuJoCo(
+                builder.finalize(),
+                disable_contacts=True,
+                jacobian="sparse",
+                njmax_nnz=1,
+            )
+
+    def test_njmax_nnz_rejects_dense_initial_jacobian_in_sparse_storage(self):
+        """Reject an undersized capacity when MuJoCo's dense Jacobian is stored sparsely by MuJoCo Warp."""
+        builder = newton.ModelBuilder()
+        for joint_index in range(33):
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            if joint_index < 2:
+                joint = builder.add_joint_revolute(parent=-1, child=body, limit_lower=1.0, limit_upper=2.0)
+            else:
+                joint = builder.add_joint_revolute(parent=-1, child=body)
+            builder.add_articulation([joint])
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(
+            model,
+            disable_contacts=True,
+            jacobian="auto",
+            njmax_nnz=2,
+        )
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
+
+        self.assertFalse(mujoco.mj_isSparse(solver.mj_model))
+        self.assertTrue(is_mujoco_warp_sparse(solver.mj_model))
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"njmax_nnz=1 is too small:.*capacity of at least 2; the initial Jacobian contains 2 nonzeros",
+        ):
+            SolverMuJoCo(
+                model,
+                disable_contacts=True,
+                jacobian="auto",
+                njmax_nnz=1,
+            )
+
     def test_impratio_multiworld_conversion(self):
         """
         Verify that impratio custom attribute with WORLD frequency:

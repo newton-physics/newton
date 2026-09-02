@@ -300,12 +300,10 @@ by the world count.
 per world (the ``efc.J`` buffer); it is unused with a dense Jacobian. If
 ``None``, MuJoCo Warp estimates it from ``nconmax`` and ``njmax``; the
 estimate defaults to ``njmax`` times the model's ``nv`` when the model does
-not indicate it needs the sparse-aware estimate. Like ``nconmax``/``njmax``,
-buffer memory scales with ``njmax_nnz`` times the number of worlds, so tune
-it for the busiest world rather than the average. If the actual nonzero
-count exceeds the buffer, MuJoCo Warp sets the ``NJMAX_NNZ`` bit in
-``solver.mjw_data.overflow``; raise ``njmax_nnz`` and recreate the solver
-when that happens.
+not indicate it needs the sparse-aware estimate. An explicit value must be
+positive and large enough for the initial sparse Jacobian. Like
+``nconmax``/``njmax``, buffer memory scales with ``njmax_nnz`` times the
+number of worlds, so tune it for the busiest world rather than the average.
 
 Task Templates
 --------------
