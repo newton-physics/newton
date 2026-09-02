@@ -143,9 +143,9 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "stiffness"):
             result = builder.add_usd(stage, return_deformable_results=True)
 
-        # Only the cable's own joints exist; the compliant attachment created none.
+        # Only the cable's free root and rod joints exist; the compliant attachment created none.
         j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
-        self.assertEqual(builder.joint_count, j1 - j0)
+        self.assertEqual(builder.joint_count, j1 - j0 + 1)
         self.assertNotIn("/World/SoftAnchor", result["path_attachment_map"])
         attrs = result["path_attachment_attrs"]["/World/SoftAnchor"]
         self.assertEqual(attrs["stiffness"], 500.0)
@@ -307,6 +307,82 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         # The regression: a non-monotonic articulation_start raised here before the fix.
         model = builder.finalize()
         self.assertGreater(model.body_count, 0)
+
+    def test_physics_attachment_wraps_rigid_target_with_cable_for_vbd(self):
+        """Wrap a rigid attachment target, attachment joint, and cable for VBD."""
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = _deformable_stage()
+        plug = UsdGeom.Cube.Define(stage, "/World/Plug")
+        plug.CreateSizeAttr(0.1)
+        UsdPhysics.RigidBodyAPI.Apply(plug.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
+
+        points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        _add_cable_curve(stage, "/World/Cable", points)
+        _add_physics_attachment(
+            stage,
+            "/World/PlugAttachment",
+            src0="/World/Cable",
+            src1="/World/Plug",
+            type0="point",
+            indices0=[0],
+            coords1=[(0.0, 0.0, 1.0)],
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+
+        plug_body = result["path_body_map"]["/World/Plug"]
+        plug_joints = [joint for joint, child in enumerate(builder.joint_child) if child == plug_body]
+        cable_joints = result["path_cable_map"]["/World/Cable"][1]
+        attachment_joints = result["path_attachment_map"]["/World/PlugAttachment"]
+        articulation_ids = {
+            builder.joint_articulation[joint] for joint in (*plug_joints, *cable_joints, *attachment_joints)
+        }
+
+        self.assertEqual(len(plug_joints), 1)
+        self.assertEqual(len(attachment_joints), 1)
+        self.assertEqual(len(articulation_ids), 1)
+        self.assertNotIn(-1, articulation_ids)
+        self.assertEqual(builder.articulation_count, 1)
+        root_joints = [
+            joint
+            for joint, articulation in enumerate(builder.joint_articulation)
+            if articulation in articulation_ids and builder.joint_parent[joint] == -1
+        ]
+        self.assertEqual(root_joints, plug_joints)
+        self.assertEqual(builder.joint_type[root_joints[0]], newton.JointType.FREE)
+
+        builder.color()
+        model = builder.finalize()
+        newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
+
+    def test_free_cable_articulation_has_free_root_joint(self):
+        """Connect a wrapped free-floating cable articulation to the world with a free joint."""
+        stage = _deformable_stage()
+        points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        _add_cable_curve(stage, "/World/Cable", points)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+
+        cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
+        articulation = builder._find_articulation_for_body(cable_bodies[0])
+        self.assertIsNotNone(articulation)
+        root_joints = [
+            joint
+            for joint, joint_articulation in enumerate(builder.joint_articulation)
+            if joint_articulation == articulation and builder.joint_parent[joint] == -1
+        ]
+        self.assertEqual(len(root_joints), 1)
+        self.assertEqual(builder.joint_type[root_joints[0]], newton.JointType.FREE)
+        self.assertEqual(builder.joint_child[root_joints[0]], cable_bodies[0])
+        self.assertTrue(all(builder.joint_articulation[joint] == articulation for joint in cable_joints))
+
+        builder.color()
+        model = builder.finalize()
+        newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
 
     def test_physics_attachment_disabled_or_unsupported_is_recorded_not_imported(self):
         """Disabled and cloth/volume-source attachments create no joints; both preserve their

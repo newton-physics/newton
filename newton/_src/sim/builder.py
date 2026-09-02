@@ -8347,7 +8347,8 @@ class ModelBuilder:
             label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
                 retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
-                articulation. Defaults to True to ensure valid simulation models.
+                floating-base articulation whose first joint is a free joint to the world. Defaults to
+                True to ensure valid simulation models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
                 capsule shapes. If None, the rod uses the default rod color.
             body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
@@ -8361,10 +8362,12 @@ class ModelBuilder:
         Returns:
             A pair ``(body_indices, joint_indices)``. For an open chain,
             ``len(joint_indices) == num_segments - 1``; for a closed loop, ``len(joint_indices) == num_segments``.
+            ``joint_indices`` contains the rod joints, but not the automatically-created free root joint.
 
         Articulations:
-            By default (``wrap_in_articulation=True``), the created joints are wrapped into a single
-            articulation, which avoids orphan joints during :meth:`finalize <ModelBuilder.finalize>`.
+            By default (``wrap_in_articulation=True``), the created joints and a free root joint are
+            wrapped into a single floating-base articulation, which avoids orphan joints during
+            :meth:`finalize <ModelBuilder.finalize>`.
             If ``wrap_in_articulation=False``, this method will return the created joint indices but will
             not wrap them; callers must place them into one or more articulations (via :meth:`add_articulation`)
             before calling :meth:`finalize <ModelBuilder.finalize>`.
@@ -8433,10 +8436,8 @@ class ModelBuilder:
         # Note: positions has N+1 elements for N segments.
         edges = [(i, i + 1) for i in range(num_segments)]
 
-        # Delegate to add_rod_graph to create bodies and internal joints.
-        # We use wrap_in_articulation=False and let add_rod manage articulation wrapping so that:
-        # - open chains are wrapped into a single articulation (tree), and
-        # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
+        # Delegate to add_rod_graph to create bodies, internal joints, and (when requested) a free-rooted
+        # articulation. A closed loop is added afterward so its closing joint remains outside the tree.
         link_bodies, link_joints = self.add_rod_graph(
             node_positions=positions_wp,
             edges=edges,
@@ -8451,16 +8452,11 @@ class ModelBuilder:
             twist_stiffness=twist_stiffness,
             twist_damping=twist_damping,
             label=label,
-            wrap_in_articulation=False,
+            wrap_in_articulation=wrap_in_articulation,
             quaternions=quaternions,
             color=color,
             body_frame_origin=body_frame_origin,
         )
-
-        # Wrap all joints into an articulation if requested.
-        if wrap_in_articulation and link_joints:
-            rod_art_label = f"{label}_articulation" if label else None
-            self.add_articulation(link_joints, label=rod_art_label)
 
         # For closed loops, add one extra loop-closing rod joint that is intentionally
         # *not* part of an articulation (articulations must be trees/forests).
@@ -8553,8 +8549,8 @@ class ModelBuilder:
         Notes:
 
         - If ``wrap_in_articulation=True`` (default), joints are created as a forest (one
-          articulation per connected component). This keeps the joint graph articulation-safe
-          (tree/forest), avoiding cycles at junctions.
+          free-rooted articulation per connected component). This keeps the joint graph
+          articulation-safe (tree/forest), avoiding cycles at junctions.
         - Cycles in the edge adjacency graph are *not* explicitly closed with extra joints when
           ``wrap_in_articulation=True`` (cycles would violate articulation tree constraints). If
           you need closed loops, build them explicitly without articulation wrapping.
@@ -8585,7 +8581,7 @@ class ModelBuilder:
             label: Optional label prefix for bodies, shapes, joints, and articulations. Generated
                 joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
-                per connected component.
+                per connected component, with a free joint from the world to the component root.
             quaternions: Optional per-edge orientations in world space. If provided, must have
                 ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
                 the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
@@ -8606,7 +8602,8 @@ class ModelBuilder:
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
-            edges in the same order as ``edges``.
+            edges in the same order as ``edges``. ``joint_indices`` contains only rod joints,
+            not the automatically-created free root joints.
 
         Raises:
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
@@ -8817,7 +8814,13 @@ class ModelBuilder:
                 # BFS over edges
                 queue: deque[int] = deque([start_edge])
                 visited[start_edge] = True
-                component_joints: list[int] = []
+                root_label = None
+                if label:
+                    root_label = (
+                        f"{label}_free_joint_{component_index}" if component_index > 0 else f"{label}_free_joint"
+                    )
+                root_joint = self.add_joint_free(child=edge_bodies[start_edge], label=root_label)
+                component_joints: list[int] = [root_joint]
                 component_edges: list[int] = []
 
                 while queue:
@@ -8886,16 +8889,13 @@ class ModelBuilder:
                         )
 
                 # Wrap the connected component into an articulation.
-                if component_joints:
-                    if label:
-                        art_label = (
-                            f"{label}_articulation_{component_index}"
-                            if component_index > 0
-                            else f"{label}_articulation"
-                        )
-                    else:
-                        art_label = None
-                    self.add_articulation(component_joints, label=art_label)
+                if label:
+                    art_label = (
+                        f"{label}_articulation_{component_index}" if component_index > 0 else f"{label}_articulation"
+                    )
+                else:
+                    art_label = None
+                self.add_articulation(component_joints, label=art_label)
 
                 component_index += 1
 

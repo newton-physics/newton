@@ -750,6 +750,62 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
     return consumed_curves, consumed_attachments
 
 
+def _cable_tree_attachment_paths(ctx: _DeformableImportContext) -> set[str]:
+    """Return cables whose sole hard xform attachment can serve as their articulation root.
+
+    The attachment pass runs after cable construction. A simple point-0 attachment on an open,
+    single-curve cable is nevertheless known up front and replaces the cable's usual free root.
+    Keep this deliberately conservative: every other attachment topology retains the floating
+    root and is handled as a loop-closing constraint.
+    """
+    deformable_read = ctx.deformable_read
+    cable_paths = {str(prim.GetPath()) for prim in ctx.prims.cables}
+    candidates: dict[str, int] = {}
+    for prim in ctx.prims.attachments:
+        path = str(prim.GetPath())
+        if _is_ignored_path(path, ctx.ignore_paths):
+            continue
+        src0 = ctx.get_first_target(prim, "physics:src0")
+        src1 = ctx.get_first_target(prim, "physics:src1")
+        if src0 not in cable_paths or src1 == src0:
+            continue
+        if str(deformable_read(prim, "type0") or "") != "point":
+            continue
+        if str(deformable_read(prim, "type1") or "") != "xform":
+            continue
+        if [int(i) for i in (deformable_read(prim, "indices0") or [])] != [0]:
+            continue
+        if deformable_read(prim, "indices1"):
+            continue
+        coords1 = deformable_read(prim, "coords1") or []
+        if len(coords1) not in (0, 1):
+            continue
+        enabled_value = deformable_read(prim, "attachmentEnabled")
+        if enabled_value is not None and not bool(enabled_value):
+            continue
+        stiffness_value = deformable_read(prim, "stiffness")
+        stiffness = math.inf if stiffness_value is None else float(stiffness_value)
+        damping_value = deformable_read(prim, "damping")
+        damping = 0.0 if damping_value is None else float(damping_value)
+        if stiffness != math.inf or not (math.isfinite(damping) and damping >= 0.0):
+            continue
+
+        if src1 not in ("", "/"):
+            target_prim = ctx.stage.GetPrimAtPath(src1)
+            if not target_prim or not target_prim.IsValid():
+                continue
+            body_path = ctx.get_rigid_body_ancestor_path(target_prim)
+            if body_path is not None and body_path not in ctx.path_body_map:
+                continue
+            if body_path is not None:
+                target_articulation = ctx.builder._find_articulation_for_body(ctx.path_body_map[body_path])
+                if target_articulation != ctx.builder.articulation_count - 1:
+                    continue
+        candidates[src0] = candidates.get(src0, 0) + 1
+
+    return {path for path, count in candidates.items() if count == 1}
+
+
 def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve_paths: set[str]) -> None:
     """Import single-curve cable deformables (linear ``GeomBasisCurves`` -> rod via ``add_rod``).
 
@@ -773,6 +829,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
     path_cable_attrs = ctx.path_cable_attrs
     path_cable_segments = ctx.path_cable_segments
     path_cable_point_anchors = ctx.path_cable_point_anchors
+    tree_attachment_paths = _cable_tree_attachment_paths(ctx)
 
     if not (root_prim and root_prim.IsValid()):
         return
@@ -940,9 +997,11 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 if rest_seg_lengths is not None:
                     material_seg_lengths = rest_seg_lengths
             label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
-            # Wrap each cable into its own articulation so the model is finalize-ready (add_rod keeps
-            # a periodic cable's loop-closing joint out of the tree). Attachment joints to other
-            # bodies are loop-closing and stay outside the articulation regardless.
+            # A simple hard point-0 attachment becomes this cable's root in the attachment pass,
+            # so defer articulation construction for that case. Every free cable is wrapped now;
+            # add_rod supplies its free joint to the world, while periodic loop closure stays outside
+            # the tree.
+            defer_to_attachment = path in tree_attachment_paths and len(vertex_counts) == 1 and not closed
             bodies, joints = builder.add_rod(
                 positions=positions,
                 quaternions=quaternions,
@@ -950,7 +1009,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 cfg=cable_cfg,
                 closed=closed,
                 label=label,
-                wrap_in_articulation=True,
+                wrap_in_articulation=not defer_to_attachment,
                 body_frame_origin="com",
             )
             _apply_local_rod_material_gains(

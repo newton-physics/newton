@@ -3514,6 +3514,32 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     _assert_bodies_above_ground(test, qf, rod_bodies, context="y-junction", margin=0.25 * cable_width)
 
 
+def _wrapped_rod_has_free_root_joint_impl(test: unittest.TestCase, _device):
+    """Give every automatically wrapped rod component one free joint to the world."""
+    builder = newton.ModelBuilder()
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=[
+            wp.vec3(0.0, 0.0, 1.0),
+            wp.vec3(0.1, 0.0, 1.0),
+            wp.vec3(0.2, 0.0, 1.0),
+        ],
+        radius=0.01,
+        label="rooted_rod",
+        wrap_in_articulation=True,
+        body_frame_origin="com",
+    )
+
+    test.assertEqual(builder.articulation_count, 1)
+    articulation_joints = [joint for joint, articulation in enumerate(builder.joint_articulation) if articulation == 0]
+    root_joints = [joint for joint in articulation_joints if builder.joint_parent[joint] == -1]
+    test.assertEqual(len(root_joints), 1)
+    test.assertEqual(builder.joint_type[root_joints[0]], newton.JointType.FREE)
+    test.assertEqual(builder.joint_child[root_joints[0]], rod_bodies[0])
+    test.assertNotIn(root_joints[0], rod_joints)
+    test.assertTrue(all(builder.joint_articulation[joint] == 0 for joint in rod_joints))
+    test.assertTrue(builder.validate_joint_ordering())
+
+
 def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
     """Verify eval_fk does not reconstruct ROD child poses from unsupported joint coordinates."""
     builder = newton.ModelBuilder()
@@ -3537,7 +3563,8 @@ def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
     state = model.state()
 
     joint_types = model.joint_type.numpy()
-    test.assertTrue(np.all(joint_types == int(newton.JointType.ROD)), msg="expected only ROD joints")
+    test.assertEqual(np.count_nonzero(joint_types == int(newton.JointType.FREE)), 1)
+    test.assertEqual(np.count_nonzero(joint_types == int(newton.JointType.ROD)), len(rod_joints))
 
     child_body = int(rod_bodies[1])
 
@@ -6648,6 +6675,12 @@ add_function_test(
     "test_cable_graph_y_junction_spanning_tree",
     _cable_graph_y_junction_spanning_tree_impl,
     devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_wrapped_rod_has_free_root_joint",
+    _wrapped_rod_has_free_root_joint_impl,
+    devices=None,
 )
 add_function_test(
     TestCable,
