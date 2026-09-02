@@ -16,6 +16,7 @@ from newton._src.solvers.semi_implicit import kernels_particle as semi_implicit_
 from newton._src.solvers.solver import _set_module_options_if_changed
 from newton._src.solvers.vbd import particle_vbd_kernels, vbd_coupling_kernels
 from newton._src.solvers.xpbd import kernels as xpbd_kernels
+from newton._src.solvers.xpbd import tendon_kernels as xpbd_tendon_kernels
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DETERMINISTIC_MODE = wp.DeterministicMode.RUN_TO_RUN
@@ -237,6 +238,7 @@ class TestSolverDeterminismOptions(unittest.TestCase):
     def setUp(self):
         self._modules = (
             xpbd_kernels,
+            xpbd_tendon_kernels,
             particle_vbd_kernels,
             semi_implicit_particle_kernels,
             vbd_coupling_kernels,
@@ -262,12 +264,18 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             options = wp.get_module_options(module=xpbd_kernels)
             self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
             self.assertEqual(options["deterministic_max_records"], 0)
+            tendon_options = wp.get_module_options(module=xpbd_tendon_kernels)
+            self.assertEqual(tendon_options["deterministic"], DETERMINISTIC_MODE)
+            self.assertEqual(tendon_options["deterministic_max_records"], 0)
 
             wp.config.deterministic = wp.DeterministicMode.NOT_GUARANTEED
             newton.solvers.SolverXPBD(model)
             options = wp.get_module_options(module=xpbd_kernels)
             self.assertEqual(options["deterministic"], wp.DeterministicMode.NOT_GUARANTEED)
             self.assertEqual(options["deterministic_max_records"], 0)
+            tendon_options = wp.get_module_options(module=xpbd_tendon_kernels)
+            self.assertEqual(tendon_options["deterministic"], wp.DeterministicMode.NOT_GUARANTEED)
+            self.assertEqual(tendon_options["deterministic_max_records"], 0)
 
     def test_matching_module_options_are_not_reapplied(self):
         options = {
@@ -328,10 +336,18 @@ class TestSolverDeterminismOptions(unittest.TestCase):
 
             deterministic_solver.step(state_0, state_1, None, None, 1.0 / 60.0)
             self.assertEqual(wp.get_module_options(module=xpbd_kernels)["deterministic"], DETERMINISTIC_MODE)
+            self.assertEqual(
+                wp.get_module_options(module=xpbd_tendon_kernels)["deterministic"],
+                DETERMINISTIC_MODE,
+            )
 
             default_solver.step(state_1, state_0, None, None, 1.0 / 60.0)
             self.assertEqual(
                 wp.get_module_options(module=xpbd_kernels)["deterministic"],
+                wp.DeterministicMode.NOT_GUARANTEED,
+            )
+            self.assertEqual(
+                wp.get_module_options(module=xpbd_tendon_kernels)["deterministic"],
                 wp.DeterministicMode.NOT_GUARANTEED,
             )
 

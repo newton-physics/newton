@@ -18,6 +18,7 @@ from .enums import (
 from .inverse_dynamics import eval_inverse_dynamics_passive
 from .model import Model
 from .state import State
+from .tendon import TendonLinkFlags, TendonLinkType
 
 __all__ = [
     "BodyFlags",
@@ -32,6 +33,8 @@ __all__ = [
     "ModelFlags",
     "State",
     "StateFlags",
+    "TendonLinkFlags",
+    "TendonLinkType",
     "eval_fk",
     "eval_ik",
     "eval_inverse_dynamics_force",
