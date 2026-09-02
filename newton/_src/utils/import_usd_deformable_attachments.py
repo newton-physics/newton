@@ -103,16 +103,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
         enabled = True if enabled_val is None else bool(enabled_val)
         stiffness_val = deformable_read(prim, "stiffness")
         damping_val = deformable_read(prim, "damping")
-        stiffness = (
-            math.inf
-            if stiffness_val is None
-            else usd._coerce_deformable_float(stiffness_val, prim, "stiffness", warn_on_failure=False)
-        )
-        damping = (
-            0.0
-            if damping_val is None
-            else usd._coerce_deformable_float(damping_val, prim, "damping", warn_on_failure=False)
-        )
+        stiffness, damping = usd._resolve_attachment_gains(prim, stiffness_val, damping_val)
 
         attrs: dict[str, Any] = {
             "src0": src0,

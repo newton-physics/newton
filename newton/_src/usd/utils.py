@@ -2260,6 +2260,31 @@ def _coerce_deformable_float(
     return result
 
 
+def _resolve_attachment_gains(
+    prim: Usd.Prim,
+    stiffness_value: Any,
+    damping_value: Any,
+) -> tuple[float | None, float | None]:
+    """Resolve attachment gains without emitting generic scalar warnings.
+
+    The cable graph prepass must reject malformed gains silently so the attachment remains
+    available to the post-pass. That post-pass preserves the authored values in metadata and emits
+    one attachment-specific warning, so warning here would duplicate diagnostics. ``None`` retains
+    the proposal's hard-stiffness and zero-damping fallbacks.
+    """
+    stiffness = (
+        math.inf
+        if stiffness_value is None
+        else _coerce_deformable_float(stiffness_value, prim, "stiffness", warn_on_failure=False)
+    )
+    damping = (
+        0.0
+        if damping_value is None
+        else _coerce_deformable_float(damping_value, prim, "damping", warn_on_failure=False)
+    )
+    return stiffness, damping
+
+
 def _read_deformable_material(
     prim: Usd.Prim,
     read_attr: Callable[[Usd.Prim, str], Any],

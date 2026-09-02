@@ -554,16 +554,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # unsupported instead of silently snapping the geometry together.
         stiffness_val = deformable_read(prim, "stiffness")
         damping_val = deformable_read(prim, "damping")
-        stiffness = (
-            math.inf
-            if stiffness_val is None
-            else usd._coerce_deformable_float(stiffness_val, prim, "stiffness", warn_on_failure=False)
-        )
-        damping = (
-            0.0
-            if damping_val is None
-            else usd._coerce_deformable_float(damping_val, prim, "damping", warn_on_failure=False)
-        )
+        stiffness, damping = usd._resolve_attachment_gains(prim, stiffness_val, damping_val)
         # Invalid gains must reach the attachment pass instead of being consumed as topology.
         # That pass records one detailed warning and preserves the authored metadata.
         if (
