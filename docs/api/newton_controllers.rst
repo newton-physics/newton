@@ -24,3 +24,11 @@ subclass of :class:`ControllerBase`.
    ControllerBase
    ControllerJointImpedance
    ControllerJointImpedanceModelFree
+
+.. rubric:: Functions
+
+.. autosummary::
+   :toctree: _generated
+   :nosignatures:
+
+   export_controller_graph

@@ -179,6 +179,15 @@ jobs:
           COVERAGE_CORE: "sysmon"
         run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
+      - name: Build and run C++ controller runtime tests
+        run: |
+          uv tool install "cmake==4.4.2"
+          export PATH="$HOME/.local/bin:$PATH"
+          cmake -S newton/_src/controllers/cpp -B build/controllers
+          cmake --build build/controllers --config Release
+          ctest --test-dir build/controllers --build-config Release --output-on-failure \
+            --output-junit "$GITHUB_WORKSPACE/build/controllers/ctest.xml"
+
       - name: Check disk space (post-test)
         if: always()
         run: df -h
@@ -187,7 +196,9 @@ jobs:
         if: ${{ !cancelled() }}
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
-          paths: "rspec.xml"
+          paths: |
+            rspec.xml
+            build/controllers/ctest.xml
           show: "fail"
 
       - name: Upload coverage artifact
