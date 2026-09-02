@@ -21,12 +21,14 @@ __all__ = [
     "RigidBodiesData",
     "RigidBodiesModel",
     "RigidBodyDescriptor",
+    "compute_body_acceleration",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
     "convert_body_origin_to_com",
     "convert_geom_offset_origin_to_com",
     "has_zero_inverse_inertia",
     "is_immovable_for_kamino",
+    "reset_body_acceleration",
     "update_body_inertias",
     "update_body_wrenches",
 ]
@@ -424,6 +426,29 @@ def transform_body_inertial_properties(
 
 
 @wp.kernel
+def _compute_body_acceleration(
+    body_qd_in: wp.array[wp.spatial_vectorf],
+    body_qd_out: wp.array[wp.spatial_vectorf],
+    inv_dt: float,
+    body_qdd: wp.array[wp.spatial_vectorf],
+):
+    body_id = wp.tid()
+    body_qdd[body_id] = (body_qd_out[body_id] - body_qd_in[body_id]) * inv_dt
+
+
+@wp.kernel
+def _reset_body_acceleration(
+    body_wid: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],  # None also supported
+    body_qdd: wp.array[wp.spatial_vectorf],
+):
+    body_id = wp.tid()
+    if world_mask and not world_mask[body_wid[body_id]]:
+        return
+    body_qdd[body_id] = wp.spatial_vectorf(0.0)
+
+
+@wp.kernel
 def _update_body_inertias(
     # Inputs:
     model_bodies_i_I_i_in: wp.array[wp.mat33f],
@@ -582,6 +607,51 @@ def _convert_geom_offset_origin_to_com(
 ###
 # Launchers
 ###
+
+
+def compute_body_acceleration(
+    body_qd_in: wp.array[wp.spatial_vectorf],
+    body_qd_out: wp.array[wp.spatial_vectorf],
+    body_qdd: wp.array[wp.spatial_vectorf],
+    dt: float,
+) -> None:
+    """Compute discrete step-average body accelerations.
+
+    Args:
+        body_qd_in: Input body twists in the world frame at the center of mass
+            [m/s, rad/s].
+        body_qd_out: Output body twists in the world frame at the center of mass
+            [m/s, rad/s].
+        body_qdd: Output body accelerations in the world frame at the center of
+            mass [m/s², rad/s²].
+        dt: Simulation step duration [s].
+    """
+    wp.launch(
+        _compute_body_acceleration,
+        dim=body_qdd.shape[0],
+        inputs=[body_qd_in, body_qd_out, 1.0 / dt, body_qdd],
+        device=body_qdd.device,
+    )
+
+
+def reset_body_acceleration(
+    body_wid: wp.array[wp.int32],
+    body_qdd: wp.array[wp.spatial_vectorf],
+    world_mask: wp.array[wp.bool] | None = None,
+) -> None:
+    """Clear body accelerations in selected worlds.
+
+    Args:
+        body_wid: Body-to-world index mapping.
+        body_qdd: Body accelerations to clear [m/s², rad/s²].
+        world_mask: Optional per-world mask selecting which accelerations to clear.
+    """
+    wp.launch(
+        _reset_body_acceleration,
+        dim=body_qdd.shape[0],
+        inputs=[body_wid, world_mask, body_qdd],
+        device=body_qdd.device,
+    )
 
 
 def convert_geom_offset_origin_to_com(

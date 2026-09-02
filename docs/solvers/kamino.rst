@@ -25,6 +25,18 @@ See the :class:`~newton.solvers.SolverKamino` API reference for construction
 and configuration details. Runnable workflows are available in the
 `Kamino examples <https://github.com/newton-physics/newton/tree/main/newton/examples/kamino>`_.
 
+Body acceleration
+-----------------
+
+Kamino populates :attr:`~newton.State.body_qdd` when the extended state
+attribute is requested. Values are center-of-mass spatial accelerations in the
+world frame, with linear acceleration followed by angular acceleration. For a
+step of duration ``dt``, Kamino reports the discrete step average
+``(body_qd_out - body_qd_in) / dt``. Consequently, a contact impact reports its
+velocity impulse divided by ``dt`` rather than a continuous midpoint
+acceleration. Resetting a state clears the requested acceleration in each reset
+world.
+
 Choosing a dynamics solver
 --------------------------
 
