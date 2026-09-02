@@ -65,6 +65,7 @@ class ControllerDifferentialIK(ControllerBase):
 
     Args:
         model: :class:`~newton.Model` whose articulations are the robots.
+            ``model.requires_grad=True`` is not supported at this time.
         articulations: Articulation indices or label patterns to control, as
             a list or as a single pattern. ``None`` selects every
             articulation in ``model``.

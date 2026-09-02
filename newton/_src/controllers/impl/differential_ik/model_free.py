@@ -263,9 +263,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             ``controlled_dofs_per_robot`` compared per robot, not just a
             sign check.
         device: Warp device.
-        requires_grad: Whether internal buffers need gradient support.
-            Currently requires ``ik_method=IkMethod.TRANSPOSE`` -- the only
-            method with a correct backward pass.
+        requires_grad: Not supported at this time; must be ``False``.
     """
 
     class Inputs:
@@ -421,12 +419,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         if not isinstance(ik_method, IkMethod):
             raise TypeError(f"ik_method must be an IkMethod, got {ik_method!r}.")
 
-        if requires_grad and ik_method != IkMethod.TRANSPOSE:
-            raise ValueError(
-                f"requires_grad=True requires ik_method=IkMethod.TRANSPOSE, got ik_method={ik_method}. "
-                "Every other IkMethod routes through a matrix inversion or eigendecomposition kernel "
-                "whose backward pass is currently disabled, so its gradient would be silently incomplete."
-            )
+        if requires_grad:
+            raise ValueError("requires_grad=True is not supported at this time.")
 
         if ik_method == IkMethod.DAMPED_LEAST_SQUARES:
             if not (isinstance(damping, (int, float)) and not isinstance(damping, bool)):
