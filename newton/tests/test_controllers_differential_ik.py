@@ -1215,6 +1215,24 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
                 device=device,
             )
 
+    def test_invalid_ik_method_raises(self):
+        """A bogus ik_method (e.g. the string value instead of the enum member) must raise.
+
+        Regression test: an unrecognized ik_method used to fall through
+        every method-specific branch and silently produce a zero-damping
+        DLS solve -- exactly IkMethod.PSEUDO_INVERSE's own solve, but
+        without PSEUDO_INVERSE's dof_count >= task_dim safety check.
+        """
+        device = wp.get_device()
+        with self.assertRaises(TypeError):
+            ControllerDifferentialIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr([3], device),
+                bandwidth=1.0,
+                damping=None,
+                ik_method="pseudo_inverse",
+                device=device,
+            )
+
     def test_axis_weight_zeroed_orientation_ignores_orientation_error(self):
         """DLS, J = I_6x6, orientation axes weighted 0: a large orientation error contributes nothing to qd_target."""
         device = wp.get_device()

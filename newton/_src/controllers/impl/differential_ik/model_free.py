@@ -381,6 +381,9 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 required=False,
             )
 
+        if not isinstance(ik_method, IkMethod):
+            raise TypeError(f"ik_method must be an IkMethod, got {ik_method!r}.")
+
         if ik_method == IkMethod.DAMPED_LEAST_SQUARES:
             if not (isinstance(damping, (int, float)) and not isinstance(damping, bool)):
                 _validate_array(
