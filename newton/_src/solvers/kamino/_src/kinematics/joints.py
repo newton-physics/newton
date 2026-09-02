@@ -497,13 +497,14 @@ def make_typed_write_joint_data(dof_type: JointDoFType, correction: JointCorrect
         # Only write the constraint residual and velocity if the joint defines constraints
         # NOTE: This will be disabled for free joints
         if wp.static(num_cts > 0):
-            # Construct a 6D residual vector
-            j_theta_j = wp.static(get_joint_constraint_angular_residual_function(dof_type))(j_q_j)
-            j_p_j = wp.spatial_vectorf(*j_r_j, *j_theta_j)
-            # Store the joint constraint residuals
-            for j in range(num_cts):
-                r_j_out[cts_offset + j] = j_p_j[cts_axes[j]]
-                dr_j_out[cts_offset + j] = j_u_j[cts_axes[j]]
+            if cts_offset >= wp.int32(0):
+                # Construct a 6D residual vector
+                j_theta_j = wp.static(get_joint_constraint_angular_residual_function(dof_type))(j_q_j)
+                j_p_j = wp.spatial_vectorf(*j_r_j, *j_theta_j)
+                # Store the joint constraint residuals
+                for j in range(num_cts):
+                    r_j_out[cts_offset + j] = j_p_j[cts_axes[j]]
+                    dr_j_out[cts_offset + j] = j_u_j[cts_axes[j]]
 
         # Only write the DoF coordinates and velocities if the joint defines DoFs
         # NOTE: This will be disabled for fixed joints
@@ -1092,6 +1093,9 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         dynamic_cts_offset = model_joint_dynamic_cts_offset[jid]
         num_dynamic_cts = model_joint_dynamic_cts_offset[jid + 1] - dynamic_cts_offset
         kinematic_cts_offset = model_joint_kinematic_cts_offset[jid]
+        num_kinematic_cts = model_joint_kinematic_cts_offset[jid + 1] - kinematic_cts_offset
+        if num_kinematic_cts == wp.int32(0):
+            kinematic_cts_offset = wp.int32(-1)
 
         # If the Base body is the world (bid=-1), use the identity transform (frame
         # of the world's origin), otherwise retrieve the Base body's pose and twist

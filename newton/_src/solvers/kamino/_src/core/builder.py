@@ -1462,6 +1462,7 @@ class ModelBuilderKamino:
                 inv_m_i=wp.array(bodies_inv_m_i, dtype=wp.float32, requires_grad=requires_grad),
                 i_I_i=wp.array(bodies_i_I_i, dtype=wp.mat33f, requires_grad=requires_grad),
                 inv_i_I_i=wp.array(bodies_inv_i_I_i, dtype=wp.mat33f, requires_grad=requires_grad),
+                is_immovable=wp.zeros(len(bodies_m_i), dtype=wp.int32),
                 q_i_0=wp.array(bodies_q_i_0, dtype=wp.transformf, requires_grad=requires_grad),
                 u_i_0=wp.array(bodies_u_i_0, dtype=wp.spatial_vectorf, requires_grad=requires_grad),
             )
