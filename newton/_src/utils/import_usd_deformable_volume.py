@@ -194,7 +194,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             if volume_material is not None:
                 youngs = volume_material.get("youngsModulus", _AOUSD_DEFAULT_YOUNGS_MODULUS * ctx.linear_unit)
                 poissons = volume_material.get("poissonsRatio", _AOUSD_DEFAULT_POISSONS_RATIO)
-                k_mu, k_lambda = usd._deformable_lame_parameters(youngs, poissons, path)
+                k_mu, k_lambda = usd._deformable_lame_parameters(youngs, poissons)
                 add_soft_mesh_kwargs["k_mu"] = k_mu
                 add_soft_mesh_kwargs["k_lambda"] = k_lambda
         if _world_matrix_reflects(soft_mesh_mat):

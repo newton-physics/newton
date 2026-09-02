@@ -1867,17 +1867,38 @@ def _should_load_tetmesh_material_for_import(prim: Usd.Prim) -> bool:
     )
 
 
-def _deformable_lame_parameters(youngs: float, poissons: float, path: str) -> tuple[float, float]:
-    """Convert isotropic deformable properties to Lamé parameters."""
-    if poissons == 0.5:
-        incompressible_approximation = 0.499
+def _resolve_deformable_poissons_ratio(value: float, path: str, *, attr_namespace: str = "physics") -> float | None:
+    """Validate a deformable Poisson ratio and apply Newton's compatibility approximation."""
+    incompressible_approximation = 0.499
+    if -1.0 < value < 0.5:
+        return value
+    if 0.5 <= value < 1.0:
+        if value == 0.5:
+            message = (
+                "is incompressible and gives an infinite Lamé parameter; "
+                f"approximating it as {incompressible_approximation:g} for Newton"
+            )
+        else:
+            message = (
+                "is outside the proposal range (-1, 0.5]; "
+                f"approximating it as {incompressible_approximation:g} for Newton compatibility"
+            )
         warnings.warn(
-            f"{path}: physics:poissonsRatio=0.5 is incompressible and gives an infinite Lamé "
-            f"parameter; approximating it as {incompressible_approximation:g} for Newton.",
+            f"{path}: {attr_namespace}:poissonsRatio={value:g} {message}.",
             stacklevel=2,
         )
-        poissons = incompressible_approximation
+        return incompressible_approximation
 
+    warnings.warn(
+        f"{path}: invalid {attr_namespace}:poissonsRatio {value:g} "
+        "(expected a finite value with -1 < value <= 0.5); treating it as unauthored.",
+        stacklevel=2,
+    )
+    return None
+
+
+def _deformable_lame_parameters(youngs: float, poissons: float) -> tuple[float, float]:
+    """Convert isotropic deformable properties to Lamé parameters."""
     k_mu = youngs / (2.0 * (1.0 + poissons))
     k_lambda = youngs * poissons / ((1.0 + poissons) * (1.0 - 2.0 * poissons))
     return k_mu, k_lambda
@@ -2056,14 +2077,7 @@ def _get_tetmesh(
         if youngs is None and is_current_volume_material:
             youngs = _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit
         if poissons is not None:
-            nu = poissons
-            if not math.isfinite(nu) or not (-1.0 < nu <= 0.5):
-                warnings.warn(
-                    f"{material_prim.GetPath()}: invalid physics:poissonsRatio {nu:g} "
-                    f"(expected -1 < value <= 0.5); treating it as unauthored.",
-                    stacklevel=2,
-                )
-                poissons = None
+            poissons = _resolve_deformable_poissons_ratio(poissons, str(material_prim.GetPath()))
         if youngs is not None:
             E = youngs
             nu = _AOUSD_DEFAULT_POISSONS_RATIO if poissons is None else poissons
@@ -2077,7 +2091,7 @@ def _get_tetmesh(
                 if is_current_volume_material:
                     E = _AOUSD_DEFAULT_YOUNGS_MODULUS * linear_unit
             if E is not None:
-                k_mu, k_lambda = _deformable_lame_parameters(E, nu, str(material_prim.GetPath()))
+                k_mu, k_lambda = _deformable_lame_parameters(E, nu)
 
         if density_val is not None:
             authored_density = density_val
@@ -2263,16 +2277,17 @@ def _read_deformable_material(
     single-source namespace read, see :meth:`SchemaResolverManager.read_deformable_attr`) when the
     bound material declares ``api_schema``.
 
-    Returns a dict of the authored, in-range values among ``attr_names``, or ``None`` if the bound
+    Returns a dict of the authored, resolved values among ``attr_names``, or ``None`` if the bound
     material does not declare ``api_schema``; an applied API with no valid authored values returns
     an empty dict. ``attr_namespace`` identifies the schema namespace in diagnostics; ``read_attr``
     remains responsible for the actual namespace resolution. ``material_prim`` may supply an
     already-resolved binding when one caller reads multiple APIs from the same material. Stiffness,
-    damping, and Young's modulus accept zero; thickness must be positive; density must be positive
-    to be returned, while zero is its ignored sentinel; and Poisson's ratio must lie in
-    ``(-1, 0.5]``. The ``-inf`` simulator-default sentinel used by stiffness, damping, Young's
-    modulus, and thickness is silently dropped. Other out-of-range or non-finite values are dropped
-    with a warning.
+    damping, and Young's modulus accept zero; thickness must be positive; and density must be
+    positive to be returned, while zero is its ignored sentinel. Poisson's ratios in the proposal
+    range ``(-1, 0.5)`` are preserved; values in ``[0.5, 1)`` use Newton's warned ``0.499``
+    compatibility approximation. The ``-inf`` simulator-default sentinel used by stiffness,
+    damping, Young's modulus, and thickness is silently dropped. Other out-of-range or non-finite
+    values are dropped with a warning.
 
     Args:
         prim: Prim whose bound physics material is resolved.
@@ -2291,6 +2306,15 @@ def _read_deformable_material(
         val = read_attr(material_prim, name)
         val = _coerce_deformable_float(val, material_prim, name, attr_namespace=attr_namespace)
         if val is None:
+            continue
+        if name == "poissonsRatio":
+            val = _resolve_deformable_poissons_ratio(
+                val,
+                str(material_prim.GetPath()),
+                attr_namespace=attr_namespace,
+            )
+            if val is not None:
+                out[name] = val
             continue
         has_negative_infinity_sentinel = name not in ("density", "poissonsRatio")
         if val == -math.inf and has_negative_infinity_sentinel:
@@ -2325,15 +2349,6 @@ def _read_deformable_material(
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} (expected > 0); "
                     f"treating it as unauthored.",
-                    stacklevel=2,
-                )
-        elif name == "poissonsRatio":
-            if -1.0 < val <= 0.5:
-                out[name] = val
-            else:
-                warnings.warn(
-                    f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} "
-                    f"(expected -1 < value <= 0.5); treating it as unauthored.",
                     stacklevel=2,
                 )
         elif val >= 0.0:

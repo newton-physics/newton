@@ -188,9 +188,10 @@ The first release deliberately supports a narrow, predictable set of inputs:
     properties and geometry thickness. Newton cannot represent
     ``physics:surfaceShearStiffness`` independently; it warns and preserves the value in the
     import results.
-  * For volumes, the shared isotropic properties become Lamé parameters. An authored
-    ``physics:poissonsRatio = 0.5`` is approximated as 0.499 with a warning to avoid the
-    incompressible singularity; values in ``(-1, 0.5)`` retain their authored sign.
+  * For volumes, the shared isotropic properties become Lamé parameters. A bound material that
+    applies ``PhysicsVolumeDeformableMaterialAPI`` receives the proposal's elasticity fallbacks
+    even when it authors no values. A TetMesh with no applicable deformable material retains the
+    builder's elasticity defaults instead.
 
   Removed material ``physics:surfaceThickness`` / ``physics:curvesThickness`` attributes remain
   accepted during a deprecation window and supply only a thickness fallback. Move their values to

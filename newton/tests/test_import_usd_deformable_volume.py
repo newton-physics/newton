@@ -430,8 +430,8 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertEqual(k_mu, 13.0)
         self.assertEqual(k_lambda, 17.0)
 
-    def test_get_tetmesh_rejects_out_of_range_poissons_ratio(self):
-        """Fall back from an invalid volume Poisson ratio without clamping it silently."""
+    def test_get_tetmesh_clamps_legacy_high_poissons_ratio(self):
+        """Preserve Newton's legacy high-ratio behavior while warning about the proposal range."""
         stage = _deformable_stage()
         tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
         _bind_deformable_material(
@@ -442,11 +442,33 @@ class TestUSDDeformableVolume(unittest.TestCase):
             poissonsRatio=0.6,
         )
 
-        with self.assertWarnsRegex(UserWarning, "invalid physics:poissonsRatio"):
+        with self.assertWarnsRegex(UserWarning, "outside the proposal range.*0.499.*compatibility"):
             tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
 
-        self.assertAlmostEqual(tetmesh.k_mu[0], 115384.61538461538, delta=1.0)
-        self.assertAlmostEqual(tetmesh.k_lambda[0], 173076.92307692306, delta=1.0)
+        expected_mu = 300000.0 / (2.0 * (1.0 + 0.499))
+        expected_lambda = 300000.0 * 0.499 / ((1.0 + 0.499) * (1.0 - 2.0 * 0.499))
+        self.assertAlmostEqual(tetmesh.k_mu[0], expected_mu, delta=1.0)
+        self.assertAlmostEqual(tetmesh.k_lambda[0], expected_lambda, delta=1.0)
+
+    def test_get_tetmesh_rejects_invalid_poissons_ratio_boundaries(self):
+        """Use the proposal fallback for values outside Newton's compatibility interval."""
+        for value in (-1.0, 1.0, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                _bind_deformable_material(
+                    stage,
+                    tet.GetPrim(),
+                    "/World/Mat",
+                    youngsModulus=300000.0,
+                    poissonsRatio=value,
+                )
+
+                with self.assertWarnsRegex(UserWarning, "invalid physics:poissonsRatio"):
+                    tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+                self.assertAlmostEqual(tetmesh.k_mu[0], 115384.61538461538, delta=1.0)
+                self.assertAlmostEqual(tetmesh.k_lambda[0], 173076.92307692306, delta=1.0)
 
     def test_get_tetmesh_uses_current_volume_elasticity_fallbacks(self):
         """Resolve missing current volume elasticity fields from proposal defaults."""

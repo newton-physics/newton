@@ -210,7 +210,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             cloth.GetPrim(),
             "/World/Mat",
             youngsModulus=float("-inf"),
-            poissonsRatio=0.75,
+            poissonsRatio=1.0,
             surfaceStretchStiffness=-1.0,
         )
 
@@ -224,6 +224,30 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertEqual(sum("invalid physics:surfaceStretchStiffness" in message for message in messages), 1)
         tri_start, _ = group_range(builder, "cloth", "/World/Cloth", "tri")
         self.assertAlmostEqual(builder.tri_materials[tri_start][0], 1098.901098901099, delta=2.0e-4)
+
+    def test_surface_material_clamps_legacy_high_poissons_ratio(self):
+        """Use the same warned compatibility approximation as volume materials."""
+        stage = _deformable_stage(up_axis="y")
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        youngs = 300000.0
+        thickness = 0.02
+        _bind_deformable_material(
+            stage,
+            cloth.GetPrim(),
+            "/World/Mat",
+            youngsModulus=youngs,
+            poissonsRatio=0.6,
+        )
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [thickness], "constant")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "outside the proposal range.*0.499.*compatibility"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+
+        tri_start, _ = group_range(builder, "cloth", "/World/Cloth", "tri")
+        expected_stretch = youngs * thickness / (1.0 - 0.499**2)
+        self.assertAlmostEqual(builder.tri_materials[tri_start][0], expected_stretch, delta=0.01)
+        self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["material"]["poissonsRatio"], 0.499)
 
     def test_surface_vendor_namespace_material_needs_resolver(self):
         """Read vendor-namespaced surface attributes only through a compatibility resolver."""
