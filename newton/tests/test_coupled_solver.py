@@ -1429,6 +1429,13 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0])
         np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [7.0, 8.0])
+        self.assertIsNotNone(model._fk_articulation_level_start)
+        self.assertGreater(model._fk_level_capacity, 0)
+        self.assertIsNone(view._fk_articulation_level_start)
+        self.assertIsNone(view._fk_level_joint_start)
+        self.assertIsNone(view._fk_level_joints)
+        self.assertIsNone(view._fk_level_parent_pos)
+        self.assertEqual(view._fk_level_capacity, 0)
 
         model.joint_target_q.assign(10.0 + np.arange(model.joint_coord_count, dtype=np.float32))
         model.joint_target_ke.assign(100.0 + np.arange(model.joint_dof_count, dtype=np.float32))
