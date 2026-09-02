@@ -36,12 +36,11 @@ def _assign_component_state(dst: Any, src: Any, name: str) -> None:
     """Copy one component state (delay or controller) from *src* into *dst*.
 
     Walks both objects' ``__dict__`` rather than their dataclass fields, so a
-    state that allocates its arrays in ``__init__`` is covered too.  Warp
-    arrays are copied in place, which is what a captured region records.
-    Values that are not Warp arrays — the Torch tensors
-    :class:`ControllerNeuralLSTM.State` holds for a Torch checkpoint — are
-    rebound, matching how that controller publishes them; a Torch checkpoint is
-    not graphable either way.
+    state that allocates its arrays in ``__init__`` is copied too.  Warp arrays
+    are copied in place, which a captured region records.  Other values are
+    rebound, which is how :class:`ControllerNeuralLSTM.State` publishes the
+    Torch tensors it holds for a Torch checkpoint.  That backend is not
+    graphable in any case.
 
     Args:
         dst: Component state to copy into.
@@ -125,11 +124,11 @@ class Actuator:
             """Copy the state held by *other* into this one.
 
             Mirrors :meth:`newton.State.assign`.  A CUDA graph records buffer
-            addresses, not the caller's Python names, so a captured region
-            holding an odd number of actuator steps leaves its two state
-            objects the wrong way round for the next replay.  Assigning at the
-            boundary, in place of that region's final swap, costs one copy per
-            replay and keeps a single graph correct::
+            addresses rather than the caller's Python names.  A captured region
+            holding an odd number of actuator steps therefore leaves its two
+            state objects the wrong way round for the next replay.  Assigning at
+            the boundary, in place of that region's final swap, keeps a single
+            graph correct at the cost of one copy per replay::
 
                 for i in range(steps):
                     control.joint_f.zero_()

@@ -182,20 +182,19 @@ after each step:
        model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
        state_0, state_1 = state_1, state_0
 
-That swap is a host-side rebinding of two Python names.  A CUDA graph records
-buffer addresses instead, so a captured region holding an **odd** number of
-actuator steps replays with its two state objects the wrong way round: the last
-step's update is discarded on every replay, and a region holding a single step
-never advances state at all.  An even-length region is unaffected, because its
-swaps cancel inside the graph.
+That swap rebinds two Python names.  A CUDA graph replays fixed buffer
+addresses and does not record it, so a region holding an **odd** number of
+actuator steps replays with its state objects the wrong way round and discards
+the last step's update.  A single-step region never advances state at all.  Even
+lengths are unaffected, because their swaps cancel inside the graph.
 
-Either pattern below keeps an odd-length region correct.  Assign at the region
-boundary, in place of its final swap, to keep one graph at the cost of one state
-copy per replay:
+Either pattern fixes an odd-length region.  The first assigns at the boundary in
+place of the final swap, which keeps one graph at the cost of one state copy per
+replay.  :meth:`Actuator.State.assign` mirrors :meth:`newton.State.assign`,
+which does the same for solver substeps.
 
 .. code-block:: python
 
-   steps = 3  # odd, so the region needs a boundary assign
    with wp.ScopedCapture() as capture:
        for i in range(steps):
            control.joint_f.zero_()
@@ -205,12 +204,9 @@ copy per replay:
            else:
                state_0, state_1 = state_1, state_0
 
-:meth:`Actuator.State.assign` mirrors :meth:`newton.State.assign`, which solves
-the same problem for an odd number of solver substeps.
-
-Or capture one graph per buffer orientation and alternate them.  This copies no
-state and needs at most two graphs, since the orientation returns to its start
-after two odd-length regions:
+The second keys one graph per buffer orientation and alternates them.  It copies
+nothing and needs at most two graphs.  It also needs no Newton-side support, so
+it works on releases without :meth:`Actuator.State.assign`.
 
 .. code-block:: python
 
@@ -223,9 +219,6 @@ after two odd-length regions:
            graphs[key] = (capture.graph, after)
        graph, (state_0, state_1) = graphs[key]
        wp.capture_launch(graph)
-
-The second pattern needs no Newton-side support, so it also works on releases
-without :meth:`Actuator.State.assign`.
 
 Stateless actuators (e.g. a plain PD controller without delay) do not require
 state objects — simply omit them:
@@ -385,11 +378,11 @@ to framework interop overhead.  :meth:`Actuator.is_graphable` returns ``True``
 when all components can be captured in a CUDA graph.
 
 :meth:`Actuator.is_graphable` describes the components, not the captured region.
-A stateful actuator also needs the region's state exchange to be graph-safe: see
+A stateful actuator also needs the region's state exchange to be graph-safe.  See
 :ref:`stateful-actuators` for the two patterns that keep an odd-length region
-correct.  ``ControllerNeuralLSTM`` on a Torch checkpoint is a further exception —
-it keeps hidden and cell state in Torch tensors that the controller rebinds on
-the host, so that state never advances inside a graph at all.
+correct.  ``ControllerNeuralLSTM`` on a Torch checkpoint is a further exception.
+It keeps hidden and cell state in Torch tensors that the controller rebinds on
+the host, so that state never advances inside a graph.
 
 Available Components
 --------------------
