@@ -464,7 +464,15 @@ class ControllerOperationalSpace(ControllerBase):
         site_indices_np = np.flatnonzero((shape_flags_np & ShapeFlags.SITE) != 0)
         if site_indices_np.size == 0:
             raise ValueError("model contains no sites; add one with ModelBuilder.add_site for the tool frame.")
-        site_articulation_np = body_to_articulation_np[shape_body_np[site_indices_np]]
+        # A site attached to no body (ModelBuilder.add_site(-1, ...), a
+        # world-fixed reference frame) has no articulation. Resolved
+        # explicitly rather than via body_to_articulation_np[-1], which
+        # would silently alias onto whatever articulation the model's last
+        # body happens to belong to.
+        site_body_np = shape_body_np[site_indices_np]
+        site_articulation_np = np.full(site_indices_np.size, -1, dtype=np.int32)
+        site_has_body = site_body_np >= 0
+        site_articulation_np[site_has_body] = body_to_articulation_np[site_body_np[site_has_body]]
         site_names = [get_name_from_label(model.shape_label[s]) for s in site_indices_np]
 
         tool_site_entries = [tool_sites] if isinstance(tool_sites, (int, str, re.Pattern)) else tool_sites
@@ -494,7 +502,15 @@ class ControllerOperationalSpace(ControllerBase):
                     f"tool site is required per robot."
                 )
             site = sites_on_robot[0]
-            tool_body_np[robot_slot] = shape_body_np[site]
+            body = int(shape_body_np[site])
+            if body < 0:
+                raise ValueError(
+                    f"tool_sites matches site {site} ('{get_name_from_label(model.shape_label[site])}') on "
+                    f"articulation {art}, but that site is attached to no body (added with "
+                    f"ModelBuilder.add_site(-1, ...), a world-fixed reference frame); a tool site must be "
+                    f"attached to a moving body."
+                )
+            tool_body_np[robot_slot] = body
             tool_transform_body.append(wp.transform(*shape_transform_np[site]))
 
         self._tool_body = wp.array(tool_body_np, dtype=wp.int32, device=self._device)
@@ -509,6 +525,12 @@ class ControllerOperationalSpace(ControllerBase):
         body_to_joint_np = np.full(model.body_count, -1, dtype=np.int32)
         body_to_joint_np[joint_child_np] = np.arange(joint_child_np.size, dtype=np.int32)
         tool_site_joint_np = body_to_joint_np[tool_body_np]
+        unmoved = np.flatnonzero(tool_site_joint_np < 0)
+        if unmoved.size:
+            raise ValueError(
+                f"tool_sites resolves to body {int(tool_body_np[unmoved[0]])}, which is not moved by any "
+                f"joint (not a joint's child body), so it has no Jacobian row to use as a tool frame."
+            )
         articulation_start_np = model.articulation_start.numpy()
         robot_link_idx_np = (tool_site_joint_np - articulation_start_np[model_robot_index_np]).astype(np.int32)
         self._robot_link_idx = wp.array(robot_link_idx_np, dtype=wp.int32, device=self._device)

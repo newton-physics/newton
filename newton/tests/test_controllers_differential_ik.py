@@ -2543,6 +2543,37 @@ class TestControllerDifferentialIK(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerDifferentialIK(model, tool_sites="nonexistent", bandwidth=1.0, damping=0.1)
 
+    def test_world_attached_site_is_ignored_and_cannot_be_selected_as_tool(self):
+        """A site attached to no body (ModelBuilder.add_site(-1, ...)) must never be mistaken for a tool site.
+
+        Regression test: such a site's body index (-1) must not alias, via
+        plain NumPy fancy indexing, onto whatever articulation the model's
+        last body happens to belong to.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0], label="arm")
+        builder.add_site(link0, label="tip", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+        builder.add_site(-1, label="world_ref", xform=wp.transform_identity())
+        model = builder.finalize(device=device)
+
+        # An unrelated world-attached site must not disturb normal resolution.
+        ControllerDifferentialIK(model, tool_sites="tip", bandwidth=1.0, damping=0.1)
+
+        # Explicitly requesting the world-attached site must raise, not
+        # silently alias onto another articulation or reach a Jacobian
+        # index computation with a bogus body/joint index.
+        with self.assertRaises(ValueError):
+            ControllerDifferentialIK(model, tool_sites="world_ref", bandwidth=1.0, damping=0.1)
+
     def test_is_graphable(self):
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
