@@ -45,6 +45,7 @@ from newton._src.sim.collide import (
 )
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
+from newton.geometry import BroadPhaseAllPairs, NarrowPhase
 from newton.tests.unittest_utils import (
     add_function_test,
     configure_sdf_for_collision_shapes,
@@ -250,6 +251,52 @@ devices = get_cuda_test_devices(mode="basic")
 
 
 class TestCollisionPipeline(unittest.TestCase):
+    def test_legacy_expert_components_ignore_unconfigured_extension_inputs(self):
+        """Preserve the Newton 1.5 expert-component call contract by default."""
+
+        class LegacyBroadPhase(BroadPhaseAllPairs):
+            def __init__(self, wrapped):
+                self.__dict__ = wrapped.__dict__
+
+            def launch(self, *args, **kwargs):
+                if "shape_displacement" in kwargs:
+                    raise TypeError("Newton 1.5 broad phases do not accept shape_displacement")
+                return super().launch(*args, **kwargs)
+
+        class LegacyNarrowPhase(NarrowPhase):
+            def __init__(self, wrapped):
+                self.__dict__ = wrapped.__dict__
+
+            def launch_custom_write(self, **kwargs):
+                new_parameters = {
+                    "collision_update_dt",
+                    "hydroelastic_shape_sdf_data_prepared",
+                    "max_speculative_extension",
+                    "mesh_edge_centers",
+                    "mesh_edge_halves",
+                    "shape_angular_velocity",
+                    "shape_base_gap",
+                    "shape_linear_velocity",
+                }
+                unexpected = new_parameters.intersection(kwargs)
+                if unexpected:
+                    raise TypeError(f"Newton 1.5 narrow phases do not accept {sorted(unexpected)}")
+                return super().launch_custom_write(**kwargs)
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+        builder.add_shape_sphere(body, radius=1.0)
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        pipeline.broad_phase = LegacyBroadPhase(pipeline.broad_phase)
+        pipeline.narrow_phase = LegacyNarrowPhase(pipeline.narrow_phase)
+        contacts = pipeline.contacts()
+
+        pipeline.collide(model.state(), contacts)
+
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
     def test_model_collision_helpers_deprecated(self):
         builder = newton.ModelBuilder()
         builder.add_ground_plane()

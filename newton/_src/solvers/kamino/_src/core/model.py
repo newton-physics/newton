@@ -225,6 +225,9 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
+    num_joint_effort_cts: wp.array[wp.int32] | None = None
+    """The number of effort-limit implicit-PD constraint rows in each world."""
+
     max_limit_cts: wp.array[wp.int32] | None = None
     """
     The maximum number of active limit constraints of each world.
@@ -377,14 +380,22 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
-    # TODO: We could make this an array of vec6i and store the absolute
+    joint_effort_cts_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the effort limited implicit-PD actuator constraint block of each world.
+    Used to index into arrays that contain flattened effort limited implicit-PD actuator constraint data.
+    Shape of ``(num_worlds,)``.
+    """
+
+    # TODO: We could make this an array of vec7i and store the absolute
     #  startindex of each constraint group in the constraint array `lambda`:
     # - [0]: total_cts_offset
     # - [1]: joint_dynamic_cts_group_offset
     # - [2]: joint_kinematic_cts_group_offset
     # - [3]: joint_friction_cts_group_offset
-    # - [4]: limit_cts_group_offset
-    # - [5]: contact_cts_group_offset
+    # - [4]: joint_effort_cts_group_offset
+    # - [5]: limit_cts_group_offset
+    # - [6]: contact_cts_group_offset
     # TODO: We could then provide helper functions to get the start-end of each block
     total_cts_offset: wp.array[wp.int32] | None = None
     """
@@ -395,6 +406,7 @@ class ModelKaminoInfo:
     - joint_dynamic_cts_group_offset
     - joint_kinematic_cts_group_offset
     - joint_friction_cts_group_offset
+    - joint_effort_cts_group_offset
     - limit_cts_group_offset
     - contact_cts_group_offset
 
@@ -405,6 +417,7 @@ class ModelKaminoInfo:
     local_joint_dynamic_cts_start = model_info.joint_dynamic_cts_group_offset[w]
     local_joint_kinematic_cts_start = model_info.joint_kinematic_cts_group_offset[w]
     local_joint_friction_cts_start = model_info.joint_friction_cts_group_offset[w]
+    local_joint_effort_cts_start = model_info.joint_effort_cts_group_offset[w]
     local_limit_cts_start = model_info.limit_cts_group_offset[w]
     local_contact_cts_start = model_info.contact_cts_group_offset[w]
 
@@ -412,6 +425,7 @@ class ModelKaminoInfo:
     world_dynamic_joint_cts_start = world_cts_start + local_joint_dynamic_cts_start
     world_kinematic_joint_cts_start = world_cts_start + local_joint_kinematic_cts_start
     world_friction_cts_start = world_cts_start + local_joint_friction_cts_start
+    world_effort_cts_start = world_cts_start + local_joint_effort_cts_start
     world_limit_cts_start = world_cts_start + local_limit_cts_start
     world_contact_cts_start = world_cts_start + local_contact_cts_start
     ```
@@ -442,6 +456,13 @@ class ModelKaminoInfo:
     joint_friction_cts_group_offset: wp.array[wp.int32] | None = None
     """
     The index offset of the Coulomb joint friction constraint group within each world's total constraint block.
+    Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
+    Shape of ``(num_worlds,)``.
+    """
+
+    joint_effort_cts_group_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the effort-limit implicit-PD constraint group within each world's constraint block.
     Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
     Shape of ``(num_worlds,)``.
     """
@@ -589,6 +610,7 @@ class ModelKamino:
         njdyncts = self.size.sum_of_num_dynamic_joint_cts
         njkincts = self.size.sum_of_num_kinematic_joint_cts
         njfccts = self.size.sum_of_num_friction_joint_cts
+        njeccts = self.size.sum_of_num_effort_joint_cts
 
         # Construct the model data on the specified device
         with wp.ScopedDevice(device=device):
@@ -637,9 +659,13 @@ class ModelKamino:
                 lambda_kin_j=wp.zeros(shape=njkincts, dtype=wp.float32, requires_grad=requires_grad),
                 lambda_dyn_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 lambda_f_j=wp.zeros(shape=njfccts, dtype=wp.float32, requires_grad=requires_grad),
+                lambda_tau_j=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
                 m_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 inv_m_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
                 dq_b_j=wp.zeros(shape=njdyncts, dtype=wp.float32, requires_grad=requires_grad),
+                inv_m_a=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
+                dq_b_a=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
+                bound_a=wp.zeros(shape=njeccts, dtype=wp.float32, requires_grad=requires_grad),
                 # TODO: Should we make these optional and only include them when implicit joints are present?
                 q_j_ref=wp.clone(self.joints.q_j_0, requires_grad=requires_grad),
                 dq_j_ref=wp.clone(self.joints.dq_j_0, requires_grad=requires_grad),
@@ -706,6 +732,9 @@ class ModelKamino:
                 ),
                 lambda_f_j=wp.zeros(
                     shape=self.size.sum_of_num_friction_joint_cts, dtype=wp.float32, requires_grad=requires_grad
+                ),
+                lambda_tau_j=wp.zeros(
+                    shape=self.size.sum_of_num_effort_joint_cts, dtype=wp.float32, requires_grad=requires_grad
                 ),
             )
 

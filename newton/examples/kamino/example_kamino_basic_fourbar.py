@@ -47,7 +47,6 @@ class Example:
             asset_file = get_kamino_basics_asset("boxes_fourbar.usda")
             robot_builder.add_usd(
                 asset_file,
-                joint_ordering=None,
                 force_show_colliders=True,
                 force_position_velocity_actuation=True,
                 enable_self_collisions=False,

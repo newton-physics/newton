@@ -8,9 +8,16 @@ wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
 import importlib
+import os
+import sys
 from typing import ClassVar
 
 import numpy as np
+
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(parent_dir)
+
+from benchmark_config import pr_gate_repeat
 
 import newton.examples
 from newton.viewer import ViewerNull
@@ -267,7 +274,7 @@ class FastConvexCollision:
 
     params = (CONVEX_COLLISION_CASES,)
     param_names: ClassVar[list[str]] = ["case"]
-    repeat = 5
+    repeat = pr_gate_repeat(5)
     number = 1
 
     def setup(self, case):

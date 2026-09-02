@@ -594,7 +594,109 @@ For convenience, :meth:`~newton.ModelBuilder.add_custom_values_batch` appends mu
        {"myns:item_id": 101, "myns:item_value": 3.0},
    ])
 
+Here, a *row* is one indexed element of a custom frequency: the values at that
+index across every attribute using the frequency describe the same entity.
+
 **Validation:** All attributes sharing a custom frequency must have the same count at ``finalize()`` time. This catches synchronization bugs early.
+
+Articulation-Scoped Custom Frequencies
+--------------------------------------
+
+A custom frequency can declare that each of its rows belongs to one articulation.
+This lets :class:`~newton.selection.ArticulationView` expose every model, state,
+or control attribute using that frequency without adding frequency-specific logic
+to the view.
+
+Set :attr:`~newton.ModelBuilder.CustomFrequency.articulation_owner_attribute` to
+the full key ``<frequency>_articulation`` of an integer owner attribute. The owner
+attribute must use the same custom frequency, be assigned to
+:class:`~newton.Model`, and declare ``references="articulation"``. An optional
+:attr:`~newton.ModelBuilder.CustomFrequency.label_attribute` identifies a string
+attribute named ``<frequency>_label`` containing row labels. Builder merging and
+replication apply their label prefixes to this declared label attribute.
+
+When owners can be derived from other model data, set
+:attr:`~newton.ModelBuilder.CustomFrequency.articulation_owner_resolver` instead
+of populating the owner attribute at every import or construction site. The
+resolver receives the completed builder and returns one articulation index per
+frequency row. It runs before merge and finalization; its results are stored in
+the declared owner attribute and remapped like ordinary articulation references.
+
+.. code-block:: python
+
+   import newton
+   import warp as wp
+
+   builder = newton.ModelBuilder()
+   body = builder.add_link(mass=1.0)
+   joint = builder.add_joint_revolute(parent=-1, child=body)
+   builder.add_articulation([joint], label="robot")
+
+   def resolve_sensor_owners(builder):
+       sensor_joints = builder.custom_attributes["demo:sensor_joint"].values
+       return [builder.joint_articulation[joint] for joint in sensor_joints]
+
+   builder.add_custom_frequency(
+       newton.ModelBuilder.CustomFrequency(
+           name="sensor",
+           namespace="demo",
+           articulation_owner_attribute="demo:sensor_articulation",
+           articulation_owner_resolver=resolve_sensor_owners,
+           label_attribute="demo:sensor_label",
+       )
+   )
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="sensor_articulation",
+           namespace="demo",
+           frequency="demo:sensor",
+           dtype=wp.int32,
+           references="articulation",
+       )
+   )
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="sensor_joint",
+           namespace="demo",
+           frequency="demo:sensor",
+           dtype=wp.int32,
+           references="joint",
+       )
+   )
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="sensor_label",
+           namespace="demo",
+           frequency="demo:sensor",
+           dtype=str,
+       )
+   )
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="sensor_value",
+           namespace="demo",
+           frequency="demo:sensor",
+           dtype=wp.float32,
+       )
+   )
+   builder.add_custom_values(**{
+       "demo:sensor_joint": joint,
+       "demo:sensor_label": "force_sensor",
+       "demo:sensor_value": 0.0,
+   })
+
+   model = builder.finalize()
+   view = newton.selection.ArticulationView(model, "robot")
+   sensor_values = view.get_attribute("demo.sensor_value", model)
+
+In this example, ``sensor_values`` has shape
+``(world_count, articulation_count_per_world, sensor_count_per_articulation)``.
+Owner indices are remapped automatically by :meth:`~newton.ModelBuilder.add_builder`,
+:meth:`~newton.ModelBuilder.add_world`, and :meth:`~newton.ModelBuilder.replicate`.
+
+Frequencies that do not declare articulation ownership remain unavailable through
+``ArticulationView``. This is appropriate for global rows or relationships that can
+span multiple articulations, such as contact pairs.
 
 USD Parsing Support
 -------------------
@@ -814,4 +916,8 @@ Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a cust
 ArticulationView Limitations
 ----------------------------
 
-Custom frequency attributes are generally not accessible via :class:`~newton.selection.ArticulationView` because they represent entity types that aren't tied to articulation structure. The one exception is the ``mujoco:tendon`` frequency, which is supported. For per-articulation data, use enum frequencies like ``ARTICULATION``, ``JOINT``, or ``BODY``.
+Custom frequency attributes are accessible through :class:`~newton.selection.ArticulationView`
+only when their frequency declares articulation ownership. MuJoCo declares ownership for
+its actuator, tendon, tendon-joint, and tendon-wrap frequencies. Unscoped custom frequencies
+remain unavailable because their rows are not tied to the articulation structure. For other
+per-articulation data, use enum frequencies such as ``ARTICULATION``, ``JOINT``, or ``BODY``.

@@ -191,19 +191,17 @@ class Example:
         twist_stiffness: float,
         label: str,
     ) -> tuple[list[int], list[int]]:
-        points = newton.utils.cable_generate_straight_points(
+        rod = newton.Rod.create_straight(
             start=wp.vec3(0.0, y, z),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=self.cable_length,
-            num_segments=self.NUM_ELEMENTS,
+            segment_count=self.NUM_ELEMENTS,
+            radius=self.CABLE_RADIUS,
         )
-        quats = newton.utils.rod_compute_parallel_transport_quaternions(points)
         bend_damping = bend_stiffness
         twist_damping = twist_stiffness
         bodies, joints = builder.add_rod(
-            positions=points,
-            quaternions=quats,
-            radius=self.CABLE_RADIUS,
+            rod=rod,
             stretch_stiffness=self.STRETCH_STIFFNESS,
             bend_stiffness=bend_stiffness,
             bend_damping=bend_damping,

@@ -19,9 +19,9 @@
 #   - twist profile error: deviation from the analytical target profile in degrees
 #   - bend leakage: transverse centerline motion as percent of cable length
 #
-# Newton's rod joint stores the already-discretized twist stiffness, not a
-# separate material G field. This example derives that solver input from the
-# mechanical torsion law:
+# Rod stores the material inputs, while each assembled rod joint stores the
+# discretized twist stiffness. ModelBuilder derives that joint gain from the
+# mechanical torsion law and the joint's local dual rest length:
 #
 #   G = E / (2 * (1 + nu))
 #   J = pi * r^4 / 2
@@ -72,6 +72,11 @@ class Example:
 
     YOUNGS_MODULUS = 2.0e9
     POISSONS_RATIO = 0.30
+
+    # Tuned direct per-joint damping gains.
+    STRETCH_DAMPING = 0.0
+    BEND_DAMPING = 1628.60163162095
+    TWIST_DAMPING = 1252.77048586227
 
     TARGET_TIP_TWIST = math.radians(90.0)
     RAMP_TIME = 3.0
@@ -126,43 +131,22 @@ class Example:
         self.cable_length = self.NUM_ELEMENTS * self.SEGMENT_LENGTH
         self.effective_twist_length = (self.NUM_ELEMENTS - 1) * self.SEGMENT_LENGTH
 
-        (
-            self.stretch_stiffness,
-            self.bend_stiffness,
-            self.twist_stiffness,
-        ) = newton.utils.rod_compute_stiffness_from_elastic_moduli(
-            self.YOUNGS_MODULUS,
-            self.CABLE_RADIUS,
-            self.SEGMENT_LENGTH,
-            poissons_ratio=self.POISSONS_RATIO,
-        )
-
-        self.stretch_damping = 0.0
-        self.bend_damping = 4.0 * self.bend_stiffness
-        self.twist_damping = 4.0 * self.twist_stiffness
-
-        self.shear_modulus = self.YOUNGS_MODULUS / (2.0 * (1.0 + self.POISSONS_RATIO))
-        self.polar_inertia = 0.5 * math.pi * self.CABLE_RADIUS**4
-
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        points = newton.utils.cable_generate_straight_points(
+        rod = newton.Rod.create_straight(
             start=wp.vec3(-0.5 * self.cable_length, 0.0, 0.45),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=self.cable_length,
-            num_segments=self.NUM_ELEMENTS,
+            segment_count=self.NUM_ELEMENTS,
+            radius=self.CABLE_RADIUS,
+            youngs_modulus=self.YOUNGS_MODULUS,
+            poissons_ratio=self.POISSONS_RATIO,
         )
-        quats = newton.utils.rod_compute_parallel_transport_quaternions(points)
 
         bodies, _joints = builder.add_rod(
-            positions=points,
-            quaternions=quats,
-            radius=self.CABLE_RADIUS,
-            stretch_stiffness=self.stretch_stiffness,
-            stretch_damping=self.stretch_damping,
-            bend_stiffness=self.bend_stiffness,
-            bend_damping=self.bend_damping,
-            twist_stiffness=self.twist_stiffness,
-            twist_damping=self.twist_damping,
+            rod=rod,
+            stretch_damping=self.STRETCH_DAMPING,
+            bend_damping=self.BEND_DAMPING,
+            twist_damping=self.TWIST_DAMPING,
             label="torsion_material_mapping",
             wrap_in_articulation=True,
             body_frame_origin="com",
@@ -260,24 +244,35 @@ class Example:
             poissons_ratio,
             shear_modulus_in,
         ) in cls.MATERIAL_SCALING_CASES:
-            stiffness_kwargs = (
-                {"shear_modulus": shear_modulus_in}
-                if shear_modulus_in is not None
-                else {"poissons_ratio": poissons_ratio}
-            )
-            _stretch, _bend, twist = newton.utils.rod_compute_stiffness_from_elastic_moduli(
-                youngs_modulus,
-                radius,
-                segment_length,
-                **stiffness_kwargs,
-            )
             shear_modulus = (
                 float(shear_modulus_in)
                 if shear_modulus_in is not None
                 else youngs_modulus / (2.0 * (1.0 + poissons_ratio))
             )
             polar_inertia = 0.5 * math.pi * radius**4
-            formula_twist = shear_modulus * polar_inertia / segment_length
+            material_kwargs = (
+                {"shear_modulus": shear_modulus_in}
+                if shear_modulus_in is not None
+                else {"poissons_ratio": poissons_ratio}
+            )
+            rod = newton.Rod.create_straight(
+                wp.vec3(0.0),
+                wp.vec3(0.0, 0.0, 1.0),
+                2.0 * segment_length,
+                segment_count=2,
+                radius=radius,
+                youngs_modulus=youngs_modulus,
+                **material_kwargs,
+            )
+            # Rod material gains use each joint's local dual rest length.
+            rod_segment_lengths = rod.segment_lengths
+            dual_rest_length = float(0.5 * (rod_segment_lengths[0] + rod_segment_lengths[1]))
+            formula_twist = shear_modulus * polar_inertia / dual_rest_length
+
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            _bodies, joints = builder.add_rod(rod=rod, body_frame_origin="com")
+            dof_start = builder.joint_qd_start[joints[0]]
+            twist = builder.joint_target_ke[dof_start + 3]
 
             labels.append(label)
             groups.append(group)
@@ -295,7 +290,7 @@ class Example:
 
         formula_relative_error = np.abs(twist_stiffnesses_np / np.maximum(formula_stiffnesses_np, 1.0e-30) - 1.0)
         predicted_scale = formula_stiffnesses_np / formula_stiffnesses_np[0]
-        helper_scale = twist_stiffnesses_np / twist_stiffnesses_np[0]
+        rod_scale = twist_stiffnesses_np / twist_stiffnesses_np[0]
 
         return {
             "labels": labels,
@@ -307,14 +302,12 @@ class Example:
             "shear_modulus": np.asarray(shear_moduli, dtype=np.float64),
             "polar_inertia": np.asarray(polar_inertias, dtype=np.float64),
             "formula_stiffness": formula_stiffnesses_np,
-            "helper_stiffness": twist_stiffnesses_np,
+            "rod_stiffness": twist_stiffnesses_np,
             "predicted_scale": predicted_scale,
-            "helper_scale": helper_scale,
+            "rod_scale": rod_scale,
             "case_count": len(labels),
             "max_formula_relative_error": float(np.max(formula_relative_error)),
-            "max_scale_relative_error": float(
-                np.max(np.abs(helper_scale / np.maximum(predicted_scale, 1.0e-30) - 1.0))
-            ),
+            "max_scale_relative_error": float(np.max(np.abs(rod_scale / np.maximum(predicted_scale, 1.0e-30) - 1.0))),
         }
 
     def _commanded_tip_twist(self) -> float:
@@ -485,7 +478,7 @@ class Example:
             f"pure endpoint quaternion twist leaked into bend: {max_transverse / self.cable_length}"
         )
         assert material_scaling["max_formula_relative_error"] < 1.0e-12, (
-            f"helper does not match GJ/h: {material_scaling['max_formula_relative_error']}"
+            f"Rod material mapping does not match GJ/h: {material_scaling['max_formula_relative_error']}"
         )
         assert material_scaling["max_scale_relative_error"] < 1.0e-9, (
             f"material scaling response is wrong: {material_scaling['max_scale_relative_error']}"

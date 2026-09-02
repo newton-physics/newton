@@ -69,53 +69,46 @@ __all__ += [
 ]
 
 # ==================================================================================
-# cable and rod utils
+# cable compatibility
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
-    RodStiffness,
-    cable_generate_straight_points,
+    CableStiffness as _CableStiffness,
+)
+from ._src.utils.cable import (  # noqa: E402
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
     create_straight_cable_points,
     create_straight_cable_points_and_quaternions,
-    rod_compute_parallel_transport_quaternions,
-    rod_compute_stiffness_from_elastic_moduli,
-    rod_generate_straight_points_and_quaternions,
 )
 
 if TYPE_CHECKING:
-    CableStiffness = RodStiffness
+    CableStiffness = _CableStiffness
 
 __all__ += [
     "CableStiffness",
-    "RodStiffness",
-    "cable_generate_straight_points",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
     "create_straight_cable_points",
     "create_straight_cable_points_and_quaternions",
-    "rod_compute_parallel_transport_quaternions",
-    "rod_compute_stiffness_from_elastic_moduli",
-    "rod_generate_straight_points_and_quaternions",
 ]
 
 _DEPRECATED_CABLE_SYMBOLS = {
-    "CableStiffness": RodStiffness,
+    "CableStiffness": _CableStiffness,
 }
 
 __deprecated_symbols__ = {
-    "CableStiffness": "Deprecated in 1.6; use newton.utils.RodStiffness instead.",
+    "CableStiffness": ("Deprecated in 1.6; pass direct stiffness values to ``newton.ModelBuilder.add_rod()`` instead."),
     "create_cable_stiffness_from_elastic_moduli": (
-        "Deprecated in 1.6; use newton.utils.rod_compute_stiffness_from_elastic_moduli instead. "
-        "The replacement requires exactly one of ``poissons_ratio`` and ``shear_modulus`` "
-        "and always returns RodStiffness."
+        "Deprecated in 1.6; supply elastic material through ``newton.Rod(...)`` or pass direct stiffness values "
+        "to ``newton.ModelBuilder.add_rod()`` instead."
     ),
     "create_parallel_transport_cable_quaternions": (
-        "Deprecated in 1.6; use newton.utils.rod_compute_parallel_transport_quaternions instead."
+        "Deprecated in 1.6; construct ``rod = newton.Rod(points)`` and read ``rod.quaternions`` instead. "
+        "For nonzero ``twist_total``, first call ``rod.compute_frames(twist_total=twist_total)``."
     ),
-    "create_straight_cable_points": "Deprecated in 1.6; use newton.utils.cable_generate_straight_points instead.",
+    "create_straight_cable_points": ("Deprecated in 1.6; use ``newton.Rod.create_straight(...).points`` instead."),
     "create_straight_cable_points_and_quaternions": (
-        "Deprecated in 1.6; use newton.utils.rod_generate_straight_points_and_quaternions instead."
+        "Deprecated in 1.6; use ``newton.Rod.create_straight(...)`` instead."
     ),
 }
 
@@ -127,7 +120,8 @@ def __getattr__(name: str):
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
 
     warnings.warn(
-        f"newton.utils.{name} is deprecated in Newton 1.6; use newton.utils.RodStiffness instead.",
+        f"newton.utils.{name} is deprecated in Newton 1.6; "
+        "pass direct stiffness values to newton.ModelBuilder.add_rod() instead.",
         DeprecationWarning,
         stacklevel=2,
     )

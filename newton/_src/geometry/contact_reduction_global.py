@@ -944,6 +944,7 @@ class GlobalContactReducer:
         deterministic: bool = False,
         hashtable_size_factor: float = 0.25,
         enable_contact_reclamation: bool = False,
+        enable_reduction: bool = True,
     ):
         """Initialize the global contact reducer.
 
@@ -960,6 +961,8 @@ class GlobalContactReducer:
                 the reduction hashtable. Must be positive.
             enable_contact_reclamation: Allocate the reservation-reuse stack used
                 by predictive contact reduction.
+            enable_reduction: Allocate hashtable values and aggregate arrays.
+                Disable when the contact buffer is decoded without reduction.
         """
         hashtable_size_factor = float(hashtable_size_factor)
         if not hashtable_size_factor > 0.0:
@@ -980,6 +983,7 @@ class GlobalContactReducer:
         self.deterministic = deterministic
         self.hashtable_size_factor = hashtable_size_factor
         self.enable_contact_reclamation = enable_contact_reclamation
+        self.enable_reduction = enable_reduction
 
         self.values_per_key = NUM_SPATIAL_DIRECTIONS + 1
 
@@ -996,7 +1000,7 @@ class GlobalContactReducer:
         if store_hydroelastic_data:
             self.contact_area = wp.zeros(buffer_size, dtype=wp.float32, device=device)
             self.contact_pressure = wp.zeros(buffer_size, dtype=wp.float32, device=device)
-            self.contact_nbin_entry = wp.zeros(buffer_size, dtype=wp.int32, device=device)
+            self.contact_nbin_entry = wp.zeros(buffer_size if enable_reduction else 0, dtype=wp.int32, device=device)
         else:
             self.contact_area = wp.zeros(0, dtype=wp.float32, device=device)
             self.contact_pressure = wp.zeros(0, dtype=wp.float32, device=device)
@@ -1021,16 +1025,20 @@ class GlobalContactReducer:
         # Hashtable sizing: keep the historical default at capacity / 4 for
         # memory compatibility, while exposing a factor for dense batched scenes.
         # A full open-addressed table can turn failed inserts into whole-table probes.
-        hashtable_size = max(int(capacity * hashtable_size_factor), 1024)
+        hashtable_size = max(int(capacity * hashtable_size_factor), 1024) if enable_reduction else 1
         self.hashtable = HashTable(hashtable_size, device=device)
 
         # Values array for hashtable - managed here, not by HashTable
         # This is contact-reduction-specific (slot-major layout with values_per_key slots)
-        self.ht_values = wp.zeros(self.hashtable.capacity * self.values_per_key, dtype=wp.uint64, device=device)
+        self.ht_values = wp.zeros(
+            self.hashtable.capacity * self.values_per_key if enable_reduction else 0,
+            dtype=wp.uint64,
+            device=device,
+        )
 
         # Aggregate force per hashtable entry (for hydroelastic stiffness calculation)
         # Accumulates sum(area * pressure * normal) for all penetrating contacts per entry
-        if store_hydroelastic_data:
+        if store_hydroelastic_data and enable_reduction:
             self.agg_force = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
             self.agg_depth_volume = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)

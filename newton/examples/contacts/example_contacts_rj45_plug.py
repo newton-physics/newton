@@ -22,7 +22,6 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 import newton.usd
-import newton.utils
 from newton.math import quat_between_vectors_robust
 from newton.solvers import SolverVBD
 
@@ -315,13 +314,12 @@ class Example:
         builder.add_articulation([d6_joint, rev_joint])
 
         cable_points = _load_cable_centerline(stage)
-        cable_quats = newton.utils.rod_compute_parallel_transport_quaternions(cable_points)
+        rod = newton.Rod(cable_points, radius=CABLE_RADIUS)
+        cable_quats = [wp.quat(*(float(value) for value in frame)) for frame in rod.quaternions]
         bend_stiffness = 1.0e1
 
         rod_bodies, _ = builder.add_rod(
-            positions=cable_points,
-            quaternions=cable_quats,
-            radius=CABLE_RADIUS,
+            rod=rod,
             cfg=dataclasses.replace(
                 builder.default_shape_cfg,
                 ke=CONTACT_KE,

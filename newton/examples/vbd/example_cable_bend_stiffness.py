@@ -74,13 +74,13 @@ class Example:
         for i, bend_stiffness in enumerate(self.BEND_STIFFNESS_VALUES):
             y_pos = (i - (self.num_cables - 1) * 0.5) * self.Y_SEPARATION
             start = wp.vec3(0.0, y_pos, 0.0)
-            points = newton.utils.cable_generate_straight_points(
+            rod = newton.Rod.create_straight(
                 start=start,
                 direction=wp.vec3(1.0, 0.0, 0.0),
                 length=self.cable_length,
-                num_segments=self.NUM_ELEMENTS,
+                segment_count=self.NUM_ELEMENTS,
+                radius=self.CABLE_RADIUS,
             )
-            quats = newton.utils.rod_compute_parallel_transport_quaternions(points)
 
             # Twist != bend exercises the split stiffness path while the applied
             # load remains pure bending.
@@ -89,9 +89,7 @@ class Example:
             twist_damping = twist_stiffness
 
             rod_bodies, _ = builder.add_rod(
-                positions=points,
-                quaternions=quats,
-                radius=self.CABLE_RADIUS,
+                rod=rod,
                 stretch_stiffness=1.0e6,
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,

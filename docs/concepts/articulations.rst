@@ -50,10 +50,38 @@ Rod joints
 
 Newton uses *cable* for the modeled object and *rod* for this discrete
 stretch/shear/bend/twist representation. A cable may be assembled from rod
-joints or modeled with another formulation. Helpers in :mod:`newton.utils`
-provide cable centerline discretization and rod-specific per-segment
-orientation/twist frames and per-joint stiffness. Solver mechanics likewise
-use ``rod`` terminology.
+joints or modeled with another formulation. :class:`newton.Rod` stores
+prepared centerline geometry, segment frames, topology, and optional rod
+constitutive data before :meth:`newton.ModelBuilder.add_rod` assembles the
+simulation representation. Pass prepared data with
+``builder.add_rod(rod=rod)``; the ordered-point form remains
+``builder.add_rod(positions=points)``. A rod may specify either an isotropic
+elastic material or a complete set of homogeneous stretch, shear, bend, and
+twist rigidities. These parameterizations are mutually exclusive. Direct
+per-joint stiffness values remain assembly controls on
+:meth:`~newton.ModelBuilder.add_rod` and override the corresponding derived
+modes; damping is configured directly during assembly. Solver mechanics
+likewise use ``rod`` terminology.
+
+For a circular elastic material, transverse shear uses the AOUSD-compatible
+effective rigidity ``kGA`` with ``k = 0.9``. This is a finite
+shear-deformable rod, not the unshearable constraint of a strict Kirchhoff
+rod. Use section rigidities or direct joint stiffnesses when a different
+constitutive choice is required.
+
+Section rigidity describes the material and cross-section response before
+discretization (``EA``, ``kGA``, ``EI``, or ``GJ``). Each generated joint's
+stiffness is the corresponding rigidity divided by its local dual rest length,
+the mean rest length of the two adjacent segments. Material moduli are resolved
+through the same rigidity path. Automatic conversion supports ordered chains
+and non-branching explicit graphs. Cyclic explicit graphs require
+``wrap_in_articulation=False`` so every adjacency joint is retained. If needed,
+form an articulation from a spanning-tree subset of the returned joints,
+leaving closure joints outside it. Automatic material or section-rigidity
+conversion is not defined for branched graphs. At a branch,
+segment incidence alone does not determine unique parent-child joint pairings,
+and different star or spanning-tree choices can produce different discrete
+energies. Supply explicit per-joint builder stiffnesses instead.
 
 :attr:`newton.JointType.ROD` is represented in Newton's joint data model, but
 it is not a conventional generalized-coordinate joint. Its four entries are

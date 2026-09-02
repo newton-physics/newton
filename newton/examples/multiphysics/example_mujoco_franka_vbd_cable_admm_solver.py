@@ -310,17 +310,16 @@ class Example:
             margin=0.001,
             gap=0.002,
         )
-        points, quats = newton.utils.rod_generate_straight_points_and_quaternions(
+        rod = newton.Rod.create_straight(
             start=PAYLOAD_CENTER - wp.vec3(0.5 * PAYLOAD_LENGTH, 0.0, 0.0),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=PAYLOAD_LENGTH,
-            num_segments=self.payload_segments,
+            segment_count=self.payload_segments,
             twist_total=0.0,
+            radius=self.payload_radius,
         )
         return builder.add_rod(
-            positions=points,
-            quaternions=quats,
-            radius=self.payload_radius,
+            rod=rod,
             body_frame_origin="start",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,

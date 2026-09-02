@@ -495,6 +495,7 @@ class Example:
         self.table_tracking_max_error = 0.0
         self.table_tracking_error_sq_sum = 0.0
         self.table_tracking_sample_count = 0
+        self._last_body_q: np.ndarray | None = None
         self.slide_x_bounds = _symmetric_bounds(TABLE_RECT_HALF_X)
         self.table_y_bounds = _symmetric_bounds(TABLE_RECT_HALF_Y)
 
@@ -676,13 +677,15 @@ class Example:
             segment_length=initial_segment_length,
             wrap_clearance=cable_wrap_clearance,
         )
-        cable_quats = newton.utils.rod_compute_parallel_transport_quaternions(cable_points)
+        cable_rod = newton.Rod(cable_points)
+        cable_quats = [wp.quat(*(float(value) for value in frame)) for frame in cable_rod.quaternions]
         cable_segment_count = len(cable_points) - 1
-        straight_cable_points, straight_cable_quats = newton.utils.rod_generate_straight_points_and_quaternions(
+        straight_rod = newton.Rod.create_straight(
             start=left_anchor_world,
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=cable_segment_count * cable_segment_length,
-            num_segments=cable_segment_count,
+            segment_count=cable_segment_count,
+            radius=cable_radius,
         )
 
         cable_cfg = builder.default_shape_cfg.copy()
@@ -690,9 +693,7 @@ class Example:
         cable_cfg.gap = 2.0 * cable_radius
 
         self.cable_bodies, cable_joints = builder.add_rod(
-            positions=straight_cable_points,
-            quaternions=straight_cable_quats,
-            radius=cable_radius,
+            rod=straight_rod,
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
             stretch_damping=1.0e-4,
@@ -886,6 +887,7 @@ class Example:
         q_left = float(input_pulley_angles[0])
         q_right = float(input_pulley_angles[1])
         body_q = self.state_0.body_q.numpy()
+        self._last_body_q = body_q
         target_table_xy = self.target_table_xy.numpy()
         table_pos = body_q[self.table_body, 0:3]
         table_x = float(table_pos[0]) - self.table_origin_xy[0]
@@ -941,7 +943,9 @@ class Example:
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
 
-        body_q = self.state_0.body_q.numpy()
+        body_q = self._last_body_q
+        if body_q is None:
+            body_q = self.state_0.body_q.numpy()
         self._check_state_bounds(body_q)
 
     def test_final(self):
@@ -949,7 +953,9 @@ class Example:
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
 
-        body_q = self.state_0.body_q.numpy()
+        body_q = self._last_body_q
+        if body_q is None:
+            body_q = self.state_0.body_q.numpy()
         self._check_state_bounds(body_q)
 
         if self.table_tracking_sample_count == 0:

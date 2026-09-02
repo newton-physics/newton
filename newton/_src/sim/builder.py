@@ -16,7 +16,7 @@ import weakref
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, overload
 
 import numpy as np
 import warp as wp
@@ -68,6 +68,7 @@ from .graph_coloring import (
     construct_particle_graph,
 )
 from .model import Model, _pack_shape_pair_codes
+from .rod import Rod
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -1126,6 +1127,37 @@ class ModelBuilder:
                         yield {"joint": joint_path, "stiffness": prim.GetCustomDataByKey("stiffness")}
         """
 
+        articulation_owner_attribute: str | None = None
+        """Full key of the attribute that assigns each row to an articulation.
+
+        The key must be named ``<frequency>_articulation``.
+        The attribute must use this custom frequency, be assigned to the model,
+        and declare ``references="articulation"``. When provided,
+        :class:`~newton.selection.ArticulationView` automatically exposes every
+        array that uses this frequency.
+        """
+
+        articulation_owner_resolver: Callable[[ModelBuilder], Sequence[int]] | None = None
+        """Optional callback that computes the articulation owner for every row.
+
+        The callback runs before this builder is merged or finalized and its
+        results populate :attr:`articulation_owner_attribute`. This keeps
+        solver-specific ownership logic local to the custom-frequency
+        registration while preserving ordinary reference remapping. Rows whose
+        ownership was already remapped by a merge are preserved when later rows
+        are appended and resolved.
+        """
+
+        label_attribute: str | None = None
+        """Optional full key of a string attribute containing row labels.
+
+        The key must be named ``<frequency>_label``.
+        The attribute must use this custom frequency and be assigned to the model.
+        :class:`~newton.selection.ArticulationView` uses it to expose labels for
+        the template articulation. Builder merging applies ``label_prefix`` to
+        these values like other entity labels.
+        """
+
         def __post_init__(self):
             """Validate frequency naming and callback relationships."""
             if not self.name or ":" in self.name:
@@ -1134,6 +1166,21 @@ class ModelBuilder:
                 raise ValueError(f"namespace must be non-empty and colon-free, got '{self.namespace}'")
             if self.usd_entry_expander is not None and self.usd_prim_filter is None:
                 raise ValueError("usd_entry_expander requires usd_prim_filter")
+            if self.articulation_owner_resolver is not None and self.articulation_owner_attribute is None:
+                raise ValueError("articulation_owner_resolver requires articulation_owner_attribute")
+            for field_name, attribute_key, expected_key in (
+                (
+                    "articulation_owner_attribute",
+                    self.articulation_owner_attribute,
+                    f"{self.key}_articulation",
+                ),
+                ("label_attribute", self.label_attribute, f"{self.key}_label"),
+            ):
+                if attribute_key is not None and attribute_key != expected_key:
+                    raise ValueError(
+                        f"{field_name} for custom frequency '{self.key}' must be '{expected_key}', "
+                        f"got '{attribute_key}'"
+                    )
 
         @property
         def key(self) -> str:
@@ -1649,6 +1696,8 @@ class ModelBuilder:
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
         """Running counts for custom string frequencies used to size custom attribute arrays."""
+        self._custom_frequency_owner_resolved_counts: dict[str, int] = {}
+        """Row counts covered by the latest custom-frequency owner resolution."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
@@ -1750,6 +1799,9 @@ class ModelBuilder:
         return (
             existing.usd_prim_filter is incoming.usd_prim_filter
             and existing.usd_entry_expander is incoming.usd_entry_expander
+            and existing.articulation_owner_attribute == incoming.articulation_owner_attribute
+            and existing.articulation_owner_resolver is incoming.articulation_owner_resolver
+            and existing.label_attribute == incoming.label_attribute
         )
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
@@ -1866,7 +1918,9 @@ class ModelBuilder:
         if freq_key in self.custom_frequencies:
             existing = self.custom_frequencies[freq_key]
             if not self._custom_frequency_specs_match(existing, freq_obj):
-                raise ValueError(f"Custom frequency '{freq_key}' is already registered with different callbacks.")
+                raise ValueError(
+                    f"Custom frequency '{freq_key}' is already registered with different callbacks or metadata."
+                )
             # Already registered with equivalent callbacks - silently skip
             return
 
@@ -1898,6 +1952,136 @@ class ModelBuilder:
     def get_custom_frequency_keys(self) -> set[str]:
         """Return set of custom frequency keys (string frequencies) defined in this builder."""
         return set(self._custom_frequency_counts.keys())
+
+    @staticmethod
+    def _get_namespaced_attribute(source: Any, key: str) -> Any:
+        """Return an attribute addressed by its colon-delimited key."""
+        value = source
+        for component in key.split(":"):
+            value = getattr(value, component)
+        return value
+
+    def _resolve_custom_frequency_articulation_owners(self) -> None:
+        """Populate declared owner attributes using frequency-local callbacks."""
+        for frequency_key, frequency in self.custom_frequencies.items():
+            resolver = frequency.articulation_owner_resolver
+            if resolver is None:
+                continue
+
+            count = self._custom_frequency_counts.get(frequency_key, 0)
+            resolved_count = self._custom_frequency_owner_resolved_counts.get(frequency_key, 0)
+            if resolved_count == count:
+                continue
+            if resolved_count > count:
+                raise RuntimeError(
+                    f"Custom frequency '{frequency_key}' has {count} rows but tracks "
+                    f"{resolved_count} resolved owner rows"
+                )
+
+            owner_key = frequency.articulation_owner_attribute
+            assert owner_key is not None
+            owner_attribute = self.custom_attributes.get(owner_key)
+            if owner_attribute is None:
+                raise ValueError(
+                    f"Custom frequency '{frequency_key}' declares unknown articulation owner attribute '{owner_key}'"
+                )
+
+            resolved_owners = list(resolver(self))
+            if len(resolved_owners) != count:
+                raise ValueError(
+                    f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                    f"{len(resolved_owners)} values, expected {count}"
+                )
+            if resolved_count > 0:
+                if not isinstance(owner_attribute.values, list) or len(owner_attribute.values) < resolved_count:
+                    value_count = len(owner_attribute.values) if owner_attribute.values is not None else 0
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' has {value_count} values but "
+                        f"{resolved_count} merged rows must be preserved"
+                    )
+                owners = list(owner_attribute.values[:resolved_count])
+            else:
+                owners = []
+            for row in range(resolved_count, count):
+                owner = resolved_owners[row]
+                if not self._is_integer_scalar(owner):
+                    raise ValueError(
+                        f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                        f"non-integer value {owner!r} at row {row}"
+                    )
+                owner_index = int(owner)
+                if owner_index < -1 or owner_index >= self.articulation_count:
+                    raise ValueError(
+                        f"Articulation owner resolver for custom frequency '{frequency_key}' returned "
+                        f"invalid articulation index {owner_index} at row {row}"
+                    )
+                owners.append(owner_index)
+            owner_attribute.values = owners
+            self._custom_frequency_owner_resolved_counts[frequency_key] = count
+
+    def _finalize_custom_frequency_metadata(self, model: Model, device: Devicelike | None) -> None:
+        """Materialize articulation ownership and label metadata on a model."""
+        for frequency_key, frequency in self.custom_frequencies.items():
+            owner_key = frequency.articulation_owner_attribute
+            if owner_key is not None:
+                owner_attribute = self.custom_attributes.get(owner_key)
+                if owner_attribute is None:
+                    raise ValueError(
+                        f"Custom frequency '{frequency_key}' declares unknown articulation owner attribute "
+                        f"'{owner_key}'"
+                    )
+                if owner_attribute.frequency != frequency_key:
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' uses frequency "
+                        f"'{owner_attribute.frequency}', expected '{frequency_key}'"
+                    )
+                if owner_attribute.assignment != Model.AttributeAssignment.MODEL:
+                    raise ValueError(f"Articulation owner attribute '{owner_key}' must be assigned to Model")
+                if owner_attribute.references != "articulation":
+                    raise ValueError(
+                        f"Articulation owner attribute '{owner_key}' must declare references='articulation'"
+                    )
+                if not wp.types.type_is_int(owner_attribute.dtype):
+                    raise ValueError(f"Articulation owner attribute '{owner_key}' must use an integer dtype")
+
+                count = model.custom_frequency_counts.get(frequency_key, 0)
+                if count == 0:
+                    owners = wp.empty(0, dtype=owner_attribute.dtype, device=device)
+                else:
+                    owners = self._get_namespaced_attribute(model, owner_key)
+                    if not isinstance(owners, wp.array) or owners.ndim != 1:
+                        raise ValueError(f"Articulation owner attribute '{owner_key}' must be a 1-D Warp array")
+                    if len(owners) != count:
+                        raise ValueError(
+                            f"Articulation owner attribute '{owner_key}' has {len(owners)} values but "
+                            f"frequency '{frequency_key}' expects {count}"
+                        )
+                    owner_values = owners.numpy()
+                    invalid = np.flatnonzero((owner_values < -1) | (owner_values >= model.articulation_count))
+                    if len(invalid) > 0:
+                        row = int(invalid[0])
+                        raise ValueError(
+                            f"Articulation owner attribute '{owner_key}' contains invalid articulation "
+                            f"index {int(owner_values[row])} at row {row}"
+                        )
+                model.custom_frequency_articulation[frequency_key] = owners
+
+            label_key = frequency.label_attribute
+            if label_key is None:
+                continue
+            label_attribute = self.custom_attributes.get(label_key)
+            if label_attribute is None:
+                raise ValueError(f"Custom frequency '{frequency_key}' declares unknown label attribute '{label_key}'")
+            if label_attribute.frequency != frequency_key:
+                raise ValueError(
+                    f"Label attribute '{label_key}' uses frequency '{label_attribute.frequency}', "
+                    f"expected '{frequency_key}'"
+                )
+            if label_attribute.assignment != Model.AttributeAssignment.MODEL:
+                raise ValueError(f"Label attribute '{label_key}' must be assigned to Model")
+            if label_attribute.dtype is not str:
+                raise ValueError(f"Label attribute '{label_key}' must use dtype=str")
+            model.custom_frequency_label_attributes[frequency_key] = label_key
 
     def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
         """Append values to custom attributes with custom string frequencies.
@@ -3039,7 +3223,9 @@ class ModelBuilder:
         for freq_key, frequency in builder.custom_frequencies.items():
             existing = self.custom_frequencies.get(freq_key)
             if existing is not None and not self._custom_frequency_specs_match(existing, frequency):
-                raise ValueError(f"Custom frequency '{freq_key}' is already registered with different callbacks.")
+                raise ValueError(
+                    f"Custom frequency '{freq_key}' is already registered with different callbacks or metadata."
+                )
 
         for full_key, attr in builder.custom_attributes.items():
             merged = self.custom_attributes.get(full_key)
@@ -3632,7 +3818,7 @@ class ModelBuilder:
                 * - ``"path_soft_map"``
                   - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
                 * - ``"path_cable_attrs"``
-                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the imported rod cannot express (e.g. shear / twist). ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the component identifier. Present only with ``return_deformable_results=True``.
+                  - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_attrs"``
                   - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``). Present only with ``return_deformable_results=True``.
                 * - ``"path_soft_attrs"``
@@ -4051,6 +4237,11 @@ class ModelBuilder:
         world: int,
         label_prefix: str | None,
     ) -> None:
+        # Resolve source rows before ordinary reference remapping copies them.
+        # Resolve existing destination rows too, since its topology may have
+        # changed since the rows were first added.
+        builder._resolve_custom_frequency_articulation_owners()
+        self._resolve_custom_frequency_articulation_owners()
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
         # Builders allocate MJCF mask-domain IDs independently. Remap every
@@ -4220,15 +4411,37 @@ class ModelBuilder:
             else:
                 merged.values.update({index_offset + idx: value for idx, value in attr.values.items()})
 
-        if label_prefix and builder._equality_constraint_count > 0:
-            label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
-            if label_attr is not None and label_attr.values:
-                start = self._equality_constraint_count
-                for i in range(start, start + builder._equality_constraint_count):
-                    if i < len(label_attr.values):
-                        label = label_attr.values[i]
-                        if label:
-                            label_attr.values[i] = f"{label_prefix}/{label}"
+        if label_prefix:
+            for frequency_key, frequency in builder.custom_frequencies.items():
+                label_key = frequency.label_attribute
+                if label_key is None:
+                    continue
+                source_label_attribute = builder.custom_attributes.get(label_key)
+                if source_label_attribute is None or source_label_attribute.frequency != frequency_key:
+                    continue
+                label_attribute = self.custom_attributes.get(label_key)
+                if (
+                    label_attribute is None
+                    or not isinstance(label_attribute.values, list)
+                    or not label_attribute.values
+                ):
+                    continue
+                start = custom_frequency_offsets.get(frequency_key, 0)
+                count = builder._custom_frequency_counts.get(frequency_key, 0)
+                for row in range(start, min(start + count, len(label_attribute.values))):
+                    label = label_attribute.values[row]
+                    if label:
+                        label_attribute.values[row] = f"{label_prefix}/{label}"
+
+            if builder._equality_constraint_count > 0:
+                label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
+                if label_attr is not None and label_attr.values:
+                    start = self._equality_constraint_count
+                    for i in range(start, start + builder._equality_constraint_count):
+                        if i < len(label_attr.values):
+                            label = label_attr.values[i]
+                            if label:
+                                label_attr.values[i] = f"{label_prefix}/{label}"
 
         for freq_key, freq_obj in builder.custom_frequencies.items():
             if freq_key not in self.custom_frequencies:
@@ -4238,6 +4451,11 @@ class ModelBuilder:
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
+            frequency = builder.custom_frequencies.get(freq_key)
+            if frequency is not None and frequency.articulation_owner_resolver is not None:
+                # Source owner values were resolved above and remapped as regular
+                # articulation references, so the merged rows are already current.
+                self._custom_frequency_owner_resolved_counts[freq_key] = offset + builder_count
 
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
             self._add_custom_attribute_model_finalizer(key, finalizer)
@@ -5431,33 +5649,147 @@ class ModelBuilder:
             **kwargs,
         )
 
-    def _set_joint_rod_stiffnesses(
+    def _set_joint_rod_material_gains(
         self,
         joint: int,
+        *,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
+    ) -> None:
+        """Overwrite non-None material gains and target modes in :meth:`add_joint_rod` slot order.
+
+        Args:
+            joint: Rod joint index.
+            stretch_stiffness: Per-joint stretch stiffness [N/m], or ``None`` to preserve it.
+            stretch_damping: Per-joint stretch damping [N·s/m], or ``None`` to preserve it.
+            shear_stiffness: Per-joint shear stiffness [N/m], or ``None`` to preserve it.
+            shear_damping: Per-joint shear damping [N·s/m], or ``None`` to preserve it.
+            bend_stiffness: Per-joint bend stiffness [N·m/rad], or ``None`` to preserve it.
+            bend_damping: Per-joint bend damping [N·m·s/rad], or ``None`` to preserve it.
+            twist_stiffness: Per-joint twist stiffness [N·m/rad], or ``None`` to preserve it.
+            twist_damping: Per-joint twist damping [N·m·s/rad], or ``None`` to preserve it.
+        """
+        joint_type = self.joint_type[joint]
+        joint_dof_dim = self.joint_dof_dim[joint]
+        if joint_type != JointType.ROD or joint_dof_dim != (2, 2):
+            raise ValueError(
+                "_set_joint_rod_material_gains() expected the four-slot ROD layout "
+                f"(2 linear, 2 angular); got joint type {JointType(joint_type).name} with dimensions "
+                f"{joint_dof_dim}. Update the ROD material-slot mapping when changing its slot layout."
+            )
+        dof_start = self.joint_qd_start[joint]
+        stiffnesses = (stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)
+        dampings = (stretch_damping, shear_damping, bend_damping, twist_damping)
+        for offset, (stiffness, damping) in enumerate(zip(stiffnesses, dampings, strict=True)):
+            if stiffness is not None or damping is not None:
+                dof = dof_start + offset
+                if stiffness is not None:
+                    self.joint_target_ke[dof] = stiffness
+                if damping is not None:
+                    self.joint_target_kd[dof] = damping
+                resolved_stiffness = self.joint_target_ke[dof]
+                resolved_damping = self.joint_target_kd[dof]
+                self.joint_target_mode[dof] = int(
+                    JointTargetMode.from_gains(
+                        resolved_stiffness,
+                        resolved_damping,
+                        has_drive=resolved_stiffness != 0.0 or resolved_damping != 0.0,
+                    )
+                )
+
+    @staticmethod
+    def _validate_rod_stiffness_inputs(
+        method_name: str,
         *,
         stretch_stiffness: float | None,
         shear_stiffness: float | None,
         bend_stiffness: float | None,
         twist_stiffness: float | None,
     ) -> None:
-        """Overwrite each non-None stiffness and its inferred target mode, in :meth:`add_joint_rod` axis order."""
-        joint_type = self.joint_type[joint]
-        joint_dof_dim = self.joint_dof_dim[joint]
-        if joint_type != JointType.ROD or joint_dof_dim != (2, 2):
+        """Validate direct per-joint rod stiffness inputs."""
+        stiffnesses = (
+            ("stretch_stiffness", stretch_stiffness),
+            ("shear_stiffness", shear_stiffness),
+            ("bend_stiffness", bend_stiffness),
+            ("twist_stiffness", twist_stiffness),
+        )
+        for name, stiffness in stiffnesses:
+            if stiffness is not None and stiffness < 0.0:
+                raise ValueError(f"{method_name}: {name} must be >= 0")
+
+    @staticmethod
+    def _validate_rod_rigidity_topology(
+        point_count: int,
+        edges: np.ndarray,
+        *,
+        wrap_in_articulation: bool,
+    ) -> None:
+        """Validate topology for automatic section-rigidity discretization."""
+        if len(edges) >= 2 and Rod._is_ordered_chain_topology(point_count, edges):
+            return
+
+        degrees = np.bincount(edges.reshape(-1), minlength=point_count)
+        if np.any(degrees > 2):
             raise ValueError(
-                "_set_joint_rod_stiffnesses() expected the four-slot ROD layout "
-                f"(2 linear, 2 angular); got joint type {JointType(joint_type).name} with dimensions "
-                f"{joint_dof_dim}. Update the ROD material-slot mapping when changing its slot layout."
+                "add_rod: automatic section-rigidity discretization requires at most 2 incident segments per point; "
+                "provide explicit builder stiffnesses for a branched graph"
             )
-        dof_start = self.joint_qd_start[joint]
-        for offset, stiffness in enumerate((stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)):
-            if stiffness is not None:
-                dof = dof_start + offset
-                damping = self.joint_target_kd[dof]
-                self.joint_target_ke[dof] = stiffness
-                self.joint_target_mode[dof] = int(
-                    JointTargetMode.from_gains(stiffness, damping, has_drive=stiffness != 0.0 or damping != 0.0)
+        if not wrap_in_articulation:
+            return
+
+        parents = list(range(point_count))
+
+        def find(point: int) -> int:
+            while parents[point] != point:
+                parents[point] = parents[parents[point]]
+                point = parents[point]
+            return point
+
+        for start, end in edges:
+            start_root = find(int(start))
+            end_root = find(int(end))
+            if start_root == end_root:
+                raise ValueError(
+                    "add_rod: automatic section-rigidity discretization for a cyclic graph requires "
+                    "wrap_in_articulation=False so every adjacency joint is retained; otherwise provide "
+                    "explicit builder stiffnesses"
                 )
+            parents[end_root] = start_root
+
+    def _set_joint_rod_stiffnesses_from_rigidities(
+        self,
+        segment_lengths: Sequence[float],
+        body_indices: list[int],
+        joint_indices: list[int],
+        *,
+        stretch_rigidity: float | None,
+        shear_rigidity: float | None,
+        bend_rigidity: float | None,
+        twist_rigidity: float | None,
+    ) -> None:
+        """Convert section rigidities into joint stiffnesses using local dual lengths."""
+        if stretch_rigidity is None and shear_rigidity is None and bend_rigidity is None and twist_rigidity is None:
+            return
+
+        segment_length_by_body = dict(zip(body_indices, segment_lengths, strict=True))
+        for joint in joint_indices:
+            dual_length = float(
+                0.5
+                * (segment_length_by_body[self.joint_parent[joint]] + segment_length_by_body[self.joint_child[joint]])
+            )
+            self._set_joint_rod_material_gains(
+                joint,
+                stretch_stiffness=None if stretch_rigidity is None else stretch_rigidity / dual_length,
+                shear_stiffness=None if shear_rigidity is None else shear_rigidity / dual_length,
+                bend_stiffness=None if bend_rigidity is None else bend_rigidity / dual_length,
+                twist_stiffness=None if twist_rigidity is None else twist_rigidity / dual_length,
+            )
 
     def add_constraint_mimic(
         self,
@@ -7600,6 +7932,8 @@ class ModelBuilder:
         remeshed_shapes = set()
 
         if method == "coacd" or method == "vhacd":
+            empty_decomposition_shape = None
+            decomposition_failed = False
             try:
                 if method == "coacd":
                     # convex decomposition using CoACD
@@ -7653,6 +7987,15 @@ class ModelBuilder:
                                 decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
                         decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
+                        if raise_on_failure:
+                            empty_decomposition_shape = shape
+                            break
+                        warnings.warn(
+                            f"Remeshing with method '{method}' failed for shape {shape}: the backend returned no "
+                            "convex parts. Falling back to convex_hull.",
+                            stacklevel=2,
+                        )
+                        decomposition_failed = True
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
                     replacement_mesh = self.shape_source[shape].copy(
@@ -7721,6 +8064,15 @@ class ModelBuilder:
                     method = "convex_hull"
                     # kwargs were addressed to the failed decomposition method
                     remeshing_kwargs = {}
+            if empty_decomposition_shape is not None:
+                raise RuntimeError(
+                    f"Remeshing with method '{method}' failed for shape {empty_decomposition_shape}: "
+                    "the backend returned no convex parts."
+                )
+            if decomposition_failed:
+                method = "convex_hull"
+                # kwargs were addressed to the failed decomposition method
+                remeshing_kwargs = {}
 
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
@@ -7807,106 +8159,161 @@ class ModelBuilder:
 
         return remeshed_shapes
 
-    @deprecate_nonkeyword_arguments
-    def add_rod(
+    def _add_rod_object(
         self,
-        positions: list[Vec3],
+        rod: Rod,
         *,
-        quaternions: list[Quat] | None = None,
-        radius: float = 0.1,
-        cfg: ShapeConfig | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        closed: bool = False,
-        label: str | None = None,
-        wrap_in_articulation: bool = True,
-        color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] | None = None,
+        cfg: ShapeConfig | None,
+        stretch_stiffness: float | None,
+        stretch_damping: float | None,
+        shear_stiffness: float | None,
+        shear_damping: float | None,
+        bend_stiffness: float | None,
+        bend_damping: float | None,
+        twist_stiffness: float | None,
+        twist_damping: float | None,
+        label: str | None,
+        wrap_in_articulation: bool,
+        junction_collision_filter: bool,
+        color: Vec3 | None,
+        body_frame_origin: Literal["start", "com"] | None,
     ) -> tuple[list[int], list[int]]:
-        """Adds a rod composed of capsule bodies connected by rod joints.
+        """Add a Rod object through the established chain or graph path."""
+        radius = rod._resolve_radius()
+        if radius is None:
+            radius = 0.1
 
-        Constructs a chain of capsule bodies from the given centerline points and orientations.
-        Each segment is a capsule aligned by the corresponding quaternion, and adjacent capsules
-        are connected by rod joints providing separate slots for linear stretch/shear and angular
-        bend/twist.
+        self._validate_rod_stiffness_inputs(
+            "add_rod",
+            stretch_stiffness=stretch_stiffness,
+            shear_stiffness=shear_stiffness,
+            bend_stiffness=bend_stiffness,
+            twist_stiffness=twist_stiffness,
+        )
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
 
-        Args:
-            positions: Centerline node positions (segment endpoints) in world space. These are the
-                cylindrical centerline endpoints of the capsules, with one extra point so that for
-                ``N`` segments there are ``N+1`` positions.
-            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
-                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
-                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
-                orientations are computed automatically to align +Z with each segment direction.
-            radius: Capsule radius.
-            cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
-                If None, defaults to 1.0e5.
-            stretch_damping: Stretch damping [N·s/m] for the rod joints (applied per-joint; not length-normalized). If None,
-                defaults to 0.0.
-            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
-                ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
-                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
-                If None, defaults to 0.0.
-            bend_damping: Bend damping [N·m·s/rad] for the rod joints (applied per-joint; not length-normalized). If None,
-                defaults to 0.0.
-            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
-                ``bend_stiffness``.
-            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
-                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            closed: If True, connects the last segment back to the first to form a closed loop. If False,
-                creates an open chain. Note: rods require at least 2 segments.
-            label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
-                retain the historical ``{label}_cable_{n}`` form for compatibility.
-            wrap_in_articulation: If True, the created joints are automatically wrapped into a single
-                articulation. Defaults to True to ensure valid simulation models.
-            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
-                capsule shapes. If None, the rod uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the legacy convention where the body origin is at the segment start position
-                (``positions[i]`` for segment ``i``), and the COM/shape are offset by half the
-                segment length. ``"com"`` places the body origin at the segment midpoint so the
-                body origin and COM coincide. If None, preserves ``"start"`` for now with a
-                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
-                pass ``"start"`` or ``"com"`` explicitly.
+        rod_points, rod_edges, rod_frames = rod._normalize_and_validate_geometry()
+        uses_chain_assembly = len(rod_edges) >= 2 and Rod._is_ordered_chain_topology(len(rod_points), rod_edges)
 
-        Returns:
-            A pair ``(body_indices, joint_indices)``. For an open chain,
-            ``len(joint_indices) == num_segments - 1``; for a closed loop, ``len(joint_indices) == num_segments``.
+        stretch_rigidity: float | None = None
+        shear_rigidity: float | None = None
+        bend_rigidity: float | None = None
+        twist_rigidity: float | None = None
+        section_rigidities = rod._resolve_section_rigidities()
+        if section_rigidities is not None:
+            stretch_rigidity, shear_rigidity, bend_rigidity, twist_rigidity = section_rigidities
+            if stretch_stiffness is not None:
+                stretch_rigidity = None
+            if shear_stiffness is not None:
+                shear_rigidity = None
+            if bend_stiffness is not None:
+                bend_rigidity = None
+            if twist_stiffness is not None:
+                twist_rigidity = None
+            # Zero rigidity is topology-independent; positive gains require a unique joint pairing.
+            if any(
+                rigidity is not None and rigidity > 0.0
+                for rigidity in (stretch_rigidity, shear_rigidity, bend_rigidity, twist_rigidity)
+            ):
+                self._validate_rod_rigidity_topology(
+                    len(rod_points),
+                    rod_edges,
+                    wrap_in_articulation=wrap_in_articulation,
+                )
 
-        Articulations:
-            By default (``wrap_in_articulation=True``), the created joints are wrapped into a single
-            articulation, which avoids orphan joints during :meth:`finalize <ModelBuilder.finalize>`.
-            If ``wrap_in_articulation=False``, this method will return the created joint indices but will
-            not wrap them; callers must place them into one or more articulations (via :meth:`add_articulation`)
-            before calling :meth:`finalize <ModelBuilder.finalize>`.
+        segment_vectors = rod_points[rod_edges[:, 1]] - rod_points[rod_edges[:, 0]]
+        segment_lengths = np.linalg.norm(segment_vectors, axis=1)
+        rod_positions: list[Vec3] = [axis_to_vec3(point) for point in rod_points]
+        rod_quaternions: list[Quat] = [
+            wp.quat(float(frame[0]), float(frame[1]), float(frame[2]), float(frame[3])) for frame in rod_frames
+        ]
 
-        Raises:
-            ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
-            ValueError: If the rod has fewer than 2 segments.
-            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
+        if uses_chain_assembly:
+            link_bodies, link_joints = self._add_rod_chain(
+                rod_positions,
+                quaternions=rod_quaternions,
+                radius=radius,
+                cfg=cfg,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=stretch_damping,
+                shear_stiffness=shear_stiffness,
+                shear_damping=shear_damping,
+                bend_stiffness=bend_stiffness,
+                bend_damping=bend_damping,
+                twist_stiffness=twist_stiffness,
+                twist_damping=twist_damping,
+                closed=rod.closed,
+                label=label,
+                wrap_in_articulation=wrap_in_articulation,
+                color=color,
+                body_frame_origin=body_frame_origin,
+            )
+        else:
+            link_bodies, link_joints = self.add_rod_graph(
+                node_positions=rod_positions,
+                edges=[(int(edge[0]), int(edge[1])) for edge in rod_edges],
+                radius=radius,
+                cfg=cfg,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=stretch_damping,
+                shear_stiffness=shear_stiffness,
+                shear_damping=shear_damping,
+                bend_stiffness=bend_stiffness,
+                bend_damping=bend_damping,
+                twist_stiffness=twist_stiffness,
+                twist_damping=twist_damping,
+                label=label,
+                wrap_in_articulation=wrap_in_articulation,
+                quaternions=rod_quaternions,
+                junction_collision_filter=junction_collision_filter,
+                color=color,
+                body_frame_origin=body_frame_origin,
+            )
 
-        Note:
-            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
-              pass a larger value when neighboring capsules should remain nearly inextensible.
-            - Stretch, shear, bend, twist, and damping values are passed through as provided per joint.
-            - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
-              the cylindrical centerline, excluding the hemispherical caps.
-            - With ``body_frame_origin="start"``, the body origin is at the first centerline endpoint,
-              the COM and shape are at local ``(0, 0, half_height)``, and the second centerline endpoint
-              is at local ``(0, 0, 2 * half_height)``.
-            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
-              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
-              ``(0, 0, half_height)``.
-        """
+        self._set_joint_rod_stiffnesses_from_rigidities(
+            segment_lengths,
+            link_bodies,
+            link_joints,
+            stretch_rigidity=stretch_rigidity,
+            shear_rigidity=shear_rigidity,
+            bend_rigidity=bend_rigidity,
+            twist_rigidity=twist_rigidity,
+        )
+        return link_bodies, link_joints
+
+    def _add_rod_chain(
+        self,
+        positions: Sequence[Vec3] | np.ndarray,
+        *,
+        quaternions: Sequence[Quat] | np.ndarray | None,
+        radius: float | None,
+        cfg: ShapeConfig | None,
+        stretch_stiffness: float | None,
+        stretch_damping: float | None,
+        shear_stiffness: float | None,
+        shear_damping: float | None,
+        bend_stiffness: float | None,
+        bend_damping: float | None,
+        twist_stiffness: float | None,
+        twist_damping: float | None,
+        closed: bool | None,
+        label: str | None,
+        wrap_in_articulation: bool,
+        color: Vec3 | None,
+        body_frame_origin: Literal["start", "com"] | None,
+    ) -> tuple[list[int], list[int]]:
+        """Add an ordered point chain through the established graph path."""
+        self._validate_rod_stiffness_inputs(
+            "add_rod",
+            stretch_stiffness=stretch_stiffness,
+            shear_stiffness=shear_stiffness,
+            bend_stiffness=bend_stiffness,
+            twist_stiffness=twist_stiffness,
+        )
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
+        closed = False if closed is None else closed
+
+        radius = 0.1 if radius is None else radius
         if cfg is None:
             cfg = self.default_shape_cfg
 
@@ -7917,15 +8324,6 @@ class ModelBuilder:
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)
         bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
         bend_damping = 0.0 if bend_damping is None else bend_damping
-
-        # Input validation
-        if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
-            raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
-        if shear_stiffness is not None and shear_stiffness < 0.0:
-            raise ValueError("add_rod: shear_stiffness must be >= 0")
-        if twist_stiffness is not None and twist_stiffness < 0.0:
-            raise ValueError("add_rod: twist_stiffness must be >= 0")
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
 
         num_segments = len(positions) - 1
         if num_segments < 1:
@@ -7991,7 +8389,7 @@ class ModelBuilder:
                     "before finalize; closed=True also adds a loop-closing joint that must remain outside any "
                     "articulation.",
                     UserWarning,
-                    stacklevel=2,
+                    stacklevel=self._external_warning_stacklevel(),
                 )
 
             if link_bodies:
@@ -8037,6 +8435,254 @@ class ModelBuilder:
 
         return link_bodies, link_joints
 
+    @overload
+    def add_rod(
+        self,
+        positions: None = None,
+        *,
+        quaternions: None = None,
+        radius: None = None,
+        cfg: ShapeConfig | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
+        closed: None = None,
+        label: str | None = None,
+        wrap_in_articulation: bool = True,
+        color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] | None = None,
+        rod: Rod,
+        junction_collision_filter: bool = True,
+    ) -> tuple[list[int], list[int]]: ...
+
+    @overload
+    def add_rod(
+        self,
+        positions: Sequence[Vec3] | np.ndarray,
+        *,
+        quaternions: Sequence[Quat] | np.ndarray | None = None,
+        radius: float | None = None,
+        cfg: ShapeConfig | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
+        closed: bool | None = None,
+        label: str | None = None,
+        wrap_in_articulation: bool = True,
+        color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] | None = None,
+        rod: None = None,
+        junction_collision_filter: bool = True,
+    ) -> tuple[list[int], list[int]]: ...
+
+    @deprecate_nonkeyword_arguments
+    def add_rod(
+        self,
+        positions: Sequence[Vec3] | np.ndarray | None = None,
+        *,
+        quaternions: Sequence[Quat] | np.ndarray | None = None,
+        radius: float | None = None,
+        cfg: ShapeConfig | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
+        closed: bool | None = None,
+        label: str | None = None,
+        wrap_in_articulation: bool = True,
+        color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] | None = None,
+        rod: Rod | None = None,
+        junction_collision_filter: bool = True,
+    ) -> tuple[list[int], list[int]]:
+        """Adds a rod composed of capsule bodies connected by rod joints.
+
+        Exactly one input form is required:
+
+        - ``positions=...`` constructs an ordered chain. The separate
+          ``quaternions`` and ``closed`` arguments belong only to this form.
+        - ``rod=...`` uses the geometry, frames, topology, and optional
+          constitutive data stored on a :class:`newton.Rod`, which may represent
+          an ordered chain or an explicit graph.
+
+        The remaining arguments configure assembly. Each segment becomes a
+        capsule body, and incident segments are connected by rod joints with
+        separate stretch, shear, bend, and twist slots.
+
+        Args:
+            positions: Geometry source for the ordered-chain form: centerline
+                node positions (segment endpoints) in world space [m]. Mutually
+                exclusive with ``rod``.
+            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
+                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
+                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
+                orientations are computed automatically to align +Z with each segment direction.
+                Valid only with ``positions``; must be None when ``rod`` is
+                supplied.
+            radius: Capsule radius [m] for the ``positions`` form. If None,
+                defaults to 0.1 m. Must be None with ``rod``; the Rod's radius
+                is used, with the same default when it is unset.
+            cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
+            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
+                If None, it is derived locally from Rod material or section rigidity;
+                otherwise it defaults to 1.0e5.
+            stretch_damping: Stretch damping [N·s/m] for the rod joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
+            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
+                the locally derived Rod shear stiffness, or to
+                ``stretch_stiffness`` otherwise.
+            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
+                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
+            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
+                If None, it is derived locally from Rod material or section rigidity;
+                otherwise it defaults to 0.0.
+            bend_damping: Bend damping [N·m·s/rad] for the rod joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
+            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
+                the locally derived Rod twist stiffness, or to
+                ``bend_stiffness`` otherwise.
+            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
+                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
+            closed: For the ``positions`` form, whether to connect the last
+                segment back to the first. Valid only with ``positions``; must
+                be None with ``rod``, which owns this topology choice.
+            label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
+                retain the historical ``{label}_cable_{n}`` form for compatibility.
+            wrap_in_articulation: Whether Newton automatically creates
+                articulations for the generated tree joints. Defaults to True.
+                See the Articulations section below.
+            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
+                capsule shapes. If None, the rod uses the default rod color.
+            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
+                the legacy convention where the body origin is at the segment start position
+                (``positions[i]`` for segment ``i``), and the COM/shape are offset by half the
+                segment length. ``"com"`` places the body origin at the segment midpoint so the
+                body origin and COM coincide. If None, preserves ``"start"`` for now with a
+                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
+                pass ``"start"`` or ``"com"`` explicitly.
+            rod: Geometry, frame, topology, and constitutive-data source for
+                the prepared-object form. Mutually exclusive with ``positions``.
+            junction_collision_filter: Whether to suppress self-collisions
+                between incident, non-jointed segments at graph junctions.
+                Has no effect for an ordered chain.
+
+        Returns:
+            A pair ``(body_indices, joint_indices)``. Bodies follow segment
+            order. An open ordered chain has one fewer joint than segments; a
+            closed ordered chain has one joint per segment. Graph joint count
+            depends on topology and articulation wrapping.
+
+        Articulations:
+            With ``wrap_in_articulation=True`` (the default), Newton places an
+            ordered chain's non-closure joints in one articulation; for a
+            closed chain, the loop-closing joint remains outside it. For an
+            explicit graph, Newton creates one articulation-safe spanning tree
+            per connected component; cyclic adjacency joints are omitted. With
+            ``wrap_in_articulation=False``, Newton creates no articulations.
+            Before :meth:`finalize <ModelBuilder.finalize>`, callers must place
+            the tree or forest joints in articulations. Loop-closing joints
+            whose child is already reachable through those articulations may
+            remain outside them.
+
+        Raises:
+            ValueError: If both or neither of ``positions`` and ``rod`` are supplied.
+            TypeError: If ``rod`` is not a :class:`newton.Rod`, or a Rod is
+                passed as ``positions``.
+            ValueError: If ``quaternions``, ``radius``, or ``closed`` is non-None
+                with ``rod``.
+            ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
+            ValueError: If the ordered point-list form has fewer than 2 segments.
+            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
+            ValueError: If automatic section-rigidity discretization is requested
+                for branching topology or for a wrapped explicit cycle.
+
+        Note:
+            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
+              pass a larger value when neighboring capsules should remain nearly inextensible.
+            - Direct stiffness and damping values are applied unchanged to every generated joint.
+            - For a material- or section-rigidity-defined :class:`newton.Rod`,
+              stiffness is derived per generated joint as ``R / L_dual``, where
+              ``R`` is the corresponding section rigidity and ``L_dual`` is the
+              mean rest length of the two adjacent segments. Explicit stiffness
+              arguments override the derived value per mode.
+            - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
+              the cylindrical centerline, excluding the hemispherical caps.
+            - With ``body_frame_origin="start"``, the body origin is at the first centerline endpoint,
+              the COM and shape are at local ``(0, 0, half_height)``, and the second centerline endpoint
+              is at local ``(0, 0, 2 * half_height)``.
+            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
+              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
+              ``(0, 0, half_height)``.
+        """
+        if (positions is None) == (rod is None):
+            raise ValueError("add_rod: exactly one of positions and rod must be supplied")
+
+        if isinstance(positions, Rod):
+            raise TypeError("add_rod: pass a Rod with the rod keyword, not as positions")
+
+        if rod is not None and not isinstance(rod, Rod):
+            raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
+
+        if rod is not None:
+            if quaternions is not None:
+                raise ValueError("add_rod: quaternions must be None when rod is supplied")
+            if radius is not None:
+                raise ValueError("add_rod: radius must be None when rod is supplied; set rod.radius instead")
+            if closed is not None:
+                raise ValueError("add_rod: closed must be None when rod is supplied")
+            return self._add_rod_object(
+                rod,
+                cfg=cfg,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=stretch_damping,
+                shear_stiffness=shear_stiffness,
+                shear_damping=shear_damping,
+                bend_stiffness=bend_stiffness,
+                bend_damping=bend_damping,
+                twist_stiffness=twist_stiffness,
+                twist_damping=twist_damping,
+                label=label,
+                wrap_in_articulation=wrap_in_articulation,
+                junction_collision_filter=junction_collision_filter,
+                color=color,
+                body_frame_origin=body_frame_origin,
+            )
+
+        assert positions is not None
+        return self._add_rod_chain(
+            positions,
+            quaternions=quaternions,
+            radius=radius,
+            cfg=cfg,
+            stretch_stiffness=stretch_stiffness,
+            stretch_damping=stretch_damping,
+            shear_stiffness=shear_stiffness,
+            shear_damping=shear_damping,
+            bend_stiffness=bend_stiffness,
+            bend_damping=bend_damping,
+            twist_stiffness=twist_stiffness,
+            twist_damping=twist_damping,
+            closed=closed,
+            label=label,
+            wrap_in_articulation=wrap_in_articulation,
+            color=color,
+            body_frame_origin=body_frame_origin,
+        )
+
     @deprecate_nonkeyword_arguments
     def add_rod_graph(
         self,
@@ -8061,8 +8707,6 @@ class ModelBuilder:
         body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod *graph* (supports junctions) from nodes + edges.
-
-        This is a generalization of :meth:`add_rod` to support branching/junction topologies.
 
         Representation:
 
@@ -8143,12 +8787,13 @@ class ModelBuilder:
         bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
-        if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
-            raise ValueError("add_rod_graph: stretch_stiffness and bend_stiffness must be >= 0")
-        if shear_stiffness is not None and shear_stiffness < 0.0:
-            raise ValueError("add_rod_graph: shear_stiffness must be >= 0")
-        if twist_stiffness is not None and twist_stiffness < 0.0:
-            raise ValueError("add_rod_graph: twist_stiffness must be >= 0")
+        self._validate_rod_stiffness_inputs(
+            "add_rod_graph",
+            stretch_stiffness=stretch_stiffness,
+            shear_stiffness=shear_stiffness,
+            bend_stiffness=bend_stiffness,
+            twist_stiffness=twist_stiffness,
+        )
         body_frame_origin = self._resolve_rod_body_frame_origin("add_rod_graph", body_frame_origin)
         if len(node_positions) < 2:
             raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
@@ -8398,12 +9043,12 @@ class ModelBuilder:
                     # Undirected graph cycle condition: E > V - 1 (for any connected component).
                     if len(component_edges) > max(0, len(component_nodes) - 1):
                         warnings.warn(
-                            "add_rod_graph: detected a cycle (closed loop) in the edge graph. "
+                            "Rod graph contains a cycle (closed loop). "
                             "With wrap_in_articulation=True, joints are built as a tree/forest, so "
-                            "cycles are not closed. Use wrap_in_articulation=False and add explicit "
-                            "closure constraints if you need a ring/loop.",
+                            "cycles are not closed. Use wrap_in_articulation=False to retain every "
+                            "cycle adjacency joint.",
                             UserWarning,
-                            stacklevel=2,
+                            stacklevel=self._external_warning_stacklevel(),
                         )
 
                 # Wrap the connected component into an articulation.
@@ -12547,8 +13192,12 @@ class ModelBuilder:
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)
+            self._resolve_custom_frequency_articulation_owners()
+
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
+                m.custom_frequency_counts = dict(self._custom_frequency_counts)
+                self._finalize_custom_frequency_metadata(m, device)
                 m.bvh_build_shapes(
                     m,
                     bvh_constructor=self.default_bvh_cfg.shape_constructor,
@@ -12559,7 +13208,7 @@ class ModelBuilder:
 
             # Resolve authoritative counts for custom frequencies
             # Use incremental _custom_frequency_counts as primary source, with safety fallback
-            custom_frequency_counts: dict[str, int] = {}
+            custom_frequency_counts: dict[str, int] = dict(self._custom_frequency_counts)
             frequency_max_lens: dict[str, int] = {}  # Track max len(values) per frequency as fallback
 
             # First pass: collect max len(values) per frequency as fallback
@@ -12571,10 +13220,7 @@ class ModelBuilder:
 
             # Determine authoritative counts: prefer _custom_frequency_counts, fallback to max lens
             for freq_key, max_len in frequency_max_lens.items():
-                if freq_key in self._custom_frequency_counts:
-                    # Use authoritative incremental counter
-                    custom_frequency_counts[freq_key] = self._custom_frequency_counts[freq_key]
-                else:
+                if freq_key not in custom_frequency_counts:
                     # Safety fallback: use max observed length
                     custom_frequency_counts[freq_key] = max_len
 
@@ -12659,6 +13305,8 @@ class ModelBuilder:
                     custom_attr.namespace,
                     custom_attr.references,
                 )
+
+            self._finalize_custom_frequency_metadata(m, device)
 
             m.bvh_build_shapes(
                 m,
