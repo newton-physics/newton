@@ -97,6 +97,7 @@ from ._src.sim import (  # noqa: E402
     eval_mass_matrix,
     eval_rigid_contact_kinematics,
 )
+# NOTE: Issue #3946 affects internal collide module; fix in _src/collide
 
 __all__ += [
     "BodyFlags",
