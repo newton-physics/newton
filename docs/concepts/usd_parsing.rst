@@ -169,8 +169,20 @@ The first release deliberately supports a narrow, predictable set of inputs:
   ``physics:thicknesses:elementType``. Surfaces accept ``constant``, ``face``, and ``point``;
   curves accept ``constant``, ``curve``, ``segment``, and ``point``. Newton averages adjacent
   samples when it needs thickness at another element type and uses the proposal's 1 mm physical
-  default when the array is empty. Thickness controls density volume, collision radius, and any
+  default when no valid thickness source is available. Because Newton previously used 2 mm, this
+  fallback emits a migration warning that includes the equivalent stage-unit value and an explicit
+  ``physics:thicknesses`` authoring recipe. The proposal fallback is
+  ``0.001 / metersPerUnit`` in stage units. To preserve Newton's previous 2 mm shell behavior,
+  author ``physics:thicknesses = [0.002 / metersPerUnit]`` with
+  ``physics:thicknesses:elementType = "constant"``. Completely bare cloth could also inherit
+  ``ModelBuilder.default_particle_radius`` previously; it now receives the physical 0.5 mm radius
+  implied by the proposal thickness. Thickness controls density volume, collision radius, and any
   stiffness derived from the isotropic material.
+
+  Poisson's ratios in ``(-1, 0.5)`` retain their authored value. Newton approximates ``0.5`` and
+  legacy values in ``(0.5, 1)`` as ``0.499`` with a warning; values in the latter interval are a
+  compatibility extension outside the proposal range. Values at or outside ``[-1, 1]`` and
+  non-finite values warn and use the proposal's ``0.3`` fallback.
 
   * For cables, each authored ``physics:curves*Stiffness`` is a structural stiffness. A material
     may additionally apply ``NewtonCurvesDeformableMaterialAPI`` to author independently optional
@@ -219,6 +231,9 @@ The first release deliberately supports a narrow, predictable set of inputs:
 * Simulation points, topology, and normals are read at the USD default time. Newton builds the
   deformable at that pose. Missing cloth bend arrays use
   ``physics:restBendAnglesDefault = "flat"``; ``"restShape"`` retains the imported dihedral.
+  If the token is unauthored and the imported cloth is non-planar, Newton warns that the proposal's
+  flat fallback changes the previous rest state and points to ``"restShape"`` as the preservation
+  choice. Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
   A cable's ``restShapePoints`` may affect material-gain discretization but never establishes an
   initial strain state.
 * Point attachments only where the authored constraint can be represented without moving any

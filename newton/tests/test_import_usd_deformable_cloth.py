@@ -192,7 +192,11 @@ class TestUSDDeformableCloth(unittest.TestCase):
             builder.add_usd(stage)
 
         messages = [str(w.message) for w in caught]
-        self.assertFalse(any("compatibility default thickness" in message for message in messages))
+        fallback_notices = [message for message in messages if "previous 2 mm default" in message]
+        self.assertEqual(len(fallback_notices), 1)
+        self.assertIn("0.001 stage units", fallback_notices[0])
+        self.assertIn("thicknesses = [0.002]", fallback_notices[0])
+        self.assertIn("thicknesses:elementType", fallback_notices[0])
         particle_start, particle_end = group_range(builder, "cloth", "/World/Cloth", "particle")
         tri_start, _ = group_range(builder, "cloth", "/World/Cloth", "tri")
         edge_start, _ = group_range(builder, "cloth", "/World/Cloth", "edge")
@@ -646,7 +650,15 @@ class TestUSDDeformableCloth(unittest.TestCase):
                     )
 
                 builder = newton.ModelBuilder()
-                builder.add_usd(stage)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_usd(stage)
+                migration_notices = [
+                    str(w.message) for w in caught if "replaces non-planar imported dihedral" in str(w.message)
+                ]
+                self.assertEqual(len(migration_notices), int(token is None))
+                if token is None:
+                    self.assertIn("restShape", migration_notices[0])
                 e0, e1 = group_range(builder, "cloth", "/World/Cloth", "edge")
                 interior_edges = [
                     edge
@@ -659,6 +671,19 @@ class TestUSDDeformableCloth(unittest.TestCase):
                     self.assertEqual(builder.edge_rest_angle[edge], 0.0)
                 else:
                     self.assertGreater(abs(builder.edge_rest_angle[edge]), 0.1)
+
+    def test_planar_cloth_default_rest_bend_needs_no_migration_warning(self):
+        """Avoid a migration notice when the flat fallback does not change the imported rest state."""
+        stage = _deformable_stage()
+        _add_cloth_mesh(stage, "/World/Cloth")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+
+        messages = [str(w.message) for w in caught]
+        self.assertFalse(any("replaces non-planar imported dihedral" in message for message in messages))
 
     def test_degenerate_cloth_triangle_warns_and_skips(self):
         """A zero-area (collinear) triangle cannot form an FEM element: the cloth is

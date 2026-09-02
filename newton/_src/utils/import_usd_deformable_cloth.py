@@ -239,7 +239,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if (mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded) != _world_matrix_reflects(world_mat):
             tri_faces = tri_faces[:, ::-1]
         tri_vertex_indices = tri_faces.reshape(-1).tolist()
-        rest_bend_angles_default = str(deformable_read(prim, "restBendAnglesDefault") or "flat")
+        authored_rest_bend_angles_default = deformable_read(prim, "restBendAnglesDefault")
+        rest_bend_angles_default = str(authored_rest_bend_angles_default or "flat")
         if rest_bend_angles_default not in ("flat", "restShape"):
             warnings.warn(
                 f"{path}: invalid physics:restBendAnglesDefault '{rest_bend_angles_default}' "
@@ -320,6 +321,15 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         )
         if thickness is None:
             thickness = _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
+            if authored_thicknesses is None:
+                previous_thickness = 2.0 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
+                warnings.warn(
+                    f"{path}: no valid surface thickness is available; using the AOUSD proposal's "
+                    f"1 mm physical fallback ({thickness:g} stage units) instead of Newton's previous "
+                    f"2 mm default. To preserve the previous behavior, author physics:thicknesses = "
+                    f"[{previous_thickness:g}] with physics:thicknesses:elementType = 'constant'.",
+                    stacklevel=2,
+                )
 
         face_thicknesses, point_thicknesses = _surface_thickness_samples(
             authored_thicknesses,
@@ -423,6 +433,19 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             properties = builder.edge_bending_properties[edge_offset]
             builder.edge_bending_properties[edge_offset] = (bend, properties[1])
         if rest_bend_angles_default == "flat":
+            has_nonplanar_rest_angle = any(
+                builder.edge_indices[edge_offset][0] != -1
+                and builder.edge_indices[edge_offset][1] != -1
+                and abs(float(builder.edge_rest_angle[edge_offset])) > 1.0e-6
+                for edge_offset in range(e0, builder.edge_count)
+            )
+            if authored_rest_bend_angles_default is None and has_nonplanar_rest_angle:
+                warnings.warn(
+                    f"{path}: unauthored physics:restBendAnglesDefault uses the proposal's 'flat' "
+                    "fallback and replaces non-planar imported dihedral rest angles; author "
+                    "physics:restBendAnglesDefault = 'restShape' to preserve them.",
+                    stacklevel=2,
+                )
             for edge_offset in range(e0, builder.edge_count):
                 builder.edge_rest_angle[edge_offset] = 0.0
 
