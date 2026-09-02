@@ -2448,6 +2448,70 @@ class TestControllerDifferentialIK(unittest.TestCase):
         ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
         np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(2), atol=1e-5)
 
+    def test_converges_to_target_for_every_ik_method(self):
+        """Every IkMethod drives a real, redundant arm to a reachable target through the model-based wrapper.
+
+        DAMPED_LEAST_SQUARES and TRANSPOSE already have dedicated
+        convergence/formula tests elsewhere; PSEUDO_INVERSE, ADAPTIVE_DAMPING,
+        and TRUNCATED_SVD had never been exercised end-to-end through
+        ControllerDifferentialIK before this test.
+        """
+        device = wp.get_device()
+        # TRANSPOSE gets its own higher bandwidth and looser tolerance:
+        # unlike the JJᵀ-inverting methods, it has no built-in scaling
+        # against the task's own conditioning, and — a known property of
+        # the method, not a bug — settles to a small nonzero steady-state
+        # residual rather than converging arbitrarily close to zero error.
+        method_kwargs = {
+            IkMethod.DAMPED_LEAST_SQUARES: ({"bandwidth": 1.0, "damping": 0.05}, 0.1),
+            IkMethod.PSEUDO_INVERSE: ({"bandwidth": 1.0, "damping": None}, 0.1),
+            IkMethod.TRANSPOSE: ({"bandwidth": 6.0, "damping": None}, 0.15),
+            IkMethod.ADAPTIVE_DAMPING: (
+                {
+                    "bandwidth": 1.0,
+                    "damping": None,
+                    "adaptive_damping_min": 0.01,
+                    "adaptive_damping_max": 0.5,
+                    "adaptive_damping_threshold": 0.1,
+                },
+                0.1,
+            ),
+            IkMethod.TRUNCATED_SVD: ({"bandwidth": 1.0, "damping": None, "truncated_svd_threshold": 0.01}, 0.1),
+        }
+        # A well-within-reach target (chain reach is 7 * 0.2 = 1.4 m) for a
+        # 7-DOF chain, so PSEUDO_INVERSE's dof_count >= task_dim requirement
+        # is satisfied too.
+        target_pos = np.array([0.3, 0.4, 0.9], dtype=np.float32)
+        for ik_method, (extra_kwargs, atol) in method_kwargs.items():
+            with self.subTest(ik_method=ik_method):
+                model = _build_seven_dof_chain_with_tool_site(device)
+                ctrl = ControllerDifferentialIK(model, tool_sites="tip", ik_method=ik_method, **extra_kwargs)
+                inputs = ctrl.input()
+                outputs = ctrl.output()
+                target = wp.array(
+                    [wp.transform(p=wp.vec3(*target_pos.tolist()), q=wp.quat_identity())],
+                    dtype=wp.transform,
+                    device=device,
+                )
+                q = np.full(7, 0.2, dtype=np.float32)
+                dt = 0.05
+                for _ in range(300):
+                    inputs.joint_q = wp.array(q, dtype=wp.float32, device=device)
+                    inputs.joint_qd = wp.zeros(7, dtype=wp.float32, device=device)
+                    inputs.desired_tool_pose_world = target
+                    ctrl.step(inputs=inputs, outputs=outputs, dt=dt)
+                    q = outputs.joint_q_target.numpy().copy()
+
+                state = model.state()
+                newton.eval_fk(
+                    model,
+                    wp.array(q, dtype=wp.float32, device=device),
+                    wp.zeros(7, dtype=wp.float32, device=device),
+                    state,
+                )
+                tip_pos = wp.transform_point(wp.transform(*state.body_q.numpy()[6]), wp.vec3(0.0, 0.0, 0.2))
+                np.testing.assert_allclose(np.array(tip_pos), target_pos, atol=atol)
+
     def test_step_resolves_tool_pose_matching_forward_kinematics(self):
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
@@ -2511,6 +2575,40 @@ class TestControllerDifferentialIK(unittest.TestCase):
         self.assertEqual(ctrl.controlled_robot_count, 2)
         self.assertEqual(ctrl.total_controlled_dofs, 3)
         self.assertEqual(ctrl.max_controlled_dofs, 2)
+
+    def test_heterogeneous_fleet_step_has_no_cross_talk_between_robots(self):
+        """Moving one robot's target must not perturb another independently-selected robot's output.
+
+        Robot 0's target is set to its own exact home pose (zero error);
+        robot 1's target is displaced, forcing it to move. If Jacobian or
+        error data ever crossed between robots' padded per-robot buffers,
+        robot 0's supposedly-zero output would pick up robot 1's motion.
+        """
+        device = wp.get_device()
+        model = _build_two_robot_arms_with_tool_sites(device)
+        ctrl = ControllerDifferentialIK(model, tool_sites=["tool0", "tool1"], bandwidth=1.0, damping=0.1)
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q = wp.zeros(3, dtype=wp.float32, device=device)
+        inputs.joint_qd = wp.zeros(3, dtype=wp.float32, device=device)
+        # Robot 0 (1-DOF arm at origin): tool0 is at (1, 0, 0) at q=0 --
+        # target set to that exact home pose, zero error. Robot 1 (2-DOF arm
+        # based at (3, 0, 0)): tool1 is at (5, 0, 0) at q=0 -- target
+        # displaced, forcing it to move.
+        inputs.desired_tool_pose_world = wp.array(
+            [
+                wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()),
+                wp.transform(p=wp.vec3(5.3, 0.2, 0.0), q=wp.quat_identity()),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        qd = outputs.joint_qd_target.numpy()
+        # Robot 0's single DOF comes first, matching the grouped-by-robot
+        # compact layout (robot 0's DOFs first, then robot 1's).
+        np.testing.assert_allclose(qd[0], 0.0, atol=1e-5)
+        self.assertGreater(np.abs(qd[1:]).max(), 1e-3)
 
     def test_subset_of_articulations(self):
         device = wp.get_device()
