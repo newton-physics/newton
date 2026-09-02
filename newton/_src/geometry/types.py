@@ -1594,7 +1594,6 @@ class Mesh:
         self._cached_hash = None
 
     # construct simulation ready buffers from points
-    @deprecate_nonkeyword_arguments
     def finalize(
         self,
         device: Devicelike = None,

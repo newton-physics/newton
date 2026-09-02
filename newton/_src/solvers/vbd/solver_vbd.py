@@ -24,7 +24,6 @@ from ...sim import (
 )
 from ...sim.collide import _count_soft_particle_rigid_contact_pairs
 from ...utils import is_graph_capture_allocation_enabled
-from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
@@ -275,7 +274,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         BEND = 2
         TWIST = 3
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
@@ -528,8 +526,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     "in a future release. Pass rigid_compliant_alm=True to adopt compliant ALM now, or "
                     "rigid_compliant_alm=False to keep the legacy path during the migration window.",
                     DeprecationWarning,
-                    # __init__ is wrapped by @deprecate_nonkeyword_arguments.
-                    stacklevel=3,
+                    stacklevel=2,
                 )
             rigid_compliant_alm = False
 
@@ -551,8 +548,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 "contact_matching_pos_threshold=...) for persistent contact geometry. "
                 "The SolverVBD body-level contact deadzone was removed.",
                 DeprecationWarning,
-                # __init__ is wrapped by @deprecate_nonkeyword_arguments.
-                stacklevel=3,
+                stacklevel=2,
             )
 
         super().__init__(model)
@@ -1567,7 +1563,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         "no solver-mode effect; legacy AVBD still honors it during the migration window.",
                         DeprecationWarning,
                         # Reaches the constructor call site through _init_rigid_system.
-                        stacklevel=5,
+                        stacklevel=4,
                     )
             else:
                 j_is_hard = np.ones(self.model.joint_count, dtype=np.int32)

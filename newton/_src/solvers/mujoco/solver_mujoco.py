@@ -49,9 +49,6 @@ from .collision_masks import (
     mujoco_mask_to_signed,
 )
 from .constants import (
-    DEFAULT_LIMIT_GAIN_RTOL,
-    DEFAULT_LIMIT_KD,
-    DEFAULT_LIMIT_KE,
     DEFAULT_LIMIT_SOLREF,
     HINGE_CONNECT_AXIS_OFFSET,
     KINEMATIC_ARMATURE,
@@ -117,6 +114,7 @@ from .kernels import (
     update_tendon_properties_kernel,
     wake_changed_trees_kernel,
 )
+from .utils import solref_invalid_mask
 
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
@@ -1224,6 +1222,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="*",
                 usd_value_transformer=parse_solreflimit_mode_usd,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="solreflimit_gain_baseline",
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                # Importers populate this for provenance-aware first-update
+                # detection. A non-finite value means that no import baseline
+                # is available; negative infinity remains equality-comparable
+                # when builders are merged.
+                default=wp.vec2(float("-inf"), float("-inf")),
+                namespace="mujoco",
             )
         )
         builder.add_custom_attribute(
@@ -4000,6 +4012,39 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # ``mujoco.solreflimit`` domain validator. Re-armed by
         # ``notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)``.
         self._raw_solreflimit_validated: bool = False
+
+        # Track changes to generic gains separately from their numerical
+        # values. Imported MJCF defaults may use any builder configuration, so
+        # no particular stiffness/damping pair can serve as a provenance marker.
+        self._joint_limit_ke_snapshot = (
+            np.array(model.joint_limit_ke.numpy(), copy=True) if model.joint_limit_ke is not None else None
+        )
+        self._joint_limit_kd_snapshot = (
+            np.array(model.joint_limit_kd.numpy(), copy=True) if model.joint_limit_kd is not None else None
+        )
+        mujoco_attrs = getattr(model, "mujoco", None)
+        solreflimit_mode = getattr(mujoco_attrs, "solreflimit_mode", None) if mujoco_attrs is not None else None
+        self._solreflimit_mode_snapshot = (
+            np.array(solreflimit_mode.numpy(), copy=True) if solreflimit_mode is not None else None
+        )
+        gain_baseline = getattr(mujoco_attrs, "solreflimit_gain_baseline", None) if mujoco_attrs is not None else None
+        if (
+            gain_baseline is not None
+            and self._solreflimit_mode_snapshot is not None
+            and self._joint_limit_ke_snapshot is not None
+            and self._joint_limit_kd_snapshot is not None
+        ):
+            gain_baseline_np = gain_baseline.numpy()
+            if (
+                gain_baseline_np.shape == (self._joint_limit_ke_snapshot.shape[0], 2)
+                and self._joint_limit_kd_snapshot.shape == self._joint_limit_ke_snapshot.shape
+                and self._solreflimit_mode_snapshot.shape == self._joint_limit_ke_snapshot.shape
+            ):
+                baseline_valid = (self._solreflimit_mode_snapshot == SOLREF_MODE_MJCF_DEFAULT) & np.all(
+                    np.isfinite(gain_baseline_np), axis=1
+                )
+                self._joint_limit_ke_snapshot[baseline_valid] = gain_baseline_np[baseline_valid, 0]
+                self._joint_limit_kd_snapshot[baseline_valid] = gain_baseline_np[baseline_valid, 1]
 
         with wp.ScopedTimer("convert_model_to_mujoco", active=False):
             self._convert_to_mjc(
@@ -8857,20 +8902,35 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_limit_solref = getattr(mujoco_attrs, "solreflimit", None) if mujoco_attrs is not None else None
         joint_limit_solref_mode = getattr(mujoco_attrs, "solreflimit_mode", None) if mujoco_attrs is not None else None
 
-        if joint_limit_solref_mode is not None:
-            solref_mode_np = joint_limit_solref_mode.numpy()
-            mjcf_default = solref_mode_np == SOLREF_MODE_MJCF_DEFAULT
-            if np.any(mjcf_default):
-                joint_limit_ke_np = self.model.joint_limit_ke.numpy()
-                joint_limit_kd_np = self.model.joint_limit_kd.numpy()
-                edited = mjcf_default & (
-                    ~np.isclose(joint_limit_ke_np, DEFAULT_LIMIT_KE, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-                    | ~np.isclose(joint_limit_kd_np, DEFAULT_LIMIT_KD, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-                )
-                if np.any(edited):
-                    solref_mode_np = np.array(solref_mode_np, copy=True)
-                    solref_mode_np[edited] = SOLREF_MODE_FORCE_SPACE
-                    joint_limit_solref_mode.assign(solref_mode_np.astype(np.int32, copy=False))
+        joint_limit_ke_np = self.model.joint_limit_ke.numpy()
+        joint_limit_kd_np = self.model.joint_limit_kd.numpy()
+        solref_mode_np = joint_limit_solref_mode.numpy() if joint_limit_solref_mode is not None else None
+
+        if (
+            solref_mode_np is not None
+            and self._solreflimit_mode_snapshot is not None
+            and self._joint_limit_ke_snapshot is not None
+            and self._joint_limit_kd_snapshot is not None
+            and solref_mode_np.shape == self._solreflimit_mode_snapshot.shape
+            and joint_limit_ke_np.shape == self._joint_limit_ke_snapshot.shape
+            and joint_limit_kd_np.shape == self._joint_limit_kd_snapshot.shape
+        ):
+            gains_edited = (joint_limit_ke_np != self._joint_limit_ke_snapshot) | (
+                joint_limit_kd_np != self._joint_limit_kd_snapshot
+            )
+            edited_defaults = (
+                (solref_mode_np == SOLREF_MODE_MJCF_DEFAULT)
+                & (self._solreflimit_mode_snapshot == SOLREF_MODE_MJCF_DEFAULT)
+                & gains_edited
+            )
+            if np.any(edited_defaults):
+                solref_mode_np = np.array(solref_mode_np, copy=True)
+                solref_mode_np[edited_defaults] = SOLREF_MODE_FORCE_SPACE
+                joint_limit_solref_mode.assign(solref_mode_np.astype(np.int32, copy=False))
+
+        self._joint_limit_ke_snapshot = np.array(joint_limit_ke_np, copy=True)
+        self._joint_limit_kd_snapshot = np.array(joint_limit_kd_np, copy=True)
+        self._solreflimit_mode_snapshot = np.array(solref_mode_np, copy=True) if solref_mode_np is not None else None
 
         # Validate authored RAW ``mujoco.solreflimit`` values once per notify.
         # MuJoCo's solref domain is ``(timeconst > 0, dampratio > 0)`` for the
@@ -8892,12 +8952,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raw_np = joint_limit_solref.numpy()
             raw_mask = mode_np == SOLREF_MODE_RAW
             if np.any(raw_mask):
-                tc = raw_np[raw_mask, 0]
-                dr = raw_np[raw_mask, 1]
                 # ``(0, 0)`` is the MuJoCo inherit-default sentinel, not a
                 # misconfiguration; flag only a single zero or mixed signs.
-                both_zero = (tc == 0.0) & (dr == 0.0)
-                invalid = ((tc == 0.0) | (dr == 0.0) | (np.sign(tc) != np.sign(dr))) & ~both_zero
+                invalid = solref_invalid_mask(raw_np[raw_mask])
                 if np.any(invalid):
                     bad = np.flatnonzero(raw_mask)[invalid]
                     warnings.warn(
@@ -8916,8 +8973,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._raw_solreflimit_validated = True
 
         if self.use_mujoco_cpu:
-            joint_limit_ke = self.model.joint_limit_ke.numpy()
-            joint_limit_kd = self.model.joint_limit_kd.numpy()
+            joint_limit_ke = joint_limit_ke_np
+            joint_limit_kd = joint_limit_kd_np
             joint_limit_solref_np = joint_limit_solref.numpy() if joint_limit_solref is not None else None
             joint_limit_solref_mode_np = (
                 joint_limit_solref_mode.numpy() if joint_limit_solref_mode is not None else None
@@ -8942,16 +8999,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             jnt_solref[mjc_jnt] = raw_solref
                             continue
 
-                ke = float(joint_limit_ke[newton_dof])
-                kd = float(joint_limit_kd[newton_dof])
-                if (
-                    solref_mode == SOLREF_MODE_MJCF_DEFAULT
-                    and np.isclose(ke, DEFAULT_LIMIT_KE, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-                    and np.isclose(kd, DEFAULT_LIMIT_KD, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-                ):
+                if solref_mode == SOLREF_MODE_MJCF_DEFAULT:
                     jnt_solref[mjc_jnt] = DEFAULT_LIMIT_SOLREF
                     continue
 
+                ke = float(joint_limit_ke[newton_dof])
+                kd = float(joint_limit_kd[newton_dof])
                 if ke <= 0.0 or kd <= 0.0:
                     # Restore MuJoCo's compiled default so a zero-gain
                     # configuration matches a fresh model with no authored

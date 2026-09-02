@@ -1211,7 +1211,7 @@ class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.Te
         object as pos_indices. This matters in practice for a floating-base robot: the
         free joint occupies 7 coordinate ("q", position-layout) DOFs but only 6 velocity
         ("qd") DOFs, so ``pos_indices`` (coord layout) and ``indices``/``target_pos_indices``
-        (default legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
+        (legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
         differently for the two actuated joints that follow it, and neither equals a plain
         ``arange(n)``.
         """
@@ -1376,7 +1376,7 @@ class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.T
         object as pos_indices. This matters in practice for a floating-base robot: the
         free joint occupies 7 coordinate ("q", position-layout) DOFs but only 6 velocity
         ("qd") DOFs, so ``pos_indices`` (coord layout) and ``indices``/``target_pos_indices``
-        (default legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
+        (legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
         differently for the two actuated joints that follow it, and neither equals a plain
         ``arange(n)``.
         """
