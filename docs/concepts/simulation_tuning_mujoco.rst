@@ -298,10 +298,8 @@ by the world count.
 
 ``njmax_nnz`` sizes MuJoCo Warp's sparse constraint Jacobian storage
 per world (the ``efc.J`` buffer); it is unused with a dense Jacobian. If
-``None``, MuJoCo Warp estimates it from ``nconmax`` and ``njmax``; the
-estimate defaults to ``njmax`` times the model's ``nv`` when the model does
-not indicate it needs the sparse-aware estimate. An explicit value must be
-positive and large enough for the initial sparse Jacobian. Like
+``None``, MuJoCo Warp estimates it from the model. An explicit value must
+be non-negative and large enough for the initial sparse Jacobian. Like
 ``nconmax``/``njmax``, buffer memory scales with ``njmax_nnz`` times the
 number of worlds, so tune it for the busiest world rather than the average.
 

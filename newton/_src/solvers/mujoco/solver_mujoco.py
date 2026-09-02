@@ -613,7 +613,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         raise ValueError(f"Expected enable or disable, got {value!r}.")
 
     @staticmethod
-    def _parse_named_int(value: str | int, mapping: dict[str, int], fallback_on_unknown: int | None = None) -> int:
+    def _parse_named_int(value: str | int, mapping: dict[str, int]) -> int:
         """Parse string-valued enums to int, otherwise return int(value)."""
         if isinstance(value, int | np.integer):
             return int(value)
@@ -627,8 +627,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         enum_suffix = last_component.rsplit("_", maxsplit=1)[-1]
         if enum_suffix in mapping:
             return mapping[enum_suffix]
-        if fallback_on_unknown is not None:
-            return fallback_on_unknown
         return int(lower_value)
 
     @staticmethod
@@ -1701,9 +1699,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ) -> int:
             """Parse actuator enum values, warning and defaulting to 0 for unrecognized names or ordinals."""
             try:
-                # Without a fallback, _parse_named_int resolves names, MuJoCo enum reprs and bare
-                # ordinals, and raises for anything else. Bare ordinals also need checking against
-                # mapping.values(), since _parse_named_int accepts any numeric value or string.
+                # _parse_named_int resolves names, MuJoCo enum reprs and bare ordinals, and raises
+                # for anything else. Bare ordinals also need checking against mapping.values(),
+                # since _parse_named_int accepts any numeric value or string.
                 ordinal = int(SolverMuJoCo._parse_named_int(value, mapping))
                 if ordinal in mapping.values():
                     return ordinal
@@ -3740,7 +3738,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             model: The model to be simulated.
             separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax: Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
-            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be positive and large enough for the initial Jacobian. If None, estimates it from the model.
+            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be non-negative and large enough for the initial sparse Jacobian. If None, derived from the model's constraint counts and njmax.
             nconmax: Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
