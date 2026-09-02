@@ -540,8 +540,8 @@ def test_vbd_tendon_compliance_uses_physical_tension(test, device):
         )
 
 
-def test_vbd_slack_damped_tendon_remains_force_free(test, device):
-    """Damping must not make a slack tendon transmit tension."""
+def test_vbd_slack_damped_tendon_opposes_extension(test, device):
+    """Positive length rate may activate unilateral damping before positive stretch."""
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=(0.0, 0.0, 0.0))
         anchor = builder.add_body(mass=0.0, is_kinematic=True)
@@ -577,9 +577,34 @@ def test_vbd_slack_damped_tendon_remains_force_free(test, device):
         final_vx = float(state_1.body_qd.numpy()[body][0])
         material_tension = float(solver.tendon_seg_material_tension.numpy()[0])
         reported_lambda = float(solver.tendon_seg_lambda.numpy()[0])
-        test.assertAlmostEqual(final_vx, 30.0, delta=1.0e-4)
+        test.assertLess(final_vx, 25.0)
         test.assertEqual(material_tension, 0.0)
         test.assertEqual(reported_lambda, 0.0, "VBD must not report a synthetic XPBD multiplier")
+
+
+def test_vbd_reset_restores_tendon_state(test, device):
+    """VBD reset should restore persistent tendon material and routing state."""
+    with wp.ScopedDevice(device):
+        model, _ = build_kinematic_rolling_transport(mu=10.0)
+        _set_serial_body_coloring(model)
+        solver = _make_tendon_vbd_solver(model)
+        initial_rest = solver.tendon_seg_rest_length.numpy().copy()
+        initial_local_l = solver.tendon_seg_attachment_l_local.numpy().copy()
+        initial_active = solver.tendon_link_active.numpy().copy()
+        initial_total = solver.tendon_total_cable.numpy().copy()
+
+        solver.tendon_seg_rest_length.fill_(0.123)
+        solver.tendon_seg_attachment_l_local.zero_()
+        solver.tendon_link_active.zero_()
+        solver.tendon_total_cable.zero_()
+
+        world_mask = wp.array([False] * model.world_count + [True], dtype=wp.bool, device=device)
+        solver.reset(model.state(), world_mask=world_mask, flags=0)
+
+        np.testing.assert_allclose(solver.tendon_seg_rest_length.numpy(), initial_rest, atol=1.0e-7)
+        np.testing.assert_allclose(solver.tendon_seg_attachment_l_local.numpy(), initial_local_l, atol=1.0e-7)
+        np.testing.assert_array_equal(solver.tendon_link_active.numpy(), initial_active)
+        np.testing.assert_allclose(solver.tendon_total_cable.numpy(), initial_total, atol=1.0e-7)
 
 
 def test_vbd_tendon_diagnostics_match_final_pose(test, device):
@@ -1292,10 +1317,11 @@ add_test(
 )
 add_test(
     TestTendonVBD,
-    "vbd_slack_damped_tendon_remains_force_free",
+    "vbd_slack_damped_tendon_opposes_extension",
     devices,
-    test_vbd_slack_damped_tendon_remains_force_free,
+    test_vbd_slack_damped_tendon_opposes_extension,
 )
+add_test(TestTendonVBD, "vbd_reset_restores_tendon_state", devices, test_vbd_reset_restores_tendon_state)
 add_test(
     TestTendonVBD,
     "vbd_tendon_diagnostics_match_final_pose",

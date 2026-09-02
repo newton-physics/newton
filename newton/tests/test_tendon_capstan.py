@@ -872,6 +872,51 @@ def build_oriented_dynamic_route(orientation, device):
     return builder.finalize(device=device), candidate, candidate_link
 
 
+def build_explicit_inactive_dynamic_route(device):
+    """Build an inactive dynamic roller with explicitly authored adjacent rests."""
+    builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=(0.0, 0.0, 0.0))
+    lower = builder.add_body(
+        xform=wp.transform(p=wp.vec3(0.0, 0.0, -0.5)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+    candidate = builder.add_body(
+        xform=wp.transform(p=wp.vec3(0.25, 0.0, 0.0)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+    upper = builder.add_body(
+        xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.5)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+
+    builder.add_tendon()
+    builder.add_tendon_link(
+        body=lower,
+        link_type=TendonLinkType.ATTACHMENT,
+        axis=(0.0, 1.0, 0.0),
+    )
+    candidate_link = builder.add_tendon_link(
+        body=candidate,
+        link_type=TendonLinkType.ROLLING,
+        radius=0.1,
+        orientation=1,
+        dynamic=True,
+        axis=(0.0, 1.0, 0.0),
+        compliance=1.0e-3,
+        rest_length=0.4,
+    )
+    builder.add_tendon_link(
+        body=upper,
+        link_type=TendonLinkType.ATTACHMENT,
+        axis=(0.0, 1.0, 0.0),
+        compliance=1.0e-3,
+        rest_length=0.6,
+    )
+    return builder.finalize(device=device), candidate_link
+
+
 def build_dynamic_route_neighbor_matrix_case(device, left_type, right_type, orientation):
     """Build an inactive dynamic roller between the requested link types."""
     builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=(0.0, 0.0, 0.0))
@@ -1613,6 +1658,40 @@ def test_dynamic_route_initial_state_matches_geometry(test, device):
         test.assertTrue(active_solver.tendon_link_active.numpy()[active_link])
 
 
+def test_inactive_dynamic_route_preserves_authored_rest_length(test, device):
+    """An initially inactive roller should merge both authored adjacent rests."""
+    with wp.ScopedDevice(device):
+        model, candidate_link = build_explicit_inactive_dynamic_route(device)
+        solver = newton.solvers.SolverXPBD(model, iterations=1)
+
+        test.assertFalse(solver.tendon_link_active.numpy()[candidate_link])
+        active = solver.tendon_seg_active.numpy().astype(bool)
+        test.assertAlmostEqual(float(np.sum(solver.tendon_seg_rest_length.numpy()[active])), 1.0, delta=1.0e-6)
+
+
+def test_xpbd_reset_restores_tendon_material_state(test, device):
+    """Reset should restore mutable tendon rest lengths and route history."""
+    with wp.ScopedDevice(device):
+        model, pulley = build_kinematic_rolling_transport(mu=10.0)
+        solver = newton.solvers.SolverXPBD(model, iterations=1)
+        state_0, state_1 = model.state(), model.state()
+        initial_rest = solver.tendon_seg_rest_length.numpy().copy()
+        initial_local_l = solver.tendon_seg_attachment_l_local.numpy().copy()
+        initial_local_r = solver.tendon_seg_attachment_r_local.numpy().copy()
+
+        body_q = state_0.body_q.numpy()
+        angle = 0.4
+        body_q[pulley, 3:] = np.array([0.0, 0.0, np.sin(0.5 * angle), np.cos(0.5 * angle)], dtype=np.float32)
+        state_0.body_q.assign(body_q)
+        solver.step(state_0, state_1, model.control(), None, 1.0 / 60.0)
+        test.assertGreater(float(np.max(np.abs(solver.tendon_seg_rest_length.numpy() - initial_rest))), 1.0e-4)
+
+        solver.reset(state_1)
+        np.testing.assert_allclose(solver.tendon_seg_rest_length.numpy(), initial_rest, atol=1.0e-7)
+        np.testing.assert_allclose(solver.tendon_seg_attachment_l_local.numpy(), initial_local_l, atol=1.0e-7)
+        np.testing.assert_allclose(solver.tendon_seg_attachment_r_local.numpy(), initial_local_r, atol=1.0e-7)
+
+
 def test_dynamic_route_uses_oriented_signed_distance(test, device):
     """A dynamic roller should remain active after crossing its bypass span."""
     with wp.ScopedDevice(device):
@@ -2332,8 +2411,8 @@ def test_tendon_damping_does_not_generate_compression(test, device):
         test.assertAlmostEqual(tension, 0.0, delta=1.0e-6)
 
 
-def test_tendon_slip_uses_true_segment_compliance(test, device):
-    """The rolling-slip cone should use the same physical tension as material transfer."""
+def test_tendon_slip_uses_active_route_segments(test, device):
+    """The slip cone should use the current routed neighbors and their physical tension."""
     with wp.ScopedDevice(device):
         compliance_l = 1.0e-9
         compliance_r = 1.0e-7
@@ -2342,32 +2421,41 @@ def test_tendon_slip_uses_true_segment_compliance(test, device):
         mu = 0.1
 
         body_q = wp.array([wp.transform_identity()], dtype=wp.transform)
-        tendon_link_seg_left = wp.array([-1, 0, -1], dtype=int)
-        tendon_link_body = wp.array([0, 0, 0], dtype=int)
+        tendon_link_cone_seg_left = wp.array([-1, -1, 0, -1], dtype=int)
+        tendon_link_cone_seg_right = wp.array([-1, -1, 2, -1], dtype=int)
+        tendon_link_body = wp.array([0, 0, 0, 0], dtype=int)
         tendon_link_type = wp.array(
-            [int(TendonLinkType.ATTACHMENT), int(TendonLinkType.ROLLING), int(TendonLinkType.ATTACHMENT)],
+            [
+                int(TendonLinkType.ATTACHMENT),
+                int(TendonLinkType.ROLLING),
+                int(TendonLinkType.ROLLING),
+                int(TendonLinkType.ATTACHMENT),
+            ],
             dtype=int,
         )
-        tendon_link_radius = wp.array([0.0, 1.0, 0.0], dtype=float)
-        tendon_link_mu = wp.array([0.0, mu, 0.0], dtype=float)
-        tendon_link_active = wp.ones(3, dtype=bool)
-        tendon_link_offset = wp.zeros(3, dtype=wp.vec3)
-        tendon_link_axis = wp.array([wp.vec3(0.0, 1.0, 0.0)] * 3, dtype=wp.vec3)
-        seg_rest_length = wp.array([rest_l, rest_r], dtype=float)
-        seg_attachment_l = wp.array([wp.vec3(-1.0, 0.0, -1.0), wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3)
-        seg_attachment_r = wp.array([wp.vec3(-1.0, 0.0, 0.0), wp.vec3(1.0, 0.0, -1.0)], dtype=wp.vec3)
-        seg_compliance = wp.array([compliance_l, compliance_r], dtype=float)
-        seg_material_tension = wp.array([(1.0 - rest_l) / compliance_l, (1.0 - rest_r) / compliance_r], dtype=float)
-        seg_damping_tension = wp.zeros(2, dtype=float)
-        seg_delta_lambda = wp.array([-1.0, 0.0], dtype=float)
+        tendon_link_radius = wp.array([0.0, 0.1, 1.0, 0.0], dtype=float)
+        tendon_link_mu = wp.array([0.0, 0.0, mu, 0.0], dtype=float)
+        tendon_link_active = wp.array([True, False, True, True], dtype=bool)
+        tendon_link_offset = wp.zeros(4, dtype=wp.vec3)
+        tendon_link_axis = wp.array([wp.vec3(0.0, 1.0, 0.0)] * 4, dtype=wp.vec3)
+        seg_rest_length = wp.array([rest_l, 1.0, rest_r], dtype=float)
+        seg_attachment_l = wp.array([wp.vec3(-1.0, 0.0, -1.0), wp.vec3(0.0), wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3)
+        seg_attachment_r = wp.array([wp.vec3(-1.0, 0.0, 0.0), wp.vec3(0.0), wp.vec3(1.0, 0.0, -1.0)], dtype=wp.vec3)
+        seg_compliance = wp.array([compliance_l, 1.0, compliance_r], dtype=float)
+        seg_material_tension = wp.array(
+            [(1.0 - rest_l) / compliance_l, 0.0, (1.0 - rest_r) / compliance_r], dtype=float
+        )
+        seg_damping_tension = wp.zeros(3, dtype=float)
+        seg_delta_lambda = wp.array([-1.0, 0.0, 0.0], dtype=float)
         body_deltas = wp.zeros(1, dtype=wp.spatial_vector)
 
         wp.launch(
             solve_tendon_slip,
-            dim=3,
+            dim=4,
             inputs=[
                 body_q,
-                tendon_link_seg_left,
+                tendon_link_cone_seg_left,
+                tendon_link_cone_seg_right,
                 tendon_link_body,
                 tendon_link_type,
                 tendon_link_radius,
@@ -2389,7 +2477,7 @@ def test_tendon_slip_uses_true_segment_compliance(test, device):
         rest = seg_rest_length.numpy()
         compliance = seg_compliance.numpy()
         force_l = (1.0 - float(rest[0])) / float(compliance[0])
-        force_r = (1.0 - float(rest[1])) / float(compliance[1])
+        force_r = (1.0 - float(rest[2])) / float(compliance[2])
         cap_ratio = math.exp(mu * math.pi)
         beta = (cap_ratio - 1.0) / (cap_ratio + 1.0)
         scale = min(1.0, beta * (force_l + force_r) / max(abs(force_l - force_r), 1.0e-8))
@@ -3316,6 +3404,18 @@ add_test(
 )
 add_test(
     TestTendonCapstan,
+    "inactive_dynamic_route_preserves_authored_rest_length",
+    devices,
+    test_inactive_dynamic_route_preserves_authored_rest_length,
+)
+add_test(
+    TestTendonCapstan,
+    "xpbd_reset_restores_tendon_material_state",
+    devices,
+    test_xpbd_reset_restores_tendon_material_state,
+)
+add_test(
+    TestTendonCapstan,
     "dynamic_route_uses_oriented_signed_distance",
     devices,
     test_dynamic_route_uses_oriented_signed_distance,
@@ -3354,9 +3454,9 @@ add_test(
 )
 add_test(
     TestTendonCapstan,
-    "tendon_slip_uses_true_segment_compliance",
+    "tendon_slip_uses_active_route_segments",
     devices,
-    test_tendon_slip_uses_true_segment_compliance,
+    test_tendon_slip_uses_active_route_segments,
 )
 add_test(TestTendonCapstan, "motorized_pulley_drives_slider", devices, test_motorized_pulley_drives_slider)
 add_test(

@@ -3,8 +3,11 @@
 
 """Solver-neutral routed tendon geometry kernels."""
 
+from typing import Any
+
 import warp as wp
 
+from ..core.reset import reset_world_selected
 from ..math import quat_velocity
 from ..sim.tendon import TendonLinkFlags, TendonLinkType
 
@@ -112,6 +115,20 @@ def snapshot_tendon_link_active(
     else:
         tendon_link_active[link_idx] = True
         tendon_link_active_step[link_idx] = True
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def reset_tendon_state_array(
+    entity_world: wp.array[int],
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    initial: wp.array[Any],
+    current: wp.array[Any],
+):
+    """Restore selected rows of one mutable tendon-state array."""
+    index = wp.tid()
+    if reset_world_selected(entity_world[index], world_mask, world_count):
+        current[index] = initial[index]
 
 
 @wp.kernel
@@ -404,6 +421,7 @@ def prepare_tendon_route(
     tendon_link_route_rest_length: wp.array[float],
     seg_attachment_l_local_step: wp.array[wp.vec3],
     seg_attachment_r_local_step: wp.array[wp.vec3],
+    initialize: int,
     compliance_floor: float,
     # outputs
     seg_route_rest_length: wp.array[float],
@@ -476,8 +494,12 @@ def prepare_tendon_route(
                 + seg_rest_length_step[seg_right]
                 + wrapped_arc_length(pt_left, pt_right, center, tendon_link_radius[link_idx], normal)
             )
+        elif initialize != 0:
+            merged_rest = seg_rest_length_step[seg_left] + seg_rest_length_step[seg_right]
+            if merged_rest <= 0.0:
+                # Auto rest length follows the initially resolved bypass route.
+                merged_rest = tendon_link_route_rest_length[link_idx]
         elif merged_rest <= 0.0:
-            # Initialization seeds the inactive merged segment from the authored bypass route.
             merged_rest = tendon_link_route_rest_length[link_idx]
 
         seg_route_rest_length[seg_left] = wp.max(merged_rest, min_rest)

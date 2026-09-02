@@ -236,7 +236,8 @@ def solve_tendon_stretch(
 @wp.kernel
 def solve_tendon_slip(
     body_q: wp.array[wp.transform],
-    tendon_link_seg_left: wp.array[int],
+    tendon_link_cone_seg_l: wp.array[int],
+    tendon_link_cone_seg_r: wp.array[int],
     tendon_link_body: wp.array[int],
     tendon_link_type: wp.array[int],
     tendon_link_radius: wp.array[float],
@@ -267,11 +268,10 @@ def solve_tendon_slip(
         return
 
     radius = tendon_link_radius[link_idx]
-    seg_left = tendon_link_seg_left[link_idx]
-    if radius <= 0.0 or seg_left < 0:
+    seg_left = tendon_link_cone_seg_l[link_idx]
+    seg_right = tendon_link_cone_seg_r[link_idx]
+    if radius <= 0.0 or seg_left < 0 or seg_right < 0:
         return
-
-    seg_right = seg_left + 1
     body = tendon_link_body[link_idx]
     pose = body_q[body]
     center = wp.transform_point(pose, tendon_link_offset[link_idx])

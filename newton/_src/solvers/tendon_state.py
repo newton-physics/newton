@@ -17,11 +17,49 @@ from ..sim import Model
 from ..sim.tendon import TendonLinkFlags, TendonLinkType
 from .tendon_kernels import (
     prepare_tendon_route,
+    reset_tendon_state_array,
     snapshot_tendon_link_active,
     solve_tendon_material,
     update_tendon_attachments,
     update_tendon_cone_rows,
     update_tendon_link_active,
+)
+
+_TENDON_SEGMENT_STATE_FIELDS = (
+    "tendon_seg_rest_length",
+    "tendon_seg_rest_length_step",
+    "tendon_seg_route_rest_length",
+    "tendon_seg_stretch",
+    "tendon_seg_material_tension",
+    "tendon_seg_damping_tension",
+    "tendon_seg_attachment_l",
+    "tendon_seg_attachment_r",
+    "tendon_seg_length",
+    "tendon_seg_attachment_l_local",
+    "tendon_seg_attachment_r_local",
+    "tendon_seg_attachment_l_local_step",
+    "tendon_seg_attachment_r_local_step",
+    "tendon_seg_lambda",
+    "tendon_seg_delta_lambda",
+    "tendon_seg_rolling_delta_l",
+    "tendon_seg_rolling_delta_r",
+    "tendon_seg_active",
+    "tendon_seg_active_link_l",
+    "tendon_seg_active_link_r",
+    "tendon_seg_active_compliance",
+    "tendon_seg_active_damping",
+)
+_TENDON_LINK_STATE_FIELDS = (
+    "tendon_link_active",
+    "tendon_link_active_step",
+    "tendon_link_route_rest_length",
+    "tendon_link_cone_seg_l",
+    "tendon_link_cone_seg_r",
+    "tendon_link_cap_ratio",
+)
+_TENDON_STATE_FIELDS = (
+    "tendon_cone_sweep_count",
+    "tendon_total_cable",
 )
 
 
@@ -114,6 +152,10 @@ class TendonStateMixin:
             )
 
         self._has_dynamic_tendon_links = False
+        self._tendon_initial_state = {}
+        self._tendon_segment_world = None
+        self._tendon_link_world = None
+        self._tendon_world = None
         # Solver-level cable cone parameters (a solver may override before calling this).
         if not hasattr(self, "tendon_max_sweeps"):
             self.tendon_max_sweeps = 256
@@ -250,6 +292,7 @@ class TendonStateMixin:
             self.tendon_link_route_rest_length = wp.array(route_rest_np, dtype=float, device=model.device)
 
             self._init_tendon_attachment_points(model, auto_mask, route_seg_mask)
+            self._cache_tendon_initial_state(model)
 
     def _snapshot_tendon_step_state(self) -> None:
         """Snapshot mutable tendon material state at the start of a time step."""
@@ -296,6 +339,7 @@ class TendonStateMixin:
         model: Model,
         body_q: wp.array[wp.transform],
         compliance_floor: float = 0.0,
+        initialize: bool = False,
     ) -> None:
         """Build the active route and merged segment properties for one solver step."""
         if model.tendon_segment_count == 0:
@@ -321,6 +365,7 @@ class TendonStateMixin:
                 self.tendon_link_route_rest_length,
                 self.tendon_seg_attachment_l_local_step,
                 self.tendon_seg_attachment_r_local_step,
+                int(initialize),
                 compliance_floor,
             ],
             outputs=[
@@ -469,7 +514,7 @@ class TendonStateMixin:
             self.tendon_seg_attachment_l_local = wp.array(att_l_local, dtype=wp.vec3, device=model.device)
             self.tendon_seg_attachment_r_local = wp.array(att_r_local, dtype=wp.vec3, device=model.device)
 
-        self._prepare_tendon_route(model, body_q)
+        self._prepare_tendon_route(model, body_q, initialize=True)
 
         wp.launch(
             kernel=update_tendon_attachments,
@@ -614,3 +659,43 @@ class TendonStateMixin:
             seg += num_links - 1
 
         self.tendon_total_cable = wp.array(total_cable, dtype=float, device=model.device)
+
+    def _cache_tendon_initial_state(self, model: Model) -> None:
+        """Preserve the initialized tendon state for solver resets."""
+        link_body = model.tendon_link_body.numpy()
+        body_world = model.body_world.numpy()
+        link_world = body_world[link_body]
+        segment_left_link = self.tendon_seg_link_l.numpy()
+        tendon_start = model.tendon_start.numpy()
+
+        self._tendon_segment_world = wp.array(link_world[segment_left_link], dtype=wp.int32, device=model.device)
+        self._tendon_link_world = wp.array(link_world, dtype=wp.int32, device=model.device)
+        self._tendon_world = wp.array(link_world[tendon_start[:-1]], dtype=wp.int32, device=model.device)
+
+        for field in (*_TENDON_SEGMENT_STATE_FIELDS, *_TENDON_LINK_STATE_FIELDS, *_TENDON_STATE_FIELDS):
+            self._tendon_initial_state[field] = wp.clone(getattr(self, field))
+
+    def _reset_tendon_state(self, world_mask: wp.array[wp.bool] | None) -> None:
+        """Restore initialized tendon material and routing state for selected worlds."""
+        if self.tendon_seg_rest_length is None:
+            return
+
+        groups = (
+            (_TENDON_SEGMENT_STATE_FIELDS, self._tendon_segment_world),
+            (_TENDON_LINK_STATE_FIELDS, self._tendon_link_world),
+            (_TENDON_STATE_FIELDS, self._tendon_world),
+        )
+        for fields, entity_world in groups:
+            for field in fields:
+                current = getattr(self, field)
+                initial = self._tendon_initial_state[field]
+                if world_mask is None:
+                    wp.copy(current, initial)
+                else:
+                    wp.launch(
+                        kernel=reset_tendon_state_array,
+                        dim=current.shape[0],
+                        inputs=[entity_world, world_mask, self.model.world_count, initial],
+                        outputs=[current],
+                        device=current.device,
+                    )

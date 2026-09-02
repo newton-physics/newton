@@ -6,7 +6,7 @@ import warnings
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, ModelFlags, State
+from ...sim import Contacts, Control, Model, ModelFlags, State, StateFlags
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
@@ -241,6 +241,24 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
     def compute_body_velocity_from_position_delta(self, value: bool) -> None:
         warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         self._compute_body_velocity_from_position_delta = value
+
+    @override
+    def reset(
+        self,
+        state: State,
+        world_mask: wp.array[wp.bool] | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Reset mutable tendon material and routing state for selected worlds.
+
+        XPBD does not otherwise mutate *state* or retain solver history between
+        steps. The *flags* argument is accepted for :class:`SolverBase`
+        compatibility and does not affect tendon-state reset.
+        """
+        if state is None:
+            raise ValueError("'state' argument is required.")
+        del flags
+        self._reset_tendon_state(self._normalize_reset_world_mask(world_mask))
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -1002,7 +1020,8 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                             dim=model.tendon_link_count,
                             inputs=[
                                 body_q,
-                                self.tendon_link_seg_left,
+                                self.tendon_link_cone_seg_l,
+                                self.tendon_link_cone_seg_r,
                                 model.tendon_link_body,
                                 model.tendon_link_type,
                                 model.tendon_link_radius,

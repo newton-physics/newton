@@ -2443,6 +2443,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         is zeroed immediately. Pose and enabled-rod friction history (curvature,
         stress, and increment) are rebaselined together from the next :meth:`step`
         input pose, after any intervening state edits or forward kinematics.
+        Mutable tendon material and routing state is restored to its initialized
+        values regardless of *flags*.
         Selected-world contact warm-start is cold-started when fresh rigid contacts
         are next processed. Internal rigid history is reset regardless of *flags*.
         When an external solver integrates the bodies, reset performs no rigid
@@ -2574,6 +2576,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     outputs=[particle_q, particle_qd],
                     device=self.device,
                 )
+
+        self._reset_tendon_state(world_mask)
 
         if not self._integrates_rigid_bodies:
             return
@@ -3796,7 +3800,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     model.tendon_link_mu,
                     model.tendon_link_offset,
                     model.tendon_link_axis,
-                    self.tendon_link_seg_left,
+                    self.tendon_link_cone_seg_l,
+                    self.tendon_link_cone_seg_r,
                     self.tendon_seg_rest_length,
                     self.tendon_seg_attachment_l_local,
                     self.tendon_seg_attachment_r_local,
