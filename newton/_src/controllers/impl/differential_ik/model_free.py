@@ -376,7 +376,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 )
         elif damping is not None:
             raise ValueError(f"damping was given but ik_method={ik_method} does not use it (pass damping=None).")
-        elif ik_method == IkMethod.PSEUDO_INVERSE:
+
+        if ik_method == IkMethod.PSEUDO_INVERSE:
             bad_robots = np.flatnonzero(controlled_dofs_per_robot_np < task_dim_np)
             if bad_robots.size > 0:
                 raise ValueError(
