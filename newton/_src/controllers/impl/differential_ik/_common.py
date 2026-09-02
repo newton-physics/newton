@@ -199,6 +199,7 @@ def _qd_from_y_kernel(
     bandwidth: wp.array[wp.float32],  # (total_controlled_dofs,) output scale gain
     robot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> owning robot
     slot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> column within that robot's Jacobian
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
     active_axis_of_slot: wp.array2d[wp.int32],  # (robot_count, 6) compact slot -> canonical axis, slot < task_dim
     axis_weight: wp.array[wp.spatial_vector],  # (robot_count,) per-canonical-axis weight, > 0 where active
     # outputs
@@ -208,17 +209,26 @@ def _qd_from_y_kernel(
 
     Row ``slot`` of ``J_wᵀ`` is gathered from Jacobian axis
     ``active_axis_of_slot[slot]``, weighted by that axis's ``axis_weight``.
-    ``y``'s slots beyond ``task_dim`` are always zero, so gathering a real,
-    weighted value into an unused slot here is harmless.
+    The dot product with ``y`` is summed only over ``slot < task_dim``:
+    every producer of ``y`` (``_gather_task_error_kernel`` for
+    ``IkMethod.TRANSPOSE``, ``_apply_spatial_matrix_kernel`` for every
+    matrix-inverting method) does leave ``y``'s slots beyond ``task_dim``
+    exactly zero, but this kernel does not rely on that -- it stops at
+    ``task_dim`` itself, so a future solver path that forgot to zero-pad
+    would still be summed correctly here, not silently corrupted.
     """
     dof = wp.tid()
     robot = robot_of_dof[dof]
     slot = slot_of_dof[dof]
+    dim = task_dim[robot]
 
     jacobian_column = wp.spatial_vector()
     for task_slot in range(6):
-        axis = active_axis_of_slot[robot, task_slot]
-        jacobian_column[task_slot] = axis_weight[robot][axis] * jacobian_tool_world[robot, axis, slot]
+        if task_slot < dim:
+            axis = active_axis_of_slot[robot, task_slot]
+            jacobian_column[task_slot] = axis_weight[robot][axis] * jacobian_tool_world[robot, axis, slot]
+        else:
+            jacobian_column[task_slot] = 0.0
 
     joint_qd_target[dof] = bandwidth[dof] * wp.dot(jacobian_column, y[robot])
 

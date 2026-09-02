@@ -6,5 +6,10 @@ pose, with a selectable inverse-Jacobian solve
 avoidance/posture control for redundant robots. Add
 `ControllerDifferentialIKModelFree`, taking the tool pose and Jacobian as inputs
 instead of computing them from a `Model`. Add `controller_differential_ik`, an
-example demonstrating `ControllerDifferentialIK` on a Franka Panda and a UR10 with
-draggable 6-DOF gizmo targets.
+example driving three heterogeneous robots at once with a single controller
+call -- a redundant 7-DOF Franka Panda, a non-redundant 6-DOF UR10, and a
+4-DOF planar arm restricted to a 3D (X, Y, yaw) task via `axis_weight`, made
+redundant by that restriction -- each tracking its own draggable gizmo
+target, with null-space posture control anchoring both redundant arms and
+`IkMethod.ADAPTIVE_DAMPING` ramping damping up automatically near a
+singularity or the edge of reach.

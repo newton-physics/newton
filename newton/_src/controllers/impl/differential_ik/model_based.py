@@ -97,18 +97,19 @@ class ControllerDifferentialIK(ControllerBase):
             default) means every axis is weighted ``1`` for every robot —
             full, equally-trusted 6D pose.
         bandwidth: Output velocity scale gain, applied per controlled DOF
-            after the Jacobian solve. Pass a scalar to apply the same gain
-            to every controlled DOF, an array of shape
-            [total_controlled_dofs] to set them individually, or ``None`` to
-            read ``inputs.bandwidth`` each step.
+            after the Jacobian solve. Must be non-negative, since a negative
+            value would flip the output velocity's direction. Pass a scalar
+            to apply the same gain to every controlled DOF, an array of
+            shape [total_controlled_dofs] to set them individually, or
+            ``None`` to read ``inputs.bandwidth`` each step.
         damping: Damped-least-squares regularization λ, applied per robot to
             the task-space normal-equations matrix. Pass a scalar to apply
             the same damping to every robot, an array of shape
             [controlled_robot_count] to set them individually, or ``None``
-            to read ``inputs.damping`` each step. Only meaningful when
-            ``ik_method=IkMethod.DAMPED_LEAST_SQUARES`` (the default); must
-            be ``None`` for every other :class:`IkMethod`, which has no λ to
-            set.
+            to read ``inputs.damping`` each step.
+            Only meaningful when ``ik_method=IkMethod.DAMPED_LEAST_SQUARES``
+            (the default); must be ``None`` for every other
+            :class:`IkMethod`, which has no λ to set.
         ik_method: Inverse-Jacobian solve method, an :class:`IkMethod`.
             Defaults to ``IkMethod.DAMPED_LEAST_SQUARES``. If the model
             requires grad, must be ``IkMethod.TRANSPOSE`` -- every other
@@ -162,26 +163,25 @@ class ControllerDifferentialIK(ControllerBase):
             ``inputs.q_des_null`` through the null-space projector. Enables
             ``null_space_stiffness``.
         null_space_stiffness: Posture-control proportional gain, applied per
-            controlled DOF. Pass a scalar to apply the same gain to every
-            controlled DOF, an array of shape [total_controlled_dofs] to set
-            them individually, or ``None`` to read
-            ``inputs.null_space_stiffness`` each step. Must be ``None`` when
-            ``use_null_space_posture_control=False``.
+            controlled DOF. Must be non-negative. Pass a scalar to apply
+            the same gain to every controlled DOF, an array of shape
+            [total_controlled_dofs] to set them individually, or ``None``
+            to read ``inputs.null_space_stiffness`` each step. Must be
+            ``None`` when ``use_null_space_posture_control=False``.
         null_space_damping: Damping λ_null for the null-space projector's own
             ``(JJᵀ + λ_null²I)⁻¹``, independent of the primary task's
-            ``damping``. Only meaningful when ``use_joint_limit_avoidance``
-            or ``use_null_space_posture_control`` is enabled — pass a scalar
-            or an array of shape [controlled_robot_count] to bake a value,
-            or leave it ``None`` to read ``inputs.null_space_damping`` each
-            step (the default, and the only valid value when both are
-            disabled). Unlike the primary ``damping``, ``λ_null = 0`` is
-            only safe when every robot has at least as many controlled DOFs
-            as its own task dimension (the number of nonzero ``axis_weight``
-            entries) — otherwise the projector's own ``JJᵀ`` is
-            rank-deficient. When baked, this is checked at construction and
-            raises; a live value is the caller's responsibility, since
-            checking it every step would cost a host sync and break
-            :meth:`is_graphable`.
+            ``damping``. Must be non-negative. Only meaningful when
+            ``use_joint_limit_avoidance`` or ``use_null_space_posture_control``
+            is enabled — pass a scalar or an array of shape
+            [controlled_robot_count] to bake a value, or leave it ``None``
+            to read ``inputs.null_space_damping`` each step (the default,
+            and the only valid value when both are disabled). Unlike the
+            primary ``damping``, ``λ_null = 0`` is only safe when every
+            robot has at least as many controlled DOFs as its own task
+            dimension (the number of nonzero ``axis_weight`` entries) —
+            otherwise the projector's own ``JJᵀ`` is rank-deficient. That
+            stronger, per-robot requirement is checked at construction only
+            when baked; a live value is the caller's responsibility there.
     """
 
     class Inputs:

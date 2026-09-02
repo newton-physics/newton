@@ -86,6 +86,25 @@ from ._common import (
 _CANONICAL_TASK_AXIS_COUNT = 6
 
 
+def _validate_non_negative_gain(value: wp.array[wp.float32] | float | None, name: str) -> None:
+    """Raise if a gain (scalar, wp.array, or already-read wp.array.numpy()) is negative anywhere.
+
+    ``None`` (an unset live gain, or a disabled one) is not an error here --
+    a missing value is a different problem, checked elsewhere. Shape/dtype
+    of an array must already be validated by the caller; this only checks
+    sign.
+    """
+    if value is None:
+        return
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value < 0.0:
+            raise ValueError(f"{name} must be non-negative, got {value}.")
+        return
+    value_np = value.numpy() if isinstance(value, wp.array) else value
+    if np.any(value_np < 0.0):
+        raise ValueError(f"{name} must be non-negative, got {value_np.tolist()}.")
+
+
 class ControllerDifferentialIKModelFree(ControllerBase):
     """Differential-kinematics (Jacobian-based) controller with a caller-supplied Jacobian.
 
@@ -150,10 +169,14 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             default) means every axis is weighted ``1`` for every robot —
             full, equally-trusted 6D pose.
         bandwidth: Output velocity scale gain, applied per controlled DOF
-            after the Jacobian solve. Pass a scalar to apply the same gain
-            to every controlled DOF, an array of shape
-            [total_controlled_dofs] to set them individually, or ``None`` to
-            read ``inputs.bandwidth`` each step.
+            after the Jacobian solve. Must be non-negative, since a negative
+            value would flip the output velocity's direction. Checked at
+            construction when baked; a live value is
+            the caller's own responsibility, since checking it every step
+            would cost a host sync and break :meth:`is_graphable`. Pass a
+            scalar to apply the same gain to every controlled DOF, an array
+            of shape [total_controlled_dofs] to set them individually, or
+            ``None`` to read ``inputs.bandwidth`` each step.
         damping: Damped-least-squares regularization λ, applied per robot to
             the task-space normal-equations matrix. Pass a scalar to apply
             the same damping to every robot, an array of shape
@@ -216,14 +239,16 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             ``inputs.q_des_null`` through the null-space projector. Enables
             ``null_space_stiffness``.
         null_space_stiffness: Posture-control proportional gain, applied per
-            controlled DOF. Pass a scalar to apply the same gain to every
+            controlled DOF. Must be non-negative; checked the same way as
+            ``bandwidth``. Pass a scalar to apply the same gain to every
             controlled DOF, an array of shape [total_controlled_dofs] to set
             them individually, or ``None`` to read
             ``inputs.null_space_stiffness`` each step. Must be ``None`` when
             ``use_null_space_posture_control=False``.
         null_space_damping: Damping λ_null for the null-space projector's own
             ``(JJᵀ + λ_null²I)⁻¹``, independent of the primary task's
-            ``damping``. Only meaningful when ``use_joint_limit_avoidance``
+            ``damping``. Must be non-negative; checked the same way as
+            ``bandwidth``. Only meaningful when ``use_joint_limit_avoidance``
             or ``use_null_space_posture_control`` is enabled — pass a scalar
             or an array of shape [controlled_robot_count] to bake a value,
             or leave it ``None`` to read ``inputs.null_space_damping`` each
@@ -232,10 +257,11 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             only safe when every robot has at least as many controlled DOFs
             as its own task dimension (the number of nonzero ``axis_weight``
             entries) — otherwise the projector's own ``JJᵀ`` is
-            rank-deficient. When baked, this is checked at construction and
-            raises; a live value is the caller's responsibility, since
-            checking it every step would cost a host sync and break
-            :meth:`is_graphable`.
+            rank-deficient. That stronger, per-robot requirement is checked
+            at construction only when baked; a live value is the caller's
+            responsibility there, since it needs ``task_dim`` and
+            ``controlled_dofs_per_robot`` compared per robot, not just a
+            sign check.
         device: Warp device.
         requires_grad: Whether internal buffers need gradient support.
             Currently requires ``ik_method=IkMethod.TRANSPOSE`` -- the only
@@ -387,6 +413,10 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 device=self._device,
                 required=False,
             )
+        # Read directly (not squared) by _qd_from_y_kernel, so a negative
+        # baked value would flip the direction of every controlled DOF's
+        # output velocity instead of merely scaling it.
+        _validate_non_negative_gain(bandwidth, "bandwidth")
 
         if not isinstance(ik_method, IkMethod):
             raise TypeError(f"ik_method must be an IkMethod, got {ik_method!r}.")
@@ -495,6 +525,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     device=self._device,
                     required=False,
                 )
+            _validate_non_negative_gain(null_space_stiffness, "null_space_stiffness")
         elif null_space_stiffness is not None:
             raise ValueError("null_space_stiffness was given but use_null_space_posture_control=False.")
 
@@ -508,6 +539,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     device=self._device,
                     required=False,
                 )
+            _validate_non_negative_gain(null_space_damping, "null_space_damping")
         elif null_space_damping is not None:
             raise ValueError(
                 "null_space_damping was given but neither use_joint_limit_avoidance nor "
@@ -1090,6 +1122,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 bandwidth,
                 self._robot_of_dof,
                 self._slot_of_dof,
+                self._task_dim,
                 self._active_axis_of_slot,
                 self._axis_weight,
             ],
