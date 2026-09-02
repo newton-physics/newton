@@ -1808,6 +1808,14 @@ class ControllerOperationalSpaceModelFree(ControllerBase):
                 device=self._device,
             )
 
+        _validate_array(
+            array=outputs.joint_f,
+            name="outputs.joint_f",
+            dtype=wp.float32,
+            shape=(self._total_controlled_dofs,),
+            device=self._device,
+            allow_indexed=True,
+        )
         # A view needs the scatter kernel (wp.copy isn't graph-capture-safe for a non-contiguous target).
         if isinstance(outputs.joint_f, wp.indexedarray):
             wp.launch(

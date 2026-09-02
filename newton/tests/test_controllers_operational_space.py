@@ -974,6 +974,39 @@ class TestControllerOperationalSpaceModelFree(unittest.TestCase):
         np.testing.assert_allclose(sim_joint_f.numpy()[:2], 0.0)
         np.testing.assert_allclose(sim_joint_f.numpy()[9:], 0.0)
 
+    def test_oversized_output_raises(self):
+        """outputs.joint_f bound to a larger-than-expected array raises.
+
+        wp.copy accepts a destination larger than the source and silently
+        writes only a prefix, so this specific direction (too large, not too
+        small) has to be caught explicitly -- a size mismatch the other way
+        happens to be caught by wp.copy itself.
+        """
+        device = wp.get_device()
+        ctrl = ControllerOperationalSpaceModelFree(
+            controlled_dofs_per_robot=wp.array(np.array([1], dtype=np.int32), device=device),
+            motion_stiffness=100.0,
+            motion_damping=10.0,
+            operational_frame_pose_world=_IDENTITY_TRANSFORM,
+            use_inertia_decoupling=False,
+            device=device,
+        )
+        zero_twist = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        rng = np.random.default_rng(9)
+        jacobian = rng.standard_normal((1, 6, 1)).astype(np.float32)
+
+        ins = ctrl.input()
+        ins.tool_pose_world = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        ins.tool_twist_world = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.desired_tool_pose_operational = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        ins.desired_twist_operational = wp.array([zero_twist], dtype=wp.spatial_vector, device=device)
+        ins.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+
+        outs = ctrl.output()
+        outs.joint_f = wp.zeros(2, dtype=wp.float32, device=device)  # controller has only 1 controlled DOF
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
     def test_transform_and_spatial_vector_inputs_accept_indexed_views(self):
         """Every input port, not just outputs.joint_f, may be bound to an indexed view of a larger array.
 
