@@ -2095,12 +2095,10 @@ class TestDVISolver(unittest.TestCase):
                 state_0 = model.state()
                 state_1 = model.state()
                 if self.device.is_cuda and wp.is_mempool_enabled(self.device):
-                    solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
-                    solver.step(state_1, state_0, control=None, contacts=None, dt=dt)
                     with wp.ScopedCapture(self.device) as capture:
                         solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
                         solver.step(state_1, state_0, control=None, contacts=None, dt=dt)
-                    for _ in range((steps - 4) // 2):
+                    for _ in range((steps - 2) // 2):
                         wp.capture_launch(capture.graph)
                 else:
                     for _ in range(steps):
