@@ -1368,7 +1368,9 @@ class TestModelConversions(unittest.TestCase):
         builder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
         builder.begin_world()
-        body = builder.add_link()
+        # Give the body real inertia so it is treated as dynamic by Kamino;
+        # otherwise the world<->massless-body joint is culled at conversion.
+        body = builder.add_link(mass=1.0, inertia=wp.mat33f(np.eye(3, dtype=np.float32)))
         joint = builder.add_joint_d6(
             -1,
             body,

@@ -98,7 +98,7 @@ class SolverKaminoImpl(SolverBase):
     options for the linear solver and preconditioning.
     """
 
-    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino], None]
+    ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino, wp.array[wp.bool] | None], None]
     """Defines the type signature for reset callback functions."""
 
     StepCallbackType = Callable[["SolverKaminoImpl", StateKamino, StateKamino, ControlKamino, ContactsKamino], None]
@@ -525,7 +525,7 @@ class SolverKaminoImpl(SolverBase):
             )
 
         # Run the pre-reset callback if it has been set
-        self._run_pre_reset_callback(state_out=state)
+        self._run_pre_reset_callback(state_out=state, world_mask=world_mask)
 
         # Resolve target joint_q
         joint_q = None
@@ -700,7 +700,7 @@ class SolverKaminoImpl(SolverBase):
                 success_mask.fill_(True)
 
         # Run the post-reset callback if it has been set
-        self._run_post_reset_callback(state_out=state)
+        self._run_post_reset_callback(state_out=state, world_mask=world_mask)
 
     @override
     def step(
@@ -788,19 +788,19 @@ class SolverKaminoImpl(SolverBase):
     # Internals - Callback Operations
     ###
 
-    def _run_pre_reset_callback(self, state_out: StateKamino):
+    def _run_pre_reset_callback(self, state_out: StateKamino, world_mask: wp.array[wp.bool] | None):
         """
         Runs the pre-reset callback if it has been set.
         """
         if self._pre_reset_cb is not None:
-            self._pre_reset_cb(self, state_out)
+            self._pre_reset_cb(self, state_out, world_mask)
 
-    def _run_post_reset_callback(self, state_out: StateKamino):
+    def _run_post_reset_callback(self, state_out: StateKamino, world_mask: wp.array[wp.bool] | None):
         """
         Runs the post-reset callback if it has been set.
         """
         if self._post_reset_cb is not None:
-            self._post_reset_cb(self, state_out)
+            self._post_reset_cb(self, state_out, world_mask)
 
     def _run_prestep_callback(
         self, state_in: StateKamino, state_out: StateKamino, control: ControlKamino, contacts: ContactsKamino

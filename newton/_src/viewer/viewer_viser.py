@@ -17,7 +17,7 @@ import warp as wp
 import newton
 
 from ..core.types import override
-from ..utils.texture import load_texture, normalize_texture
+from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 
 
@@ -50,25 +50,6 @@ class ViewerViser(ViewerBase):
             except ImportError as e:
                 raise ImportError("viser package is required for ViewerViser. Install with: pip install viser") from e
         return cls._viser_module
-
-    @staticmethod
-    def _to_numpy(x) -> np.ndarray | None:
-        """Convert warp arrays or other array-like objects to numpy arrays."""
-        if x is None:
-            return None
-        if hasattr(x, "numpy"):
-            return x.numpy()
-        return np.asarray(x)
-
-    @staticmethod
-    def _prepare_texture(texture: np.ndarray | str | None) -> np.ndarray | None:
-        """Load and normalize texture data for viser/glTF usage."""
-        return normalize_texture(
-            load_texture(texture),
-            flip_vertical=False,
-            require_channels=True,
-            scale_unit_range=True,
-        )
 
     @staticmethod
     def _build_trimesh_mesh(points: np.ndarray, indices: np.ndarray, uvs: np.ndarray, texture: np.ndarray):
@@ -260,10 +241,23 @@ class ViewerViser(ViewerBase):
         """Call a viser scene method with only supported keyword args."""
         try:
             signature = inspect.signature(method)
-            allowed = {k: v for k, v in kwargs.items() if k in signature.parameters}
-            return method(**allowed)
-        except Exception:
+        except (TypeError, ValueError):
             return method(**kwargs)
+
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+        allowed = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
+        dropped_appearance = [
+            key
+            for key in ("opacity", "batched_opacities", "color", "batched_colors", "material")
+            if kwargs.get(key) is not None and key not in signature.parameters and not accepts_kwargs
+        ]
+        if dropped_appearance:
+            warnings.warn(
+                f"Viser {method.__name__} does not support requested appearance argument(s): "
+                f"{', '.join(dropped_appearance)}.",
+                stacklevel=2,
+            )
+        return method(**allowed)
 
     @property
     def url(self) -> str:
@@ -621,6 +615,7 @@ class ViewerViser(ViewerBase):
         roughness: float | None = None,
         metallic: float | None = None,
         dynamic: bool = False,
+        opacity: float | None = None,
     ):
         """
         Log a mesh to viser for visualization.
@@ -641,6 +636,7 @@ class ViewerViser(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
             dynamic: Whether mesh topology may change between frames.
+            opacity: Optional display opacity in [0, 1].
         """
         name = self._qualify(name)
 
@@ -648,10 +644,10 @@ class ViewerViser(ViewerBase):
         assert isinstance(indices, wp.array)
 
         # Convert to numpy arrays
-        points_np = self._to_numpy(points).astype(np.float32)
-        indices_np = self._to_numpy(indices).astype(np.uint32)
-        uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
-        texture_image = self._prepare_texture(texture)
+        points_np = to_numpy(points).astype(np.float32)
+        indices_np = to_numpy(indices).astype(np.uint32)
+        uvs_np = to_numpy(uvs).astype(np.float32) if uvs is not None else None
+        texture_image = prepare_viewer_texture(texture)
 
         if texture_image is not None and uvs_np is None:
             warnings.warn(f"Mesh {name} has a texture but no UVs; texture will be ignored.", stacklevel=2)
@@ -683,6 +679,7 @@ class ViewerViser(ViewerBase):
             "uvs": uvs_np,
             "texture": texture_image,
             "trimesh": trimesh_mesh,
+            "opacity": opacity,
         }
 
         # Remove existing mesh if present
@@ -698,21 +695,25 @@ class ViewerViser(ViewerBase):
 
         # Add mesh to viser scene
         if trimesh_mesh is not None:
-            handle = self._call_scene_method(
-                self._server.scene.add_mesh_trimesh,
-                name=name,
-                mesh=trimesh_mesh,
-            )
+            mesh_kwargs = {
+                "name": name,
+                "mesh": trimesh_mesh,
+            }
+            if opacity is not None:
+                mesh_kwargs["opacity"] = float(np.clip(opacity, 0.0, 1.0))
+            handle = self._call_scene_method(self._server.scene.add_mesh_trimesh, **mesh_kwargs)
         else:
-            handle = self._call_scene_method(
-                self._server.scene.add_mesh_simple,
-                name=name,
-                vertices=points_np,
-                faces=indices_np,
-                color=(180, 180, 180) if color is None else color,
-                wireframe=False,
-                side="double" if not backface_culling else "front",
-            )
+            mesh_kwargs = {
+                "name": name,
+                "vertices": points_np,
+                "faces": indices_np,
+                "color": (180, 180, 180) if color is None else color,
+                "wireframe": False,
+                "side": "double" if not backface_culling else "front",
+            }
+            if opacity is not None:
+                mesh_kwargs["opacity"] = float(np.clip(opacity, 0.0, 1.0))
+            handle = self._call_scene_method(self._server.scene.add_mesh_simple, **mesh_kwargs)
         self._scene_handles[name] = handle
 
     @staticmethod
@@ -791,7 +792,7 @@ class ViewerViser(ViewerBase):
                 handle.visible = False
             return
 
-        xforms_np = self._to_numpy(xforms)
+        xforms_np = to_numpy(xforms)
         if xforms_np is None or len(xforms_np) == 0:
             self._remove_plane_handles(name)
             return
@@ -799,7 +800,7 @@ class ViewerViser(ViewerBase):
         xforms_np = np.asarray(xforms_np, dtype=np.float32)
         positions = xforms_np[:, :3]
         quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
-        scales_np = self._to_numpy(scales) if scales is not None else None
+        scales_np = to_numpy(scales) if scales is not None else None
         if scales_np is not None:
             scales_np = np.asarray(scales_np, dtype=np.float32)
 
@@ -877,6 +878,7 @@ class ViewerViser(ViewerBase):
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log instanced mesh data to viser using efficient batched rendering.
@@ -892,6 +894,7 @@ class ViewerViser(ViewerBase):
             colors: Instance colors.
             materials: Instance materials.
             hidden: Whether the instances are hidden.
+            opacities: Instance opacities.
         """
         name = self._qualify(name)
         mesh = self._qualify(mesh)
@@ -910,8 +913,9 @@ class ViewerViser(ViewerBase):
         base_points = mesh_data["points"]
         base_indices = mesh_data["indices"]
         base_uvs = mesh_data.get("uvs")
-        texture_image = self._prepare_texture(mesh_data.get("texture"))
+        texture_image = prepare_viewer_texture(mesh_data.get("texture"))
         trimesh_mesh = mesh_data.get("trimesh")
+        mesh_opacity = mesh_data.get("opacity")
 
         if hidden:
             # Remove existing instances if present
@@ -929,11 +933,16 @@ class ViewerViser(ViewerBase):
         if xforms is None:
             return
 
-        xforms_np = self._to_numpy(xforms)
-        scales_np = self._to_numpy(scales) if scales is not None else None
-        colors_np = self._to_numpy(colors) if colors is not None else None
+        xforms_np = to_numpy(xforms)
+        scales_np = to_numpy(scales) if scales is not None else None
+        colors_np = to_numpy(colors) if colors is not None else None
 
         num_instances = len(xforms_np)
+        opacities_np = promote_to_clamped_float_array(
+            opacities if opacities is not None else mesh_opacity,
+            num_instances,
+            value_name="Opacity",
+        )
 
         # Extract positions from transforms
         # Warp transform format: [x, y, z, qx, qy, qz, qw]
@@ -981,6 +990,15 @@ class ViewerViser(ViewerBase):
                         handle.batched_colors = batched_colors
                         # Cache the colors for future reference
                         self._instances[name]["colors"] = batched_colors
+                    if opacities_np is not None:
+                        if hasattr(handle, "batched_opacities"):
+                            handle.batched_opacities = opacities_np
+                            self._instances[name]["opacities"] = opacities_np
+                        else:
+                            warnings.warn(
+                                f"Viser handle for {name!r} does not support batched opacity updates.",
+                                stacklevel=2,
+                            )
                     return
                 except Exception:
                     # If update fails, recreate the mesh
@@ -1006,6 +1024,7 @@ class ViewerViser(ViewerBase):
                 batched_positions=positions,
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
+                batched_opacities=opacities_np,
                 lod="off",
             )
         else:
@@ -1018,6 +1037,7 @@ class ViewerViser(ViewerBase):
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
                 batched_colors=batched_colors,
+                batched_opacities=opacities_np,
                 lod="off",
             )
 
@@ -1026,6 +1046,7 @@ class ViewerViser(ViewerBase):
             "mesh": mesh,
             "count": num_instances,
             "colors": batched_colors,  # Cache the colors
+            "opacities": opacities_np,
             "use_trimesh": use_trimesh,
         }
 
@@ -1199,8 +1220,8 @@ class ViewerViser(ViewerBase):
             remove_existing_line()
             return
 
-        starts_np = self._to_numpy(starts)
-        ends_np = self._to_numpy(ends)
+        starts_np = to_numpy(starts)
+        ends_np = to_numpy(ends)
 
         if starts_np is None or ends_np is None or len(starts_np) == 0:
             remove_existing_line()
@@ -1225,7 +1246,7 @@ class ViewerViser(ViewerBase):
         # add_line_segments() also accepts RGB tuples on initial creation.
         color_rgb: np.ndarray = np.array((0, 255, 0), dtype=np.uint8)
         if colors is not None:
-            colors_np = self._to_numpy(colors)
+            colors_np = to_numpy(colors)
             if colors_np is not None:
                 colors_np = np.asarray(colors_np)
                 if colors_np.ndim == 1 and colors_np.shape[0] == 3:
@@ -1345,7 +1366,7 @@ class ViewerViser(ViewerBase):
         if points is None:
             return
 
-        pts = self._to_numpy(points)
+        pts = to_numpy(points)
         n_points = pts.shape[0]
 
         if n_points == 0:
@@ -1353,7 +1374,7 @@ class ViewerViser(ViewerBase):
 
         # Handle radii (point size)
         if radii is not None:
-            size = self._to_numpy(radii)
+            size = to_numpy(radii)
             if size.ndim == 0 or size.shape == ():
                 point_size = float(size)
             elif len(size) == n_points:
@@ -1365,7 +1386,7 @@ class ViewerViser(ViewerBase):
 
         # Handle colors
         if colors is not None:
-            cols = self._to_numpy(colors)
+            cols = to_numpy(colors)
             if cols.shape == (n_points, 3):
                 # Convert from 0-1 to 0-255
                 colors_val = (cols * 255).astype(np.uint8)

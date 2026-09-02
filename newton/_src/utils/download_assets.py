@@ -20,7 +20,7 @@ from warp._src.thirdparty.appdirs import user_cache_dir
 # commit.  Update these SHAs when assets change upstream and the new versions
 # have been validated against Newton's test suite.
 NEWTON_ASSETS_URL = "https://github.com/newton-physics/newton-assets.git"
-NEWTON_ASSETS_REF = "a96f0973b6ae69c90609f9fafef9d2c1db2d6431"
+NEWTON_ASSETS_REF = "f8fb7abcbeba2318814a74f3eeb02780ad7925d6"
 
 MENAGERIE_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
 MENAGERIE_REF = "da76818e269b82289eba39808e2fb91d679d6994"

@@ -855,6 +855,7 @@ class ModelKamino:
                 conversion_model,
                 model_size,
                 model_info,
+                model_bodies,
             )
 
             # Geometries

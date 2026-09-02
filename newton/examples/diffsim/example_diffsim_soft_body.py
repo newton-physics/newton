@@ -101,7 +101,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase="explicit",
-            soft_contact_margin=0.001,
+            soft_contact_gap=0.001,
             requires_grad=True,
         )
 

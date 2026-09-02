@@ -78,6 +78,29 @@ class TestViewerCameraSpeed(unittest.TestCase):
         self.assertAlmostEqual(camera.pos.y, 0.0)
         self.assertAlmostEqual(camera.pos.z, 0.0)
 
+    def test_camera_deceleration_is_capped(self):
+        """Check that the camera deceleration is capped to avoid flipping the camera velocity direction."""
+        camera = SimpleNamespace(
+            pos=_Vec3(0.0, 0.0, 0.0),
+            get_front=lambda: (1.0, 0.0, 0.0),
+            get_right=lambda: (0.0, 1.0, 0.0),
+            get_up=lambda: (0.0, 0.0, 1.0),
+        )
+        viewer = SimpleNamespace(camera=camera, camera_speed=2.0)
+        gui = ViewerGui.__new__(ViewerGui)
+        gui._viewer = viewer
+        gui.ui = None
+        velocity_init = np.array([1.0, 0.0, 0.0], dtype=np.float32)  # Non-zero initial velocity
+        gui._cam_vel = velocity_init.copy()
+        gui._cam_damp_tau = 0.1
+
+        key = SimpleNamespace(W=1, UP=2, S=3, DOWN=4, A=5, LEFT=6, D=7, RIGHT=8, Q=9, E=10)
+        pyglet = SimpleNamespace(window=SimpleNamespace(key=key))
+        with patch.dict(sys.modules, {"pyglet": pyglet}):
+            gui.update_camera_from_keys(2.0 * gui._cam_damp_tau, lambda _: False)
+
+        self.assertGreaterEqual(np.dot(camera.pos, velocity_init), 0.0)
+
 
 class TestViewerGLShouldStep(unittest.TestCase):
     """ViewerGL.should_step() state machine: running, paused, and single-step."""

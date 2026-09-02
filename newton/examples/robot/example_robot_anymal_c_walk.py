@@ -84,7 +84,6 @@ def _compute_obs_kernel(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.device = wp.get_device()
 

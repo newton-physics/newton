@@ -81,6 +81,57 @@ else:
     UsdStage = Any
 
 
+def _validate_opacity(value: Any, value_name: str) -> float:
+    """Return a finite display opacity in [0, 1]."""
+    opacity = float(value)
+    if not np.isfinite(opacity) or not 0.0 <= opacity <= 1.0:
+        raise ValueError(f"{value_name} must be a finite value in [0, 1], got {opacity!r}.")
+    return opacity
+
+
+def _validate_color(value: Any, value_name: str) -> tuple[float, float, float]:
+    """Return a finite RGB display color with components in [0, 1]."""
+    color = np.asarray(value, dtype=np.float32)
+    if color.shape != (3,):
+        raise ValueError(f"{value_name} must contain exactly 3 values, got shape {color.shape}.")
+    if np.any(~np.isfinite(color)) or np.any(color < 0.0) or np.any(color > 1.0):
+        raise ValueError(f"{value_name} must contain finite values in [0, 1], got {color.tolist()!r}.")
+    return (float(color[0]), float(color[1]), float(color[2]))
+
+
+def _broadcast_triangle_colors(value: Any, triangle_count: int, default_color: Vec3) -> np.ndarray:
+    """Return one validated RGB display color per triangle."""
+    colors = np.asarray(default_color if value is None else value, dtype=np.float32)
+    if colors.shape == (3,):
+        colors = np.broadcast_to(colors, (triangle_count, 3))
+    elif colors.shape != (triangle_count, 3):
+        raise ValueError(
+            f"Triangle color arrays must contain one RGB value or exactly {triangle_count} RGB values, "
+            f"got shape {colors.shape}."
+        )
+    invalid_color = (~np.isfinite(colors)) | (colors < 0.0) | (colors > 1.0)
+    if np.any(invalid_color):
+        invalid_row = colors[np.flatnonzero(np.any(invalid_color, axis=1))[0]]
+        raise ValueError(f"Triangle color must contain finite values in [0, 1], got {invalid_row.tolist()!r}.")
+    return colors
+
+
+def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray:
+    """Return one validated display opacity per triangle."""
+    opacities = np.asarray(1.0 if value is None else value, dtype=np.float32).reshape(-1)
+    if opacities.size == 1:
+        opacities = np.full(triangle_count, float(opacities[0]), dtype=np.float32)
+    elif opacities.size != triangle_count:
+        raise ValueError(
+            f"Triangle opacity arrays must contain one value or exactly {triangle_count} values, got {opacities.size}."
+        )
+    invalid_opacity = (~np.isfinite(opacities)) | (opacities < 0.0) | (opacities > 1.0)
+    if np.any(invalid_opacity):
+        invalid_value = float(opacities[np.flatnonzero(invalid_opacity)[0]])
+        raise ValueError(f"Triangle opacity must contain finite values in [0, 1], got {invalid_value!r}.")
+    return opacities
+
+
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 _SCALAR_GRAVITY_DEPRECATION_MSG = (
@@ -135,6 +186,141 @@ def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
         collision_mesh._collision_edges = collision_edges
 
     return collision_mesh
+
+
+_CONVEX_SUPPORT_MIN_VERTICES = 256
+_CONVEX_SUPPORT_LUT_RESOLUTION = 32
+
+
+def _build_convex_support_acceleration(source: Mesh) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Build a directional seed table and welded vertex adjacency for a convex collision mesh."""
+    vertices = np.asarray(source.vertices, dtype=np.float32).reshape(-1, 3)
+    vertex_count = len(vertices)
+    if vertex_count < _CONVEX_SUPPORT_MIN_VERTICES:
+        return None
+
+    triangles = np.asarray(source.indices, dtype=np.int32).reshape(-1, 3)
+    geometry_scale = max(float(np.max(np.ptp(vertices, axis=0))), 1.0e-6)
+    vertices64 = vertices.astype(np.float64)
+    triangle_points = vertices64[triangles]
+    face_normals = np.cross(
+        triangle_points[:, 1] - triangle_points[:, 0], triangle_points[:, 2] - triangle_points[:, 0]
+    )
+    normal_lengths = np.linalg.norm(face_normals, axis=1)
+    nondegenerate = normal_lengths > geometry_scale * geometry_scale * 1.0e-12
+    face_normals = face_normals[nondegenerate]
+    if len(face_normals) == 0:
+        return None
+    face_normals /= normal_lengths[nondegenerate, None]
+    face_offsets = np.einsum("ij,ij->i", face_normals, triangle_points[nondegenerate, 0])
+
+    # The input indices are not automatically rebuilt as a convex hull. Only
+    # use their edges when every non-degenerate triangle lies on a supporting
+    # plane of the point set; otherwise a local edge maximum need not be the
+    # global support point and the exhaustive path must remain active.
+    plane_tolerance = geometry_scale * 2.0e-6
+    for start in range(0, len(face_normals), 64):
+        stop = min(start + 64, len(face_normals))
+        projections = face_normals[start:stop] @ vertices64.T
+        offsets = face_offsets[start:stop]
+        supported_positive = np.max(projections, axis=1) <= offsets + plane_tolerance
+        supported_negative = np.min(projections, axis=1) >= offsets - plane_tolerance
+        if not np.all(supported_positive | supported_negative):
+            return None
+
+    # A connected subset of supporting faces is not necessarily a complete
+    # hull. Walking its edges can stop at a local maximum because an omitted
+    # face also omits the edge needed to reach the global support vertex.
+    # Validate a closed two-manifold after welding numerically split seams.
+    coordinate_scale = max(float(np.max(np.abs(vertices))), 1.0)
+    weld_groups: dict[tuple[float, float, float], list[int]] = {}
+    welded_vertex = np.empty(vertex_count, dtype=np.int32)
+    for vertex, position in enumerate(vertices):
+        key = tuple(np.round(position / coordinate_scale, decimals=6))
+        group = weld_groups.setdefault(key, [])
+        if group:
+            welded_vertex[vertex] = group[0]
+        else:
+            welded_vertex[vertex] = vertex
+        group.append(vertex)
+
+    edge_incidence: Counter[tuple[int, int]] = Counter()
+    for triangle in triangles[nondegenerate]:
+        welded = tuple(int(welded_vertex[int(vertex)]) for vertex in triangle)
+        if len(set(welded)) < 3:
+            continue
+        for first, second in ((welded[0], welded[1]), (welded[1], welded[2]), (welded[2], welded[0])):
+            edge_incidence[min(first, second), max(first, second)] += 1
+    if not edge_incidence or any(count != 2 for count in edge_incidence.values()):
+        warnings.warn(
+            "Convex support acceleration requires complete closed hull topology; "
+            "falling back to exhaustive support mapping.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+
+    adjacent = [set() for _ in range(vertex_count)]
+    for triangle in triangles:
+        a, b, c = (int(value) for value in triangle)
+        if a != b:
+            adjacent[a].add(b)
+            adjacent[b].add(a)
+        if a != c:
+            adjacent[a].add(c)
+            adjacent[c].add(a)
+        if b != c:
+            adjacent[b].add(c)
+            adjacent[c].add(b)
+
+    # Procedural and imported meshes can have numerically split seam vertices.
+    # Share their neighborhoods without changing the mesh points or support values.
+    for group in weld_groups.values():
+        if len(group) <= 1:
+            continue
+        merged = set(group)
+        for vertex in group:
+            merged.update(adjacent[vertex])
+        for vertex in group:
+            adjacent[vertex].update(merged)
+            adjacent[vertex].discard(vertex)
+
+    if any(not neighbors for neighbors in adjacent):
+        return None
+    visited = {0}
+    stack = [0]
+    while stack:
+        vertex = stack.pop()
+        for neighbor in adjacent[vertex]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                stack.append(neighbor)
+    if len(visited) != vertex_count:
+        return None
+
+    resolution = _CONVEX_SUPPORT_LUT_RESOLUTION
+    coordinates = np.linspace(-1.0, 1.0, resolution, dtype=np.float32)
+    xx, yy = np.meshgrid(coordinates, coordinates, indexing="xy")
+    zz = 1.0 - np.abs(xx) - np.abs(yy)
+    folded = zz < 0.0
+    old_x = xx.copy()
+    old_y = yy.copy()
+    xx[folded] = (1.0 - np.abs(old_y[folded])) * np.where(old_x[folded] >= 0.0, 1.0, -1.0)
+    yy[folded] = (1.0 - np.abs(old_x[folded])) * np.where(old_y[folded] >= 0.0, 1.0, -1.0)
+    directions = np.column_stack((xx.ravel(), yy.ravel(), zz.ravel()))
+    directions /= np.linalg.norm(directions, axis=1)[:, None]
+
+    lut = np.empty(resolution * resolution, dtype=np.int32)
+    for start in range(0, len(directions), 64):
+        stop = min(start + 64, len(directions))
+        lut[start:stop] = np.argmax(directions[start:stop] @ vertices.T, axis=1)
+
+    offsets = np.zeros(vertex_count + 1, dtype=np.int32)
+    neighbors = []
+    for vertex, values in enumerate(adjacent):
+        neighbors.extend(sorted(values))
+        offsets[vertex + 1] = len(neighbors)
+    return lut, offsets, np.asarray(neighbors, dtype=np.int32)
 
 
 @dataclass(frozen=True)
@@ -308,6 +494,7 @@ class ModelBuilder:
     """
 
     _DEFAULT_GROUND_PLANE_COLOR = (0.125, 0.125, 0.15)
+    _DEFAULT_TRI_COLOR = (0.7, 0.5, 0.3)
     _SHAPE_COLOR_PALETTE = (
         # Paul Tol - Bright 9
         (68, 119, 170),  # blue
@@ -764,7 +951,6 @@ class ModelBuilder:
         Describes a joint axis (a single degree of freedom) that can have limits and be driven towards a target.
         """
 
-        @deprecate_nonkeyword_arguments
         def __init__(
             self,
             *,
@@ -1335,6 +1521,8 @@ class ModelBuilder:
         """Source geometry objects accumulated for :attr:`Model.shape_source`."""
         self.shape_color: list[Vec3] = []
         """Resolved display colors accumulated for :attr:`Model.shape_color`."""
+        self.shape_opacity: list[float] = []
+        """Resolved display opacities accumulated for :attr:`Model.shape_opacity`."""
         self.shape_is_solid: list[bool] = []
         """Solid-vs-hollow flags accumulated for :attr:`Model.shape_is_solid`."""
         self.shape_margin: list[float] = []
@@ -1418,6 +1606,10 @@ class ModelBuilder:
         """Triangle material rows accumulated for :attr:`Model.tri_materials`."""
         self.tri_areas: list[float] = []
         """Triangle rest areas [m^2] accumulated for :attr:`Model.tri_areas`."""
+        self.tri_color: list[Vec3] = []
+        """Triangle surface display colors accumulated for :attr:`Model.tri_color`."""
+        self.tri_opacity: list[float] = []
+        """Triangle surface display opacities accumulated for :attr:`Model.tri_opacity`."""
 
         # edges (bending)
         self.edge_indices: list[tuple[int, int, int, int]] = []
@@ -4602,7 +4794,6 @@ class ModelBuilder:
 
         return wp.mat33(*value)
 
-    @deprecate_nonkeyword_arguments
     def add_link(
         self,
         *,
@@ -4688,7 +4879,6 @@ class ModelBuilder:
 
         return body_id
 
-    @deprecate_nonkeyword_arguments
     def add_body(
         self,
         *,
@@ -4755,7 +4945,6 @@ class ModelBuilder:
 
     # region joints
 
-    @deprecate_nonkeyword_arguments
     def add_joint(
         self,
         joint_type: JointType,
@@ -5003,7 +5192,6 @@ class ModelBuilder:
 
         return joint_index
 
-    @deprecate_nonkeyword_arguments
     def add_joint_revolute(
         self,
         parent: int,
@@ -5101,7 +5289,6 @@ class ModelBuilder:
             **kwargs,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_prismatic(
         self,
         parent: int,
@@ -5197,7 +5384,6 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_ball(
         self,
         parent: int,
@@ -5279,7 +5465,6 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_fixed(
         self,
         parent: int,
@@ -5327,7 +5512,6 @@ class ModelBuilder:
 
         return joint_index
 
-    @deprecate_nonkeyword_arguments
     def add_joint_free(
         self,
         child: int,
@@ -5388,7 +5572,6 @@ class ModelBuilder:
         self.joint_q[q_start : q_start + 7] = list(joint_q)
         return joint_id
 
-    @deprecate_nonkeyword_arguments
     def add_joint_distance(
         self,
         parent: int,
@@ -5452,7 +5635,6 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_d6(
         self,
         parent: int,
@@ -5507,7 +5689,6 @@ class ModelBuilder:
             **kwargs,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_joint_rod(
         self,
         parent: int,
@@ -6798,6 +6979,7 @@ class ModelBuilder:
         src: Mesh | Gaussian | Heightfield | Any | None = None,
         is_static: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -6819,6 +7001,7 @@ class ModelBuilder:
             src: The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH`. Defaults to `None`.
             is_static: If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If `None`, mesh-backed shapes fall back to :attr:`~newton.Mesh.color`; otherwise the per-shape palette sequence is used.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity. Mesh-backed shapes fall back to :attr:`~newton.Mesh.opacity`.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated (e.g., "shape_N"). Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -6924,6 +7107,13 @@ class ModelBuilder:
                     f"Got collision_group={cfg.collision_group}"
                 )
 
+        resolved_opacity = opacity
+        if resolved_opacity is None and src is not None:
+            resolved_opacity = getattr(src, "opacity", None)
+        if resolved_opacity is None:
+            resolved_opacity = 1.0
+        resolved_opacity = _validate_opacity(resolved_opacity, "Shape opacity")
+
         self.shape_body.append(body)
         shape = self.shape_count
         if cfg.has_shape_collision:
@@ -6953,6 +7143,7 @@ class ModelBuilder:
         self.shape_scale.append((float(scale[0]), float(scale[1]), float(scale[2])))
         self.shape_source.append(src)
         self.shape_color.append(resolved_color)
+        self.shape_opacity.append(resolved_opacity)
         self.shape_margin.append(cfg.margin)
         self.shape_is_solid.append(cfg.is_solid)
         self.shape_material_ke.append(cfg.ke)
@@ -7006,7 +7197,6 @@ class ModelBuilder:
 
         return shape
 
-    @deprecate_nonkeyword_arguments
     def add_shape_plane(
         self,
         plane: Vec4 | None = (0.0, 0.0, 1.0, 0.0),
@@ -7017,6 +7207,7 @@ class ModelBuilder:
         body: int = -1,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7039,6 +7230,7 @@ class ModelBuilder:
             body: The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If `None`, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -7071,15 +7263,16 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_ground_plane(
         self,
         *,
         height: float = 0.0,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = _DEFAULT_GROUND_PLANE_COLOR,
+        opacity: float | None = None,
         label: str | None = None,
     ) -> int:
         """Adds a ground plane collision shape to the model.
@@ -7088,6 +7281,7 @@ class ModelBuilder:
             height: The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. Defaults to the ground plane color ``(0.125, 0.125, 0.15)``. Pass ``None`` to use the per-shape palette color instead.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
 
         Returns:
@@ -7100,9 +7294,9 @@ class ModelBuilder:
             cfg=cfg,
             label=label or "ground_plane",
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_sphere(
         self,
         body: int,
@@ -7112,6 +7306,7 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7124,6 +7319,7 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If `None`, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -7146,9 +7342,9 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_ellipsoid(
         self,
         body: int,
@@ -7160,6 +7356,7 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7181,6 +7378,7 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -7222,9 +7420,9 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_box(
         self,
         body: int,
@@ -7236,6 +7434,7 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7252,6 +7451,7 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -7274,9 +7474,9 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_capsule(
         self,
         body: int,
@@ -7287,6 +7487,7 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7302,6 +7503,7 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -7329,9 +7531,9 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_cylinder(
         self,
         body: int,
@@ -7343,6 +7545,7 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7361,6 +7564,7 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -7388,9 +7592,9 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_cone(
         self,
         body: int,
@@ -7401,6 +7605,7 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7417,6 +7622,7 @@ class ModelBuilder:
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -7444,9 +7650,9 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_mesh(
         self,
         body: int,
@@ -7456,6 +7662,7 @@ class ModelBuilder:
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7468,6 +7675,7 @@ class ModelBuilder:
             scale: The scale of the mesh. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.color` when available.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.opacity` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -7487,9 +7695,9 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_convex_hull(
         self,
         body: int,
@@ -7499,6 +7707,7 @@ class ModelBuilder:
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7511,6 +7720,7 @@ class ModelBuilder:
             scale: The scale of the convex hull. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.color` when available.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.opacity` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -7529,10 +7739,10 @@ class ModelBuilder:
             src=mesh,
             label=label,
             color=color,
+            opacity=opacity,
             custom_attributes=custom_attributes,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_heightfield(
         self,
         *,
@@ -7541,6 +7751,7 @@ class ModelBuilder:
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7556,6 +7767,7 @@ class ModelBuilder:
             scale: Per-instance scale applied to the heightfield extents (``hx``, ``hy``, ``min_z``, ``max_z``). Lets the same :class:`Heightfield` asset be reused at different sizes across shapes. Defaults to ``None``, which is treated as ``(1.0, 1.0, 1.0)``.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: An optional label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -7578,9 +7790,9 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_shape_gaussian(
         self,
         body: int,
@@ -7591,6 +7803,7 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         collision_proxy: str | Mesh | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -7614,6 +7827,7 @@ class ModelBuilder:
                 - ``"convex_hull"``: auto-generate convex hull from Gaussian positions.
                 - A :class:`Mesh` instance: use the provided mesh as collision proxy.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
+            opacity: Optional display opacity with value in [0, 1]. If `None`, uses full opacity.
             label: Optional unique label for identifying the shape.
             custom_attributes: Dictionary of custom attribute values for SHAPE
                 frequency attributes.
@@ -7667,9 +7881,9 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
             color=color,
+            opacity=opacity,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_site(
         self,
         body: int,
@@ -7854,6 +8068,7 @@ class ModelBuilder:
                 body = self.shape_body[shape]
                 xform = self.shape_transform[shape]
                 color = self.shape_color[shape]
+                opacity = self.shape_opacity[shape]
                 custom_attributes = get_shape_custom_attributes(shape)
                 cfg = ModelBuilder.ShapeConfig(
                     density=0.0,  # do not add extra mass / inertia
@@ -7869,6 +8084,7 @@ class ModelBuilder:
                     cfg=cfg,
                     mesh=self.shape_source[shape],
                     color=color,
+                    opacity=opacity,
                     label=f"{self.shape_label[shape]}_visual",
                     scale=self.shape_scale[shape],
                     custom_attributes=custom_attributes,
@@ -7960,6 +8176,7 @@ class ModelBuilder:
                         body = self.shape_body[shape]
                         xform = self.shape_transform[shape]
                         color = self.shape_color[shape]
+                        opacity = self.shape_opacity[shape]
                         custom_attributes = get_shape_custom_attributes(shape)
                         filtered_shapes = sorted(
                             filtered_shape
@@ -7994,6 +8211,7 @@ class ModelBuilder:
                                 scale=scale,
                                 cfg=cfg,
                                 color=color,
+                                opacity=opacity,
                                 label=f"{self.shape_label[shape]}_convex_{i}",
                                 custom_attributes=custom_attributes,
                             )
@@ -8108,7 +8326,6 @@ class ModelBuilder:
 
         return remeshed_shapes
 
-    @deprecate_nonkeyword_arguments
     def add_rod(
         self,
         positions: list[Vec3],
@@ -8338,7 +8555,6 @@ class ModelBuilder:
 
         return link_bodies, link_joints
 
-    @deprecate_nonkeyword_arguments
     def add_rod_graph(
         self,
         node_positions: list[Vec3],
@@ -8923,7 +9139,6 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.SPRING,
             )
 
-    @deprecate_nonkeyword_arguments
     def add_triangle(
         self,
         i: int,
@@ -8935,6 +9150,8 @@ class ModelBuilder:
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
+        color: Vec3 | None = None,
+        opacity: float | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> float:
         """Adds a triangular FEM element between three particles in the system.
@@ -8951,6 +9168,8 @@ class ModelBuilder:
             tri_kd: The damping coefficient of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangle. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangle. If None, the default value (:attr:`default_tri_lift`) is used.
+            color: Display color in [0, 1]. If None, the default triangle color is used.
+            opacity: Display opacity in [0, 1]. If None, the triangle is fully opaque.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
@@ -8965,6 +9184,11 @@ class ModelBuilder:
         tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
         tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
         tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+        resolved_color = _validate_color(
+            self._DEFAULT_TRI_COLOR if color is None else color,
+            "Triangle color",
+        )
+        resolved_opacity = _validate_opacity(1.0 if opacity is None else opacity, "Triangle opacity")
 
         # compute basis for 2D rest pose
         p = self.particle_q[i]
@@ -8997,6 +9221,8 @@ class ModelBuilder:
             self.tri_activations.append(0.0)
             self.tri_materials.append((tri_ke, tri_ka, tri_kd, tri_drag, tri_lift))
             self.tri_areas.append(area)
+            self.tri_color.append(resolved_color)
+            self.tri_opacity.append(resolved_opacity)
 
             # Process custom attributes
             if custom_attributes:
@@ -9008,7 +9234,6 @@ class ModelBuilder:
                 )
             return area
 
-    @deprecate_nonkeyword_arguments
     def add_triangles(
         self,
         i: list[int] | np.ndarray,
@@ -9020,6 +9245,8 @@ class ModelBuilder:
         tri_kd: list[float] | None = None,
         tri_drag: list[float] | None = None,
         tri_lift: list[float] | None = None,
+        color: Vec3 | list[Vec3] | np.ndarray | None = None,
+        opacity: float | list[float] | np.ndarray | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> list[float]:
         """Adds triangular FEM elements between groups of three particles in the system.
@@ -9036,6 +9263,10 @@ class ModelBuilder:
             tri_kd: The damping coefficient of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangles. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangles. If None, the default value (:attr:`default_tri_lift`) is used.
+            color: Display color in [0, 1]. If a single RGB value, applied to all
+                triangles. If array-like, RGB values are applied per triangle.
+            opacity: Display opacity in [0, 1]. If scalar, applied to all triangles.
+                If array-like, values are applied per triangle.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
@@ -9096,6 +9327,9 @@ class ModelBuilder:
 
         inds = np.concatenate((i_[valid_inds, None], j_[valid_inds, None], k_[valid_inds, None]), axis=-1)
 
+        color_arr = _broadcast_triangle_colors(color, len(areas), self._DEFAULT_TRI_COLOR)
+        opacity_arr = _broadcast_triangle_opacities(opacity, len(areas))
+
         tri_start = len(self.tri_indices)
         self.tri_indices.extend(inds.tolist())
         self.tri_poses.extend(inv_D[valid_inds].tolist())
@@ -9122,6 +9356,8 @@ class ModelBuilder:
                 strict=False,
             )
         )
+        self.tri_color.extend(color_arr[valid_inds].tolist())
+        self.tri_opacity.extend(opacity_arr[valid_inds].tolist())
         areas_list = areas.tolist()
         self.tri_areas.extend(areas[valid_inds].tolist())
 
@@ -9202,7 +9438,6 @@ class ModelBuilder:
 
         return volume
 
-    @deprecate_nonkeyword_arguments
     def add_edge(
         self,
         i: int,
@@ -9275,7 +9510,6 @@ class ModelBuilder:
 
         return edge_index
 
-    @deprecate_nonkeyword_arguments
     def add_edges(
         self,
         i: list[int],
@@ -9421,7 +9655,6 @@ class ModelBuilder:
                 )
         return range(edge_start, len(self.edge_indices))
 
-    @deprecate_nonkeyword_arguments
     def add_cloth_grid(
         self,
         *,
@@ -9449,6 +9682,8 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        color: Vec3 | list[Vec3] | np.ndarray | None = None,
+        opacity: float | list[float] | np.ndarray | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
@@ -9476,6 +9711,12 @@ class ModelBuilder:
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify
                 this cloth.
+            color: Display color in [0, 1] for the cloth surface. If a single
+                RGB value, applied to all triangles. If array-like, RGB values
+                are applied per triangle.
+            opacity: Display opacity in [0, 1] for the cloth surface. If scalar,
+                applied to all triangles. If array-like, values are applied per
+                triangle.
         """
 
         def grid_index(x, y, dim_x):
@@ -9523,6 +9764,8 @@ class ModelBuilder:
             spring_ke=spring_ke,
             spring_kd=spring_kd,
             particle_radius=particle_radius,
+            color=color,
+            opacity=opacity,
             custom_attributes_particles=custom_attributes_particles,
             custom_attributes_triangles=custom_attributes_triangles,
             custom_attributes_edges=custom_attributes_edges,
@@ -9548,7 +9791,6 @@ class ModelBuilder:
                 self.particle_mass[start_vertex + vertex_id] = particle_mass
                 vertex_id = vertex_id + 1
 
-    @deprecate_nonkeyword_arguments
     def add_cloth_mesh(
         self,
         *,
@@ -9570,6 +9812,8 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        color: Vec3 | list[Vec3] | np.ndarray | None = None,
+        opacity: float | list[float] | np.ndarray | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
@@ -9590,6 +9834,12 @@ class ModelBuilder:
             indices: A list of triangle indices, 3 entries per-face
             density: The density per-area of the mesh
             particle_radius: The particle_radius which controls particle based collisions.
+            color: Display color in [0, 1] for the cloth surface. If a single
+                RGB value, applied to all triangles. If array-like, RGB values
+                are applied per triangle.
+            opacity: Display opacity in [0, 1] for the cloth surface. If scalar,
+                applied to all triangles. If array-like, values are applied per
+                triangle.
             custom_attributes_particles: Dictionary of custom attribute names to values for the particles.
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
@@ -9662,6 +9912,8 @@ class ModelBuilder:
             tri_kd=[tri_kd] * num_tris,
             tri_drag=[tri_drag] * num_tris,
             tri_lift=[tri_lift] * num_tris,
+            color=color,
+            opacity=opacity,
             custom_attributes=custom_attributes_triangles,
         )
         for t in range(num_tris):
@@ -9698,7 +9950,6 @@ class ModelBuilder:
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
 
-    @deprecate_nonkeyword_arguments
     def add_particle_grid(
         self,
         *,
@@ -9802,7 +10053,6 @@ class ModelBuilder:
             custom_attributes=broadcast_custom_attrs,
         )
 
-    @deprecate_nonkeyword_arguments
     def add_soft_grid(
         self,
         *,
@@ -9832,6 +10082,8 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        color: Vec3 | list[Vec3] | np.ndarray | None = None,
+        opacity: float | list[float] | np.ndarray | None = None,
         label: str | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
@@ -9868,6 +10120,12 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
+            color: Display color in [0, 1] for the generated surface mesh. If a
+                single RGB value, applied to all triangles. If array-like, RGB
+                values are applied per triangle.
+            opacity: Display opacity in [0, 1] for the generated surface mesh.
+                If scalar, applied to all triangles. If array-like, values are
+                applied per triangle.
             label: Optional name reserved for forwarding to mesh-quality
                 diagnostics. Currently unused by ``add_soft_grid`` (the
                 generated grid is degenerate-free by construction); kept
@@ -9956,7 +10214,9 @@ class ModelBuilder:
 
         # add surface triangles
         start_tri = len(self.tri_indices)
-        for _k, v in faces.items():
+        surface_colors = _broadcast_triangle_colors(color, len(faces), self._DEFAULT_TRI_COLOR)
+        surface_opacities = _broadcast_triangle_opacities(opacity, len(faces))
+        for face_index, v in enumerate(faces.values()):
             self.add_triangle(
                 v[0],
                 v[1],
@@ -9966,6 +10226,8 @@ class ModelBuilder:
                 tri_kd=tri_kd,
                 tri_drag=tri_drag,
                 tri_lift=tri_lift,
+                color=surface_colors[face_index],
+                opacity=surface_opacities[face_index],
             )
         end_tri = len(self.tri_indices)
 
@@ -9974,7 +10236,6 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
-    @deprecate_nonkeyword_arguments
     def add_soft_mesh(
         self,
         *,
@@ -9998,6 +10259,8 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        color: Vec3 | list[Vec3] | np.ndarray | None = None,
+        opacity: float | list[float] | np.ndarray | None = None,
         validate_mesh: bool = False,
         label: str | None = None,
     ) -> None:
@@ -10038,6 +10301,12 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
+            color: Display color in [0, 1] for the generated surface mesh. If a
+                single RGB value, applied to all triangles. If array-like, RGB
+                values are applied per triangle.
+            opacity: Display opacity in [0, 1] for the generated surface mesh.
+                If scalar, applied to all triangles. If array-like, values are
+                applied per triangle.
             validate_mesh: If True, check for inverted or small-volume
                 tetrahedra, sliver tetrahedra, and non-manifold faces, and
                 emit warnings. See :func:`newton.utils.validate_tet_mesh`.
@@ -10173,6 +10442,8 @@ class ModelBuilder:
         # add surface triangles
         start_tri = len(self.tri_indices)
         surf = surface_tri_indices.reshape(-1, 3)
+        surface_colors = _broadcast_triangle_colors(color, len(surf), self._DEFAULT_TRI_COLOR)
+        surface_opacities = _broadcast_triangle_opacities(opacity, len(surf))
         for ti, tri in enumerate(surf):
             tr_custom = {k: arr[ti] for k, arr in tri_custom.items()} if tri_custom else None
             self.add_triangle(
@@ -10184,6 +10455,8 @@ class ModelBuilder:
                 tri_kd=tri_kd,
                 tri_drag=tri_drag,
                 tri_lift=tri_lift,
+                color=surface_colors[ti],
+                opacity=surface_opacities[ti],
                 custom_attributes=tr_custom,
             )
         end_tri = len(self.tri_indices)
@@ -11807,6 +12080,65 @@ class ModelBuilder:
             m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
+
+            # Compact convex support data (one copy per shared geometry).
+            shape_support_data = []
+            support_lut_chunks = []
+            support_offset_chunks = []
+            support_neighbor_chunks = []
+            support_cache = {}
+            lut_offset = 0
+            vertex_offset = 0
+            neighbor_offset = 0
+            for shape_type, source, shape_flags in zip(
+                self.shape_type, generated_shape_sources, self.shape_flags, strict=True
+            ):
+                metadata = (-1, -1, -1, 0)
+                if (
+                    shape_type == GeoType.CONVEX_MESH
+                    and isinstance(source, Mesh)
+                    and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                ):
+                    source_key = hash(source)
+                    if source_key not in support_cache:
+                        acceleration = _build_convex_support_acceleration(source)
+                        cached = None
+                        if acceleration is not None:
+                            lut, offsets, neighbors = acceleration
+                            cached = (
+                                (lut_offset, vertex_offset, neighbor_offset, _CONVEX_SUPPORT_LUT_RESOLUTION),
+                                lut,
+                                offsets,
+                                neighbors,
+                            )
+                            support_lut_chunks.append(lut)
+                            support_offset_chunks.append(offsets)
+                            support_neighbor_chunks.append(neighbors)
+                            lut_offset += len(lut)
+                            vertex_offset += len(offsets)
+                            neighbor_offset += len(neighbors)
+                        support_cache[source_key] = cached
+                    cached = support_cache[source_key]
+                    if cached is not None:
+                        metadata = cached[0]
+                shape_support_data.append(metadata)
+
+            m._shape_support_data = wp.array(shape_support_data, dtype=wp.vec4i, device=device)
+            m._convex_support_lut = wp.array(
+                np.concatenate(support_lut_chunks) if support_lut_chunks else np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=device,
+            )
+            m._convex_support_vertex_offsets = wp.array(
+                np.concatenate(support_offset_chunks) if support_offset_chunks else np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=device,
+            )
+            m._convex_support_neighbors = wp.array(
+                np.concatenate(support_neighbor_chunks) if support_neighbor_chunks else np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=device,
+            )
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
@@ -11820,6 +12152,7 @@ class ModelBuilder:
 
             m.shape_source = self.shape_source  # used for rendering
             m.shape_color = wp.array(self.shape_color, dtype=wp.vec3)
+            m.shape_opacity = wp.array(self.shape_opacity, dtype=wp.float32)
 
             m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
@@ -12474,6 +12807,8 @@ class ModelBuilder:
             m.tri_activations = _to_wp_array(self.tri_activations, wp.float32, requires_grad=requires_grad)
             m.tri_materials = _to_wp_array(self.tri_materials, wp.float32, requires_grad=requires_grad)
             m.tri_areas = _to_wp_array(self.tri_areas, wp.float32, requires_grad=requires_grad)
+            m.tri_color = _to_wp_array(self.tri_color, wp.vec3, requires_grad=False)
+            m.tri_opacity = _to_wp_array(self.tri_opacity, wp.float32, requires_grad=False)
 
             # ---------------------
             # edges
@@ -13387,6 +13722,3 @@ class ModelBuilder:
 
         model.shape_contact_pairs = wp.array(candidate_pairs, dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(candidate_pairs)
-
-
-ModelBuilder.ShapeConfig.__init__ = deprecate_nonkeyword_arguments(ModelBuilder.ShapeConfig.__init__)
