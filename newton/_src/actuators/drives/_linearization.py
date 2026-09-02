@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared linearization for the neural controllers under implicit actuation.
+"""Shared linearization for the neural drives under implicit actuation.
 
 A network is not an in-kernel force law, so each step it is linearized about the
 current state and enters the implicit solve as ``tau0 + a (q - q0) + b (qd - qd0)``.
-Both :class:`ControllerNeuralMLP` and :class:`ControllerNeuralLSTM` use this;
+Both :class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM` use this;
 only the forward and gradient evaluation differs between them.
 """
 
@@ -31,7 +31,7 @@ def _linear_force(
 
     ``tau(q, qd) = tau0 + a (q - q0) + b (qd - qd0)`` with ``a = d(tau)/dq`` and
     ``b = d(tau)/dqd`` taken at the expansion point ``(q0, qd0)`` (see
-    :meth:`ControllerNeuralMLP.prepare_implicit`). Keeping the expansion point
+    :meth:`DriveNeuralMLP.prepare_implicit`). Keeping the expansion point
     rather than a collapsed offset avoids cancelling two large float32 terms to
     recover ``tau0`` near that point, where the solve is most sensitive.
     """

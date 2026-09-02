@@ -31,9 +31,9 @@ import warp as wp
 
 from ...controller import ControllerBase
 from ...utils import _validate_array
-from ._common import (
+from .._common import (
     _add_term_kernel,
-    _mass_matrix_multiply_kernel,
+    _block_matrix_vector_multiply_kernel,
     _pd_term_kernel,
     _read_port,
     _scatter_port_kernel,
@@ -455,7 +455,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                 )
                 mass_matrix = self._mass_matrix_buf
             wp.launch(
-                _mass_matrix_multiply_kernel,
+                _block_matrix_vector_multiply_kernel,
                 dim=dim,
                 inputs=[
                     mass_matrix,

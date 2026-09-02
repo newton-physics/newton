@@ -121,6 +121,37 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                 self.assertIn("unsupported_reason", result["path_attachment_attrs"]["/World/Att"])
                 builder.finalize()
 
+    def test_malformed_attachment_gains_are_preserved_not_hardened(self):
+        """Preserve malformed attachment gains as unsupported instead of raising or hardening."""
+        from pxr import Sdf
+
+        for name in ("stiffness", "damping"):
+            for enabled in (True, False):
+                with self.subTest(attribute=name, enabled=enabled):
+                    stage = _deformable_stage()
+                    pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]
+                    _add_cable_curve(stage, "/World/Cable", pts)
+                    attachment = _add_physics_attachment(
+                        stage,
+                        "/World/Att",
+                        src0="/World/Cable",
+                        type0="point",
+                        indices0=[0],
+                        coords1=[(0.0, 0.0, 1.0)],
+                        enabled=enabled,
+                    )
+                    attachment.CreateAttribute(f"physics:{name}", Sdf.ValueTypeNames.Token).Set("bad")
+
+                    builder = newton.ModelBuilder()
+                    with self.assertWarnsRegex(UserWarning, rf"/World/Att.*physics:{name}.*numeric scalar"):
+                        result = builder.add_usd(stage, return_deformable_results=True)
+
+                    self.assertNotIn("/World/Att", result["path_attachment_map"])
+                    attrs = result["path_attachment_attrs"]["/World/Att"]
+                    self.assertEqual(attrs[name], "bad")
+                    self.assertIn("unsupported_reason", attrs)
+                    builder.finalize()
+
     def test_compliant_attachment_is_preserved_not_hardened(self):
         """A finite-stiffness (compliant) attachment is preserved as metadata instead of
         being silently lowered into a hard joint: authored physics is not changed, the

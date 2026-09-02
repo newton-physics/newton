@@ -141,6 +141,14 @@ class TestApi(unittest.TestCase):
         doc_method = "\n".join(line.strip() for line in (TetMesh.create_from_usd.__doc__ or "").splitlines()).strip()
         assert doc_func == doc_method, "Docstring mismatch between get_tetmesh and TetMesh.create_from_usd"
 
+    def test_get_tetmesh_hides_importer_material_control(self):
+        """Keep importer-only material controls out of the public signature."""
+        import newton.usd  # noqa: PLC0415
+
+        parameters = inspect.signature(newton.usd.get_tetmesh).parameters
+
+        self.assertNotIn("_load_material", parameters)
+
     def test_keyword_only_arguments_reject_positional_use(self):
         """Reject positional use of mature keyword-only API options."""
         import warp as wp  # noqa: PLC0415

@@ -16,13 +16,13 @@ def _masked_zero_1d(data: wp.array[float], mask: wp.array[wp.bool]):
         data[i] = 0.0
 
 
-class Controller:
-    """Base class for actuator control laws.
+class DriveBase:
+    """Base class for actuator drives.
 
-    Control laws compute actuator output effort from authored controller
+    Drives compute actuator output effort from authored drive
     parameters, commanded inputs (targets, feedforward), and simulation
     state. The output may still be constrained by one or more
-    :class:`~newton.actuators.Clamping` objects.
+    :class:`~newton.actuators.ClampingBase` objects.
 
     Subclasses must override ``compute`` and ``resolve_arguments``.
 
@@ -35,9 +35,9 @@ class Controller:
 
     @dataclass
     class State:
-        """Base state for controllers.
+        """Base state for drives.
 
-        Subclass this in concrete controllers that maintain internal
+        Subclass this in concrete drives that maintain internal
         state (e.g. integral accumulators, history buffers).
         """
 
@@ -71,7 +71,7 @@ class Controller:
 
         Args:
             device: Warp device to use.
-            num_actuators: Number of actuators (DOFs) this controller manages.
+            num_actuators: Number of actuators (DOFs) this drive manages.
         """
         pass
 
@@ -87,7 +87,7 @@ class Controller:
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        state: Controller.State | None,
+        state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
     ) -> None:
@@ -104,23 +104,23 @@ class Controller:
             target_pos_indices: Indices into *target_pos*.
             target_vel_indices: Indices into *target_vel* and *feedforward*.
             forces: Scratch buffer to write effort [N or N·m] to. Shape ``(N,)``.
-            state: Controller state (``None`` if stateless).
+            state: Drive state (``None`` if stateless).
             dt: Timestep [s].
             device: Warp device for kernel launches.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute")
 
     evaluate_force: ClassVar[wp.Function | None] = None
-    """``@wp.func`` form of this controller's force law, called inside the
+    """``@wp.func`` form of this drive's force law, called inside the
     implicit solve kernel (see :meth:`Actuator.set_effort_mode_implicit`).
-    ``None`` means the controller does not support implicit actuation.
+    ``None`` means the drive does not support implicit actuation.
 
     Required signature (``float64``)::
 
         evaluate_force(q, qd, target_q, target_qd, feedforward,
                        params: wp.array2d[float], i: int) -> wp.float64
 
-    ``params[i]`` holds the controller's parameters for actuator slot ``i``;
+    ``params[i]`` holds the drive's parameters for actuator slot ``i``;
     see :meth:`bind_params`.
     """
 
@@ -129,13 +129,13 @@ class Controller:
 
         Called once when the implicit effort mode is installed. Override to:
 
-        1. Pack the controller's parameters into a contiguous
+        1. Pack the drive's parameters into a contiguous
            ``(num_actuators, P)`` array — row ``i`` for actuator slot ``i``,
            layout matching :attr:`evaluate_force`.
-        2. Re-point the controller's parameter arrays (e.g. ``kp``) at columns
+        2. Re-point the drive's parameter arrays (e.g. ``kp``) at columns
            of the pack so later writes stay visible.
 
-        ``None`` (the default) means the controller does not support implicit
+        ``None`` (the default) means the drive does not support implicit
         actuation.
         """
         return None
@@ -150,7 +150,7 @@ class Controller:
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        ctrl_state: Controller.State | None,
+        drive_state: DriveBase.State | None,
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
@@ -158,7 +158,7 @@ class Controller:
         """Refresh the parameter pack before an implicit solve step.
 
         Called by the implicit effort mode once per step, before the solve
-        kernel. Controllers whose :attr:`evaluate_force` law needs per-step
+        kernel. Drives whose :attr:`evaluate_force` law needs per-step
         preparation (e.g. a neural network linearized about the current
         state) override this to rewrite the pack built by :meth:`bind_params`
         in place. The default is a no-op — parameter-static laws like PD need
@@ -166,26 +166,26 @@ class Controller:
         """
 
     def is_stateful(self) -> bool:
-        """Return True if this controller maintains internal state."""
+        """Return True if this drive maintains internal state."""
         raise NotImplementedError(f"{type(self).__name__} must implement is_stateful")
 
     def is_graphable(self) -> bool:
         """Return True if compute() can be captured in a CUDA graph."""
         raise NotImplementedError(f"{type(self).__name__} must implement is_graphable")
 
-    def state(self, num_actuators: int, device: wp.Device) -> Controller.State | None:
+    def state(self, num_actuators: int, device: wp.Device) -> DriveBase.State | None:
         """Create and return a new state object, or None if stateless."""
         return None
 
     def update_state(
         self,
-        current_state: Controller.State,
-        next_state: Controller.State,
+        current_state: DriveBase.State,
+        next_state: DriveBase.State,
     ) -> None:
         """Advance internal state after a compute step.
 
         Args:
-            current_state: Current controller state.
-            next_state: Next controller state to write.
+            current_state: Current drive state.
+            next_state: Next drive state to write.
         """
         pass

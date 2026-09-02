@@ -698,6 +698,12 @@ The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.Viewe
 
     viewer.log_contacts(contacts, state)
 
+Contact normals, mode disks, and force arrows are sized relative to the smaller
+shape in each contact pair. Use the ``Contact Relative Scale`` control to adjust
+all contact glyphs while preserving their proportions across differently sized
+contacts. Contact mode coloring and force arrows require the ``"force"``
+extended contact attribute.
+
 **Transform gizmos:**
 
 Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gizmo at a given transform:

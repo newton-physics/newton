@@ -18,7 +18,7 @@ from ._linearization import (
     _gather_slot_state_kernel,
     _linear_force,
 )
-from .base import Controller
+from .base import DriveBase
 
 if typing.TYPE_CHECKING:
     import torch
@@ -167,8 +167,8 @@ def _output_and_state_grads_kernel(
     dtau_dqd[i] = in_grad[i, vel_col] * vel_scale * effort_scale
 
 
-class ControllerNeuralMLP(Controller):
-    """MLP-based neural network controller.
+class DriveNeuralMLP(DriveBase):
+    """MLP-based neural network actuator drive.
 
     Uses a pre-trained MLP to compute joint effort from concatenated, scaled
     position-error and joint-velocity history. The output is multiplied by
@@ -194,8 +194,8 @@ class ControllerNeuralMLP(Controller):
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
 
     @dataclass
-    class State(Controller.State):
-        """History buffers for MLP controller."""
+    class State(DriveBase.State):
+        """History buffers for the MLP drive."""
 
         pos_error_history: torch.Tensor | wp.array2d[float] | None = None
         """Position error history, shape [history_length, actuator_count]."""
@@ -227,14 +227,14 @@ class ControllerNeuralMLP(Controller):
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         if "model_path" not in args:
-            raise ValueError("ControllerNeuralMLP requires 'model_path' argument")
+            raise ValueError("DriveNeuralMLP requires 'model_path' argument")
         model_path = args["model_path"]
         if not model_path:
-            raise ValueError("ControllerNeuralMLP requires a non-empty 'model_path'")
+            raise ValueError("DriveNeuralMLP requires a non-empty 'model_path'")
         return {"model_path": model_path}
 
     def __init__(self, model_path: str):
-        """Initialize MLP controller from a checkpoint file.
+        """Initialize the MLP drive from a checkpoint file.
 
         Args:
             model_path: Path to the ``.onnx``, ``.pt2``, ``.pt``, or ``.pth``
@@ -337,7 +337,7 @@ class ControllerNeuralMLP(Controller):
             out_shape = _runtime_shape(runtime, self._net_output_name)
         if out_shape != (num_actuators, 1):
             raise ValueError(
-                f"ControllerNeuralMLP: network output '{self._net_output_name}' has shape {out_shape}, "
+                f"DriveNeuralMLP: network output '{self._net_output_name}' has shape {out_shape}, "
                 f"expected {(num_actuators, 1)} (one scalar effort per actuator)"
             )
 
@@ -355,7 +355,7 @@ class ControllerNeuralMLP(Controller):
     """
 
     #: The network enters the general implicit solve as a per-step-linearized
-    #: in-kernel law (see :meth:`prepare_implicit`), like any other controller.
+    #: in-kernel law (see :meth:`prepare_implicit`), like any other drive.
     evaluate_force = _linear_force
 
     def _implicit_supported(self) -> bool:
@@ -388,7 +388,7 @@ class ControllerNeuralMLP(Controller):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        ctrl_state: ControllerNeuralMLP.State | None,
+        drive_state: DriveNeuralMLP.State | None,
         dt: float,
         inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
@@ -401,7 +401,7 @@ class ControllerNeuralMLP(Controller):
         as the linearized force law. Called once per step before the solve.
         """
         if inv_mass is None:
-            raise ValueError("ControllerNeuralMLP.prepare_implicit requires inv_mass (the per-slot response)")
+            raise ValueError("DriveNeuralMLP.prepare_implicit requires inv_mass (the per-slot response)")
         device = device or self._device
         n = self._num_actuators
         wp.launch(
@@ -486,15 +486,15 @@ class ControllerNeuralMLP(Controller):
             device=device,
         )
 
-    def state(self, num_actuators: int, device: wp.Device) -> ControllerNeuralMLP.State:
+    def state(self, num_actuators: int, device: wp.Device) -> DriveNeuralMLP.State:
         if self._is_torch_checkpoint:
             import torch
 
-            return ControllerNeuralMLP.State(
+            return DriveNeuralMLP.State(
                 pos_error_history=torch.zeros(self.history_length, num_actuators, device=self._torch_device),
                 vel_history=torch.zeros(self.history_length, num_actuators, device=self._torch_device),
             )
-        return ControllerNeuralMLP.State(
+        return DriveNeuralMLP.State(
             pos_error_history=wp.zeros((self.history_length, num_actuators), dtype=wp.float32, device=device),
             vel_history=wp.zeros((self.history_length, num_actuators), dtype=wp.float32, device=device),
         )
@@ -511,7 +511,7 @@ class ControllerNeuralMLP(Controller):
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        state: ControllerNeuralMLP.State,
+        state: DriveNeuralMLP.State,
         dt: float,
         device: wp.Device | None = None,
     ) -> None:
@@ -581,8 +581,8 @@ class ControllerNeuralMLP(Controller):
 
     def update_state(
         self,
-        current_state: ControllerNeuralMLP.State,
-        next_state: ControllerNeuralMLP.State,
+        current_state: DriveNeuralMLP.State,
+        next_state: DriveNeuralMLP.State,
     ) -> None:
         if next_state is None:
             return
@@ -617,7 +617,7 @@ class ControllerNeuralMLP(Controller):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        state: ControllerNeuralMLP.State,
+        state: DriveNeuralMLP.State,
     ) -> None:
         import torch
 

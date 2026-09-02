@@ -1014,6 +1014,13 @@ separated-shapes distance query.
 For convex primitive pairs, multiple contact points are generated for stable stacking and
 resting contacts. The collision pipeline estimates buffer sizes based on the model; you
 can override this value with ``rigid_contact_max`` when instantiating the pipeline.
+The automatic capacity is a conservative heuristic based on colliding shape types,
+contact-pair metadata, and world layout. It generally grows linearly with replicated
+worlds, but it is not a guaranteed worst-case bound. When the estimate implies at least
+256 MiB for the base rigid-contact buffers, the pipeline warns with the resolved capacity
+and the inputs that produced it. Pass an explicit ``rigid_contact_max`` to select the
+memory budget and silence the warning. Optional collision features and solvers may
+allocate additional per-contact memory.
 
 .. _Mesh Collisions:
 
@@ -1461,8 +1468,8 @@ Soft contacts are generated automatically when particles are present. They use a
 
 .. testcode:: soft-contacts
 
-    # Set soft contact margin
-    pipeline = CollisionPipeline(model, soft_contact_margin=0.01)
+    # Set the soft-contact detection gap (slack added to the particle radius)
+    pipeline = CollisionPipeline(model, soft_contact_gap=0.01)
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
 
@@ -1481,7 +1488,8 @@ do not control collision detection performed inside a solver. For example,
 :class:`~solvers.SolverMuJoCo` generates contacts internally when
 ``use_mujoco_contacts=True`` (see :ref:`mujoco-collision-pipeline`), while
 :class:`~solvers.SolverVBD` handles particle self-contact internally according
-to ``particle_collision_detection_interval``.
+to the self-contact slot of ``collision_frequency`` /
+``collision_frequency_type``.
 
 Start by calling ``collide`` every substep when debugging contact behavior.
 This keeps contacts current as bodies move. Once the behavior is acceptable,
