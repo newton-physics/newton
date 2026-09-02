@@ -299,8 +299,21 @@ class TestUSDDeformableCloth(unittest.TestCase):
         cloth.GetPrim().CreateAttribute("physics:surfaceThickness", Sdf.ValueTypeNames.Float).Set(0.02)
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(DeprecationWarning, "thicknesses.*thicknesses:elementType"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             builder.add_usd(stage)
+        messages = [str(warning.message) for warning in caught]
+        self.assertTrue(
+            any(
+                warning.category is DeprecationWarning
+                and "thicknesses" in str(warning.message)
+                and "thicknesses:elementType" in str(warning.message)
+                for warning in caught
+            )
+        )
+        fallback_notices = [message for message in messages if "no valid surface thickness" in message]
+        self.assertEqual(len(fallback_notices), 1)
+        self.assertIn("/World/Cloth:", fallback_notices[0])
         self.assertAlmostEqual(builder.particle_radius[0], 0.0005, places=7)
 
     def test_legacy_surface_material_retains_old_units_during_deprecation(self):
@@ -383,7 +396,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
         _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", density=1000.0)
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        with self.assertWarnsRegex(UserWarning, "/World/Cloth:.*1 mm physical fallback"):
+            builder.add_usd(stage)
 
         p0, p1 = group_range(builder, "cloth", "/World/Cloth", "particle")
         # Unit quad (area 1): mass = density * default thickness * area = 1000 * 0.001 = 1 kg.
@@ -413,7 +427,15 @@ class TestUSDDeformableCloth(unittest.TestCase):
         UsdShade.MaterialBindingAPI.Apply(base_cloth.GetPrim()).Bind(mat, materialPurpose="physics")
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        fallback_notices = [
+            str(warning.message) for warning in caught if "no valid surface thickness" in str(warning.message)
+        ]
+        self.assertEqual(len(fallback_notices), 2)
+        for path in ("/World/ClothBodyDensity", "/World/ClothBaseMat"):
+            self.assertTrue(any(message.startswith(f"{path}:") for message in fallback_notices))
 
         for path in ("/World/ClothBodyDensity", "/World/ClothBaseMat"):
             p0, p1 = group_range(builder, "cloth", path, "particle")
@@ -449,7 +471,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         # The current surface material on the bare cloth uses AOUSD's 1 mm fallback.
-        result = builder.add_usd(stage, return_deformable_results=True)
+        with self.assertWarnsRegex(UserWarning, "/World/ClothBare:.*1 mm physical fallback"):
+            result = builder.add_usd(stage, return_deformable_results=True)
 
         def total_mass(path):
             p0, p1 = group_range(builder, "cloth", path, "particle")
