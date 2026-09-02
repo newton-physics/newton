@@ -371,8 +371,18 @@ def _apply_local_rod_material_gains(
         return
 
     body_rest_lengths = dict(zip(bodies, segment_rest_lengths, strict=True))
-    body_radii = dict(zip(bodies, segment_radii, strict=True))
     structural_dampings = _resolve_cable_structural_dampings(material)
+    if segment_radii and all(radius == segment_radii[0] for radius in segment_radii[1:]):
+        uniform_segment_values = _resolve_cable_structural_stiffnesses(material, segment_radii[0], linear_unit)
+        body_structural_values = dict.fromkeys(bodies, uniform_segment_values)
+    else:
+        body_structural_values = {
+            body: _resolve_cable_structural_stiffnesses(material, radius, linear_unit)
+            for body, radius in zip(bodies, segment_radii, strict=True)
+        }
+    uniform_joint_values = None
+    if joint_radii and all(radius == joint_radii[0] for radius in joint_radii[1:]):
+        uniform_joint_values = _resolve_cable_structural_stiffnesses(material, joint_radii[0], linear_unit)
 
     def series_stiffness(
         parent_value: float | None,
@@ -391,13 +401,17 @@ def _apply_local_rod_material_gains(
         child = builder.joint_child[joint]
         parent_length = body_rest_lengths[parent]
         child_length = body_rest_lengths[child]
-        parent_values = _resolve_cable_structural_stiffnesses(material, body_radii[parent], linear_unit)
-        child_values = _resolve_cable_structural_stiffnesses(material, body_radii[child], linear_unit)
+        parent_values = body_structural_values[parent]
+        child_values = body_structural_values[child]
 
         stretch = series_stiffness(parent_values[0], child_values[0], parent_length, child_length)
         shear = series_stiffness(parent_values[1], child_values[1], parent_length, child_length)
         joint_rest_length = 0.5 * (parent_length + child_length)
-        joint_values = _resolve_cable_structural_stiffnesses(material, joint_radius, linear_unit)
+        joint_values = (
+            uniform_joint_values
+            if uniform_joint_values is not None
+            else _resolve_cable_structural_stiffnesses(material, joint_radius, linear_unit)
+        )
         bend = None if joint_values[2] is None else joint_values[2] / joint_rest_length
         twist = None if joint_values[3] is None else joint_values[3] / joint_rest_length
         stretch_damping, shear_damping, bend_damping, twist_damping = (

@@ -126,11 +126,18 @@ def _warn_legacy_surface_material(path: str, material: dict[str, float] | None) 
 
 
 def _resolve_surface_structural_stiffnesses(
-    material: dict[str, float] | None, thickness: float | None, linear_unit: float
-) -> tuple[float | None, float | None, float | None] | None:
-    """Resolve surface stretch, shear, and bend structural stiffnesses."""
+    material: dict[str, float] | None,
+    thickness: float | np.ndarray | None,
+    linear_unit: float,
+) -> tuple[float | np.ndarray | None, float | np.ndarray | None, float | np.ndarray | None] | None:
+    """Resolve scalar or vector surface stretch, shear, and bend structural stiffnesses."""
     if material is None or thickness is None:
         return None
+
+    def constant(value: float) -> float | np.ndarray:
+        if isinstance(thickness, np.ndarray):
+            return np.full_like(thickness, value)
+        return value
 
     if _is_legacy_only_surface_material(material):
         stretch = material.get("stretchStiffness")
@@ -146,9 +153,9 @@ def _resolve_surface_structural_stiffnesses(
     poissons = material.get("poissonsRatio", _AOUSD_DEFAULT_POISSONS_RATIO)
     shear_modulus = youngs / (2.0 * (1.0 + poissons))
 
-    def resolve(current_name: str, legacy_name: str, derived: float) -> float:
+    def resolve(current_name: str, legacy_name: str, derived: float | np.ndarray) -> float | np.ndarray:
         if current_name in material:
-            return material[current_name]
+            return constant(material[current_name])
         if legacy_name in material:
             legacy = material[legacy_name]
             return legacy * (thickness**3 if current_name == "surfaceBendStiffness" else thickness)
@@ -338,6 +345,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             len(mesh_points),
             thickness,
         )
+        face_thickness_array = np.asarray(face_thicknesses, dtype=np.float64)
+        point_thickness_array = np.asarray(point_thicknesses, dtype=np.float64)
 
         # Newton's isotropic membrane cannot apply stretch and shear independently, so
         # stretch drives its in-plane mode and shear remains metadata. Keep the area mode
@@ -391,47 +400,70 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             particle_radius=particle_radius,
             label=path,
         )
-        for point, point_thickness in enumerate(point_thicknesses):
-            builder.particle_radius[p0 + point] = 0.5 * point_thickness
+        builder.particle_radius[p0 : builder.particle_count] = (0.5 * point_thickness_array).tolist()
 
-        element_volumes = tri_areas * np.asarray(face_thicknesses, dtype=np.float64)
+        element_volumes = tri_areas * face_thickness_array
         density_element_masses = resolved_cloth_density * element_volumes
-        density_point_masses = [0.0] * len(mesh_points)
-        for element_mass, face in zip(density_element_masses, tri_faces, strict=True):
-            for point in face:
-                density_point_masses[int(point)] += float(element_mass) / 3.0
-        for point, mass in enumerate(density_point_masses):
-            builder.particle_mass[p0 + point] = mass
+        density_point_masses = np.bincount(
+            tri_faces.reshape(-1),
+            weights=np.repeat(density_element_masses / 3.0, 3),
+            minlength=len(mesh_points),
+        )
+        builder.particle_mass[p0 : builder.particle_count] = density_point_masses.tolist()
 
-        for tri_offset, face_thickness in enumerate(face_thicknesses):
-            resolved = _resolve_surface_structural_stiffnesses(surface_material, face_thickness, ctx.linear_unit)
-            stretch = builder.default_tri_ke if resolved is None or resolved[0] is None else resolved[0]
-            material = builder.tri_materials[t0 + tri_offset]
-            builder.tri_materials[t0 + tri_offset] = (
-                stretch,
-                material[1],
-                material[2],
-                material[3],
-                material[4],
+        uniform_face_thickness = bool(np.all(face_thickness_array == face_thickness_array[0]))
+        if not uniform_face_thickness and surface_material is not None:
+            face_structural_stiffnesses = _resolve_surface_structural_stiffnesses(
+                surface_material, face_thickness_array, ctx.linear_unit
             )
+            face_stretches = (
+                np.full_like(face_thickness_array, builder.default_tri_ke)
+                if face_structural_stiffnesses is None or face_structural_stiffnesses[0] is None
+                else face_structural_stiffnesses[0]
+            )
+            for tri_offset, stretch in enumerate(face_stretches):
+                material = builder.tri_materials[t0 + tri_offset]
+                builder.tri_materials[t0 + tri_offset] = (
+                    float(stretch),
+                    material[1],
+                    material[2],
+                    material[3],
+                    material[4],
+                )
 
-        edge_face_indices: dict[tuple[int, int], list[int]] = {}
-        for tri_offset, face in enumerate(tri_faces):
-            for edge in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
-                key = tuple(sorted((int(edge[0]), int(edge[1]))))
-                edge_face_indices.setdefault(key, []).append(tri_offset)
-        for edge_offset in range(e0, builder.edge_count):
-            _opposite_a, _opposite_b, edge_a, edge_b = builder.edge_indices[edge_offset]
-            key = tuple(sorted((int(edge_a) - p0, int(edge_b) - p0)))
-            adjacent_faces = edge_face_indices[key]
-            if authored_thicknesses is not None and authored_thicknesses.element_type == "point":
-                edge_thickness = 0.5 * (point_thicknesses[key[0]] + point_thicknesses[key[1]])
-            else:
-                edge_thickness = sum(face_thicknesses[index] for index in adjacent_faces) / len(adjacent_faces)
-            resolved = _resolve_surface_structural_stiffnesses(surface_material, edge_thickness, ctx.linear_unit)
-            bend = builder.default_edge_ke if resolved is None or resolved[2] is None else resolved[2]
-            properties = builder.edge_bending_properties[edge_offset]
-            builder.edge_bending_properties[edge_offset] = (bend, properties[1])
+        point_thickness_authored = authored_thicknesses is not None and authored_thicknesses.element_type == "point"
+        uniform_edge_thickness = (
+            bool(np.all(point_thickness_array == point_thickness_array[0]))
+            if point_thickness_authored
+            else uniform_face_thickness
+        )
+        if not uniform_edge_thickness and surface_material is not None:
+            edge_face_indices: dict[tuple[int, int], list[int]] = {}
+            for tri_offset, face in enumerate(tri_faces):
+                for edge in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+                    key = tuple(sorted((int(edge[0]), int(edge[1]))))
+                    edge_face_indices.setdefault(key, []).append(tri_offset)
+            edge_thickness_array = np.empty(builder.edge_count - e0, dtype=np.float64)
+            for edge_index, edge_offset in enumerate(range(e0, builder.edge_count)):
+                _opposite_a, _opposite_b, edge_a, edge_b = builder.edge_indices[edge_offset]
+                key = tuple(sorted((int(edge_a) - p0, int(edge_b) - p0)))
+                adjacent_faces = edge_face_indices[key]
+                if point_thickness_authored:
+                    edge_thickness = 0.5 * (point_thicknesses[key[0]] + point_thicknesses[key[1]])
+                else:
+                    edge_thickness = sum(face_thicknesses[index] for index in adjacent_faces) / len(adjacent_faces)
+                edge_thickness_array[edge_index] = edge_thickness
+            edge_structural_stiffnesses = _resolve_surface_structural_stiffnesses(
+                surface_material, edge_thickness_array, ctx.linear_unit
+            )
+            edge_bends = (
+                np.full_like(edge_thickness_array, builder.default_edge_ke)
+                if edge_structural_stiffnesses is None or edge_structural_stiffnesses[2] is None
+                else edge_structural_stiffnesses[2]
+            )
+            for edge_offset, bend in zip(range(e0, builder.edge_count), edge_bends, strict=True):
+                properties = builder.edge_bending_properties[edge_offset]
+                builder.edge_bending_properties[edge_offset] = (float(bend), properties[1])
         if rest_bend_angles_default == "flat":
             has_nonplanar_rest_angle = any(
                 builder.edge_indices[edge_offset][0] != -1

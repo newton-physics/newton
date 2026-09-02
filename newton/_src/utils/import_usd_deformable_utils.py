@@ -756,16 +756,16 @@ def _set_cable_body_radius(builder: ModelBuilder, body: int, radius: float) -> N
         builder.body_inv_inertia[body] = wp.mat33(0.0)
 
 
-def _element_masses_from_points(
+def _element_masses_from_points_ragged(
     point_masses: Sequence[float], element_indices: Sequence[Sequence[int]], element_volumes: Sequence[float]
 ) -> list[float] | None:
-    """Convert point masses to element masses using the proposal's volume-weighted relation."""
+    """Convert point masses for an internal element array with varying arity."""
     point_volumes = [0.0] * len(point_masses)
     referenced_points: set[int] = set()
     for indices, volume in zip(element_indices, element_volumes, strict=True):
         share = float(volume) / len(indices)
-        for raw_point_index in indices:
-            point_index = int(raw_point_index)
+        for point in indices:
+            point_index = int(point)
             referenced_points.add(point_index)
             point_volumes[point_index] += share
     if any(point_volumes[point] <= 0.0 or not math.isfinite(point_volumes[point]) for point in referenced_points):
@@ -778,16 +778,65 @@ def _element_masses_from_points(
     ]
 
 
-def _lump_element_masses_to_points(
+def _element_masses_from_points(
+    point_masses: Sequence[float], element_indices: Sequence[Sequence[int]], element_volumes: Sequence[float]
+) -> list[float] | None:
+    """Convert point masses to element masses using the proposal's volume-weighted relation."""
+    if len(element_indices) == 0:
+        return []
+    try:
+        indices = np.asarray(element_indices, dtype=np.int64)
+    except ValueError:
+        return _element_masses_from_points_ragged(point_masses, element_indices, element_volumes)
+    if indices.ndim != 2:
+        return _element_masses_from_points_ragged(point_masses, element_indices, element_volumes)
+    volumes = np.asarray(element_volumes, dtype=np.float64)
+    points_per_element = indices.shape[1]
+    point_volumes = np.bincount(
+        indices.reshape(-1),
+        weights=np.repeat(volumes / points_per_element, points_per_element),
+        minlength=len(point_masses),
+    )
+    referenced_points = np.unique(indices)
+    if np.any((point_volumes[referenced_points] <= 0.0) | ~np.isfinite(point_volumes[referenced_points])):
+        return None
+    mass_per_volume = np.zeros(len(point_masses), dtype=np.float64)
+    mass_per_volume[referenced_points] = (
+        np.asarray(point_masses, dtype=np.float64)[referenced_points] / point_volumes[referenced_points]
+    )
+    return (volumes / points_per_element * np.sum(mass_per_volume[indices], axis=1)).tolist()
+
+
+def _lump_element_masses_to_points_ragged(
     element_masses: Sequence[float], element_indices: Sequence[Sequence[int]], point_count: int
 ) -> list[float]:
-    """Split each element mass equally over its points."""
+    """Split element mass for an internal element array with varying arity."""
     point_masses = [0.0] * point_count
     for mass, indices in zip(element_masses, element_indices, strict=True):
         share = float(mass) / len(indices)
         for point in indices:
             point_masses[int(point)] += share
     return point_masses
+
+
+def _lump_element_masses_to_points(
+    element_masses: Sequence[float], element_indices: Sequence[Sequence[int]], point_count: int
+) -> list[float]:
+    """Split each element mass equally over its points."""
+    if len(element_indices) == 0:
+        return [0.0] * point_count
+    try:
+        indices = np.asarray(element_indices, dtype=np.int64)
+    except ValueError:
+        return _lump_element_masses_to_points_ragged(element_masses, element_indices, point_count)
+    if indices.ndim != 2:
+        return _lump_element_masses_to_points_ragged(element_masses, element_indices, point_count)
+    points_per_element = indices.shape[1]
+    return np.bincount(
+        indices.reshape(-1),
+        weights=np.repeat(np.asarray(element_masses, dtype=np.float64) / points_per_element, points_per_element),
+        minlength=point_count,
+    ).tolist()
 
 
 def _resolve_simplex_point_masses(
@@ -837,8 +886,8 @@ def _resolve_simplex_point_masses(
                 for source, volume in zip(element_sources, element_volumes, strict=True)
             ]
     else:
-        referenced_points = {int(point) for indices in element_indices for point in indices}
-        unreferenced_count = point_count - len(referenced_points)
+        referenced_point_count = len(np.unique(np.asarray(element_indices, dtype=np.int64)))
+        unreferenced_count = point_count - referenced_point_count
         if unreferenced_count:
             warnings.warn(
                 f"{prim.GetPath()}: physics:masses has {unreferenced_count} unreferenced point value(s); "
