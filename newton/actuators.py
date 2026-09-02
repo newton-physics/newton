@@ -18,6 +18,7 @@ construction.
 from ._src.actuators import (
     Actuator,
     ActuatorParsed,
+    ActuatorView,
     Clamping,
     ClampingDCMotor,
     ClampingMaxEffort,
@@ -38,6 +39,7 @@ from ._src.actuators import (
 __all__ = [
     "Actuator",
     "ActuatorParsed",
+    "ActuatorView",
     "Clamping",
     "ClampingDCMotor",
     "ClampingMaxEffort",
