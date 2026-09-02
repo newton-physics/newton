@@ -924,6 +924,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             dof_start = builder.joint_qd_start[joint]
             dof_end = builder.joint_qd_start[joint + 1] if joint + 1 < builder.joint_count else len(builder.joint_qd)
             cable_stiffness.extend(builder.joint_target_ke[dof_start:dof_end])
+        self.assertTrue(cable_stiffness)
         self.assertTrue(all(math.isfinite(value) and value > 0.0 for value in cable_stiffness))
 
     def test_cable_density_segment_mass_is_cylinder_not_capsule(self):
