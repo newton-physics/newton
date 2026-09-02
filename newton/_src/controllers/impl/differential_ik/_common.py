@@ -298,7 +298,7 @@ def _adaptive_damping_kernel(
     damping[robot_idx] = wp.sqrt(lam_sq)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _truncated_pinv_matrix_kernel(
     matrix: wp.array3d[float],  # (robot_count, 6, 6) undamped JJᵀ
     singular_value_threshold: wp.array[wp.float32],  # (robot_count,) sigma below which a direction is dropped
@@ -316,6 +316,13 @@ def _truncated_pinv_matrix_kernel(
     Tikhonov damping, which shifts every direction by the same ``λ²`` and
     never truncates any of them, this has no smooth transition between the
     two regimes.
+
+    Backward disabled: its analytic gradient (via ``symmetric_eigenvalues_qr``
+    plus an in-kernel selection/threshold loop over the eigenpairs) disagrees
+    with a finite difference by orders of magnitude, not just numerical
+    noise. Any caller under an active tape gets an exact-zero gradient
+    contribution from this kernel instead. Root cause not yet isolated;
+    deferred to a follow-up.
     """
     robot_idx = wp.tid()
 

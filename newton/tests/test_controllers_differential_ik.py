@@ -1449,7 +1449,8 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             controlled_dofs_per_robot=_dofs_arr([6], device),
             axis_weight=_POSITION_ONLY_AXIS_WEIGHT,  # orientation axes (rows 3-5) weighted 0
             bandwidth=1.0,
-            damping=0.1,
+            damping=None,
+            ik_method=IkMethod.TRANSPOSE,  # the only IkMethod with a correct backward pass
             device=device,
             requires_grad=True,
         )
@@ -1468,6 +1469,95 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         jacobian_grad = inputs.jacobian_tool_world.grad.numpy()
         np.testing.assert_array_equal(jacobian_grad[0, 3:, :], np.zeros((3, 6), dtype=np.float32))
         self.assertGreater(np.abs(jacobian_grad[0, :3, :]).max(), 1e-6)
+
+    def test_requires_grad_rejects_every_ik_method_except_transpose(self):
+        """Only IkMethod.TRANSPOSE may be combined with requires_grad=True.
+
+        Every other method routes through ``_invert_spd_block_kernel`` or
+        ``_truncated_pinv_matrix_kernel``, both marked
+        ``enable_backward=False`` because their backward pass does not match
+        a finite difference (see the kernels' docstrings in ``_common.py``
+        and ``differential_ik/_common.py``). Constructing a requires_grad
+        controller with one of them would silently produce an incomplete
+        gradient, so the constructor rejects it instead.
+        """
+        device = wp.get_device()
+        method_kwargs = {
+            IkMethod.DAMPED_LEAST_SQUARES: {"damping": 0.1},
+            IkMethod.PSEUDO_INVERSE: {"damping": None},
+            IkMethod.ADAPTIVE_DAMPING: {
+                "damping": None,
+                "adaptive_damping_min": 0.02,
+                "adaptive_damping_max": 0.5,
+                "adaptive_damping_threshold": 0.3,
+            },
+            IkMethod.TRUNCATED_SVD: {"damping": None, "truncated_svd_threshold": 0.05},
+        }
+        for ik_method, extra_kwargs in method_kwargs.items():
+            with self.subTest(ik_method=ik_method), self.assertRaises(ValueError):
+                ControllerDifferentialIKModelFree(
+                    controlled_dofs_per_robot=_dofs_arr([6], device),
+                    bandwidth=1.0,
+                    ik_method=ik_method,
+                    device=device,
+                    requires_grad=True,
+                    **extra_kwargs,
+                )
+
+    def test_gradient_matches_finite_difference_for_transpose(self):
+        """TRANSPOSE's analytic gradient matches a central finite difference.
+
+        The only IkMethod with a correct backward pass, since it never
+        inverts a matrix or takes an eigendecomposition -- q̇ = bandwidth·Jᵀe
+        is differentiated by the generic mechanism without issue.
+        """
+        device = wp.get_device()
+        rng = np.random.default_rng(31)
+        jacobian_np = rng.normal(size=(1, 6, 6)).astype(np.float32)
+        pos_err = np.array([0.1, 0.05, -0.03], dtype=np.float32)
+
+        def qd_target_sum(ctrl, jacobian_value):
+            inputs = ctrl.input()
+            outputs = ctrl.output()
+            inputs.joint_q.assign(np.zeros(6, dtype=np.float32))
+            inputs.tool_pose_world.assign([wp.transform_identity()])
+            inputs.desired_tool_pose_world.assign([wp.transform(p=wp.vec3(*pos_err.tolist()), q=wp.quat_identity())])
+            inputs.jacobian_tool_world.assign(jacobian_value)
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+            return float(outputs.joint_qd_target.numpy().sum())
+
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([6], device),
+            bandwidth=1.0,
+            damping=None,
+            ik_method=IkMethod.TRANSPOSE,
+            device=device,
+            requires_grad=True,
+        )
+        inputs = ctrl.input()
+        outputs = ctrl.output()
+        inputs.joint_q.assign(np.zeros(6, dtype=np.float32))
+        inputs.tool_pose_world.assign([wp.transform_identity()])
+        inputs.desired_tool_pose_world.assign([wp.transform(p=wp.vec3(*pos_err.tolist()), q=wp.quat_identity())])
+        inputs.jacobian_tool_world.assign(jacobian_np)
+
+        tape = wp.Tape()
+        with tape:
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+        tape.backward(grads={outputs.joint_qd_target: wp.ones(6, dtype=wp.float32, device=device)})
+        analytic_grad = inputs.jacobian_tool_world.grad.numpy().copy()
+
+        # Central finite difference on a few representative entries, not all
+        # 36 -- enough to catch a broken backward pass without an expensive,
+        # over-precise sweep.
+        eps = 1.0e-3
+        for row, col in [(0, 0), (2, 3), (5, 5)]:
+            plus = jacobian_np.copy()
+            plus[0, row, col] += eps
+            minus = jacobian_np.copy()
+            minus[0, row, col] -= eps
+            numeric_grad = (qd_target_sum(ctrl, plus) - qd_target_sum(ctrl, minus)) / (2.0 * eps)
+            np.testing.assert_allclose(analytic_grad[0, row, col], numeric_grad, atol=1.0e-2, rtol=1.0e-2)
 
     def test_pseudo_inverse_rejects_explicit_damping(self):
         device = wp.get_device()

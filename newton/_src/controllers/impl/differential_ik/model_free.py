@@ -163,7 +163,12 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             be ``None`` for every other :class:`IkMethod`, which has no λ to
             set.
         ik_method: Inverse-Jacobian solve method, an :class:`IkMethod`.
-            Defaults to ``IkMethod.DAMPED_LEAST_SQUARES``.
+            Defaults to ``IkMethod.DAMPED_LEAST_SQUARES``. If
+            ``requires_grad=True``, must be ``IkMethod.TRANSPOSE`` -- every
+            other method routes through a matrix inversion or
+            eigendecomposition kernel whose backward pass is currently
+            disabled (see ``_common.py``), so it would silently contribute
+            no gradient.
         adaptive_damping_min: λ used when the smallest singular value of the
             task Jacobian is at or above ``adaptive_damping_threshold``.
             Required (and must be non-negative) when
@@ -233,6 +238,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             :meth:`is_graphable`.
         device: Warp device.
         requires_grad: Whether internal buffers need gradient support.
+            Currently requires ``ik_method=IkMethod.TRANSPOSE`` -- the only
+            method with a correct backward pass.
     """
 
     class Inputs:
@@ -383,6 +390,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
 
         if not isinstance(ik_method, IkMethod):
             raise TypeError(f"ik_method must be an IkMethod, got {ik_method!r}.")
+
+        if requires_grad and ik_method != IkMethod.TRANSPOSE:
+            raise ValueError(
+                f"requires_grad=True requires ik_method=IkMethod.TRANSPOSE, got ik_method={ik_method}. "
+                "Every other IkMethod routes through a matrix inversion or eigendecomposition kernel "
+                "whose backward pass is currently disabled, so its gradient would be silently incomplete."
+            )
 
         if ik_method == IkMethod.DAMPED_LEAST_SQUARES:
             if not (isinstance(damping, (int, float)) and not isinstance(damping, bool)):

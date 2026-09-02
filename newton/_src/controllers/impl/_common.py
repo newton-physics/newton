@@ -202,7 +202,7 @@ def _null_space_projector_kernel(
     null_space_projector[robot_idx, row, col] = identity_entry - total
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _invert_spd_block_kernel(
     spd_matrix: wp.array3d[float],  # (block_count, max_dim, max_dim) symmetric positive-definite matrix per block
     block_dim: wp.array[wp.int32],  # (block_count,) size of the used top-left submatrix of each block
@@ -223,6 +223,15 @@ def _invert_spd_block_kernel(
     expansion, Gauss-Jordan) is used — this is the numerically standard way to
     invert a small SPD matrix, and the same recipe
     ``newton/_src/actuators/response_oracle.py`` uses for the same reason.
+
+    Backward disabled: this kernel's forward/back-substitution loops read
+    values written earlier in the same launch (an intra-kernel recurrence),
+    a pattern Warp's generic adjoint generation does not differentiate
+    correctly -- gradients through it are silently wrong, not merely
+    unsupported. Any caller under an active tape gets an exact-zero gradient
+    contribution from this kernel instead. Fixing this needs a hand-written
+    adjoint or an algorithm restructured to avoid same-launch recurrence;
+    deferred to a follow-up.
     """
     block_idx = wp.tid()
     block_size = block_dim[block_idx]

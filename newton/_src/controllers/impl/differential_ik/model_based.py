@@ -112,7 +112,11 @@ class ControllerDifferentialIK(ControllerBase):
             be ``None`` for every other :class:`IkMethod`, which has no λ to
             set.
         ik_method: Inverse-Jacobian solve method, an :class:`IkMethod`.
-            Defaults to ``IkMethod.DAMPED_LEAST_SQUARES``.
+            Defaults to ``IkMethod.DAMPED_LEAST_SQUARES``. If the model
+            requires grad, must be ``IkMethod.TRANSPOSE`` -- every other
+            method routes through a matrix inversion or eigendecomposition
+            kernel whose backward pass is currently disabled (see
+            ``_common.py``), so it would silently contribute no gradient.
         adaptive_damping_min: λ used when the smallest singular value of the
             task Jacobian is at or above ``adaptive_damping_threshold``.
             Required (and must be non-negative) when
