@@ -2779,7 +2779,10 @@ class TestControllerDifferentialIK(unittest.TestCase):
                 },
                 0.1,
             ),
-            DifferentialIKMethod.TRUNCATED_SVD: ({"bandwidth": 1.0, "damping": None, "truncated_svd_threshold": 0.01}, 0.1),
+            DifferentialIKMethod.TRUNCATED_SVD: (
+                {"bandwidth": 1.0, "damping": None, "truncated_svd_threshold": 0.01},
+                0.1,
+            ),
         }
         # A well-within-reach target (chain reach is 7 * 0.2 = 1.4 m) for a
         # 7-DOF chain, so PSEUDO_INVERSE's dof_count >= task_dim requirement

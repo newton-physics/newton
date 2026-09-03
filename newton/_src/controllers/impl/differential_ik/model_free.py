@@ -185,13 +185,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             ``ik_method=DifferentialIKMethod.DAMPED_LEAST_SQUARES`` (the default); must
             be ``None`` for every other :class:`DifferentialIKMethod`, which has no λ to
             set.
-        ik_method: Inverse-Jacobian solve method, an :class:`DifferentialIKMethod`.
-            Defaults to ``DifferentialIKMethod.DAMPED_LEAST_SQUARES``. If
-            ``requires_grad=True``, must be ``DifferentialIKMethod.TRANSPOSE`` -- every
-            other method routes through a matrix inversion or
-            eigendecomposition kernel whose backward pass is currently
-            disabled (see ``_common.py``), so it would silently contribute
-            no gradient.
+        ik_method: Inverse-Jacobian solve method, a :class:`DifferentialIKMethod`.
+            Defaults to ``DifferentialIKMethod.DAMPED_LEAST_SQUARES``.
         adaptive_damping_min: λ used when the smallest singular value of the
             task Jacobian is at or above ``adaptive_damping_threshold``.
             Required (and must be non-negative) when
@@ -417,7 +412,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         _validate_non_negative_gain(bandwidth, "bandwidth")
 
         if not isinstance(ik_method, DifferentialIKMethod):
-            raise TypeError(f"ik_method must be an DifferentialIKMethod, got {ik_method!r}.")
+            raise TypeError(f"ik_method must be a DifferentialIKMethod, got {ik_method!r}.")
 
         if requires_grad:
             raise ValueError("requires_grad=True is not supported at this time.")
@@ -475,7 +470,9 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             if truncated_svd_threshold <= 0.0:
                 raise ValueError(f"truncated_svd_threshold must be positive, got {truncated_svd_threshold}.")
         elif truncated_svd_threshold is not None:
-            raise ValueError(f"truncated_svd_threshold was given but ik_method={ik_method} != DifferentialIKMethod.TRUNCATED_SVD.")
+            raise ValueError(
+                f"truncated_svd_threshold was given but ik_method={ik_method} != DifferentialIKMethod.TRUNCATED_SVD."
+            )
 
         use_null_space = bool(use_joint_limit_avoidance) or bool(use_null_space_posture_control)
 
