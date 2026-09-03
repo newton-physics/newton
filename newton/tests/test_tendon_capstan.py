@@ -1142,6 +1142,54 @@ class TestTendonCapstan(unittest.TestCase):
 
         self.assertEqual(destination.body_count, 0)
 
+    def test_collapse_fixed_joints_preserves_tendon_links(self):
+        builder = newton.ModelBuilder()
+        inertia = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        root = builder.add_link(mass=1.0, inertia=inertia)
+        merge_xform = wp.transform(
+            wp.vec3(1.0, 0.5, 0.0),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5),
+        )
+        child = builder.add_link(xform=merge_xform, mass=1.0, inertia=inertia)
+        endpoint = builder.add_link(xform=wp.transform(wp.vec3(3.0, 0.0, 0.0)), mass=1.0, inertia=inertia)
+        builder.add_joint_fixed(parent=root, child=child, parent_xform=merge_xform)
+
+        builder.add_tendon()
+        link = builder.add_tendon_link(body=child, offset=(0.2, 0.0, 0.0), axis=(1.0, 0.0, 0.0))
+        builder.add_tendon_link(body=endpoint)
+        center_before = wp.transform_point(builder.body_q[child], wp.vec3(*builder.tendon_link_offset[link]))
+        axis_before = wp.transform_vector(builder.body_q[child], wp.vec3(*builder.tendon_link_axis[link]))
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.tendon_link_body, [0, 1])
+        link_body = builder.tendon_link_body[link]
+        center_after = wp.transform_point(builder.body_q[link_body], wp.vec3(*builder.tendon_link_offset[link]))
+        axis_after = wp.transform_vector(builder.body_q[link_body], wp.vec3(*builder.tendon_link_axis[link]))
+        np.testing.assert_allclose(center_after, center_before, atol=1.0e-7)
+        np.testing.assert_allclose(axis_after, axis_before, atol=1.0e-7)
+
+        model = builder.finalize()
+        newton.solvers.SolverXPBD(model, iterations=1)
+
+    def test_collapse_fixed_joints_retains_world_tendon_body(self):
+        builder = newton.ModelBuilder()
+        inertia = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        anchor = builder.add_link(mass=1.0, inertia=inertia)
+        endpoint = builder.add_link(mass=1.0, inertia=inertia)
+        builder.add_joint_fixed(parent=-1, child=anchor)
+        builder.add_tendon()
+        builder.add_tendon_link(body=anchor)
+        builder.add_tendon_link(body=endpoint)
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.body_count, 2)
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.tendon_link_body, [0, 1])
+        model = builder.finalize()
+        newton.solvers.SolverXPBD(model, iterations=1)
+
     def test_rejects_cross_world_tendon(self):
         builder = newton.ModelBuilder()
         builder.begin_world()

@@ -6360,17 +6360,17 @@ class ModelBuilder:
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
 
-        # Find bodies referenced in equality constraints that shouldn't be merged into world
-        bodies_in_constraints = set()
+        # Preserve body frames needed by equality constraints and tendon links when collapsing into world.
+        bodies_requiring_body_frame = set(self.tendon_link_body)
         for body1, body2 in zip(
             self._eq_list("equality_constraint_body1"),
             self._eq_list("equality_constraint_body2"),
             strict=False,
         ):
             if body1 >= 0:
-                bodies_in_constraints.add(body1)
+                bodies_requiring_body_frame.add(body1)
             if body2 >= 0:
-                bodies_in_constraints.add(body2)
+                bodies_requiring_body_frame.add(body2)
 
         retained_joints = []
         retained_bodies = []
@@ -6413,21 +6413,20 @@ class ModelBuilder:
             entry_xform = incoming_xform
             entry_last_dynamic_body = last_dynamic_body
             joint = joint_data[(parent_body, child_body)][0]
-            # Don't merge fixed joints if the child body is referenced in an equality constraint
-            # and would be merged into world (last_dynamic_body == -1)
-            should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
+            # Local frames referenced by constraints or tendons cannot be remapped onto body -1.
+            should_skip_merge = child_body in bodies_requiring_body_frame and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
             joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
-                # Skip merging this fixed joint because the body is referenced in an equality constraint
+                # Keep a body frame required by a constraint or tendon instead of merging it into world.
                 if verbose:
                     parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                     child_lbl = self.body_label[child_body]
                     print(
                         f"Skipping collapse of fixed joint {joint['label']} between {parent_lbl} and {child_lbl}: "
-                        f"{child_lbl} is referenced in an equality constraint and cannot be merged into world"
+                        f"{child_lbl} is referenced by a constraint or tendon and cannot be merged into world"
                     )
 
             if joint_in_keep_list and joint["type"] == JointType.FIXED:
@@ -6860,6 +6859,22 @@ class ModelBuilder:
 
         # Reset the constraint count based on the retained joints
         self.joint_constraint_count = len(self.joint_cts)
+
+        # Keep tendon contact geometry in the same world frame when its body is merged.
+        for link_idx, old_body in enumerate(self.tendon_link_body):
+            if old_body in body_remap:
+                self.tendon_link_body[link_idx] = body_remap[old_body]
+                continue
+
+            merged_parent = body_merged_parent[old_body]
+            merge_xform = body_merged_transform[old_body]
+            self.tendon_link_body[link_idx] = body_remap[merged_parent]
+            self.tendon_link_offset[link_idx] = wp.transform_point(
+                merge_xform, axis_to_vec3(self.tendon_link_offset[link_idx])
+            )
+            self.tendon_link_axis[link_idx] = wp.transform_vector(
+                merge_xform, axis_to_vec3(self.tendon_link_axis[link_idx])
+            )
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies.
         # Import locally to avoid a cycle while the public simulation package initializes.
