@@ -25,7 +25,7 @@ from ...joint_selection import resolve_joint_selection
 from ...tool_selection import resolve_tool_sites
 from ...utils import _validate_array
 from .._common import _read_port, _shift_jacobian_to_tool_kernel
-from ._common import IkMethod, _tool_pose_kernel
+from ._common import DifferentialIKMethod, _tool_pose_kernel
 from .model_free import ControllerDifferentialIKModelFree
 
 
@@ -33,7 +33,7 @@ class ControllerDifferentialIK(ControllerBase):
     """Differential-kinematics (Jacobian-based) controller with internally computed kinematics.
 
     Implements a differential-kinematics control law, selectable per instance
-    via :class:`IkMethod` (damped least squares by default). This model-based
+    via :class:`DifferentialIKMethod` (damped least squares by default). This model-based
     variant computes the tool pose and tool-point Jacobian itself: it
     evaluates forward kinematics and :func:`newton.eval_jacobian` from
     ``model`` on every :meth:`step`, so the caller supplies only joint
@@ -108,37 +108,37 @@ class ControllerDifferentialIK(ControllerBase):
             the same damping to every robot, an array of shape
             [controlled_robot_count] to set them individually, or ``None``
             to read ``inputs.damping`` each step.
-            Only meaningful when ``ik_method=IkMethod.DAMPED_LEAST_SQUARES``
+            Only meaningful when ``ik_method=DifferentialIKMethod.DAMPED_LEAST_SQUARES``
             (the default); must be ``None`` for every other
-            :class:`IkMethod`, which has no λ to set.
-        ik_method: Inverse-Jacobian solve method, an :class:`IkMethod`.
-            Defaults to ``IkMethod.DAMPED_LEAST_SQUARES``. If the model
-            requires grad, must be ``IkMethod.TRANSPOSE`` -- every other
+            :class:`DifferentialIKMethod`, which has no λ to set.
+        ik_method: Inverse-Jacobian solve method, an :class:`DifferentialIKMethod`.
+            Defaults to ``DifferentialIKMethod.DAMPED_LEAST_SQUARES``. If the model
+            requires grad, must be ``DifferentialIKMethod.TRANSPOSE`` -- every other
             method routes through a matrix inversion or eigendecomposition
             kernel whose backward pass is currently disabled (see
             ``_common.py``), so it would silently contribute no gradient.
         adaptive_damping_min: λ used when the smallest singular value of the
             task Jacobian is at or above ``adaptive_damping_threshold``.
             Required (and must be non-negative) when
-            ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be ``None``
+            ``ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING``; must be ``None``
             otherwise.
         adaptive_damping_max: λ used at a full singularity (smallest
             singular value zero), ramping down to ``adaptive_damping_min``
             as the smallest singular value rises to
             ``adaptive_damping_threshold``. Required (and must exceed
             ``adaptive_damping_min``) when
-            ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be ``None``
+            ``ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING``; must be ``None``
             otherwise.
         adaptive_damping_threshold: Smallest-singular-value threshold below
             which damping starts ramping from ``adaptive_damping_min``
             toward ``adaptive_damping_max``. Required (and must be
-            positive) when ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be
+            positive) when ``ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING``; must be
             ``None`` otherwise.
         truncated_svd_threshold: Per-direction singular-value threshold —
             a task-space direction with singular value above this is
             inverted exactly, one at or below it is dropped from the solve
             entirely. Required (and must be positive) when
-            ``ik_method=IkMethod.TRUNCATED_SVD``; must be ``None``
+            ``ik_method=DifferentialIKMethod.TRUNCATED_SVD``; must be ``None``
             otherwise.
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
             through the null-space projector. Requires
@@ -230,7 +230,7 @@ class ControllerDifferentialIK(ControllerBase):
         axis_weight: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         bandwidth: wp.array[wp.float32] | float | None,
         damping: wp.array[wp.float32] | float | None,
-        ik_method: IkMethod = IkMethod.DAMPED_LEAST_SQUARES,
+        ik_method: DifferentialIKMethod = DifferentialIKMethod.DAMPED_LEAST_SQUARES,
         adaptive_damping_min: float | None = None,
         adaptive_damping_max: float | None = None,
         adaptive_damping_threshold: float | None = None,
@@ -253,7 +253,7 @@ class ControllerDifferentialIK(ControllerBase):
         self._device = model.device
         self._requires_grad = model.requires_grad
         self._bandwidth_is_live = bandwidth is None
-        self._damping_is_live = ik_method == IkMethod.DAMPED_LEAST_SQUARES and damping is None
+        self._damping_is_live = ik_method == DifferentialIKMethod.DAMPED_LEAST_SQUARES and damping is None
         self._use_joint_limit_avoidance = bool(use_joint_limit_avoidance)
         self._use_null_space_posture_control = bool(use_null_space_posture_control)
         self._use_null_space = self._use_joint_limit_avoidance or self._use_null_space_posture_control

@@ -28,4 +28,4 @@ subclass of :class:`ControllerBase`.
    ControllerJointImpedanceModelFree
    ControllerOperationalSpace
    ControllerOperationalSpaceModelFree
-   IkMethod
+   DifferentialIKMethod

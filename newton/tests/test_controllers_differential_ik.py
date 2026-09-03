@@ -29,7 +29,7 @@ from newton._src.controllers.impl._common import (
     _pose_error_kernel,
 )
 from newton._src.controllers.impl.differential_ik._common import (
-    IkMethod,
+    DifferentialIKMethod,
     _adaptive_damping_kernel,
     _build_jjt_plus_damping_kernel,
     _gather_jacobian_by_axis_kernel,
@@ -1214,7 +1214,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             controlled_dofs_per_robot=_dofs_arr([1], device),
             bandwidth=bandwidth_val,
             damping=None,
-            ik_method=IkMethod.TRANSPOSE,
+            ik_method=DifferentialIKMethod.TRANSPOSE,
             device=device,
         )
         jacobian_np = np.zeros((1, 6, 1), dtype=np.float32)
@@ -1240,7 +1240,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
-                ik_method=IkMethod.TRANSPOSE,
+                ik_method=DifferentialIKMethod.TRANSPOSE,
                 device=device,
             )
 
@@ -1252,7 +1252,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             controlled_dofs_per_robot=_dofs_arr([6], device),
             bandwidth=1.0,
             damping=None,
-            ik_method=IkMethod.PSEUDO_INVERSE,
+            ik_method=DifferentialIKMethod.PSEUDO_INVERSE,
             device=device,
         )
         inputs = ctrl.input()
@@ -1276,7 +1276,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=_dofs_arr([3], device),
                 bandwidth=1.0,
                 damping=None,
-                ik_method=IkMethod.PSEUDO_INVERSE,
+                ik_method=DifferentialIKMethod.PSEUDO_INVERSE,
                 device=device,
             )
 
@@ -1285,7 +1285,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
 
         Regression test: an unrecognized ik_method used to fall through
         every method-specific branch and silently produce a zero-damping
-        DLS solve -- exactly IkMethod.PSEUDO_INVERSE's own solve, but
+        DLS solve -- exactly DifferentialIKMethod.PSEUDO_INVERSE's own solve, but
         without PSEUDO_INVERSE's dof_count >= task_dim safety check.
         """
         device = wp.get_device()
@@ -1400,7 +1400,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             axis_weight=_POSITION_ONLY_AXIS_WEIGHT,
             bandwidth=1.0,
             damping=None,
-            ik_method=IkMethod.TRANSPOSE,
+            ik_method=DifferentialIKMethod.TRANSPOSE,
             device=device,
         )
         inputs = ctrl.input()
@@ -1417,14 +1417,14 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=1e-5)
 
     def test_axis_weight_zeroed_orientation_allows_pseudo_inverse_with_three_dof_robot(self):
-        """A 3-DOF robot fails IkMethod.PSEUDO_INVERSE at full 6D pose, but is allowed once orientation is dropped."""
+        """A 3-DOF robot fails DifferentialIKMethod.PSEUDO_INVERSE at full 6D pose, but is allowed once orientation is dropped."""
         device = wp.get_device()
         ctrl = ControllerDifferentialIKModelFree(
             controlled_dofs_per_robot=_dofs_arr([3], device),
             axis_weight=_POSITION_ONLY_AXIS_WEIGHT,
             bandwidth=1.0,
             damping=None,
-            ik_method=IkMethod.PSEUDO_INVERSE,
+            ik_method=DifferentialIKMethod.PSEUDO_INVERSE,
             device=device,
         )
         self.assertEqual(ctrl.controlled_robot_count, 1)
@@ -1488,7 +1488,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             axis_weight=_POSITION_ONLY_AXIS_WEIGHT,
             bandwidth=1.0,
             damping=None,
-            ik_method=IkMethod.ADAPTIVE_DAMPING,
+            ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING,
             adaptive_damping_min=lam_min,
             adaptive_damping_max=0.5,
             adaptive_damping_threshold=0.5,
@@ -1590,7 +1590,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
-                ik_method=IkMethod.PSEUDO_INVERSE,
+                ik_method=DifferentialIKMethod.PSEUDO_INVERSE,
                 device=device,
             )
 
@@ -1603,7 +1603,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             controlled_dofs_per_robot=_dofs_arr([6], device),
             bandwidth=1.0,
             damping=None,
-            ik_method=IkMethod.ADAPTIVE_DAMPING,
+            ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING,
             adaptive_damping_min=lam_min,
             adaptive_damping_max=1.0,
             adaptive_damping_threshold=0.5,
@@ -1631,7 +1631,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             controlled_dofs_per_robot=_dofs_arr([1], device),
             bandwidth=bandwidth_val,
             damping=None,
-            ik_method=IkMethod.ADAPTIVE_DAMPING,
+            ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING,
             adaptive_damping_min=0.0,
             adaptive_damping_max=lam_max,
             adaptive_damping_threshold=1.0,
@@ -1660,7 +1660,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=None,
-                ik_method=IkMethod.ADAPTIVE_DAMPING,
+                ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING,
                 adaptive_damping_min=0.1,
                 adaptive_damping_max=1.0,
                 # adaptive_damping_threshold omitted
@@ -1675,7 +1675,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
-                ik_method=IkMethod.ADAPTIVE_DAMPING,
+                ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING,
                 adaptive_damping_min=0.1,
                 adaptive_damping_max=1.0,
                 adaptive_damping_threshold=0.5,
@@ -1706,7 +1706,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             controlled_dofs_per_robot=_dofs_arr([6], device),
             bandwidth=1.0,
             damping=None,
-            ik_method=IkMethod.TRUNCATED_SVD,
+            ik_method=DifferentialIKMethod.TRUNCATED_SVD,
             truncated_svd_threshold=1.0e-2,  # well below every singular value of a random 6x6 J
             device=device,
         )
@@ -1741,7 +1741,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
             controlled_dofs_per_robot=_dofs_arr([n], device),
             bandwidth=1.0,
             damping=None,
-            ik_method=IkMethod.TRUNCATED_SVD,
+            ik_method=DifferentialIKMethod.TRUNCATED_SVD,
             truncated_svd_threshold=threshold,
             device=device,
         )
@@ -1778,7 +1778,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=None,
-                ik_method=IkMethod.TRUNCATED_SVD,
+                ik_method=DifferentialIKMethod.TRUNCATED_SVD,
                 device=device,
             )
 
@@ -1790,7 +1790,7 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
                 controlled_dofs_per_robot=_dofs_arr([6], device),
                 bandwidth=1.0,
                 damping=0.1,
-                ik_method=IkMethod.TRUNCATED_SVD,
+                ik_method=DifferentialIKMethod.TRUNCATED_SVD,
                 truncated_svd_threshold=0.01,
                 device=device,
             )
@@ -2739,7 +2739,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         device = wp.get_device()
         model = _build_two_link_arm_with_tool_site(device)
         ctrl = ControllerDifferentialIK(
-            model, tool_sites="tip", bandwidth=1.0, damping=None, ik_method=IkMethod.TRANSPOSE
+            model, tool_sites="tip", bandwidth=1.0, damping=None, ik_method=DifferentialIKMethod.TRANSPOSE
         )
         inputs = ctrl.input()
         outputs = ctrl.output()
@@ -2752,7 +2752,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         np.testing.assert_allclose(outputs.joint_qd_target.numpy(), np.zeros(2), atol=1e-5)
 
     def test_converges_to_target_for_every_ik_method(self):
-        """Every IkMethod drives a real, redundant arm to a reachable target through the model-based wrapper.
+        """Every DifferentialIKMethod drives a real, redundant arm to a reachable target through the model-based wrapper.
 
         DAMPED_LEAST_SQUARES and TRANSPOSE already have dedicated
         convergence/formula tests elsewhere; PSEUDO_INVERSE, ADAPTIVE_DAMPING,
@@ -2766,10 +2766,10 @@ class TestControllerDifferentialIK(unittest.TestCase):
         # the method, not a bug — settles to a small nonzero steady-state
         # residual rather than converging arbitrarily close to zero error.
         method_kwargs = {
-            IkMethod.DAMPED_LEAST_SQUARES: ({"bandwidth": 1.0, "damping": 0.05}, 0.1),
-            IkMethod.PSEUDO_INVERSE: ({"bandwidth": 1.0, "damping": None}, 0.1),
-            IkMethod.TRANSPOSE: ({"bandwidth": 6.0, "damping": None}, 0.15),
-            IkMethod.ADAPTIVE_DAMPING: (
+            DifferentialIKMethod.DAMPED_LEAST_SQUARES: ({"bandwidth": 1.0, "damping": 0.05}, 0.1),
+            DifferentialIKMethod.PSEUDO_INVERSE: ({"bandwidth": 1.0, "damping": None}, 0.1),
+            DifferentialIKMethod.TRANSPOSE: ({"bandwidth": 6.0, "damping": None}, 0.15),
+            DifferentialIKMethod.ADAPTIVE_DAMPING: (
                 {
                     "bandwidth": 1.0,
                     "damping": None,
@@ -2779,7 +2779,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
                 },
                 0.1,
             ),
-            IkMethod.TRUNCATED_SVD: ({"bandwidth": 1.0, "damping": None, "truncated_svd_threshold": 0.01}, 0.1),
+            DifferentialIKMethod.TRUNCATED_SVD: ({"bandwidth": 1.0, "damping": None, "truncated_svd_threshold": 0.01}, 0.1),
         }
         # A well-within-reach target (chain reach is 7 * 0.2 = 1.4 m) for a
         # 7-DOF chain, so PSEUDO_INVERSE's dof_count >= task_dim requirement

@@ -29,7 +29,7 @@
 # translate/rotate axis selection, so the widget itself can't suggest a
 # motion the controller would ignore.
 #
-# Uses IkMethod.ADAPTIVE_DAMPING: damping ramps up automatically as any arm
+# Uses DifferentialIKMethod.ADAPTIVE_DAMPING: damping ramps up automatically as any arm
 # nears a kinematic singularity or the edge of its reach, instead of a
 # single fixed damping value.
 #
@@ -44,7 +44,7 @@ import newton.examples
 import newton.solvers
 import newton.utils
 from newton import Axis, JointTargetMode
-from newton.controllers import ControllerDifferentialIK, IkMethod
+from newton.controllers import ControllerDifferentialIK, DifferentialIKMethod
 
 # ---------------------------------------------------------------------------
 # Robot configuration
@@ -85,7 +85,7 @@ JOINT_TARGET_KD = 100.0
 
 BANDWIDTH = 5.0
 # Empirically tuned against this example's continuous velocity-based control
-# loop (see IkMethod.ADAPTIVE_DAMPING).
+# loop (see DifferentialIKMethod.ADAPTIVE_DAMPING).
 ADAPTIVE_DAMPING_MIN = 0.02
 ADAPTIVE_DAMPING_MAX = 0.5
 ADAPTIVE_DAMPING_THRESHOLD = 0.2
@@ -169,7 +169,7 @@ class Example:
             ),
             bandwidth=BANDWIDTH,
             damping=None,
-            ik_method=IkMethod.ADAPTIVE_DAMPING,
+            ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING,
             adaptive_damping_min=ADAPTIVE_DAMPING_MIN,
             adaptive_damping_max=ADAPTIVE_DAMPING_MAX,
             adaptive_damping_threshold=ADAPTIVE_DAMPING_THRESHOLD,

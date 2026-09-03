@@ -11,7 +11,7 @@ axis is excluded structurally rather than multiplied by zero.
 
 The inverse-Jacobian solve is isolated to its own group of kernels (see the
 section comment above ``_build_jjt_plus_damping_kernel``) so that a solver
-can be selected per instance via :class:`IkMethod` without touching
+can be selected per instance via :class:`DifferentialIKMethod` without touching
 pose-error, null-space, or integration code.
 """
 
@@ -28,12 +28,12 @@ from warp.fem.linalg import symmetric_eigenvalues_qr
 _EIGENVALUE_QR_TOL = wp.constant(wp.float32(1.0e-6))
 
 
-class IkMethod(enum.Enum):
+class DifferentialIKMethod(enum.Enum):
     """Inverse-Jacobian solve method for :class:`ControllerDifferentialIKModelFree`/:class:`ControllerDifferentialIK`.
 
     Import directly from ``newton.controllers``, the same way as any other
     top-level enum (e.g. ``JointTargetMode``): ``from newton.controllers
-    import IkMethod``.
+    import DifferentialIKMethod``.
     """
 
     DAMPED_LEAST_SQUARES = "damped_least_squares"
@@ -109,7 +109,7 @@ def _gather_task_error_kernel(
 ):
     """Gather a pose error's active axes into a compact, contiguous, weighted representation, ``e_weighted = diag(w) @ e``.
 
-    Load-bearing for ``IkMethod.TRANSPOSE`` (which uses this directly as
+    Load-bearing for ``DifferentialIKMethod.TRANSPOSE`` (which uses this directly as
     ``y``, with nothing else to filter it); every solve that inverts ``JJᵀ``
     also consumes this rather than the raw 6D error, so ``pose_error``
     reads the same way everywhere — the error actually being driven to
@@ -139,11 +139,11 @@ def _gather_task_error_kernel(
 # Jᵀ(JJᵀ + λ²I)⁻¹ == (JᵀJ + λ²I)⁻¹Jᵀ holds for any shape of J whenever
 # λ > 0, so there is no separate "overdetermined" n_joints x n_joints code
 # path to get wrong for a heterogeneous fleet mixing DOF counts. This only
-# breaks down at exactly λ = 0 (IkMethod.PSEUDO_INVERSE): JJᵀ is then
+# breaks down at exactly λ = 0 (DifferentialIKMethod.PSEUDO_INVERSE): JJᵀ is then
 # rank-deficient whenever dof_count is below the robot's own task dimension,
 # and while the Cholesky pivot floor in _invert_spd_block_kernel keeps that
 # from producing NaN, it does not produce a meaningful pseudo-inverse in
-# that regime, so IkMethod.PSEUDO_INVERSE requires every robot to have at
+# that regime, so DifferentialIKMethod.PSEUDO_INVERSE requires every robot to have at
 # least as many controlled DOFs as its own task dimension.
 # ---------------------------------------------------------------------------
 
@@ -211,7 +211,7 @@ def _qd_from_y_kernel(
     ``active_axis_of_slot[slot]``, weighted by that axis's ``axis_weight``.
     The dot product with ``y`` is summed only over ``slot < task_dim``:
     every producer of ``y`` (``_gather_task_error_kernel`` for
-    ``IkMethod.TRANSPOSE``, ``_apply_spatial_matrix_kernel`` for every
+    ``DifferentialIKMethod.TRANSPOSE``, ``_apply_spatial_matrix_kernel`` for every
     matrix-inverting method) does leave ``y``'s slots beyond ``task_dim``
     exactly zero, but this kernel does not rely on that -- it stops at
     ``task_dim`` itself, so a future solver path that forgot to zero-pad
@@ -234,7 +234,7 @@ def _qd_from_y_kernel(
 
 
 # ---------------------------------------------------------------------------
-# Adaptive damping (IkMethod.ADAPTIVE_DAMPING): λ is computed each step from
+# Adaptive damping (DifferentialIKMethod.ADAPTIVE_DAMPING): λ is computed each step from
 # the smallest eigenvalue of the (undamped) JJᵀ, instead of being a fixed
 # input, so damping stays near ``adaptive_damping_min`` away from a
 # singularity and ramps up toward ``adaptive_damping_max`` only as the robot

@@ -9,7 +9,7 @@ from .impl import (
     ControllerJointImpedanceModelFree,
     ControllerOperationalSpace,
     ControllerOperationalSpaceModelFree,
-    IkMethod,
+    DifferentialIKMethod,
 )
 
 __all__ = [
@@ -20,5 +20,5 @@ __all__ = [
     "ControllerJointImpedanceModelFree",
     "ControllerOperationalSpace",
     "ControllerOperationalSpaceModelFree",
-    "IkMethod",
+    "DifferentialIKMethod",
 ]

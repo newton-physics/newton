@@ -16,7 +16,7 @@ model-based controller's own ``q_start``/``qd_start`` properties (see
 :attr:`ControllerDifferentialIK.qd_start`).
 
 Differential-kinematics law (shown here for damped least squares; see
-``IkMethod`` for the other four solvers — pseudo-inverse, transpose,
+``DifferentialIKMethod`` for the other four solvers — pseudo-inverse, transpose,
 adaptive damping, and truncated SVD):
 
     e = pose_error(tool_pose_world, desired_tool_pose_world)
@@ -69,7 +69,7 @@ from .._common import (
     _task_matrix_times_jacobian_kernel,
 )
 from ._common import (
-    IkMethod,
+    DifferentialIKMethod,
     _adaptive_damping_kernel,
     _build_jjt_plus_damping_kernel,
     _gather_jacobian_by_axis_kernel,
@@ -109,7 +109,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
     """Differential-kinematics (Jacobian-based) controller with a caller-supplied Jacobian.
 
     Implements a differential-kinematics control law, selectable per instance
-    via :class:`IkMethod` (damped least squares by default). This model-free
+    via :class:`DifferentialIKMethod` (damped least squares by default). This model-free
     variant expects the tool-point Jacobian and the current tool pose to be
     computed externally — it is the caller's responsibility to provide them,
     and to keep them consistent with ``inputs.joint_q``, before every
@@ -182,12 +182,12 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             the same damping to every robot, an array of shape
             [controlled_robot_count] to set them individually, or ``None``
             to read ``inputs.damping`` each step. Only meaningful when
-            ``ik_method=IkMethod.DAMPED_LEAST_SQUARES`` (the default); must
-            be ``None`` for every other :class:`IkMethod`, which has no λ to
+            ``ik_method=DifferentialIKMethod.DAMPED_LEAST_SQUARES`` (the default); must
+            be ``None`` for every other :class:`DifferentialIKMethod`, which has no λ to
             set.
-        ik_method: Inverse-Jacobian solve method, an :class:`IkMethod`.
-            Defaults to ``IkMethod.DAMPED_LEAST_SQUARES``. If
-            ``requires_grad=True``, must be ``IkMethod.TRANSPOSE`` -- every
+        ik_method: Inverse-Jacobian solve method, an :class:`DifferentialIKMethod`.
+            Defaults to ``DifferentialIKMethod.DAMPED_LEAST_SQUARES``. If
+            ``requires_grad=True``, must be ``DifferentialIKMethod.TRANSPOSE`` -- every
             other method routes through a matrix inversion or
             eigendecomposition kernel whose backward pass is currently
             disabled (see ``_common.py``), so it would silently contribute
@@ -195,25 +195,25 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         adaptive_damping_min: λ used when the smallest singular value of the
             task Jacobian is at or above ``adaptive_damping_threshold``.
             Required (and must be non-negative) when
-            ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be ``None``
+            ``ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING``; must be ``None``
             otherwise.
         adaptive_damping_max: λ used at a full singularity (smallest
             singular value zero), ramping down to ``adaptive_damping_min``
             as the smallest singular value rises to
             ``adaptive_damping_threshold``. Required (and must exceed
             ``adaptive_damping_min``) when
-            ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be ``None``
+            ``ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING``; must be ``None``
             otherwise.
         adaptive_damping_threshold: Smallest-singular-value threshold below
             which damping starts ramping from ``adaptive_damping_min``
             toward ``adaptive_damping_max``. Required (and must be
-            positive) when ``ik_method=IkMethod.ADAPTIVE_DAMPING``; must be
+            positive) when ``ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING``; must be
             ``None`` otherwise.
         truncated_svd_threshold: Per-direction singular-value threshold —
             a task-space direction with singular value above this is
             inverted exactly, one at or below it is dropped from the solve
             entirely. Required (and must be positive) when
-            ``ik_method=IkMethod.TRUNCATED_SVD``; must be ``None``
+            ``ik_method=DifferentialIKMethod.TRUNCATED_SVD``; must be ``None``
             otherwise.
         use_joint_limit_avoidance: Project a joint-limit-avoidance bias
             through the null-space projector. Requires
@@ -308,7 +308,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         axis_weight: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         bandwidth: wp.array[wp.float32] | float | None,
         damping: wp.array[wp.float32] | float | None,
-        ik_method: IkMethod = IkMethod.DAMPED_LEAST_SQUARES,
+        ik_method: DifferentialIKMethod = DifferentialIKMethod.DAMPED_LEAST_SQUARES,
         adaptive_damping_min: float | None = None,
         adaptive_damping_max: float | None = None,
         adaptive_damping_threshold: float | None = None,
@@ -416,13 +416,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         # output velocity instead of merely scaling it.
         _validate_non_negative_gain(bandwidth, "bandwidth")
 
-        if not isinstance(ik_method, IkMethod):
-            raise TypeError(f"ik_method must be an IkMethod, got {ik_method!r}.")
+        if not isinstance(ik_method, DifferentialIKMethod):
+            raise TypeError(f"ik_method must be an DifferentialIKMethod, got {ik_method!r}.")
 
         if requires_grad:
             raise ValueError("requires_grad=True is not supported at this time.")
 
-        if ik_method == IkMethod.DAMPED_LEAST_SQUARES:
+        if ik_method == DifferentialIKMethod.DAMPED_LEAST_SQUARES:
             if not (isinstance(damping, (int, float)) and not isinstance(damping, bool)):
                 _validate_array(
                     array=damping,
@@ -435,19 +435,19 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         elif damping is not None:
             raise ValueError(f"damping was given but ik_method={ik_method} does not use it (pass damping=None).")
 
-        if ik_method == IkMethod.PSEUDO_INVERSE:
+        if ik_method == DifferentialIKMethod.PSEUDO_INVERSE:
             bad_robots = np.flatnonzero(controlled_dofs_per_robot_np < task_dim_np)
             if bad_robots.size > 0:
                 raise ValueError(
-                    "ik_method=IkMethod.PSEUDO_INVERSE requires every robot to have at least as many controlled "
+                    "ik_method=DifferentialIKMethod.PSEUDO_INVERSE requires every robot to have at least as many controlled "
                     f"DOFs as its own task dimension, since JJᵀ is otherwise rank-deficient at λ = 0; robot(s) "
                     f"{bad_robots.tolist()} have controlled_dofs_per_robot < their own axis_weight's active count."
                 )
 
-        if ik_method == IkMethod.ADAPTIVE_DAMPING:
+        if ik_method == DifferentialIKMethod.ADAPTIVE_DAMPING:
             if adaptive_damping_min is None or adaptive_damping_max is None or adaptive_damping_threshold is None:
                 raise ValueError(
-                    "ik_method=IkMethod.ADAPTIVE_DAMPING requires adaptive_damping_min, adaptive_damping_max, "
+                    "ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING requires adaptive_damping_min, adaptive_damping_max, "
                     "and adaptive_damping_threshold."
                 )
             if adaptive_damping_min < 0.0:
@@ -466,16 +466,16 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         ):
             raise ValueError(
                 "adaptive_damping_min/adaptive_damping_max/adaptive_damping_threshold were given but "
-                f"ik_method={ik_method} != IkMethod.ADAPTIVE_DAMPING."
+                f"ik_method={ik_method} != DifferentialIKMethod.ADAPTIVE_DAMPING."
             )
 
-        if ik_method == IkMethod.TRUNCATED_SVD:
+        if ik_method == DifferentialIKMethod.TRUNCATED_SVD:
             if truncated_svd_threshold is None:
-                raise ValueError("ik_method=IkMethod.TRUNCATED_SVD requires truncated_svd_threshold.")
+                raise ValueError("ik_method=DifferentialIKMethod.TRUNCATED_SVD requires truncated_svd_threshold.")
             if truncated_svd_threshold <= 0.0:
                 raise ValueError(f"truncated_svd_threshold must be positive, got {truncated_svd_threshold}.")
         elif truncated_svd_threshold is not None:
-            raise ValueError(f"truncated_svd_threshold was given but ik_method={ik_method} != IkMethod.TRUNCATED_SVD.")
+            raise ValueError(f"truncated_svd_threshold was given but ik_method={ik_method} != DifferentialIKMethod.TRUNCATED_SVD.")
 
         use_null_space = bool(use_joint_limit_avoidance) or bool(use_null_space_posture_control)
 
@@ -587,10 +587,10 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         # without a separate "does this method use damping" branch below.
         self._damping_baked = (
             self._bake(damping, controlled_robot_count)
-            if ik_method == IkMethod.DAMPED_LEAST_SQUARES
+            if ik_method == DifferentialIKMethod.DAMPED_LEAST_SQUARES
             else self._bake(0.0, controlled_robot_count)
         )
-        self._use_adaptive_damping = ik_method == IkMethod.ADAPTIVE_DAMPING
+        self._use_adaptive_damping = ik_method == DifferentialIKMethod.ADAPTIVE_DAMPING
         self._adaptive_damping_min_baked = (
             self._bake(adaptive_damping_min, controlled_robot_count) if self._use_adaptive_damping else None
         )
@@ -600,7 +600,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         self._adaptive_damping_threshold_baked = (
             self._bake(adaptive_damping_threshold, controlled_robot_count) if self._use_adaptive_damping else None
         )
-        self._use_truncated_svd = ik_method == IkMethod.TRUNCATED_SVD
+        self._use_truncated_svd = ik_method == DifferentialIKMethod.TRUNCATED_SVD
         self._truncated_svd_threshold_baked = (
             self._bake(truncated_svd_threshold, controlled_robot_count) if self._use_truncated_svd else None
         )
@@ -1007,7 +1007,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             outputs=[self._pose_error_active_buf],
             device=self._device,
         )
-        if self._ik_method == IkMethod.TRANSPOSE:
+        if self._ik_method == DifferentialIKMethod.TRANSPOSE:
             # q̇ = bandwidth · Jᵀe: no matrix to invert, so the (compact,
             # active-axes-only) pose error itself stands in for y in the
             # shared finishing kernel.
