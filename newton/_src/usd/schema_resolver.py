@@ -217,8 +217,10 @@ class SchemaResolver:
     # Internal schema ownership by prim type. A schema name owns every mapped
     # key for that prim type; a key-to-schema mapping declares ownership per key.
     _schema_ownership: ClassVar[Mapping[PrimType, str | Mapping[str, str]]] = {}
-    # Whether unregistered or unowned mappings may use compatibility defaults.
-    _use_compatibility_defaults: ClassVar[bool] = True
+    # Whether registered-schema resolution may use defaults stored in this
+    # resolver's mapping. These defaults are considered after the importer
+    # default, and only for unowned properties or applied unregistered schemas.
+    _use_mapping_defaults: ClassVar[bool] = True
 
     # extra_attr_namespaces is a list of additional USD attribute namespaces in which the schema attributes may be authored.
     extra_attr_namespaces: ClassVar[list[str]] = []
@@ -253,8 +255,8 @@ class SchemaResolver:
     def _validate_schema_ownership(self) -> None:
         if not isinstance(self._schema_ownership, Mapping):
             raise TypeError(f"{type(self).__name__}._schema_ownership must be a mapping")
-        if not isinstance(self._use_compatibility_defaults, bool):
-            raise TypeError(f"{type(self).__name__}._use_compatibility_defaults must be a bool")
+        if not isinstance(self._use_mapping_defaults, bool):
+            raise TypeError(f"{type(self).__name__}._use_mapping_defaults must be a bool")
 
         for prim_type, ownership in self._schema_ownership.items():
             if not isinstance(prim_type, PrimType):
@@ -542,7 +544,7 @@ class _SchemaResolutionPolicy:
             spec = resolver.mapping.get(prim_type, {}).get(key)
             if (
                 spec is None
-                or not resolver._use_compatibility_defaults
+                or not resolver._use_mapping_defaults
                 or (resolver._schema_name(prim_type, key) is not None and id(resolver) not in compatibility_fallbacks)
                 or spec.default is None
             ):

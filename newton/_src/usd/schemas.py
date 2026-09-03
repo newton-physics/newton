@@ -132,7 +132,7 @@ class SchemaResolverNewton(SchemaResolver):
     """
 
     name: ClassVar[str] = "newton"
-    _use_compatibility_defaults: ClassVar[bool] = False
+    _use_mapping_defaults: ClassVar[bool] = False
     _schema_ownership: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: "NewtonSceneAPI",
         PrimType.JOINT: dict.fromkeys(

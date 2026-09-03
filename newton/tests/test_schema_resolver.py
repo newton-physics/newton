@@ -135,14 +135,14 @@ class TestSchemaResolver(unittest.TestCase):
 
         class SchemaResolverInvalidDefaults(SchemaResolver):
             name = "invalid_defaults"
-            _use_compatibility_defaults: ClassVar = "yes"
+            _use_mapping_defaults: ClassVar = "yes"
             mapping: ClassVar = {}
 
         with self.assertRaisesRegex(ValueError, "unknown key 'joint:friction'"):
             SchemaResolverUnknownKey()
         with self.assertRaisesRegex(ValueError, "empty schema name"):
             SchemaResolverEmptyName()
-        with self.assertRaisesRegex(TypeError, "_use_compatibility_defaults must be a bool"):
+        with self.assertRaisesRegex(TypeError, "_use_mapping_defaults must be a bool"):
             SchemaResolverInvalidDefaults()
 
     def test_schema_ownership_reads_typed_fallback(self):
