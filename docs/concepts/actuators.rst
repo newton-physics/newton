@@ -24,7 +24,7 @@ efficient integration into RL workflows with many parallel environments.
 
 The goal is to provide canonical actuator models with support for
 **differentiability** and **graphable execution** where the underlying
-controller implementation supports it.  Actuators are designed to be easy to
+drive implementation supports it.  Actuators are designed to be easy to
 customize and extend for specific actuator models.
 
 Architecture
@@ -36,7 +36,7 @@ An actuator is composed from three building blocks, applied in this order:
 
    Actuator
    ├── Delay       (optional: delays command inputs by N actuator timesteps)
-   ├── Controller  (control law that computes raw effort)
+   ├── Drive      (control law that computes raw effort)
    └── Clamping[]  (clamps raw effort based on motor-limit modeling)
        ├── ClampingMaxEffort        (±max_effort symmetric clamp)
        ├── ClampingDCMotor         (velocity-dependent saturation)
@@ -44,21 +44,21 @@ An actuator is composed from three building blocks, applied in this order:
 
 **Delay**
    Optionally delays command inputs (control targets and feedforward terms)
-   by *N* actuator timesteps before they reach the controller, modeling
+   by *N* actuator timesteps before they reach the drive, modeling
    communication or processing latency.  The delay always produces output;
    when the buffer is empty or a DOF has ``delay_steps == 0``, the current
    command inputs are used directly.  When underfilled, the lag is clamped
    to the available history so the oldest available entry is returned.
 
-**Controller**
+**Drive**
    Computes raw actuator effort [N or N·m] from the current simulator state
    and control targets.  This is the actuator's control law — for example PD,
-   PID, or neural-network-based control.  See the individual controller class
+   PID, or neural-network-based control.  See the individual drive class
    documentation for the control-law equations.
 
 **Clamping**
    Clamps raw effort based on motor-limit modeling.  This applies
-   post-controller output limits to the computed effort to model motor limits
+   post-drive output limits to the computed effort to model motor limits
    such as saturation, back-EMF losses, performance envelopes, or
    position-dependent effort limits.  Multiple clamping stages can be combined
    on a single actuator.
@@ -67,10 +67,20 @@ The per-step pipeline is:
 
 .. code-block:: text
 
-   Delay read → Controller → Clamping → Scatter-add → State updates (controller + delay write)
+   Delay read → Drive → Clamping → Scatter-add → State updates (drive + delay write)
 
-Controllers and clamping objects are pluggable: implement the
-:class:`Controller` or :class:`Clamping` base class to add new models.
+Drives and clamping objects are pluggable: implement the
+:class:`DriveBase` or :class:`ClampingBase` class to add new models.
+
+.. deprecated:: 1.6
+
+   The actuator ``Controller*`` class names are retained as compatibility
+   aliases for :class:`DriveBase`, :class:`DrivePD`, :class:`DrivePID`,
+   :class:`DriveNeuralMLP`, and :class:`DriveNeuralLSTM`. The former
+   ``controller`` constructor keywords and attributes are also deprecated;
+   use ``drive``, ``drive_class``, ``drive_state``, and ``drive_kwargs``.
+   The clamping base class is now :class:`ClampingBase`; :class:`Clamping`
+   remains as a deprecated compatibility alias.
 
 .. note::
 
@@ -91,7 +101,7 @@ when the model is finalized:
    import warp as wp
    import newton
    from newton.actuators import (
-       Actuator, ClampingMaxEffort, ControllerPD, Delay,
+       Actuator, ClampingMaxEffort, DrivePD, Delay,
    )
 
    builder = newton.ModelBuilder()
@@ -103,7 +113,7 @@ when the model is finalized:
 .. testcode:: actuator-usage
 
    builder.add_actuator(
-       ControllerPD,
+       DrivePD,
        index=dof_index,
        kp=100.0,
        kd=10.0,
@@ -125,7 +135,7 @@ components directly:
 
    actuator = Actuator(
        indices,
-       controller=ControllerPD(kp=kp, kd=kd),
+       drive=DrivePD(kp=kp, kd=kd),
        delay=Delay(delay_steps=wp.array([5], dtype=wp.int32), max_delay=5),
        clamping=[ClampingMaxEffort(max_effort=max_e)],
        control_target_pos_attr="joint_target_q",
@@ -162,8 +172,8 @@ reusable from a custom simulator or test harness:
 Stateful Actuators
 ------------------
 
-Controllers that maintain internal state (e.g. :class:`ControllerPID` with an
-integral accumulator, or :class:`ControllerNeuralLSTM` with hidden/cell state) and
+Drives that maintain internal state (e.g. :class:`DrivePID` with an
+integral accumulator, or :class:`DriveNeuralLSTM` with hidden/cell state) and
 actuators with a :class:`Delay` require explicit double-buffered state
 management.  Create two state objects with :meth:`Actuator.state` and swap them
 after each step:
@@ -180,17 +190,17 @@ after each step:
        model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
        state_0, state_1 = state_1, state_0
 
-Stateless actuators (e.g. a plain PD controller without delay) do not require
+Stateless actuators (e.g. a plain PD drive without delay) do not require
 state objects — simply omit them:
 
 .. testcode:: actuator-usage
 
-   # Build a stateless actuator (no delay, stateless controller)
+   # Build a stateless actuator (no delay, stateless drive)
    b2 = newton.ModelBuilder()
    lk = b2.add_link()
    jt = b2.add_joint_revolute(parent=-1, child=lk, axis=newton.Axis.Z)
    b2.add_articulation([jt])
-   b2.add_actuator(ControllerPD, index=b2.joint_qd_start[jt], kp=50.0)
+   b2.add_actuator(DrivePD, index=b2.joint_qd_start[jt], kp=50.0)
    m2 = b2.finalize()
 
    m2.actuators[0].step(m2.state(), m2.control())
@@ -200,8 +210,8 @@ state objects — simply omit them:
 Neural-Network Checkpoints
 --------------------------
 
-Neural-network controllers (:class:`ControllerNeuralMLP`,
-:class:`ControllerNeuralLSTM`) support two checkpoint backends. `ONNX
+Neural-network drives (:class:`DriveNeuralMLP`,
+:class:`DriveNeuralLSTM`) support two checkpoint backends. `ONNX
 <https://onnx.ai/>`__ (``.onnx``) is an open format for trained networks, which
 Warp-NN runs with its own Warp kernels. Torch checkpoints use the Torch backend
 and require PyTorch.
@@ -219,7 +229,7 @@ extra file:
    metadata = {"effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
    torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
 
-:class:`ControllerNeuralLSTM` requires ``num_layers`` and ``hidden_size`` in
+:class:`DriveNeuralLSTM` requires ``num_layers`` and ``hidden_size`` in
 the metadata of both pt2 and ONNX checkpoints.  Only legacy Torch checkpoints
 may omit them: they contain the original module, whose ``torch.nn.LSTM``
 submodule is inspected directly, while ``torch.export`` flattens the network
@@ -313,26 +323,27 @@ response update can be captured in one CUDA graph.
 explicit mode. :class:`~newton.actuators.Actuator.ImplicitOptions` sets the
 solve's iteration count and convergence tolerances.
 
-All controllers support the implicit mode:
-:class:`~newton.actuators.ControllerPD`,
-:class:`~newton.actuators.ControllerPID`,
-:class:`~newton.actuators.ControllerNeuralMLP` and
-:class:`~newton.actuators.ControllerNeuralLSTM`.
+The following built-in drives support the implicit mode (neural drives require
+the ONNX backend):
+:class:`~newton.actuators.DrivePD`,
+:class:`~newton.actuators.DrivePID`,
+:class:`~newton.actuators.DriveNeuralMLP` and
+:class:`~newton.actuators.DriveNeuralLSTM`.
 
-The neural controllers enter the solve as a per-step linearization of the
+The neural drives enter the solve as a per-step linearization of the
 network. Its slopes come from a Warp autodiff pass over the loaded network, so
 only the ONNX backend supports them (see :ref:`neural-network-checkpoints`);
 with a Torch checkpoint
 :meth:`~newton.actuators.Actuator.set_effort_mode_implicit` raises
-``NotImplementedError``. :class:`~newton.actuators.ControllerNeuralMLP` also
+``NotImplementedError``. :class:`~newton.actuators.DriveNeuralMLP` also
 needs a single-step input history (``input_idx == [0]``).
 
 Differentiability and Graph Capture
 -----------------------------------
 
 Whether an actuator supports differentiability and CUDA graph capture depends on
-its controller.  :class:`ControllerPD` and :class:`ControllerPID` are fully
-graphable.  For neural-network controllers it depends on the checkpoint
+its drive.  :class:`DrivePD` and :class:`DrivePID` are fully
+graphable.  For neural-network drives it depends on the checkpoint
 backend: ONNX checkpoints are graphable, while Torch checkpoints are not due
 to framework interop overhead.  :meth:`Actuator.is_graphable` returns ``True``
 when all components can be captured in a CUDA graph.
@@ -345,18 +356,18 @@ Delay
 
 * :class:`Delay` — circular-buffer delay for control targets (stateful).
 
-Controllers
-^^^^^^^^^^^
+Drives
+^^^^^^
 
-* :class:`ControllerPD` — proportional-derivative control law (stateless).
-* :class:`ControllerPID` — proportional-integral-derivative control law
+* :class:`DrivePD` — proportional-derivative control law (stateless).
+* :class:`DrivePID` — proportional-integral-derivative control law
   (stateful: integral accumulator with anti-windup clamp).
-* :class:`ControllerNeuralMLP` — MLP neural-network controller
+* :class:`DriveNeuralMLP` — MLP neural-network drive
   (stateful: position/velocity history buffers).
-* :class:`ControllerNeuralLSTM` — LSTM neural-network controller
+* :class:`DriveNeuralLSTM` — LSTM neural-network drive
   (stateful: hidden/cell state).
 
-See the API documentation for each controller's control-law equations.
+See the API documentation for each drive's control-law equations.
 
 Clamping
 ^^^^^^^^
@@ -374,22 +385,22 @@ Customization
 -------------
 
 Any actuator can be assembled from the existing building blocks — mix and
-match controllers, clamping stages, and delay to fit a specific use case.
+match drives, clamping stages, and delay to fit a specific use case.
 When the built-in components are not sufficient, implement new ones by
-subclassing :class:`Controller` or :class:`Clamping`.
+subclassing :class:`DriveBase` or :class:`ClampingBase`.
 
-For example, a custom controller needs to implement
-:meth:`~Controller.compute`, :meth:`~Controller.resolve_arguments`,
-:meth:`~Controller.is_stateful`, and :meth:`~Controller.is_graphable`:
+For example, a custom drive needs to implement
+:meth:`~DriveBase.compute`, :meth:`~DriveBase.resolve_arguments`,
+:meth:`~DriveBase.is_stateful`, and :meth:`~DriveBase.is_graphable`:
 
 .. code-block:: python
    :caption: Skeleton — the ``compute`` body is omitted; see existing
-             controllers for complete examples.
+             drives for complete examples.
 
    import warp as wp
-   from newton.actuators import Controller
+   from newton.actuators import DriveBase
 
-   class MyController(Controller):
+   class MyDrive(DriveBase):
        @classmethod
        def resolve_arguments(cls, args):
            return {"gain": args.get("gain", 1.0)}
@@ -414,24 +425,24 @@ For example, a custom controller needs to implement
 :meth:`~newton.ModelBuilder.add_actuator` or USD schemas) to constructor
 parameters, filling in defaults where needed.
 
-A custom controller works in the explicit mode with the methods above. To also
+A custom drive works in the explicit mode with the methods above. To also
 support the implicit mode it provides three more things, because the solve
 evaluates the control law inside its own kernel rather than calling
-:meth:`~Controller.compute`:
+:meth:`~DriveBase.compute`:
 
-* :attr:`~Controller.evaluate_force` — a ``@wp.func`` holding the control law.
+* :attr:`~DriveBase.evaluate_force` — a ``@wp.func`` holding the control law.
   The solve calls it at the predicted state, so it must read every parameter it
-  needs from one packed row rather than from the controller's own arrays.
-* :meth:`~Controller.bind_params` — packs those parameters into an
-  ``(num_actuators, P)`` array and re-points the controller's public arrays at
+  needs from one packed row rather than from the drive's own arrays.
+* :meth:`~DriveBase.bind_params` — packs those parameters into an
+  ``(num_actuators, P)`` array and re-points the drive's public arrays at
   its columns, so later writes stay visible to the solve.
-* :meth:`~Controller.prepare_implicit` — optional, called once per step before
+* :meth:`~DriveBase.prepare_implicit` — optional, called once per step before
   the solve. Use it for parameters that depend on the current state, such as a
-  PID integral term or a network linearization. Controllers with fixed
+  PID integral term or a network linearization. Drives with fixed
   parameters do not override it.
 
 .. code-block:: python
-   :caption: Adding implicit support to ``MyController``.
+   :caption: Adding implicit support to ``MyDrive``.
 
    @wp.func
    def _my_force(q: wp.float64, qd: wp.float64, target_q: wp.float64,
@@ -439,7 +450,7 @@ evaluates the control law inside its own kernel rather than calling
                  params: wp.array2d[float], i: wp.int32) -> wp.float64:
        return wp.float64(params[i, 0]) * (target_q - q)
 
-   class MyController(Controller):
+   class MyDrive(DriveBase):
        evaluate_force = _my_force
 
        def bind_params(self):
@@ -448,15 +459,16 @@ evaluates the control law inside its own kernel rather than calling
            self.gain = pack[:, 0]   # writes to self.gain now reach the solve
            return pack
 
-Returning ``None`` from :meth:`~Controller.bind_params` declares that this
+Returning ``None`` from :meth:`~DriveBase.bind_params` declares that this
 configuration cannot be solved implicitly.
 :meth:`~newton.actuators.Actuator.set_effort_mode_implicit` then raises
 ``NotImplementedError`` rather than falling back silently, as it does for a
 Torch-backed neural checkpoint. Leaving
-:attr:`~Controller.evaluate_force` as ``None`` raises the same error.
+:attr:`~DriveBase.evaluate_force` as ``None`` raises the same error.
 
-Similarly, a custom clamping stage subclasses :class:`Clamping` and implements
-:meth:`~Clamping.modify_forces` (which reads effort from a source buffer and writes bounded effort to a destination buffer).
+Similarly, a custom clamping stage subclasses :class:`ClampingBase` and
+implements :meth:`~ClampingBase.modify_forces` (which reads effort from a source
+buffer and writes bounded effort to a destination buffer).
 
 See Also
 --------

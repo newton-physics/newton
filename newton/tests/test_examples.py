@@ -1356,6 +1356,13 @@ add_example_test(
     test_options={"num-frames": 120},
     use_viewer=True,
 )
+add_example_test(
+    TestControllersExamples,
+    name="controllers.example_controller_operational_space_hybrid_force_motion",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 600},
+    use_viewer=True,
+)
 
 
 if __name__ == "__main__":

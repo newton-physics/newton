@@ -27,7 +27,7 @@ from newton._src.sim.model import Model
 from ...controller import ControllerBase
 from ...joint_selection import select_joints
 from ...utils import _validate_array
-from ._common import _gather_mass_matrix_blocks_kernel, _read_port
+from .._common import _gather_mass_matrix_blocks_kernel, _read_port
 from .model_free import ControllerJointImpedanceModelFree
 
 
@@ -324,7 +324,7 @@ class ControllerJointImpedance(ControllerBase):
 
         self._model_mass_matrix: wp.array3d[wp.float32] | None = None
         self._controlled_mass_matrix: wp.array3d[wp.float32] | None = None
-        self._local_dof_idx: wp.array2d[wp.int32] | None = None
+        self._articulation_dof_idx_of_padded_dof_idx: wp.array2d[wp.int32] | None = None
         self._gravity_flat: wp.array[wp.float32] | None = None
         self._coriolis_flat: wp.array[wp.float32] | None = None
 
@@ -347,8 +347,8 @@ class ControllerJointImpedance(ControllerBase):
                 device=self._device,
                 requires_grad=self._requires_grad,
             )
-            self._local_dof_idx = wp.array(
-                self._compute_local_dof_idx(
+            self._articulation_dof_idx_of_padded_dof_idx = wp.array(
+                self._compute_articulation_dof_idx_of_padded_dof_idx(
                     qd_idx_np=qd_idx_np,
                     model_robot_index_np=model_robot_index_np,
                     controlled_dofs_per_robot_np=controlled_dofs_per_robot_np,
@@ -391,7 +391,7 @@ class ControllerJointImpedance(ControllerBase):
         if self._use_coriolis:
             self._mf_input.coriolis_force = self._coriolis_flat[self._qd_idx]
 
-    def _compute_local_dof_idx(
+    def _compute_articulation_dof_idx_of_padded_dof_idx(
         self, *, qd_idx_np: np.ndarray, model_robot_index_np: np.ndarray, controlled_dofs_per_robot_np: np.ndarray
     ) -> np.ndarray:
         """Return, for each (controlled robot, padded slot), the DOF's index within that robot.
@@ -408,12 +408,14 @@ class ControllerJointImpedance(ControllerBase):
         offsets = np.zeros(controlled_robot_count, dtype=np.int64)
         offsets[1:] = np.cumsum(controlled_dofs_per_robot_np[:-1])
 
-        local_dof_idx = np.zeros((controlled_robot_count, self._max_controlled_dofs), dtype=np.int32)
+        articulation_dof_idx_of_padded_dof_idx = np.zeros(
+            (controlled_robot_count, self._max_controlled_dofs), dtype=np.int32
+        )
         for robot in range(controlled_robot_count):
             n = int(controlled_dofs_per_robot_np[robot])
             chunk = qd_idx_np[offsets[robot] : offsets[robot] + n]
-            local_dof_idx[robot, :n] = chunk - robot_dof_start[robot]
-        return local_dof_idx
+            articulation_dof_idx_of_padded_dof_idx[robot, :n] = chunk - robot_dof_start[robot]
+        return articulation_dof_idx_of_padded_dof_idx
 
     @property
     def model_robot_count(self) -> int:
@@ -555,7 +557,7 @@ class ControllerJointImpedance(ControllerBase):
                 inputs=[
                     self._model_mass_matrix,
                     self._model_robot_index,
-                    self._local_dof_idx,
+                    self._articulation_dof_idx_of_padded_dof_idx,
                     self._controlled_dofs_per_robot,
                 ],
                 outputs=[self._controlled_mass_matrix],

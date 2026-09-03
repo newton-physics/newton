@@ -1188,8 +1188,8 @@ class TestMenagerieUSD(TestMenagerieBase):
         "nmeshpolymap",
         "nmeshpolyvert",
         "nmeshvert",
-        "nmaxmeshdeg",
-        "nmaxpolygon",
+        "nmeshdegmax",
+        "npolygonmax",
         "mesh_",
         # Site body IDs reference body indices (different ordering)
         "site_",

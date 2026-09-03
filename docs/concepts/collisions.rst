@@ -1014,6 +1014,13 @@ separated-shapes distance query.
 For convex primitive pairs, multiple contact points are generated for stable stacking and
 resting contacts. The collision pipeline estimates buffer sizes based on the model; you
 can override this value with ``rigid_contact_max`` when instantiating the pipeline.
+The automatic capacity is a conservative heuristic based on colliding shape types,
+contact-pair metadata, and world layout. It generally grows linearly with replicated
+worlds, but it is not a guaranteed worst-case bound. When the estimate implies at least
+256 MiB for the base rigid-contact buffers, the pipeline warns with the resolved capacity
+and the inputs that produced it. Pass an explicit ``rigid_contact_max`` to select the
+memory budget and silence the warning. Optional collision features and solvers may
+allocate additional per-contact memory.
 
 .. _Mesh Collisions:
 
