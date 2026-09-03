@@ -5,35 +5,30 @@
 # Example Controllers — Differential IK
 #
 # Demonstrates ControllerDifferentialIK on three real, heterogeneous robots at once
-# -- a 7-DOF Franka Panda arm (redundant against the 6D task), a 6-DOF UR10
-# arm (not redundant), and a 4-DOF planar arm restricted to a 3D task
-# (X, Y, yaw) via axis_weight, so it too is redundant -- each independently
-# tracking its own draggable gizmo target. One controller call handles all
-# three, each robot resolved through its own tool site and Jacobian.
+# -- a 7-DOF Franka Panda arm tasking the full 6D pose (redundant by 1 DOF),
+# a 6-DOF UR10 arm tasking position only (redundant by 3 DOFs), and a 4-DOF
+# planar arm restricted to a 3D task (X, Y, yaw) via axis_weight (redundant
+# by 1 DOF) -- each independently tracking its own draggable gizmo target.
+# One controller call handles all three, each robot resolved through its own
+# tool site and Jacobian.
 #
-# ControllerDifferentialIK outputs one-step-ahead joint position/velocity targets,
-# not torques, so every controlled arm DOF is left in MuJoCo's
-# POSITION_VELOCITY actuator mode: the controller runs once per frame, and
-# MuJoCo's own implicit PD tracks that fixed target across every physics
-# substep. The Franka's fingers are left untouched, held at their initial
-# target by the same PD.
+# Kinematics only: the controller's joint targets are applied directly to
+# the sim state each frame (no physics solver), keeping the demo focused on
+# the IK itself.
 #
-# The Franka's 7th DOF and the planar arm's 4th DOF are both redundant
-# against their own (6D and 3D) tasks; null-space posture control
-# continuously pulls each toward its own ready pose, so neither drifts
-# toward a bad internal configuration with nothing to anchor it. The UR10
-# has no redundant DOF, so the same posture control is a no-op for it.
+# Every robot here is redundant against its own task, so null-space posture
+# control continuously pulls each toward its own ready pose, so none of them
+# drifts toward a bad internal configuration with nothing to anchor it.
 #
-# The planar arm's gizmo is restricted to X/Y translation and yaw rotation
-# -- the same 3 axes axis_weight keeps active for it -- via log_gizmo's own
-# translate/rotate axis selection, so the widget itself can't suggest a
-# motion the controller would ignore.
+# Each robot's gizmo only exposes the axes its own axis_weight keeps active
+# -- via log_gizmo's own translate/rotate axis selection -- so the widget
+# itself can't suggest a motion the controller would ignore.
 #
-# Uses DifferentialIKMethod.ADAPTIVE_DAMPING: damping ramps up automatically as any arm
-# nears a kinematic singularity or the edge of its reach, instead of a
-# single fixed damping value.
+# --ik-method picks the inverse-Jacobian solve (dls, pinv, transpose,
+# adaptive_damping, truncated_svd) -- see the create_controller_from_*_method
+# functions below, one per DifferentialIKMethod.
 #
-# Command: python -m newton.examples controller_differential_ik
+# Command: python -m newton.examples controller_differential_ik --ik-method adaptive_damping
 ###########################################################################
 
 import numpy as np
@@ -41,9 +36,8 @@ import warp as wp
 
 import newton
 import newton.examples
-import newton.solvers
 import newton.utils
-from newton import Axis, JointTargetMode
+from newton import Axis
 from newton.controllers import ControllerDifferentialIK, DifferentialIKMethod
 
 # ---------------------------------------------------------------------------
@@ -58,7 +52,7 @@ FRANKA_BASE_POSITION = wp.vec3(0.0, 0.0, 0.0)
 # A UR10 configuration reaching forward and down, the same reach scale as
 # the Franka's ready pose.
 UR10_READY_POSE = [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
-UR10_ARM_DOFS = len(UR10_READY_POSE)  # 6; no redundant DOF, unlike the Franka
+UR10_ARM_DOFS = len(UR10_READY_POSE)  # 6; redundant by 3 DOFs against its position-only 3D task
 UR10_BASE_POSITION = wp.vec3(0.0, 1.8, 0.0)  # separated from the Franka along Y
 
 # A 4R planar arm: every joint rotates about world Z, so the tool stays at a
@@ -72,28 +66,121 @@ PLANAR_BASE_POSITION = wp.vec3(0.0, 3.6, 0.5)  # separated from the UR10 along Y
 
 TOOL_SITE_SCALE = (0.02, 0.02, 0.02)
 
-# Franka and UR10 task the full 6D pose; the planar arm only X, Y, and yaw --
-# its Z position, roll, and pitch are structurally excluded from the solve.
+# Franka tasks the full 6D pose; UR10 position only; the planar arm only
+# X, Y, and yaw -- each excluded axis is structurally dropped from its own
+# solve, not merely weighted toward zero.
 FULL_POSE_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+POSITION_ONLY_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 1.0, 0.0, 0.0, 0.0)
 PLANAR_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
-# Every controlled arm DOF tracks joint_target_q/qd via MuJoCo's own
-# implicit PD, driven once per frame by the controller's one-step-ahead
-# targets.
-JOINT_TARGET_KE = 3000.0
-JOINT_TARGET_KD = 100.0
+_XYZ_AXES = (Axis.X, Axis.Y, Axis.Z)
 
-BANDWIDTH = 5.0
-# Empirically tuned against this example's continuous velocity-based control
-# loop (see DifferentialIKMethod.ADAPTIVE_DAMPING).
-ADAPTIVE_DAMPING_MIN = 0.02
-ADAPTIVE_DAMPING_MAX = 0.5
-ADAPTIVE_DAMPING_THRESHOLD = 0.2
 
-# Null-space posture control: pulls every controlled DOF toward its own
-# ready-pose entry, projected through the null-space projector.
-NULL_SPACE_STIFFNESS = 2.0
-NULL_SPACE_DAMPING = 0.05
+def _gizmo_axes_from_weight(axis_weight):
+    """log_gizmo's translate/rotate axis lists for a robot's own axis_weight, one gizmo handle per active axis."""
+    return {
+        "translate": [axis for i, axis in enumerate(_XYZ_AXES) if axis_weight[i] > 0.0],
+        "rotate": [axis for i, axis in enumerate(_XYZ_AXES) if axis_weight[3 + i] > 0.0],
+    }
+
+
+# ---------------------------------------------------------------------------
+# One constructor per DifferentialIKMethod, each fully self-contained --
+# every parameter that method needs (or forbids) lives right here, so
+# picking a method from the command line is just picking which function
+# runs, and each one is a complete, independent example of that method's
+# own ControllerDifferentialIK arguments.
+# ---------------------------------------------------------------------------
+
+
+def create_controller_from_dls_method(model, joints, axis_weight, device):
+    """DifferentialIKMethod.DAMPED_LEAST_SQUARES: a single fixed damping λ everywhere."""
+    return ControllerDifferentialIK(
+        model,
+        joints=joints,
+        tool_sites="tool_site",
+        axis_weight=axis_weight,
+        bandwidth=20.0,
+        damping=0.1,
+        ik_method=DifferentialIKMethod.DAMPED_LEAST_SQUARES,
+        use_null_space_posture_control=True,
+        null_space_stiffness=2.0,
+        null_space_damping=0.05,
+    )
+
+
+def create_controller_from_pinv_method(model, joints, axis_weight, device):
+    """DifferentialIKMethod.PSEUDO_INVERSE: exact (λ=0) Moore-Penrose pseudo-inverse, no damping."""
+    return ControllerDifferentialIK(
+        model,
+        joints=joints,
+        tool_sites="tool_site",
+        axis_weight=axis_weight,
+        bandwidth=20.0,
+        damping=None,
+        ik_method=DifferentialIKMethod.PSEUDO_INVERSE,
+        use_null_space_posture_control=True,
+        null_space_stiffness=2.0,
+        null_space_damping=0.05,
+    )
+
+
+def create_controller_from_transpose_method(model, joints, axis_weight, device):
+    """DifferentialIKMethod.TRANSPOSE: qd = bandwidth * Jᵀe, no matrix inversion at all.
+
+    Unlike the inverting methods, there's no damping to keep this loop
+    stable at a high gain, so bandwidth has to stay small (well below
+    ``1/frame_dt``) or the discrete-time position update overshoots and
+    diverges.
+    """
+    return ControllerDifferentialIK(
+        model,
+        joints=joints,
+        tool_sites="tool_site",
+        axis_weight=axis_weight,
+        bandwidth=5.0,
+        damping=None,
+        ik_method=DifferentialIKMethod.TRANSPOSE,
+        use_null_space_posture_control=True,
+        null_space_stiffness=2.0,
+        null_space_damping=0.05,
+    )
+
+
+def create_controller_from_adaptive_damping_method(model, joints, axis_weight, device):
+    """DifferentialIKMethod.ADAPTIVE_DAMPING: λ ramps up automatically near a singularity or reach limit."""
+    return ControllerDifferentialIK(
+        model,
+        joints=joints,
+        tool_sites="tool_site",
+        axis_weight=axis_weight,
+        bandwidth=20.0,
+        damping=None,
+        ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING,
+        adaptive_damping_min=1e-2,
+        adaptive_damping_max=0.5,
+        adaptive_damping_threshold=0.05,
+        use_null_space_posture_control=True,
+        null_space_stiffness=2.0,
+        null_space_damping=0.05,
+    )
+
+
+def create_controller_from_truncated_svd_method(model, joints, axis_weight, device):
+    """DifferentialIKMethod.TRUNCATED_SVD: directions below the threshold are dropped, not damped."""
+    return ControllerDifferentialIK(
+        model,
+        joints=joints,
+        tool_sites="tool_site",
+        axis_weight=axis_weight,
+        bandwidth=20.0,
+        damping=None,
+        ik_method=DifferentialIKMethod.TRUNCATED_SVD,
+        truncated_svd_threshold=0.1,
+        use_null_space_posture_control=True,
+        null_space_stiffness=2.0,
+        null_space_damping=0.05,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -104,18 +191,24 @@ NULL_SPACE_DAMPING = 0.05
 class Example:
     @staticmethod
     def create_parser():
-        return newton.examples.create_parser()
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--ik-method",
+            type=str,
+            default="adaptive_damping",
+            choices=["dls", "pinv", "transpose", "adaptive_damping", "truncated_svd"],
+            help="Inverse-Jacobian solve method, a DifferentialIKMethod.",
+        )
+        return parser
 
     def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 10
-        self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
         self.viewer = viewer
         self.device = wp.get_device()
 
-        # ---- Physics scene ---------------------------------------------------
+        # ---- Scene -------------------------------------------------------
         franka_urdf_path = str(newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf")
         ur10_asset_file = str(newton.utils.download_asset("universal_robots_ur10") / "usd/ur10_instanceable.usda")
         builder = newton.ModelBuilder()
@@ -135,48 +228,33 @@ class Example:
 
         builder.add_ground_plane()
 
-        # Every arm DOF tracks joint_target_q/qd via MuJoCo's implicit PD;
-        # this includes the Franka's finger DOFs, so they hold their
-        # builder-set home target even though the controller never writes
-        # to them.
-        for i in range(builder.joint_dof_count):
-            builder.joint_target_ke[i] = JOINT_TARGET_KE
-            builder.joint_target_kd[i] = JOINT_TARGET_KD
-            builder.joint_target_mode[i] = int(JointTargetMode.POSITION_VELOCITY)
-
         self.model = builder.finalize(device=self.device)
         self.state_0 = self.model.state()
-        self.state_1 = self.model.state()
-        self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-
-        # Contacts play no role in this tracking demo.
-        self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
 
         # ---- Differential-kinematics controller -------------------------------
         # One controller call handles all three robots; joints lists robot
         # 0's (Franka's) controlled joints first, then robot 1's (UR10's),
         # then robot 2's (the planar arm's), matching axis_weight's and
         # desired_tool_pose_world's per-robot ordering below.
-        self.controller = ControllerDifferentialIK(
-            self.model,
-            joints=franka_joints + ur10_joints + planar_joints,
-            tool_sites="tool_site",
-            axis_weight=wp.array(
-                [FULL_POSE_AXIS_WEIGHT, FULL_POSE_AXIS_WEIGHT, PLANAR_AXIS_WEIGHT],
-                dtype=wp.spatial_vector,
-                device=self.device,
-            ),
-            bandwidth=BANDWIDTH,
-            damping=None,
-            ik_method=DifferentialIKMethod.ADAPTIVE_DAMPING,
-            adaptive_damping_min=ADAPTIVE_DAMPING_MIN,
-            adaptive_damping_max=ADAPTIVE_DAMPING_MAX,
-            adaptive_damping_threshold=ADAPTIVE_DAMPING_THRESHOLD,
-            use_null_space_posture_control=True,
-            null_space_stiffness=NULL_SPACE_STIFFNESS,
-            null_space_damping=NULL_SPACE_DAMPING,
-        )
+        joints = franka_joints + ur10_joints + planar_joints
+        axis_weight_rows = [FULL_POSE_AXIS_WEIGHT, POSITION_ONLY_AXIS_WEIGHT, PLANAR_AXIS_WEIGHT]
+        axis_weight = wp.array(axis_weight_rows, dtype=wp.spatial_vector, device=self.device)
+        ik_method = args.ik_method
+        if ik_method == "dls":
+            self.controller = create_controller_from_dls_method(self.model, joints, axis_weight, self.device)
+        elif ik_method == "pinv":
+            self.controller = create_controller_from_pinv_method(self.model, joints, axis_weight, self.device)
+        elif ik_method == "transpose":
+            self.controller = create_controller_from_transpose_method(self.model, joints, axis_weight, self.device)
+        elif ik_method == "adaptive_damping":
+            self.controller = create_controller_from_adaptive_damping_method(
+                self.model, joints, axis_weight, self.device
+            )
+        elif ik_method == "truncated_svd":
+            self.controller = create_controller_from_truncated_svd_method(self.model, joints, axis_weight, self.device)
+        else:
+            raise ValueError(f"Unknown --ik-method: {ik_method}")
 
         self._input = self.controller.input()
         self._output = self.controller.output()
@@ -187,11 +265,11 @@ class Example:
             np.array(FRANKA_READY_POSE + UR10_READY_POSE + PLANAR_READY_POSE, dtype=np.float32)
         )
         # The controller's outputs are compact (one entry per controlled
-        # DOF); indexed views scatter them straight into the sim control
-        # buffers, in each buffer's own layout (q_start: coordinate space,
-        # qd_start: DOF space).
-        self._output.joint_q_target = self.control.joint_target_q[self.controller.q_start]
-        self._output.joint_qd_target = self.control.joint_target_qd[self.controller.qd_start]
+        # DOF); indexed views scatter them straight into the sim state, in
+        # each buffer's own layout (q_start: coordinate space, qd_start:
+        # DOF space).
+        self._output.joint_q_target = self.state_0.joint_q[self.controller.q_start]
+        self._output.joint_qd_target = self.state_0.joint_qd[self.controller.qd_start]
 
         # Draggable gizmo per robot, seeded at each tool's actual starting
         # world pose -- zero initial error, rather than a sudden snap at
@@ -202,11 +280,10 @@ class Example:
             wp.transform(*body_q_np[ur10_tool_body].tolist()) * ur10_tool_site_transform,
             wp.transform(*body_q_np[planar_tool_body].tolist()) * planar_tool_site_transform,
         ]
-        self.gizmo_axes = [
-            {"translate": None, "rotate": None},
-            {"translate": None, "rotate": None},
-            {"translate": [Axis.X, Axis.Y], "rotate": [Axis.Z]},
-        ]
+        # A zero-weighted axis is excluded from that robot's solve entirely
+        # (see axis_weight above), so its gizmo handle is dropped too -- the
+        # widget can't suggest a motion the controller would ignore.
+        self.gizmo_axes = [_gizmo_axes_from_weight(weight) for weight in axis_weight_rows]
 
         # Set such that Franka at y=0, UR10 at y=1.8, planar arm at y=3.6 are in view together.
         if hasattr(self.viewer, "set_camera"):
@@ -341,8 +418,7 @@ class Example:
 
     def step(self):
         # Gizmo drag updates are Python-side, so this whole frame is outside
-        # any CUDA graph. Rebind joint_q/joint_qd to whichever State buffer
-        # the substep swap left at state_0 after the previous frame.
+        # any CUDA graph.
         self._input.joint_q = self.state_0.joint_q
         self._input.joint_qd = self.state_0.joint_qd
         pose = np.zeros((len(self.gizmo_tfs), 7), dtype=np.float32)
@@ -351,17 +427,11 @@ class Example:
             pose[i, 3:] = wp.transform_get_rotation(tf)
         self._input.desired_tool_pose_world.assign(pose)
 
-        # One controller step per frame: joint_q_target/joint_qd_target are
-        # one frame ahead, tracked by MuJoCo's own PD across every substep
-        # below -- refreshing the target every substep instead would chase
-        # the drifted current_q with no restoring signal left against
-        # gravity.
+        # joint_q_target/joint_qd_target write straight into state_0 (see
+        # the output bindings in __init__); eval_fk brings body_q/body_qd
+        # back in sync for rendering and the next frame's Jacobian.
         self.controller.step(inputs=self._input, outputs=self._output, dt=self.frame_dt)
-
-        for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.sim_time += self.frame_dt
 
