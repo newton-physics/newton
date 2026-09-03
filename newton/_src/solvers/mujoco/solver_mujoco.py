@@ -211,7 +211,29 @@ def _mujoco_warp_deterministic_modules() -> list[Any]:
     ]
 
 
-_MUJOCO_WARP_DYNAMIC_RECORD_MODULES = frozenset({"mujoco_warp._src.smooth"})
+# MJWarp modules whose kernels perform atomics inside data-dependent loops.
+# Warp's code generator can only prove a per-thread record lower bound for
+# statically bounded loops, so these modules need the model-derived bound from
+# ``_mujoco_warp_deterministic_max_records()``; every other module is left at 0
+# (the code-generated bound) to avoid over-allocating scatter buffers, which are
+# sized ``launch_dim * records_per_thread``.
+#
+# ``test_mujoco_deterministic_records.py`` re-derives this set from the
+# installed MJWarp sources and fails if a module gains a data-dependent atomic
+# without being listed here.
+_MUJOCO_WARP_DYNAMIC_RECORD_MODULES = frozenset(
+    {
+        "mujoco_warp._src.collision_flex",
+        "mujoco_warp._src.constraint",
+        "mujoco_warp._src.derivative",
+        "mujoco_warp._src.forward",
+        "mujoco_warp._src.island",
+        "mujoco_warp._src.passive",
+        "mujoco_warp._src.sensor",
+        "mujoco_warp._src.smooth",
+        "mujoco_warp._src.solver",
+    }
+)
 
 
 def _mujoco_warp_max_constraint_row_width(mj_model: MjModel) -> int:
