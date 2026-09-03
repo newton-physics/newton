@@ -5259,8 +5259,8 @@ def _joint_rod_api_deprecates_cable_names(test, device):
     test.assertEqual(caught.filename, __file__)
 
 
-def _cable_legacy_positional_arguments_preserve_binding(test, device):
-    """Verify Newton 1.5 cable arguments retain their positional meaning."""
+def _cable_positional_argument_migrations(test, device):
+    """Preserve active migrations and enforce completed migrations."""
     test.assertEqual(
         inspect.signature(newton.ModelBuilder.add_joint_cable),
         inspect.signature(newton.ModelBuilder.add_joint_rod),
@@ -5288,7 +5288,7 @@ def _cable_legacy_positional_arguments_preserve_binding(test, device):
     quaternions = [wp.quat_identity(), wp.quat_identity()]
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with test.assertWarnsRegex(DeprecationWarning, r"Passing .* positionally to ModelBuilder\.add_rod"):
+    with test.assertRaises(TypeError):
         builder.add_rod(
             points,
             quaternions,
@@ -5297,11 +5297,9 @@ def _cable_legacy_positional_arguments_preserve_binding(test, device):
             *released_stiffness_args,
             body_frame_origin="com",
         )
-    np.testing.assert_allclose(builder.joint_target_ke, expected_ke)
-    np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with test.assertWarnsRegex(DeprecationWarning, r"Passing .* positionally to ModelBuilder\.add_rod_graph"):
+    with test.assertRaises(TypeError):
         builder.add_rod_graph(
             points,
             [(0, 1), (1, 2)],
@@ -5310,8 +5308,6 @@ def _cable_legacy_positional_arguments_preserve_binding(test, device):
             *released_stiffness_args,
             body_frame_origin="com",
         )
-    np.testing.assert_allclose(builder.joint_target_ke, expected_ke)
-    np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
 
 
 def _cable_rod_helper_api_deprecates_create_names(test, device):
@@ -6721,8 +6717,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_legacy_positional_arguments_preserve_binding",
-    _cable_legacy_positional_arguments_preserve_binding,
+    "test_cable_positional_argument_migrations",
+    _cable_positional_argument_migrations,
     devices=None,
 )
 add_function_test(

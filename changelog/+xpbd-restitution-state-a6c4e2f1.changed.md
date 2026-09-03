@@ -1,0 +1,1 @@
+Solve `SolverXPBD` rigid restitution per contact manifold with bounded best-K contact reduction. Scenes that raised `rigid_contact_restitution_iterations` to compensate for weak multi-contact rebounds can return it to the default of 2 and should re-test bounce behavior.

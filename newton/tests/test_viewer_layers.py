@@ -26,7 +26,7 @@ class _RecordingViewer(ViewerNull):
         self.instance_xforms: list[tuple[str, object]] = []
         self.mesh_calls: list[tuple[str, bool]] = []
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False, opacities=None):
         self.instance_calls.append((name, hidden))
         if xforms is not None:
             self.instance_xforms.append((name, xforms.numpy().copy()))
@@ -45,6 +45,7 @@ class _RecordingViewer(ViewerNull):
         roughness=None,
         metallic=None,
         dynamic=False,
+        opacity=None,
     ):
         self.mesh_calls.append((name, hidden))
 
@@ -454,6 +455,40 @@ class TestViewerLayerBackends(unittest.TestCase):
             scene.captured_calls["add_batched_meshes_simple"]["name"],
             "/layers/solverA/instances",
         )
+
+    def test_viser_warns_when_appearance_argument_is_unsupported(self):
+        """Drop unsupported appearance arguments with an explicit warning."""
+
+        def add_batched_meshes_trimesh(name):
+            return name
+
+        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
+            result = ViewerViser._call_scene_method(
+                add_batched_meshes_trimesh,
+                name="instances",
+                batched_opacities=[0.5],
+            )
+
+        self.assertEqual(result, "instances")
+
+    def test_viser_does_not_retry_failed_scene_calls(self):
+        """Propagate scene failures without retrying with unsupported arguments."""
+        call_count = 0
+
+        def add_batched_meshes_trimesh(name):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError(f"failed to add {name}")
+
+        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
+            with self.assertRaisesRegex(RuntimeError, "failed to add instances"):
+                ViewerViser._call_scene_method(
+                    add_batched_meshes_trimesh,
+                    name="instances",
+                    batched_opacities=[0.5],
+                )
+
+        self.assertEqual(call_count, 1)
 
 
 if __name__ == "__main__":

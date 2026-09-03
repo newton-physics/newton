@@ -2336,8 +2336,9 @@ def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):
 
     # The latch is solver-local so independently constructed solvers remain testable.
     for _ in range(2):
-        with test.assertWarnsRegex(DeprecationWarning, "legacy AVBD still honors it"):
+        with test.assertWarnsRegex(DeprecationWarning, "legacy AVBD still honors it") as warning:
             newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+        test.assertEqual(warning.filename, __file__)
 
 
 def _rigid_velocity_drive_preserves_legacy_damping_and_adds_compliant_support(test, device):
@@ -3731,7 +3732,7 @@ def _soft_contact_presize_is_world_aware(test, device):
             sizes[world_count] = solver.body_particle_contact_penalty_k.shape[0]
             test.assertEqual(
                 sizes[world_count],
-                newton.CollisionPipeline(model, broad_phase="nxn").soft_rigid_contact_pair_count,
+                newton.CollisionPipeline(model, broad_phase="nxn").soft_contact_pair_count,
                 f"{globals_kind=} {world_count=}",
             )
         test.assertEqual(sizes[4], 4 * sizes[1], f"{globals_kind=}")
@@ -4120,7 +4121,7 @@ def test_edge_face_pushes_vertices_out(test, device):
 
     margin = 0.1
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=margin, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=margin, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state_in = model.state()
@@ -4198,7 +4199,7 @@ def test_edge_face_reacts_on_rigid_body(test, device):
 
     margin = 0.1
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=margin, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=margin, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state_in = model.state()
@@ -4243,7 +4244,7 @@ def test_edge_face_reacts_through_coupled_proxy(test, device):
         ),
     )
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state_in, state_out = model.state(), model.state()
@@ -4283,7 +4284,7 @@ def _run_face_section2(device, shape_margin):
     model = builder.finalize(device=device)
 
     smax = 8
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1, soft_contact_max=smax)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1, soft_contact_max=smax)
     contacts = pipeline.contacts()
     state = model.state()
 
@@ -4439,7 +4440,7 @@ def test_flag_off_is_inert(test, device):
     model, _verts = _build_edge_over_post(device)
     # Flag OFF at construction: the buffer has no edge/face headroom and the passes never run.
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=False
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=False
     )
     contacts = pipeline.contacts()
     state_in = model.state()
@@ -4469,7 +4470,7 @@ def test_full_surface_rejected_for_vbd_proxy_particles(test, device):
     model = builder.finalize(device=device)
 
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()  # capability marker set True
     solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)

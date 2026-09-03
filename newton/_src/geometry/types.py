@@ -167,10 +167,12 @@ class Mesh:
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
         indices: Sequence[int] | np.ndarray,
+        *,
         normals: Sequence[Vec3] | np.ndarray | None = None,
         uvs: Sequence[Vec2] | np.ndarray | None = None,
         compute_inertia: bool = True,
@@ -180,8 +182,9 @@ class Mesh:
         roughness: float | None = None,
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
-        *,
+        texture_transform: Sequence[Sequence[float]] | np.ndarray = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
         sdf: "SDF | None" = None,
+        opacity: float | None = None,
     ):
         """
         Construct a Mesh object from a triangle mesh.
@@ -202,7 +205,11 @@ class Mesh:
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
             texture: Optional texture path/URL or image data (H, W, C).
+            texture_transform: Affine texture-coordinate transform as two rows
+                ``((m00, m01, tx), (m10, m11, ty))``. It is applied to the
+                authored UV coordinates as ``(u', v') = M @ (u, v) + t``.
             sdf: Optional prebuilt SDF object owned by this mesh.
+            opacity: Optional per-mesh opacity in [0, 1].
         """
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
 
@@ -213,8 +220,11 @@ class Mesh:
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self._color: Vec3 | None = None
         self.color = color
+        self._opacity: float | None = None
+        self.opacity = opacity
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
+        self.texture_transform = texture_transform
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -796,11 +806,13 @@ class Mesh:
             normals=self.normals.copy() if self.normals is not None else None,
             uvs=self.uvs.copy() if self.uvs is not None else None,
             color=self.color,
+            opacity=self.opacity,
             texture=self._texture
             if isinstance(self._texture, str)
             else (self._texture.copy() if self._texture is not None else None),
             roughness=self._roughness,
             metallic=self._metallic,
+            texture_transform=self._texture_transform,
         )
         if not recompute_inertia:
             m.inertia = self.inertia
@@ -1513,6 +1525,15 @@ class Mesh:
         self._color = value
 
     @property
+    def opacity(self) -> float | None:
+        """Optional display opacity with value in [0, 1]."""
+        return self._opacity
+
+    @opacity.setter
+    def opacity(self, value: float | None):
+        self._opacity = None if value is None else float(value)
+
+    @property
     def texture(self) -> str | np.ndarray | None:
         """Optional texture as a file path or a normalized RGBA array."""
         return self._texture
@@ -1533,6 +1554,21 @@ class Mesh:
         is reassigned.
         """
         return self._compute_texture_hash()
+
+    @property
+    def texture_transform(self) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """Affine transform applied to the authored UV coordinates."""
+        return self._texture_transform
+
+    @texture_transform.setter
+    def texture_transform(self, value: Sequence[Sequence[float]] | np.ndarray):
+        try:
+            matrix = np.asarray(value, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("texture_transform must be a finite 2-by-3 matrix.") from exc
+        if matrix.shape != (2, 3) or not np.all(np.isfinite(matrix)):
+            raise ValueError("texture_transform must be a finite 2-by-3 matrix.")
+        self._texture_transform = tuple(tuple(float(component) for component in row) for row in matrix)
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
@@ -1558,7 +1594,6 @@ class Mesh:
         self._cached_hash = None
 
     # construct simulation ready buffers from points
-    @deprecate_nonkeyword_arguments
     def finalize(
         self,
         device: Devicelike = None,
@@ -1746,12 +1781,25 @@ class TetMesh:
             tet_mesh = newton.TetMesh(vertices, tet_indices)
     """
 
-    _RESERVED_ATTR_KEYS = frozenset({"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"})
+    _RESERVED_ATTR_KEYS = frozenset(
+        {
+            "vertices",
+            "tet_indices",
+            "k_mu",
+            "k_lambda",
+            "k_damp",
+            "density",
+            "__custom_names__",
+            "__custom_freqs__",
+        }
+    )
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
         tet_indices: Sequence[int] | np.ndarray,
+        *,
         k_mu: np.ndarray | float | None = None,
         k_lambda: np.ndarray | float | None = None,
         k_damp: np.ndarray | float | None = None,
@@ -1989,9 +2037,12 @@ class TetMesh:
         to the prim (via ``material:binding:physics``) and contains
         ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
         ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
-        those values are read and converted to Lame parameters (``k_mu``,
-        ``k_lambda``) and density on the returned TetMesh. Material properties
-        are set to ``None`` if not present.
+        those values are read and converted to Lamé parameters (``k_mu``,
+        ``k_lambda``) and density on the returned TetMesh, expressed in the stage's
+        configured units. Their SI-equivalent units are [Pa] for the Lamé parameters
+        and [kg/m^3] for density. A material applying
+        ``PhysicsVolumeDeformableMaterialAPI`` receives the proposal's elasticity
+        fallbacks; API-less compatibility materials leave missing properties unset.
 
         Custom primvars use their resolved interpolation to determine attribute
         frequency. Other custom arrays use length-based inference; arrays whose
@@ -2033,7 +2084,7 @@ class TetMesh:
                 canonical-only.
 
         Returns:
-            TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
+            A :class:`newton.TetMesh` with vertex positions and tet connectivity.
         """
         from ..usd.utils import get_tetmesh  # noqa: PLC0415
 
@@ -2130,10 +2181,10 @@ class TetMesh:
                     if key == "density":
                         if arr.size > 1 and not np.allclose(arr, arr[0]):
                             raise ValueError(
-                                f"Non-uniform per-element density found in '{filename}'. "
-                                f"TetMesh only supports a single uniform density value."
+                                f"Non-uniform per-element {key} found in '{filename}'. "
+                                f"TetMesh only supports a single uniform {key} value."
                             )
-                        kwargs["density"] = float(arr[0])
+                        kwargs[key] = float(arr[0])
                     else:
                         kwargs[key] = arr
 

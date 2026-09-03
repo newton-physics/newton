@@ -12,7 +12,7 @@ predicted end-of-step state:
 
     ``q(p) = q + h qd(p)``
 
-Here ``h`` is the timestep, ``g`` is the controller force law with clamping,
+Here ``h`` is the timestep, ``g`` is the drive force law with clamping,
 and ``A`` is the coupled inverse-mass response supplied by
 :class:`ResponseOracle`. Options: :class:`ImplicitOptions`.
 
@@ -31,7 +31,7 @@ import numpy as np
 import warp as wp
 
 from ..sim import JointType
-from .controllers.base import Controller
+from .drives.base import DriveBase
 from .response_oracle import ResponseOracle
 
 __all__ = ["ImplicitOptions", "ResponseOracle"]
@@ -353,16 +353,16 @@ class _EffortModeImplicit:
 
     Groups actuator DOFs by articulation and solves each group using the
     response provided by :class:`ResponseOracle`. The generated kernel
-    combines the controller force law, controller parameters, and clamps.
+    combines the drive force law, drive parameters, and clamps.
 
-    Before each solve, :meth:`compute_force` calls the controller's
-    :meth:`~Controller.prepare_implicit` hook to update state-dependent
-    controller parameters.
+    Before each solve, :meth:`compute_force` calls the drive's
+    :meth:`~DriveBase.prepare_implicit` hook to update state-dependent drive
+    parameters.
     """
 
     def __init__(
         self,
-        controller,
+        drive,
         clamping,
         response: ResponseOracle,
         options: ImplicitOptions | None,
@@ -387,31 +387,30 @@ class _EffortModeImplicit:
                 "build one with newton.actuators.ResponseOracle(model)."
             )
         self._response = response
-        self._controller = controller
-        # Set for controllers that require per-step preparation ahead of the implicit
+        self._drive = drive
+        # Set for drives that require per-step preparation ahead of the implicit
         # solve, such as advancing an integral term or relinearizing a network.
-        self._needs_prepare = type(controller).prepare_implicit is not Controller.prepare_implicit
-        self._init_solver(controller, clamping)
+        self._needs_prepare = type(drive).prepare_implicit is not DriveBase.prepare_implicit
+        self._init_solver(drive, clamping)
         # Up front: this reads to host and allocates, both illegal during graph capture.
         self._build_groups(vel_indices)
 
-    def _resolve_force_law(self, controller):
-        """Validate the controller's in-kernel force law and adopt its params.
+    def _resolve_force_law(self, drive):
+        """Validate the drive's in-kernel force law and adopt its params.
 
-        ``bind_params`` builds the pack and re-points the controller's
+        ``bind_params`` builds the pack and re-points the drive's
         parameter attributes to views into it, so later writes stay live.
         """
-        # Check first: bind_params() re-points the controller's parameter arrays.
-        if controller.evaluate_force is None:
+        # Check first: bind_params() re-points the drive's parameter arrays.
+        if drive.evaluate_force is None:
             raise NotImplementedError(
-                f"{type(controller).__name__} does not support implicit actuation "
-                "(Controller.evaluate_force unavailable)"
+                f"{type(drive).__name__} does not support implicit actuation (DriveBase.evaluate_force unavailable)"
             )
-        params = controller.bind_params()
+        params = drive.bind_params()
         if params is None:
             raise NotImplementedError(
-                f"{type(controller).__name__} does not support implicit actuation "
-                "in this configuration (Controller.bind_params() returned None)"
+                f"{type(drive).__name__} does not support implicit actuation "
+                "in this configuration (DriveBase.bind_params() returned None)"
             )
         self._params = params
 
@@ -430,7 +429,8 @@ class _EffortModeImplicit:
             func = clamp.evaluate_clamp
             if func is None:
                 raise NotImplementedError(
-                    f"{type(clamp).__name__} does not support implicit actuation (Clamping.evaluate_clamp unavailable)"
+                    f"{type(clamp).__name__} does not support implicit actuation "
+                    "(ClampingBase.evaluate_clamp unavailable)"
                 )
             width = clamp.param_width()
             entries.append((func, col))
@@ -448,12 +448,12 @@ class _EffortModeImplicit:
             clamp._bound_owner = clamping
         return _compose_clamps(tuple(entries)), tuple(entries)
 
-    def _init_solver(self, controller, clamping) -> None:
-        """Build the coupled in-kernel solve from the controller and clamps."""
-        self._resolve_force_law(controller)
+    def _init_solver(self, drive, clamping) -> None:
+        """Build the coupled in-kernel solve from the drive and clamps."""
+        self._resolve_force_law(drive)
         chain, entries = self._pack_clamps(clamping)
-        key = (controller.evaluate_force, entries)
-        self._kernel = _build_coupled_solve_kernel(controller.evaluate_force, chain, key)
+        key = (drive.evaluate_force, entries)
+        self._kernel = _build_coupled_solve_kernel(drive.evaluate_force, chain, key)
 
     def _build_groups(self, vel_indices) -> None:
         """Map actuator DOFs to (articulation, local index) and group by articulation."""
@@ -549,7 +549,7 @@ class _EffortModeImplicit:
         self._num_groups = num_groups
 
     def is_graphable(self) -> bool:
-        return self._controller.is_graphable()
+        return self._drive.is_graphable()
 
     def compute_force(
         self,
@@ -565,12 +565,12 @@ class _EffortModeImplicit:
         target_vel_indices: wp.array[wp.uint32],
         computed_forces: wp.array[float],
         applied_forces: wp.array[float],
-        ctrl_state: Any,
+        drive_state: Any,
         dt: float | None,
     ) -> wp.array[float]:
         """Solve implicit effort and return the applied-effort buffer.
 
-        The controller law at the final predicted state is written to
+        The drive law at the final predicted state is written to
         *computed_forces*. Clamps are enforced inside the solve against that
         state, and the solved effort is written to *applied_forces*.
         """
@@ -586,7 +586,7 @@ class _EffortModeImplicit:
                 outputs=[self._slot_response],
                 device=self._device,
             )
-            self._controller.prepare_implicit(
+            self._drive.prepare_implicit(
                 positions,
                 velocities,
                 target_pos,
@@ -595,7 +595,7 @@ class _EffortModeImplicit:
                 vel_indices,
                 target_pos_indices,
                 target_vel_indices,
-                ctrl_state,
+                drive_state,
                 float(dt),
                 self._slot_response,
                 self._device,
