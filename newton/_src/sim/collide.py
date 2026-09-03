@@ -1023,12 +1023,7 @@ def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]
     if particle_count == 0 or shape_count == 0:
         return wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
     world_count = int(getattr(model, "world_count", 0) or 0)
-    return _world_compatible_pairs(
-        model.particle_world.numpy(),
-        model.shape_world.numpy(),
-        world_count,
-        model.device,
-    )
+    return _world_compatible_pairs(model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device)
 
 
 def _count_soft_particle_rigid_contact_pairs(model: Model) -> int:
@@ -1054,8 +1049,7 @@ def _count_soft_particle_rigid_contact_pairs(model: Model) -> int:
 
 
 def _build_soft_face_rigid_contact_pairs(
-    model: Model,
-    capable_shape_mask: np.ndarray | None = None,
+    model: Model, capable_shape_mask: np.ndarray | None = None
 ) -> wp.array[wp.vec2i]:
     """World-compatible ``(soft triangle, shape)`` candidate pairs for the full-surface FACE pass,
     mirroring :func:`_build_soft_particle_rigid_contact_pairs`. A triangle's world is the world of
@@ -1070,17 +1064,12 @@ def _build_soft_face_rigid_contact_pairs(
     world_count = int(getattr(model, "world_count", 0) or 0)
     face_world = model.particle_world.numpy()[model.tri_indices.numpy()[:, 0]]
     return _world_compatible_pairs(
-        face_world,
-        model.shape_world.numpy(),
-        world_count,
-        device,
-        shape_ok=capable_shape_mask,
+        face_world, model.shape_world.numpy(), world_count, device, shape_ok=capable_shape_mask
     )
 
 
 def _build_soft_edge_rigid_contact_pairs(
-    model: Model,
-    capable_shape_mask: np.ndarray | None = None,
+    model: Model, capable_shape_mask: np.ndarray | None = None
 ) -> wp.array[wp.vec2i]:
     """World-compatible ``(soft edge, shape)`` candidate pairs for the full-surface EDGE pass,
     mirroring :func:`_build_soft_particle_rigid_contact_pairs`. An edge's world is that of one of its
@@ -1097,11 +1086,7 @@ def _build_soft_edge_rigid_contact_pairs(
     # edge_indices rows are [o0, o1, v0, v1]; col 2 (v0) is an endpoint, so its world is the edge's.
     edge_world = model.particle_world.numpy()[model.edge_indices.numpy()[:, 2]]
     return _world_compatible_pairs(
-        edge_world,
-        model.shape_world.numpy(),
-        world_count,
-        device,
-        shape_ok=capable_shape_mask,
+        edge_world, model.shape_world.numpy(), world_count, device, shape_ok=capable_shape_mask
     )
 
 

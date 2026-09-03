@@ -235,7 +235,7 @@ def _shape_frames(
     if rigid_body >= 0:
         X_wb = body_q[rigid_body]
     X_bs = shape_transform[shape_index]
-    X_ws = X_wb * X_bs
+    X_ws = wp.transform_multiply(X_wb, X_bs)
     X_sw = wp.transform_inverse(X_ws)
     return X_bs, X_ws, X_sw
 
@@ -598,8 +598,6 @@ def launch_soft_ef_contacts(
     if n_edge_pairs == 0 and n_face_pairs == 0:
         return
 
-    if (shape_aabb_lower is None) != (shape_aabb_upper is None):
-        raise ValueError("shape_aabb_lower and shape_aabb_upper must be provided together")
     if shape_aabb_lower is None:
         # Isolated kernel tests can intentionally disable the broad rejection. Production collision
         # always supplies the current narrow-phase AABBs, so graph capture never allocates here.
@@ -632,7 +630,7 @@ def launch_soft_ef_contacts(
         contacts.soft_contact_normal,
     ]
 
-    if n_edge_pairs:
+    if n_edge_pairs > 0:
         wp.launch(
             create_soft_edge_contacts,
             dim=n_edge_pairs,
@@ -650,7 +648,7 @@ def launch_soft_ef_contacts(
             outputs=outputs,
             device=device,
         )
-    if n_face_pairs:
+    if n_face_pairs > 0:
         wp.launch(
             create_soft_face_contacts,
             dim=n_face_pairs,

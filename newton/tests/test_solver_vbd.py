@@ -13,7 +13,6 @@ import warp as wp
 import newton
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-    accumulate_particle_body_contact_force_and_hessian,
     build_particle_body_contact_adjacency_active,
     evaluate_dihedral_angle_based_bending_force_hessian,
     evaluate_neo_hookean_membrane_force_hessian,
@@ -23,15 +22,15 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
     evaluate_volumetric_neo_hookean_force_and_hessian,
     gather_particle_body_contact_force_and_hessian,
-    solve_elasticity_tile,
-    solve_elasticity_tile_tet_only,
-    solve_elasticity_tile_two_particles,
+    make_solve_elasticity_tile,
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
     _alm_relaxed_ascent,
     _compliant_alm_coefficients,
     _contact_tangent_conditioning_scale,
+    _eval_body_particle_contact,
+    _eval_soft_ef_contact,
     _joint_angular_rho_seed,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
@@ -434,6 +433,122 @@ def _prepare_particle_contact_gather_replay(
         particle_contact_head[i] = -1
         particle_forces[i] = wp.vec3(0.0)
         particle_hessians[i] = wp.mat33(0.0)
+
+
+@wp.kernel
+def accumulate_particle_body_contact_force_and_hessian(
+    # inputs
+    dt: float,
+    current_color: int,
+    pos_anchor: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
+    # body-particle contact
+    friction_epsilon: float,
+    particle_radius: wp.array[float],
+    body_particle_contact_indices: wp.array[wp.vec3i],
+    body_particle_contact_count: wp.array[int],
+    body_particle_contact_max: int,
+    # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    # Barycentric weights on each record's soft particles; (1, 0, 0) for a particle contact.
+    contact_barycentric: wp.array[wp.vec3],
+    # outputs: particle force and hessian
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
+):
+    """Legacy capacity-scan scatter accumulation, kept as the reference oracle for the gather kernel."""
+    t_id = wp.tid()
+
+    # One unified soft-contact stream. body_particle_contact_count[0] is the total soft-contact count;
+    # each record self-describes via its -1-padded corner ids: (p, -1, -1) is a particle contact,
+    # (v0, v1, -1) an edge, (v0, v1, v2) a face. A contact energy E(x) at x = sum_i bary[i]*pos[c_i]
+    # contributes bary[i]*force to corner i and bary[i]^2*hessian to its block. VBD solves one color
+    # per launch, so only scatter to this record's corners of the active color.
+    count = min(body_particle_contact_max, body_particle_contact_count[0])
+    if t_id >= count:
+        return
+
+    corners = body_particle_contact_indices[t_id]
+    # Per-contact AVBD penalty + material properties shared with the rigid side.
+    contact_ke = body_particle_contact_penalty_k[t_id]
+    contact_kd = body_particle_contact_material_kd[t_id]
+    contact_mu = body_particle_contact_material_mu[t_id]
+
+    if corners[1] < 0:
+        # Particle contact (p, -1, -1): single-vertex path, unchanged from the pre-unification code.
+        particle_idx = corners[0]
+        if particle_colors[particle_idx] == current_color:
+            body_contact_force, body_contact_hessian = _eval_body_particle_contact(
+                particle_idx,
+                pos[particle_idx],
+                pos_anchor[particle_idx],
+                t_id,
+                contact_ke,
+                contact_kd,
+                contact_mu,
+                friction_epsilon,
+                particle_radius,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                body_com,
+                contact_shape,
+                contact_body_pos,
+                contact_body_vel,
+                contact_normal,
+                shape_margin,
+                dt,
+            )
+            wp.atomic_add(particle_forces, particle_idx, body_contact_force)
+            wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
+    else:
+        # Edge/face contact: barycentric point over the record's 2-3 soft particles.
+        bary = contact_barycentric[t_id]
+        ef_force, ef_hessian, _cp_world = _eval_soft_ef_contact(
+            t_id,
+            corners,
+            bary,
+            pos,
+            pos_anchor,
+            particle_radius,
+            contact_ke,
+            contact_kd,
+            contact_mu,
+            friction_epsilon,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            contact_shape,
+            contact_body_pos,
+            contact_body_vel,
+            contact_normal,
+            shape_margin,
+            dt,
+        )
+        for i in range(3):
+            ci = corners[i]
+            if ci >= 0:
+                w = bary[i]
+                if particle_colors[ci] == current_color:
+                    wp.atomic_add(particle_forces, ci, w * ef_force)
+                    wp.atomic_add(particle_hessians, ci, (w * w) * ef_hessian)
 
 
 @wp.kernel
@@ -2115,7 +2230,7 @@ def _particle_contact_gather_capture_replays_device_count(test, device):
 
 
 def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
-    """Exercise production gather dispatch, capture replay, and deterministic fallback."""
+    """Exercise production gather dispatch, capture replay, and deterministic-mode reproducibility."""
     with wp.ScopedDevice(device):
         model, _vertices = _build_edge_over_post(device)
         pipeline = newton.CollisionPipeline(
@@ -2132,7 +2247,6 @@ def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
         test.assertGreater(active_count, 0)
 
         solver = newton.solvers.SolverVBD(model, iterations=1)
-        test.assertTrue(solver._use_particle_contact_gather)
         solver.step(state_in, state_out, None, contacts, 1.0 / 120.0)
         test.assertTrue(solver._particle_contact_adjacency_initialized)
 
@@ -2166,15 +2280,23 @@ def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
                     test.assertTrue(np.any(head >= 0))
                 test.assertTrue(np.all(np.isfinite(state_out.particle_q.numpy())))
 
+        # The gather is the only contact-force path; in deterministic mode its canonical
+        # node-order consumption must make repeated identical steps bitwise reproducible.
         deterministic_solver = newton.solvers.SolverVBD(
             model,
             iterations=1,
             deterministic=wp.DeterministicMode.RUN_TO_RUN,
         )
-        test.assertFalse(deterministic_solver._use_particle_contact_gather)
-        test.assertEqual(deterministic_solver._particle_contact_head.shape[0], 0)
+        test.assertEqual(deterministic_solver._particle_contact_head.shape[0], model.particle_count)
         contacts.soft_contact_count.assign([active_count])
-        deterministic_solver.step(model.state(), model.state(), None, contacts, 1.0 / 120.0)
+        results = []
+        for _ in range(2):
+            state_a = model.state()
+            state_b = model.state()
+            deterministic_solver._particle_contact_adjacency_initialized = False
+            deterministic_solver.step(state_a, state_b, None, contacts, 1.0 / 120.0)
+            results.append(state_b.particle_q.numpy().copy())
+        np.testing.assert_array_equal(results[0], results[1])
 
 
 def _make_body_particle_dual_prefix_data(device, capacity):
@@ -4292,7 +4414,7 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
         model.edge_bending_properties,
     ]
     wp.launch(
-        solve_elasticity_tile,
+        make_solve_elasticity_tile(True, True, False),
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
@@ -4308,11 +4430,14 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
         device=device,
     )
     wp.launch(
-        solve_elasticity_tile_two_particles,
+        make_solve_elasticity_tile(True, False, True),
         dim=((model.particle_count + 1) // 2) * (2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE),
         block_dim=2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
             *common_inputs,
+            model.tet_indices,
+            model.tet_poses,
+            model.tet_materials,
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
@@ -4444,7 +4569,7 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
     specialized_displacements = wp.array(initial_displacements, dtype=wp.vec3, device=device)
 
     wp.launch(
-        solve_elasticity_tile,
+        make_solve_elasticity_tile(True, True, False),
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
@@ -4474,7 +4599,7 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
         device=device,
     )
     wp.launch(
-        solve_elasticity_tile_tet_only,
+        make_solve_elasticity_tile(False, True, False),
         dim=model.particle_count * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
         inputs=[
@@ -4485,6 +4610,14 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
             model.particle_mass,
             inertia_device,
             model.particle_flags,
+            model.tri_indices,
+            model.tri_poses,
+            model.tri_materials,
+            model.tri_areas,
+            model.edge_indices,
+            model.edge_rest_angle,
+            model.edge_rest_length,
+            model.edge_bending_properties,
             model.tet_indices,
             model.tet_poses,
             model.tet_materials,
