@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ``_svd_one_sided_jacobi``/``_svd_one_sided_jacobi_kernel``.
-"""
+"""Tests for ``_svd_one_sided_jacobi``/``_svd_one_sided_jacobi_kernel``."""
 
 from __future__ import annotations
 

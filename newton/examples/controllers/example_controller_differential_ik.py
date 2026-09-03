@@ -268,7 +268,12 @@ class Example:
         # arm's), matching axis_weight's/null_space_axes's/
         # desired_tool_pose_world's per-robot ordering below.
         joints = franka_joints + ur10_joints + planar_joints + five_dof_joints
-        axis_weight_rows = [FULL_POSE_AXIS_WEIGHT, POSITION_ONLY_AXIS_WEIGHT, PLANAR_AXIS_WEIGHT, SOFT_ORIENTATION_AXIS_WEIGHT]
+        axis_weight_rows = [
+            FULL_POSE_AXIS_WEIGHT,
+            POSITION_ONLY_AXIS_WEIGHT,
+            PLANAR_AXIS_WEIGHT,
+            SOFT_ORIENTATION_AXIS_WEIGHT,
+        ]
         axis_weight = wp.array(axis_weight_rows, dtype=wp.spatial_vector, device=self.device)
         # Every robot's null-space projector protects exactly the axes its
         # own axis_weight solves for, except the 5-DOF arm: axis_weight
