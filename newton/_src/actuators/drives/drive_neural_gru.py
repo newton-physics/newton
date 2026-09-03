@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any, ClassVar
 
 import numpy as np
@@ -28,7 +29,6 @@ _INPUT_FEATURE_CODES = {
     "velocity_error": _FEATURE_VELOCITY_ERROR,
     "dynamic_bias": _FEATURE_DYNAMIC_BIAS,
 }
-_DYNAMIC_BIAS_CONTROL_ATTRIBUTE = "actuator:dynamic_bias"
 
 
 @wp.kernel
@@ -131,11 +131,65 @@ def _node_attributes(onnx, node) -> dict[str, Any]:
     return {attribute.name: onnx.helper.get_attribute_value(attribute) for attribute in node.attribute}
 
 
+def _concrete_onnx_dimension(dimension: Any) -> int | None:
+    """Return a concrete ONNX dimension value, or ``None`` when symbolic."""
+    return int(dimension.dim_value) if dimension.HasField("dim_value") else None
+
+
 def _reorder_onnx_gru_gates(values: np.ndarray, hidden_size: int) -> np.ndarray:
     """Convert ONNX ``(z, r, h)`` gate order to Warp-NN ``(r, z, n)``."""
     return np.concatenate(
         (values[hidden_size : 2 * hidden_size], values[:hidden_size], values[2 * hidden_size :]), axis=0
     )
+
+
+def _validate_onnx_data_path(
+    onnx: Any,
+    source_name: str,
+    target_name: str,
+    producers: dict[str, Any],
+    constants: set[str],
+    model_path: str,
+    path_name: str,
+) -> None:
+    """Require an order-preserving shape-only path between two ONNX values."""
+    value_name = target_name
+    visited: set[str] = set()
+    while value_name != source_name:
+        if value_name in visited:
+            raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' {path_name} contains a cycle")
+        visited.add(value_name)
+
+        node = producers.get(value_name)
+        if node is None or node.op_type not in {"Identity", "Reshape", "Squeeze", "Transpose"}:
+            raise ValueError(
+                f"DriveNeuralGRU checkpoint '{model_path}' {path_name} is not connected through "
+                "supported shape-only operations"
+            )
+        if not node.input or not node.input[0]:
+            raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' {path_name} has an invalid {node.op_type}")
+
+        if node.op_type == "Identity":
+            if len(node.input) != 1:
+                raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' {path_name} has an invalid Identity")
+        elif node.op_type == "Reshape":
+            if len(node.input) != 2 or node.input[1] not in constants:
+                raise ValueError(
+                    f"DriveNeuralGRU checkpoint '{model_path}' {path_name} requires a constant Reshape shape"
+                )
+        elif node.op_type == "Squeeze":
+            if len(node.input) > 2 or (len(node.input) == 2 and node.input[1] not in constants):
+                raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' {path_name} requires constant Squeeze axes")
+        else:
+            attributes = _node_attributes(onnx, node)
+            permutation = attributes.get("perm")
+            if permutation is None or list(permutation) != list(range(len(permutation))):
+                raise ValueError(
+                    f"DriveNeuralGRU checkpoint '{model_path}' {path_name} has an unsupported Transpose; "
+                    "only identity permutations preserve the reconstructed runtime order"
+                )
+
+        value_name = node.input[0]
 
 
 def _load_network_description(model_path: str) -> _GRUNetworkDescription:
@@ -155,12 +209,32 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
             if "value" in attributes:
                 constants[node.output[0]] = onnx.numpy_helper.to_array(attributes["value"])
 
+    producers: dict[str, Any] = {}
+    for node in model.graph.node:
+        for output_name in node.output:
+            if output_name:
+                producers[output_name] = node
+    constant_names = set(initializers).union(constants)
+    graph_inputs = {value.name: value for value in model.graph.input}
+
     gru_nodes = [node for node in model.graph.node if node.op_type == "GRU"]
     if not gru_nodes:
         raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' contains no GRU node")
+    if not model.graph.input or not gru_nodes[0].input or not gru_nodes[0].input[0]:
+        raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' first GRU has no network-input data path")
+    _validate_onnx_data_path(
+        onnx,
+        model.graph.input[0].name,
+        gru_nodes[0].input[0],
+        producers,
+        constant_names,
+        model_path,
+        "first GRU data path from the network input",
+    )
 
     layers: list[_GRULayerDescription] = []
     hidden_size: int | None = None
+    initial_hidden_names: set[str] = set()
     for node in gru_nodes:
         attributes = _node_attributes(onnx, node)
         direction = attributes.get("direction", b"forward")
@@ -170,6 +244,28 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
             raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' requires GRU layout=0")
         if int(attributes.get("linear_before_reset", 0)) != 1:
             raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' requires GRU linear_before_reset=1")
+        if len(node.input) > 4 and node.input[4]:
+            raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' does not support GRU sequence_lens")
+        if "clip" in attributes:
+            raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' does not support the GRU clip attribute")
+        if "activation_alpha" in attributes:
+            raise ValueError(
+                f"DriveNeuralGRU checkpoint '{model_path}' does not support the GRU activation_alpha attribute"
+            )
+        if "activation_beta" in attributes:
+            raise ValueError(
+                f"DriveNeuralGRU checkpoint '{model_path}' does not support the GRU activation_beta attribute"
+            )
+        activations = attributes.get("activations")
+        if activations is not None:
+            activation_names = tuple(
+                value.decode("utf-8") if isinstance(value, bytes) else value for value in activations
+            )
+            if activation_names != ("Sigmoid", "Tanh"):
+                raise ValueError(
+                    f"DriveNeuralGRU checkpoint '{model_path}' supports only default GRU activations "
+                    "['Sigmoid', 'Tanh']"
+                )
         if len(node.input) < 3 or node.input[1] not in initializers or node.input[2] not in initializers:
             raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' must embed GRU weights")
 
@@ -186,6 +282,36 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
         if hidden_size is not None and (layer_hidden_size != hidden_size or input_size != hidden_size):
             raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' stacked GRU layers must share one hidden size")
         hidden_size = layer_hidden_size
+
+        initial_hidden_name = node.input[5] if len(node.input) > 5 else ""
+        if not initial_hidden_name:
+            raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' requires an external initial_h for every GRU")
+        if initial_hidden_name in initial_hidden_names:
+            raise ValueError(
+                f"DriveNeuralGRU checkpoint '{model_path}' requires a distinct external initial_h for every GRU"
+            )
+        initial_hidden_names.add(initial_hidden_name)
+        initial_hidden = graph_inputs.get(initial_hidden_name)
+        if initial_hidden is None or initial_hidden_name in initializers:
+            raise ValueError(
+                f"DriveNeuralGRU checkpoint '{model_path}' GRU initial_h '{initial_hidden_name}' "
+                "must be an external graph input"
+            )
+        initial_hidden_type = initial_hidden.type.tensor_type
+        initial_hidden_shape = initial_hidden_type.shape.dim
+        if initial_hidden_type.elem_type != onnx.TensorProto.FLOAT or len(initial_hidden_shape) != 3:
+            raise ValueError(
+                f"DriveNeuralGRU checkpoint '{model_path}' GRU initial_h '{initial_hidden_name}' "
+                "must be a float32 tensor with shape [1, batch, hidden_size]"
+            )
+        direction_size = _concrete_onnx_dimension(initial_hidden_shape[0])
+        batch_size = _concrete_onnx_dimension(initial_hidden_shape[1])
+        state_hidden_size = _concrete_onnx_dimension(initial_hidden_shape[2])
+        if direction_size != 1 or state_hidden_size != layer_hidden_size or batch_size == 0:
+            raise ValueError(
+                f"DriveNeuralGRU checkpoint '{model_path}' GRU initial_h '{initial_hidden_name}' "
+                f"must have shape [1, batch, {layer_hidden_size}]"
+            )
 
         bias_ih = None
         bias_hh = None
@@ -210,6 +336,19 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
             )
         )
 
+    for layer_index, (previous, current) in enumerate(pairwise(gru_nodes), start=1):
+        if not previous.output or not previous.output[0] or not current.input or not current.input[0]:
+            raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' GRU layer {layer_index} has no data path")
+        _validate_onnx_data_path(
+            onnx,
+            previous.output[0],
+            current.input[0],
+            producers,
+            constant_names,
+            model_path,
+            f"GRU layer {layer_index} data path",
+        )
+
     gemm_nodes = [node for node in model.graph.node if node.op_type == "Gemm"]
     if len(gemm_nodes) != 1:
         raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' must contain one scalar Gemm output head")
@@ -229,6 +368,18 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
     if head_weight.shape != (1, hidden_size) or head_bias.shape != (1,):
         raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' output head must produce one scalar")
 
+    if not gru_nodes[-1].output or not gru_nodes[-1].output[0] or not head.input or not head.input[0]:
+        raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' output head has no GRU data path")
+    _validate_onnx_data_path(
+        onnx,
+        gru_nodes[-1].output[0],
+        head.input[0],
+        producers,
+        constant_names,
+        model_path,
+        "output head data path from the final GRU output",
+    )
+
     consumers: dict[str, list[Any]] = {}
     for node in model.graph.node:
         for input_name in node.input:
@@ -237,17 +388,28 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
     value_name = head.output[0]
     apply_tanh = False
     output_scale = 1.0
+    has_output_scale = False
     while value_name in consumers:
         next_nodes = consumers[value_name]
         if len(next_nodes) != 1:
             raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' output head must have one linear path")
         node = next_nodes[0]
+        if len(node.output) != 1 or not node.output[0]:
+            raise ValueError(
+                f"DriveNeuralGRU checkpoint '{model_path}' has an invalid post-head '{node.op_type}' output"
+            )
         if node.op_type == "Identity":
+            if list(node.input) != [value_name]:
+                raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' has an invalid output Identity")
             value_name = node.output[0]
-        elif node.op_type == "Tanh" and not apply_tanh:
+        elif node.op_type == "Tanh" and not apply_tanh and not has_output_scale:
+            if list(node.input) != [value_name]:
+                raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' has an invalid output Tanh")
             apply_tanh = True
             value_name = node.output[0]
-        elif node.op_type == "Mul" and output_scale == 1.0:
+        elif node.op_type == "Mul" and not has_output_scale:
+            if len(node.input) != 2 or list(node.input).count(value_name) != 1:
+                raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' has an invalid output scale")
             scale_names = [name for name in node.input if name != value_name]
             if len(scale_names) != 1:
                 raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' has an invalid output scale")
@@ -257,10 +419,12 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
             output_scale = float(np.asarray(scale).reshape(-1)[0])
             if not math.isfinite(output_scale):
                 raise ValueError(f"DriveNeuralGRU checkpoint '{model_path}' output scale must be finite")
+            has_output_scale = True
             value_name = node.output[0]
         else:
             raise ValueError(
-                f"DriveNeuralGRU checkpoint '{model_path}' has unsupported output operation '{node.op_type}'"
+                f"DriveNeuralGRU checkpoint '{model_path}' has unsupported output operation order at "
+                f"'{node.op_type}'; expected Gemm, optional Tanh, then optional scalar Mul"
             )
 
     graph_outputs = {output.name for output in model.graph.output}
@@ -350,9 +514,6 @@ class DriveNeuralGRU(DriveBase):
                 f"{self._description.layers[0].input_size} does not match input_columns "
                 f"{len(self._input_feature_keys)}"
             )
-        self._control_input_attribute_keys = (
-            (_DYNAMIC_BIAS_CONTROL_ATTRIBUTE,) if "dynamic_bias" in self._input_feature_keys else ()
-        )
         try:
             self._input_means = tuple(float(input_normalization["mean"][name]) for name in self._input_feature_keys)
             self._input_stds = tuple(float(input_normalization["std"][name]) for name in self._input_feature_keys)
@@ -394,23 +555,20 @@ class DriveNeuralGRU(DriveBase):
         self._gru_layers: list[Any] = []
         self._head: Any = None
         self._activation: Any = None
-        self._bound_control_inputs: dict[str, wp.array[float]] = {}
+        self._bound_bias_force: wp.array[float] | None = None
         self._next_hidden: list[wp.array2d[float]] | None = None
-
-    def _required_control_attributes(self) -> tuple[str, ...]:
-        """Return the optional custom Control input selected by metadata."""
-        return self._control_input_attribute_keys
 
     def _bind_control_inputs(self, control: Any) -> None:
         """Bind the optional bias input from the current Control object."""
-        self._bound_control_inputs = {}
-        bound_inputs = {}
-        for key in self._required_control_attributes():
-            value = control
-            for component in key.split(":"):
-                value = getattr(value, component)
-            bound_inputs[key] = value
-        self._bound_control_inputs = bound_inputs
+        self._bound_bias_force = None
+        if "dynamic_bias" in self._input_feature_keys:
+            try:
+                self._bound_bias_force = control.actuator.dynamic_bias
+            except AttributeError as exc:
+                raise RuntimeError(
+                    "DriveNeuralGRU input_columns includes 'dynamic_bias'; provide control.actuator.dynamic_bias. "
+                    "Model-backed controls must declare it as a CONTROL/JOINT_DOF custom attribute before finalization"
+                ) from exc
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         """Create the Warp-NN layers and inference buffers.
@@ -494,7 +652,7 @@ class DriveNeuralGRU(DriveBase):
         if self._device is None:
             raise RuntimeError("DriveNeuralGRU must be finalized before creating state")
         if device != self._device:
-            raise ValueError(f"GRU state device {device} must match controller device {self._device}")
+            raise ValueError(f"GRU state device {device} must match drive device {self._device}")
         return DriveNeuralGRU.State(
             hidden=wp.zeros(
                 (len(self._description.layers), num_actuators, self._description.layers[0].hidden_size),
@@ -520,11 +678,10 @@ class DriveNeuralGRU(DriveBase):
         device: wp.Device | None = None,
     ) -> None:
         """Evaluate one GRU sample and write physical effort."""
-        control_inputs = self._bound_control_inputs
-        self._bound_control_inputs = {}
-        bias_force = control_inputs.get(_DYNAMIC_BIAS_CONTROL_ATTRIBUTE)
+        bias_force = self._bound_bias_force
+        self._bound_bias_force = None
         self._next_hidden = None
-        if self._control_input_attribute_keys and bias_force is None:
+        if "dynamic_bias" in self._input_feature_keys and bias_force is None:
             raise RuntimeError(
                 "DriveNeuralGRU input_columns includes 'dynamic_bias', but no control.actuator.dynamic_bias was bound"
             )

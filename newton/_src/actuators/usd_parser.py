@@ -190,7 +190,7 @@ class _SchemaEntry:
     component_class: type | Callable[[dict[str, Any]], type]
     """Concrete class, or a callable that receives the parsed kwargs and
     returns the concrete class (e.g. for neural drives that pick
-    MLP vs LSTM at parse time).  The callable may also validate kwargs
+    MLP, LSTM, or GRU at parse time).  The callable may also validate kwargs
     and raise :class:`ValueError`.
     """
     kind: ComponentKind

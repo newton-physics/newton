@@ -13233,22 +13233,6 @@ class ModelBuilder:
                 # Build drive from stacked per-DOF arrays + shared kwargs
                 drive_arrays = self._stack_args_to_arrays(entry.drive_args, device=device, requires_grad=requires_grad)
                 drive = entry.drive_class(**drive_arrays, **entry.drive_shared_kwargs)
-                required_control_attributes = getattr(drive, "_required_control_attributes", lambda: ())
-                for key in required_control_attributes():
-                    namespace, separator, name = key.partition(":")
-                    if not separator:
-                        name = namespace
-                        namespace = None
-                    self.add_custom_attribute(
-                        ModelBuilder.CustomAttribute(
-                            name=name,
-                            dtype=wp.float32,
-                            frequency=Model.AttributeFrequency.JOINT_DOF,
-                            assignment=Model.AttributeAssignment.CONTROL,
-                            namespace=namespace,
-                            default=0.0,
-                        )
-                    )
 
                 delay_obj = None
                 if entry.delay_args:

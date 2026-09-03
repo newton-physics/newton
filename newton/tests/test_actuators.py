@@ -717,7 +717,12 @@ class TestDriveNeuralGRU(unittest.TestCase):
         stage = Usd.Stage.CreateNew(stage_path)
         world = stage.DefinePrim("/World", "Xform")
         stage.SetDefaultPrim(world)
-        stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
+        physics_scene = stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
+        dynamic_bias = physics_scene.CreateAttribute(
+            "newton:actuator:dynamic_bias", Sdf.ValueTypeNames.Float, custom=True
+        )
+        dynamic_bias.Set(0.0)
+        dynamic_bias.SetCustomData({"assignment": "control", "frequency": "joint_dof"})
 
         robot = stage.DefinePrim("/World/Robot", "Xform")
         schemas = Sdf.TokenListOp()
@@ -754,6 +759,18 @@ class TestDriveNeuralGRU(unittest.TestCase):
         )
         stage.GetRootLayer().Save()
         return stage_path
+
+    def _declare_dynamic_bias(self, builder: newton.ModelBuilder) -> None:
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="dynamic_bias",
+                namespace="actuator",
+                dtype=wp.float32,
+                frequency=newton.Model.AttributeFrequency.JOINT_DOF,
+                assignment=newton.Model.AttributeAssignment.CONTROL,
+                default=0.0,
+            )
+        )
 
     def _make_case(self, model_path: str, n: int) -> types.SimpleNamespace:
         indices = np.array([3, 1, 5][:n], dtype=np.uint32)
@@ -972,6 +989,45 @@ class TestDriveNeuralGRU(unittest.TestCase):
         np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
         np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
 
+    def test_delay_applies_to_targets_but_not_dynamic_bias(self):
+        metadata = self._metadata(("position_error", "target_velocity", "dynamic_bias"))
+        path = self._save_gru("delayed_targets.onnx", metadata)
+        case = self._make_case(path, 3)
+        case.actuator = Actuator(
+            indices=case.actuator.indices,
+            pos_indices=case.actuator.pos_indices,
+            target_pos_indices=case.actuator.target_pos_indices,
+            drive=DriveNeuralGRU(path),
+            delay=Delay(
+                delay_steps=wp.full(3, 1, dtype=wp.int32, device=self.device),
+                max_delay=1,
+            ),
+        )
+        case.state_a = case.actuator.state()
+        case.state_b = case.actuator.state()
+
+        delayed_target = case.target.copy()
+        delayed_target_velocity = case.target_velocity.copy()
+        _, hidden_first = self._step(case)
+        case.state_a, case.state_b = case.state_b, case.state_a
+
+        case.target = np.array([-3.0, 2.5, 1.4, -0.6, 3.2, -2.1], dtype=np.float32)
+        case.target_velocity = np.array([2.1, 0.4, -1.6, 3.3, -2.2, 0.8], dtype=np.float32)
+        case.dynamic_bias = np.array([-4.0, 5.5, 1.2, -2.7, 3.1, 6.4], dtype=np.float32)
+        case.control.joint_target_q.assign(case.target)
+        case.control.joint_target_qd.assign(case.target_velocity)
+        case.control.actuator.dynamic_bias.assign(case.dynamic_bias)
+
+        expected_case = types.SimpleNamespace(**vars(case))
+        expected_case.target = delayed_target
+        expected_case.target_velocity = delayed_target_velocity
+        expected_effort, expected_hidden = self._expected(metadata, expected_case, hidden=hidden_first)
+
+        effort, hidden = self._step(case)
+
+        np.testing.assert_allclose(effort, expected_effort, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(hidden, expected_hidden, rtol=1e-5, atol=1e-6)
+
     def test_dynamic_bias_feature_is_optional(self):
         metadata = self._metadata(self.FEATURES[:-1])
         path = self._save_gru("no_bias.onnx", metadata, input_size=3)
@@ -1061,7 +1117,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
             DriveNeuralGRU(self._save_gru("vector_output.onnx", output_size=2))
 
     def test_rejects_unsupported_onnx_graphs(self):
-        _, _, helper, numpy_helper = _onnx_modules()
+        _, TensorProto, helper, numpy_helper = _onnx_modules()
         source = self._save_gru("valid_for_mutation.onnx")
 
         def node(model, op_type, index=0):
@@ -1090,6 +1146,34 @@ class TestDriveNeuralGRU(unittest.TestCase):
             set_attribute(model, "GRU", "layout", 1)
 
         edits.append(("batch_major.onnx", batch_major, "layout"))
+
+        def missing_initial_hidden(model):
+            node(model, "GRU").input[5] = ""
+
+        edits.append(("missing_initial_hidden.onnx", missing_initial_hidden, "initial_h|initial hidden"))
+
+        def sequence_lengths(model):
+            model.graph.input.append(helper.make_tensor_value_info("sequence_lens", TensorProto.INT32, [None]))
+            node(model, "GRU").input[4] = "sequence_lens"
+
+        edits.append(("sequence_lengths.onnx", sequence_lengths, "sequence_lens"))
+
+        def clipped_gru(model):
+            set_attribute(model, "GRU", "clip", 0.25)
+
+        edits.append(("clipped_gru.onnx", clipped_gru, "clip"))
+
+        def custom_activations(model):
+            set_attribute(model, "GRU", "activations", ["HardSigmoid", "Tanh"])
+
+        edits.append(("custom_activations.onnx", custom_activations, "activations"))
+
+        for attribute in ("activation_alpha", "activation_beta"):
+
+            def custom_activation_parameter(model, attribute=attribute):
+                set_attribute(model, "GRU", attribute, [0.25, 0.5])
+
+            edits.append((f"{attribute}.onnx", custom_activation_parameter, attribute))
 
         def missing_weights(model):
             node(model, "GRU").input[1] = "missing_weight"
@@ -1156,6 +1240,22 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         edits.append(("unsupported_output.onnx", unsupported_output, "unsupported output operation"))
 
+        def reversed_output_operations(model):
+            tanh = node(model, "Tanh")
+            scale = node(model, "Mul")
+            tanh.op_type = "Mul"
+            tanh.input.append("output_scale")
+            scale.op_type = "Tanh"
+            del scale.input[1:]
+
+        edits.append(("reversed_output_operations.onnx", reversed_output_operations, "order|unsupported output"))
+
+        def disconnected_head(model):
+            model.graph.input.append(helper.make_tensor_value_info("unrelated_features", TensorProto.FLOAT, [None, 4]))
+            node(model, "Gemm").input[0] = "unrelated_features"
+
+        edits.append(("disconnected_head.onnx", disconnected_head, "GRU|output head"))
+
         def disconnected_output(model):
             model.graph.output[0].name = "not_the_head_output"
 
@@ -1199,9 +1299,11 @@ class TestDriveNeuralGRU(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no hidden"):
             DriveNeuralGRU.State().reset()
 
-    def test_model_allocates_and_clears_dynamic_bias_on_control_only(self):
-        def build_model(model_path):
+    def test_declared_dynamic_bias_is_allocated_and_cleared_on_control_only(self):
+        def build_model(model_path, declare_dynamic_bias):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            if declare_dynamic_bias:
+                self._declare_dynamic_bias(builder)
             link = builder.add_link()
             joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
             builder.add_articulation([joint])
@@ -1212,7 +1314,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
             )
             return builder.finalize(device=self.device)
 
-        model = build_model(self._save_gru("control_bias.onnx"))
+        model = build_model(self._save_gru("control_bias.onnx"), declare_dynamic_bias=True)
         control = model.control()
         state = model.state()
         self.assertEqual(control.actuator.dynamic_bias.shape, (model.joint_dof_count,))
@@ -1224,9 +1326,20 @@ class TestDriveNeuralGRU(unittest.TestCase):
         np.testing.assert_array_equal(control.actuator.dynamic_bias.numpy(), 0.0)
 
         metadata = self._metadata(("position", "target_velocity"))
-        model_without_bias = build_model(self._save_gru("control_no_bias.onnx", metadata))
+        model_without_bias = build_model(self._save_gru("control_no_bias.onnx", metadata), declare_dynamic_bias=False)
         self.assertFalse(hasattr(model_without_bias.control(), "actuator"))
         self.assertFalse(hasattr(model_without_bias.state(), "actuator"))
+
+        missing_attribute_model = build_model(self._save_gru("control_missing_bias.onnx"), declare_dynamic_bias=False)
+        missing_attribute_actuator = missing_attribute_model.actuators[0]
+        with self.assertRaisesRegex(RuntimeError, r"control\.actuator\.dynamic_bias.*CONTROL.*JOINT_DOF"):
+            missing_attribute_actuator.step(
+                missing_attribute_model.state(),
+                missing_attribute_model.control(),
+                missing_attribute_actuator.state(),
+                missing_attribute_actuator.state(),
+                dt=self.SAMPLE_DT,
+            )
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")
     def test_model_builder_constructs_relative_onnx_usd_actuator(self):
@@ -1255,6 +1368,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         builder.add_actuator(DriveNeuralGRU, index=dofs[0], model_path=shared_path)
         builder.add_actuator(DriveNeuralGRU, index=dofs[1], model_path=shared_path)
         builder.add_actuator(DriveNeuralGRU, index=dofs[2], model_path=distinct_path)
+        self._declare_dynamic_bias(builder)
 
         model = builder.finalize(device=self.device)
 
@@ -1271,6 +1385,12 @@ class TestDriveNeuralGRU(unittest.TestCase):
         stage_path = os.path.join(self._tmp_dir, "gru.usda")
         stage = Usd.Stage.CreateNew(stage_path)
         stage.DefinePrim("/World/Joint", "PhysicsRevoluteJoint")
+        physics_scene = stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
+        dynamic_bias = physics_scene.CreateAttribute(
+            "newton:actuator:dynamic_bias", Sdf.ValueTypeNames.Float, custom=True
+        )
+        dynamic_bias.Set(0.0)
+        dynamic_bias.SetCustomData({"assignment": "control", "frequency": "joint_dof"})
         prim = stage.DefinePrim("/World/Actuator", "NewtonActuator")
         schemas = Sdf.TokenListOp()
         schemas.prependedItems = ["NewtonNeuralControlAPI"]

@@ -270,12 +270,47 @@ must be embedded in the ONNX file.
 
 The first five features use the standard State and Control arrays already
 passed to every drive. ``dynamic_bias`` is an optional, caller-supplied
-generalized bias-force input. When selected, :class:`ModelBuilder` registers a
-one-dimensional ``wp.float32`` Control array at
-``control.actuator.dynamic_bias``. It has the same global joint-DOF layout and
-length as ``state.joint_qd`` and is gathered with the actuator's velocity
-indices. This input is registered only for models whose GRU checkpoint selects
-it, including USD-instantiated actuators.
+generalized bias-force input. When selected, the application must declare a
+one-dimensional ``wp.float32`` custom Control attribute named
+``actuator:dynamic_bias`` before finalizing the model. It is exposed as
+``control.actuator.dynamic_bias``, has the same global joint-DOF layout and
+length as ``state.joint_qd``, and is gathered with the actuator's velocity
+indices. Checkpoints that do not select this feature need no declaration.
+
+For programmatic model construction, declare the input with Newton's existing
+custom-attribute API:
+
+.. code-block:: python
+
+   import warp as wp
+
+   import newton
+
+   builder.add_custom_attribute(
+       newton.ModelBuilder.CustomAttribute(
+           name="dynamic_bias",
+           namespace="actuator",
+           dtype=wp.float32,
+           frequency=newton.Model.AttributeFrequency.JOINT_DOF,
+           assignment=newton.Model.AttributeAssignment.CONTROL,
+           default=0.0,
+       )
+   )
+
+For USD construction, make the equivalent declaration on the
+``PhysicsScene`` prim. The actuator prim continues to use
+``newton:modelPath`` and ``newton:targets`` normally:
+
+.. code-block:: usda
+
+   def PhysicsScene "Scene" {
+       custom float newton:actuator:dynamic_bias = 0.0 (
+           customData = {
+               string assignment = "control"
+               string frequency = "joint_dof"
+           }
+       )
+   }
 
 Newton clears this Control array with :meth:`Control.clear` but does not compute
 its values. Applications must therefore clear Control first, then populate the
@@ -322,7 +357,7 @@ Deferred capabilities are tracked here:
    * - Additional State or Control features
      - Deferred; the drive supports the five built-in features listed above and optional ``dynamic_bias``.
    * - Automatic generalized-bias-force computation
-     - Deferred; Newton allocates the optional Control input, but callers populate it.
+     - Deferred; callers declare and populate the optional Control input.
    * - Additive feedforward effort, solver-PD, and previous torque
      - Deferred.
    * - Residual torque and hybrid physics baselines
