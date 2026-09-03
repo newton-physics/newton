@@ -260,21 +260,19 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             caller's responsibility there, since it needs the null-space
             task dimension and ``controlled_dofs_per_robot`` compared per
             robot, not just a sign check.
-        null_space_axes: Which of the 6 canonical task axes the null-space
-            projector treats as occupied, independent of ``axis_weight``.
-            Only whether each entry is zero or nonzero matters — the
-            magnitude itself is meaningless, unlike ``axis_weight``'s own
-            soft per-axis trust. Defaults to ``axis_weight`` itself (so by
-            default the projector's notion of "the task" matches the
-            solve's), which is why the two are usually the same but don't
-            have to be: a robot can soft-track an axis in the solve
-            (``axis_weight`` nonzero) while excluding it from the
-            projector's own rank (``null_space_axes`` zero there), e.g. an
-            under-actuated arm softly tracking orientation that would
-            otherwise leave it with no usable null space at all. Unlike
-            ``axis_weight``, an all-zero row is legal — it means that
-            robot's null-space projector is unconstrained (``N = I``).
-            Only meaningful when ``use_joint_limit_avoidance`` or
+        null_space_axes: Which of the 6 canonical axes the null-space
+            projector guarantees the secondary objective (joint-limit
+            avoidance/posture control) won't disturb — zero leaves that
+            axis unprotected, nonzero protects it; only the sign matters,
+            unlike ``axis_weight``'s own soft magnitude. Defaults to
+            ``axis_weight`` (every solved axis protected), but the two are
+            independent: an axis can be softly solved for yet left
+            unprotected, e.g. an under-actuated arm with too few DOFs to
+            protect every solved axis and still have a usable null space
+            left over. Unlike ``axis_weight``, an all-zero row is legal —
+            it protects no axes, so the secondary objective is free to
+            move all of them. Only meaningful when
+            ``use_joint_limit_avoidance`` or
             ``use_null_space_posture_control`` is enabled.
         device: Warp device.
         requires_grad: Not supported at this time; must be ``False``.

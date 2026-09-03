@@ -175,10 +175,24 @@ class ControllerDifferentialIK(ControllerBase):
             and the only valid value when both are disabled). Unlike the
             primary ``damping``, ``λ_null = 0`` is only safe when every
             robot has at least as many controlled DOFs as its own task
-            dimension (the number of nonzero ``axis_weight`` entries) —
+            dimension (the number of nonzero ``null_space_axes`` entries) —
             otherwise the projector's own ``JJᵀ`` is rank-deficient. That
             stronger, per-robot requirement is checked at construction only
             when baked; a live value is the caller's responsibility there.
+        null_space_axes: Which of the 6 canonical axes the null-space
+            projector guarantees the secondary objective (joint-limit
+            avoidance/posture control) won't disturb — zero leaves that
+            axis unprotected, nonzero protects it; only the sign matters,
+            unlike ``axis_weight``'s own soft magnitude. Defaults to
+            ``axis_weight`` (every solved axis protected), but the two are
+            independent: an axis can be softly solved for yet left
+            unprotected, e.g. an under-actuated arm with too few DOFs to
+            protect every solved axis and still have a usable null space
+            left over. Unlike ``axis_weight``, an all-zero row is legal —
+            it protects no axes, so the secondary objective is free to
+            move all of them. Only meaningful when
+            ``use_joint_limit_avoidance`` or
+            ``use_null_space_posture_control`` is enabled.
     """
 
     class Inputs:
@@ -239,6 +253,7 @@ class ControllerDifferentialIK(ControllerBase):
         use_null_space_posture_control: bool = False,
         null_space_stiffness: wp.array[wp.float32] | float | None = None,
         null_space_damping: wp.array[wp.float32] | float | None = None,
+        null_space_axes: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
     ):
         if not isinstance(model, Model):
             raise TypeError(f"model must be a newton.Model, got {type(model).__name__}.")
@@ -339,6 +354,7 @@ class ControllerDifferentialIK(ControllerBase):
             use_null_space_posture_control=use_null_space_posture_control,
             null_space_stiffness=null_space_stiffness,
             null_space_damping=null_space_damping,
+            null_space_axes=null_space_axes,
             device=self._device,
             requires_grad=self._requires_grad,
         )
