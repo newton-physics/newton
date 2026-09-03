@@ -25,7 +25,7 @@ from newton._src.geometry.soft_contacts_sdf import (
     SDF_FACE_ITERS,
     SDF_LS_ITERS,
     _is_analytic,
-    _shape_world_frame,
+    _shape_frames,
     _soft_feature_aabb_misses_shape,
     eval_shape_sdf,
     launch_soft_ef_contacts,
@@ -4630,8 +4630,7 @@ def _brute_face_min_kernel(
     sdf_idx = shape_sdf_index[shape_index]
     if (not _is_analytic(geo)) and sdf_idx < 0:
         return
-    X_ws = _shape_world_frame(shape_body, body_q, shape_transform[shape_index], shape_index)
-    X_sw = wp.transform_inverse(X_ws)
+    _X_bs, _X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
     a = wp.transform_point(X_sw, particle_q[tri_indices[t, 0]])
     b = wp.transform_point(X_sw, particle_q[tri_indices[t, 1]])
     c = wp.transform_point(X_sw, particle_q[tri_indices[t, 2]])
@@ -4674,8 +4673,7 @@ def _brute_edge_min_kernel(
     sdf_idx = shape_sdf_index[shape_index]
     if (not _is_analytic(geo)) and sdf_idx < 0:
         return
-    X_ws = _shape_world_frame(shape_body, body_q, shape_transform[shape_index], shape_index)
-    X_sw = wp.transform_inverse(X_ws)
+    _X_bs, _X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
     p = wp.transform_point(X_sw, particle_q[edge_indices[e, 2]])
     q = wp.transform_point(X_sw, particle_q[edge_indices[e, 3]])
     scale = shape_scale[shape_index]

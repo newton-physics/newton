@@ -221,18 +221,21 @@ def optimize_face_sdf(
 
 
 @wp.func
-def _shape_world_frame(
+def _shape_frames(
     shape_body: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
-    X_bs: wp.transform,
+    shape_transform: wp.array[wp.transform],
     shape_index: wp.int32,
-) -> wp.transform:
-    """Return the shape-local-to-world transform for a supplied body-local frame."""
+):
+    """Return (X_bs, X_ws, X_sw): shape-local->body, shape-local->world, world->shape-local."""
     rigid_body = shape_body[shape_index]
     X_wb = wp.transform_identity()
     if rigid_body >= 0:
         X_wb = body_q[rigid_body]
-    return wp.transform_multiply(X_wb, X_bs)
+    X_bs = shape_transform[shape_index]
+    X_ws = wp.transform_multiply(X_wb, X_bs)
+    X_sw = wp.transform_inverse(X_ws)
+    return X_bs, X_ws, X_sw
 
 
 @wp.func
@@ -398,8 +401,7 @@ def create_soft_face_contacts(
         return
 
     # _s suffix = shape-local frame (matching the X_*s transforms: b = body, w = world, s = shape).
-    X_ws_for_inverse = _shape_world_frame(shape_body, body_q, shape_transform[shape_index], shape_index)
-    X_sw = wp.transform_inverse(X_ws_for_inverse)
+    X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
     a_s = wp.transform_point(X_sw, a_w)
     b_s = wp.transform_point(X_sw, b_w)
     c_s = wp.transform_point(X_sw, c_w)
@@ -422,8 +424,6 @@ def create_soft_face_contacts(
     )
     if phi < threshold:
         y = x - phi * grad
-        X_bs = shape_transform[shape_index]
-        X_ws = _shape_world_frame(shape_body, body_q, X_bs, shape_index)
         _emit_soft_ef_contact(
             tid,
             tid_base,
@@ -526,8 +526,7 @@ def create_soft_edge_contacts(
         return
 
     # _s suffix = shape-local frame (matching the X_*s transforms: b = body, w = world, s = shape).
-    X_ws_for_inverse = _shape_world_frame(shape_body, body_q, shape_transform[shape_index], shape_index)
-    X_sw = wp.transform_inverse(X_ws_for_inverse)
+    X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
     p_s = wp.transform_point(X_sw, p_w)
     q_s = wp.transform_point(X_sw, q_w)
     scale = shape_scale[shape_index]
@@ -543,8 +542,6 @@ def create_soft_edge_contacts(
     u, x, phi, grad = optimize_edge_sdf(geo, scale, p_s, q_s, sdf_idx, texture_sdf_table, sdf_edge_iters)
     if phi < threshold:
         y = x - phi * grad
-        X_bs = shape_transform[shape_index]
-        X_ws = _shape_world_frame(shape_body, body_q, X_bs, shape_index)
         # optimize_edge_sdf parameterizes x = (1 - u) * p_s + u * q_s, so v0 carries weight 1 - u.
         _emit_soft_ef_contact(
             tid,
