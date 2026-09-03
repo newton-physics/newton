@@ -258,12 +258,20 @@ class Example:
 
         self._input = self.controller.input()
         self._output = self.controller.output()
-        # Constant across every step -- the posture target is always each
+        # Bound once, before capture: state_0 is never swapped (no physics
+        # solver here), so these buffer addresses stay valid for every
+        # replay of the captured graph below.
+        self._input.joint_q = self.state_0.joint_q
+        self._input.joint_qd = self.state_0.joint_qd
+        # q_des_null is None unless use_null_space_posture_control=True (not
+        # every create_controller_from_*_method above enables it). Constant
+        # across every step when it is -- the posture target is always each
         # robot's own ready pose, so this is assigned once rather than
         # reassigned in step().
-        self._input.q_des_null.assign(
-            np.array(FRANKA_READY_POSE + UR10_READY_POSE + PLANAR_READY_POSE, dtype=np.float32)
-        )
+        if self._input.q_des_null is not None:
+            self._input.q_des_null.assign(
+                np.array(FRANKA_READY_POSE + UR10_READY_POSE + PLANAR_READY_POSE, dtype=np.float32)
+            )
         # The controller's outputs are compact (one entry per controlled
         # DOF); indexed views scatter them straight into the sim state, in
         # each buffer's own layout (q_start: coordinate space, qd_start:
@@ -293,8 +301,14 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        # No CUDA graph capture: the gizmo drag updates desired_tool_pose_world
-        # from Python each frame, which isn't graph-capturable.
+        # desired_tool_pose_world.assign() (the only per-frame input, driven
+        # by the dragged gizmos) runs outside the graph, into this same
+        # persistent buffer, before every replay -- see step().
+        self.graph = None
+        if self.controller.is_graphable() and self.device.is_cuda:
+            with wp.ScopedCapture() as capture:
+                self._simulate()
+            self.graph = capture.graph
 
     @staticmethod
     def _add_franka(builder, urdf_path, base_position):
@@ -416,22 +430,27 @@ class Example:
 
         return arm_joints, tool_body, tool_site_transform
 
+    def _simulate(self):
+        # joint_q_target/joint_qd_target write straight into state_0 (see
+        # the output bindings in __init__); eval_fk brings body_q/body_qd
+        # back in sync for rendering and the next frame's Jacobian.
+        self.controller.step(inputs=self._input, outputs=self._output, dt=self.frame_dt)
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
     def step(self):
-        # Gizmo drag updates are Python-side, so this whole frame is outside
-        # any CUDA graph.
-        self._input.joint_q = self.state_0.joint_q
-        self._input.joint_qd = self.state_0.joint_qd
+        # The gizmo drag is read on the host and assigned into its
+        # persistent device buffer here, outside the graph -- everything
+        # downstream of it (_simulate) is captured once and just replayed.
         pose = np.zeros((len(self.gizmo_tfs), 7), dtype=np.float32)
         for i, tf in enumerate(self.gizmo_tfs):
             pose[i, :3] = wp.transform_get_translation(tf)
             pose[i, 3:] = wp.transform_get_rotation(tf)
         self._input.desired_tool_pose_world.assign(pose)
 
-        # joint_q_target/joint_qd_target write straight into state_0 (see
-        # the output bindings in __init__); eval_fk brings body_q/body_qd
-        # back in sync for rendering and the next frame's Jacobian.
-        self.controller.step(inputs=self._input, outputs=self._output, dt=self.frame_dt)
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self._simulate()
 
         self.sim_time += self.frame_dt
 
