@@ -712,36 +712,34 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
     def _write_single_joint_gru_usd(self, model_path: str, filename: str) -> str:
         """Write a single-joint GRU articulation using typed USD physics APIs."""
-        from pxr import Sdf, UsdPhysics
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
         stage_path = os.path.join(self._tmp_dir, filename)
         stage = Usd.Stage.CreateNew(stage_path)
-        world = stage.DefinePrim("/World", "Xform")
-        stage.SetDefaultPrim(world)
-        stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
+        world = UsdGeom.Xform.Define(stage, "/World")
+        stage.SetDefaultPrim(world.GetPrim())
+        UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
 
-        robot = stage.DefinePrim("/World/Robot", "Xform")
-        UsdPhysics.ArticulationRootAPI.Apply(robot)
+        UsdGeom.Xform.Define(stage, "/World/Robot")
 
-        base = stage.DefinePrim("/World/Robot/Base", "Xform")
-        schemas = Sdf.TokenListOp()
-        schemas.prependedItems = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
-        base.SetMetadata("apiSchemas", schemas)
-        base.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(1.0)
-        base.CreateAttribute("physics:diagonalInertia", Sdf.ValueTypeNames.Float3).Set((0.01, 0.01, 0.01))
-        base.CreateAttribute("physics:kinematicEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+        base = UsdGeom.Xform.Define(stage, "/World/Robot/Base")
+        base_rigid_body = UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.ArticulationRootAPI.Apply(base.GetPrim())
+        base_rigid_body.CreateKinematicEnabledAttr(True)
+        base_mass = UsdPhysics.MassAPI.Apply(base.GetPrim())
+        base_mass.CreateMassAttr(1.0)
+        base_mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.01, 0.01, 0.01))
 
-        link = stage.DefinePrim("/World/Robot/Link", "Xform")
-        schemas = Sdf.TokenListOp()
-        schemas.prependedItems = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
-        link.SetMetadata("apiSchemas", schemas)
-        link.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(0.5)
-        link.CreateAttribute("physics:diagonalInertia", Sdf.ValueTypeNames.Float3).Set((0.005, 0.005, 0.005))
+        link = UsdGeom.Xform.Define(stage, "/World/Robot/Link")
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        link_mass = UsdPhysics.MassAPI.Apply(link.GetPrim())
+        link_mass.CreateMassAttr(0.5)
+        link_mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.005, 0.005, 0.005))
 
-        joint = stage.DefinePrim("/World/Robot/Joint", "PhysicsRevoluteJoint")
-        joint.CreateRelationship("physics:body0").SetTargets([Sdf.Path("/World/Robot/Base")])
-        joint.CreateRelationship("physics:body1").SetTargets([Sdf.Path("/World/Robot/Link")])
-        joint.CreateAttribute("physics:axis", Sdf.ValueTypeNames.Token).Set("Z")
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Robot/Joint")
+        joint.CreateBody0Rel().SetTargets([base.GetPath()])
+        joint.CreateBody1Rel().SetTargets([link.GetPath()])
+        joint.CreateAxisAttr("Z")
 
         actuator = stage.DefinePrim("/World/Robot/Actuator", "NewtonActuator")
         schemas = Sdf.TokenListOp()
