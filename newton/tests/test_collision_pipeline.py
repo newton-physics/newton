@@ -4998,7 +4998,7 @@ def _launch_soft_ef_multiset(pipeline, state, *, use_shape_aabbs: bool):
         model=pipeline.model,
         state=state,
         contacts=contacts,
-        margin=pipeline.soft_contact_margin,
+        margin=pipeline.soft_contact_gap,
         device=pipeline.device,
         edge_pairs=pipeline.soft_edge_rigid_pairs,
         face_pairs=pipeline.soft_face_rigid_pairs,
@@ -5015,7 +5015,7 @@ def test_soft_feature_aabb_cull_contact_multiset(test, device):
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        soft_contact_margin=0.1,
+        soft_contact_gap=0.1,
         enable_rigid_soft_full_surface_contact=True,
     )
     state = model.state()

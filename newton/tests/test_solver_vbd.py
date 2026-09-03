@@ -2121,7 +2121,7 @@ def _particle_contact_gather_solver_step_dispatch_and_capture(test, device):
         pipeline = newton.CollisionPipeline(
             model,
             broad_phase="nxn",
-            soft_contact_margin=0.1,
+            soft_contact_gap=0.1,
             enable_rigid_soft_full_surface_contact=True,
         )
         contacts = pipeline.contacts()
