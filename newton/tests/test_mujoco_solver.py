@@ -12770,5 +12770,47 @@ class TestMuJoCoSolverOverflowState(unittest.TestCase):
         )
 
 
+class TestMuJoCoSolverCapacityMismatch(unittest.TestCase):
+    """Tests for the rigid_contact_max/nconmax capacity check in _convert_contacts_to_mjwarp."""
+
+    def _make_mismatched_scene(self, strict_capacity):
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+        if not wp.get_device().is_cuda:
+            self.skipTest("requires CUDA")
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform((0, 0.3, 0), wp.quat_identity()), mass=0.1)
+        builder.add_shape_sphere(b, radius=0.05)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, strict_capacity=strict_capacity)
+        pipeline = newton.CollisionPipeline(model)
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        ctrl = model.control()
+        contacts = pipeline.contacts()
+        pipeline.collide(state_0, contacts)
+        self.assertGreater(contacts.rigid_contact_max, solver.mjw_data.naconmax)
+        return solver, state_0, state_1, ctrl, contacts
+
+    def test_capacity_mismatch_does_not_warn_by_default(self):
+        """A capacity mismatch on a healthy scene should not warn when strict_capacity=False."""
+        solver, s0, s1, ctrl, contacts = self._make_mismatched_scene(strict_capacity=False)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            solver.step(s0, s1, ctrl, contacts, 1.0 / 60.0)
+        self.assertEqual(caught, [])
+
+    def test_capacity_mismatch_raises_under_strict_capacity(self):
+        """The same mismatch raises RuntimeError when strict_capacity=True."""
+        solver, s0, s1, ctrl, contacts = self._make_mismatched_scene(strict_capacity=True)
+        with self.assertRaises(RuntimeError):
+            solver.step(s0, s1, ctrl, contacts, 1.0 / 60.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

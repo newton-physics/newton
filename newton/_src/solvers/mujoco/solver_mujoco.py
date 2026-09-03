@@ -3739,13 +3739,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 :class:`warp.DeterministicMode`, or ``None`` to inherit
                 ``wp.config.deterministic``.
             strict_capacity: If ``True``, raise a ``RuntimeError`` when the
-                Newton contact pipeline buffer (``rigid_contact_max``) exceeds
-                MuJoCo Warp's ``nconmax``; the check runs at the start of every
-                step and requires no GPU sync.  If ``False`` (default), emit a
-                ``UserWarning`` on that same mismatch but continue.  Runtime
-                overflow (contacts dropped during a step) is always reported
-                GPU-side via a ``wp.printf`` message; to detect it in Python
-                without a GPU sync, request ``state.mujoco.overflow`` via
+                Newton contact pipeline buffer *capacity*
+                (``contacts.rigid_contact_max``) exceeds MuJoCo Warp's buffer
+                *capacity* (``nconmax``); the check runs at the start of every
+                step and requires no GPU sync.  This is a capacity mismatch,
+                not evidence that contacts were actually dropped — the two
+                buffers are sized by independent heuristics and routinely
+                disagree even on scenes that never overflow — so it is not
+                reported by default (``False``).  Runtime overflow (contacts
+                actually dropped during a step) is always reported GPU-side
+                via a ``wp.printf`` message; to detect it in Python without a
+                GPU sync, request ``state.mujoco.overflow`` via
                 ``builder.request_state_attributes("mujoco:overflow")`` and
                 check the bitmask after each step.
         """
@@ -4599,16 +4603,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # path clamps count and rejects cid >= naconmax).  Launching more
         # threads than naconmax wastes GPU resources, so cap the grid size.
         naconmax = self.mjw_data.naconmax
-        if contacts.rigid_contact_max > naconmax:
-            msg = (
+        # rigid_contact_max and naconmax are independent buffer capacities and
+        # routinely disagree without any contacts being dropped, so only
+        # strict_capacity raises on a mismatch; it does not warn by default.
+        if self._strict_capacity and contacts.rigid_contact_max > naconmax:
+            raise RuntimeError(
                 f"contacts.rigid_contact_max ({contacts.rigid_contact_max}) exceeds "
-                f"nconmax ({naconmax}); Newton contacts beyond the cap are silently "
-                f"discarded and results may be invalid. "
-                f"Pass nconmax>={contacts.rigid_contact_max} to SolverMuJoCo to avoid this."
+                f"nconmax ({naconmax}); contacts beyond the cap will be dropped if more "
+                f"than {naconmax} contacts are actually generated. "
+                f"Pass nconmax>={contacts.rigid_contact_max} to SolverMuJoCo to size for the worst case."
             )
-            if self._strict_capacity:
-                raise RuntimeError(msg)
-            warnings.warn(msg, UserWarning, stacklevel=4)
         launch_dim = min(contacts.rigid_contact_max, naconmax)
 
         # Grow the tid_to_cid buffer if the MJWarp data capacity changed after
