@@ -270,55 +270,20 @@ must be embedded in the ONNX file.
 
 The first five features use the standard State and Control arrays already
 passed to every drive. ``dynamic_bias`` is an optional, caller-supplied
-generalized bias-force input. When selected, the application must declare a
-one-dimensional ``wp.float32`` custom Control attribute named ``dynamic_bias``
-before finalizing the model. It is exposed as ``control.dynamic_bias``, has the
-same global joint-DOF layout and length as ``state.joint_qd``, and is gathered
-with the actuator's velocity indices. Set the actuator's existing
-``control_feedforward_attr`` to ``"dynamic_bias"`` so this array is passed to
-the drive. Checkpoints that do not select this feature need no declaration.
+generalized bias-force input. When selected, :meth:`ModelBuilder.add_actuator`
+automatically registers a one-dimensional ``wp.float32`` custom Control
+attribute named ``dynamic_bias``. It is exposed as ``control.dynamic_bias``,
+has the same global joint-DOF layout and length as ``state.joint_qd``, and is
+gathered with the actuator's velocity indices. Checkpoints that do not select
+this feature do not allocate the attribute. The same setup applies when the
+actuator is imported from USD; the actuator prim only needs
+``newton:modelPath`` and ``newton:targets``.
 
-For programmatic model construction, declare the input with Newton's existing
-custom-attribute API:
-
-.. code-block:: python
-
-   import warp as wp
-
-   import newton
-
-   builder.add_custom_attribute(
-       newton.ModelBuilder.CustomAttribute(
-           name="dynamic_bias",
-           dtype=wp.float32,
-           frequency=newton.Model.AttributeFrequency.JOINT_DOF,
-           assignment=newton.Model.AttributeAssignment.CONTROL,
-           default=0.0,
-       )
-   )
-
-For USD construction, make the equivalent declaration on the
-``PhysicsScene`` prim. The actuator prim continues to use
-``newton:modelPath`` and ``newton:targets`` normally:
-
-.. code-block:: usda
-
-   def PhysicsScene "Scene" {
-       custom float newton:dynamic_bias = 0.0 (
-           customData = {
-               string assignment = "control"
-               string frequency = "joint_dof"
-           }
-       )
-   }
-
-Newton does not compute or clear this custom Control array. After model
-finalization, select it as the actuator's input, then populate the generalized
-bias force after each :meth:`Control.clear` and before actuator evaluation:
+Newton allocates but does not compute or clear this custom Control array.
+Populate the generalized bias force before every actuator evaluation:
 
 .. code-block:: python
 
-   actuator.control_feedforward_attr = "dynamic_bias"
    control.clear(model)
    control.joint_target_q.assign(target_positions)
    control.dynamic_bias.assign(computed_generalized_bias_force)
@@ -360,7 +325,7 @@ Deferred capabilities are tracked here:
    * - Additional State or Control features
      - Deferred; the drive supports the five built-in features listed above and optional ``dynamic_bias``.
    * - Automatic generalized-bias-force computation
-     - Deferred; callers declare and populate the optional Control input.
+     - Deferred; Newton allocates the optional Control input, and callers compute and populate it.
    * - Additive feedforward effort, solver-PD, and previous torque
      - Deferred.
    * - Residual torque and hybrid physics baselines

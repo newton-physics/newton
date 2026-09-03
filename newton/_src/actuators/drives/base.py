@@ -63,6 +63,11 @@ class DriveBase:
         """
         raise NotImplementedError(f"{cls.__name__} must implement resolve_arguments")
 
+    @classmethod
+    def _configure_actuator(cls, builder: Any, args: dict[str, Any]) -> dict[str, Any]:
+        """Register required model attributes and return actuator options."""
+        return {}
+
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         """Called by :class:`Actuator` after construction to set up device-specific resources.
 

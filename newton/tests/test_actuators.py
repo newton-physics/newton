@@ -717,10 +717,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         stage = Usd.Stage.CreateNew(stage_path)
         world = stage.DefinePrim("/World", "Xform")
         stage.SetDefaultPrim(world)
-        physics_scene = stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
-        dynamic_bias = physics_scene.CreateAttribute("newton:dynamic_bias", Sdf.ValueTypeNames.Float, custom=True)
-        dynamic_bias.Set(0.0)
-        dynamic_bias.SetCustomData({"assignment": "control", "frequency": "joint_dof"})
+        stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
 
         robot = stage.DefinePrim("/World/Robot", "Xform")
         schemas = Sdf.TokenListOp()
@@ -757,17 +754,6 @@ class TestDriveNeuralGRU(unittest.TestCase):
         )
         stage.GetRootLayer().Save()
         return stage_path
-
-    def _declare_dynamic_bias(self, builder: newton.ModelBuilder) -> None:
-        builder.add_custom_attribute(
-            newton.ModelBuilder.CustomAttribute(
-                name="dynamic_bias",
-                dtype=wp.float32,
-                frequency=newton.Model.AttributeFrequency.JOINT_DOF,
-                assignment=newton.Model.AttributeAssignment.CONTROL,
-                default=0.0,
-            )
-        )
 
     def _make_case(self, model_path: str, n: int) -> types.SimpleNamespace:
         indices = np.array([3, 1, 5][:n], dtype=np.uint32)
@@ -1299,11 +1285,9 @@ class TestDriveNeuralGRU(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no hidden"):
             DriveNeuralGRU.State().reset()
 
-    def test_declared_dynamic_bias_is_allocated_on_control_only(self):
-        def build_model(model_path, declare_dynamic_bias):
+    def test_dynamic_bias_is_allocated_on_control_only(self):
+        def build_model(model_path):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-            if declare_dynamic_bias:
-                self._declare_dynamic_bias(builder)
             link = builder.add_link()
             joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
             builder.add_articulation([joint])
@@ -1312,15 +1296,14 @@ class TestDriveNeuralGRU(unittest.TestCase):
                 index=builder.joint_qd_start[joint],
                 model_path=model_path,
             )
-            model = builder.finalize(device=self.device)
-            model.actuators[0].control_feedforward_attr = "dynamic_bias"
-            return model
+            return builder.finalize(device=self.device)
 
-        model = build_model(self._save_gru("control_bias.onnx"), declare_dynamic_bias=True)
+        model = build_model(self._save_gru("control_bias.onnx"))
         control = model.control()
         state = model.state()
         self.assertEqual(control.dynamic_bias.shape, (model.joint_dof_count,))
         self.assertEqual(control.dynamic_bias.dtype, wp.float32)
+        self.assertEqual(model.actuators[0].control_feedforward_attr, "dynamic_bias")
         self.assertFalse(hasattr(state, "dynamic_bias"))
 
         control.dynamic_bias.assign(np.full(model.joint_dof_count, 2.5, dtype=np.float32))
@@ -1328,20 +1311,9 @@ class TestDriveNeuralGRU(unittest.TestCase):
         np.testing.assert_array_equal(control.dynamic_bias.numpy(), 2.5)
 
         metadata = self._metadata(("position", "target_velocity"))
-        model_without_bias = build_model(self._save_gru("control_no_bias.onnx", metadata), declare_dynamic_bias=False)
+        model_without_bias = build_model(self._save_gru("control_no_bias.onnx", metadata))
         self.assertFalse(hasattr(model_without_bias.control(), "dynamic_bias"))
         self.assertFalse(hasattr(model_without_bias.state(), "dynamic_bias"))
-
-        missing_attribute_model = build_model(self._save_gru("control_missing_bias.onnx"), declare_dynamic_bias=False)
-        missing_attribute_actuator = missing_attribute_model.actuators[0]
-        with self.assertRaisesRegex(RuntimeError, "control_feedforward_attr"):
-            missing_attribute_actuator.step(
-                missing_attribute_model.state(),
-                missing_attribute_model.control(),
-                missing_attribute_actuator.state(),
-                missing_attribute_actuator.state(),
-                dt=self.SAMPLE_DT,
-            )
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")
     def test_model_builder_constructs_relative_onnx_usd_actuator(self):
@@ -1352,8 +1324,8 @@ class TestDriveNeuralGRU(unittest.TestCase):
         result = builder.add_usd(stage_path, floating=False, load_visual_shapes=False)
         self.assertEqual(result["actuator_count"], 1)
         model = builder.finalize(device=self.device)
-        model.actuators[0].control_feedforward_attr = "dynamic_bias"
         self.assertIsInstance(model.actuators[0].drive, DriveNeuralGRU)
+        self.assertEqual(model.actuators[0].control_feedforward_attr, "dynamic_bias")
         self.assertEqual(model.control().dynamic_bias.shape, (model.joint_dof_count,))
         self.assertFalse(hasattr(model.state(), "dynamic_bias"))
 
@@ -1371,7 +1343,6 @@ class TestDriveNeuralGRU(unittest.TestCase):
         builder.add_actuator(DriveNeuralGRU, index=dofs[0], model_path=shared_path)
         builder.add_actuator(DriveNeuralGRU, index=dofs[1], model_path=shared_path)
         builder.add_actuator(DriveNeuralGRU, index=dofs[2], model_path=distinct_path)
-        self._declare_dynamic_bias(builder)
 
         model = builder.finalize(device=self.device)
 
@@ -1388,10 +1359,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         stage_path = os.path.join(self._tmp_dir, "gru.usda")
         stage = Usd.Stage.CreateNew(stage_path)
         stage.DefinePrim("/World/Joint", "PhysicsRevoluteJoint")
-        physics_scene = stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
-        dynamic_bias = physics_scene.CreateAttribute("newton:dynamic_bias", Sdf.ValueTypeNames.Float, custom=True)
-        dynamic_bias.Set(0.0)
-        dynamic_bias.SetCustomData({"assignment": "control", "frequency": "joint_dof"})
+        stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
         prim = stage.DefinePrim("/World/Actuator", "NewtonActuator")
         schemas = Sdf.TokenListOp()
         schemas.prependedItems = ["NewtonNeuralControlAPI"]

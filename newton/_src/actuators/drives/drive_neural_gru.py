@@ -494,6 +494,26 @@ class DriveNeuralGRU(DriveBase):
             raise ValueError("DriveNeuralGRU requires a non-empty 'model_path'")
         return {"model_path": model_path}
 
+    @classmethod
+    def _configure_actuator(cls, builder: Any, args: dict[str, Any]) -> dict[str, Any]:
+        """Register and select the optional generalized-bias input."""
+        model_path = os.fspath(args["model_path"])
+        if "dynamic_bias" not in _parse_input_feature_keys(load_metadata(model_path), model_path):
+            return {}
+
+        from ...sim.model import Model  # noqa: PLC0415
+
+        builder.add_custom_attribute(
+            builder.CustomAttribute(
+                name="dynamic_bias",
+                dtype=wp.float32,
+                frequency=Model.AttributeFrequency.JOINT_DOF,
+                assignment=Model.AttributeAssignment.CONTROL,
+                default=0.0,
+            )
+        )
+        return {"control_feedforward_attr": "dynamic_bias"}
+
     def __init__(self, model_path: str):
         """Initialize the drive from an ONNX GRU network.
 
