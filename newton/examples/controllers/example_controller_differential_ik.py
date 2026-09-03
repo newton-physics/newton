@@ -4,13 +4,15 @@
 ###########################################################################
 # Example Controllers — Differential IK
 #
-# Demonstrates ControllerDifferentialIK on three real, heterogeneous robots at once
-# -- a 7-DOF Franka Panda arm tasking the full 6D pose (redundant by 1 DOF),
-# a 6-DOF UR10 arm tasking position only (redundant by 3 DOFs), and a 4-DOF
+# Demonstrates ControllerDifferentialIK on four real, heterogeneous robots at
+# once -- a 7-DOF Franka Panda arm tasking the full 6D pose (redundant by 1
+# DOF), a 6-DOF UR10 arm tasking position only (redundant by 3 DOFs), a 4-DOF
 # planar arm restricted to a 3D task (X, Y, yaw) via axis_weight (redundant
-# by 1 DOF) -- each independently tracking its own draggable gizmo target.
-# One controller call handles all three, each robot resolved through its own
-# tool site and Jacobian.
+# by 1 DOF), and a 5-DOF elbow-type arm that softly tracks yaw but leaves
+# every rotation axis unprotected by its own null space (see null_space_axes
+# below) -- each independently tracking its own draggable gizmo target. One
+# controller call handles all four, each robot resolved through its own tool
+# site and Jacobian.
 #
 # Kinematics only: the controller's joint targets are applied directly to
 # the sim state each frame (no physics solver), keeping the demo focused on
@@ -64,14 +66,32 @@ PLANAR_READY_POSE = [0.4, 1.6, -1.4, 1.0]
 PLANAR_ARM_DOFS = len(PLANAR_READY_POSE)
 PLANAR_BASE_POSITION = wp.vec3(0.0, 3.6, 0.5)  # separated from the UR10 along Y
 
+# A 5-DOF elbow-type arm: pan (about world Z), then three joints that all
+# bend in that same pan-rotated vertical plane (about their own, current
+# local Y -- see _add_five_dof_arm), then a wrist roll about the arm's own
+# current pointing direction (local X). Only 2 of the 3 orientation axes are
+# ever independently reachable this way, matching a real small-DOF arm.
+# Long near the base (the main-reach segments), short near the tool -- a
+# long final segment would give the wrist a huge Jacobian column relative
+# to the shoulder/elbow's, so a small wrist joint rotation would swing the
+# tool by a lot while barely affecting reach, making the arm hard to
+# position precisely (poor manipulability). One length per joint below,
+# each segment running from that joint's own body to the next.
+FIVE_DOF_LINK_LENGTHS = [0.05, 0.25, 0.20, 0.08, 0.05]
+FIVE_DOF_READY_POSE = [0.3, -0.6, 0.9, 0.4, 0.0]
+FIVE_DOF_ARM_DOFS = len(FIVE_DOF_READY_POSE)
+FIVE_DOF_BASE_POSITION = wp.vec3(0.0, 5.4, 0.3)  # separated from the planar arm along Y; raised clear of the ground
+
 TOOL_SITE_SCALE = (0.02, 0.02, 0.02)
 
 # Franka tasks the full 6D pose; UR10 position only; the planar arm only
-# X, Y, and yaw -- each excluded axis is structurally dropped from its own
-# solve, not merely weighted toward zero.
+# X, Y, and yaw; the 5-DOF arm position plus a soft orientation in the roll and pitch -- each excluded
+# axis is structurally dropped from its own solve, not merely weighted
+# toward zero.
 FULL_POSE_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
 POSITION_ONLY_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 1.0, 0.0, 0.0, 0.0)
 PLANAR_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+SOFT_ORIENTATION_AXIS_WEIGHT = wp.spatial_vector(1.0, 1.0, 1.0, 0.5, 0.5, 0.0)
 
 _XYZ_AXES = (Axis.X, Axis.Y, Axis.Z)
 
@@ -93,7 +113,7 @@ def _gizmo_axes_from_weight(axis_weight):
 # ---------------------------------------------------------------------------
 
 
-def create_controller_from_dls_method(model, joints, axis_weight, device):
+def create_controller_from_dls_method(model, joints, axis_weight, null_space_axes, device):
     """DifferentialIKMethod.DAMPED_LEAST_SQUARES: a single fixed damping λ everywhere."""
     return ControllerDifferentialIK(
         model,
@@ -106,10 +126,11 @@ def create_controller_from_dls_method(model, joints, axis_weight, device):
         use_null_space_posture_control=True,
         null_space_stiffness=2.0,
         null_space_damping=0.05,
+        null_space_axes=null_space_axes,
     )
 
 
-def create_controller_from_pinv_method(model, joints, axis_weight, device):
+def create_controller_from_pinv_method(model, joints, axis_weight, null_space_axes, device):
     """DifferentialIKMethod.PSEUDO_INVERSE: exact (λ=0) Moore-Penrose pseudo-inverse, no damping."""
     return ControllerDifferentialIK(
         model,
@@ -122,10 +143,11 @@ def create_controller_from_pinv_method(model, joints, axis_weight, device):
         use_null_space_posture_control=True,
         null_space_stiffness=2.0,
         null_space_damping=0.05,
+        null_space_axes=null_space_axes,
     )
 
 
-def create_controller_from_transpose_method(model, joints, axis_weight, device):
+def create_controller_from_transpose_method(model, joints, axis_weight, null_space_axes, device):
     """DifferentialIKMethod.TRANSPOSE: qd = bandwidth * Jᵀe, no matrix inversion at all.
 
     Unlike the inverting methods, there's no damping to keep this loop
@@ -144,10 +166,11 @@ def create_controller_from_transpose_method(model, joints, axis_weight, device):
         use_null_space_posture_control=True,
         null_space_stiffness=2.0,
         null_space_damping=0.05,
+        null_space_axes=null_space_axes,
     )
 
 
-def create_controller_from_adaptive_damping_method(model, joints, axis_weight, device):
+def create_controller_from_adaptive_damping_method(model, joints, axis_weight, null_space_axes, device):
     """DifferentialIKMethod.ADAPTIVE_DAMPING: λ ramps up automatically near a singularity or reach limit."""
     return ControllerDifferentialIK(
         model,
@@ -163,10 +186,11 @@ def create_controller_from_adaptive_damping_method(model, joints, axis_weight, d
         use_null_space_posture_control=True,
         null_space_stiffness=2.0,
         null_space_damping=0.05,
+        null_space_axes=null_space_axes,
     )
 
 
-def create_controller_from_truncated_svd_method(model, joints, axis_weight, device):
+def create_controller_from_truncated_svd_method(model, joints, axis_weight, null_space_axes, device):
     """DifferentialIKMethod.TRUNCATED_SVD: directions below the threshold are dropped, not damped."""
     return ControllerDifferentialIK(
         model,
@@ -180,6 +204,7 @@ def create_controller_from_truncated_svd_method(model, joints, axis_weight, devi
         use_null_space_posture_control=True,
         null_space_stiffness=2.0,
         null_space_damping=0.05,
+        null_space_axes=null_space_axes,
     )
 
 
@@ -222,9 +247,13 @@ class Example:
         planar_joints, planar_tool_body, planar_tool_site_transform = self._add_planar_arm(
             builder, PLANAR_BASE_POSITION
         )
+        five_dof_joints, five_dof_tool_body, five_dof_tool_site_transform = self._add_five_dof_arm(
+            builder, FIVE_DOF_BASE_POSITION
+        )
         self._franka_joints = franka_joints
         self._ur10_joints = ur10_joints
         self._planar_joints = planar_joints
+        self._five_dof_joints = five_dof_joints
 
         builder.add_ground_plane()
 
@@ -233,26 +262,44 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # ---- Differential-kinematics controller -------------------------------
-        # One controller call handles all three robots; joints lists robot
+        # One controller call handles all four robots; joints lists robot
         # 0's (Franka's) controlled joints first, then robot 1's (UR10's),
-        # then robot 2's (the planar arm's), matching axis_weight's and
+        # then robot 2's (the planar arm's), then robot 3's (the 5-DOF
+        # arm's), matching axis_weight's/null_space_axes's/
         # desired_tool_pose_world's per-robot ordering below.
-        joints = franka_joints + ur10_joints + planar_joints
-        axis_weight_rows = [FULL_POSE_AXIS_WEIGHT, POSITION_ONLY_AXIS_WEIGHT, PLANAR_AXIS_WEIGHT]
+        joints = franka_joints + ur10_joints + planar_joints + five_dof_joints
+        axis_weight_rows = [FULL_POSE_AXIS_WEIGHT, POSITION_ONLY_AXIS_WEIGHT, PLANAR_AXIS_WEIGHT, SOFT_ORIENTATION_AXIS_WEIGHT]
         axis_weight = wp.array(axis_weight_rows, dtype=wp.spatial_vector, device=self.device)
+        # Every robot's null-space projector protects exactly the axes its
+        # own axis_weight solves for, except the 5-DOF arm: axis_weight
+        # softly tracks roll and pitch for it, but null_space_axes leaves all three
+        # rotations unprotected, leaving a 2D null space in position.
+        null_space_axes = wp.array(
+            [FULL_POSE_AXIS_WEIGHT, POSITION_ONLY_AXIS_WEIGHT, PLANAR_AXIS_WEIGHT, POSITION_ONLY_AXIS_WEIGHT],
+            dtype=wp.spatial_vector,
+            device=self.device,
+        )
         ik_method = args.ik_method
         if ik_method == "dls":
-            self.controller = create_controller_from_dls_method(self.model, joints, axis_weight, self.device)
+            self.controller = create_controller_from_dls_method(
+                self.model, joints, axis_weight, null_space_axes, self.device
+            )
         elif ik_method == "pinv":
-            self.controller = create_controller_from_pinv_method(self.model, joints, axis_weight, self.device)
+            self.controller = create_controller_from_pinv_method(
+                self.model, joints, axis_weight, null_space_axes, self.device
+            )
         elif ik_method == "transpose":
-            self.controller = create_controller_from_transpose_method(self.model, joints, axis_weight, self.device)
+            self.controller = create_controller_from_transpose_method(
+                self.model, joints, axis_weight, null_space_axes, self.device
+            )
         elif ik_method == "adaptive_damping":
             self.controller = create_controller_from_adaptive_damping_method(
-                self.model, joints, axis_weight, self.device
+                self.model, joints, axis_weight, null_space_axes, self.device
             )
         elif ik_method == "truncated_svd":
-            self.controller = create_controller_from_truncated_svd_method(self.model, joints, axis_weight, self.device)
+            self.controller = create_controller_from_truncated_svd_method(
+                self.model, joints, axis_weight, null_space_axes, self.device
+            )
         else:
             raise ValueError(f"Unknown --ik-method: {ik_method}")
 
@@ -270,7 +317,9 @@ class Example:
         # reassigned in step().
         if self._input.q_des_null is not None:
             self._input.q_des_null.assign(
-                np.array(FRANKA_READY_POSE + UR10_READY_POSE + PLANAR_READY_POSE, dtype=np.float32)
+                np.array(
+                    FRANKA_READY_POSE + UR10_READY_POSE + PLANAR_READY_POSE + FIVE_DOF_READY_POSE, dtype=np.float32
+                )
             )
         # The controller's outputs are compact (one entry per controlled
         # DOF); indexed views scatter them straight into the sim state, in
@@ -287,17 +336,19 @@ class Example:
             wp.transform(*body_q_np[franka_tool_body].tolist()) * franka_tool_site_transform,
             wp.transform(*body_q_np[ur10_tool_body].tolist()) * ur10_tool_site_transform,
             wp.transform(*body_q_np[planar_tool_body].tolist()) * planar_tool_site_transform,
+            wp.transform(*body_q_np[five_dof_tool_body].tolist()) * five_dof_tool_site_transform,
         ]
         # A zero-weighted axis is excluded from that robot's solve entirely
         # (see axis_weight above), so its gizmo handle is dropped too -- the
         # widget can't suggest a motion the controller would ignore.
         self.gizmo_axes = [_gizmo_axes_from_weight(weight) for weight in axis_weight_rows]
 
-        # Set such that Franka at y=0, UR10 at y=1.8, planar arm at y=3.6 are in view together.
+        # Set such that Franka at y=0, UR10 at y=1.8, planar arm at y=3.6,
+        # and the 5-DOF arm at y=5.4 are all in view together.
         if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(3.2, -1.8, 2.4), pitch=-20.0, yaw=15.0)
+            self.viewer.set_camera(pos=wp.vec3(4.0, -2.4, 3.0), pitch=-20.0, yaw=15.0)
             if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.4, 1.8, 0.4))
+                self.viewer.camera.look_at(wp.vec3(0.4, 2.7, 0.4))
 
         self.viewer.set_model(self.model)
 
@@ -430,6 +481,72 @@ class Example:
 
         return arm_joints, tool_body, tool_site_transform
 
+    @staticmethod
+    def _add_five_dof_arm(builder, base_position):
+        """Build a 5-DOF elbow-type arm (pan, lift, elbow, wrist flex, wrist roll) and add a tool site at its tip.
+
+        Every joint below uses an identity-rotation ``parent_xform``, so
+        each joint's own axis is expressed directly in the accumulated
+        rotation of every joint before it -- pan (axis Z) at the base,
+        then three joints sharing axis Y (which panning rotates together
+        with the whole arm, but bending about your own Y never moves where
+        that axis points, so all three stay in the same, pan-rotated
+        plane), then a wrist roll about axis X (the arm's own current
+        pointing direction, since every link below extends along local
+        +X). Returns:
+            Tuple of (arm joint indices, last link's body index, tool
+            site's body-local transform).
+        """
+        coord_count_before = builder.joint_coord_count
+
+        # A capsule extends along its own local Z axis by default; this
+        # rotation aligns that with each link's own local +X, the direction
+        # successive links chain along below.
+        capsule_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)
+        joint_axes = [
+            wp.vec3(0.0, 0.0, 1.0),  # pan
+            wp.vec3(0.0, 1.0, 0.0),  # lift
+            wp.vec3(0.0, 1.0, 0.0),  # elbow
+            wp.vec3(0.0, 1.0, 0.0),  # wrist flex
+            wp.vec3(1.0, 0.0, 0.0),  # wrist roll
+        ]
+
+        arm_joints = []
+        parent = -1
+        parent_xform = wp.transform(base_position, wp.quat_identity())
+        link = -1
+        for axis, length in zip(joint_axes, FIVE_DOF_LINK_LENGTHS, strict=True):
+            link = builder.add_link()
+            joint = builder.add_joint_revolute(
+                parent=parent,
+                child=link,
+                axis=axis,
+                parent_xform=parent_xform,
+                child_xform=wp.transform_identity(),
+            )
+            builder.add_shape_capsule(
+                link,
+                xform=wp.transform(wp.vec3(length / 2.0, 0.0, 0.0), capsule_rotation),
+                radius=0.02,
+                half_height=length / 2.0,
+            )
+            arm_joints.append(joint)
+            parent = link
+            parent_xform = wp.transform(wp.vec3(length, 0.0, 0.0), wp.quat_identity())
+        builder.add_articulation(arm_joints, label="five_dof_arm")
+
+        arm_coords = list(range(coord_count_before, coord_count_before + FIVE_DOF_ARM_DOFS))
+        for coord, angle in zip(arm_coords, FIVE_DOF_READY_POSE, strict=True):
+            builder.joint_q[coord] = angle
+
+        # The tool site sits at the last link's tip, one more (short) link
+        # length out along its own local +X.
+        tool_body = link
+        tool_site_transform = wp.transform(wp.vec3(FIVE_DOF_LINK_LENGTHS[-1], 0.0, 0.0), wp.quat_identity())
+        builder.add_site(tool_body, xform=tool_site_transform, label="tool_site", visible=True, scale=TOOL_SITE_SCALE)
+
+        return arm_joints, tool_body, tool_site_transform
+
     def _simulate(self):
         # joint_q_target/joint_qd_target write straight into state_0 (see
         # the output bindings in __init__); eval_fk brings body_q/body_qd
@@ -472,7 +589,7 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Gizmos aren't dragged in headless test mode, so all three arms should stay near their ready pose."""
+        """Gizmos aren't dragged in headless test mode, so all four arms should stay near their ready pose."""
         joint_q = self.state_0.joint_q.numpy()
         joint_qd = self.state_0.joint_qd.numpy()
         assert np.all(np.isfinite(joint_q)), f"joint_q has NaN/Inf: {joint_q}"
@@ -494,6 +611,13 @@ class Example:
         planar_ready_q = np.array(PLANAR_READY_POSE, dtype=np.float32)
         assert np.all(np.abs(planar_q - planar_ready_q) < 0.2), (
             f"Planar arm joints drifted from its ready pose: {planar_q}"
+        )
+
+        five_dof_q_start = self.model.joint_q_start.numpy()[self._five_dof_joints[0]]
+        five_dof_q = joint_q[five_dof_q_start : five_dof_q_start + FIVE_DOF_ARM_DOFS]
+        five_dof_ready_q = np.array(FIVE_DOF_READY_POSE, dtype=np.float32)
+        assert np.all(np.abs(five_dof_q - five_dof_ready_q) < 0.2), (
+            f"5-DOF arm joints drifted from its ready pose: {five_dof_q}"
         )
 
 
