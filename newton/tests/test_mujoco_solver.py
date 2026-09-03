@@ -8029,6 +8029,24 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.iterations, 5, "Constructor value should override custom attribute")
         self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
 
+    def test_disable_sensors_rejects_rne_state_attributes(self):
+        """Reject disabled sensors when RNE-derived state attributes are requested."""
+        for attribute in ("body_qdd", "body_parent_f"):
+            with self.subTest(attribute=attribute):
+                model = self._create_multiworld_model(world_count=1)
+                solver = SolverMuJoCo(model, disable_sensors=True)
+                model.request_state_attributes(attribute)
+                state = model.state()
+                with self.assertRaisesRegex(ValueError, "disable_sensors"):
+                    solver.step(state, state, None, None, 0.01)
+
+    def test_disable_sensors_allows_unrelated_state_attributes(self):
+        """Step with disabled sensors when no RNE-derived state attribute is requested."""
+        model = self._create_multiworld_model(world_count=1)
+        solver = SolverMuJoCo(model, disable_sensors=True)
+        state_in, state_out = model.state(), model.state()
+        solver.step(state_in, state_out, model.control(), None, 0.01)
+
     def test_enable_multiccd_default_off(self):
         """Verify that multi-CCD is disabled by default (Newton default differs from MuJoCo 3.8+)."""
         model = self._create_multiworld_model(world_count=1)
