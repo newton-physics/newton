@@ -711,7 +711,8 @@ class TestDriveNeuralGRU(unittest.TestCase):
         return path
 
     def _write_single_joint_gru_usd(self, model_path: str, filename: str) -> str:
-        from pxr import Sdf
+        """Write a single-joint GRU articulation using typed USD physics APIs."""
+        from pxr import Sdf, UsdPhysics
 
         stage_path = os.path.join(self._tmp_dir, filename)
         stage = Usd.Stage.CreateNew(stage_path)
@@ -720,9 +721,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
 
         robot = stage.DefinePrim("/World/Robot", "Xform")
-        schemas = Sdf.TokenListOp()
-        schemas.prependedItems = ["PhysicsArticulationRootAPI"]
-        robot.SetMetadata("apiSchemas", schemas)
+        UsdPhysics.ArticulationRootAPI.Apply(robot)
 
         base = stage.DefinePrim("/World/Robot/Base", "Xform")
         schemas = Sdf.TokenListOp()
@@ -1315,6 +1314,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")
     def test_model_builder_constructs_relative_onnx_usd_actuator(self):
+        """Construct a finalized GRU actuator from a relative USD asset path."""
         model_path = self._save_gru("builder_gru.onnx")
         stage_path = self._write_single_joint_gru_usd(model_path, "builder_gru.usda")
 
