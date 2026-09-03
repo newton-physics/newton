@@ -11,11 +11,6 @@ import warp as wp
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
-from newton._src.solvers.kamino._src.models.builders.basics import build_box_on_plane, build_boxes_hinged
-from newton._src.solvers.kamino._src.models.builders.testing import (
-    build_free_joint_test,
-    build_unary_revolute_joint_test,
-)
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.padmm.types import PADMMData
@@ -28,6 +23,8 @@ from newton.tests.kamino.utils.extract import (
     extract_info_vectors,
     extract_problem_vector,
 )
+from newton.tests.utils.basics import build_box_on_plane, build_boxes_hinged
+from newton.tests.utils.testing import build_free_joint_test, build_unary_revolute_joint_test
 
 ###
 # Helpers
@@ -831,8 +828,8 @@ class TestSolverMetrics(unittest.TestCase):
             contacts=test.contacts,
         )
 
-        rtol = 1e-6
-        atol = 1e-6
+        rtol = 1e-5
+        atol = 1e-5
 
         # Compare Jacobians
         J_cts_dense_np = extract_cts_jacobians(

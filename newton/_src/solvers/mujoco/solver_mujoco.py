@@ -3763,7 +3763,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
             disable_contacts: If True, disable contact computation in MuJoCo.
-            disable_sensors: If True, disable sensor computation in MuJoCo.
+            disable_sensors: If True, disable sensor computation in MuJoCo. On the MuJoCo Warp backend, :meth:`step` raises ``ValueError`` if the output state requests ``body_qdd`` or ``body_parent_f``, which MuJoCo computes inside the sensor stage.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
@@ -4158,6 +4158,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._mujoco.mj_step(self.mj_model, self.mj_data)
             self._update_newton_state(self.model, state_out, self.mj_data, state_prev=state_in)
         else:
+            self._validate_rne_postconstraint(state_out)
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
                 self._enable_rne_postconstraint(state_out)
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
@@ -4430,6 +4431,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
+
+    def _validate_rne_postconstraint(self, state_out: State):
+        """Reject state fields whose post-constraint RNE stage is disabled."""
+        if self.mj_model.opt.disableflags & self._mujoco.mjtDisableBit.mjDSBL_SENSOR and (
+            state_out.body_qdd is not None or state_out.body_parent_f is not None
+        ):
+            raise ValueError(
+                "disable_sensors=True is incompatible with requested body_qdd or body_parent_f state attributes."
+            )
 
     def _enable_rne_postconstraint(self, state_out: State):
         """Request computation of RNE forces if required for state fields."""
