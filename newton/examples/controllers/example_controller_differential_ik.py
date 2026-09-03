@@ -8,9 +8,10 @@
 # once -- a 7-DOF Franka Panda arm tasking the full 6D pose (redundant by 1
 # DOF), a 6-DOF UR10 arm tasking position only (redundant by 3 DOFs), a 4-DOF
 # planar arm restricted to a 3D task (X, Y, yaw) via axis_weight (redundant
-# by 1 DOF), and a 5-DOF elbow-type arm that softly tracks yaw but leaves
-# every rotation axis unprotected by its own null space (see null_space_axes
-# below) -- each independently tracking its own draggable gizmo target. One
+# by 1 DOF), and a 5-DOF elbow-type arm that softly tracks roll and pitch but
+# leaves every rotation axis unprotected by its own null space (see
+# null_space_axes below) -- each independently tracking its own draggable
+# gizmo target. One
 # controller call handles all four, each robot resolved through its own tool
 # site and Jacobian.
 #

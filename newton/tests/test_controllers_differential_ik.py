@@ -1941,6 +1941,145 @@ class TestControllerDifferentialIKModelFree(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(qd)))
         self.assertLess(float(qd[0]), 0.0)  # still pulls DOF 0 away from its limit
 
+    def test_set_joint_limits_updates_avoidance_bias(self):
+        """set_joint_limits changes which limit the avoidance bias reacts to, without reconstructing the controller."""
+        device = wp.get_device()
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([4], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=1.0,
+            joint_limit_avoidance_margin=0.1,
+            joint_pos_lower=wp.full(4, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(4, 1.0, dtype=wp.float32, device=device),
+            null_space_damping=0.5,
+            device=device,
+        )
+        rng = np.random.default_rng(17)
+        jacobian_np = np.zeros((1, 6, 4), dtype=np.float32)
+        jacobian_np[0, [0, 1, 5], :] = rng.normal(size=(3, 4))
+        pose = _identity_transform(1, device)
+
+        def _step():
+            inputs = ctrl.input()
+            outputs = ctrl.output()
+            inputs.joint_q = wp.array([0.99, 0.0, 0.0, 0.0], dtype=wp.float32, device=device)
+            inputs.tool_pose_world = pose
+            inputs.desired_tool_pose_world = pose
+            inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+            return outputs.joint_qd_target.numpy()
+
+        qd_before = _step()
+        self.assertLess(float(qd_before[0]), 0.0)  # DOF 0 near its upper limit of 1.0, pulled down
+
+        # Widen the upper limit far past the current position: DOF 0 is no
+        # longer near either limit, so the avoidance bias on it vanishes.
+        ctrl.set_joint_limits(
+            joint_pos_lower=wp.full(4, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(4, 10.0, dtype=wp.float32, device=device),
+        )
+        qd_after = _step()
+        self.assertAlmostEqual(float(qd_after[0]), 0.0, places=5)
+
+    def test_set_joint_limits_rejected_without_joint_limit_avoidance_enabled(self):
+        """set_joint_limits requires use_joint_limit_avoidance=True, since the underlying arrays don't exist otherwise."""
+        device = wp.get_device()
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([4], device), bandwidth=1.0, damping=0.1, device=device
+        )
+        with self.assertRaises(ValueError):
+            ctrl.set_joint_limits(
+                joint_pos_lower=wp.full(4, -1.0, dtype=wp.float32, device=device),
+                joint_pos_upper=wp.full(4, 1.0, dtype=wp.float32, device=device),
+            )
+
+    def test_set_joint_limits_rejects_lower_not_less_than_upper(self):
+        """set_joint_limits re-runs the same lower < upper validation as construction."""
+        device = wp.get_device()
+        ctrl = ControllerDifferentialIKModelFree(
+            controlled_dofs_per_robot=_dofs_arr([4], device),
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=1.0,
+            joint_limit_avoidance_margin=0.1,
+            joint_pos_lower=wp.full(4, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(4, 1.0, dtype=wp.float32, device=device),
+            null_space_damping=0.5,
+            device=device,
+        )
+        with self.assertRaises(ValueError):
+            ctrl.set_joint_limits(
+                joint_pos_lower=wp.full(4, 1.0, dtype=wp.float32, device=device),
+                joint_pos_upper=wp.full(4, -1.0, dtype=wp.float32, device=device),
+            )
+
+    def test_null_space_projector_independent_across_robots_with_fewer_than_six_dofs(self):
+        """A robot's null-space output must not depend on a batch-mate's SVD data when every robot has < 6 DOFs.
+
+        The null-space projector's SVD-reconstruction kernel loops over 6
+        singular directions per row/column; when every robot in the batch
+        has fewer than 6 controlled DOFs, the buffers it reads are narrower
+        than 6, and an unguarded loop can read into a neighboring robot's
+        slice of the same buffer. Regression test for that out-of-bounds
+        read: running two structurally different, deliberately
+        differently-shaped robots together must reproduce exactly what
+        each robot alone produces.
+        """
+        device = wp.get_device()
+
+        def _step_qd(dofs_list, jacobian_np, joint_q_np, joint_limit_lo, joint_limit_hi):
+            ctrl = ControllerDifferentialIKModelFree(
+                controlled_dofs_per_robot=_dofs_arr(dofs_list, device),
+                bandwidth=1.0,
+                damping=0.1,
+                use_joint_limit_avoidance=True,
+                joint_limit_avoidance_gain=1.0,
+                joint_limit_avoidance_margin=0.1,
+                joint_pos_lower=wp.array(joint_limit_lo, dtype=wp.float32, device=device),
+                joint_pos_upper=wp.array(joint_limit_hi, dtype=wp.float32, device=device),
+                null_space_damping=0.5,
+                device=device,
+            )
+            pose = _identity_transform(len(dofs_list), device)
+            inputs = ctrl.input()
+            outputs = ctrl.output()
+            inputs.joint_q = wp.array(joint_q_np, dtype=wp.float32, device=device)
+            inputs.tool_pose_world = pose
+            inputs.desired_tool_pose_world = pose
+            inputs.jacobian_tool_world = wp.array3d(jacobian_np, dtype=wp.float32, device=device)
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+            return outputs.joint_qd_target.numpy()
+
+        rng = np.random.default_rng(31)
+        jacobian_a = np.zeros((1, 6, 4), dtype=np.float32)
+        jacobian_a[0, [0, 1, 5], :] = rng.normal(size=(3, 4))
+        joint_q_a = np.array([0.99, 0.0, 0.0, 0.0], dtype=np.float32)
+        lo_a = np.array([-1.0, -1.0, -1.0, -1.0], dtype=np.float32)
+        hi_a = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+
+        jacobian_b = np.zeros((1, 6, 3), dtype=np.float32)
+        jacobian_b[0, [0, 2, 4], :] = rng.normal(size=(3, 3))
+        joint_q_b = np.array([0.0, -0.98, 0.0], dtype=np.float32)
+        lo_b = np.array([-1.0, -1.0, -1.0], dtype=np.float32)
+        hi_b = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+
+        qd_a_alone = _step_qd([4], jacobian_a, joint_q_a, lo_a, hi_a)
+        qd_b_alone = _step_qd([3], jacobian_b, joint_q_b, lo_b, hi_b)
+
+        jacobian_batched = np.zeros((2, 6, 4), dtype=np.float32)
+        jacobian_batched[0] = jacobian_a[0]
+        jacobian_batched[1, :, :3] = jacobian_b[0]
+        joint_q_batched = np.concatenate([joint_q_a, joint_q_b])
+        lo_batched = np.concatenate([lo_a, lo_b])
+        hi_batched = np.concatenate([hi_a, hi_b])
+        qd_batched = _step_qd([4, 3], jacobian_batched, joint_q_batched, lo_batched, hi_batched)
+
+        np.testing.assert_allclose(qd_batched[:4], qd_a_alone, atol=1e-5)
+        np.testing.assert_allclose(qd_batched[4:], qd_b_alone, atol=1e-5)
+
     def test_null_space_damping_rejected_without_null_space_enabled(self):
         """null_space_damping given with neither joint-limit avoidance nor posture control enabled must raise."""
         device = wp.get_device()
@@ -2885,6 +3024,58 @@ class TestControllerDifferentialIK(unittest.TestCase):
 
         position_velocity = jacobian_pos @ qd.astype(np.float64)
         np.testing.assert_allclose(position_velocity, np.zeros(3), atol=1e-2)
+
+    def test_set_joint_limits_forwarded_to_inner_controller(self):
+        """set_joint_limits on ControllerDifferentialIK reaches its inner ControllerDifferentialIKModelFree.
+
+        Verified behaviorally: with the tool already at its target (zero
+        primary-task error), only the joint-limit avoidance bias can move
+        the arm, so widening the limits must change qd.
+        """
+        device = wp.get_device()
+        model = _build_seven_dof_chain_with_tool_site(device)
+        ctrl = ControllerDifferentialIK(
+            model,
+            tool_sites="tip",
+            bandwidth=1.0,
+            damping=0.1,
+            use_joint_limit_avoidance=True,
+            joint_limit_avoidance_gain=1.0,
+            joint_limit_avoidance_margin=0.1,
+            joint_pos_lower=wp.full(7, -1.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(7, 1.0, dtype=wp.float32, device=device),
+            null_space_damping=0.1,
+        )
+        joint_q = np.full(7, 0.99, dtype=np.float32)  # every DOF pinned near its upper limit
+        state = model.state()
+        newton.eval_fk(
+            model,
+            wp.array(joint_q, dtype=wp.float32, device=device),
+            wp.zeros(7, dtype=wp.float32, device=device),
+            state,
+        )
+        tip_world = wp.transform(*state.body_q.numpy()[6]) * wp.transform(
+            p=wp.vec3(0.0, 0.0, 0.2), q=wp.quat_identity()
+        )
+
+        def _step():
+            inputs = ctrl.input()
+            outputs = ctrl.output()
+            inputs.joint_q = wp.array(joint_q, dtype=wp.float32, device=device)
+            inputs.joint_qd = wp.zeros(7, dtype=wp.float32, device=device)
+            inputs.desired_tool_pose_world = wp.array([tip_world], dtype=wp.transform, device=device)
+            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+            return outputs.joint_qd_target.numpy()
+
+        qd_before = _step()
+        self.assertTrue(np.any(np.abs(qd_before) > 1e-3))  # avoidance bias pulling every DOF off its limit
+
+        ctrl.set_joint_limits(
+            joint_pos_lower=wp.full(7, -10.0, dtype=wp.float32, device=device),
+            joint_pos_upper=wp.full(7, 10.0, dtype=wp.float32, device=device),
+        )
+        qd_after = _step()
+        np.testing.assert_allclose(qd_after, np.zeros(7), atol=1e-4)  # no longer near either limit
 
 
 if __name__ == "__main__":

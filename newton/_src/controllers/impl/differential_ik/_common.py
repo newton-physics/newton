@@ -348,7 +348,7 @@ def _svd_reconstruct_scaled_kernel(
         reconstructed[robot_idx, row, col] = 0.0
         return
     total = float(0.0)
-    for i in range(6):
+    for i in range(wp.min(dof_count[robot_idx], 6)):
         total += u[robot_idx, row, i] * pinv_singular_value[robot_idx, i] * v[robot_idx, col, i]
     reconstructed[robot_idx, row, col] = total
 

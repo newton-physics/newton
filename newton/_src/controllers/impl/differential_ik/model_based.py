@@ -497,6 +497,17 @@ class ControllerDifferentialIK(ControllerBase):
         outputs.joint_q_target = mf_outputs.joint_q_target
         return outputs
 
+    def set_joint_limits(self, *, joint_pos_lower: wp.array[wp.float32], joint_pos_upper: wp.array[wp.float32]) -> None:
+        """Update the joint position limits used by joint-limit avoidance, in place.
+
+        Args:
+            joint_pos_lower: Lower joint position limit per controlled DOF
+                [m or rad], shape [total_controlled_dofs].
+            joint_pos_upper: Upper joint position limit per controlled DOF
+                [m or rad], shape [total_controlled_dofs].
+        """
+        self._model_free.set_joint_limits(joint_pos_lower=joint_pos_lower, joint_pos_upper=joint_pos_upper)
+
     def step(
         self,
         *,

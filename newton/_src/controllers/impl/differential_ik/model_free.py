@@ -108,6 +108,32 @@ def _validate_non_negative_gain(value: wp.array[wp.float32] | float | None, name
         raise ValueError(f"{name} must be non-negative, got {value_np.tolist()}.")
 
 
+def _validate_joint_limits(
+    joint_pos_lower: wp.array[wp.float32],
+    joint_pos_upper: wp.array[wp.float32],
+    total_controlled_dofs: int,
+    device: wp.context.Device,
+) -> None:
+    """Raise unless ``joint_pos_lower``/``joint_pos_upper`` are finite, correctly shaped, and ``lower < upper`` everywhere.
+
+    Shared between construction and :meth:`ControllerDifferentialIKModelFree.set_joint_limits`, since both need the
+    same pair of arrays to hold the same invariants.
+    """
+    _validate_array(
+        array=joint_pos_lower, name="joint_pos_lower", dtype=wp.float32, shape=(total_controlled_dofs,), device=device
+    )
+    _validate_array(
+        array=joint_pos_upper, name="joint_pos_upper", dtype=wp.float32, shape=(total_controlled_dofs,), device=device
+    )
+    if np.any(joint_pos_lower.numpy() >= joint_pos_upper.numpy()):
+        raise ValueError("joint_pos_lower must be strictly less than joint_pos_upper for every DOF.")
+    if not (np.all(np.isfinite(joint_pos_lower.numpy())) and np.all(np.isfinite(joint_pos_upper.numpy()))):
+        raise ValueError(
+            "joint_pos_lower/joint_pos_upper must be finite for every DOF when use_joint_limit_avoidance=True; "
+            "an unbounded limit produces a NaN midpoint even though the avoidance bias is zero away from a limit."
+        )
+
+
 class ControllerDifferentialIKModelFree(ControllerBase):
     """Differential-kinematics (Jacobian-based) controller with a caller-supplied Jacobian.
 
@@ -506,28 +532,12 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     "joint_limit_avoidance_margin must be positive when use_joint_limit_avoidance=True, got "
                     f"{joint_limit_avoidance_margin}."
                 )
-            _validate_array(
-                array=joint_pos_lower,
-                name="joint_pos_lower",
-                dtype=wp.float32,
-                shape=(total_controlled_dofs,),
+            _validate_joint_limits(
+                joint_pos_lower=joint_pos_lower,
+                joint_pos_upper=joint_pos_upper,
+                total_controlled_dofs=total_controlled_dofs,
                 device=self._device,
             )
-            _validate_array(
-                array=joint_pos_upper,
-                name="joint_pos_upper",
-                dtype=wp.float32,
-                shape=(total_controlled_dofs,),
-                device=self._device,
-            )
-            if np.any(joint_pos_lower.numpy() >= joint_pos_upper.numpy()):
-                raise ValueError("joint_pos_lower must be strictly less than joint_pos_upper for every DOF.")
-            if not (np.all(np.isfinite(joint_pos_lower.numpy())) and np.all(np.isfinite(joint_pos_upper.numpy()))):
-                raise ValueError(
-                    "joint_pos_lower/joint_pos_upper must be finite for every DOF when "
-                    "use_joint_limit_avoidance=True; an unbounded limit produces a NaN midpoint even though "
-                    "the avoidance bias is zero away from a limit."
-                )
         elif joint_pos_lower is not None or joint_pos_upper is not None:
             raise ValueError("joint_pos_lower/joint_pos_upper were given but use_joint_limit_avoidance=False.")
 
@@ -1019,6 +1029,31 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             total_controlled_dofs, dtype=wp.float32, device=device, requires_grad=requires_grad
         )
         return outputs
+
+    def set_joint_limits(self, *, joint_pos_lower: wp.array[wp.float32], joint_pos_upper: wp.array[wp.float32]) -> None:
+        """Update the joint position limits used by joint-limit avoidance, in place.
+
+        Unlike ``bandwidth``/``damping``/etc., joint limits have no live
+        ``inputs.*`` port -- they change far less often, so a setter suits
+        them better than a per-step read. The caller is responsible for
+        keeping ``inputs.joint_q`` consistent with the new limits.
+
+        Args:
+            joint_pos_lower: Lower joint position limit per controlled DOF
+                [m or rad], shape [total_controlled_dofs].
+            joint_pos_upper: Upper joint position limit per controlled DOF
+                [m or rad], shape [total_controlled_dofs].
+        """
+        if not self._use_joint_limit_avoidance:
+            raise ValueError("set_joint_limits requires use_joint_limit_avoidance=True.")
+        _validate_joint_limits(
+            joint_pos_lower=joint_pos_lower,
+            joint_pos_upper=joint_pos_upper,
+            total_controlled_dofs=self._total_controlled_dofs,
+            device=self._device,
+        )
+        self._joint_pos_lower.assign(joint_pos_lower)
+        self._joint_pos_upper.assign(joint_pos_upper)
 
     def step(
         self,
