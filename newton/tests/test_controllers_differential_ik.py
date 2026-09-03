@@ -45,10 +45,10 @@ from newton._src.controllers.impl.differential_ik._common import (
     _adaptive_damping_kernel,
     _joint_limit_avoidance_bias_kernel,
     _posture_bias_kernel,
-    _qd_from_svd_z_kernel,
+    _qd_from_singular_basis_kernel,
     _qd_from_y_kernel,
-    _svd_apply_damped_z_kernel,
-    _svd_apply_truncated_z_kernel,
+    _qd_in_singular_basis_damped_kernel,
+    _qd_in_singular_basis_truncated_kernel,
     _svd_one_sided_jacobi_kernel,
 )
 from newton._src.controllers.impl.differential_ik.model_based import ControllerDifferentialIK
@@ -59,8 +59,8 @@ devices = get_test_devices()
 
 
 def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np, device, task_dim_val=6):
-    """Run the SVD-based solve end to end (_svd_one_sided_jacobi_kernel + _svd_apply_damped_z_kernel +
-    _qd_from_svd_z_kernel), returning ``joint_qd_target`` as numpy.
+    """Run the SVD-based solve end to end (_svd_one_sided_jacobi_kernel + _qd_in_singular_basis_damped_kernel +
+    _qd_from_singular_basis_kernel), returning ``joint_qd_target`` as numpy.
 
     ``jacobian_np`` is already ``J_w`` (every test in this section uses
     ``axis_weight`` all-ones, so ``J_w == J``); ``task_dim_val`` defaults to
@@ -99,12 +99,12 @@ def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np,
         device=device,
     )
 
-    z = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
+    qd_in_singular_basis = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
     wp.launch(
-        _svd_apply_damped_z_kernel,
+        _qd_in_singular_basis_damped_kernel,
         dim=(robot_count, max_dofs),
         inputs=[u, s, error, damping, task_dim, dof_count],
-        outputs=[z],
+        outputs=[qd_in_singular_basis],
         device=device,
     )
 
@@ -118,9 +118,9 @@ def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np,
     )
     joint_qd_target = wp.zeros(total_dofs, dtype=wp.float32, device=device)
     wp.launch(
-        _qd_from_svd_z_kernel,
+        _qd_from_singular_basis_kernel,
         dim=total_dofs,
-        inputs=[v, z, bandwidth, robot_of_dof, slot_of_dof, dof_count],
+        inputs=[v, qd_in_singular_basis, bandwidth, robot_of_dof, slot_of_dof, dof_count],
         outputs=[joint_qd_target],
         device=device,
     )
@@ -128,7 +128,7 @@ def _solve_dls_svd(jacobian_np, error_np, damping_val, dof_counts, bandwidth_np,
 
 
 def _solve_truncated_svd(jacobian_np, error_np, threshold_val, dof_counts, bandwidth_np, device, task_dim_val=6):
-    """Like :func:`_solve_dls_svd`, but through ``_svd_apply_truncated_z_kernel`` (``DifferentialIKMethod.TRUNCATED_SVD``)."""
+    """Like :func:`_solve_dls_svd`, but through ``_qd_in_singular_basis_truncated_kernel`` (``DifferentialIKMethod.TRUNCATED_SVD``)."""
     robot_count, m, max_dofs = jacobian_np.shape
     assert m == 6
     dof_counts = np.atleast_1d(dof_counts).astype(np.int32)
@@ -164,12 +164,12 @@ def _solve_truncated_svd(jacobian_np, error_np, threshold_val, dof_counts, bandw
         device=device,
     )
 
-    z = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
+    qd_in_singular_basis = wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=device)
     wp.launch(
-        _svd_apply_truncated_z_kernel,
+        _qd_in_singular_basis_truncated_kernel,
         dim=(robot_count, max_dofs),
         inputs=[u, s, error, threshold, task_dim, dof_count],
-        outputs=[z],
+        outputs=[qd_in_singular_basis],
         device=device,
     )
 
@@ -183,9 +183,9 @@ def _solve_truncated_svd(jacobian_np, error_np, threshold_val, dof_counts, bandw
     )
     joint_qd_target = wp.zeros(total_dofs, dtype=wp.float32, device=device)
     wp.launch(
-        _qd_from_svd_z_kernel,
+        _qd_from_singular_basis_kernel,
         dim=total_dofs,
-        inputs=[v, z, bandwidth, robot_of_dof, slot_of_dof, dof_count],
+        inputs=[v, qd_in_singular_basis, bandwidth, robot_of_dof, slot_of_dof, dof_count],
         outputs=[joint_qd_target],
         device=device,
     )
@@ -267,9 +267,9 @@ def test_qd_from_y_ignores_garbage_in_ys_padding_slots(test: unittest.TestCase, 
 
 
 # ---------------------------------------------------------------------------
-# The SVD-based solve: _svd_one_sided_jacobi_kernel + _svd_apply_damped_z_kernel
-# + _qd_from_svd_z_kernel (see _solve_dls_svd above) -- see the section
-# comment above _svd_one_sided_jacobi in _common.py for why it's SVD-based.
+# The SVD-based solve: _svd_one_sided_jacobi_kernel + _qd_in_singular_basis_damped_kernel
+# + _qd_from_singular_basis_kernel (see _solve_dls_svd above) -- see the
+# section comment above _svd_one_sided_jacobi in _common.py for why it's SVD-based.
 # ---------------------------------------------------------------------------
 
 
@@ -478,8 +478,17 @@ def test_posture_bias_matches_formula(test: unittest.TestCase, device):
 
 
 def test_adaptive_damping_matches_formula(test: unittest.TestCase, device):
-    """Adaptive damping matches the Maciejewski-Klein closed form, saturating at both ends of the ramp."""
-    smallest_eigenvalue = wp.array([0.0, 0.25, 100.0], dtype=wp.float32, device=device)  # sigma_min = 0, 0.5, 10
+    """Adaptive damping matches the Maciejewski-Klein closed form, saturating at both ends of the ramp.
+
+    ``task_dim=dof_count=1`` for every robot, so ``s``'s only column (index
+    ``task_dim - 1 = 0``) holds sigma_min directly -- this isolates the ramp
+    formula itself from the singular-value indexing, which
+    ``test_adaptive_damping_uses_lambda_max_for_structurally_rank_deficient_robot``
+    (controller-level) covers instead.
+    """
+    s = wp.array([[0.0], [0.5], [10.0]], dtype=wp.float32, device=device)  # sigma_min = 0, 0.5, 10
+    task_dim = wp.array([1, 1, 1], dtype=wp.int32, device=device)
+    dof_count = wp.array([1, 1, 1], dtype=wp.int32, device=device)
     damping_min = wp.array([0.1, 0.1, 0.1], dtype=wp.float32, device=device)
     damping_max = wp.array([2.0, 2.0, 2.0], dtype=wp.float32, device=device)
     threshold = wp.array([1.0, 1.0, 1.0], dtype=wp.float32, device=device)
@@ -487,7 +496,7 @@ def test_adaptive_damping_matches_formula(test: unittest.TestCase, device):
     wp.launch(
         _adaptive_damping_kernel,
         dim=3,
-        inputs=[smallest_eigenvalue, damping_min, damping_max, threshold],
+        inputs=[s, task_dim, dof_count, damping_min, damping_max, threshold],
         outputs=[damping],
         device=device,
     )
@@ -520,7 +529,7 @@ def test_truncated_svd_z_drops_singular_directions(test: unittest.TestCase, devi
     """A rank-3 J (from a 3-DOF robot padded to dof_count=6) has 3 structurally-zero singular values.
 
     Checks the "structural vs. thresholded zero" distinction against
-    ``_svd_apply_truncated_z_kernel``'s output: a solve with ``dof_count=3``
+    ``_qd_in_singular_basis_truncated_kernel``'s output: a solve with ``dof_count=3``
     (the genuine rank) must match one with ``dof_count=6`` on the same,
     only-3-real-columns Jacobian -- the 3 structural padding directions
     contribute exactly nothing either way.

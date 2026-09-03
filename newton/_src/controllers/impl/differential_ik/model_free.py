@@ -75,14 +75,13 @@ from ._common import (
     _gather_task_error_kernel,
     _integrate_position_kernel,
     _joint_limit_avoidance_bias_kernel,
+    _pinv_singular_value_damped_kernel,
     _posture_bias_kernel,
-    _qd_from_svd_z_kernel,
+    _qd_from_singular_basis_kernel,
     _qd_from_y_kernel,
+    _qd_in_singular_basis_damped_kernel,
+    _qd_in_singular_basis_truncated_kernel,
     _scatter_pinv_transpose_by_axis_kernel,
-    _smallest_singular_value_squared_kernel,
-    _svd_apply_damped_z_kernel,
-    _svd_apply_truncated_z_kernel,
-    _svd_damped_g_kernel,
     _svd_one_sided_jacobi_kernel,
     _svd_reconstruct_scaled_kernel,
 )
@@ -758,14 +757,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             requires_grad=requires_grad,
         )
         self._svd_v_view = self._svd_v_buf.view(svd_mat_v).reshape((controlled_robot_count,))
-        self._svd_z_buf = wp.zeros(
+        self._qd_in_singular_basis_buf = wp.zeros(
             (controlled_robot_count, max_controlled_dofs),
             dtype=wp.float32,
             device=self._device,
             requires_grad=requires_grad,
         )
         if self._use_adaptive_damping:
-            self._smallest_eigenvalue_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
             self._adaptive_damping_buf = wp.zeros(controlled_robot_count, dtype=wp.float32, device=self._device)
         self._qd_buf = wp.zeros(
             total_controlled_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
@@ -802,7 +800,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 requires_grad=requires_grad,
             )
             self._svd_v_null_view = self._svd_v_null_buf.view(svd_mat_v).reshape((controlled_robot_count,))
-            self._svd_g_null_buf = wp.zeros(
+            self._pinv_singular_value_null_buf = wp.zeros(
                 (controlled_robot_count, max_controlled_dofs),
                 dtype=wp.float32,
                 device=self._device,
@@ -1103,8 +1101,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         else:
             # Every other method shares one SVD of J_w = diag(w) @ J -- see
             # the section comment above _svd_one_sided_jacobi in _common.py
-            # -- differing only in the per-singular-direction gain (g) each
-            # applies to it below.
+            # -- differing only in the per-singular-direction pseudo-inverse
+            # singular value each applies to it below.
             wp.launch(
                 _gather_and_weight_jacobian_kernel,
                 dim=(controlled_robot_count, 6, self._max_controlled_dofs),
@@ -1126,17 +1124,12 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             )
             if self._use_adaptive_damping:
                 wp.launch(
-                    _smallest_singular_value_squared_kernel,
-                    dim=controlled_robot_count,
-                    inputs=[self._svd_s_buf, self._task_dim, self._controlled_dofs_per_robot],
-                    outputs=[self._smallest_eigenvalue_buf],
-                    device=self._device,
-                )
-                wp.launch(
                     _adaptive_damping_kernel,
                     dim=controlled_robot_count,
                     inputs=[
-                        self._smallest_eigenvalue_buf,
+                        self._svd_s_buf,
+                        self._task_dim,
+                        self._controlled_dofs_per_robot,
                         self._adaptive_damping_min_baked,
                         self._adaptive_damping_max_baked,
                         self._adaptive_damping_threshold_baked,
@@ -1147,7 +1140,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 damping = self._adaptive_damping_buf
             if self._use_truncated_svd:
                 wp.launch(
-                    _svd_apply_truncated_z_kernel,
+                    _qd_in_singular_basis_truncated_kernel,
                     dim=(controlled_robot_count, self._max_controlled_dofs),
                     inputs=[
                         self._svd_u_buf,
@@ -1157,12 +1150,12 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                         self._task_dim,
                         self._controlled_dofs_per_robot,
                     ],
-                    outputs=[self._svd_z_buf],
+                    outputs=[self._qd_in_singular_basis_buf],
                     device=self._device,
                 )
             else:
                 wp.launch(
-                    _svd_apply_damped_z_kernel,
+                    _qd_in_singular_basis_damped_kernel,
                     dim=(controlled_robot_count, self._max_controlled_dofs),
                     inputs=[
                         self._svd_u_buf,
@@ -1172,15 +1165,15 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                         self._task_dim,
                         self._controlled_dofs_per_robot,
                     ],
-                    outputs=[self._svd_z_buf],
+                    outputs=[self._qd_in_singular_basis_buf],
                     device=self._device,
                 )
             wp.launch(
-                _qd_from_svd_z_kernel,
+                _qd_from_singular_basis_kernel,
                 dim=total_controlled_dofs,
                 inputs=[
                     self._svd_v_buf,
-                    self._svd_z_buf,
+                    self._qd_in_singular_basis_buf,
                     bandwidth,
                     self._robot_of_dof,
                     self._slot_of_dof,
@@ -1225,10 +1218,10 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 device=self._device,
             )
             wp.launch(
-                _svd_damped_g_kernel,
+                _pinv_singular_value_damped_kernel,
                 dim=(controlled_robot_count, self._max_controlled_dofs),
                 inputs=[self._svd_s_null_buf, null_space_damping, self._task_dim, self._controlled_dofs_per_robot],
-                outputs=[self._svd_g_null_buf],
+                outputs=[self._pinv_singular_value_null_buf],
                 device=self._device,
             )
             wp.launch(
@@ -1236,7 +1229,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 dim=(controlled_robot_count, 6, self._max_controlled_dofs),
                 inputs=[
                     self._svd_u_null_buf,
-                    self._svd_g_null_buf,
+                    self._pinv_singular_value_null_buf,
                     self._svd_v_null_buf,
                     self._controlled_dofs_per_robot,
                 ],
