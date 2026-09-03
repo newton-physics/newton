@@ -4167,7 +4167,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @event_scope
     @override
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts | None, dt: float) -> None:
         """Advance the simulation by one timestep.
 
         Follows a three-phase push-integrate-pull cycle:
@@ -4208,8 +4208,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             state_in: Input state for this step.
             state_out: Output state written by this step.
             control: Joint targets and feedforward forces.
-            contacts: Newton collision pipeline contacts.  Ignored when
-                ``use_mujoco_contacts=True`` (MuJoCo Warp runs its own
+            contacts: Newton collision pipeline contacts.  Required when
+                ``use_mujoco_contacts=False``.  Ignored (and may be ``None``)
+                when ``use_mujoco_contacts=True`` (MuJoCo Warp runs its own
                 collision detection); bits 16-17 of ``state_out.mujoco.overflow``
                 are suppressed in that mode since the contacts object is not
                 used by the solver.
@@ -4232,6 +4233,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self._update_mjc_data(self.mjw_data, self.model, state_in)
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
+                    if contacts is None:
+                        raise ValueError(
+                            "contacts is required when use_mujoco_contacts=False "
+                            "(MuJoCo Warp does not run its own collision detection)."
+                        )
                     self._convert_contacts_to_mjwarp(self.model, state_in, contacts)
                 # Always clear d.overflow before the step so state.mujoco.overflow
                 # reflects only the current step (d.overflow uses |= accumulation).

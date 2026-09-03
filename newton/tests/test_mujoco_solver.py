@@ -13173,6 +13173,28 @@ class TestMuJoCoSolverOverflowState(unittest.TestCase):
             f"Newton overflow bits set despite contacts=None: {bits:#010x}",
         )
 
+    def test_contacts_none_raises_when_newton_contacts_required(self):
+        """contacts=None under use_mujoco_contacts=False should raise a clear ValueError."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+        if not wp.get_device().is_cuda:
+            self.skipTest("requires CUDA")
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform((0, 0.3, 0), wp.quat_identity()), mass=0.1)
+        builder.add_shape_sphere(b, radius=0.05)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        ctrl = model.control()
+        with self.assertRaises(ValueError):
+            solver.step(state_0, state_1, ctrl, None, 1.0 / 60.0)
+
 
 class TestMuJoCoSolverCapacityMismatch(unittest.TestCase):
     """Tests for the rigid_contact_max/nconmax capacity check in _convert_contacts_to_mjwarp."""
